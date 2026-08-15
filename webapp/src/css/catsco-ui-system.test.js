@@ -1088,6 +1088,42 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-project-task-option.is-selected .cc-project-task-selection-indicator svg')).toContain('color: #fff;');
   });
 
+  it('keeps conversation-share selection controls quiet and system-aligned', () => {
+    const primaryRule = ruleIn(openchatCss, '.cc-conversation-share-primary');
+    const primaryHoverRule = ruleIn(openchatCss, '.cc-conversation-share-primary:hover:not(:disabled)');
+    const toggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle');
+    const hoverToggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle:hover');
+    const indicatorRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle-indicator');
+    const selectedIndicatorRule = ruleIn(
+      openchatCss,
+      '.cc-conversation-share-message-toggle.is-selected .cc-conversation-share-message-toggle-indicator',
+    );
+    const selectedCardRule = ruleIn(openchatCss, '.cc-message-anchor.is-conversation-share-selected');
+
+    expect(toggleRule).toContain('width: 32px;');
+    expect(toggleRule).toContain('height: 32px;');
+    expect(toggleRule).toContain('border: 0;');
+    expect(toggleRule).toContain('background: transparent;');
+    expect(toggleRule).toContain('box-shadow: none;');
+    expect(hoverToggleRule).toContain('background: transparent;');
+    expect(openchatCss).toMatch(
+      /\.cc-conversation-share-message-toggle:hover \.cc-conversation-share-message-toggle-indicator\s*\{[^}]*border-color: var\(--cc-text-secondary\);/s,
+    );
+    expect(indicatorRule).toContain('width: 20px;');
+    expect(indicatorRule).toContain('height: 20px;');
+    expect(indicatorRule).toContain('border-radius: 6px;');
+    expect(selectedCardRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 10%, transparent);');
+    expect(openchatCss).toContain('--cc-conversation-share-accent: #3ab292;');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-hover: color-mix(in srgb, var(--cc-conversation-share-accent) 24%, var(--cc-panel));');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-border: color-mix(in srgb, var(--cc-conversation-share-accent) 64%, var(--cc-border-strong));');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-text: color-mix(in srgb, var(--cc-conversation-share-accent) 72%, var(--cc-text));');
+    expect(primaryRule).toContain('color: var(--cc-conversation-share-accent-text);');
+    expect(primaryRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 18%, var(--cc-panel));');
+    expect(primaryHoverRule).toContain('background: var(--cc-conversation-share-accent-hover);');
+    expect(selectedIndicatorRule).toContain('border-color: var(--cc-conversation-share-accent-border);');
+    expect(selectedIndicatorRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 18%, var(--cc-panel));');
+  });
+
   it('keeps project selection controls inside their scroll rail', () => {
     const listRule = ruleFor('.cc-new-task-agent-list');
     const optionRule = ruleFor('.cc-new-task-agent');
@@ -1405,12 +1441,17 @@ describe('CatsCo shell styling', () => {
 
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
     const noticeRule = ruleFor('.v3-composer-notices .v3-live-input-status');
+    const messageOverflowMenuRule = ruleFor('.v3-message-footer .v3-message-more-actions .v3-message-action-menu');
 
     expect(ruleFor('.v3-timeline')).toContain('padding: 18px 20px 140px;');
     expect(ruleFor('.v3-timeline-inner')).toContain('max-width: 760px;');
     expect(ruleFor('.v3-message.is-peer .v3-avatar-col')).toContain('margin-right: 10px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-bubble')).toContain('padding: 8px 0 14px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-footer')).toContain('padding: 0;');
+    expect(messageOverflowMenuRule).toContain('top: calc(100% + 6px);');
+    expect(messageOverflowMenuRule).toContain('right: 0;');
+    expect(messageOverflowMenuRule).toContain('bottom: auto;');
+    expect(messageOverflowMenuRule).toContain('left: auto;');
     expect(ruleFor('.v3-peer-typing')).toContain('width: min(760px, 100%);');
     expect(ruleFor('.v3-peer-typing')).toContain('margin: 4px auto;');
     expect(ruleFor('.v3-peer-typing')).toContain('padding: 8px 0 14px;');

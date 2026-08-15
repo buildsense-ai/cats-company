@@ -815,6 +815,7 @@ describe('ChatMessage rich file rendering', () => {
   it('renders message actions at the lower left and time at the lower right', async () => {
     const onReply = vi.fn();
     const onRegenerate = vi.fn(() => Promise.resolve());
+    const onCreateConversationShare = vi.fn();
     await act(async () => {
       root.render(
         <ChatMessage
@@ -829,6 +830,7 @@ describe('ChatMessage rich file rendering', () => {
           senderName="CatsCo"
           onReply={onReply}
           onRegenerate={onRegenerate}
+          onCreateConversationShare={onCreateConversationShare}
         />,
       );
       await Promise.resolve();
@@ -846,11 +848,12 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-msg-header .v3-msg-time')).toBeNull();
     expect(footer.querySelector('time.v3-msg-time')?.getAttribute('datetime')).toBe('2026-06-09T00:00:00Z');
 
-    const directActions = Array.from(footer.querySelectorAll(':scope > .v3-message-actions > .v3-action-btn'));
-    expect(directActions.map((button) => button.getAttribute('aria-label'))).toEqual([
+    const actionButtons = Array.from(footer.querySelectorAll(':scope > .v3-message-actions .v3-action-btn'));
+    expect(actionButtons.map((button) => button.getAttribute('aria-label'))).toEqual([
       '复制',
       '重新生成',
       '回复',
+      '更多操作',
     ]);
 
     await act(async () => {
@@ -873,7 +876,24 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(onReply).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
+
+    const moreActionsButton = container.querySelector('[aria-label="更多操作"]');
+    await act(async () => {
+      Simulate.click(moreActionsButton);
+      await Promise.resolve();
+    });
+    const moreActionsMenu = container.querySelector('.v3-message-action-menu');
+    expect(moreActionsButton.getAttribute('aria-expanded')).toBe('true');
+    expect(moreActionsMenu?.getAttribute('role')).toBe('menu');
+    expect(moreActionsMenu?.textContent).toContain('制作分享图');
+    expect(moreActionsButton.parentElement?.classList.contains('v3-message-more-actions')).toBe(true);
+    expect(moreActionsMenu?.parentElement).toBe(moreActionsButton.parentElement);
+
+    await act(async () => {
+      Simulate.click(moreActionsMenu.querySelector('[role="menuitem"]'));
+      await Promise.resolve();
+    });
+    expect(onCreateConversationShare).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 

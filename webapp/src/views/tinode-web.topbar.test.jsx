@@ -273,6 +273,11 @@ describe('LocalAssistantBar model selector', () => {
     expect(unavailableButton.disabled).toBe(true);
   });
 
+  it('keeps conversation-share image generation out of the top bar', async () => {
+    await renderBar({ onCreateConversationShare: vi.fn() });
+    expect(container.querySelector('button[aria-label="制作对话分享图"]')).toBeNull();
+  });
+
   it('keeps the current model and quota together in the header', async () => {
     await renderBar();
     const status = container.querySelector('.v3-local-assistant-status');

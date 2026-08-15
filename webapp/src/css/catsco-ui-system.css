@@ -3537,6 +3537,18 @@ html[data-theme="liquid"] .catsco-brand-mark {
   left: 0;
 }
 
+.v3-message-footer .v3-message-more-actions {
+  position: relative;
+  display: flex;
+}
+
+.v3-message-footer .v3-message-more-actions .v3-message-action-menu {
+  top: calc(100% + 6px);
+  right: 0;
+  bottom: auto;
+  left: auto;
+}
+
 @keyframes cc-message-regenerate-spin {
   to { transform: rotate(-360deg); }
 }

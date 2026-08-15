@@ -63,6 +63,16 @@ vi.mock('../widgets/chat-message', () => ({
             edit
           </button>
         )}
+        {props.onCreateConversationShare && (
+          <button
+            type="button"
+            className="mock-create-conversation-share"
+            data-message-id={props.message?.id}
+            onClick={props.onCreateConversationShare}
+          >
+            制作分享图
+          </button>
+        )}
         {fileBlock && (
           <button
             type="button"
@@ -155,6 +165,26 @@ vi.mock('../widgets/avatar', () => ({
   },
 }));
 
+vi.mock('../utils/conversation-share-image', () => ({
+  conversationShareMessageKey: (message, index = 0) => String(
+    message?.id ?? message?.seq_id ?? `share-message-${index}`,
+  ),
+  conversationShareText: (message) => {
+    const blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+    if (blocks.length > 0) {
+      return blocks.map((block) => block?.text || block?.payload?.name || '').filter(Boolean).join('\n');
+    }
+    return typeof message?.content === 'string' ? message.content : message?.content?.text || '';
+  },
+  downloadConversationShareImage: vi.fn(),
+  downloadConversationShareImages: vi.fn(),
+  renderConversationShareImage: vi.fn(async () => ({
+    dataUrl: 'data:image/png;base64,catsco-share',
+    width: 1080,
+    height: 1440,
+  })),
+}));
+
 vi.mock('../api', () => ({
   api: {
     getMessages: vi.fn(),
@@ -190,6 +220,7 @@ import MessagesView, {
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
 import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
+import { downloadConversationShareImage, downloadConversationShareImages, renderConversationShareImage } from '../utils/conversation-share-image';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -457,6 +488,194 @@ describe('MessagesView composer draft isolation', () => {
       .find((button) => button.textContent.includes('返回搜索结果'));
     await act(async () => backButton.click());
     expect(onBackToSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects existing conversation messages and exports a branded sharing image', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: '请整理本周项目进度',
+          created_at: '2026-08-13T02:00:00Z',
+        },
+        {
+          id: 102,
+          seq_id: 102,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content_blocks: [
+            { type: 'text', text: '已经整理完成，附件如下。' },
+            { type: 'file', payload: { name: 'weekly-brief.pdf' } },
+          ],
+          created_at: '2026-08-13T02:01:00Z',
+        },
+      ],
+    });
+    const previousTheme = document.documentElement.dataset.theme;
+    const previousLiquidVariant = document.documentElement.dataset.liquidVariant;
+    document.documentElement.dataset.theme = 'liquid';
+    document.documentElement.dataset.liquidVariant = 'green';
+
+    try {
+      await mountTopic(root, 'p2p_1_2', {
+        topicName: '项目周报',
+      });
+      await act(async () => { await flushPromises(); });
+
+      const shareTrigger = container.querySelector('.mock-chat-message[data-message-id="102"] .mock-create-conversation-share');
+      await act(async () => {
+        shareTrigger.click();
+        await Promise.resolve();
+      });
+
+      const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+      expect(toolbar?.textContent).toContain('已选 1 条');
+      expect(container.querySelectorAll('.cc-message-search-hit')).toHaveLength(0);
+
+      const selectableCards = container.querySelectorAll('.cc-message-anchor.is-conversation-share-selectable');
+      expect(selectableCards).toHaveLength(2);
+      expect(selectableCards[1].classList.contains('is-conversation-share-selected')).toBe(true);
+      const selectableToggles = container.querySelectorAll('button[aria-label^="选择消息"]');
+      expect(selectableToggles).toHaveLength(1);
+
+      const generateButton = [...toolbar.querySelectorAll('button')]
+        .find((button) => button.textContent.includes('生成分享图'));
+      generateButton.focus();
+      await act(async () => {
+        generateButton.click();
+        await flushPromises();
+      });
+      expect(renderConversationShareImage).toHaveBeenCalledWith(expect.objectContaining({
+        topicName: '项目周报',
+        theme: 'liquid-green',
+        items: [expect.objectContaining({
+          senderName: '项目周报',
+          message: expect.objectContaining({ id: 102 }),
+        })],
+      }));
+
+      const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+      expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,catsco-share');
+      const closeButton = preview.querySelector('button[aria-label="关闭分享图预览"]');
+      expect(document.activeElement).toBe(closeButton);
+      const downloadButton = [...preview.querySelectorAll('button')]
+        .find((button) => button.textContent.includes('下载 PNG'));
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }));
+      });
+      expect(document.activeElement).toBe(downloadButton);
+      await act(async () => downloadButton.click());
+      expect(downloadConversationShareImage).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }));
+        await flushPromises();
+      });
+      expect(document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]')).toBeNull();
+      expect(document.activeElement).toBe(generateButton);
+    } finally {
+      if (previousTheme) document.documentElement.dataset.theme = previousTheme;
+      else delete document.documentElement.dataset.theme;
+      if (previousLiquidVariant) document.documentElement.dataset.liquidVariant = previousLiquidVariant;
+      else delete document.documentElement.dataset.liquidVariant;
+    }
+  });
+
+  it('allows up to 50 messages and rejects the 51st selection', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: Array.from({ length: 51 }, (_, index) => ({
+        id: index + 1,
+        seq_id: index + 1,
+        topic_id: 'p2p_1_2',
+        from_uid: index % 2 === 0 ? 1 : 2,
+        type: 'text',
+        content: `消息 ${index + 1}`,
+      })),
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    await act(async () => {
+      container.querySelector('.mock-chat-message[data-message-id="1"] .mock-create-conversation-share').click();
+      await Promise.resolve();
+    });
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const toggles = container.querySelectorAll('.cc-conversation-share-message-toggle');
+    expect(toggles).toHaveLength(51);
+
+    await act(async () => {
+      for (let index = 1; index < 50; index += 1) {
+        toggles[index].click();
+      }
+    });
+    expect(toolbar?.textContent).toContain('已选 50 条');
+
+    await act(async () => toggles[50].click());
+    expect(toolbar?.textContent).toContain('已选 50 条');
+    expect(toolbar?.textContent).toContain('一次最多选择 50 条消息。');
+  });
+
+  it('previews and downloads every generated share-image page', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 201,
+        seq_id: 201,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '一条较长的消息',
+      }],
+    });
+    renderConversationShareImage.mockResolvedValueOnce({
+      dataUrl: 'data:image/png;base64,page-one',
+      pages: [
+        { dataUrl: 'data:image/png;base64,page-one', width: 720, height: 9600, page: 1, total: 2 },
+        { dataUrl: 'data:image/png;base64,page-two', width: 720, height: 2200, page: 2, total: 2 },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    const shareTrigger = container.querySelector('.mock-create-conversation-share');
+    await act(async () => shareTrigger.click());
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    expect(preview?.textContent).toContain('共 2 张');
+    expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,page-one');
+
+    const nextButton = preview.querySelector('button[aria-label="查看下一张分享图"]');
+    await act(async () => nextButton.click());
+    expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,page-two');
+
+    const downloadAllButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('下载全部 PNG'));
+    await act(async () => downloadAllButton.click());
+    expect(downloadConversationShareImages).toHaveBeenCalledWith([
+      'data:image/png;base64,page-one',
+      'data:image/png;base64,page-two',
+    ]);
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {
