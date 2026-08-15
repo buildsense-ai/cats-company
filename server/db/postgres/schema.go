@@ -22,6 +22,8 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusSourcesTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
+		createBotSkillMutationsTable,
+		createBotSkillMutationsActiveIndex,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
@@ -334,6 +336,49 @@ CREATE TABLE IF NOT EXISTS bot_config (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+const createBotSkillMutationsTable = `
+CREATE TABLE IF NOT EXISTS bot_skill_mutations (
+    id BIGSERIAL PRIMARY KEY,
+    bot_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    local_skill_id VARCHAR(128) NOT NULL,
+    actor_user_uid BIGINT NOT NULL,
+    source_topic_id VARCHAR(255) NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    runtime_body_id VARCHAR(128) NOT NULL,
+    client_request_id VARCHAR(128) NOT NULL,
+    request_fingerprint CHAR(64) NOT NULL,
+    operation VARCHAR(16) NOT NULL CHECK (operation IN ('create','replace','rollback')),
+    candidate_content_hash CHAR(64) NOT NULL,
+    expected_definition_revision BIGINT NOT NULL,
+    expected_previous_content_hash CHAR(64) DEFAULT NULL,
+    before_reference JSONB DEFAULT NULL,
+    after_reference JSONB DEFAULT NULL,
+    git_commit_sha VARCHAR(64) DEFAULT NULL,
+    definition_revision BIGINT DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'validating'
+        CHECK (status IN ('validating','version_ready','definition_committed','activation_pending','active','rejected','compensation_pending','rolled_back')),
+    error_code VARCHAR(64) DEFAULT NULL,
+    error_summary VARCHAR(512) DEFAULT NULL,
+    rollback_of BIGINT DEFAULT NULL REFERENCES bot_skill_mutations(id) ON DELETE SET NULL,
+    lease_generation BIGINT NOT NULL DEFAULT 1,
+    lease_expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    activated_at TIMESTAMPTZ DEFAULT NULL,
+    CONSTRAINT uk_bot_skill_mutations_request UNIQUE (actor_user_uid, bot_uid, client_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bot_skill_mutations_audit
+    ON bot_skill_mutations (bot_uid, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_bot_skill_mutations_source
+    ON bot_skill_mutations (source_topic_id, source_message_id);
+`
+
+const createBotSkillMutationsActiveIndex = `
+CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_skill_mutations_active
+    ON bot_skill_mutations (bot_uid)
+    WHERE status IN ('validating','version_ready','definition_committed','activation_pending','compensation_pending');
 `
 
 const createRateLimitTable = `
@@ -1054,6 +1099,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_projects_updated_at BEFORE UPDATE ON projects
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_bot_config_updated_at BEFORE UPDATE ON bot_config
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_bot_skill_mutations_updated_at BEFORE UPDATE ON bot_skill_mutations
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
