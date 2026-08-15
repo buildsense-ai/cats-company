@@ -1,6 +1,5 @@
 const DEFAULT_WIDTH = 720;
 const DEFAULT_SCALE = 1.5;
-const DEFAULT_MAX_TEXT_LENGTH = 560;
 const MIN_OUTPUT_SCALE = 0.75;
 // Keep long 50-message shares usable without allocating an unbounded canvas.
 const MAX_OUTPUT_HEIGHT = 9600;
@@ -95,7 +94,7 @@ function structuredContentParts(content) {
   return sourceWasString ? [content] : [];
 }
 
-export function conversationShareText(message, maxLength = DEFAULT_MAX_TEXT_LENGTH) {
+export function conversationShareText(message) {
   const blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
   const blockParts = blocks
     .filter((block) => ['text', 'image', 'file'].includes(block?.type))
@@ -104,9 +103,7 @@ export function conversationShareText(message, maxLength = DEFAULT_MAX_TEXT_LENG
   const parts = blockParts.length > 0
     ? blockParts
     : structuredContentParts(message?.content);
-  const value = parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export function conversationShareMessageKey(message, index = 0) {
@@ -282,12 +279,35 @@ export async function renderConversationShareImage({
     MAX_OUTPUT_HEIGHT / height,
     Math.sqrt(MAX_OUTPUT_PIXELS / (width * height)),
   );
+  const maxPageHeight = Math.min(
+    MAX_OUTPUT_HEIGHT / MIN_OUTPUT_SCALE,
+    MAX_OUTPUT_PIXELS / (width * MIN_OUTPUT_SCALE * MIN_OUTPUT_SCALE),
+  );
+  const maxBubbleHeight = Math.max(1, maxPageHeight - heightForLayouts([]) - gap);
+  const maxLinesPerBubble = Math.max(
+    1,
+    Math.floor((maxBubbleHeight - 60 - bubblePaddingY * 2) / bodyLineHeight),
+  );
+  const paginatedLayouts = layouts.flatMap((item) => {
+    if (item.lines.length <= maxLinesPerBubble) return [item];
+
+    const fragments = [];
+    for (let start = 0; start < item.lines.length; start += maxLinesPerBubble) {
+      const lines = item.lines.slice(start, start + maxLinesPerBubble);
+      fragments.push({
+        ...item,
+        lines,
+        bubbleHeight: 60 + lines.length * bodyLineHeight + bubblePaddingY * 2,
+      });
+    }
+    return fragments;
+  });
 
   // Keep every page within the browser-safe canvas bounds. Long selections remain
   // complete by becoming a small sequence of share images instead of failing.
   const layoutPages = [];
   let currentPageLayouts = [];
-  layouts.forEach((item) => {
+  paginatedLayouts.forEach((item) => {
     const nextPageLayouts = [...currentPageLayouts, item];
     if (
       currentPageLayouts.length > 0
@@ -305,7 +325,7 @@ export async function renderConversationShareImage({
     const height = heightForLayouts(pageLayouts);
     const outputScale = outputScaleForHeight(height);
     if (!Number.isFinite(outputScale) || outputScale < MIN_OUTPUT_SCALE) {
-      throw new Error('单条消息内容较长，请缩短后重试。');
+      throw new Error('分享图尺寸超出浏览器安全范围，请稍后重试。');
     }
     const pageCanvas = pageIndex === 0 ? canvas : document.createElement('canvas');
     const pageCtx = pageIndex === 0 ? ctx : pageCanvas.getContext('2d');

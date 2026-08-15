@@ -15,13 +15,24 @@ describe('conversation share image helpers', () => {
     })).toBe('先整理重点\n[文件] brief.pdf\n[图片] cover.png');
   });
 
-  it('falls back to legacy content and caps long messages', () => {
+  it('keeps full long text and attachment labels', () => {
+    const longText = '0123456789abcdefghijklmnopqrstuvwxyz'.repeat(4);
+    expect(conversationShareText({
+      content_blocks: [
+        { type: 'text', text: longText },
+        { type: 'file', payload: { name: 'brief.pdf' } },
+        { type: 'image', payload: { name: 'cover.png' } },
+      ],
+    })).toBe(`${longText}\n[文件] brief.pdf\n[图片] cover.png`);
+  });
+
+  it('falls back to legacy content without truncating messages', () => {
     expect(conversationShareText({ content: 'legacy message' })).toBe('legacy message');
     expect(conversationShareText({
       content: JSON.stringify({ type: 'image', payload: { name: 'legacy-cover.png' } }),
     })).toBe('[图片] legacy-cover.png');
     const longText = 'a'.repeat(40);
-    expect(conversationShareText({ content: longText }, 12)).toBe('aaaaaaaaaaa…');
+    expect(conversationShareText({ content: longText })).toBe(longText);
   });
 
   it('prefers stable message identifiers for selection keys', () => {
@@ -87,6 +98,46 @@ describe('conversation share image helpers', () => {
     expect(fillStyles).toContain('#151718');
     expect(strokeStyles).toContain('#3ab292');
     expect(context.fillText).toHaveBeenCalledWith(expect.stringMatching(/…$/), 344, 94);
+  });
+
+  it('paginates one long message without truncating its final content', async () => {
+    const originalCreateElement = document.createElement.bind(document);
+    const context = {
+      arcTo: vi.fn(),
+      beginPath: vi.fn(),
+      closePath: vi.fn(),
+      fill: vi.fn(),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      measureText: vi.fn((value) => ({ width: String(value).length * 10 })),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      restore: vi.fn(),
+      save: vi.fn(),
+      scale: vi.fn(),
+      stroke: vi.fn(),
+    };
+    const canvas = {
+      getContext: vi.fn(() => context),
+      toDataURL: vi.fn(() => 'data:image/png;base64:single-long-share'),
+      style: {},
+    };
+    vi.spyOn(document, 'createElement').mockImplementation((tagName, options) => (
+      tagName === 'canvas' ? canvas : originalCreateElement(tagName, options)
+    ));
+    const longText = `${'a'.repeat(30_000)}END-OF-MESSAGE`;
+
+    const result = await renderConversationShareImage({
+      logoUrl: '',
+      items: [{
+        message: { id: 1, content: longText, created_at: '2026-08-13T03:00:00Z' },
+        senderName: 'Me',
+        isSelf: true,
+      }],
+    });
+
+    expect(result.pages.length).toBeGreaterThan(1);
+    expect(context.fillText.mock.calls.some(([text]) => String(text).includes('END-OF-MESSAGE'))).toBe(true);
   });
 
   it('paginates a long 50-message share instead of rejecting the selection', async () => {
