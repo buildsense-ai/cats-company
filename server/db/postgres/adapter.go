@@ -46,6 +46,8 @@ var _ store.ProjectStore = (*Adapter)(nil)
 var _ store.ProjectTopicStore = (*Adapter)(nil)
 var _ store.PushSubscriptionStore = (*Adapter)(nil)
 var _ store.ConversationNotificationPreferenceStore = (*Adapter)(nil)
+var _ store.BotSkillMutationPolicyStore = (*Adapter)(nil)
+var _ store.BotSkillMutationStore = (*Adapter)(nil)
 
 // Open initializes the database connection with default pool settings.
 func (a *Adapter) Open(dsn string) error {
