@@ -281,6 +281,13 @@ type BotArtifactPolicyStore interface {
 	UpdateBotArtifactUploadPolicy(botUID int64, enabled bool) error
 }
 
+// BotSkillMutationPolicyStore persists the opt-in policy for the dedicated
+// Skill mutation control plane. It does not authorize general Bot edits.
+type BotSkillMutationPolicyStore interface {
+	GetBotSkillMutationMode(botUID int64) (types.BotSkillMutationMode, error)
+	UpdateBotSkillMutationMode(botUID int64, mode types.BotSkillMutationMode) error
+}
+
 // BotModelConfigStore is optional so existing narrow Store test doubles do not
 // need cloud-model methods. Production database adapters implement it.
 type BotModelConfigStore interface {
