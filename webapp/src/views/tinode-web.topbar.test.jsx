@@ -123,6 +123,44 @@ describe('model reasoning menu placement', () => {
   });
 });
 
+describe('LocalAssistantBar narrow-pane layout', () => {
+  it('keeps model status and a long conversation title in bounded header tracks', () => {
+    expect(topbarCss).toMatch(
+      /\.v3-local-assistant-bar\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*min\(42%,\s*480px\)\)\s*minmax\(0,\s*1fr\);/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-chat-column\s*\{[^}]*container-type:\s*inline-size;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-model-menu-anchor\s*\{[^}]*width:\s*min\(100%,\s*340px\);[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-local-assistant-status\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-shell-title\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*text-overflow:\s*ellipsis;/s,
+    );
+  });
+
+  it('removes secondary model metadata before a narrow pane can crowd the title', () => {
+    expect(topbarCss).toMatch(
+      /@container\s*\(max-width:\s*820px\)\s*\{[\s\S]*?\.v3-model-context,\s*\.v3-model-quota\s*\{[^}]*display:\s*none;/,
+    );
+  });
+
+  it('moves a narrow-pane title onto its own readable row instead of ellipsizing it', () => {
+    expect(topbarCss).toMatch(
+      /@container\s*\(max-width:\s*820px\)\s*\{\s*\.v3-local-assistant-bar\s*\{[^}]*grid-template-areas:\s*"model actions"\s*"title title";[^}]*grid-template-rows:\s*38px\s+minmax\(24px,\s*auto\);/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-shell-title,\s*\.v3-shell-title-input\s*\{[^}]*grid-area:\s*title;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-shell-title\s*\{[^}]*overflow:\s*visible;[^}]*text-overflow:\s*clip;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+  });
+});
+
 describe('resolveDisplayedActiveAgent', () => {
   it('exposes an owned draft agent to the model selector before the task is created', () => {
     expect(resolveDisplayedActiveAgent('', null, {

@@ -5,12 +5,16 @@
 
 .v3-local-assistant-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, min(42%, 480px)) minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   box-sizing: border-box;
   min-height: 56px;
   padding: 0 12px;
+}
+
+.v3-chat-column {
+  container-type: inline-size;
 }
 
 .v3-model-select {
@@ -20,13 +24,18 @@
 
 .v3-model-menu-anchor {
   position: relative;
-  display: inline-flex;
-  max-width: min(100%, 340px);
+  display: flex;
+  width: min(100%, 340px);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .v3-local-assistant-status {
-  max-width: min(100%, 340px);
+  box-sizing: border-box;
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .v3-model-status-button {
@@ -712,7 +721,8 @@
 .v3-shell-title {
   position: static;
   justify-self: center;
-  max-width: min(42vw, 480px);
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   transform: none;
   text-overflow: ellipsis;
@@ -801,6 +811,51 @@
   background: var(--cc-hover);
 }
 
+@container (max-width: 820px) {
+  .v3-local-assistant-bar {
+    grid-template-areas:
+      "model actions"
+      "title title";
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 38px minmax(24px, auto);
+    min-height: 70px;
+    gap: 0 6px;
+    padding-top: 4px;
+    padding-bottom: 6px;
+  }
+
+  .v3-model-select {
+    grid-area: model;
+  }
+
+  .v3-model-context,
+  .v3-model-quota {
+    display: none;
+  }
+
+  .v3-shell-title,
+  .v3-shell-title-input {
+    grid-area: title;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    justify-self: stretch;
+  }
+
+  .v3-shell-title {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 18px;
+    text-align: center;
+  }
+
+  .v3-shell-actions {
+    grid-area: actions;
+  }
+}
+
 @media (max-width: 768px) {
   .v3-local-assistant-bar {
     gap: 8px;
@@ -822,14 +877,14 @@
   }
 
   .v3-shell-title {
-    max-width: 34vw;
+    max-width: 100%;
     font-size: 13px;
   }
 
   .v3-shell-title-input {
-    width: auto;
-    min-width: 88px;
-    max-width: 34vw;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
     font-size: 13px;
   }
 
@@ -862,7 +917,7 @@
 
   .v3-shell-title {
     grid-area: title;
-    max-width: calc(100vw - 24px);
+    max-width: 100%;
     font-size: 12px;
   }
 
@@ -909,13 +964,13 @@
   }
 
   .v3-shell-title {
-    max-width: calc(100vw - 20px);
+    max-width: 100%;
   }
 
   .v3-shell-title-input {
-    width: auto;
-    min-width: 80px;
-    max-width: 30vw;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .v3-action-btn {
