@@ -2,9 +2,14 @@ package server
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -20,6 +25,59 @@ type skillMutationGrantIssueTestStore struct {
 	messages     map[string][]*types.Message
 	groupMembers map[[2]int64]bool
 	err          error
+}
+
+type skillMutationGrantWSTestStore struct {
+	*skillMutationGrantIssueTestStore
+	mu     sync.Mutex
+	apiKey string
+	bodyID string
+}
+
+func (s *skillMutationGrantWSTestStore) GetBotByAPIKey(apiKey string) (int64, error) {
+	if apiKey != s.apiKey {
+		return 0, errors.New("not found")
+	}
+	return 42, nil
+}
+
+func (s *skillMutationGrantWSTestStore) EnsureBotBodyBinding(botUID int64, bodyID string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if botUID != 42 {
+		return "", false, errors.New("bot not found")
+	}
+	if s.bodyID == "" {
+		s.bodyID = bodyID
+	}
+	return s.bodyID, s.bodyID == bodyID, nil
+}
+
+func (s *skillMutationGrantWSTestStore) SetBotBodyBinding(botUID int64, bodyID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if botUID != 42 {
+		return errors.New("bot not found")
+	}
+	s.bodyID = bodyID
+	return nil
+}
+
+func (s *skillMutationGrantWSTestStore) GetBotBodyID(botUID int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if botUID != 42 {
+		return "", errors.New("bot not found")
+	}
+	return s.bodyID, nil
+}
+
+func (s *skillMutationGrantWSTestStore) GetFriends(uid int64) ([]*types.User, error) {
+	return nil, nil
+}
+
+func (s *skillMutationGrantWSTestStore) GetUserGroups(uid int64) ([]*types.Group, error) {
+	return nil, nil
 }
 
 func (s *skillMutationGrantIssueTestStore) GetUser(uid int64) (*types.User, error) {
@@ -110,10 +168,23 @@ func newSkillMutationGrantIssueFixture(t *testing.T, actorUID int64) *skillMutat
 		t.Fatal(err)
 	}
 	hub.skillMutationGrants = signer
+	runtimeSigner, err := newBotRuntimeCredentialSigner([]byte(skillMutationGrantTestSecret), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.botRuntimeCredentials = runtimeSigner
 	hub.bodyLeases.now = func() time.Time { return now }
 	client := &Client{
-		hub: hub, uid: 42, accountType: types.AccountBot, bodyID: "body-prod-1", connectionID: "conn-1", send: make(chan []byte, 8),
+		hub: hub, uid: 42, accountType: types.AccountBot, bodyID: "body-prod-1", installationID: "install-prod-1",
+		connectionID: "conn-1", send: make(chan []byte, 8),
 	}
+	_, runtimeClaims, err := runtimeSigner.issue(botRuntimeCredentialInput{
+		OwnerUID: 7, BotUID: 42, BodyID: client.bodyID, InstallationID: client.installationID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.botRuntimeCredential = runtimeClaims
 	if _, err := hub.bodyLeases.acquire(client.uid, client.bodyID, client.connectionID); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +258,24 @@ func TestSkillMutationGrantRejectsInactiveOrLegacyRuntimeBody(t *testing.T) {
 	result = readSkillMutationGrantResult(t, legacy)
 	if result.Error == nil || result.Error.Code != "runtime_identity_invalid" {
 		t.Fatalf("legacy body result: %#v", result)
+	}
+}
+
+func TestSkillMutationGrantRequiresOwnerIssuedRuntimeCredential(t *testing.T) {
+	missing := newSkillMutationGrantIssueFixture(t, 7)
+	missing.client.botRuntimeCredential = nil
+	missing.hub.handleSkillMutationGrant(missing.client, missing.msg)
+	result := readSkillMutationGrantResult(t, missing)
+	if result.Error == nil || result.Error.Code != "runtime_credential_required" || result.Grant != "" {
+		t.Fatalf("missing Runtime credential result: %#v", result)
+	}
+
+	mismatchedOwner := newSkillMutationGrantIssueFixture(t, 7)
+	mismatchedOwner.client.botRuntimeCredential.OwnerUID = 8
+	mismatchedOwner.hub.handleSkillMutationGrant(mismatchedOwner.client, mismatchedOwner.msg)
+	result = readSkillMutationGrantResult(t, mismatchedOwner)
+	if result.Error == nil || result.Error.Code != "runtime_credential_required" || result.Grant != "" {
+		t.Fatalf("mismatched Runtime credential owner result: %#v", result)
 	}
 }
 
@@ -284,4 +373,87 @@ func TestDeviceConnectorCannotRequestSkillMutationGrant(t *testing.T) {
 	if deviceConnectorMessageAllowed(msg) {
 		t.Fatal("device connector was allowed to request a Skill mutation grant")
 	}
+}
+
+func TestWebSocketAPIKeyOnlyCannotRequestSkillMutationGrant(t *testing.T) {
+	fixture := newSkillMutationGrantIssueFixture(t, 7)
+	apiKey := GenerateAPIKey(42)
+	db := &skillMutationGrantWSTestStore{skillMutationGrantIssueTestStore: fixture.db, apiKey: apiKey}
+	hub := NewHub(db, nil)
+	grantSigner, _ := newSkillMutationGrantSigner([]byte(skillMutationGrantTestSecret), func() time.Time { return fixture.now })
+	runtimeSigner, _ := newBotRuntimeCredentialSigner([]byte(skillMutationGrantTestSecret), func() time.Time { return fixture.now })
+	hub.skillMutationGrants = grantSigner
+	hub.botRuntimeCredentials = runtimeSigner
+	hub.bodyLeases.now = func() time.Time { return fixture.now }
+	go hub.Run()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWS(hub, w, r)
+	}))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	apiKeyOnly, response, err := dialSkillMutationRuntime(wsURL, apiKey, "self-reported-body", "self-reported-install", "")
+	closeResponse(response)
+	if err != nil {
+		t.Fatalf("API-key-only websocket dial failed: %v", err)
+	}
+	if err := apiKeyOnly.WriteJSON(&ClientMessage{SkillMutationGrant: fixture.msg}); err != nil {
+		apiKeyOnly.Close()
+		t.Fatal(err)
+	}
+	var denied ServerMessage
+	if err := apiKeyOnly.ReadJSON(&denied); err != nil {
+		apiKeyOnly.Close()
+		t.Fatal(err)
+	}
+	if denied.SkillMutationGrant == nil || denied.SkillMutationGrant.Error == nil ||
+		denied.SkillMutationGrant.Error.Code != "runtime_credential_required" || denied.SkillMutationGrant.Grant != "" {
+		apiKeyOnly.Close()
+		t.Fatalf("API-key-only grant result: %#v", denied.SkillMutationGrant)
+	}
+	apiKeyOnly.Close()
+	waitForClientCount(t, hub, 42, 0)
+
+	rawCredential, _, err := runtimeSigner.issue(botRuntimeCredentialInput{
+		OwnerUID: 7, BotUID: 42, BodyID: "trusted-body", InstallationID: "trusted-install",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched, response, err := dialSkillMutationRuntime(wsURL, apiKey, "other-body", "trusted-install", rawCredential)
+	if mismatched != nil {
+		mismatched.Close()
+	}
+	closeResponse(response)
+	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("mismatched Runtime credential status=%v err=%v, want 403", responseStatus(response), err)
+	}
+	trusted, response, err := dialSkillMutationRuntime(wsURL, apiKey, "trusted-body", "trusted-install", rawCredential)
+	closeResponse(response)
+	if err != nil {
+		t.Fatalf("trusted Runtime websocket dial failed: %v", err)
+	}
+	defer trusted.Close()
+	if err := trusted.WriteJSON(&ClientMessage{SkillMutationGrant: fixture.msg}); err != nil {
+		t.Fatal(err)
+	}
+	var allowed ServerMessage
+	if err := trusted.ReadJSON(&allowed); err != nil {
+		t.Fatal(err)
+	}
+	if allowed.SkillMutationGrant == nil || allowed.SkillMutationGrant.Error != nil || allowed.SkillMutationGrant.Grant == "" {
+		t.Fatalf("trusted Runtime grant result: %#v", allowed.SkillMutationGrant)
+	}
+}
+
+func dialSkillMutationRuntime(wsURL, apiKey, bodyID, installationID, runtimeCredential string) (*websocket.Conn, *http.Response, error) {
+	headers := http.Header{}
+	headers.Set("X-API-Key", apiKey)
+	headers.Set(botBodyIDHeader, bodyID)
+	headers.Set(botInstallationIDHeader, installationID)
+	if runtimeCredential != "" {
+		headers.Set(botRuntimeCredentialHeader, runtimeCredential)
+	}
+	return websocket.DefaultDialer.Dial(wsURL, headers)
 }

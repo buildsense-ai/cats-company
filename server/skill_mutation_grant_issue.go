@@ -17,11 +17,12 @@ const (
 )
 
 var (
-	errSkillMutationGrantUnavailable = errors.New("skill mutation authorization is unavailable")
-	errSkillMutationRuntimeIdentity  = errors.New("current Bot runtime identity is not active")
-	errSkillMutationSourceMessage    = errors.New("source message is not an eligible human message for this Bot")
-	errSkillMutationActorForbidden   = errors.New("source actor is not allowed to mutate this Bot")
-	errSkillMutationDefinitionStale  = errors.New("BotDefinition revision or previous Skill version is stale")
+	errSkillMutationGrantUnavailable  = errors.New("skill mutation authorization is unavailable")
+	errSkillMutationRuntimeIdentity   = errors.New("current Bot runtime identity is not active")
+	errSkillMutationRuntimeCredential = errors.New("trusted Bot Runtime credential is required")
+	errSkillMutationSourceMessage     = errors.New("source message is not an eligible human message for this Bot")
+	errSkillMutationActorForbidden    = errors.New("source actor is not allowed to mutate this Bot")
+	errSkillMutationDefinitionStale   = errors.New("BotDefinition revision or previous Skill version is stale")
 )
 
 type skillMutationPolicyReader interface {
@@ -58,6 +59,8 @@ func (h *Hub) handleSkillMutationGrant(client *Client, msg *MsgSkillMutationGran
 			code = "unavailable"
 		case errors.Is(err, errSkillMutationRuntimeIdentity):
 			code = "runtime_identity_invalid"
+		case errors.Is(err, errSkillMutationRuntimeCredential):
+			code = "runtime_credential_required"
 		case errors.Is(err, errSkillMutationSourceMessage):
 			code = "source_message_invalid"
 		case errors.Is(err, errSkillMutationActorForbidden):
@@ -93,6 +96,12 @@ func (h *Hub) authorizeSkillMutationGrant(client *Client, msg *MsgSkillMutationG
 		!h.bodyLeases.isCurrent(client.uid, client.bodyID, client.connectionID) {
 		return skillMutationGrantInput{}, errSkillMutationRuntimeIdentity
 	}
+	runtimeCredential := client.botRuntimeCredential
+	if runtimeCredential == nil || runtimeCredential.BotUID != client.uid ||
+		runtimeCredential.BodyID != client.bodyID || runtimeCredential.InstallationID != client.installationID ||
+		!botRuntimeCredentialHasScope(runtimeCredential, botRuntimeSkillMutationScope) {
+		return skillMutationGrantInput{}, errSkillMutationRuntimeCredential
+	}
 	messages, ok := h.db.(store.MessageAroundStore)
 	if !ok {
 		return skillMutationGrantInput{}, fmt.Errorf("message lookup: %w", errSkillMutationGrantUnavailable)
@@ -119,6 +128,9 @@ func (h *Hub) authorizeSkillMutationGrant(client *Client, msg *MsgSkillMutationG
 	ownerUID, err := h.db.GetBotOwner(client.uid)
 	if err != nil || ownerUID <= 0 {
 		return skillMutationGrantInput{}, fmt.Errorf("Bot owner lookup: %w", errSkillMutationGrantUnavailable)
+	}
+	if runtimeCredential.OwnerUID != ownerUID {
+		return skillMutationGrantInput{}, errSkillMutationRuntimeCredential
 	}
 	policies, ok := h.db.(skillMutationPolicyReader)
 	if !ok {

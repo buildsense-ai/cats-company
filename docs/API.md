@@ -260,6 +260,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 | DELETE | `/api/bots?uid={uid}` | 删除我的 Bot | - |
 | PATCH | `/api/bots/visibility` | 设置 Bot 可见性 | `{ "uid": 10, "visibility": "public" }` |
 | PATCH | `/api/bots/skills-visibility?uid={uid}&v={scope}` | 设置技能列表可见范围 | - |
+| POST | `/api/bots/runtime-credential` | 为指定 Bot Runtime 签发受限凭证 | `{ "bot_uid": 10, "body_id": "...", "installation_id": "..." }` |
 | GET | `/api/agents/skills?uid={uid}` | 按所有者权限读取脱敏技能列表 | - |
 
 #### POST /api/bots — 创建 Bot
@@ -279,6 +280,35 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 ```
 
 创建成功后返回 `api_key`，Bot 即可用此 key 通过 WebSocket 接入。
+
+#### POST /api/bots/runtime-credential — 签发 Bot Runtime 凭证
+
+仅 Agent 所有者可调用。该接口为一个明确的 Runtime 实例签发独立于 Bot API Key 的受限凭证，凭证绑定
+`bot_uid`、`body_id` 和 `installation_id`，当前只包含 `skill_mutation:grant` 权限。响应包含敏感凭证，必须
+按密钥保存；服务端设置 `Cache-Control: no-store`，不会把它作为普通用户或 Bot 登录凭证接受。
+
+```json
+// Request
+{
+  "bot_uid": 10,
+  "body_id": "body-prod-1",
+  "installation_id": "install-prod-1"
+}
+
+// Response 201
+{
+  "bot_uid": 10,
+  "body_id": "body-prod-1",
+  "installation_id": "install-prod-1",
+  "scopes": ["skill_mutation:grant"],
+  "credential": "<owner-provisioned-runtime-token>",
+  "expires_at": 1789471200000
+}
+```
+
+Runtime 仍使用 `X-API-Key` 连接 WebSocket，并额外通过 `X-CatsCo-Runtime-Credential` 携带此凭证。
+只持 Bot API Key 的客户端仍可使用原有聊天连接，但不能申请 Skill mutation grant；凭证与连接的 Bot、body
+或 installation 不一致时，WebSocket 握手会被拒绝。
 
 #### PATCH /api/bots/visibility — 设置可见性
 

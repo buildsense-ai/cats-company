@@ -54,6 +54,7 @@ type Hub struct {
 	deviceClients           map[int64]map[string]*Client
 	deviceRPC               *deviceRPCRouter
 	thinToolRPC             *thinToolRPCRouter
+	botRuntimeCredentials   *botRuntimeCredentialSigner
 	skillMutationGrants     *skillMutationGrantSigner
 	channelOut              *ChannelOutboundDispatcher
 	groupTurns              *groupAgentTurnTracker
@@ -94,6 +95,7 @@ type Client struct {
 	deviceBodyID         string
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
+	botRuntimeCredential *botRuntimeCredentialClaims
 	messagingAttention   messagingClientAttention
 	messagingAttentionMu sync.RWMutex
 	attentionSyncMu      sync.Mutex
@@ -111,32 +113,34 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	if strings.TrimSpace(nodeID) == "" {
 		nodeID = newRuntimeNodeID()
 	}
+	runtimeCredentialSigner, _ := newBotRuntimeCredentialSigner(jwtSecret, time.Now)
 	grantSigner, _ := newSkillMutationGrantSigner(jwtSecret, time.Now)
 	hub := &Hub{
-		clients:             make(map[int64]map[*Client]struct{}),
-		clientsByConn:       make(map[string]*Client),
-		register:            make(chan *Client, 256),
-		unregister:          make(chan *Client, 256),
-		presence:            make(chan presenceEvent, 256),
-		db:                  db,
-		rateLimiter:         rl,
-		botStats:            NewBotStats(),
-		botConvo:            botConvoTracker{counters: make(map[string]*botConvoCount)},
-		nodeID:              nodeID,
-		sharedRuntime:       shared,
-		bodyLeases:          newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:         newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
-		deviceAudit:         newDeviceAuditLog(),
-		deviceRevokes:       newDeviceConnectorRevocationList(),
-		deviceClients:       make(map[int64]map[string]*Client),
-		deviceRPC:           newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
-		thinToolRPC:         newThinToolRPCRouter(defaultThinToolRPCTTL),
-		skillMutationGrants: grantSigner,
-		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
-		agentPush:           newAgentPushTurnCoordinator(),
-		taskGrace:           90 * time.Second,
-		taskReaperInterval:  30 * time.Second,
-		botConnectionEpochs: make(map[int64]uint64),
+		clients:               make(map[int64]map[*Client]struct{}),
+		clientsByConn:         make(map[string]*Client),
+		register:              make(chan *Client, 256),
+		unregister:            make(chan *Client, 256),
+		presence:              make(chan presenceEvent, 256),
+		db:                    db,
+		rateLimiter:           rl,
+		botStats:              NewBotStats(),
+		botConvo:              botConvoTracker{counters: make(map[string]*botConvoCount)},
+		nodeID:                nodeID,
+		sharedRuntime:         shared,
+		bodyLeases:            newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		userDevices:           newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		deviceAudit:           newDeviceAuditLog(),
+		deviceRevokes:         newDeviceConnectorRevocationList(),
+		deviceClients:         make(map[int64]map[string]*Client),
+		deviceRPC:             newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
+		thinToolRPC:           newThinToolRPCRouter(defaultThinToolRPCTTL),
+		botRuntimeCredentials: runtimeCredentialSigner,
+		skillMutationGrants:   grantSigner,
+		groupTurns:            newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:             newAgentPushTurnCoordinator(),
+		taskGrace:             90 * time.Second,
+		taskReaperInterval:    30 * time.Second,
+		botConnectionEpochs:   make(map[int64]uint64),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -917,6 +921,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	displayName := ""
 	isBotAPIKey := false
 	var connectorClaims *DeviceConnectorClaims
+	var runtimeCredentialClaims *botRuntimeCredentialClaims
 	bodyID := ""
 	installationID := ""
 	connectionID := ""
@@ -1023,6 +1028,27 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		var err error
 		bodyID, err = normalizeBotBodyID(r.Header.Get(botBodyIDHeader))
 		installationID = normalizeDeviceText(r.Header.Get(botInstallationIDHeader))
+		runtimeCredential := extractBotRuntimeCredential(r)
+		if runtimeCredential != "" {
+			if err != nil || strings.TrimSpace(installationID) == "" {
+				http.Error(w, "Bot Runtime credential requires body and installation ids", http.StatusBadRequest)
+				return
+			}
+			if hub == nil || hub.botRuntimeCredentials == nil {
+				http.Error(w, "Bot Runtime credential service unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			claims, verifyErr := hub.botRuntimeCredentials.verify(runtimeCredential)
+			if verifyErr != nil {
+				http.Error(w, "invalid Bot Runtime credential", http.StatusUnauthorized)
+				return
+			}
+			if claims.BotUID != uid || claims.BodyID != bodyID || claims.InstallationID != installationID {
+				http.Error(w, "Bot Runtime credential does not match this Runtime", http.StatusForbidden)
+				return
+			}
+			runtimeCredentialClaims = claims
+		}
 		if err != nil {
 			if strings.TrimSpace(r.Header.Get(botBodyIDHeader)) != "" || botBodyIDStrictMode() {
 				http.Error(w, "missing or invalid bot body id", http.StatusBadRequest)
@@ -1081,17 +1107,18 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		hub:             hub,
-		conn:            conn,
-		uid:             uid,
-		remoteAddr:      requestRemoteAddr(r),
-		displayName:     displayName,
-		accountType:     acctType,
-		bodyID:          bodyID,
-		installationID:  installationID,
-		connectionID:    connectionID,
-		deviceConnector: connectorClaims,
-		send:            make(chan []byte, 256),
+		hub:                  hub,
+		conn:                 conn,
+		uid:                  uid,
+		remoteAddr:           requestRemoteAddr(r),
+		displayName:          displayName,
+		accountType:          acctType,
+		bodyID:               bodyID,
+		installationID:       installationID,
+		connectionID:         connectionID,
+		deviceConnector:      connectorClaims,
+		botRuntimeCredential: runtimeCredentialClaims,
+		send:                 make(chan []byte, 256),
 	}
 
 	if !hub.registerClient(client) {
