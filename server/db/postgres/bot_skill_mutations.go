@@ -257,7 +257,8 @@ func (a *Adapter) AdvanceBotSkillMutation(
 			error_code = COALESCE($5, error_code),
 			error_summary = COALESCE($6, error_summary),
 			activated_at = COALESCE($7, activated_at),
-			lease_expires_at = $8
+			lease_expires_at = $8,
+			updated_at = CURRENT_TIMESTAMP
 		 WHERE bot_uid = $9 AND id = $10 AND status = $11
 		   AND lease_generation = $12 AND lease_expires_at > $13
 		 RETURNING `+postgresBotSkillMutationColumns,
@@ -272,6 +273,90 @@ func (a *Adapter) AdvanceBotSkillMutation(
 		return nil, fmt.Errorf("advance bot skill mutation: %w", err)
 	}
 	return mutation, nil
+}
+
+func (a *Adapter) CommitBotSkillMutationDefinition(
+	botUID, mutationID, expectedLeaseGeneration int64,
+	now time.Time,
+	leaseTTL time.Duration,
+) (*types.BotSkillMutation, *types.BotDefinitionRecord, error) {
+	if expectedLeaseGeneration <= 0 {
+		return nil, nil, store.ErrBotSkillMutationStateConflict
+	}
+	leaseExpiresAt, err := store.ValidateBotSkillMutationLease(now, leaseTTL)
+	if err != nil {
+		return nil, nil, err
+	}
+	now = now.UTC()
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin bot skill definition commit: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var raw []byte
+	if err := tx.QueryRow(
+		`SELECT COALESCE(config, '{}'::jsonb) FROM bot_config WHERE user_id = $1 FOR UPDATE`,
+		botUID,
+	).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, store.ErrBotSkillMutationNotFound
+		}
+		return nil, nil, fmt.Errorf("lock bot definition for skill mutation: %w", err)
+	}
+	record, err := store.DecodeBotDefinitionJSON(raw, botUID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode bot definition for skill mutation: %w", err)
+	}
+
+	mutation, _, err := scanPostgresBotSkillMutation(tx.QueryRow(
+		`SELECT `+postgresBotSkillMutationColumns+`
+		 FROM bot_skill_mutations WHERE bot_uid = $1 AND id = $2 FOR UPDATE`,
+		botUID, mutationID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, store.ErrBotSkillMutationNotFound
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("lock bot skill mutation for definition commit: %w", err)
+	}
+	if mutation.Status != types.BotSkillMutationVersionReady || mutation.LeaseGeneration != expectedLeaseGeneration {
+		return nil, nil, store.ErrBotSkillMutationStateConflict
+	}
+	if !mutation.LeaseExpiresAt.After(now) {
+		return nil, nil, store.ErrBotSkillMutationLeaseExpired
+	}
+	if err := store.ApplyBotSkillMutationDefinition(record, mutation, now); err != nil {
+		return nil, nil, err
+	}
+	next, err := store.EncodeBotDefinitionJSON(raw, record)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode bot definition for skill mutation: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE bot_config SET config = $1::jsonb WHERE user_id = $2`, next, botUID); err != nil {
+		return nil, nil, fmt.Errorf("save bot definition for skill mutation: %w", err)
+	}
+
+	mutation, _, err = scanPostgresBotSkillMutation(tx.QueryRow(
+		`UPDATE bot_skill_mutations
+		 SET status = $1, definition_revision = $2, lease_expires_at = $3,
+		     updated_at = CURRENT_TIMESTAMP
+		 WHERE bot_uid = $4 AND id = $5 AND status = $6 AND lease_generation = $7
+		 RETURNING `+postgresBotSkillMutationColumns,
+		string(types.BotSkillMutationDefinitionCommitted), record.Runtime.DesiredRevision,
+		leaseExpiresAt, botUID, mutationID, string(types.BotSkillMutationVersionReady), expectedLeaseGeneration,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, store.ErrBotSkillMutationStateConflict
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("commit bot skill mutation definition fact: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit bot skill mutation definition: %w", err)
+	}
+	return mutation, record, nil
 }
 
 func (a *Adapter) RenewBotSkillMutationLease(
@@ -293,7 +378,8 @@ func (a *Adapter) RenewBotSkillMutationLease(
 	now = now.UTC()
 	mutation, _, err := scanPostgresBotSkillMutation(a.db.QueryRow(
 		`UPDATE bot_skill_mutations
-		 SET lease_generation = lease_generation + 1, lease_expires_at = $1
+		 SET lease_generation = lease_generation + 1, lease_expires_at = $1,
+		     updated_at = CURRENT_TIMESTAMP
 		 WHERE bot_uid = $2 AND id = $3 AND status = $4 AND lease_generation = $5
 		   AND lease_expires_at > $6
 		 RETURNING `+postgresBotSkillMutationColumns,

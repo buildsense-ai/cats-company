@@ -305,6 +305,99 @@ func (a *Adapter) AdvanceBotSkillMutation(
 	return mutation, nil
 }
 
+func (a *Adapter) CommitBotSkillMutationDefinition(
+	botUID, mutationID, expectedLeaseGeneration int64,
+	now time.Time,
+	leaseTTL time.Duration,
+) (*types.BotSkillMutation, *types.BotDefinitionRecord, error) {
+	if expectedLeaseGeneration <= 0 {
+		return nil, nil, store.ErrBotSkillMutationStateConflict
+	}
+	leaseExpiresAt, err := store.ValidateBotSkillMutationLease(now, leaseTTL)
+	if err != nil {
+		return nil, nil, err
+	}
+	now = now.UTC()
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin bot skill definition commit: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var raw []byte
+	if err := tx.QueryRow(
+		`SELECT COALESCE(config, JSON_OBJECT()) FROM bot_config WHERE user_id = ? FOR UPDATE`,
+		botUID,
+	).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, store.ErrBotSkillMutationNotFound
+		}
+		return nil, nil, fmt.Errorf("lock bot definition for skill mutation: %w", err)
+	}
+	record, err := store.DecodeBotDefinitionJSON(raw, botUID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode bot definition for skill mutation: %w", err)
+	}
+
+	mutation, _, err := scanMySQLBotSkillMutation(tx.QueryRow(
+		`SELECT `+mysqlBotSkillMutationColumns+`
+		 FROM bot_skill_mutations WHERE bot_uid = ? AND id = ? FOR UPDATE`,
+		botUID, mutationID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, store.ErrBotSkillMutationNotFound
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("lock bot skill mutation for definition commit: %w", err)
+	}
+	if mutation.Status != types.BotSkillMutationVersionReady || mutation.LeaseGeneration != expectedLeaseGeneration {
+		return nil, nil, store.ErrBotSkillMutationStateConflict
+	}
+	if !mutation.LeaseExpiresAt.After(now) {
+		return nil, nil, store.ErrBotSkillMutationLeaseExpired
+	}
+	if err := store.ApplyBotSkillMutationDefinition(record, mutation, now); err != nil {
+		return nil, nil, err
+	}
+	next, err := store.EncodeBotDefinitionJSON(raw, record)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode bot definition for skill mutation: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE bot_config SET config = ? WHERE user_id = ?`, next, botUID); err != nil {
+		return nil, nil, fmt.Errorf("save bot definition for skill mutation: %w", err)
+	}
+
+	result, err := tx.Exec(
+		`UPDATE bot_skill_mutations
+		 SET status = ?, definition_revision = ?, lease_expires_at = ?
+		 WHERE bot_uid = ? AND id = ? AND status = ? AND lease_generation = ?`,
+		string(types.BotSkillMutationDefinitionCommitted), record.Runtime.DesiredRevision,
+		leaseExpiresAt, botUID, mutationID, string(types.BotSkillMutationVersionReady), expectedLeaseGeneration,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("commit bot skill mutation definition fact: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, nil, fmt.Errorf("read bot skill mutation definition result: %w", err)
+	}
+	if affected != 1 {
+		return nil, nil, store.ErrBotSkillMutationStateConflict
+	}
+	mutation, _, err = scanMySQLBotSkillMutation(tx.QueryRow(
+		`SELECT `+mysqlBotSkillMutationColumns+` FROM bot_skill_mutations WHERE bot_uid = ? AND id = ?`,
+		botUID, mutationID,
+	))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read committed bot skill mutation definition: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit bot skill mutation definition: %w", err)
+	}
+	return mutation, record, nil
+}
+
 func (a *Adapter) RenewBotSkillMutationLease(
 	botUID, mutationID, expectedLeaseGeneration int64,
 	expected types.BotSkillMutationStatus,

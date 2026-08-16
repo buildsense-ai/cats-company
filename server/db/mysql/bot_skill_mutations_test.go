@@ -30,10 +30,14 @@ func mysqlBotSkillMutationTestRow(
 	gitCommit string,
 ) *sqlmock.Rows {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	var definitionRevision any
+	if status == types.BotSkillMutationDefinitionCommitted {
+		definitionRevision = int64(11)
+	}
 	return sqlmock.NewRows(mysqlBotSkillMutationTestColumns).AddRow(
 		id, int64(42), "review-pr", int64(7), "p2p_7_42", int64(99),
 		"runtime:cloud-1", "request-0001", fingerprint, "create",
-		strings.Repeat("a", 64), int64(10), "", nil, after, gitCommit, nil, string(status),
+		strings.Repeat("a", 64), int64(10), "", nil, after, gitCommit, definitionRevision, string(status),
 		"", "", nil, leaseGeneration, leaseExpiresAt, now, now, nil,
 	)
 }
@@ -255,5 +259,110 @@ func TestAdvanceBotSkillMutationRequiresAtomicDefinitionCommitPath(t *testing.T)
 	)
 	if err != store.ErrBotSkillMutationAtomicCommitRequired {
 		t.Fatalf("err=%v, want atomic commit required", err)
+	}
+}
+
+func TestCommitBotSkillMutationDefinitionIsOneTransaction(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	expires := now.Add(2 * time.Minute)
+	ref := &types.BotSkillRef{Source: "skillhub", SkillID: "private-1", Version: "1.0.1", ContentHash: strings.Repeat("a", 64)}
+	afterRaw, _ := encodeMySQLBotSkillMutationRef(ref)
+	raw, err := store.EncodeBotDefinitionJSON(nil, &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "42",
+			Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+			Prompt: &types.BotPromptDefinition{Selected: "default"},
+			Skills: []types.BotSkillRef{},
+		},
+		Runtime: types.BotDefinitionRuntime{DesiredRevision: 10},
+		Exists:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT COALESCE\(config, JSON_OBJECT\(\)\) FROM bot_config WHERE user_id = \? FOR UPDATE`).
+		WithArgs(int64(42)).WillReturnRows(sqlmock.NewRows([]string{"config"}).AddRow(raw))
+	mock.ExpectQuery(`FROM bot_skill_mutations WHERE bot_uid = \? AND id = \? FOR UPDATE`).
+		WithArgs(int64(42), int64(101)).
+		WillReturnRows(mysqlBotSkillMutationTestRow(101, strings.Repeat("f", 64), types.BotSkillMutationVersionReady, 1, expires, afterRaw, strings.Repeat("e", 40)))
+	mock.ExpectExec(`UPDATE bot_config SET config = \? WHERE user_id = \?`).
+		WithArgs(sqlmock.AnyArg(), int64(42)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE bot_skill_mutations\s+SET status = \?, definition_revision = \?, lease_expires_at = \?`).
+		WithArgs("definition_committed", int64(11), expires, int64(42), int64(101), "version_ready", int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`FROM bot_skill_mutations WHERE bot_uid = \? AND id = \?`).
+		WithArgs(int64(42), int64(101)).
+		WillReturnRows(mysqlBotSkillMutationTestRow(101, strings.Repeat("f", 64), types.BotSkillMutationDefinitionCommitted, 1, expires, afterRaw, strings.Repeat("e", 40)))
+	mock.ExpectCommit()
+
+	mutation, definition, err := (&Adapter{db: sqlDB}).CommitBotSkillMutationDefinition(42, 101, 1, now, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("commit definition mutation: %v", err)
+	}
+	if mutation.Status != types.BotSkillMutationDefinitionCommitted || mutation.DefinitionRevision == nil || *mutation.DefinitionRevision != 11 {
+		t.Fatalf("unexpected mutation: %#v", mutation)
+	}
+	if definition.Runtime.DesiredRevision != 11 || len(definition.Definition.Skills) != 1 || definition.Definition.Skills[0] != *ref {
+		t.Fatalf("unexpected definition: %#v", definition)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCommitBotSkillMutationDefinitionRollsBackWhenFactCommitFails(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	expires := now.Add(2 * time.Minute)
+	ref := &types.BotSkillRef{Source: "skillhub", SkillID: "private-1", Version: "1.0.1", ContentHash: strings.Repeat("a", 64)}
+	afterRaw, _ := encodeMySQLBotSkillMutationRef(ref)
+	raw, err := store.EncodeBotDefinitionJSON(nil, &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "42",
+			Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+			Prompt: &types.BotPromptDefinition{Selected: "default"},
+			Skills: []types.BotSkillRef{},
+		},
+		Runtime: types.BotDefinitionRuntime{DesiredRevision: 10},
+		Exists:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT COALESCE\(config, JSON_OBJECT\(\)\) FROM bot_config WHERE user_id = \? FOR UPDATE`).
+		WithArgs(int64(42)).WillReturnRows(sqlmock.NewRows([]string{"config"}).AddRow(raw))
+	mock.ExpectQuery(`FROM bot_skill_mutations WHERE bot_uid = \? AND id = \? FOR UPDATE`).
+		WithArgs(int64(42), int64(101)).
+		WillReturnRows(mysqlBotSkillMutationTestRow(
+			101, strings.Repeat("f", 64), types.BotSkillMutationVersionReady, 1, expires, afterRaw, strings.Repeat("e", 40),
+		))
+	mock.ExpectExec(`UPDATE bot_config SET config = \? WHERE user_id = \?`).
+		WithArgs(sqlmock.AnyArg(), int64(42)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE bot_skill_mutations\s+SET status = \?, definition_revision = \?, lease_expires_at = \?`).
+		WithArgs("definition_committed", int64(11), expires, int64(42), int64(101), "version_ready", int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	_, _, err = (&Adapter{db: sqlDB}).CommitBotSkillMutationDefinition(42, 101, 1, now, 2*time.Minute)
+	if err != store.ErrBotSkillMutationStateConflict {
+		t.Fatalf("err=%v, want state conflict", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
