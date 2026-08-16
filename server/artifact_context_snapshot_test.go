@@ -143,6 +143,14 @@ func TestArtifactContextSnapshotCreateReadAndTrustBoundary(t *testing.T) {
 	if snapshot.PageContext["selected_text"] != "企业客户" {
 		t.Fatalf("page context = %#v", snapshot.PageContext)
 	}
+	semanticContext, ok := snapshot.PageContext["semantic_context"].(map[string]interface{})
+	if !ok || semanticContext["view"] != "customer-comparison" {
+		t.Fatalf("semantic context = %#v", snapshot.PageContext["semantic_context"])
+	}
+	selection, ok := semanticContext["selection"].([]interface{})
+	if !ok || len(selection) != 2 || selection[0] != "c12" || selection[1] != "c18" {
+		t.Fatalf("semantic selection = %#v", semanticContext["selection"])
+	}
 	controls := snapshot.PageContext["controls"].([]interface{})
 	if len(controls) != 1 || controls[0].(map[string]interface{})["type"] != "checkbox" {
 		t.Fatalf("controls = %#v", controls)
@@ -175,6 +183,14 @@ func TestArtifactContextSnapshotCreateReadAndTrustBoundary(t *testing.T) {
 	trust := response["trust"].(map[string]interface{})
 	if trust["artifact"] != "server_validated" || trust["page_context"] != "untrusted_page_supplied" {
 		t.Fatalf("trust labels = %#v", trust)
+	}
+	returnedPageContext, ok := response["page_context"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response page context = %#v", response["page_context"])
+	}
+	returnedSemanticContext, ok := returnedPageContext["semantic_context"].(map[string]interface{})
+	if !ok || returnedSemanticContext["view"] != "customer-comparison" {
+		t.Fatalf("returned semantic context = %#v", returnedPageContext["semantic_context"])
 	}
 
 	wrongBot := httptest.NewRequest(http.MethodGet, "/api/bot/artifact-context?context_ref="+ref, nil)
