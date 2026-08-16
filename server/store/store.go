@@ -27,6 +27,7 @@ var ErrBotSkillMutationStateConflict = errors.New("bot skill mutation status cha
 var ErrBotSkillMutationLeaseExpired = errors.New("bot skill mutation lease expired")
 var ErrBotSkillMutationVersionFactsConflict = errors.New("skill version facts do not match the candidate content")
 var ErrBotSkillMutationAtomicCommitRequired = errors.New("bot definition commit requires the atomic mutation commit path")
+var ErrBotSkillMutationDefinitionStale = errors.New("bot definition no longer matches the mutation base")
 
 const maxConversationTaskStatusFutureClockSkew = 5 * time.Minute
 
@@ -305,6 +306,7 @@ type BotSkillMutationStore interface {
 	BeginBotSkillMutation(input types.BotSkillMutationCreateInput, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, bool, error)
 	GetBotSkillMutation(botUID, mutationID int64) (*types.BotSkillMutation, error)
 	AdvanceBotSkillMutation(botUID, mutationID, expectedLeaseGeneration int64, expected, next types.BotSkillMutationStatus, patch types.BotSkillMutationTransition, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
+	CommitBotSkillMutationDefinition(botUID, mutationID, expectedLeaseGeneration int64, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, *types.BotDefinitionRecord, error)
 	RenewBotSkillMutationLease(botUID, mutationID, expectedLeaseGeneration int64, expected types.BotSkillMutationStatus, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
 }
 

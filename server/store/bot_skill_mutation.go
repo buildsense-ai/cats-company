@@ -188,6 +188,71 @@ func IsTerminalBotSkillMutationStatus(status types.BotSkillMutationStatus) bool 
 	return status == types.BotSkillMutationActive || status == types.BotSkillMutationRejected || status == types.BotSkillMutationRolledBack
 }
 
+// ApplyBotSkillMutationDefinition applies immutable version facts to the exact
+// BotDefinition revision on which the mutation was based. Database adapters
+// call this only while both rows are locked in one transaction.
+func ApplyBotSkillMutationDefinition(
+	record *types.BotDefinitionRecord,
+	mutation *types.BotSkillMutation,
+	now time.Time,
+) error {
+	if record == nil || mutation == nil || mutation.Status != types.BotSkillMutationVersionReady ||
+		mutation.AfterReference == nil || now.IsZero() {
+		return ErrBotSkillMutationStateConflict
+	}
+	if record.Runtime.DesiredRevision != mutation.ExpectedDefinitionRevision {
+		return ErrBotSkillMutationDefinitionStale
+	}
+	if mutation.AfterReference.ContentHash != mutation.CandidateContentHash {
+		return ErrBotSkillMutationVersionFactsConflict
+	}
+
+	skills := append([]types.BotSkillRef(nil), record.Definition.Skills...)
+	switch mutation.Operation {
+	case types.BotSkillMutationCreate:
+		for _, current := range skills {
+			if current.SkillID == mutation.AfterReference.SkillID {
+				return ErrBotSkillMutationDefinitionStale
+			}
+		}
+		skills = append(skills, *mutation.AfterReference)
+	case types.BotSkillMutationReplace, types.BotSkillMutationRollback:
+		if mutation.BeforeReference == nil {
+			return ErrBotSkillMutationStateConflict
+		}
+		matched := -1
+		for index, current := range skills {
+			if current == *mutation.BeforeReference {
+				if matched >= 0 {
+					return ErrBotSkillMutationDefinitionStale
+				}
+				matched = index
+			}
+		}
+		if matched < 0 {
+			return ErrBotSkillMutationDefinitionStale
+		}
+		skills[matched] = *mutation.AfterReference
+	default:
+		return ErrBotSkillMutationStateConflict
+	}
+
+	record.Definition.Skills = skills
+	if record.Definition.Model.Kind == "" {
+		record.Definition.Model = types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"}
+	}
+	if record.Definition.Prompt == nil {
+		record.Definition.Prompt = &types.BotPromptDefinition{Selected: "default"}
+	}
+	record.Runtime.DesiredRevision++
+	record.Runtime.UpdatedAt = now.UTC().Format(time.RFC3339)
+	record.Runtime.LastAttemptRevision = 0
+	record.Runtime.LastAttemptAt = ""
+	record.Runtime.LastError = ""
+	record.Exists = true
+	return nil
+}
+
 func validMutationIdentifier(value string, maxBytes int, allowColon bool) bool {
 	if value == "" || len(value) > maxBytes {
 		return false

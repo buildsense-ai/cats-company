@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -118,5 +119,77 @@ func TestValidateBotSkillMutationLease(t *testing.T) {
 	}
 	if _, err := ValidateBotSkillMutationLease(now, 11*time.Minute); err == nil {
 		t.Fatal("oversized lease must fail")
+	}
+}
+
+func TestApplyBotSkillMutationDefinitionUsesExactRevisionAndReference(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	before := types.BotSkillRef{Source: "skillhub", SkillID: "review-pr", Version: "1.0.0", ContentHash: strings.Repeat("a", 64)}
+	after := types.BotSkillRef{Source: "skillhub", SkillID: "review-pr", Version: "1.0.1", ContentHash: strings.Repeat("b", 64)}
+	record := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{Skills: []types.BotSkillRef{before}},
+		Runtime:    types.BotDefinitionRuntime{DesiredRevision: 10, LastError: "old failure"},
+		Exists:     true,
+	}
+	mutation := &types.BotSkillMutation{
+		Operation:                  types.BotSkillMutationReplace,
+		Status:                     types.BotSkillMutationVersionReady,
+		CandidateContentHash:       after.ContentHash,
+		ExpectedDefinitionRevision: 10,
+		BeforeReference:            &before,
+		AfterReference:             &after,
+	}
+
+	if err := ApplyBotSkillMutationDefinition(record, mutation, now); err != nil {
+		t.Fatalf("apply definition mutation: %v", err)
+	}
+	if record.Runtime.DesiredRevision != 11 || record.Definition.Skills[0] != after || record.Runtime.LastError != "" {
+		t.Fatalf("unexpected committed definition: %+v", record)
+	}
+
+	staleRecord := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{Skills: []types.BotSkillRef{before}},
+		Runtime:    types.BotDefinitionRuntime{DesiredRevision: 11},
+	}
+	if err := ApplyBotSkillMutationDefinition(staleRecord, mutation, now); !errors.Is(err, ErrBotSkillMutationDefinitionStale) {
+		t.Fatalf("stale revision error=%v", err)
+	}
+	if staleRecord.Definition.Skills[0] != before || staleRecord.Runtime.DesiredRevision != 11 {
+		t.Fatal("stale mutation changed the definition")
+	}
+
+	missingBase := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{Skills: []types.BotSkillRef{}},
+		Runtime:    types.BotDefinitionRuntime{DesiredRevision: 10},
+	}
+	if err := ApplyBotSkillMutationDefinition(missingBase, mutation, now); !errors.Is(err, ErrBotSkillMutationDefinitionStale) {
+		t.Fatalf("missing base error=%v", err)
+	}
+}
+
+func TestApplyBotSkillMutationDefinitionCreatesWithoutOverwriting(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	after := types.BotSkillRef{Source: "skillhub", SkillID: "new-skill", Version: "1.0.0", ContentHash: strings.Repeat("c", 64)}
+	mutation := &types.BotSkillMutation{
+		Operation:                  types.BotSkillMutationCreate,
+		Status:                     types.BotSkillMutationVersionReady,
+		CandidateContentHash:       after.ContentHash,
+		ExpectedDefinitionRevision: 4,
+		AfterReference:             &after,
+	}
+	record := &types.BotDefinitionRecord{Runtime: types.BotDefinitionRuntime{DesiredRevision: 4}}
+	if err := ApplyBotSkillMutationDefinition(record, mutation, now); err != nil {
+		t.Fatalf("create skill reference: %v", err)
+	}
+	if len(record.Definition.Skills) != 1 || record.Definition.Skills[0] != after || record.Runtime.DesiredRevision != 5 {
+		t.Fatalf("unexpected created definition: %+v", record)
+	}
+
+	duplicate := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{Skills: []types.BotSkillRef{after}},
+		Runtime:    types.BotDefinitionRuntime{DesiredRevision: 4},
+	}
+	if err := ApplyBotSkillMutationDefinition(duplicate, mutation, now); !errors.Is(err, ErrBotSkillMutationDefinitionStale) {
+		t.Fatalf("duplicate create error=%v", err)
 	}
 }
