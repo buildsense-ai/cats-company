@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -10,14 +11,16 @@ import (
 )
 
 func TestBotSkillMutationSchemaDefaultsToOwnerOnly(t *testing.T) {
-	for name, statement := range map[string]string{
-		"create":    createBotConfigTable,
-		"migration": migrateBotConfigAddSkillMutationMode,
-	} {
-		if !strings.Contains(statement, "ENUM('owner_only','shared_live')") ||
-			!strings.Contains(statement, "DEFAULT 'owner_only'") {
-			t.Fatalf("%s schema must constrain mutation mode and default fail-closed", name)
-		}
+	if strings.Contains(createBotConfigTable, "skill_mutation_mode") {
+		t.Fatal("fresh schema must add skill_mutation_mode through the migration instead of defining it twice")
+	}
+	if !strings.Contains(migrateBotConfigAddSkillMutationMode, "ADD COLUMN skill_mutation_mode") ||
+		!strings.Contains(migrateBotConfigAddSkillMutationMode, "ENUM('owner_only','shared_live')") ||
+		!strings.Contains(migrateBotConfigAddSkillMutationMode, "DEFAULT 'owner_only'") {
+		t.Fatal("fresh and legacy schemas must use the same fail-closed skill mutation migration")
+	}
+	if !isIgnorableMigrationError(errors.New("Error 1060: Duplicate column name 'skill_mutation_mode'")) {
+		t.Fatal("an already-upgraded schema must tolerate the repeated migration")
 	}
 }
 

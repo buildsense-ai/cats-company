@@ -358,7 +358,6 @@ CREATE TABLE IF NOT EXISTS bot_config (
     role VARCHAR(32) NOT NULL DEFAULT 'general',
     description TEXT NULL,
     artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1,
-    skill_mutation_mode ENUM('owner_only','shared_live') NOT NULL DEFAULT 'owner_only',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
