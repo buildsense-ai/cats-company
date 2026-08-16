@@ -54,6 +54,7 @@ type Hub struct {
 	deviceClients           map[int64]map[string]*Client
 	deviceRPC               *deviceRPCRouter
 	thinToolRPC             *thinToolRPCRouter
+	skillMutationGrants     *skillMutationGrantSigner
 	channelOut              *ChannelOutboundDispatcher
 	groupTurns              *groupAgentTurnTracker
 	artifactContextResolver ArtifactContextResolver
@@ -110,6 +111,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	if strings.TrimSpace(nodeID) == "" {
 		nodeID = newRuntimeNodeID()
 	}
+	grantSigner, _ := newSkillMutationGrantSigner(jwtSecret, time.Now)
 	hub := &Hub{
 		clients:             make(map[int64]map[*Client]struct{}),
 		clientsByConn:       make(map[string]*Client),
@@ -129,6 +131,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceClients:       make(map[int64]map[string]*Client),
 		deviceRPC:           newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 		thinToolRPC:         newThinToolRPCRouter(defaultThinToolRPCTTL),
+		skillMutationGrants: grantSigner,
 		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
@@ -1160,6 +1163,8 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 		h.handleDeviceRPC(client, msg.DeviceRPC)
 	case msg.ThinToolRPC != nil:
 		h.handleThinToolRPC(client, msg.ThinToolRPC)
+	case msg.SkillMutationGrant != nil:
+		h.handleSkillMutationGrant(client, msg.SkillMutationGrant)
 	}
 }
 
@@ -1167,7 +1172,7 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 	if msg == nil {
 		return false
 	}
-	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil {
+	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil || msg.SkillMutationGrant != nil {
 		return false
 	}
 	actions := 0
