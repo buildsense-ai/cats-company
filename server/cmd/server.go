@@ -749,6 +749,7 @@ func main() {
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
+	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))
 	mux.HandleFunc("/api/bots/skills-visibility", ownerAuthWithDB(botHandler.HandleSetBotSkillsVisibility))
 	mux.HandleFunc("/api/bots/avatar", ownerAuthWithDB(botHandler.HandleUpdateBotAvatar))
