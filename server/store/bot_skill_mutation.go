@@ -220,14 +220,19 @@ func ApplyBotSkillMutationDefinition(
 		if mutation.BeforeReference == nil {
 			return ErrBotSkillMutationStateConflict
 		}
+		if mutation.AfterReference.Source != mutation.BeforeReference.Source ||
+			mutation.AfterReference.SkillID != mutation.BeforeReference.SkillID {
+			return ErrBotSkillMutationVersionFactsConflict
+		}
 		matched := -1
 		for index, current := range skills {
-			if current == *mutation.BeforeReference {
-				if matched >= 0 {
-					return ErrBotSkillMutationDefinitionStale
-				}
-				matched = index
+			if current.SkillID != mutation.BeforeReference.SkillID {
+				continue
 			}
+			if current != *mutation.BeforeReference || matched >= 0 {
+				return ErrBotSkillMutationDefinitionStale
+			}
+			matched = index
 		}
 		if matched < 0 {
 			return ErrBotSkillMutationDefinitionStale

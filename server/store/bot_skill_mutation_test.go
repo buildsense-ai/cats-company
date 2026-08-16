@@ -193,3 +193,71 @@ func TestApplyBotSkillMutationDefinitionCreatesWithoutOverwriting(t *testing.T) 
 		t.Fatalf("duplicate create error=%v", err)
 	}
 }
+
+func TestApplyBotSkillMutationDefinitionRejectsCrossSkillReplacement(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	beforeA := types.BotSkillRef{Source: "skillhub", SkillID: "skill-a", Version: "1.0.0", ContentHash: strings.Repeat("a", 64)}
+	beforeB := types.BotSkillRef{Source: "skillhub", SkillID: "skill-b", Version: "1.0.0", ContentHash: strings.Repeat("b", 64)}
+	afterB := types.BotSkillRef{Source: "skillhub", SkillID: "skill-b", Version: "2.0.0", ContentHash: strings.Repeat("c", 64)}
+
+	for _, operation := range []types.BotSkillMutationOperation{
+		types.BotSkillMutationReplace,
+		types.BotSkillMutationRollback,
+	} {
+		t.Run(string(operation), func(t *testing.T) {
+			record := &types.BotDefinitionRecord{
+				Definition: types.BotDefinition{Skills: []types.BotSkillRef{beforeA, beforeB}},
+				Runtime:    types.BotDefinitionRuntime{DesiredRevision: 10},
+			}
+			mutation := &types.BotSkillMutation{
+				Operation:                  operation,
+				Status:                     types.BotSkillMutationVersionReady,
+				CandidateContentHash:       afterB.ContentHash,
+				ExpectedDefinitionRevision: 10,
+				BeforeReference:            &beforeA,
+				AfterReference:             &afterB,
+			}
+
+			err := ApplyBotSkillMutationDefinition(record, mutation, now)
+			if !errors.Is(err, ErrBotSkillMutationVersionFactsConflict) {
+				t.Fatalf("error=%v, want version facts conflict", err)
+			}
+			if record.Runtime.DesiredRevision != 10 ||
+				len(record.Definition.Skills) != 2 ||
+				record.Definition.Skills[0] != beforeA ||
+				record.Definition.Skills[1] != beforeB {
+				t.Fatalf("cross-skill replacement changed definition: %+v", record)
+			}
+		})
+	}
+}
+
+func TestApplyBotSkillMutationDefinitionRejectsDuplicateTargetSkillID(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	before := types.BotSkillRef{Source: "skillhub", SkillID: "review-pr", Version: "1.0.0", ContentHash: strings.Repeat("a", 64)}
+	duplicate := types.BotSkillRef{Source: "skillhub", SkillID: "review-pr", Version: "0.9.0", ContentHash: strings.Repeat("b", 64)}
+	after := types.BotSkillRef{Source: "skillhub", SkillID: "review-pr", Version: "1.0.1", ContentHash: strings.Repeat("c", 64)}
+	record := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{Skills: []types.BotSkillRef{before, duplicate}},
+		Runtime:    types.BotDefinitionRuntime{DesiredRevision: 10},
+	}
+	mutation := &types.BotSkillMutation{
+		Operation:                  types.BotSkillMutationReplace,
+		Status:                     types.BotSkillMutationVersionReady,
+		CandidateContentHash:       after.ContentHash,
+		ExpectedDefinitionRevision: 10,
+		BeforeReference:            &before,
+		AfterReference:             &after,
+	}
+
+	err := ApplyBotSkillMutationDefinition(record, mutation, now)
+	if !errors.Is(err, ErrBotSkillMutationDefinitionStale) {
+		t.Fatalf("error=%v, want stale definition", err)
+	}
+	if record.Runtime.DesiredRevision != 10 ||
+		len(record.Definition.Skills) != 2 ||
+		record.Definition.Skills[0] != before ||
+		record.Definition.Skills[1] != duplicate {
+		t.Fatalf("duplicate target check changed definition: %+v", record)
+	}
+}
