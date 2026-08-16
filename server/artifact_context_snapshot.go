@@ -548,6 +548,15 @@ func (h *ArtifactContextSnapshotHandler) HandleBotRead(w http.ResponseWriter, r 
 	if record.PublishVersion > 0 {
 		artifact["latest_version"] = record.PublishVersion
 	}
+	trust := map[string]string{
+		"artifact":     "server_validated",
+		"page_context": "untrusted_page_supplied",
+	}
+	if snapshot.PageContext != nil {
+		if _, hasSemanticContext := snapshot.PageContext["semantic_context"]; hasSemanticContext {
+			trust["semantic_context"] = "untrusted_page_supplied"
+		}
+	}
 	response := map[string]interface{}{
 		"contract_version": artifactContextSnapshotContract,
 		"status":           artifactContextSnapshotActive,
@@ -555,10 +564,7 @@ func (h *ArtifactContextSnapshotHandler) HandleBotRead(w http.ResponseWriter, r 
 		"created_at":       snapshot.CreatedAt.Format(time.RFC3339Nano),
 		"expires_at":       snapshot.ExpiresAt.Format(time.RFC3339Nano),
 		"revision":         snapshot.Revision,
-		"trust": map[string]string{
-			"artifact":     "server_validated",
-			"page_context": "untrusted_page_supplied",
-		},
+		"trust":            trust,
 	}
 	if snapshot.ObservedAt != "" {
 		response["observed_at"] = snapshot.ObservedAt

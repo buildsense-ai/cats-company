@@ -181,7 +181,8 @@ func TestArtifactContextSnapshotCreateReadAndTrustBoundary(t *testing.T) {
 		t.Fatalf("trusted Artifact = %#v", artifact)
 	}
 	trust := response["trust"].(map[string]interface{})
-	if trust["artifact"] != "server_validated" || trust["page_context"] != "untrusted_page_supplied" {
+	if trust["artifact"] != "server_validated" || trust["page_context"] != "untrusted_page_supplied" ||
+		trust["semantic_context"] != "untrusted_page_supplied" {
 		t.Fatalf("trust labels = %#v", trust)
 	}
 	returnedPageContext, ok := response["page_context"].(map[string]interface{})
@@ -199,6 +200,60 @@ func TestArtifactContextSnapshotCreateReadAndTrustBoundary(t *testing.T) {
 	handler.HandleBotRead(wrongRecorder, wrongBot)
 	if wrongRecorder.Code != http.StatusForbidden || !strings.Contains(wrongRecorder.Body.String(), `"status":"mismatch"`) {
 		t.Fatalf("wrong Bot status = %d, body = %s", wrongRecorder.Code, wrongRecorder.Body.String())
+	}
+}
+
+func TestArtifactContextSnapshotReadKeepsSemanticTrustOptional(t *testing.T) {
+	hub := newArtifactSnapshotTestHub(t)
+	handler := NewArtifactContextSnapshotHandler(hub)
+	observedAt := "2026-08-14T01:02:03Z"
+	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+		ActorUID: 7,
+		TopicID:  "p2p_7_440",
+		AgentUID: 440,
+		Artifact: ArtifactContextRecord{
+			ID:             "lesson-game",
+			Title:          "课堂小游戏",
+			Kind:           "html",
+			URL:            "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/",
+			PublishVersion: 3,
+		},
+		DisplayedVersion: 2,
+		ObservedAt:       observedAt,
+		PageContext: map[string]interface{}{
+			"contract_version": artifactPageContextContract,
+			"observed_at":      observedAt,
+			"selected_text":    "plain HTML selection",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create plain snapshot: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/bot/artifact-context?context_ref="+snapshot.Ref, nil)
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(440)))
+	recorder := httptest.NewRecorder()
+	handler.HandleBotRead(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("read status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode read response: %v", err)
+	}
+	trust, ok := response["trust"].(map[string]interface{})
+	if !ok || trust["artifact"] != "server_validated" || trust["page_context"] != "untrusted_page_supplied" {
+		t.Fatalf("plain trust labels = %#v", response["trust"])
+	}
+	if _, exists := trust["semantic_context"]; exists {
+		t.Fatalf("plain response must not require semantic trust: %#v", trust)
+	}
+	pageContext, ok := response["page_context"].(map[string]interface{})
+	if !ok || pageContext["selected_text"] != "plain HTML selection" {
+		t.Fatalf("plain page context = %#v", response["page_context"])
+	}
+	if _, exists := pageContext["semantic_context"]; exists {
+		t.Fatalf("plain page context unexpectedly has semantics: %#v", pageContext)
 	}
 }
 
