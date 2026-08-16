@@ -58,6 +58,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddProfileRole,
 		migrateBotConfigAddProfileDescription,
 		migrateBotConfigAddArtifactUploadPolicy,
+		migrateBotConfigAddSkillMutationMode,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
@@ -762,6 +763,10 @@ ALTER TABLE bot_config ADD COLUMN description TEXT NULL;
 
 const migrateBotConfigAddArtifactUploadPolicy = `
 ALTER TABLE bot_config ADD COLUMN artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1;
+`
+
+const migrateBotConfigAddSkillMutationMode = `
+ALTER TABLE bot_config ADD COLUMN skill_mutation_mode ENUM('owner_only','shared_live') NOT NULL DEFAULT 'owner_only';
 `
 
 // Migration: add code mode support to messages table.

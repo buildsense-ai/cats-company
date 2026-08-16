@@ -67,6 +67,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddRole,
 		migrateBotConfigAddDescription,
 		migrateBotConfigAddArtifactUploadPolicy,
+		migrateBotConfigAddSkillMutationMode,
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentEntriesAddAccessMode,
 		migrateChannelAgentEntriesDefaultAccessMode,
@@ -328,6 +329,8 @@ CREATE TABLE IF NOT EXISTS bot_config (
     role VARCHAR(32) NOT NULL DEFAULT 'general',
     description TEXT NOT NULL DEFAULT '',
     artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    skill_mutation_mode VARCHAR(16) NOT NULL DEFAULT 'owner_only'
+        CONSTRAINT bot_config_skill_mutation_mode_check CHECK (skill_mutation_mode IN ('owner_only','shared_live')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -881,6 +884,23 @@ const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXIS
 const migrateBotConfigAddRole = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'general';`
 const migrateBotConfigAddDescription = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';`
 const migrateBotConfigAddArtifactUploadPolicy = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE;`
+const migrateBotConfigAddSkillMutationMode = `
+ALTER TABLE bot_config
+    ADD COLUMN IF NOT EXISTS skill_mutation_mode VARCHAR(16) NOT NULL DEFAULT 'owner_only';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'bot_config_skill_mutation_mode_check'
+          AND conrelid = 'bot_config'::regclass
+    ) THEN
+        ALTER TABLE bot_config
+            ADD CONSTRAINT bot_config_skill_mutation_mode_check
+            CHECK (skill_mutation_mode IN ('owner_only','shared_live'));
+    END IF;
+END $$;
+`
 const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`
 const migrateChannelAgentEntriesAddAccessMode = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS access_mode VARCHAR(32) NOT NULL DEFAULT 'approval_required';`
 const migrateChannelAgentEntriesDefaultAccessMode = `ALTER TABLE channel_agent_entries ALTER COLUMN access_mode SET DEFAULT 'approval_required';`

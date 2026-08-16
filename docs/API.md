@@ -294,13 +294,19 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 #### PATCH /api/bots?uid={uid} — 更新 Agent 设置
 
-仅 Agent 所有者可调用。除了名称、头像、定位模板和用途说明外，可通过
-`artifact_upload_enabled` 控制普通成员是否能直接发布共享成果。该字段默认为
-`true`；关闭后所有者仍可上传和管理成果，普通成员只能查看已有成果。
+仅 Agent 所有者可调用。除了名称、头像、定位模板和用途说明外，还支持以下协作策略：
+
+- `artifact_upload_enabled`：控制普通成员是否能直接发布共享成果。默认为
+  `true`；关闭后所有者仍可上传和管理成果，普通成员只能查看已有成果。
+- `skill_mutation_mode`：控制专用 Skill 变更控制面接受谁提交的版本化变更。
+  `owner_only`（默认）仅允许所有者；`shared_live` 表示允许成员经专用变更通道提交。
+  该字段不授予普通 Bot 设置编辑权限，也不会绕过后续变更通道的审计、并发控制和校验。
+  在专用变更通道上线前，该策略仅持久化，不会单独开放任何 Skill 修改能力。
 
 ```json
 {
-  "artifact_upload_enabled": false
+  "artifact_upload_enabled": false,
+  "skill_mutation_mode": "owner_only"
 }
 ```
 

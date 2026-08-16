@@ -793,10 +793,26 @@ func (h *BotHandler) HandleUpdateBot(w http.ResponseWriter, r *http.Request) {
 		Role                  *string `json:"role"`
 		Description           *string `json:"description"`
 		ArtifactUploadEnabled *bool   `json:"artifact_upload_enabled"`
+		SkillMutationMode     *string `json:"skill_mutation_mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
+	}
+	var skillMutationMode types.BotSkillMutationMode
+	var skillMutationPolicies store.BotSkillMutationPolicyStore
+	if req.SkillMutationMode != nil {
+		var ok bool
+		skillMutationMode, ok = types.ParseBotSkillMutationMode(*req.SkillMutationMode)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid skill mutation mode"})
+			return
+		}
+		skillMutationPolicies, ok = h.db.(store.BotSkillMutationPolicyStore)
+		if !ok {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "skill mutation policy is unavailable"})
+			return
+		}
 	}
 
 	if req.DisplayName != "" {
@@ -844,6 +860,12 @@ func (h *BotHandler) HandleUpdateBot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := policies.UpdateBotArtifactUploadPolicy(botUID, *req.ArtifactUploadEnabled); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+			return
+		}
+	}
+	if req.SkillMutationMode != nil {
+		if err := skillMutationPolicies.UpdateBotSkillMutationMode(botUID, skillMutationMode); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
 			return
 		}

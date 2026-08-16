@@ -492,18 +492,40 @@ const (
 
 // BotConfig holds configuration for a registered bot.
 type BotConfig struct {
-	UserID                int64               `json:"user_id"`
-	OwnerID               int64               `json:"owner_id"`
-	APIEndpoint           string              `json:"api_endpoint,omitempty"`
-	Model                 string              `json:"model,omitempty"`
-	Enabled               bool                `json:"enabled"`
-	Visibility            BotVisibility       `json:"visibility"`
-	SkillsVisibility      BotSkillsVisibility `json:"skills_visibility"`
-	BodyID                string              `json:"body_id,omitempty"`
-	Role                  string              `json:"role,omitempty"`
-	Description           string              `json:"description,omitempty"`
-	ArtifactUploadEnabled *bool               `json:"artifact_upload_enabled,omitempty"`
-	Config                map[string]string   `json:"config,omitempty"`
+	UserID                int64                `json:"user_id"`
+	OwnerID               int64                `json:"owner_id"`
+	APIEndpoint           string               `json:"api_endpoint,omitempty"`
+	Model                 string               `json:"model,omitempty"`
+	Enabled               bool                 `json:"enabled"`
+	Visibility            BotVisibility        `json:"visibility"`
+	SkillsVisibility      BotSkillsVisibility  `json:"skills_visibility"`
+	BodyID                string               `json:"body_id,omitempty"`
+	Role                  string               `json:"role,omitempty"`
+	Description           string               `json:"description,omitempty"`
+	ArtifactUploadEnabled *bool                `json:"artifact_upload_enabled,omitempty"`
+	SkillMutationMode     BotSkillMutationMode `json:"skill_mutation_mode"`
+	Config                map[string]string    `json:"config,omitempty"`
+}
+
+// BotSkillMutationMode controls who may submit a versioned Skill mutation for
+// a Bot. The default remains owner-only; shared-live still requires the
+// dedicated mutation control plane and never grants general Bot edit access.
+type BotSkillMutationMode string
+
+const (
+	BotSkillMutationOwnerOnly  BotSkillMutationMode = "owner_only"
+	BotSkillMutationSharedLive BotSkillMutationMode = "shared_live"
+)
+
+func ParseBotSkillMutationMode(value string) (BotSkillMutationMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationOwnerOnly):
+		return BotSkillMutationOwnerOnly, true
+	case string(BotSkillMutationSharedLive):
+		return BotSkillMutationSharedLive, true
+	default:
+		return "", false
+	}
 }
 
 // BotModelConfig stores the cloud-selected model and the latest device apply

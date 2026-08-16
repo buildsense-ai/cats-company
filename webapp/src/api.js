@@ -763,13 +763,21 @@ export const api = {
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload),
   deleteCloudWorker: (name) =>
     request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}),
-  updateBot: (uid, { display_name, avatar_url, role, description, artifact_upload_enabled }) =>
+  updateBot: (uid, {
+    display_name,
+    avatar_url,
+    role,
+    description,
+    artifact_upload_enabled,
+    skill_mutation_mode,
+  }) =>
     request('PATCH', `/api/bots?uid=${uid}`, {
       display_name,
       avatar_url,
       role,
       description,
       artifact_upload_enabled,
+      skill_mutation_mode,
     }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
