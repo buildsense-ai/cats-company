@@ -169,9 +169,12 @@ func validateBotRuntimeCredentialClaims(claims *botRuntimeCredentialClaims, now 
 		return errors.New("invalid Bot Runtime credential installation")
 	}
 	issuedAt := claims.IssuedAt.Time.UTC()
+	notBefore := claims.NotBefore.Time.UTC()
 	expiresAt := claims.ExpiresAt.Time.UTC()
 	if !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > maxBotRuntimeCredentialTTL ||
-		issuedAt.After(now.Add(botRuntimeCredentialClockSkew)) {
+		issuedAt.After(now.Add(botRuntimeCredentialClockSkew)) ||
+		now.Before(notBefore.Add(-botRuntimeCredentialClockSkew)) ||
+		!now.Before(expiresAt.Add(botRuntimeCredentialClockSkew)) {
 		return errors.New("invalid Bot Runtime credential lifetime")
 	}
 	if claims.Subject != fmt.Sprintf("bot:%d:body:%s", claims.BotUID, bodyID) ||

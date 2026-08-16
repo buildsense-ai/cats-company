@@ -97,7 +97,9 @@ func (h *Hub) authorizeSkillMutationGrant(client *Client, msg *MsgSkillMutationG
 		return skillMutationGrantInput{}, errSkillMutationRuntimeIdentity
 	}
 	runtimeCredential := client.botRuntimeCredential
-	if runtimeCredential == nil || runtimeCredential.BotUID != client.uid ||
+	if h.botRuntimeCredentials == nil || h.botRuntimeCredentials.now == nil || runtimeCredential == nil ||
+		validateBotRuntimeCredentialClaims(runtimeCredential, h.botRuntimeCredentials.now().UTC()) != nil ||
+		runtimeCredential.BotUID != client.uid ||
 		runtimeCredential.BodyID != client.bodyID || runtimeCredential.InstallationID != client.installationID ||
 		!botRuntimeCredentialHasScope(runtimeCredential, botRuntimeSkillMutationScope) {
 		return skillMutationGrantInput{}, errSkillMutationRuntimeCredential

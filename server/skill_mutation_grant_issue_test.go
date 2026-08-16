@@ -375,16 +375,23 @@ func TestDeviceConnectorCannotRequestSkillMutationGrant(t *testing.T) {
 	}
 }
 
-func TestWebSocketAPIKeyOnlyCannotRequestSkillMutationGrant(t *testing.T) {
+func TestWebSocketRejectsAPIKeyOnlyAndExpiredRuntimeCredentialGrantRequests(t *testing.T) {
 	fixture := newSkillMutationGrantIssueFixture(t, 7)
 	apiKey := GenerateAPIKey(42)
 	db := &skillMutationGrantWSTestStore{skillMutationGrantIssueTestStore: fixture.db, apiKey: apiKey}
 	hub := NewHub(db, nil)
-	grantSigner, _ := newSkillMutationGrantSigner([]byte(skillMutationGrantTestSecret), func() time.Time { return fixture.now })
-	runtimeSigner, _ := newBotRuntimeCredentialSigner([]byte(skillMutationGrantTestSecret), func() time.Time { return fixture.now })
+	var clockMu sync.RWMutex
+	runtimeNow := fixture.now
+	now := func() time.Time {
+		clockMu.RLock()
+		defer clockMu.RUnlock()
+		return runtimeNow
+	}
+	grantSigner, _ := newSkillMutationGrantSigner([]byte(skillMutationGrantTestSecret), now)
+	runtimeSigner, _ := newBotRuntimeCredentialSigner([]byte(skillMutationGrantTestSecret), now)
 	hub.skillMutationGrants = grantSigner
 	hub.botRuntimeCredentials = runtimeSigner
-	hub.bodyLeases.now = func() time.Time { return fixture.now }
+	hub.bodyLeases.now = now
 	go hub.Run()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -416,7 +423,7 @@ func TestWebSocketAPIKeyOnlyCannotRequestSkillMutationGrant(t *testing.T) {
 	waitForClientCount(t, hub, 42, 0)
 
 	rawCredential, _, err := runtimeSigner.issue(botRuntimeCredentialInput{
-		OwnerUID: 7, BotUID: 42, BodyID: "trusted-body", InstallationID: "trusted-install",
+		OwnerUID: 7, BotUID: 42, BodyID: "trusted-body", InstallationID: "trusted-install", TTL: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -444,6 +451,23 @@ func TestWebSocketAPIKeyOnlyCannotRequestSkillMutationGrant(t *testing.T) {
 	}
 	if allowed.SkillMutationGrant == nil || allowed.SkillMutationGrant.Error != nil || allowed.SkillMutationGrant.Grant == "" {
 		t.Fatalf("trusted Runtime grant result: %#v", allowed.SkillMutationGrant)
+	}
+
+	clockMu.Lock()
+	runtimeNow = fixture.now.Add(time.Second + botRuntimeCredentialClockSkew)
+	clockMu.Unlock()
+	expiredRequest := *fixture.msg
+	expiredRequest.RequestID = "grant-request-after-runtime-expiry"
+	if err := trusted.WriteJSON(&ClientMessage{SkillMutationGrant: &expiredRequest}); err != nil {
+		t.Fatal(err)
+	}
+	var expired ServerMessage
+	if err := trusted.ReadJSON(&expired); err != nil {
+		t.Fatal(err)
+	}
+	if expired.SkillMutationGrant == nil || expired.SkillMutationGrant.Error == nil ||
+		expired.SkillMutationGrant.Error.Code != "runtime_credential_required" || expired.SkillMutationGrant.Grant != "" {
+		t.Fatalf("expired long-lived Runtime grant result: %#v", expired.SkillMutationGrant)
 	}
 }
 
