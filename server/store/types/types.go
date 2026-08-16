@@ -601,6 +601,128 @@ type BotSkillRef struct {
 	ContentHash string `json:"contentHash"`
 }
 
+// BotSkillMutationOperation is deliberately narrower than general file or Bot
+// editing. The first control-plane release supports one complete Skill create,
+// replacement, or owner/operator rollback per mutation.
+type BotSkillMutationOperation string
+
+const (
+	BotSkillMutationCreate   BotSkillMutationOperation = "create"
+	BotSkillMutationReplace  BotSkillMutationOperation = "replace"
+	BotSkillMutationRollback BotSkillMutationOperation = "rollback"
+)
+
+func ParseBotSkillMutationOperation(value string) (BotSkillMutationOperation, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationCreate):
+		return BotSkillMutationCreate, true
+	case string(BotSkillMutationReplace):
+		return BotSkillMutationReplace, true
+	case string(BotSkillMutationRollback):
+		return BotSkillMutationRollback, true
+	default:
+		return "", false
+	}
+}
+
+// BotSkillMutationStatus records the durable progress of one versioned Skill
+// transaction. Status changes are compare-and-set; callers cannot skip stages.
+type BotSkillMutationStatus string
+
+const (
+	BotSkillMutationValidating          BotSkillMutationStatus = "validating"
+	BotSkillMutationVersionReady        BotSkillMutationStatus = "version_ready"
+	BotSkillMutationDefinitionCommitted BotSkillMutationStatus = "definition_committed"
+	BotSkillMutationActivationPending   BotSkillMutationStatus = "activation_pending"
+	BotSkillMutationActive              BotSkillMutationStatus = "active"
+	BotSkillMutationRejected            BotSkillMutationStatus = "rejected"
+	BotSkillMutationCompensationPending BotSkillMutationStatus = "compensation_pending"
+	BotSkillMutationRolledBack          BotSkillMutationStatus = "rolled_back"
+)
+
+func ParseBotSkillMutationStatus(value string) (BotSkillMutationStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationValidating):
+		return BotSkillMutationValidating, true
+	case string(BotSkillMutationVersionReady):
+		return BotSkillMutationVersionReady, true
+	case string(BotSkillMutationDefinitionCommitted):
+		return BotSkillMutationDefinitionCommitted, true
+	case string(BotSkillMutationActivationPending):
+		return BotSkillMutationActivationPending, true
+	case string(BotSkillMutationActive):
+		return BotSkillMutationActive, true
+	case string(BotSkillMutationRejected):
+		return BotSkillMutationRejected, true
+	case string(BotSkillMutationCompensationPending):
+		return BotSkillMutationCompensationPending, true
+	case string(BotSkillMutationRolledBack):
+		return BotSkillMutationRolledBack, true
+	default:
+		return "", false
+	}
+}
+
+// BotSkillMutationCreateInput contains immutable, server-attributed facts for
+// beginning a mutation. Actor identity is supplied by the canonical CatsCo
+// envelope, never trusted from a model-authored payload.
+type BotSkillMutationCreateInput struct {
+	BotUID                      int64
+	LocalSkillID                string
+	ActorUserUID                int64
+	SourceTopicID               string
+	SourceMessageID             int64
+	RuntimeBodyID               string
+	ClientRequestID             string
+	Operation                   BotSkillMutationOperation
+	CandidateContentHash        string
+	ExpectedDefinitionRevision  int64
+	ExpectedPreviousContentHash string
+	BeforeReference             *BotSkillRef
+	RollbackOf                  *int64
+}
+
+// BotSkillMutation is the auditable control-plane fact. It stores immutable
+// references and hashes, never Skill package bytes or credentials.
+type BotSkillMutation struct {
+	ID                          int64                     `json:"id"`
+	BotUID                      int64                     `json:"bot_uid"`
+	LocalSkillID                string                    `json:"local_skill_id"`
+	ActorUserUID                int64                     `json:"actor_user_uid"`
+	SourceTopicID               string                    `json:"source_topic_id"`
+	SourceMessageID             int64                     `json:"source_message_id"`
+	RuntimeBodyID               string                    `json:"runtime_body_id"`
+	ClientRequestID             string                    `json:"client_request_id"`
+	Operation                   BotSkillMutationOperation `json:"operation"`
+	CandidateContentHash        string                    `json:"candidate_content_hash"`
+	ExpectedDefinitionRevision  int64                     `json:"expected_definition_revision"`
+	ExpectedPreviousContentHash string                    `json:"expected_previous_content_hash,omitempty"`
+	BeforeReference             *BotSkillRef              `json:"before_reference,omitempty"`
+	AfterReference              *BotSkillRef              `json:"after_reference,omitempty"`
+	GitCommitSHA                string                    `json:"git_commit_sha,omitempty"`
+	DefinitionRevision          *int64                    `json:"definition_revision,omitempty"`
+	Status                      BotSkillMutationStatus    `json:"status"`
+	ErrorCode                   string                    `json:"error_code,omitempty"`
+	ErrorSummary                string                    `json:"error_summary,omitempty"`
+	RollbackOf                  *int64                    `json:"rollback_of,omitempty"`
+	LeaseGeneration             int64                     `json:"lease_generation"`
+	LeaseExpiresAt              time.Time                 `json:"lease_expires_at"`
+	CreatedAt                   time.Time                 `json:"created_at"`
+	UpdatedAt                   time.Time                 `json:"updated_at"`
+	ActivatedAt                 *time.Time                `json:"activated_at,omitempty"`
+}
+
+// BotSkillMutationTransition carries only state-dependent output facts. Nil
+// values preserve existing database fields.
+type BotSkillMutationTransition struct {
+	AfterReference     *BotSkillRef
+	GitCommitSHA       *string
+	DefinitionRevision *int64
+	ErrorCode          *string
+	ErrorSummary       *string
+	ActivatedAt        *time.Time
+}
+
 // BotDefinition is the deliberately small portable identity of a XiaoBa bot.
 // Device runtime material, sessions, quotas, and device identities do not
 // belong here. Skills are immutable SkillHub references rather than packages.
