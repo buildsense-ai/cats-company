@@ -45,12 +45,18 @@ describe('entry bundle split', () => {
   it('keeps the auth shell on the established visual tokens and overflow rules', () => {
     expect(authCss).toContain('--cc-accent: #29bc95;');
     expect(authCss).toContain('--cc-bg: #fcfcfc;');
+    expect(authCss).toContain('--oc-danger: #ef4444;');
+    expect(authCss).not.toContain('--cc-conversation-share-accent:');
     expect(authCss).toContain('--cc-scrollbar-page-size: 8px;');
     expect(authCss).toContain('scrollbar-color: var(--cc-scrollbar-thumb) var(--cc-scrollbar-track);');
     expect(authCss).toContain('::-webkit-scrollbar-thumb');
+    expect(authCss).toContain(':focus-visible');
     expect(authCss).toContain('--cc-liquid-shadow:');
     expect(authCss).toContain('html[data-theme="liquid"][data-liquid-variant="green"] {');
     expect(authCss).toContain('.oc-auth-card');
+    expect(authCss).toContain('.oc-form-error');
+    expect(authCss).toContain('.oc-settings-secondary');
+    expect(authCss).toContain('.oc-modal.cc-confirm-dialog');
     expect(authCss).toContain('.cc-workspace-loading');
     expect(authCss).toContain('.cc-workspace-loading-error');
   });

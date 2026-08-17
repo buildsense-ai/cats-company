@@ -25,7 +25,7 @@ const developmentWorkspacePreview = import.meta.env.DEV && (
   || ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
 );
 
-applyDocumentTheme(localStorage.getItem(THEME_STORAGE_KEY));
+applyDocumentTheme(globalThis.localStorage?.getItem(THEME_STORAGE_KEY));
 
 function readBrowserLocation() {
   return {
@@ -119,7 +119,7 @@ export function App() {
     if (auth.loggedIn || !getToken() || readStoredUserProfile()) return;
     setToken(null);
     clearStoredUserProfile();
-  }, [auth.loggedIn]);
+  }, [auth.loggedIn, auth.revision]);
 
   const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);
   const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')

@@ -36,8 +36,125 @@
   transform: none;
 }
 
+.oc-form-error {
+  color: var(--oc-danger);
+  font-size: 13px;
+  margin-top: 6px;
+}
+::-webkit-scrollbar {
+  width: var(--cc-scrollbar-size, 6px);
+  height: var(--cc-scrollbar-size, 6px);
+}
+
+::-webkit-scrollbar-track {
+  border: var(--cc-scrollbar-inset, 1px) solid transparent;
+  border-radius: 999px;
+  background: var(--cc-scrollbar-track, rgba(127, 127, 127, 0.05));
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb {
+  min-width: 28px;
+  min-height: 28px;
+  border: var(--cc-scrollbar-inset, 1px) solid transparent;
+  border-radius: 999px;
+  background: var(--cc-scrollbar-thumb, rgba(127, 127, 127, 0.3));
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cc-scrollbar-thumb-hover, rgba(127, 127, 127, 0.52));
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--cc-scrollbar-thumb-active, rgba(127, 127, 127, 0.7));
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none !important;
+  width: 0;
+  height: 0;
+  border: 0;
+  background: transparent;
+  background-image: none;
+}
+
+::-webkit-scrollbar-button:single-button {
+  display: none !important;
+  width: 0;
+  height: 0;
+  border: 0;
+  background: transparent;
+  background-image: none;
+}
+
+::-webkit-scrollbar-button:vertical:decrement,
+::-webkit-scrollbar-button:vertical:increment,
+::-webkit-scrollbar-button:horizontal:decrement,
+::-webkit-scrollbar-button:horizontal:increment,
+::-webkit-scrollbar-button:vertical:start:decrement,
+::-webkit-scrollbar-button:vertical:end:increment,
+::-webkit-scrollbar-button:horizontal:start:decrement,
+::-webkit-scrollbar-button:horizontal:end:increment {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  inline-size: 0 !important;
+  block-size: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.oc-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.oc-settings-secondary {
+  font-size: 12px;
+  color: var(--v3-text-muted) !important;
+}
+
+@media (max-width: 640px), (max-height: 640px) {
+  .oc-modal-overlay {
+    align-items: stretch !important;
+  }
+
+  .oc-modal {
+    width: min(100%, calc(100vw - 24px)) !important;
+    max-width: none !important;
+    max-height: calc(100vh - 24px) !important;
+  }
+}
+
 /* Source: src/css/catsco-ui-system.css */
 :root {
+  --oc-danger: #ef4444;
   color-scheme: light;
   --cc-font-sans: "Inter Variable", "Noto Sans SC Variable", Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --cc-font-mono: "JetBrains Mono Variable", "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -476,11 +593,30 @@ select:disabled {
   color: var(--cc-text);
 }
 .oc-modal-overlay {
+  inset: 0;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  cursor: default;
+  padding: 16px;
   background: rgba(0, 0, 0, 0.66);
   backdrop-filter: blur(3px);
 }
 
 .oc-modal {
+  overflow-y: auto;
+  padding: 24px;
+  width: 90%;
+  max-width: 400px;
+  overflow: hidden;
+  cursor: default;
+  max-height: calc(100vh - 32px) !important;
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-lg);
   background: var(--cc-panel);
@@ -584,6 +720,24 @@ select:disabled {
   padding: 20px;
   background: rgba(0, 0, 0, 0.72);
   backdrop-filter: blur(6px) saturate(88%);
+}
+
+.oc-modal.cc-confirm-dialog {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: start;
+  width: min(420px, calc(100vw - 32px));
+  max-width: 420px;
+  box-sizing: border-box;
+  padding: 18px;
+  gap: 14px;
+  border: 1px solid var(--cc-border) !important;
+  border-radius: 16px !important;
+  background: var(--cc-panel) !important;
+  box-shadow:
+    0 28px 72px rgba(0, 0, 0, 0.42),
+    0 8px 24px rgba(0, 0, 0, 0.18) !important;
+  animation: cc-confirm-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .cc-confirm-copy {

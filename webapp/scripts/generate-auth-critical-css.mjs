@@ -6,10 +6,12 @@ import postcss from 'postcss';
 const WEBAPP_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const OUTPUT_PATH = join(WEBAPP_ROOT, 'src/css/auth-critical.css');
 const ADDITIONS_PATH = join(WEBAPP_ROOT, 'src/css/auth-critical-additions.css');
+const OPENCHAT_AUTH_ROOT_PROPERTIES = new Set(['--oc-danger']);
 const STYLE_SOURCES = [
   {
     path: 'src/css/openchat-theme.css',
-    selectorIsCritical: (selector) => selector.trim() === '*' || /\.oc-auth(?:-|$)/.test(selector),
+    selectorIsCritical: openchatSelectorIsCritical,
+    rootProperties: OPENCHAT_AUTH_ROOT_PROPERTIES,
   },
   { path: 'src/css/catsco-ui-system.css', selectorIsCritical },
   { path: 'src/css/catsco-liquid-green.css', selectorIsCritical },
@@ -18,6 +20,7 @@ const STYLE_SOURCES = [
 const CRITICAL_CLASS = /\.(?:oc-auth(?:-[\w-]+)?|oc-password-reset-code-row|oc-settings-secondary|oc-form-error|cc-inline-feedback(?:-[\w-]+)?|cc-toast(?:-[\w-]+)?|cc-confirm(?:-[\w-]+)?)(?=$|[\s.:#,[>+~])/;
 const GLOBAL_SELECTOR = /^(?::root|\*|\*::before|\*::after|html(?:\[[^\]]+\])*(?:\s+\*)?|(?:html(?:\[[^\]]+\])*\s+)?(?:body|#root)(?:::[\w-]+)?|(?:button|input|textarea|select)(?:::[\w-]+|:[\w-]+(?:\([^)]*\))?)*|(?:input|textarea)::placeholder|strong|b|code|pre|kbd|samp|\[role="button"\]|\[tabindex\]:focus-visible)$/;
 const GLOBAL_INPUT_GROUP = /^html(?:\[[^\]]+\])*\s+:is\(\s*(?:input|textarea|select)\b/;
+const GLOBAL_SCROLLBAR_SELECTOR = /^::-webkit-scrollbar[\w-]*(?::[\w-]+)*$/;
 const CRITICAL_KEYFRAME = /^(?:cc-liquid-|cc-toast-|cc-confirm-)/;
 const GENERIC_FEEDBACK_SELECTOR = /^(?:\.oc-btn|\.oc-modal|\.oc-modal-overlay)$/;
 const GENERIC_NESTED_SELECTOR = /^(?:input|textarea|select|button|\[role="button"\])(?:$|:)/;
@@ -27,7 +30,8 @@ function criticalClassIsInAuthOrGlobalContext(selector) {
   if (!match || match.index === undefined) return false;
   const prefix = selector.slice(0, match.index);
   const outerPrefix = prefix.includes(':is(') ? prefix.slice(0, prefix.lastIndexOf(':is(')) : prefix;
-  return !/[.#][A-Za-z_-]/.test(outerPrefix);
+  return !/[.#][A-Za-z_-]/.test(outerPrefix)
+    || GENERIC_FEEDBACK_SELECTOR.test(outerPrefix.trim());
 }
 
 function selectorIsCritical(selector) {
@@ -35,7 +39,19 @@ function selectorIsCritical(selector) {
   return criticalClassIsInAuthOrGlobalContext(normalized)
     || GENERIC_FEEDBACK_SELECTOR.test(normalized)
     || GLOBAL_SELECTOR.test(normalized)
+    || normalized === ':focus-visible'
+    || GLOBAL_SCROLLBAR_SELECTOR.test(normalized)
     || GLOBAL_INPUT_GROUP.test(normalized);
+}
+
+function openchatSelectorIsCritical(selector) {
+  const normalized = selector.trim().replace(/\s+/g, ' ');
+  return normalized === '*'
+    || normalized === ':root'
+    || criticalClassIsInAuthOrGlobalContext(normalized)
+    || GENERIC_FEEDBACK_SELECTOR.test(normalized)
+    || normalized === ':focus-visible'
+    || GLOBAL_SCROLLBAR_SELECTOR.test(normalized);
 }
 
 function trimNestedSelectorLists(selector) {
@@ -49,12 +65,20 @@ function trimNestedSelectorLists(selector) {
   });
 }
 
-function filterNode(node, predicate) {
+function filterNode(node, predicate, rootProperties) {
   if (node.type === 'rule') {
     const selectors = node.selectors.filter(predicate).map(trimNestedSelectorLists);
     if (selectors.length === 0) return null;
     const rule = node.clone();
     rule.selectors = selectors;
+    if (rootProperties && rule.selector.trim() === ':root') {
+      const declarations = rule.nodes.filter((child) => (
+        child.type === 'decl' && rootProperties.has(child.prop)
+      ));
+      if (declarations.length === 0) return null;
+      rule.removeAll();
+      declarations.forEach((declaration) => rule.append(declaration.clone()));
+    }
     return rule;
   }
 
@@ -66,17 +90,17 @@ function filterNode(node, predicate) {
 
   const atRule = node.clone({ nodes: [] });
   node.nodes.forEach((child) => {
-    const filtered = filterNode(child, predicate);
+    const filtered = filterNode(child, predicate, rootProperties);
     if (filtered) atRule.append(filtered);
   });
   return atRule.nodes.length > 0 ? atRule : null;
 }
 
-function extractCriticalRules(source, predicate) {
+function extractCriticalRules(source, predicate, rootProperties) {
   const root = postcss.parse(source);
   const filtered = postcss.root();
   root.nodes.forEach((node) => {
-    const result = filterNode(node, predicate);
+    const result = filterNode(node, predicate, rootProperties);
     if (result) filtered.append(result);
   });
   return filtered.toString().trim();
@@ -137,9 +161,13 @@ function collapseRepeatedRules(css) {
 }
 
 export function generateAuthCriticalCss({ write = true } = {}) {
-  const sections = STYLE_SOURCES.map(({ path, selectorIsCritical: predicate }) => {
+  const sections = STYLE_SOURCES.map(({
+    path,
+    selectorIsCritical: predicate,
+    rootProperties,
+  }) => {
     const source = readFileSync(join(WEBAPP_ROOT, path), 'utf8');
-    const rules = extractCriticalRules(source, predicate);
+    const rules = extractCriticalRules(source, predicate, rootProperties);
     return rules ? `/* Source: ${path} */\n${rules}` : '';
   }).filter(Boolean);
   const additions = readFileSync(ADDITIONS_PATH, 'utf8').trim();
