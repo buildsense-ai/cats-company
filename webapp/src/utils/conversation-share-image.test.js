@@ -1,6 +1,7 @@
 import {
   conversationShareMessageKey,
   conversationShareText,
+  downloadConversationShareImage,
   renderConversationShareImage,
 } from './conversation-share-image';
 
@@ -39,6 +40,33 @@ describe('conversation share image helpers', () => {
     expect(conversationShareMessageKey({ id: 42 }, 3)).toBe('42');
     expect(conversationShareMessageKey({ seq_id: 8 }, 3)).toBe('8');
     expect(conversationShareMessageKey({}, 3)).toBe('share-message-3');
+  });
+
+  it('uses a Blob URL to start a mobile-safe PNG download', () => {
+    vi.useFakeTimers();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:catsco-share');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    let clickedHref = '';
+    let clickedFilename = '';
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function recordClick() {
+      clickedHref = this.href;
+      clickedFilename = this.download;
+    });
+
+    expect(downloadConversationShareImage('data:image/png;base64,aGVsbG8=', 'share.png')).toBe(true);
+
+    const blob = createObjectURL.mock.calls[0][0];
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.type).toBe('image/png');
+    expect(clickedHref).toBe('blob:catsco-share');
+    expect(clickedFilename).toBe('share.png');
+    vi.advanceTimersByTime(60_000);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:catsco-share');
+
+    click.mockRestore();
+    createObjectURL.mockRestore();
+    revokeObjectURL.mockRestore();
+    vi.useRealTimers();
   });
 
   it('renders a branded PNG payload with a scale-aware canvas', async () => {

@@ -438,16 +438,56 @@ export async function renderConversationShareImage({
   };
 }
 
+function blobFromDataURL(dataUrl) {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null;
+  const separatorIndex = dataUrl.indexOf(',');
+  if (separatorIndex < 0) return null;
+
+  const metadata = dataUrl.slice(5, separatorIndex);
+  const payload = dataUrl.slice(separatorIndex + 1);
+  const mimeType = metadata.split(';')[0] || 'application/octet-stream';
+  try {
+    if (metadata.includes(';base64')) {
+      if (typeof atob !== 'function') return null;
+      const binary = atob(payload);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return new Blob([bytes], { type: mimeType });
+    }
+    return new Blob([decodeURIComponent(payload)], { type: mimeType });
+  } catch {
+    return null;
+  }
+}
+
 export function downloadConversationShareImage(dataUrl, filename = 'catsco-conversation-share.png') {
-  if (typeof document === 'undefined' || !dataUrl) return false;
+  if (
+    typeof document === 'undefined'
+    || typeof URL === 'undefined'
+    || typeof URL.createObjectURL !== 'function'
+    || !dataUrl
+  ) return false;
+  const blob = blobFromDataURL(dataUrl);
+  if (!blob) return false;
+
+  const objectURL = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.href = dataUrl;
+  link.href = objectURL;
   link.download = filename;
   link.rel = 'noopener';
   link.style.display = 'none';
   document.body.appendChild(link);
-  link.click();
+  try {
+    link.click();
+  } catch {
+    link.remove();
+    URL.revokeObjectURL?.(objectURL);
+    return false;
+  }
   link.remove();
+  window.setTimeout(() => URL.revokeObjectURL?.(objectURL), 60_000);
   return true;
 }
 
