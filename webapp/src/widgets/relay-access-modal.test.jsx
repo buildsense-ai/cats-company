@@ -278,6 +278,33 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('邀请码套餐');
   });
 
+  it('labels enforced commercial usage as one shared package pool', async () => {
+    api.getRelayUsage.mockResolvedValue({
+      configured: true,
+      summary: {
+        source: 'relay', model: '套餐总额度', quota_configured: true,
+        percent: 16.5, remaining_percent: 83.5, status: 'normal', reset_duration: '1M',
+      },
+    });
+    api.getRelayCommercial.mockResolvedValue({
+      enabled: true,
+      enforce_enabled: true,
+      summary: {
+        uid: 38,
+        models: ['MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash', 'gpt-5.6-terra', 'gpt-5.6-sol'],
+        entitlements: [{ state: 'active', plan_name: '专业版', expires_at: '2026-09-13T07:32:08Z' }],
+      },
+    });
+
+    await renderModal();
+
+    expect(api.getRelayUsage).toHaveBeenCalledWith({ scope: 'total' });
+    expect(container.textContent).toContain('共享额度池');
+    expect(container.textContent).toContain('套餐总额度');
+    expect(container.textContent).toContain('本周期总用量');
+    expect(container.textContent).toContain('套餐内模型共用同一额度池');
+  });
+
   it('shows explicit no-package state for enabled users without active entitlements', async () => {
     api.getRelayCommercial.mockResolvedValue({
       enabled: true,
@@ -590,6 +617,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder).toHaveBeenCalledWith(9, 'test', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });
     expect(container.textContent).toContain('待支付');
     const confirmButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('完成灰度测试支付'));
+    const usageCallsBeforeConfirm = api.getRelayUsage.mock.calls.length;
     await act(async () => {
       confirmButton.click();
       await Promise.resolve();
@@ -598,6 +626,7 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     expect(api.confirmCommercialTestPayment).toHaveBeenCalledWith('CCWEBTEST0001');
+    expect(api.getRelayUsage.mock.calls.length).toBeGreaterThan(usageCallsBeforeConfirm);
     expect(container.textContent).toContain('支付成功');
     expect(container.textContent).toContain('套餐已生效');
   });

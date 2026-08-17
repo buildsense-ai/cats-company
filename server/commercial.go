@@ -313,12 +313,13 @@ type commercialRelayKeySummary struct {
 }
 
 type commercialRelayUsageUser struct {
-	UID             int64                      `json:"uid"`
-	Username        string                     `json:"username"`
-	Configured      bool                       `json:"configured"`
-	Key             *commercialRelayKeySummary `json:"key,omitempty"`
-	Limits          commercialRelayLimits      `json:"limits"`
-	GovernanceError string                     `json:"governance_error,omitempty"`
+	UID              int64                      `json:"uid"`
+	Username         string                     `json:"username"`
+	Configured       bool                       `json:"configured"`
+	Key              *commercialRelayKeySummary `json:"key,omitempty"`
+	Limits           commercialRelayLimits      `json:"limits"`
+	GovernanceError  string                     `json:"governance_error,omitempty"`
+	UsageWindowStart string                     `json:"usage_window_start,omitempty"`
 }
 
 type commercialRelayUsageResponse struct {
