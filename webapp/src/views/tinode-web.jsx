@@ -53,7 +53,12 @@ import {
 } from '../utils/conversation-model-state';
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
-import { normalizeUserProfile, readStoredUserProfile } from '../utils/user-profile';
+import {
+  clearStoredUserProfile,
+  normalizeUserProfile,
+  readStoredUserProfile,
+  writeStoredUserProfile,
+} from '../utils/user-profile';
 import {
   THEME_STORAGE_KEY,
   isLiquidTheme,
@@ -426,8 +431,8 @@ function TinodeWebApp({ location }) {
 
 
   const persistUser = useCallback((nextUser) => {
-    localStorage.setItem('oc_user', JSON.stringify(nextUser));
-    setUser(nextUser);
+    const profile = writeStoredUserProfile(nextUser);
+    if (profile) setUser(profile);
   }, []);
 
   useEffect(() => {
@@ -517,7 +522,7 @@ function TinodeWebApp({ location }) {
     });
     disconnectWS();
     setToken(null);
-    localStorage.removeItem('oc_user');
+    clearStoredUserProfile();
     setUser(null);
     setOnlineUsers({});
     setTaskDraft(null);

@@ -34,6 +34,9 @@
     }
   },
   "scripts": {
+    "prestart": "node scripts/generate-auth-critical-css.mjs",
+    "pretest": "node scripts/generate-auth-critical-css.mjs",
+    "prebuild": "node scripts/generate-auth-critical-css.mjs",
     "start": "vite",
     "test": "vitest run",
     "build": "vite build"

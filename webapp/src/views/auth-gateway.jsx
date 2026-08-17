@@ -5,7 +5,7 @@ import { InlineFeedback } from '../components/feedback-system';
 import AuthFlowBackground from '../components/auth-flow-background';
 import t from '../i18n';
 import { isValidEmailFormat } from '../utils/email-format';
-import { normalizeUserProfile } from '../utils/user-profile';
+import { writeStoredUserProfile } from '../utils/user-profile';
 import {
   authModeForPathname,
   authPathForMode,
@@ -285,7 +285,9 @@ export default function AuthGateway({
 
   const handleLogin = async (account, password) => {
     const response = await api.login({ account, password });
-    localStorage.setItem('oc_user', JSON.stringify(normalizeUserProfile(response)));
+    if (!writeStoredUserProfile(response)) {
+      throw new Error('登录响应缺少有效的用户资料');
+    }
     setToken(response.token);
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };

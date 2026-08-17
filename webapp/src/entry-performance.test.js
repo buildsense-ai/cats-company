@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { generateAuthCriticalCss } from '../scripts/generate-auth-critical-css.mjs';
 
 const readSource = (path) => readFileSync(resolve(process.cwd(), path), 'utf8')
   .replace(/\r\n?/g, '\n');
@@ -48,9 +49,17 @@ describe('entry bundle split', () => {
     expect(authCss).toContain('scrollbar-color: var(--cc-scrollbar-thumb) var(--cc-scrollbar-track);');
     expect(authCss).toContain('::-webkit-scrollbar-thumb');
     expect(authCss).toContain('--cc-liquid-shadow:');
+    expect(authCss).toContain('html[data-theme="liquid"][data-liquid-variant="green"] {');
     expect(authCss).toContain('.oc-auth-card');
     expect(authCss).toContain('.cc-workspace-loading');
     expect(authCss).toContain('.cc-workspace-loading-error');
+  });
+
+  it('generates the auth shell stylesheet from the workspace visual sources', () => {
+    expect(authCss).toBe(generateAuthCriticalCss({ write: false }));
+    expect(authCss).toContain('Generated from the workspace CSS sources');
+    expect(authCss).not.toContain('.relay-access-primary-btn');
+    expect(authCss).not.toContain('.catsco-download-action');
   });
 
   it('allows crawlers to discover the public entrypoint', () => {

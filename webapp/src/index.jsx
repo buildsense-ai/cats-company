@@ -10,7 +10,7 @@ import { getAuthRevision, getPushPromptOwner, getToken, setToken } from './api';
 import { FeedbackProvider } from './components/feedback-system';
 import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
-import { readStoredUserProfile, USER_PROFILE_STORAGE_KEY } from './utils/user-profile';
+import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
 import './css/auth-critical.css';
 
 const importWorkspace = () => import('./views/tinode-web');
@@ -118,11 +118,7 @@ export function App() {
   useLayoutEffect(() => {
     if (auth.loggedIn || !getToken() || readStoredUserProfile()) return;
     setToken(null);
-    try {
-      localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-    } catch {
-      // The token has already been cleared; storage may be unavailable.
-    }
+    clearStoredUserProfile();
   }, [auth.loggedIn]);
 
   const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);

@@ -24,3 +24,26 @@ export function readStoredUserProfile(storage) {
     return null;
   }
 }
+
+export function writeStoredUserProfile(raw, storage) {
+  const profile = normalizeUserProfile(raw);
+  if (!profile) return null;
+
+  try {
+    const source = storage ?? globalThis.localStorage;
+    source?.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    return profile;
+  } catch {
+    return null;
+  }
+}
+
+export function clearStoredUserProfile(storage) {
+  try {
+    const source = storage ?? globalThis.localStorage;
+    source?.removeItem(USER_PROFILE_STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}

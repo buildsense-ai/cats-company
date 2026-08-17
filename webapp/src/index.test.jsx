@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getAuthRevision: vi.fn(() => 1),
   getPushPromptOwner: vi.fn(() => ''),
   readStoredUserProfile: vi.fn(() => null),
+  clearStoredUserProfile: vi.fn(() => true),
   pwaController: vi.fn(),
   pushCleanupController: vi.fn(),
 }));
@@ -59,8 +60,8 @@ vi.mock('./utils/theme-access', () => ({
 }));
 
 vi.mock('./utils/user-profile', () => ({
+  clearStoredUserProfile: mocks.clearStoredUserProfile,
   readStoredUserProfile: mocks.readStoredUserProfile,
-  USER_PROFILE_STORAGE_KEY: 'oc_user',
 }));
 
 import {
@@ -79,6 +80,7 @@ beforeEach(() => {
   mocks.getPushPromptOwner.mockReturnValue('');
   mocks.readStoredUserProfile.mockReturnValue(null);
   mocks.setToken.mockClear();
+  mocks.clearStoredUserProfile.mockClear();
   mocks.pwaController.mockClear();
   mocks.pushCleanupController.mockClear();
   container = document.createElement('div');
@@ -114,6 +116,7 @@ test('clears an orphaned token and renders the authentication gateway', async ()
   expect(container.querySelector('[data-testid="auth-gateway"]')).toBeTruthy();
   expect(container.querySelector('[data-testid="tinode-web"]')).toBeFalsy();
   expect(mocks.setToken).toHaveBeenCalledWith(null);
+  expect(mocks.clearStoredUserProfile).toHaveBeenCalledTimes(1);
 });
 
 test('does not load the workspace when an auth event has no restorable profile', async () => {
