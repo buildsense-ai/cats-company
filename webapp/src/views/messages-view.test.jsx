@@ -176,8 +176,8 @@ vi.mock('../utils/conversation-share-image', () => ({
     }
     return typeof message?.content === 'string' ? message.content : message?.content?.text || '';
   },
-  downloadConversationShareImage: vi.fn(),
-  downloadConversationShareImages: vi.fn(),
+  downloadConversationShareImage: vi.fn(async () => true),
+  downloadConversationShareImages: vi.fn(async () => true),
   renderConversationShareImage: vi.fn(async () => ({
     dataUrl: 'data:image/png;base64,catsco-share',
     width: 1080,
@@ -574,7 +574,10 @@ describe('MessagesView composer draft isolation', () => {
         }));
       });
       expect(document.activeElement).toBe(downloadButton);
-      await act(async () => downloadButton.click());
+      await act(async () => {
+        downloadButton.click();
+        await flushPromises();
+      });
       expect(downloadConversationShareImage).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
       await act(async () => {
         document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -671,11 +674,50 @@ describe('MessagesView composer draft isolation', () => {
 
     const downloadAllButton = [...preview.querySelectorAll('button')]
       .find((button) => button.textContent.includes('下载全部 PNG'));
-    await act(async () => downloadAllButton.click());
+    await act(async () => {
+      downloadAllButton.click();
+      await flushPromises();
+    });
     expect(downloadConversationShareImages).toHaveBeenCalledWith([
       'data:image/png;base64,page-one',
       'data:image/png;base64,page-two',
     ]);
+  });
+
+  it('shows a visible recovery message when image saving cannot start', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 301,
+        seq_id: 301,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '请保存这张分享图',
+      }],
+    });
+    downloadConversationShareImage.mockResolvedValueOnce(false);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    const downloadButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('下载 PNG'));
+    await act(async () => {
+      downloadButton.click();
+      await flushPromises();
+    });
+
+    expect(preview?.textContent).toContain('无法启动图片保存。请检查浏览器的下载或弹窗权限后重试。');
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {

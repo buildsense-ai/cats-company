@@ -1,8 +1,8 @@
 const DEFAULT_WIDTH = 720;
 const DEFAULT_SCALE = 1.5;
-const MIN_OUTPUT_SCALE = 0.75;
-// Keep long 50-message shares usable without allocating an unbounded canvas.
-const MAX_OUTPUT_HEIGHT = 9600;
+// Keep long shares within a scanner-friendly page height as well as browser
+// canvas limits. Their content remains complete across the resulting pages.
+const MAX_OUTPUT_HEIGHT = 7680;
 const MAX_OUTPUT_PIXELS = 18_000_000;
 const APP_ENTRY_URL = 'https://app.catsco.cc';
 // This fixed QR matrix encodes APP_ENTRY_URL. The four-module quiet zone is part
@@ -42,15 +42,10 @@ const APP_ENTRY_QR_MODULES = [
   '000000000000000000000000000000000',
   '000000000000000000000000000000000',
 ];
-// Two logical pixels per module keeps the code inside the existing compact
-// footer. At the default 1.5x export scale, each module remains 3 physical
-// pixels wide for dependable scanning.
-const APP_ENTRY_QR_MODULE_SIZE = 2;
-const APP_ENTRY_QR_SOURCE_QUIET_ZONE = 4;
-const APP_ENTRY_QR_RENDERED_QUIET_ZONE = 1;
-const APP_ENTRY_QR_CROP = APP_ENTRY_QR_SOURCE_QUIET_ZONE - APP_ENTRY_QR_RENDERED_QUIET_ZONE;
-const APP_ENTRY_QR_RENDERED_MODULES = APP_ENTRY_QR_MODULES.length - APP_ENTRY_QR_CROP * 2;
-const APP_ENTRY_QR_SIZE = APP_ENTRY_QR_RENDERED_MODULES * APP_ENTRY_QR_MODULE_SIZE;
+// Keep the full 33×33 matrix, including its four-module quiet zone. Five
+// logical pixels per module remain legible in a long share export.
+const APP_ENTRY_QR_MODULE_SIZE = 5;
+const APP_ENTRY_QR_SIZE = APP_ENTRY_QR_MODULES.length * APP_ENTRY_QR_MODULE_SIZE;
 
 export const CONVERSATION_SHARE_IMAGE_WIDTH = DEFAULT_WIDTH;
 
@@ -277,9 +272,8 @@ function drawLogoFallback(ctx, x, y, size, palette) {
 
 function drawAppEntryQRCode(ctx, x, y, palette) {
   ctx.fillStyle = palette.text;
-  const visibleRows = APP_ENTRY_QR_MODULES.slice(APP_ENTRY_QR_CROP, -APP_ENTRY_QR_CROP);
-  visibleRows.forEach((row, rowIndex) => {
-    Array.from(row.slice(APP_ENTRY_QR_CROP, -APP_ENTRY_QR_CROP)).forEach((module, columnIndex) => {
+  APP_ENTRY_QR_MODULES.forEach((row, rowIndex) => {
+    Array.from(row).forEach((module, columnIndex) => {
       if (module !== '1') return;
       ctx.fillRect(
         x + columnIndex * APP_ENTRY_QR_MODULE_SIZE,
@@ -312,7 +306,9 @@ export async function renderConversationShareImage({
 
   const padding = 56;
   const headerHeight = 128;
-  const footerHeight = 72;
+  // The QR stays in the footer, to the right of the CatsCo wordmark. This
+  // leaves the full quiet zone clear of the divider and footer copy.
+  const footerHeight = 208;
   const bubbleMaxWidth = Math.min(720, width - padding * 2);
   const bodyLineHeight = 28;
   const bubblePaddingX = 24;
@@ -331,6 +327,10 @@ export async function renderConversationShareImage({
   });
   const gap = 28;
   const requestedScale = Number.isFinite(scale) && scale > 0 ? scale : DEFAULT_SCALE;
+  // Keep a QR-sized export at the normal 1.5x density. Allowing pages to
+  // shrink further makes a valid QR too small for scanners to find inside a
+  // very tall PNG.
+  const minimumPageOutputScale = Math.min(requestedScale, DEFAULT_SCALE);
   const heightForLayouts = (pageLayouts) => (
     headerHeight
     + footerHeight
@@ -343,8 +343,8 @@ export async function renderConversationShareImage({
     Math.sqrt(MAX_OUTPUT_PIXELS / (width * height)),
   );
   const maxPageHeight = Math.min(
-    MAX_OUTPUT_HEIGHT / MIN_OUTPUT_SCALE,
-    MAX_OUTPUT_PIXELS / (width * MIN_OUTPUT_SCALE * MIN_OUTPUT_SCALE),
+    MAX_OUTPUT_HEIGHT / minimumPageOutputScale,
+    MAX_OUTPUT_PIXELS / (width * minimumPageOutputScale * minimumPageOutputScale),
   );
   const maxBubbleHeight = Math.max(1, maxPageHeight - heightForLayouts([]) - gap);
   const maxLinesPerBubble = Math.max(
@@ -374,7 +374,7 @@ export async function renderConversationShareImage({
     const nextPageLayouts = [...currentPageLayouts, item];
     if (
       currentPageLayouts.length > 0
-      && outputScaleForHeight(heightForLayouts(nextPageLayouts)) < MIN_OUTPUT_SCALE
+      && outputScaleForHeight(heightForLayouts(nextPageLayouts)) < minimumPageOutputScale
     ) {
       layoutPages.push(currentPageLayouts);
       currentPageLayouts = [item];
@@ -387,7 +387,7 @@ export async function renderConversationShareImage({
   const renderPage = (pageLayouts, pageIndex) => {
     const height = heightForLayouts(pageLayouts);
     const outputScale = outputScaleForHeight(height);
-    if (!Number.isFinite(outputScale) || outputScale < MIN_OUTPUT_SCALE) {
+    if (!Number.isFinite(outputScale) || outputScale < minimumPageOutputScale) {
       throw new Error('分享图尺寸超出浏览器安全范围，请稍后重试。');
     }
     const pageCanvas = pageIndex === 0 ? canvas : document.createElement('canvas');
@@ -477,17 +477,22 @@ export async function renderConversationShareImage({
     pageCtx.moveTo(padding, footerTop + 16);
     pageCtx.lineTo(width - padding, footerTop + 16);
     pageCtx.stroke();
+    const qrX = width - padding - APP_ENTRY_QR_SIZE;
+    const footerCopyMaxWidth = Math.max(1, qrX - padding - 84);
     pageCtx.fillStyle = palette.muted;
     pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText('由 CatsCo 生成 · 保留对话上下文', padding, height - padding - 20);
+    pageCtx.fillText(
+      fitText(pageCtx, '由 CatsCo 生成 · 保留对话上下文', footerCopyMaxWidth),
+      padding,
+      height - padding - 20,
+    );
     pageCtx.textAlign = 'right';
     pageCtx.fillStyle = palette.accentText;
     pageCtx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
-    const qrX = width - padding - APP_ENTRY_QR_SIZE;
     pageCtx.fillText('CatsCo', qrX - 12, height - padding - 20);
     pageCtx.textAlign = 'left';
 
-    const qrY = footerTop + 20;
+    const qrY = footerTop + 28;
     drawAppEntryQRCode(pageCtx, qrX, qrY, palette);
 
     return {
@@ -530,15 +535,49 @@ function blobFromDataURL(dataUrl) {
   }
 }
 
-export function downloadConversationShareImage(dataUrl, filename = 'catsco-conversation-share.png') {
+function imageFileFromBlob(blob, filename) {
+  if (typeof File !== 'function') return null;
+  return new File([blob], filename, { type: blob.type || 'image/png' });
+}
+
+function isMobileBrowser() {
+  if (typeof navigator === 'undefined') return false;
+  if (navigator.userAgentData?.mobile === true) return true;
+  const userAgent = String(navigator.userAgent || '');
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent)
+    || (/Macintosh/i.test(userAgent) && Number(navigator.maxTouchPoints) > 1);
+}
+
+function startNativeImageShare(files) {
+  if (
+    !isMobileBrowser()
+    || typeof navigator.share !== 'function'
+    || typeof navigator.canShare !== 'function'
+    || files.length === 0
+  ) return null;
+
+  const shareData = {
+    files,
+    title: 'CatsCo 对话分享图',
+  };
+  try {
+    if (!navigator.canShare(shareData)) return null;
+    return Promise.resolve(navigator.share(shareData))
+      .then(() => true)
+      // Closing the system sheet is an intentional cancellation, not a failed
+      // save action that should surface as an error in the conversation.
+      .catch((error) => error?.name === 'AbortError');
+  } catch {
+    return null;
+  }
+}
+
+function startDirectImageDownload(blob, filename) {
   if (
     typeof document === 'undefined'
     || typeof URL === 'undefined'
     || typeof URL.createObjectURL !== 'function'
-    || !dataUrl
   ) return false;
-  const blob = blobFromDataURL(dataUrl);
-  if (!blob) return false;
 
   const objectURL = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -559,11 +598,62 @@ export function downloadConversationShareImage(dataUrl, filename = 'catsco-conve
   return true;
 }
 
-export function downloadConversationShareImages(dataUrls, filenamePrefix = 'catsco-conversation-share') {
+function openImageForManualSave(blob) {
+  if (
+    typeof window === 'undefined'
+    || typeof URL === 'undefined'
+    || typeof URL.createObjectURL !== 'function'
+  ) return false;
+
+  const objectURL = URL.createObjectURL(blob);
+  const imageWindow = window.open(objectURL, '_blank');
+  if (!imageWindow) {
+    URL.revokeObjectURL?.(objectURL);
+    return false;
+  }
+  try {
+    imageWindow.opener = null;
+  } catch {
+    // Some browsers expose a cross-origin WindowProxy here. The image is
+    // still open and can be saved with the browser's native controls.
+  }
+  window.setTimeout(() => URL.revokeObjectURL?.(objectURL), 300_000);
+  return true;
+}
+
+export async function downloadConversationShareImage(dataUrl, filename = 'catsco-conversation-share.png') {
+  const blob = blobFromDataURL(dataUrl);
+  if (!blob) return false;
+
+  const imageFile = imageFileFromBlob(blob, filename);
+  const nativeShare = imageFile ? startNativeImageShare([imageFile]) : null;
+  if (nativeShare) return nativeShare;
+
+  // iOS and some embedded mobile browsers ignore synthetic download clicks.
+  // When native file sharing is unavailable, show the image in a real tab so
+  // the user can still save it with the platform's long-press/save controls.
+  if (isMobileBrowser()) return openImageForManualSave(blob);
+  return startDirectImageDownload(blob, filename);
+}
+
+export async function downloadConversationShareImages(dataUrls, filenamePrefix = 'catsco-conversation-share') {
   const urls = Array.isArray(dataUrls) ? dataUrls.filter(Boolean) : [];
   if (urls.length === 0) return false;
-  return urls.every((dataUrl, index) => {
-    const suffix = urls.length > 1 ? `-${String(index + 1).padStart(2, '0')}` : '';
-    return downloadConversationShareImage(dataUrl, `${filenamePrefix}${suffix}.png`);
+  if (urls.length === 1) return downloadConversationShareImage(urls[0], `${filenamePrefix}.png`);
+
+  const files = urls.map((dataUrl, index) => {
+    const blob = blobFromDataURL(dataUrl);
+    const suffix = `-${String(index + 1).padStart(2, '0')}`;
+    return blob ? imageFileFromBlob(blob, `${filenamePrefix}${suffix}.png`) : null;
   });
+  if (files.some((file) => !file)) return false;
+
+  const nativeShare = startNativeImageShare(files);
+  if (nativeShare) return nativeShare;
+  // Browsers usually block a burst of mobile downloads. The UI retains a
+  // one-page action and explains this fallback when a multi-file share isn't
+  // supported.
+  if (isMobileBrowser()) return false;
+
+  return files.every((file) => startDirectImageDownload(file, file.name));
 }

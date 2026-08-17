@@ -367,6 +367,7 @@ export default function MessagesView({
   const [conversationShareImages, setConversationShareImages] = useState([]);
   const [conversationSharePreviewPage, setConversationSharePreviewPage] = useState(0);
   const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
+  const [conversationShareDownloading, setConversationShareDownloading] = useState(false);
   const [conversationShareError, setConversationShareError] = useState('');
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
@@ -2843,6 +2844,7 @@ export default function MessagesView({
     setConversationSharePreviewOpen(false);
     setConversationShareImages([]);
     setConversationSharePreviewPage(0);
+    setConversationShareDownloading(false);
   }, []);
 
   const transitionConversationShare = useCallback(({ mode, selectedKeys = [] }) => {
@@ -2916,6 +2918,41 @@ export default function MessagesView({
       setConversationShareGenerating(false);
     }
   }, [displayName, selectedConversationShareItems, topic, topicName]);
+
+  const saveConversationShareImages = useCallback(async ({ all = false } = {}) => {
+    if (conversationShareDownloading || !conversationSharePreviewImage) return;
+    setConversationShareDownloading(true);
+    setConversationShareError('');
+    try {
+      let saved;
+      if (all && conversationShareImages.length > 1) {
+        saved = await downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
+      } else if (conversationShareImages.length > 1) {
+        saved = await downloadConversationShareImage(
+          conversationSharePreviewImage.dataUrl,
+          `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
+        );
+      } else {
+        saved = await downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
+      }
+      if (!saved) {
+        setConversationShareError(
+          all && conversationShareImages.length > 1
+            ? '无法一次保存全部图片。请使用“下载当前 PNG”逐张保存，或在系统分享菜单中选择保存。'
+            : '无法启动图片保存。请检查浏览器的下载或弹窗权限后重试。',
+        );
+      }
+    } catch {
+      setConversationShareError('无法启动图片保存。请检查浏览器的下载或弹窗权限后重试。');
+    } finally {
+      setConversationShareDownloading(false);
+    }
+  }, [
+    conversationShareDownloading,
+    conversationShareImages,
+    conversationSharePreviewImage,
+    conversationSharePreviewPage,
+  ]);
 
   useEffect(() => {
     if (!conversationShareMode) return;
@@ -3835,6 +3872,12 @@ export default function MessagesView({
                 alt={`${displayName || topicName || '对话'}的 CatsCo 分享图，第 ${conversationSharePreviewPage + 1} 张，共 ${conversationShareImages.length} 张`}
               />
             </div>
+            {conversationShareDownloading && (
+              <p className="cc-conversation-share-preview-status" role="status">正在打开图片保存…</p>
+            )}
+            {conversationShareError && (
+              <p className="cc-conversation-share-preview-status is-error" role="alert">{conversationShareError}</p>
+            )}
             <footer className="cc-conversation-share-preview-actions">
               <button type="button" className="cc-conversation-share-secondary" onClick={() => setConversationSharePreviewOpen(false)}>
                 返回选择
@@ -3843,27 +3886,22 @@ export default function MessagesView({
                 <button
                   type="button"
                   className="cc-conversation-share-secondary"
-                  onClick={() => downloadConversationShareImage(
-                    conversationSharePreviewImage.dataUrl,
-                    `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
-                  )}
+                  disabled={conversationShareDownloading}
+                  onClick={() => void saveConversationShareImages()}
                 >
-                  下载当前 PNG
+                  {conversationShareDownloading ? '正在打开…' : '下载当前 PNG'}
                 </button>
               )}
               <button
                 type="button"
                 className="cc-conversation-share-primary"
-                onClick={() => {
-                  if (conversationShareImages.length > 1) {
-                    downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
-                  } else {
-                    downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
-                  }
-                }}
+                disabled={conversationShareDownloading}
+                onClick={() => void saveConversationShareImages({ all: conversationShareImages.length > 1 })}
               >
                 <Download size={16} aria-hidden="true" />
-                {conversationShareImages.length > 1 ? '下载全部 PNG' : '下载 PNG'}
+                {conversationShareDownloading
+                  ? '正在打开…'
+                  : (conversationShareImages.length > 1 ? '下载全部 PNG' : '下载 PNG')}
               </button>
             </footer>
           </section>
