@@ -5,6 +5,7 @@ import { InlineFeedback } from '../components/feedback-system';
 import AuthFlowBackground from '../components/auth-flow-background';
 import t from '../i18n';
 import { isValidEmailFormat } from '../utils/email-format';
+import { normalizeUserProfile } from '../utils/user-profile';
 import {
   authModeForPathname,
   authPathForMode,
@@ -14,18 +15,21 @@ import {
 } from '../utils/auth-routes';
 import PasswordResetForm from '../widgets/password-reset-form';
 
-function normalizeUserProfile(raw) {
-  if (!raw) return null;
-  const username = raw.username || '';
-  return {
-    uid: raw.uid || raw.id,
-    username,
-    email: raw.email || '',
-    display_name: raw.display_name || username,
-    avatar_url: raw.avatar_url || '',
-    account_type: raw.account_type || 'human',
-  };
-}
+const passwordToggleStyle = {
+  position: 'absolute',
+  right: 12,
+  top: '40%',
+  transform: 'translateY(-50%)',
+  display: 'flex',
+  alignItems: 'center',
+  margin: 0,
+  padding: 0,
+  border: 0,
+  background: 'transparent',
+  color: '#888',
+  cursor: 'pointer',
+  userSelect: 'none',
+};
 
 function formatAuthError(message) {
   const text = String(message || '').toLowerCase();
@@ -156,12 +160,16 @@ export function AuthView({
               onChange={(event) => setPassword(event.target.value)}
               style={{ paddingRight: 48 }}
             />
-            <span
+            <button
+              type="button"
+              aria-label={showPassword ? '隐藏密码' : '显示密码'}
+              aria-pressed={showPassword}
+              title={showPassword ? '隐藏密码' : '显示密码'}
               onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
+              style={passwordToggleStyle}
             >
               {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </span>
+            </button>
           </div>
         </>
       ) : (
@@ -207,12 +215,16 @@ export function AuthView({
               onChange={(event) => setPassword(event.target.value)}
               style={{ paddingRight: 48 }}
             />
-            <span
+            <button
+              type="button"
+              aria-label={showPassword ? '隐藏密码' : '显示密码'}
+              aria-pressed={showPassword}
+              title={showPassword ? '隐藏密码' : '显示密码'}
               onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
+              style={passwordToggleStyle}
             >
               {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </span>
+            </button>
           </div>
         </>
       )}
@@ -245,19 +257,17 @@ export function AuthView({
 export default function AuthGateway({
   location = window.location,
   onAuthenticationIntent,
-  preserveAuthShell = false,
 } = {}) {
   const { pathname = '/', search = '', hash = '' } = location;
   const mode = authModeForPathname(pathname);
 
   useEffect(() => {
-    if (preserveAuthShell) return;
     const redirectPath = authenticationRedirectPath({
       authenticated: Boolean(getToken()),
       location: { pathname, search, hash },
     });
     if (redirectPath) navigateBrowserPath(redirectPath, { replace: true });
-  }, [hash, pathname, preserveAuthShell, search]);
+  }, [hash, pathname, search]);
 
   const navigateToAuthMode = (nextMode) => {
     navigateBrowserPath(authPathForMode(nextMode, postAuthenticationPathFromSearch(search)));

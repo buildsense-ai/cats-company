@@ -28,6 +28,10 @@ vi.mock('./views/tinode-web', () => ({
   default: ({ location }) => <div data-testid="tinode-web">{location.pathname}</div>,
 }));
 
+vi.mock('./views/auth-gateway', () => ({
+  default: () => <div data-testid="auth-gateway" />,
+}));
+
 vi.mock('./components/pwa-controller', () => ({
   default: (props) => {
     mocks.pwaController(props);

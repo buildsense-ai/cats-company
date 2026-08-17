@@ -65,4 +65,25 @@ describe('AuthView route links', () => {
       .find((link) => link.textContent === '返回登录');
     expect(login?.getAttribute('href')).toBe('/login?next=%2Fe%2Finvite-1');
   });
+
+  test('exposes the password reveal control as a named toggle button', async () => {
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    const passwordInput = container.querySelector('input[type="password"]');
+    const toggle = container.querySelector('button[aria-label="显示密码"]');
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+
+    await act(async () => toggle?.click());
+
+    expect(passwordInput?.getAttribute('type')).toBe('text');
+    expect(container.querySelector('button[aria-label="隐藏密码"]')?.getAttribute('aria-pressed')).toBe('true');
+  });
 });

@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useLayoutEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useState, useTransition } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/noto-sans-sc/wght.css';
@@ -35,6 +35,7 @@ function readBrowserLocation() {
 
 export function App() {
   const [browserLocation, setBrowserLocation] = useState(readBrowserLocation);
+  const [, startAuthTransition] = useTransition();
   const [auth, setAuth] = useState(() => ({
     loggedIn: Boolean(getToken()),
     pushPromptOwner: getPushPromptOwner(),
@@ -42,14 +43,18 @@ export function App() {
   }));
 
   useEffect(() => {
-    const handleAuthChanged = (event) => setAuth({
-      loggedIn: Boolean(event.detail?.loggedIn),
-      pushPromptOwner: getPushPromptOwner(),
-      revision: event.detail?.revision ?? getAuthRevision(),
-    });
+    const handleAuthChanged = (event) => {
+      startAuthTransition(() => {
+        setAuth({
+          loggedIn: Boolean(event.detail?.loggedIn),
+          pushPromptOwner: getPushPromptOwner(),
+          revision: event.detail?.revision ?? getAuthRevision(),
+        });
+      });
+    };
     window.addEventListener('cc:auth-changed', handleAuthChanged);
     return () => window.removeEventListener('cc:auth-changed', handleAuthChanged);
-  }, []);
+  }, [startAuthTransition]);
 
   useLayoutEffect(() => {
     const handleHistoryChange = () => setBrowserLocation(readBrowserLocation());
@@ -65,7 +70,7 @@ export function App() {
   return (
     <FeedbackProvider>
       {shouldLoadWorkspace ? (
-        <Suspense fallback={<AuthGateway location={browserLocation} preserveAuthShell />}>
+        <Suspense fallback={null}>
           <TinodeWeb location={browserLocation} />
         </Suspense>
       ) : <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}

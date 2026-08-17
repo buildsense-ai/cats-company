@@ -30,7 +30,6 @@ import RelayAccessModal from '../widgets/relay-access-modal';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import { useFeedback } from '../components/feedback-system';
-import { AuthView } from './auth-gateway';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -54,6 +53,7 @@ import {
 } from '../utils/conversation-model-state';
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
+import { normalizeUserProfile } from '../utils/user-profile';
 import {
   THEME_STORAGE_KEY,
   isLiquidTheme,
@@ -64,11 +64,8 @@ import {
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
 import {
-  authModeForPathname,
-  authPathForMode,
   authenticationRedirectPath,
   navigateBrowserPath,
-  postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
 import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import './workspace-styles';
@@ -96,19 +93,6 @@ const DEV_PREVIEW_USER = {
   avatar_url: '',
   account_type: 'human',
 };
-
-function normalizeUserProfile(raw) {
-  if (!raw) return null;
-  const username = raw.username || '';
-  return {
-    uid: raw.uid || raw.id,
-    username,
-    email: raw.email || '',
-    display_name: raw.display_name || username,
-    avatar_url: raw.avatar_url || '',
-    account_type: raw.account_type || 'human',
-  };
-}
 
 export function resolveInitialUser({
   themePreview = '',
@@ -222,7 +206,6 @@ function TinodeWebApp({ location }) {
       return normalized;
     });
   }, [user?.uid]);
-  const authMode = authModeForPathname(pathname);
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
   const [showProfileEditor, setShowProfileEditor] = useState(false);
@@ -243,10 +226,6 @@ function TinodeWebApp({ location }) {
     });
     if (redirectPath) navigateBrowserPath(redirectPath, { replace: true });
   }, [hash, pathname, search, user]);
-
-  const navigateToAuthMode = useCallback((mode) => {
-    navigateBrowserPath(authPathForMode(mode, postAuthenticationPathFromSearch(search)));
-  }, [search]);
 
   useEffect(() => {
     let cancelled = false;
@@ -790,30 +769,6 @@ function TinodeWebApp({ location }) {
     };
   }, [search, user?.uid]);
 
-  const handleLogin = async (account, password) => {
-    const res = await api.login({ account, password });
-    setToken(res.token);
-    persistUser(normalizeUserProfile(res));
-    navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
-  };
-
-  const handleRegister = async (email, password, loginName, code) => {
-    const username = loginName.trim();
-    if (!username) {
-      throw new Error('请输入登录名称');
-    }
-    if (username.length < 3) {
-      throw new Error('登录名称至少 3 个字符');
-    }
-    await api.register({
-      email,
-      username,
-      password,
-      code,
-    });
-    await handleLogin(email, password);
-  };
-
   const handleLogout = () => {
     clearAuthenticatedSession();
   };
@@ -985,15 +940,7 @@ function TinodeWebApp({ location }) {
   }
 
   if (!user) {
-    return (
-      <AuthView
-        mode={authMode}
-        nextPath={postAuthenticationPathFromSearch(search)}
-        onNavigate={navigateToAuthMode}
-        onLogin={handleLogin}
-        onRegister={handleRegister}
-      />
-    );
+    return null;
   }
 
   if (entrySceneKey) {
