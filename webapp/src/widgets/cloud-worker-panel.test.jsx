@@ -152,7 +152,21 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker({ cloud_status: 'weird_state' })],
     });
-    expect(container.textContent).toContain('状态同步中');
+    expect(container.textContent).toContain('状态未知');
+  });
+
+  test('renders an unavailable probe as a settled state instead of loading forever', async () => {
+    await renderPanel({
+      workers: [worker({
+        cloud_status: 'unavailable',
+        app_version: '',
+        cloud_version: '',
+        cloud_image_id: '',
+      })],
+    });
+    expect(container.textContent).toContain('状态暂不可用');
+    expect(container.textContent).toContain('暂未读取到版本信息');
+    expect(container.textContent).not.toContain('同步中');
   });
 
   test('labels creating / stopped / missing cloud states distinctly', async () => {

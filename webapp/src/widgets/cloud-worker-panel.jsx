@@ -23,7 +23,8 @@ const CLOUD_STATUS_META = {
   missing: { label: '实例不存在', tone: 'danger' },
   error: { label: '异常', tone: 'danger' },
   failed: { label: '异常', tone: 'danger' },
-  unknown: { label: '状态同步中', tone: 'muted' },
+  unavailable: { label: '状态暂不可用', tone: 'muted' },
+  unknown: { label: '状态未知', tone: 'muted' },
 };
 
 const statusMeta = (status) => (
@@ -263,9 +264,9 @@ export default function CloudWorkerPanel({
                     )}
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
-                        {worker.cloud_status && worker.cloud_status !== 'unknown'
-                          ? '版本信息收集中…'
-                          : '状态信息同步中…'}
+                        {['provisioning', 'creating'].includes(String(worker.cloud_status || '').toLowerCase())
+                          ? '实例创建完成后显示版本信息'
+                          : '暂未读取到版本信息'}
                       </span>
                     )}
                   </div>

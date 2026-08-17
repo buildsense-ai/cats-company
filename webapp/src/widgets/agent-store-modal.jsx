@@ -251,6 +251,28 @@ async function resolveSharedLocalSkill(skill, shared) {
 
 const isOwnedBot = (bot) => bot?.is_owner === true || bot?.relation === 'owner';
 
+const mergeCloudWorkerFacts = (bots, workers) => {
+  const byTenant = new Map(
+    (workers || []).filter((worker) => worker?.tenant_name).map((worker) => [worker.tenant_name, worker]),
+  );
+  return bots.map((bot) => {
+    const cloud = byTenant.get(bot.tenant_name);
+    if (!cloud) return bot;
+    const reportedStatus = String(cloud.cloud_status || cloud.status || '').toLowerCase();
+    const presenceFallback = bot.is_online === true || bot.online === true ? 'online' : '';
+    const cloudStatus = !reportedStatus || reportedStatus === 'unknown' || reportedStatus === 'unavailable'
+      ? (presenceFallback || reportedStatus || 'unavailable')
+      : reportedStatus;
+    return {
+      ...bot,
+      cloud_status: cloudStatus,
+      app_version: cloud.app_version,
+      cloud_version: cloud.cloud_version || cloud.version,
+      cloud_image_id: cloud.cloud_image_id || cloud.image_id,
+    };
+  });
+};
+
 const normalizeAssistantRole = (value) => (
   ASSISTANT_ROLES.some((role) => role.value === value) ? value : 'general'
 );
@@ -845,27 +867,13 @@ export default function AgentStoreModal({
         agentsRes.agents || [],
         friendsRes.friends || [],
       ).filter(isOwnedBot);
-      setBots(manageableBots);
       // Distinguish "quota fetch failed" (null + error) from "cloud hosting
       // disabled" (quota.enabled === false) so the UI does not mislead.
       setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
       setCloudQuota(cloudRes.quota || null);
       // Enrich cloud-managed workers with version/status from the control plane.
       const cloudWorkers = cloudRes.workers || [];
-      if (cloudWorkers.length > 0) {
-        setBots(prev => prev.map(bot => {
-          const cloud = cloudWorkers.find(w => w.tenant_name === bot.tenant_name);
-          return cloud
-            ? {
-                ...bot,
-                cloud_status: cloud.cloud_status || cloud.status,
-                app_version: cloud.app_version,
-                cloud_version: cloud.cloud_version || cloud.version,
-                cloud_image_id: cloud.cloud_image_id || cloud.image_id,
-              }
-            : bot;
-        }));
-      }
+      setBots(mergeCloudWorkerFacts(manageableBots, cloudWorkers));
 
       if (
         !initialAgentAppliedRef.current
@@ -888,6 +896,35 @@ export default function AgentStoreModal({
       if (!silent) setLoading(false);
     }
   };
+
+  // Cloud status is operational data, not static bot metadata. Refresh only
+  // while the managed panel is visible so a transient first-request failure
+  // settles automatically without polling the rest of the assistant UI.
+  useEffect(() => {
+    const visible = (tab === 'hub' && hubCloudView)
+      || (tab === 'create' && createMode === CREATE_MODES.MANAGED);
+    if (!visible || !api.getCloudWorkers) return undefined;
+
+    let active = true;
+    const refresh = async () => {
+      try {
+        const cloudRes = await api.getCloudWorkers();
+        if (!active) return;
+        setCloudQuotaError(false);
+        setCloudQuota(cloudRes?.quota || null);
+        setBots((current) => mergeCloudWorkerFacts(current, cloudRes?.workers || []));
+      } catch {
+        if (active) setCloudQuotaError(true);
+      }
+    };
+
+    refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [createMode, hubCloudView, tab]);
 
   const handleCreate = async (e) => {
     e.preventDefault();

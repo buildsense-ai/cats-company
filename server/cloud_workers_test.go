@@ -322,6 +322,9 @@ func TestCloudWorkerHandleList(t *testing.T) {
 	if first["app_version"] != "1.4.9" {
 		t.Fatalf("app_version=%v want 1.4.9", first["app_version"])
 	}
+	if first["cloud_status"] != "unavailable" {
+		t.Fatalf("cloud_status=%v want unavailable when status probe is not configured", first["cloud_status"])
+	}
 	quota := out["quota"].(map[string]interface{})
 	if quota["total"].(float64) != 5 || quota["used"].(float64) != 1 || quota["remaining"].(float64) != 4 {
 		t.Fatalf("quota=%v", quota)
@@ -355,7 +358,7 @@ func TestCloudWorkerHandleListFillsCloudStatus(t *testing.T) {
 	ts.ownerBots = []map[string]interface{}{
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 		{"id": int64(2), "username": "bot-b", "display_name": "B", "tenant_name": "bot-bot-b"},
-		{"id": int64(3), "username": "bot-c", "display_name": "C", "tenant_name": "bot-bot-c"}, // 无实例行 → 保持 unknown
+		{"id": int64(3), "username": "bot-c", "display_name": "C", "tenant_name": "bot-bot-c"}, // 无实例行 → missing
 	}
 
 	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers", nil)
@@ -384,13 +387,13 @@ func TestCloudWorkerHandleListFillsCloudStatus(t *testing.T) {
 		t.Fatalf("bot-b cloud_status = %v", b["cloud_status"])
 	}
 	c := byTenant["bot-bot-c"]
-	if _, ok := c["cloud_status"]; ok {
-		t.Fatalf("bot-c should keep unknown (no cloud_status key), got %v", c["cloud_status"])
+	if c["cloud_status"] != "missing" {
+		t.Fatalf("bot-c cloud_status=%v want missing", c["cloud_status"])
 	}
 }
 
 func TestCloudWorkerHandleListStatusScriptFailureFallsBack(t *testing.T) {
-	// 状态脚本失败时列表仍返回，状态保持 unknown（不阻塞列表）
+	// 状态脚本失败时列表仍返回，并明确标记 unavailable（不伪装成加载中）。
 	cfg := workerScriptCfg(t, "7=5", map[string]string{"status": writeWorkerOpScript(t, "fail")})
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
 	ts.ownerBots = []map[string]interface{}{
@@ -410,8 +413,8 @@ func TestCloudWorkerHandleListStatusScriptFailureFallsBack(t *testing.T) {
 		t.Fatalf("want 1 worker, got %d", len(workers))
 	}
 	first := workers[0].(map[string]interface{})
-	if _, ok := first["cloud_status"]; ok {
-		t.Fatalf("cloud_status should be absent on script failure, got %v", first["cloud_status"])
+	if first["cloud_status"] != "unavailable" {
+		t.Fatalf("cloud_status=%v want unavailable on script failure", first["cloud_status"])
 	}
 }
 

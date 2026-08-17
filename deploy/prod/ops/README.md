@@ -11,7 +11,9 @@
 | `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
 | `destroy-worker.sh` | 删实例 + key pair + 本地 state | 删除（幂等） |
 | `reset-worker.sh` | 销毁重建（丢数据） | 重置 / 重装 |
+| `deploy-worker-version.sh` | 安装指定应用版本（保数据） | 更新 / 本地版本缺失时回滚 |
 | `rollback-worker.sh` | 切换 `/opt/catsco/current`（保数据） | 版本回滚 |
+| `status-worker.sh` | 批量读取实例、镜像与版本状态 | 云员工管理页状态 |
 
 ## 部署配置（B4-2 对接）
 
@@ -23,8 +25,10 @@
 CATSCO_WORKER_PROVISION_SCRIPT=/opt/catsco/ops/provision-worker.sh
 CATSCO_WORKER_DESTROY_SCRIPT=/opt/catsco/ops/destroy-worker.sh
 CATSCO_WORKER_RESET_SCRIPT=/opt/catsco/ops/reset-worker.sh
+CATSCO_WORKER_UPDATE_SCRIPT=/opt/catsco/ops/deploy-worker-version.sh
 CATSCO_WORKER_ROLLBACK_SCRIPT=/opt/catsco/ops/rollback-worker.sh
 CATSCO_WORKER_IMAGES_SCRIPT=/opt/catsco/ops/list-worker-images.sh
+CATSCO_WORKER_STATUS_SCRIPT=/opt/catsco/ops/status-worker.sh
 CATSCO_WORKER_CREATE_QUOTA=            # "<uid>=<n>;<uid>=<n>"，留空 = 未开放（0）
 ```
 
@@ -45,17 +49,19 @@ CTYUN_WORKER_FLAVOR_ID=<flavor-id>
 CTYUN_WORKER_VPC_ID=<vpc-id>
 CTYUN_WORKER_SUBNET_ID=<subnet-id>
 CTYUN_WORKER_SECURITY_GROUP_ID=<sg-id>
-CTYUN_WORKER_STATE_DIR=/var/lib/catsco-worker   # 默认 <dir>/<tenant>，见下
+CTYUN_WORKER_STATE_ROOT=/var/lib/catsco-worker  # 默认 <root>/<tenant>，见下
 CTYUN_WORKER_BILLING_MODE=month          # month（默认包月）或 ondemand
 CTYUN_WORKER_CYCLE_COUNT=1               # 包月购买月数，1-60
 CTYUN_WORKER_AUTO_RENEW=1                # 包月实例创建后开启按月自动续费
+CATSCO_WORKER_ARTIFACT_BASE_URL=https://github-release.tos-cn-guangzhou.volces.com/update/worker
+CATSCO_WORKER_ARTIFACT_CACHE_DIR=/var/lib/catsco-worker/.artifacts
 CATSCO_WORKER_HTTP_BASE_URL=https://app.catsco.cc   # 缺省
 CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 ```
 
 - `CTYUN_WORKER_*`（region/az/flavor/vpc/subnet/sg）与 XiaoBa-CLI bake 管线的
   repo vars 一致（worker 实例跑在 bake 的 worker 镜像上）。
-- `CTYUN_WORKER_STATE_DIR` 必须**持久化挂载**：其下每个 tenant 保存
+- `CTYUN_WORKER_STATE_ROOT` 必须**持久化挂载**：其下每个 tenant 保存
   `id_rsa`（私钥）、`known_hosts`、`inject.env`（身份快照，reset 复用）。
   默认 `/var/lib/catsco-worker/<tenant>`。
 - 包月实例创建后会配置自动续费，删除时调用退订接口；按量实例沿用直接删除。
@@ -89,5 +95,6 @@ export CATSCO_JQ=/path/to/jq
 cd deploy/prod/ops && node --test *.test.mjs
 ```
 
-测试覆盖 list / provision / destroy / reset / rollback（fake ctyun-cli +
-fake ssh + fake timeout），包含包月、按量、自动续费和失败回收路径。
+测试覆盖 list / status / provision / update / destroy / reset / rollback
+（fake ctyun-cli + fake ssh + fake timeout），包含包月、按量、自动续费、
+失败回收、版本安装与状态同步路径。

@@ -1019,6 +1019,7 @@ describe('AgentStoreModal', () => {
         display_name: '云端审查助手',
         relation: 'owner',
         is_owner: true,
+        is_online: true,
         visibility: 'public',
       }],
     });
@@ -1026,7 +1027,7 @@ describe('AgentStoreModal', () => {
       quota: { enabled: true, total: 3, used: 1, remaining: 2 },
       workers: [{
         tenant_name: 'tenant-a',
-        status: 'running',
+        status: 'unknown',
         version: '1.4.8',
         image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
       }],
@@ -1065,7 +1066,8 @@ describe('AgentStoreModal', () => {
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('创建云托管员工'))).toBe(true);
     expect(container.textContent).toContain('云端审查助手');
-    expect(container.textContent).toContain('运行中');
+    expect(container.textContent).toContain('在线');
+    expect(container.textContent).not.toContain('状态同步中');
     // Self-hosted form is gone while managed is active.
     expect(container.textContent).not.toContain('创建我的专属助手');
 
@@ -1123,6 +1125,59 @@ describe('AgentStoreModal', () => {
 
     expect(api.createCloudWorker).toHaveBeenCalledTimes(1);
     expect(api.createCloudWorker).toHaveBeenCalledWith(expect.objectContaining({ display_name: '云端审查助手' }));
+  });
+
+  test('refreshes transient cloud status when the managed panel becomes visible', async () => {
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 92,
+        uid: 92,
+        tenant_name: 'tenant-a',
+        username: 'bot-cloud-1',
+        display_name: '云端审查助手',
+        relation: 'owner',
+        is_owner: true,
+      }],
+    });
+    const quota = { enabled: true, total: 3, used: 1, remaining: 2 };
+    api.getCloudWorkers
+      .mockResolvedValueOnce({
+        quota,
+        workers: [{ tenant_name: 'tenant-a', status: 'unknown' }],
+      })
+      .mockResolvedValueOnce({
+        quota,
+        workers: [{
+          tenant_name: 'tenant-a',
+          cloud_status: 'running',
+          cloud_version: '1.4.8',
+          cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+        }],
+      });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建新助手'));
+    await act(async () => Simulate.click(createTab));
+    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
+    await act(async () => {
+      Simulate.change(managedRadio, { target: { checked: true } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getCloudWorkers).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('运行中');
+    expect(container.textContent).toContain('基础镜像 1.4.8');
+    expect(container.textContent).not.toContain('状态同步中');
   });
 
   test('opens the cloud manage view from the hub and returns to the roster', async () => {

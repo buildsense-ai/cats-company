@@ -76,7 +76,7 @@ type CloudWorkerConfig struct {
 	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
 	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
 	ImagesScript    string // CATSCO_WORKER_IMAGES_SCRIPT
-	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status stays "unknown")
+	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
 }
 
 // CloudWorkerConfigFromEnv reads configuration from the environment.
@@ -219,21 +219,32 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 填云侧事实（实例状态/版本/镜像）。状态脚本未配置或失败时保持 unknown，
-	// 不影响列表返回（状态降级而非报错）。
+	// 填云侧事实（实例状态/版本/镜像）。列表本身始终可用：探测未配置
+	// 或失败时明确降级为 unavailable；探测成功但没有对应实例时标记
+	// missing，避免前端把永久未知误显示成“同步中”。
+	for i := range workers {
+		workers[i].CloudStatus = "unavailable"
+	}
 	if h.statusScript != "" {
 		const statusTimeout = 20 * time.Second
 		if out, statusErr := h.runScriptTimeout(statusTimeout, h.statusScript); statusErr == nil {
 			infos := parseCloudWorkerStatusTSV(out)
 			for i := range workers {
+				workers[i].CloudStatus = "missing"
 				info, ok := infos[workers[i].TenantName]
 				if !ok {
 					continue
 				}
-				workers[i].CloudStatus = info.Status
+				if info.Status == "" {
+					workers[i].CloudStatus = "unknown"
+				} else {
+					workers[i].CloudStatus = info.Status
+				}
 				workers[i].CloudImageID = info.ImageID
 				workers[i].CloudVersion = info.Version
 			}
+		} else {
+			log.Printf("[cloud-worker] status probe failed: %v", statusErr)
 		}
 	}
 
