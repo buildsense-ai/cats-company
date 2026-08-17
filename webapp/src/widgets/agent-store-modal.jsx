@@ -57,11 +57,23 @@ const cloudWorkerCreateMessage = (e) => {
       return '云端资源供给失败，请稍后重试或联系管理员';
     case 'cloud_worker_provision_failed_pending_cleanup':
       return '云端实例供给失败，可能有残留实例待清理，可在列表中删除';
+    case 'cloud_worker_operation_busy':
+      return '另一项云员工操作正在执行，请等待完成后再创建';
     case 'cloud_worker_invalid_username':
     case 'cloud_worker_create_failed':
     default:
       return '云端资源创建失败，请稍后重试或联系管理员';
   }
+};
+
+const cloudWorkerActionMessage = (e, actionLabel) => {
+  if (e?.data?.code === 'cloud_worker_operation_busy' || e?.status === 409) {
+    return '另一项云员工操作正在执行，请等待完成后再试';
+  }
+  if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(e?.code) || [502, 503, 504].includes(e?.status)) {
+    return `${actionLabel}连接中断，操作可能仍在服务器执行。请先等待并刷新状态，不要重复提交`;
+  }
+  return e?.message || `${actionLabel}失败，请稍后重试`;
 };
 
 const CHANNEL_AGENT_ACCESS_MODES = {
@@ -378,7 +390,7 @@ export default function AgentStoreModal({
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
-  const [cloudActioning, setCloudActioning] = useState(null); // tenant_name being acted on
+  const [cloudActioning, setCloudActioning] = useState(null); // { name, action }
   const [editingBot, setEditingBot] = useState(null);
   const [manageSection, setManageSection] = useState('basic');
   const [managedSkills, setManagedSkills] = useState({ count: 0, skills: [], loading: false, error: '' });
@@ -1087,7 +1099,9 @@ export default function AgentStoreModal({
       tone: 'danger',
     });
     if (!confirmed) return;
+    const cloudName = owned ? bot.tenant_name : '';
     try {
+      if (cloudName) setCloudActioning({ name: cloudName, action: 'delete' });
       if (owned) {
         if (bot.tenant_name) {
           // Cloud workers are removed through the control plane so the cloud
@@ -1107,7 +1121,11 @@ export default function AgentStoreModal({
       setTab('hub');
       feedback.notify({ tone: 'success', message: owned ? '虚拟员工已删除' : '助手已移除' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudName
+        ? cloudWorkerActionMessage(e, '删除')
+        : (e.message || t('error_server')));
+    } finally {
+      if (cloudName) setCloudActioning(null);
     }
   };
 
@@ -1123,12 +1141,13 @@ export default function AgentStoreModal({
     });
     if (!confirmed) return;
     try {
-      setCloudActioning(name);
+      setCloudActioning({ name, action: 'update' });
       await api.updateCloudWorker(name, version ? { version } : {});
       await loadBots({ silent: true });
       feedback.notify({ tone: 'success', message: '应用更新完成' });
     } catch (e) {
-      setError(e.message || '云端员工更新失败');
+      setError(cloudWorkerActionMessage(e, '更新'));
+      await loadBots({ silent: true }).catch(() => {});
     } finally {
       setCloudActioning(null);
     }
@@ -1166,11 +1185,12 @@ export default function AgentStoreModal({
           version = versions[0];
         }
       }
-      setCloudActioning(name);
+      setCloudActioning({ name, action: 'rollback' });
       await api.rollbackCloudWorker(name, version ? { version } : {});
       feedback.notify({ tone: 'success', message: '回滚已触发，稍后刷新查看状态' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudWorkerActionMessage(e, '回滚'));
+      await loadBots({ silent: true }).catch(() => {});
     } finally {
       setCloudActioning(null);
     }
@@ -1194,11 +1214,12 @@ export default function AgentStoreModal({
       if (!confirmed) return;
     }
     try {
-      setCloudActioning(name);
+      setCloudActioning({ name, action: 'reset' });
       await api.resetCloudWorker(name, version ? { version } : {});
       feedback.notify({ tone: 'success', message: '重置已触发，稍后刷新查看状态' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudWorkerActionMessage(e, '重置'));
+      await loadBots({ silent: true }).catch(() => {});
     } finally {
       setCloudActioning(null);
     }

@@ -381,6 +381,23 @@ describe('CloudWorkerPanel', () => {
     actionButtons.forEach((btn) => expect(btn.disabled).toBe(true));
   });
 
+  test('shows the exact wait state and blocks actions on every worker', async () => {
+    await renderPanel({
+      workers: [worker(), worker({ tenant_name: 'tenant-b', id: 92, uid: 92 })],
+      images: [{ version: '1.4.8' }],
+      actioning: { name: 'tenant-a', action: 'update' },
+    });
+
+    const status = container.querySelector('.cc-cloud-operation-status');
+    expect(status).toBeTruthy();
+    expect(status.textContent).toContain('正在更新应用');
+    expect(container.textContent).toContain('更新中...');
+    const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    actionButtons.forEach((button) => expect(button.disabled).toBe(true));
+    const selectors = Array.from(container.querySelectorAll('.cc-cloud-version-select'));
+    selectors.forEach((select) => expect(select.disabled).toBe(true));
+  });
+
   test('shows the categorized failure message inline in the create card', async () => {
     // 面板只显示按错误码分类后的提示（不显示后端具体技术原因）
     const onCreate = vi.fn().mockRejectedValue(new Error('云端资源供给失败，请稍后重试或联系管理员'));

@@ -858,6 +858,52 @@ func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 	}
 }
 
+func TestCloudWorkerBusyOperationReturnsConflictWithoutQueueing(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update":  writeWorkerOpScript(t, "ok"),
+		"destroy": writeWorkerOpScript(t, "ok"),
+	})
+	if cfg.UpdateScript == "" || cfg.DestroyScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
+
+	tests := []struct {
+		method string
+		path   string
+		body   interface{}
+	}{
+		{http.MethodPost, "/api/cloud-workers", map[string]string{"username": "new-worker"}},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1.4.9"}},
+		{http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil},
+	}
+	for _, tc := range tests {
+		req := cloudWorkerRequest(7, tc.method, tc.path, tc.body)
+		rec := httptest.NewRecorder()
+		if tc.path == "/api/cloud-workers" {
+			h.HandleCreate(rec, req)
+		} else {
+			h.HandleSub(rec, req)
+		}
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s status=%d want 409 body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Retry-After") != "15" {
+			t.Fatalf("%s Retry-After=%q want 15", tc.path, rec.Header().Get("Retry-After"))
+		}
+		out := decodeCloudWorkerList(t, rec)
+		if out["code"] != "cloud_worker_operation_busy" {
+			t.Fatalf("%s code=%v", tc.path, out["code"])
+		}
+	}
+}
+
 // TestCloudWorkerHandleResetForwardsVersion asserts reset forwards an optional
 // version selector to reset-worker.sh (which maps it to the matching image id,
 // falling back to the latest image when omitted).

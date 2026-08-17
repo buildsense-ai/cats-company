@@ -110,6 +110,18 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 	}
 }
 
+func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter) bool {
+	if h.opMu.TryLock() {
+		return true
+	}
+	w.Header().Set("Retry-After", "15")
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"error": "another cloud worker operation is already running",
+		"code":  "cloud_worker_operation_busy",
+	})
+	return false
+}
+
 // parseWorkerCreateQuota parses "CATSCO_WORKER_CREATE_QUOTA" of the form
 // "<uid>=<n>;<uid>=<n>". Unknown or malformed entries are ignored; an unset or
 // empty variable yields an empty map (everyone has quota 0 = cannot create).
@@ -348,7 +360,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	// All paid-instance operations are serialized so the quota check and the
 	// bot creation stay atomic and no single user can pile up concurrent
 	// script processes.
-	h.opMu.Lock()
+	if !h.tryBeginOperation(w) {
+		return
+	}
 	defer h.opMu.Unlock()
 
 	total := h.quota[uid]
@@ -613,7 +627,9 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	h.opMu.Lock()
+	if !h.tryBeginOperation(w) {
+		return
+	}
 	defer h.opMu.Unlock()
 
 	out, err := h.runScript(script, args...)
@@ -670,7 +686,9 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.opMu.Lock()
+	if !h.tryBeginOperation(w) {
+		return
+	}
 	defer h.opMu.Unlock()
 
 	// Fail closed: without a destroy script we cannot guarantee the cloud
