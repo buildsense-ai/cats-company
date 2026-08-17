@@ -781,6 +781,7 @@ func TestCommercialRelayRequiredPaymentModelRejectsMappingDrift(t *testing.T) {
 			{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100},
 			{GrantType: "manual", Model: "retired-model", AmountCNY: 50},
 		},
+		Entitlements: []*types.CommercialEntitlement{{Source: "legacy", State: "active"}},
 	}
 	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{}}}
 	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err == nil || !strings.Contains(err.Error(), "gpt-5.6-terra") {
@@ -789,7 +790,10 @@ func TestCommercialRelayRequiredPaymentModelRejectsMappingDrift(t *testing.T) {
 	relayUser.Limits.ModelLimits = []commercialRelayModelLimit{{
 		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
 	}}
-	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err != nil {
+	managed := []*types.CommercialManagedRelayBudget{{
+		UID: 38, Model: "retired-model", Provider: "retired", AllowedModels: []string{"retired-model"}, MaxLimit: 50,
+	}}
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, managed); err != nil {
 		t.Fatalf("historical manual model should not block paid model sync: %v", err)
 	}
 }
