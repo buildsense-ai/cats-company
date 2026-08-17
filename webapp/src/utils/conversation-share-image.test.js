@@ -206,9 +206,10 @@ describe('conversation share image helpers', () => {
     expect(strokeStyles).toContain('#3ab292');
     expect(context.fillText).toHaveBeenCalledWith(expect.stringMatching(/…$/), 344, 94);
     expect(context.fillText).toHaveBeenCalledWith(expect.stringMatching(/^由/), 56, expect.any(Number));
-    expect(context.fillText).toHaveBeenCalledWith('CatsCo', expect.any(Number), expect.any(Number));
-    expect(context.fillRect).toHaveBeenCalledWith(199, 384, 5, 5);
-    expect(context.fillRect).not.toHaveBeenCalledWith(179, 364, 5, 5);
+    expect(context.fillText).toHaveBeenCalledWith('CatsCo', 194, 429);
+    expect(context.fillText).toHaveBeenCalledWith('app.catsco.cc', 194, 454);
+    expect(context.fillRect).toHaveBeenCalledWith(228, 384, 4, 4);
+    expect(context.fillRect).not.toHaveBeenCalledWith(212, 368, 4, 4);
   });
 
   it('paginates one long message without truncating its final content', async () => {

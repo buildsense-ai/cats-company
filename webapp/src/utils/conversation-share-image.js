@@ -42,9 +42,11 @@ const APP_ENTRY_QR_MODULES = [
   '000000000000000000000000000000000',
   '000000000000000000000000000000000',
 ];
-// Keep the full 33×33 matrix, including its four-module quiet zone. Five
-// logical pixels per module remain legible in a long share export.
-const APP_ENTRY_QR_MODULE_SIZE = 5;
+// Keep the full 33×33 matrix, including its four-module quiet zone. At the
+// minimum 1.5× export density, four logical pixels per module still yields
+// six physical pixels per module for reliable scanning without overpowering
+// the footer.
+const APP_ENTRY_QR_MODULE_SIZE = 4;
 const APP_ENTRY_QR_SIZE = APP_ENTRY_QR_MODULES.length * APP_ENTRY_QR_MODULE_SIZE;
 
 export const CONVERSATION_SHARE_IMAGE_WIDTH = DEFAULT_WIDTH;
@@ -306,9 +308,9 @@ export async function renderConversationShareImage({
 
   const padding = 56;
   const headerHeight = 128;
-  // The QR stays in the footer, to the right of the CatsCo wordmark. This
-  // leaves the full quiet zone clear of the divider and footer copy.
-  const footerHeight = 208;
+  // The QR and CatsCo label form one compact, right-aligned footer group. Its
+  // full quiet zone starts below the divider, leaving both elements clear.
+  const footerHeight = 184;
   const bubbleMaxWidth = Math.min(720, width - padding * 2);
   const bodyLineHeight = 28;
   const bubblePaddingX = 24;
@@ -478,6 +480,9 @@ export async function renderConversationShareImage({
     pageCtx.lineTo(width - padding, footerTop + 16);
     pageCtx.stroke();
     const qrX = width - padding - APP_ENTRY_QR_SIZE;
+    const qrY = footerTop + 32;
+    const qrLabelRight = qrX - 18;
+    const qrLabelCenterY = qrY + APP_ENTRY_QR_SIZE / 2;
     const footerCopyMaxWidth = Math.max(1, qrX - padding - 84);
     pageCtx.fillStyle = palette.muted;
     pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
@@ -488,11 +493,13 @@ export async function renderConversationShareImage({
     );
     pageCtx.textAlign = 'right';
     pageCtx.fillStyle = palette.accentText;
-    pageCtx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText('CatsCo', qrX - 12, height - padding - 20);
+    pageCtx.font = '600 24px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText('CatsCo', qrLabelRight, qrLabelCenterY - 5);
+    pageCtx.fillStyle = palette.muted;
+    pageCtx.font = '400 14px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText('app.catsco.cc', qrLabelRight, qrLabelCenterY + 20);
     pageCtx.textAlign = 'left';
 
-    const qrY = footerTop + 28;
     drawAppEntryQRCode(pageCtx, qrX, qrY, palette);
 
     return {
