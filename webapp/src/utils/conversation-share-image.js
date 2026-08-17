@@ -4,6 +4,46 @@ const MIN_OUTPUT_SCALE = 0.75;
 // Keep long 50-message shares usable without allocating an unbounded canvas.
 const MAX_OUTPUT_HEIGHT = 9600;
 const MAX_OUTPUT_PIXELS = 18_000_000;
+const APP_ENTRY_URL = 'https://app.catsco.cc';
+// This fixed QR matrix encodes APP_ENTRY_URL. The four-module quiet zone is part
+// of the matrix so it stays scannable on every share theme.
+const APP_ENTRY_QR_MODULES = [
+  '000000000000000000000000000000000',
+  '000000000000000000000000000000000',
+  '000000000000000000000000000000000',
+  '000000000000000000000000000000000',
+  '000011111110100000100011111110000',
+  '000010000010100100001010000010000',
+  '000010111010100011101010111010000',
+  '000010111010011011101010111010000',
+  '000010111010101111101010111010000',
+  '000010000010001111100010000010000',
+  '000011111110101010101011111110000',
+  '000000000000011101110000000000000',
+  '000010011111111100110100101110000',
+  '000001111000101010110101111100000',
+  '000001010111010001110111110010000',
+  '000011011000000010100110011110000',
+  '000000001111011010010011000010000',
+  '000011101000100001111100100100000',
+  '000011001111011110010010111110000',
+  '000010100100101100001011011010000',
+  '000010100011101000111111101100000',
+  '000000000000101111001000101100000',
+  '000011111110111100001010100010000',
+  '000010000010100010111000100110000',
+  '000010111010111011111111100110000',
+  '000010111010100000110010000110000',
+  '000010111010011010110100111110000',
+  '000010000010001000100001101110000',
+  '000011111110111001101100010010000',
+  '000000000000000000000000000000000',
+  '000000000000000000000000000000000',
+  '000000000000000000000000000000000',
+  '000000000000000000000000000000000',
+];
+const APP_ENTRY_QR_MODULE_SIZE = 3;
+const APP_ENTRY_QR_SIZE = APP_ENTRY_QR_MODULES.length * APP_ENTRY_QR_MODULE_SIZE;
 
 export const CONVERSATION_SHARE_IMAGE_WIDTH = DEFAULT_WIDTH;
 
@@ -228,6 +268,23 @@ function drawLogoFallback(ctx, x, y, size, palette) {
   ctx.restore();
 }
 
+function drawAppEntryQRCode(ctx, x, y) {
+  ctx.fillStyle = '#fcfdfc';
+  ctx.fillRect(x, y, APP_ENTRY_QR_SIZE, APP_ENTRY_QR_SIZE);
+  ctx.fillStyle = '#18201e';
+  APP_ENTRY_QR_MODULES.forEach((row, rowIndex) => {
+    Array.from(row).forEach((module, columnIndex) => {
+      if (module !== '1') return;
+      ctx.fillRect(
+        x + columnIndex * APP_ENTRY_QR_MODULE_SIZE,
+        y + rowIndex * APP_ENTRY_QR_MODULE_SIZE,
+        APP_ENTRY_QR_MODULE_SIZE,
+        APP_ENTRY_QR_MODULE_SIZE,
+      );
+    });
+  });
+}
+
 export async function renderConversationShareImage({
   items = [],
   topicName = '对话',
@@ -249,7 +306,7 @@ export async function renderConversationShareImage({
 
   const padding = 56;
   const headerHeight = 128;
-  const footerHeight = 72;
+  const footerHeight = 120;
   const bubbleMaxWidth = Math.min(720, width - padding * 2);
   const bodyLineHeight = 28;
   const bubblePaddingX = 24;
@@ -407,20 +464,25 @@ export async function renderConversationShareImage({
       y += item.bubbleHeight + gap;
     });
 
+    const footerTop = height - padding - footerHeight;
+    const qrX = width - padding - APP_ENTRY_QR_SIZE;
+    const qrY = footerTop + 15;
+    const footerCopyMaxWidth = Math.max(1, qrX - padding - 24);
     pageCtx.strokeStyle = palette.border;
     pageCtx.lineWidth = 1;
     pageCtx.beginPath();
-    pageCtx.moveTo(padding, height - padding - footerHeight + 16);
-    pageCtx.lineTo(width - padding, height - padding - footerHeight + 16);
+    pageCtx.moveTo(padding, footerTop + 9);
+    pageCtx.lineTo(width - padding, footerTop + 9);
     pageCtx.stroke();
-    pageCtx.fillStyle = palette.muted;
-    pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText('由 CatsCo 生成 · 保留对话上下文', padding, height - padding - 20);
-    pageCtx.textAlign = 'right';
+    drawAppEntryQRCode(pageCtx, qrX, qrY);
     pageCtx.fillStyle = palette.accentText;
-    pageCtx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText('CatsCo', width - padding, height - padding - 20);
-    pageCtx.textAlign = 'left';
+    pageCtx.font = '600 18px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText(fitText(pageCtx, '扫码打开 CatsCo', footerCopyMaxWidth), padding, footerTop + 40);
+    pageCtx.fillStyle = palette.muted;
+    pageCtx.font = '400 15px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText(fitText(pageCtx, 'app.catsco.cc', footerCopyMaxWidth), padding, footerTop + 66);
+    pageCtx.font = '400 14px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText(fitText(pageCtx, '由 CatsCo 生成 · 保留对话上下文', footerCopyMaxWidth), padding, footerTop + 91);
 
     return {
       dataUrl: pageCanvas.toDataURL('image/png'),

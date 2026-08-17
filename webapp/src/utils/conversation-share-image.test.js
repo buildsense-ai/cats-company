@@ -126,6 +126,9 @@ describe('conversation share image helpers', () => {
     expect(fillStyles).toContain('#151718');
     expect(strokeStyles).toContain('#3ab292');
     expect(context.fillText).toHaveBeenCalledWith(expect.stringMatching(/…$/), 344, 94);
+    expect(context.fillText).toHaveBeenCalledWith('扫码打开 CatsCo', 56, expect.any(Number));
+    expect(context.fillText).toHaveBeenCalledWith('app.catsco.cc', 56, expect.any(Number));
+    expect(context.fillRect.mock.calls.some(([, , width, height]) => width === 3 && height === 3)).toBe(true);
   });
 
   it('paginates one long message without truncating its final content', async () => {
