@@ -43,6 +43,13 @@ if (op === "ecs ListEcsInstances") {
   state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
+} else if (op === "ecs UnsubscribeEcsInstance") {
+  if (state.failUnsubscribe) { json({ statusCode: "900", errorCode: "E.UNSUB", message: "boom" }); process.exit(0); }
+  state.unsubscribedInstances = state.unsubscribedInstances || [];
+  state.unsubscribedInstances.push(val("--instanceID"));
+  state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DeleteEcsKeypair") {
   if (state.failDeleteKeypair) { json({ statusCode: "900", errorCode: "E.DELKP", message: "boom" }); process.exit(0); }
   state.deletedKeypairs = state.deletedKeypairs || [];
@@ -196,6 +203,41 @@ test("destroy-worker: keypair still cleaned when instance already gone", () => {
   assert.match(r.stdout, /"status":"not-found"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+});
+
+test("destroy-worker: monthly instance (expiredTime) is unsubscribed, not deleted", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9", expiredTime: "2030-01-01T00:00:00Z" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /"status":"destroyed"/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.unsubscribedInstances, ["i-1"], "monthly instance must be unsubscribed");
+  assert.equal((state.deletedInstances || []).length, 0, "monthly instance must not use DeleteEcsInstance");
+  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+});
+
+test("destroy-worker: on-demand instance (no expiredTime) still uses DeleteEcsInstance", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.deletedInstances, ["i-1"], "on-demand instance must use DeleteEcsInstance");
+  assert.equal((state.unsubscribedInstances || []).length, 0, "on-demand instance must not be unsubscribed");
+});
+
+test("destroy-worker: unsubscribe failure fails closed", () => {
+  const sb = setupSandbox({
+    failUnsubscribe: true,
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9", expiredTime: "2030-01-01T00:00:00Z" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /unsubscribe failed/);
 });
 
 test("destroy-worker: instance delete failure fails closed", () => {
