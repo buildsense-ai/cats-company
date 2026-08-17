@@ -18,10 +18,16 @@ import (
 
 const defaultRelayAdminTimeout = 15 * time.Second
 
+type commercialQuotaSummaryStore interface {
+	GetCommercialSummary(uid int64) (*types.CommercialSummary, error)
+}
+
 type RelayKeyHandler struct {
 	admin                     *RelayAdminClient
-	commercialStore           CommercialStore
 	deviceModelStatusResolver func(uid int64) (DeviceModelStatus, bool)
+	commercialStore           commercialQuotaSummaryStore
+	commercialEnforceEnabled  bool
+	commercialEnforceUIDs     map[int64]bool
 }
 
 type RelayAdminClient struct {
@@ -99,6 +105,19 @@ func (h *RelayKeyHandler) SetCommercialStore(store CommercialStore) {
 	if h != nil {
 		h.commercialStore = store
 	}
+}
+
+func (h *RelayKeyHandler) SetCommercialQuotaSource(store commercialQuotaSummaryStore, enforceEnabled bool, enforceUIDs map[int64]bool) {
+	if h == nil {
+		return
+	}
+	h.commercialStore = store
+	h.commercialEnforceEnabled = enforceEnabled
+	h.commercialEnforceUIDs = copyCommercialUIDSet(enforceUIDs)
+}
+
+func (h *RelayKeyHandler) commercialQuotaEnforced(uid int64) bool {
+	return h != nil && h.commercialStore != nil && uid > 0 && (h.commercialEnforceEnabled || h.commercialEnforceUIDs[uid])
 }
 
 func NewRelayAdminClientFromEnv() *RelayAdminClient {
@@ -256,6 +275,19 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	if model == "" {
 		model = relayEnv("CATS_RELAY_DEFAULT_MODEL", "MiniMax-M2.7")
+	}
+	if h.commercialQuotaEnforced(uid) {
+		summary, summaryErr := h.commercialStore.GetCommercialSummary(uid)
+		if summaryErr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "commercial quota is unavailable"})
+			return
+		}
+		if !commercialQuotaModelAllowed(summary, model) {
+			writeJSON(w, http.StatusOK, relayUsageResponse{Configured: user != nil && user.Configured})
+			return
+		}
+		writeJSON(w, http.StatusOK, buildRelaySharedUsageResponse(user, model))
+		return
 	}
 	writeJSON(w, http.StatusOK, buildRelayUsageResponse(user, model))
 }
@@ -465,6 +497,61 @@ func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel stri
 			LastReset:        limit.Budget.LastReset,
 		},
 	}
+}
+
+func buildRelaySharedUsageResponse(user *commercialRelayUsageUser, model string) relayUsageResponse {
+	if user == nil || !user.Configured {
+		return relayUsageResponse{Configured: false}
+	}
+	budget := user.Limits.MonthlyBudget
+	maxLimit := budget.MaxLimit
+	used := budget.CurrentUsage
+	percent := 0.0
+	remainingPercent := 0.0
+	status := "normal"
+	if maxLimit > 0 {
+		percent = used / maxLimit * 100
+		remainingPercent = math.Max(0, 100-percent)
+		if used > maxLimit+0.000001 {
+			status = "over_limit"
+		} else if percent >= 90 {
+			status = "high"
+		}
+	}
+	return relayUsageResponse{
+		Configured: true,
+		Summary: &relayUsageSummary{
+			Source:           "relay_shared",
+			Model:            model,
+			Provider:         "shared",
+			QuotaConfigured:  maxLimit > 0,
+			Percent:          percent,
+			RemainingPercent: remainingPercent,
+			UsedCNY:          used,
+			LimitCNY:         maxLimit,
+			RemainingCNY:     math.Max(0, maxLimit-used),
+			Status:           status,
+			ResetDuration:    budget.ResetDuration,
+			LastReset:        budget.LastReset,
+		},
+	}
+}
+
+func commercialQuotaModelAllowed(summary *types.CommercialSummary, model string) bool {
+	if summary == nil {
+		return false
+	}
+	target := normalizeRelayModelName(model)
+	for candidate, amount := range summary.TotalsByModel {
+		if amount <= 0 {
+			continue
+		}
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || normalizeRelayModelName(candidate) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func findRelayUsageModel(limits []commercialRelayModelLimit, model string) (commercialRelayModelLimit, bool) {

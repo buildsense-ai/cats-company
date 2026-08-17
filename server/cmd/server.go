@@ -406,6 +406,8 @@ func main() {
 	if len(relayCommercialEnforceUIDs) > 0 {
 		log.Printf("relay commercial enforce sync allowlist is enabled for %d uid(s)", len(relayCommercialEnforceUIDs))
 	}
+	relayKeyHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	botModelConfigHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	accountAdminHandler.SetCommercialRelayAdmin(relayAdminClient, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	var commercialRelaySyncer *server.CommercialRelaySyncer
 	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())

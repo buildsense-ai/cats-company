@@ -39,14 +39,17 @@ type botModelOwnershipStore interface {
 }
 
 type BotModelConfigHandler struct {
-	owners            botModelOwnershipStore
-	models            store.BotModelConfigStore
-	relayAdmin        *RelayAdminClient
-	secretCodec       *botModelSecretCodec
-	secretCodecError  error
-	rolloutConfigured bool
-	publicEnabled     bool
-	testUIDs          map[int64]bool
+	owners                   botModelOwnershipStore
+	models                   store.BotModelConfigStore
+	relayAdmin               *RelayAdminClient
+	secretCodec              *botModelSecretCodec
+	secretCodecError         error
+	rolloutConfigured        bool
+	publicEnabled            bool
+	testUIDs                 map[int64]bool
+	commercialStore          commercialQuotaSummaryStore
+	commercialEnforceEnabled bool
+	commercialEnforceUIDs    map[int64]bool
 }
 
 type botModelCatalogItem struct {
@@ -138,6 +141,19 @@ func (h *BotModelConfigHandler) SetRelayUsageClient(admin *RelayAdminClient) {
 	if h != nil {
 		h.relayAdmin = admin
 	}
+}
+
+func (h *BotModelConfigHandler) SetCommercialQuotaSource(store commercialQuotaSummaryStore, enforceEnabled bool, enforceUIDs map[int64]bool) {
+	if h == nil {
+		return
+	}
+	h.commercialStore = store
+	h.commercialEnforceEnabled = enforceEnabled
+	h.commercialEnforceUIDs = copyCommercialUIDSet(enforceUIDs)
+}
+
+func (h *BotModelConfigHandler) commercialQuotaEnforced(uid int64) bool {
+	return h != nil && h.commercialStore != nil && uid > 0 && (h.commercialEnforceEnabled || h.commercialEnforceUIDs[uid])
 }
 
 // SetRollout supports either a public launch or an owner allowlist.
@@ -674,6 +690,21 @@ func (h *BotModelConfigHandler) catalogWithUsage(ctx context.Context, ownerUID i
 	user, err := fetchRelayUsageForUID(ctx, h.relayAdmin, ownerUID)
 	if err != nil {
 		return catalog, "额度暂时无法同步"
+	}
+	if h.commercialQuotaEnforced(ownerUID) {
+		summary, summaryErr := h.commercialStore.GetCommercialSummary(ownerUID)
+		if summaryErr != nil {
+			return catalog, "套餐共享额度暂时无法同步"
+		}
+		if user == nil || user.Limits.MonthlyBudget.MaxLimit <= 0 {
+			return catalog, "套餐共享额度同步中"
+		}
+		for i := range catalog {
+			if commercialQuotaModelAllowed(summary, catalog[i].ID) {
+				catalog[i].Quota = buildRelaySharedUsageResponse(user, catalog[i].ID).Summary
+			}
+		}
+		return catalog, ""
 	}
 	for i := range catalog {
 		usage := buildRelayUsageResponse(user, catalog[i].ID)
