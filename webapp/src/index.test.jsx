@@ -63,7 +63,12 @@ vi.mock('./utils/user-profile', () => ({
   USER_PROFILE_STORAGE_KEY: 'oc_user',
 }));
 
-import { App } from './index';
+import {
+  App,
+  isWorkspaceChunkLoadError,
+  WorkspaceLoadErrorBoundary,
+  WorkspaceLoadFailure,
+} from './index';
 
 let container;
 let root;
@@ -126,4 +131,41 @@ test('does not load the workspace when an auth event has no restorable profile',
   expect(container.querySelector('[data-testid="auth-gateway"]')).toBeTruthy();
   expect(container.querySelector('[data-testid="tinode-web"]')).toBeFalsy();
   expect(mocks.setToken).toHaveBeenCalledWith(null);
+});
+
+test('identifies recoverable workspace chunk failures without masking application errors', () => {
+  expect(isWorkspaceChunkLoadError(new TypeError('Failed to fetch dynamically imported module'))).toBe(true);
+  expect(isWorkspaceChunkLoadError(new Error('Loading chunk 42 failed.'))).toBe(true);
+  expect(isWorkspaceChunkLoadError(new Error('Unexpected application error'))).toBe(false);
+});
+
+test('shows a retry action when the workspace chunk fails to load', async () => {
+  const onRetry = vi.fn();
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const FailedWorkspace = () => {
+    throw new TypeError('Failed to fetch dynamically imported module');
+  };
+
+  try {
+    await act(async () => {
+      root.render(
+        <WorkspaceLoadErrorBoundary>
+          <FailedWorkspace />
+        </WorkspaceLoadErrorBoundary>,
+      );
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('工作台加载失败');
+
+    await act(async () => {
+      root.render(<WorkspaceLoadFailure onRetry={onRetry} />);
+    });
+    const retry = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === '重新加载');
+    await act(async () => retry?.click());
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  } finally {
+    consoleError.mockRestore();
+  }
 });

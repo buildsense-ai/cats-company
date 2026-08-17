@@ -12,11 +12,13 @@ const robots = readSource('public/robots.txt');
 describe('entry bundle split', () => {
   it('defers the authenticated workspace while preserving direct-route support', () => {
     expect(entrySource).toContain("const TinodeWeb = lazy(importWorkspace);");
-    expect(entrySource).toContain("const preloadWorkspace = () => { void importWorkspace(); };");
+    expect(entrySource).toContain("const preloadWorkspace = () => { void importWorkspace().catch(() => undefined); };");
     expect(entrySource).toContain('const [, startAuthTransition] = useTransition();');
     expect(entrySource).toContain('startAuthTransition(() => {');
     expect(entrySource).toContain('function WorkspaceLoadingFallback()');
     expect(entrySource).toContain('<Suspense fallback={<WorkspaceLoadingFallback />}>');
+    expect(entrySource).toContain('<WorkspaceLoadErrorBoundary>');
+    expect(entrySource).toContain('function isWorkspaceChunkLoadError(error)');
     expect(entrySource).toContain('loggedIn: isRestorableSession(token),');
     expect(entrySource).toContain("browserLocation.pathname.startsWith('/mobile-upload/')");
     expect(entrySource).toContain("get('workflow_demo') === '1'");
@@ -48,6 +50,7 @@ describe('entry bundle split', () => {
     expect(authCss).toContain('--cc-liquid-shadow:');
     expect(authCss).toContain('.oc-auth-card');
     expect(authCss).toContain('.cc-workspace-loading');
+    expect(authCss).toContain('.cc-workspace-loading-error');
   });
 
   it('allows crawlers to discover the public entrypoint', () => {

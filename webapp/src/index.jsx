@@ -15,7 +15,8 @@ import './css/auth-critical.css';
 
 const importWorkspace = () => import('./views/tinode-web');
 const TinodeWeb = lazy(importWorkspace);
-const preloadWorkspace = () => { void importWorkspace(); };
+const preloadWorkspace = () => { void importWorkspace().catch(() => undefined); };
+const WORKSPACE_CHUNK_ERROR_PATTERN = /(?:chunkloaderror|loading chunk|failed to fetch dynamically imported module|importing a module script failed|dynamically imported module)/i;
 const requestedThemePreview = import.meta.env.DEV
   ? new URLSearchParams(window.location.search).get('theme_preview')
   : '';
@@ -54,6 +55,38 @@ function WorkspaceLoadingFallback() {
       <span role="status">正在加载工作台…</span>
     </main>
   );
+}
+
+export function isWorkspaceChunkLoadError(error) {
+  return WORKSPACE_CHUNK_ERROR_PATTERN.test(String(error?.message || error || ''));
+}
+
+export function WorkspaceLoadFailure({ onRetry = () => window.location.reload() }) {
+  return (
+    <main className="cc-workspace-loading cc-workspace-loading-error">
+      <p role="alert">工作台加载失败，请检查网络后重试。</p>
+      <button type="button" className="oc-auth-btn cc-workspace-loading-retry" onClick={onRetry}>
+        重新加载
+      </button>
+    </main>
+  );
+}
+
+export class WorkspaceLoadErrorBoundary extends React.Component {
+  state = { error: null };
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  render() {
+    const { error } = this.state;
+    if (error) {
+      if (!isWorkspaceChunkLoadError(error)) throw error;
+      return <WorkspaceLoadFailure />;
+    }
+    return this.props.children;
+  }
 }
 
 export function App() {
@@ -100,9 +133,11 @@ export function App() {
   return (
     <FeedbackProvider>
       {shouldLoadWorkspace ? (
-        <Suspense fallback={<WorkspaceLoadingFallback />}>
-          <TinodeWeb location={browserLocation} />
-        </Suspense>
+        <WorkspaceLoadErrorBoundary>
+          <Suspense fallback={<WorkspaceLoadingFallback />}>
+            <TinodeWeb location={browserLocation} />
+          </Suspense>
+        </WorkspaceLoadErrorBoundary>
       ) : <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
       {!auth.loggedIn && <PushCleanupController />}
       {mountPwa && (

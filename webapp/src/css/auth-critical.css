@@ -431,6 +431,21 @@ samp {
   animation: cc-workspace-loading-spin 720ms linear infinite;
 }
 
+.cc-workspace-loading-error {
+  flex-direction: column;
+  text-align: center;
+}
+
+.cc-workspace-loading-error p {
+  margin: 0;
+}
+
+.cc-workspace-loading .cc-workspace-loading-retry {
+  width: auto;
+  min-width: 120px;
+  margin-top: 0;
+}
+
 @keyframes cc-workspace-loading-spin {
   to { transform: rotate(360deg); }
 }
