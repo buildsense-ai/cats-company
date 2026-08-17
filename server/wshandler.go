@@ -63,7 +63,6 @@ type Hub struct {
 	push                     *PushNotificationService
 	agentPush                *agentPushTurnCoordinator
 	taskGrace                time.Duration
-}
 	// taskReaperInterval is how often the disconnected-task recovery reaper
 	// scans durable rows. It complements the per-disconnect time.AfterFunc so
 	// a crashed/restarted process or transient DB error cannot permanently
@@ -118,7 +117,6 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	runtimeCredentialSigner, _ := newBotRuntimeCredentialSigner(jwtSecret, time.Now)
 	grantSigner, _ := newSkillMutationGrantSigner(jwtSecret, time.Now)
 	hub := &Hub{
-<<<<<<< HEAD
 		clients:               make(map[int64]map[*Client]struct{}),
 		clientsByConn:         make(map[string]*Client),
 		register:              make(chan *Client, 256),
@@ -140,30 +138,6 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		botRuntimeCredentials: runtimeCredentialSigner,
 		skillMutationGrants:   grantSigner,
 		groupTurns:            newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
-		agentPush:             newAgentPushTurnCoordinator(),
-		taskGrace:             90 * time.Second,
-		taskReaperInterval:    30 * time.Second,
-		botConnectionEpochs:   make(map[int64]uint64),
-=======
-		clients:       make(map[int64]map[*Client]struct{}),
-		clientsByConn: make(map[string]*Client),
-		register:      make(chan *Client, 256),
-		unregister:    make(chan *Client, 256),
-		presence:      make(chan presenceEvent, 256),
-		db:            db,
-		rateLimiter:   rl,
-		botStats:      NewBotStats(),
-		botConvo:      botConvoTracker{counters: make(map[string]*botConvoCount)},
-		nodeID:        nodeID,
-		sharedRuntime: shared,
-		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
-		deviceAudit:   newDeviceAuditLog(),
-		deviceRevokes: newDeviceConnectorRevocationList(),
-		deviceClients: make(map[int64]map[string]*Client),
-		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
-		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
-		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 		artifactContextSnapshots: newArtifactContextSnapshotStore(
 			artifactContextSnapshotTTLDefault,
 			artifactContextTombstoneTTLDefault,
@@ -173,7 +147,6 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
 		botConnectionEpochs: make(map[int64]uint64),
->>>>>>> 4099e5c (feat: add pull-based artifact context snapshots)
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
