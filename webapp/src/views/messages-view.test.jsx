@@ -3540,7 +3540,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3594,7 +3594,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
