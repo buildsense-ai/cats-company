@@ -34,7 +34,10 @@ const val = f => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : ""; 
 const json = o => process.stdout.write(JSON.stringify(o));
 if (op === "ecs ListEcsInstances") {
   const name = val("--instanceName");
-  json({ statusCode: "800", returnObj: { results: (state.instances || []).filter(i => !name || i.instanceName === name) } });
+  state.listCalls = (state.listCalls || 0) + 1;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  const instances = state.hideInstancesOnList ? [] : (state.instances || []);
+  json({ statusCode: "800", returnObj: { results: instances.filter(i => !name || i.instanceName === name) } });
 } else if (op === "ecs GetEcsKeypairDetails") {
   const name = val("--keyPairName");
   json({ statusCode: "800", returnObj: { results: (state.keypairs || []).filter(k => k.keyPairName === name) } });
@@ -104,7 +107,11 @@ if (cmd.includes("cloud-init status")) {
   // .env 注入：同步读整个 stdin（here-string 以 EOF 结束）
   const env = fs.readFileSync(0, "utf8");
   state.injectedEnv = env;
-  if (state.failSshAfterCloudInit) { fs.writeFileSync(statePath, JSON.stringify(state)); process.exit(1); }
+  if (state.failSshAfterCloudInit) {
+    if (state.hideInstancesAfterSshFailure) state.hideInstancesOnList = true;
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    process.exit(1);
+  }
   fs.writeFileSync(statePath, JSON.stringify(state));
 } else if (cmd.includes("cat > /srv/catsco-agent/.xiaoba/catsco.json")) {
   // localConfig（bootstrap 身份）写入
@@ -169,6 +176,7 @@ function setupSandbox(state) {
   writeCommand(bin, "ctyun-cli", FAKE_CTYUN);
   writeCommand(bin, "ssh", FAKE_SSH);
   writeCommand(bin, "scp", "process.exit(0);");
+  writeCommand(bin, "sleep", "process.exit(0);");
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
   const statePath = path.join(sandbox, "state.json");
   fs.writeFileSync(statePath, JSON.stringify(state || {}));
@@ -361,4 +369,28 @@ test("provision-worker: post-create failure unsubscribes monthly instance in cle
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.ok((state.unsubscribedInstances || []).includes("i-worker-bot-a"), "monthly instance must be unsubscribed, not deleted");
   assert.ok(!(state.deletedInstances || []).includes("i-worker-bot-a"), "monthly instance must not go through DeleteEcsInstance");
+});
+
+test("provision-worker: cleanup unsubscribes monthly instance when the instance list becomes stale", () => {
+  const sb = setupSandbox({ failSshAfterCloudInit: true, hideInstancesAfterSshFailure: true });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /provision failed/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.ok(state.listCalls >= 5, "cleanup should retry the eventually consistent instance list");
+  assert.deepEqual(state.unsubscribedInstances, ["i-worker-bot-a"], "known monthly instance ID must still be unsubscribed");
+  assert.equal((state.deletedInstances || []).length, 0, "monthly fallback must never use DeleteEcsInstance");
+});
+
+test("provision-worker: cleanup deletes on-demand instance when the instance list becomes stale", () => {
+  const sb = setupSandbox({ failSshAfterCloudInit: true, hideInstancesAfterSshFailure: true });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"],
+    { CTYUN_WORKER_BILLING_MODE: "ondemand" });
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /provision failed/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.deletedInstances, ["i-worker-bot-a"], "known on-demand instance ID must still be deleted");
+  assert.equal((state.unsubscribedInstances || []).length, 0, "on-demand fallback must not use UnsubscribeEcsInstance");
 });

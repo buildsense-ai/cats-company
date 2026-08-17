@@ -145,14 +145,13 @@ gen_uuid() {
   fi
 }
 
-delete_instance() {
-  # 按计费方式删除：包月（expiredTime 非空）→ 退订；按量 → 直接删除
-  # 实测（2026-08-07/08-13）：两个 API 都需 clientToken 且不接受 --projectID
-  local inst_json="$1"
-  local del_id=""
-  del_id="$(jq -r '.instanceID // ""' <<<"$inst_json")"
+delete_instance_by_id() {
+  # 实测（2026-08-07/08-13）：两个 API 都需 clientToken 且不接受 --projectID。
+  # billing_mode 来自创建请求，可在实例目录暂时不可见时作为可靠兜底。
+  local del_id="$1"
+  local billing_mode="$2"
   [[ -n "$del_id" ]] || return 1
-  if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst_json")" ]]; then
+  if [[ "$billing_mode" == "month" ]]; then
     ctyun ecs UnsubscribeEcsInstance --regionID "$REGION_ID" \
       --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1
   else
@@ -161,14 +160,36 @@ delete_instance() {
   fi
 }
 
+delete_instance() {
+  # 按实例目录里的计费事实删除：包月（expiredTime 非空）→ 退订；按量 → 直接删除。
+  local inst_json="$1"
+  local del_id=""
+  local billing_mode="ondemand"
+  del_id="$(jq -r '.instanceID // ""' <<<"$inst_json")"
+  [[ -n "$del_id" ]] || return 1
+  if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst_json")" ]]; then
+    billing_mode="month"
+  fi
+  delete_instance_by_id "$del_id" "$billing_mode"
+}
+
 cleanup_failed() {
   # fail-closed：删除刚创建的实例 + key pair（尽力，聚合报错）
   local errors=""
   if [[ -n "${CREATED_INSTANCE_ID:-}" ]]; then
-    # 实例 ID 用列表返回的 instanceID（UUID）优先，创建返回的 masterResourceID 兜底
-    local inst
-    inst="$(find_instance "$INSTANCE_NAME" 2>/dev/null || true)"
+    # 天翼云创建接口与实例目录存在短暂最终一致性。先重试目录；仍不可见时，
+    # 使用运行等待阶段记住的 instanceID，最后才回退创建响应的 masterResourceID。
+    local inst=""
+    local attempt
+    local cleanup_id="${CREATED_INSTANCE_UUID:-$CREATED_INSTANCE_ID}"
+    for attempt in 1 2 3; do
+      inst="$(find_instance "$INSTANCE_NAME" 2>/dev/null || true)"
+      [[ -n "$inst" ]] && break
+      [[ "$attempt" == "3" ]] || sleep 2
+    done
     if [[ -n "$inst" ]] && delete_instance "$inst"; then
+      : # ok
+    elif [[ -z "$inst" && -n "$cleanup_id" ]] && delete_instance_by_id "$cleanup_id" "$BILLING_MODE"; then
       : # ok
     else
       errors="instance delete failed; "
@@ -281,12 +302,15 @@ fi
 create_resp="$(ctyun "${create_args[@]}")"
 CREATED_INSTANCE_ID="$(jq -r '.returnObj.masterResourceID // empty' <<<"$create_resp")"
 [[ -n "$CREATED_INSTANCE_ID" ]] || { echo "error: CreateEcsInstance did not return masterResourceID" >&2; exit 1; }
+CREATED_INSTANCE_UUID=""
 
 # --- 5. 等实例 running + 等 SSH（cloud-init done） ---
 INSTANCE_IP=""
 for _ in $(seq 1 60); do
   inst="$(find_instance "$INSTANCE_NAME")"
   if [[ -n "$inst" ]]; then
+    resolved_instance_id="$(jq -r '.instanceID // ""' <<<"$inst")"
+    [[ -z "$resolved_instance_id" ]] || CREATED_INSTANCE_UUID="$resolved_instance_id"
     state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$inst")"
     # 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
     ip="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"

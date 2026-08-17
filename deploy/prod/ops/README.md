@@ -46,6 +46,9 @@ CTYUN_WORKER_VPC_ID=<vpc-id>
 CTYUN_WORKER_SUBNET_ID=<subnet-id>
 CTYUN_WORKER_SECURITY_GROUP_ID=<sg-id>
 CTYUN_WORKER_STATE_DIR=/var/lib/catsco-worker   # 默认 <dir>/<tenant>，见下
+CTYUN_WORKER_BILLING_MODE=month          # month（默认包月）或 ondemand
+CTYUN_WORKER_CYCLE_COUNT=1               # 包月购买月数，1-60
+CTYUN_WORKER_AUTO_RENEW=1                # 包月实例创建后开启按月自动续费
 CATSCO_WORKER_HTTP_BASE_URL=https://app.catsco.cc   # 缺省
 CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 ```
@@ -55,6 +58,9 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 - `CTYUN_WORKER_STATE_DIR` 必须**持久化挂载**：其下每个 tenant 保存
   `id_rsa`（私钥）、`known_hosts`、`inject.env`（身份快照，reset 复用）。
   默认 `/var/lib/catsco-worker/<tenant>`。
+- 包月实例创建后会配置自动续费，删除时调用退订接口；按量实例沿用直接删除。
+  供给失败清理会短暂重试实例目录，并使用创建时记住的实例 ID 和计费模式
+  兜底，避免目录最终一致性造成持续计费的孤儿实例。
 - ⚠️ **公网 IP 配额**：provision 需要公网 IP（`extIP 1`）做 SSH 注入；若区域
   公网 IP 配额不足，`CreateEcsInstance` 会报 `Ecs.Order.ProcFailed`（实测，
   2026-08-07 华南2 配额紧张）。
@@ -83,5 +89,5 @@ export CATSCO_JQ=/path/to/jq
 cd deploy/prod/ops && node --test *.test.mjs
 ```
 
-30 个测试覆盖 list / provision / destroy / reset / rollback（fake ctyun-cli +
-fake ssh + fake timeout）。
+测试覆盖 list / provision / destroy / reset / rollback（fake ctyun-cli +
+fake ssh + fake timeout），包含包月、按量、自动续费和失败回收路径。
