@@ -79,8 +79,10 @@ if (op === "ecs ListEcsInstances") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DeleteEcsKeypair") {
+  if (state.failDeleteKeypair) { json({ statusCode: "900", errorCode: "E.DELKP", message: "boom" }); process.exit(0); }
   state.deletedKeypairs = state.deletedKeypairs || [];
   state.deletedKeypairs.push(val("--keyPairName"));
+  state.keypairs = (state.keypairs || []).filter(k => k.keyPairName !== val("--keyPairName"));
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else {
@@ -312,6 +314,41 @@ test("provision-worker: state root isolates credentials by tenant", () => {
   assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "id_rsa")));
   assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "inject.env")));
   assert.equal(fs.existsSync(path.join(stateRoot, "inject.env")), false, "identity snapshot must never be shared at the root");
+});
+
+test("provision-worker: replaces an orphaned legacy keypair before creating an instance", () => {
+  const sb = setupSandbox({
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }],
+  });
+  const stateRoot = path.join(sb.sandbox, "legacy-tenant-state");
+  const r = run(
+    sb,
+    ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"],
+    { CTYUN_WORKER_STATE_ROOT: toMsys(stateRoot), CTYUN_WORKER_STATE_DIR: "" },
+  );
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /replacing orphaned key pair worker-key-bot-a/);
+
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+  assert.equal(state.keypairs.length, 1, "the orphan pair must be replaced, not duplicated");
+  assert.equal(state.keypairs[0].keyPairName, "worker-key-bot-a");
+  assert.match(state.createArgs, /--keyPairID kp-worker-key-bot-a/);
+  assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "id_rsa")));
+});
+
+test("provision-worker: fails closed when an orphaned keypair cannot be replaced", () => {
+  const sb = setupSandbox({
+    failDeleteKeypair: true,
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }],
+  });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /Tianyi Cloud API failed: E\.DELKP/);
+
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.instances || []).length, 0, "no billable instance may be created without a recoverable key");
+  assert.deepEqual(state.keypairs, [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }]);
 });
 
 test("provision-worker: create failure fails closed and cleans up", () => {

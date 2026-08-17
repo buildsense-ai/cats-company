@@ -92,6 +92,9 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 - **fail-closed**：任一步失败聚合报错退出非 0；key pair 只在本次新建时才由
   失败清理删除（复用对象不动）；实例删除必须 `--clientToken` 且不带
   `--projectID`（天翼云 API 实测，2026-08-07）。
+- **旧 key pair 恢复**：若同名实例不存在、云端仍有 tenant key pair，但持久化
+  tenant 目录中的私钥缺失或损坏，provision 会在创建计费实例前替换该孤儿
+  key pair 并生成新的 tenant 私钥，避免创建后等待 SSH 超时。
 
 ## 本地测试
 

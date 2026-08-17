@@ -26,7 +26,7 @@
 
 1. 配置新控制面所需脚本（见 `.env.example`）：`CATSCO_WORKER_PROVISION_SCRIPT`、`CATSCO_WORKER_UPDATE_SCRIPT`、`CATSCO_WORKER_RESET_SCRIPT`、`CATSCO_WORKER_ROLLBACK_SCRIPT`、`CATSCO_WORKER_DESTROY_SCRIPT`、`CATSCO_WORKER_IMAGES_SCRIPT`。
 2. 新 worker 一律通过云托管入口创建（配额 `CATSCO_WORKER_CREATE_QUOTA` 控制）。
-3. 存量旧托管 bot：需要保留的，在新控制面可见并可用 rollback/reset 管理；不再需要的，配置 destroy 脚本后删除。
+3. 存量旧托管 bot：需要保留的，在新控制面可见并可用 rollback/reset 管理；不再需要的，配置 destroy 脚本后删除。reset 会先删除旧实例和同名云 key pair，再在 tenant 独立状态目录生成新私钥；若实例已经不存在但遗留云 key pair、tenant 私钥又缺失，provision 会在创建新实例前替换该孤儿 key pair，避免进入 SSH 超时循环。
 4. 旧 gauz-platform 部署服务确认无调用后下线，清理其环境变量与面向当前使用的文档、界面文案；本文档保留旧链路名称，作为迁移和回滚审计记录。
 
 ## 版本化运维契约
