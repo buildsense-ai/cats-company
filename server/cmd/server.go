@@ -387,6 +387,7 @@ func main() {
 	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
+	imageUpscaleHandler := server.NewImageUpscaleProxyHandlerFromEnv()
 	sttHandler := server.NewSTTHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
@@ -819,6 +820,8 @@ func main() {
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
 	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/images/upscale/tasks/", chainHTTP(imageUpscaleHandler.HandleUpscaleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
+	mux.HandleFunc("/v1/images/upscale", chainHTTP(imageUpscaleHandler.HandleUpscale, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/tasks/", chainHTTP(imageGenerationHandler.HandleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
@@ -832,6 +835,9 @@ func main() {
 		if err := imageGenerationHandler.EditConfigError(); err != nil {
 			log.Printf("Reference-image proxy is unavailable until configured: %v", err)
 		}
+	}
+	if err := imageUpscaleHandler.ConfigError(); err != nil {
+		log.Printf("Image upscale proxy is unavailable until configured: %v", err)
 	}
 	if err := sttHandler.ConfigError(); err != nil {
 		log.Printf("Streaming STT is unavailable: %v", err)
