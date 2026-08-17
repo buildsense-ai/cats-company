@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"image"
 	"image/jpeg"
@@ -51,7 +52,15 @@ func imageUpscaleTestRequest(t *testing.T, targetURL string, imageBytes []byte, 
 	}
 	request := httptest.NewRequest(http.MethodPost, targetURL, &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
-	return request
+	return imageUpscaleTestRequestWithUID(request, 7)
+}
+
+func imageUpscaleTestTaskRequest(targetURL string, uid int64) *http.Request {
+	return imageUpscaleTestRequestWithUID(httptest.NewRequest(http.MethodGet, targetURL, nil), uid)
+}
+
+func imageUpscaleTestRequestWithUID(request *http.Request, uid int64) *http.Request {
+	return request.WithContext(context.WithValue(request.Context(), uidKey, uid))
 }
 
 type topazFakeCapture struct {
@@ -175,7 +184,7 @@ func TestImageUpscaleProxySubmitsTopazTaskAndDownloadsResult(t *testing.T) {
 		t.Fatalf("unexpected task response: %#v", task)
 	}
 
-	statusRequest := httptest.NewRequest(http.MethodGet, "/v1/images/upscale/tasks/fake-process-1?target_width=64&target_height=36", nil)
+	statusRequest := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/fake-process-1?target_width=64&target_height=36", 7)
 	statusRecorder := httptest.NewRecorder()
 	handler.HandleUpscaleTask(statusRecorder, statusRequest)
 	if statusRecorder.Code != http.StatusOK {
@@ -224,7 +233,7 @@ func TestImageUpscaleProxyWaitsForPendingTaskWithoutResubmitting(t *testing.T) {
 		t.Fatalf("submit status=%d", submitRecorder.Code)
 	}
 	for index := 0; index < 3; index++ {
-		request := httptest.NewRequest(http.MethodGet, "/v1/images/upscale/tasks/fake-process-1?target_width=64&target_height=36", nil)
+		request := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/fake-process-1?target_width=64&target_height=36", 7)
 		recorder := httptest.NewRecorder()
 		handler.HandleUpscaleTask(recorder, request)
 		if index < 2 && recorder.Code != http.StatusAccepted {
@@ -241,6 +250,102 @@ func TestImageUpscaleProxyWaitsForPendingTaskWithoutResubmitting(t *testing.T) {
 	}
 	if capture.statusCalls != 3 {
 		t.Fatalf("status calls=%d, want 3", capture.statusCalls)
+	}
+}
+
+func TestImageUpscaleProxyRejectsTaskAccessFromAnotherUser(t *testing.T) {
+	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
+	defer upstream.Close()
+	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+
+	submit := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
+	submitRecorder := httptest.NewRecorder()
+	handler.HandleUpscale(submitRecorder, submit)
+	if submitRecorder.Code != http.StatusAccepted {
+		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+
+	poll := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/fake-process-1", 8)
+	pollRecorder := httptest.NewRecorder()
+	handler.HandleUpscaleTask(pollRecorder, poll)
+	if pollRecorder.Code != http.StatusNotFound {
+		t.Fatalf("poll status=%d body=%s", pollRecorder.Code, pollRecorder.Body.String())
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.statusCalls != 0 || capture.downloadCalls != 0 {
+		t.Fatalf("provider was queried for another user's task: status=%d download=%d", capture.statusCalls, capture.downloadCalls)
+	}
+}
+
+func TestImageUpscaleProxyExpiresTaskOwnership(t *testing.T) {
+	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
+	defer upstream.Close()
+	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	now := time.Unix(1_700_000_000, 0)
+	handler.now = func() time.Time { return now }
+	handler.taskOwnerTTL = time.Minute
+
+	submit := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
+	submitRecorder := httptest.NewRecorder()
+	handler.HandleUpscale(submitRecorder, submit)
+	if submitRecorder.Code != http.StatusAccepted {
+		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+
+	now = now.Add(time.Minute)
+	poll := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/fake-process-1", 7)
+	pollRecorder := httptest.NewRecorder()
+	handler.HandleUpscaleTask(pollRecorder, poll)
+	if pollRecorder.Code != http.StatusNotFound {
+		t.Fatalf("poll status=%d body=%s", pollRecorder.Code, pollRecorder.Body.String())
+	}
+	handler.taskOwnersMu.Lock()
+	remainingOwners := len(handler.taskOwners)
+	handler.taskOwnersMu.Unlock()
+	if remainingOwners != 0 {
+		t.Fatalf("expired task owners=%d, want 0", remainingOwners)
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.statusCalls != 0 {
+		t.Fatalf("provider status calls=%d, want 0", capture.statusCalls)
+	}
+}
+
+func TestImageUpscaleProxyDoesNotFollowProviderRedirect(t *testing.T) {
+	redirectCalls := 0
+	redirectKey := ""
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectCalls++
+		redirectKey = r.Header.Get("X-API-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"process_id": "redirected-task"})
+	}))
+	defer redirectTarget.Close()
+
+	providerCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls++
+		if key := r.Header.Get("X-API-Key"); key != "provider-secret" {
+			t.Errorf("provider key=%q", key)
+		}
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer provider.Close()
+
+	handler := NewImageUpscaleProxyHandler(provider.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "provider-secret"})
+	request := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
+	recorder := httptest.NewRecorder()
+	handler.HandleUpscale(recorder, request)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if providerCalls != 1 {
+		t.Fatalf("provider calls=%d, want 1", providerCalls)
+	}
+	if redirectCalls != 0 || redirectKey != "" {
+		t.Fatalf("redirect followed with key=%q calls=%d", redirectKey, redirectCalls)
 	}
 }
 
@@ -301,7 +406,7 @@ func TestImageUpscaleProxyRejectsUnexpectedOutputSize(t *testing.T) {
 	if submitRecorder.Code != http.StatusAccepted {
 		t.Fatalf("submit status=%d", submitRecorder.Code)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/v1/images/upscale/tasks/fake-process-1?target_width=64&target_height=36", nil)
+	request := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/fake-process-1?target_width=64&target_height=36", 7)
 	recorder := httptest.NewRecorder()
 	handler.HandleUpscaleTask(recorder, request)
 	if recorder.Code != http.StatusBadGateway {
@@ -378,7 +483,7 @@ func TestImageUpscaleProxyRetriesStatusWithoutResubmitting(t *testing.T) {
 		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
 	}
 
-	poll := httptest.NewRequest(http.MethodGet, "/v1/images/upscale/tasks/retry-status-task", nil)
+	poll := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/retry-status-task", 7)
 	pollRecorder := httptest.NewRecorder()
 	handler.HandleUpscaleTask(pollRecorder, poll)
 	if pollRecorder.Code != http.StatusOK {
@@ -437,7 +542,7 @@ func TestImageUpscaleProxyRetriesDownloadWithoutResubmitting(t *testing.T) {
 		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
 	}
 
-	poll := httptest.NewRequest(http.MethodGet, "/v1/images/upscale/tasks/retry-download-task", nil)
+	poll := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/retry-download-task", 7)
 	pollRecorder := httptest.NewRecorder()
 	handler.HandleUpscaleTask(pollRecorder, poll)
 	if pollRecorder.Code != http.StatusOK {
@@ -474,11 +579,22 @@ func TestImageUpscaleProxyRejectsTargetSmallerThanSource(t *testing.T) {
 	defer upstream.Close()
 	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
 
-	request := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 64, 36), 32, 18)
-	recorder := httptest.NewRecorder()
-	handler.HandleUpscale(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	for _, target := range []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "width", width: 32, height: 36},
+		{name: "height", width: 64, height: 18},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			request := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 64, 36), target.width, target.height)
+			recorder := httptest.NewRecorder()
+			handler.HandleUpscale(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 	capture.mu.Lock()
 	defer capture.mu.Unlock()

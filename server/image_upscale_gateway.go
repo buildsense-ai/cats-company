@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,6 +38,7 @@ const (
 	imageUpscaleRetryBaseDelay                 = 250 * time.Millisecond
 	imageUpscaleMaxRetryDelay                  = 5 * time.Second
 	imageUpscaleTaskPathPrefix                 = "/v1/images/upscale/tasks/"
+	defaultImageUpscaleTaskOwnerTTL            = 24 * time.Hour
 )
 
 var allowedImageUpscaleModels = map[string]struct{}{
@@ -63,12 +65,22 @@ type ImageUpscaleProxyHandler struct {
 	downloadBaseURL  *url.URL
 	apiKey           string
 	model            string
-	client           *http.Client
+	providerClient   *http.Client
+	downloadClient   *http.Client
 	maxRequestBytes  int64
 	maxSourceBytes   int64
 	maxResponseBytes int64
 	maxTargetEdge    int
+	taskOwnersMu     sync.Mutex
+	taskOwners       map[string]imageUpscaleTaskOwner
+	taskOwnerTTL     time.Duration
+	now              func() time.Time
 	configError      error
+}
+
+type imageUpscaleTaskOwner struct {
+	uid       int64
+	expiresAt time.Time
 }
 
 type imageUpscaleProviderHTTPError struct {
@@ -123,6 +135,9 @@ func NewImageUpscaleProxyHandler(upstreamURL string, opts ImageUpscaleProxyOptio
 		maxResponseBytes: opts.MaxResponseBytes,
 		maxTargetEdge:    opts.MaxTargetEdge,
 		model:            strings.TrimSpace(opts.Model),
+		taskOwners:       make(map[string]imageUpscaleTaskOwner),
+		taskOwnerTTL:     defaultImageUpscaleTaskOwnerTTL,
+		now:              time.Now,
 	}
 	if handler.maxRequestBytes <= 0 {
 		handler.maxRequestBytes = defaultImageUpscaleMaxRequestBytes
@@ -151,7 +166,11 @@ func NewImageUpscaleProxyHandler(upstreamURL string, opts ImageUpscaleProxyOptio
 	if timeout <= 0 {
 		timeout = defaultImageUpscaleRequestTimeout
 	}
-	handler.client = &http.Client{Timeout: timeout}
+	noRedirect := func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	handler.providerClient = &http.Client{Timeout: timeout, CheckRedirect: noRedirect}
+	handler.downloadClient = &http.Client{Timeout: timeout, CheckRedirect: noRedirect}
 
 	endpoints, err := parseImageUpscaleEndpoints(upstreamURL)
 	if err != nil {
@@ -244,6 +263,34 @@ func (h *ImageUpscaleProxyHandler) ConfigError() error {
 	return h.configError
 }
 
+func (h *ImageUpscaleProxyHandler) registerTaskOwner(taskID string, uid int64) {
+	now := h.now()
+	h.taskOwnersMu.Lock()
+	defer h.taskOwnersMu.Unlock()
+	h.removeExpiredTaskOwnersLocked(now)
+	h.taskOwners[taskID] = imageUpscaleTaskOwner{
+		uid:       uid,
+		expiresAt: now.Add(h.taskOwnerTTL),
+	}
+}
+
+func (h *ImageUpscaleProxyHandler) taskOwnedBy(taskID string, uid int64) bool {
+	now := h.now()
+	h.taskOwnersMu.Lock()
+	defer h.taskOwnersMu.Unlock()
+	h.removeExpiredTaskOwnersLocked(now)
+	owner, ok := h.taskOwners[taskID]
+	return ok && owner.uid == uid
+}
+
+func (h *ImageUpscaleProxyHandler) removeExpiredTaskOwnersLocked(now time.Time) {
+	for taskID, owner := range h.taskOwners {
+		if !now.Before(owner.expiresAt) {
+			delete(h.taskOwners, taskID)
+		}
+	}
+}
+
 // HandleUpscale handles POST /v1/images/upscale. It submits exactly one
 // Topaz job and returns a CatsCo task envelope; the client polls the task route.
 func (h *ImageUpscaleProxyHandler) HandleUpscale(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +300,11 @@ func (h *ImageUpscaleProxyHandler) HandleUpscale(w http.ResponseWriter, r *http.
 	}
 	if h.configError != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image upscale service unavailable"})
+		return
+	}
+	uid := UIDFromContext(r.Context())
+	if uid <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
 	}
 
@@ -283,6 +335,7 @@ func (h *ImageUpscaleProxyHandler) HandleUpscale(w http.ResponseWriter, r *http.
 		h.writeProviderFailureWithContext(w, r, err, "submit")
 		return
 	}
+	h.registerTaskOwner(submission.ProcessID, uid)
 
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Retry-After", strconv.Itoa(defaultImageUpscaleRetryAfterSeconds))
@@ -296,7 +349,7 @@ func (h *ImageUpscaleProxyHandler) HandleUpscale(w http.ResponseWriter, r *http.
 		"retry_after_ms": defaultImageUpscaleRetryAfterSeconds * 1000,
 		"eta":            submission.ETA,
 	})
-	log.Printf("[image-upscale] submitted uid=%d task=%s target=%dx%d model=%s source_bytes=%d", UIDFromContext(r.Context()), submission.ProcessID, targetWidth, targetHeight, model, len(contents))
+	log.Printf("[image-upscale] submitted uid=%d task=%s target=%dx%d model=%s source_bytes=%d", uid, submission.ProcessID, targetWidth, targetHeight, model, len(contents))
 }
 
 // HandleUpscaleTask handles GET /v1/images/upscale/tasks/{process_id}.
@@ -309,8 +362,17 @@ func (h *ImageUpscaleProxyHandler) HandleUpscaleTask(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image upscale service unavailable"})
 		return
 	}
+	uid := UIDFromContext(r.Context())
+	if uid <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
 	taskID := strings.TrimPrefix(r.URL.Path, imageUpscaleTaskPathPrefix)
 	if !validImageUpscaleTaskID(taskID) || strings.Contains(taskID, "/") {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image upscale task not found"})
+		return
+	}
+	if !h.taskOwnedBy(taskID, uid) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image upscale task not found"})
 		return
 	}
@@ -448,7 +510,7 @@ func (h *ImageUpscaleProxyHandler) readUpscaleRequest(w http.ResponseWriter, r *
 	if decodeErr != nil || config.Width < 1 || config.Height < 1 {
 		return nil, "", "", 0, 0, "", errors.New("image_file is not a readable PNG or JPEG")
 	}
-	if targetWidth < config.Width && targetHeight < config.Height {
+	if targetWidth < config.Width || targetHeight < config.Height {
 		return nil, "", "", 0, 0, "", fmt.Errorf("target %dx%d is not larger than source %dx%d", targetWidth, targetHeight, config.Width, config.Height)
 	}
 	return contents, inputMediaType, extension, targetWidth, targetHeight, model, nil
@@ -463,7 +525,7 @@ func (h *ImageUpscaleProxyHandler) submitTopazTask(ctx context.Context, body []b
 	request.Header.Set("X-API-Key", h.apiKey)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "cats-company-image-upscaler/1.0")
-	response, err := h.client.Do(request)
+	response, err := h.providerClient.Do(request)
 	if err != nil {
 		return topazUpscaleSubmitResponse{}, err
 	}
@@ -518,7 +580,7 @@ func (h *ImageUpscaleProxyHandler) fetchTopazStatusOnce(ctx context.Context, tas
 	request.Header.Set("X-API-Key", h.apiKey)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "cats-company-image-upscaler/1.0")
-	response, err := h.client.Do(request)
+	response, err := h.providerClient.Do(request)
 	if err != nil {
 		return topazUpscaleStatusResponse{}, err
 	}
@@ -569,7 +631,7 @@ func (h *ImageUpscaleProxyHandler) downloadTopazResultOnce(ctx context.Context, 
 	request.Header.Set("X-API-Key", h.apiKey)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "cats-company-image-upscaler/1.0")
-	response, err := h.client.Do(request)
+	response, err := h.providerClient.Do(request)
 	if err != nil {
 		return nil, "", 0, 0, err
 	}
@@ -608,7 +670,7 @@ func (h *ImageUpscaleProxyHandler) downloadTopazResultOnce(ctx context.Context, 
 		return nil, "", 0, 0, err
 	}
 	imageRequest.Header.Set("Accept", "image/jpeg, image/png")
-	imageResponse, err := h.client.Do(imageRequest)
+	imageResponse, err := h.downloadClient.Do(imageRequest)
 	if err != nil {
 		return nil, "", 0, 0, err
 	}
