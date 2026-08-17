@@ -1157,12 +1157,14 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 }
 
 func TestCommercialRelayBootstrapPagesEveryConfiguredKey(t *testing.T) {
-	const total = 51
+	const total = 106
+	requests := 0
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		if limit <= 0 {
-			limit = 50
+		if limit != 10 {
+			t.Fatalf("bootstrap requested an unsafe page size: %d", limit)
 		}
 		end := offset + limit
 		if end > total {
@@ -1170,7 +1172,11 @@ func TestCommercialRelayBootstrapPagesEveryConfiguredKey(t *testing.T) {
 		}
 		users := make([]commercialRelayUsageUser, 0, end-offset)
 		for uid := offset + 1; uid <= end; uid++ {
-			users = append(users, commercialRelayUsageUser{UID: int64(uid), Configured: true})
+			users = append(users, commercialRelayUsageUser{
+				UID:             int64(uid),
+				Configured:      true,
+				GovernanceError: strings.Repeat("x", 30*1024),
+			})
 		}
 		_ = json.NewEncoder(w).Encode(commercialRelayUsageResponse{Users: users, TotalCount: total})
 	}))
@@ -1182,6 +1188,9 @@ func TestCommercialRelayBootstrapPagesEveryConfiguredKey(t *testing.T) {
 
 	if len(syncer.queue) != total || len(syncer.pendingUIDs) != total {
 		t.Fatalf("bootstrap missed relay keys: queued=%d pending=%d", len(syncer.queue), len(syncer.pendingUIDs))
+	}
+	if requests != 11 {
+		t.Fatalf("bootstrap request count=%d, want 11", requests)
 	}
 }
 

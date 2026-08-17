@@ -127,7 +127,9 @@ func (s *CommercialRelaySyncer) bootstrapConfiguredRelayUsers(ctx context.Contex
 }
 
 func (s *CommercialRelaySyncer) bootstrapConfiguredRelayUsersOnce(ctx context.Context) error {
-	const pageSize = 50
+	// Relay usage rows include the full provider/model catalog. Keep bootstrap
+	// pages comfortably below RelayAdminClient's bounded response size.
+	const pageSize = 10
 	for offset := 0; ; offset += pageSize {
 		var page commercialRelayUsageResponse
 		path := fmt.Sprintf("/internal/usage/users?offset=%d&limit=%d&include_governance=1", offset, pageSize)
