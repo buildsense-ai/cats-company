@@ -396,6 +396,38 @@ func TestRelayUsageHandlerKeepsSharedQuotaGrayToAllowedUID(t *testing.T) {
 	}
 }
 
+func TestRelayUsageHandlerKeepsLegacyQuotaVisibleDuringMigration(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{
+			Users: []commercialRelayUsageUser{
+				{
+					UID:        38,
+					Configured: true,
+					Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+						{Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 500, CurrentUsage: 50, ResetDuration: "1M"}},
+					}},
+				},
+			},
+		})
+	}))
+	defer admin.Close()
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}}, true, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=MiniMax-M3", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	var out relayUsageResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Summary == nil {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if out.Summary.Source != "relay" || out.Summary.Percent != 10 {
+		t.Fatalf("legacy quota disappeared during migration: %#v", out.Summary)
+	}
+}
+
 func TestRelayUsageSummaryUsesCurrentDeviceModel(t *testing.T) {
 	oldSecret := append([]byte(nil), jwtSecret...)
 	defer func() { jwtSecret = oldSecret }()

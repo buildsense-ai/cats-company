@@ -28,6 +28,13 @@ type RelayKeyHandler struct {
 	commercialStore           commercialQuotaSummaryStore
 	commercialEnforceEnabled  bool
 	commercialEnforceUIDs     map[int64]bool
+	commercialSyncer          *CommercialRelaySyncer
+}
+
+func (h *RelayKeyHandler) SetCommercialRelaySyncer(syncer *CommercialRelaySyncer) {
+	if h != nil {
+		h.commercialSyncer = syncer
+	}
 }
 
 type RelayAdminClient struct {
@@ -282,6 +289,10 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "commercial quota is unavailable"})
 			return
 		}
+		if !commercialSummaryHasQuota(summary) {
+			writeJSON(w, http.StatusOK, buildRelayUsageResponse(user, model))
+			return
+		}
 		if !commercialQuotaModelAllowed(summary, model) {
 			writeJSON(w, http.StatusOK, relayUsageResponse{Configured: user != nil && user.Configured})
 			return
@@ -290,6 +301,18 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, buildRelayUsageResponse(user, model))
+}
+
+func commercialSummaryHasQuota(summary *types.CommercialSummary) bool {
+	if summary == nil {
+		return false
+	}
+	for _, amount := range summary.TotalsByModel {
+		if amount > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func buildRelayTotalUsageResponse(user *commercialRelayUsageUser, commercialSummary *types.CommercialSummary) relayUsageResponse {
@@ -413,6 +436,9 @@ func (h *RelayKeyHandler) forward(w http.ResponseWriter, r *http.Request, method
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
 		stripRelayPlaintext(&out)
+	}
+	if method == http.MethodPost && suffix == "" && h.commercialSyncer != nil && h.commercialSyncer.EnforcedFor(uid) {
+		h.commercialSyncer.Enqueue(uid)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -47,6 +47,105 @@ func TestPostgresCommercialPaymentContract(t *testing.T) {
 	}
 	testCommercialPaymentContract(t, db, ownerID)
 	testCommercialOfficialPlanUpgradeUsers(t, db)
+	testCommercialRelayBaselineContract(t, db)
+}
+
+func TestPostgresCommercialRelayBaselineContract(t *testing.T) {
+	rawDSN := os.Getenv("CATS_PG_TEST_DSN")
+	if rawDSN == "" {
+		t.Skip("set CATS_PG_TEST_DSN to run PostgreSQL integration tests")
+	}
+	schemaName := fmt.Sprintf("cats_commercial_baseline_test_%d", time.Now().UnixNano())
+	base := &Adapter{}
+	if err := base.Open(rawDSN); err != nil {
+		t.Fatalf("open base postgres connection: %v", err)
+	}
+	defer base.Close()
+	if _, err := base.db.Exec(`CREATE SCHEMA ` + quoteIdent(schemaName)); err != nil {
+		t.Fatalf("create commercial baseline test schema: %v", err)
+	}
+	defer base.db.Exec(`DROP SCHEMA ` + quoteIdent(schemaName) + ` CASCADE`)
+
+	db := &Adapter{}
+	if err := db.Open(dsnWithSearchPath(t, rawDSN, schemaName)); err != nil {
+		t.Fatalf("open commercial baseline postgres connection: %v", err)
+	}
+	defer db.Close()
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("create commercial baseline schema objects: %v", err)
+	}
+	testCommercialRelayBaselineContract(t, db)
+}
+
+func testCommercialRelayBaselineContract(t *testing.T, db *Adapter) {
+	t.Helper()
+	freeUID, err := db.CreateUser(&types.User{
+		Username: "commercial-free-baseline", Email: "commercial-free-baseline@example.test", DisplayName: "Free Baseline",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-free-baseline-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create free baseline user: %v", err)
+	}
+	anchor := time.Date(2026, 8, 1, 8, 30, 0, 0, time.UTC)
+	budgets := map[string]float64{"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-v4-flash": 100}
+	created, err := db.EnsureCommercialRelayBaseline(freeUID, "free", budgets, anchor)
+	if err != nil || !created {
+		t.Fatalf("create free relay baseline: created=%v err=%v", created, err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(freeUID, "free", budgets, anchor)
+	if err != nil || created {
+		t.Fatalf("free relay baseline was not idempotent: created=%v err=%v", created, err)
+	}
+	summary, err := db.GetCommercialSummary(freeUID)
+	if err != nil || summary.TotalCNY != 1600 || len(summary.Entitlements) != 1 || len(summary.Grants) != 3 {
+		t.Fatalf("unexpected free relay baseline summary: summary=%#v err=%v", summary, err)
+	}
+	if summary.Entitlements[0].PlanSlug != "catsco-free" || !summary.Entitlements[0].StartsAt.Equal(anchor) {
+		t.Fatalf("free baseline entitlement mismatch: %#v", summary.Entitlements[0])
+	}
+
+	legacyUID, err := db.CreateUser(&types.User{
+		Username: "commercial-legacy-baseline", Email: "commercial-legacy-baseline@example.test", DisplayName: "Legacy Baseline",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-legacy-baseline-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create legacy baseline user: %v", err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(legacyUID, "legacy", map[string]float64{"gpt-5.6-terra": 5000}, anchor)
+	if err != nil || !created {
+		t.Fatalf("create legacy relay baseline: created=%v err=%v", created, err)
+	}
+	legacySummary, err := db.GetCommercialSummary(legacyUID)
+	if err != nil || legacySummary.TotalCNY != 5000 || len(legacySummary.Entitlements) != 1 {
+		t.Fatalf("unexpected legacy relay baseline summary: summary=%#v err=%v", legacySummary, err)
+	}
+	if legacySummary.Entitlements[0].PlanSlug != "catsco-legacy-custom" {
+		t.Fatalf("legacy baseline was not classified separately: %#v", legacySummary.Entitlements[0])
+	}
+
+	manualUID, err := db.CreateUser(&types.User{
+		Username: "commercial-manual-baseline", Email: "commercial-manual-baseline@example.test", DisplayName: "Manual Baseline",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-manual-baseline-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create manual baseline user: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, grant_type, model, amount_cny, reset_duration, effective_at, source_ref, note)
+		VALUES ($1, 'manual', 'MiniMax-M3', 77, '1M', $2, 'pre-migration-manual', 'preserve manual quota')`, manualUID, anchor); err != nil {
+		t.Fatalf("seed manual relay quota: %v", err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(manualUID, "legacy", nil, anchor)
+	if err != nil || !created {
+		t.Fatalf("attach legacy entitlement to manual quota: created=%v err=%v", created, err)
+	}
+	manualSummary, err := db.GetCommercialSummary(manualUID)
+	if err != nil || manualSummary.TotalCNY != 77 || len(manualSummary.Grants) != 1 || len(manualSummary.Entitlements) != 1 {
+		t.Fatalf("manual quota changed during legacy migration: summary=%#v err=%v", manualSummary, err)
+	}
+	if manualSummary.Entitlements[0].PlanSlug != "catsco-legacy-custom" {
+		t.Fatalf("manual quota did not receive the legacy package: %#v", manualSummary.Entitlements[0])
+	}
 }
 
 func testCommercialOfficialPlanUpgradeUsers(t *testing.T, db *Adapter) {

@@ -15,11 +15,11 @@
 
 ## 套餐价格与当前开放状态
 
-套餐价格自 2026-08 起与官网个人方案统一为 Free、Personal 和 Pro。Free 使用现有基础模型服务，不建立商业权益，也不额外发放 GPT-5.6 Relay 额度；只有 Personal 和 Pro 通过订单履约。内部 SOL 等价 token 按 Relay 当前 SOL 等价价表折成 CNY 执行额度，不返回给普通用户。
+套餐价格自 2026-08 起与官网个人方案统一为 Free、Personal 和 Pro。Free 会把账号原有基础模型额度迁入同一个共享额度池；非标准手调额度归入“内部保留套餐”，按原值继续生效。Personal 和 Pro 通过订单履约，并与仍有效的内部保留额度共同进入账号共享池。内部 SOL 等价 token 按 Relay 当前 SOL 等价价表折成 CNY 执行额度，不返回给普通用户。
 
 | slug | 套餐 | 价格 | 内部 SOL 等价 token | Relay 总额度 | 有效期 | 限购 | 灰度默认 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 无商业 plan | Free / 免费版 | ¥0 | 不额外发放 | 使用现有基础额度 | 长期 | - | 不进入订单目录 |
+| `catsco-free` | Free / 免费版 | ¥0 | 继承默认基础额度 | 账号共享额度池 | 长期 | - | 隐藏系统套餐，不进入订单目录 |
 | `catsco-personal` | Personal / 个人版 | ¥399 | 2 亿 | ¥10500 | 30 天 | 不限 | `test` |
 | `catsco-pro` | Pro / 专业版 | ¥799 | 6 亿 | ¥31500 | 30 天 | 不限 | `test`，用户侧标记推荐 |
 
@@ -30,6 +30,15 @@
 用户端只显示 Free / Personal / Pro、工作强度、已用百分比和剩余百分比，不显示 SOL 等价 token、CNY 执行额度、模型预算或内部成本。用户商业化接口也不返回套餐的 `internal_quota_tokens`、`model_budgets` 和 `monthly_budget_cny`。
 
 旧 `catsco-trial-3d`、`catsco-plus-minus`、`catsco-plus`、`catsco-plus-plus`、`catsco-team-monthly` 套餐应转为 `hidden`，停止创建新订单；已有订单和有效权益继续按原快照履约，不重写历史名称、金额或额度。`CATS_COMMERCIAL_TRIAL_PLAN_SLUG` 如需继续使用，只能指向售价为 0、状态为 `hidden` 且包含有效额度的独立内部体验计划，不能指向 Free 展示卡。
+
+全量迁移由 Relay key 现有策略反向建立套餐基线，且必须幂等：
+
+- 默认 `MiniMax M2.7=1000`、`MiniMax M3=500`、`DeepSeek V4 Flash=100` 归为 `catsco-free`。
+- 任何非默认额度或额外模型归为 `catsco-legacy-custom`，界面显示“内部保留套餐”。
+- 已有有效付费、邀请码或试用权益不重复导入；原有手调额度不归零。
+- 迁移周期沿用 Relay 当前最早有效 `last_reset`，避免全量切换时无故重置已用量。
+- 新注册或自助创建 Relay key 后自动初始化；全局 enforce 启动时仅扫描已配置 key 的账号。
+- 单个账号迁移未完成前，模型菜单继续显示旧额度，不能先进入空共享池。
 
 当前权益和 Relay 同步仍按单个 UID 发放。团队成员、席位和共享额度归属机制完成前，不新增团队公开套餐。
 
