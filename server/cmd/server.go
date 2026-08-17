@@ -433,6 +433,12 @@ func main() {
 		})
 		commercialRelaySyncer.Start(commercialServiceCtx)
 		accountAdminHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		relayKeyHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		userHandler.SetRelayRegistrationReadyHook(func(uid int64) {
+			if commercialRelaySyncer.EnforcedFor(uid) {
+				commercialRelaySyncer.Enqueue(uid)
+			}
+		})
 	}
 	relayCommercialHandler := server.NewRelayCommercialHandlerWithOptions(commercialStore, server.RelayCommercialOptions{
 		PublicEnabled:  relayCommercialPublicEnabled,

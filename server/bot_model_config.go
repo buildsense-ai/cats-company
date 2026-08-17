@@ -696,6 +696,13 @@ func (h *BotModelConfigHandler) catalogWithUsage(ctx context.Context, ownerUID i
 		if summaryErr != nil {
 			return catalog, "套餐共享额度暂时无法同步"
 		}
+		if !commercialSummaryHasQuota(summary) {
+			for i := range catalog {
+				usage := buildRelayUsageResponse(user, catalog[i].ID)
+				catalog[i].Quota = usage.Summary
+			}
+			return catalog, "套餐共享额度迁移中，暂按原额度显示"
+		}
 		if user == nil || user.Limits.MonthlyBudget.MaxLimit <= 0 {
 			return catalog, "套餐共享额度同步中"
 		}

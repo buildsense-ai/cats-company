@@ -986,6 +986,40 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	}
 }
 
+func TestOwnerModelCatalogKeepsLegacyQuotaDuringSharedMigration(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"users": []map[string]interface{}{{
+				"uid": 38, "configured": true,
+				"limits": map[string]interface{}{
+					"model_limits": []map[string]interface{}{{
+						"model": "MiniMax-M3", "budget": map[string]interface{}{"max_limit": 500.0, "current_usage": 50.0},
+					}},
+				},
+			}},
+		})
+	}))
+	defer relay.Close()
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetRelayUsageClient(&RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()})
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}}, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsage(context.Background(), 38, true)
+
+	if !strings.Contains(quotaError, "迁移中") {
+		t.Fatalf("migration state was not explained: %q", quotaError)
+	}
+	for _, item := range catalog {
+		if item.ID == "minimax-m3" {
+			if item.Quota == nil || item.Quota.Source != "relay" || item.Quota.Percent != 10 {
+				t.Fatalf("legacy quota disappeared: %#v", item.Quota)
+			}
+			return
+		}
+	}
+	t.Fatal("MiniMax M3 catalog item was not found")
+}
+
 func TestCustomModelUpdateWithNewKeySucceedsWhenStoredCiphertextCannotDecrypt(t *testing.T) {
 	enableBotModelEncryption(t)
 	db := &botModelConfigTestStore{

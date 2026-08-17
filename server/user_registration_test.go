@@ -167,7 +167,9 @@ func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
 		username string
 	}
 	calls := make(chan provisionCall, 1)
+	ready := make(chan int64, 1)
 	handler := NewUserHandler(db)
+	handler.SetRelayRegistrationReadyHook(func(uid int64) { ready <- uid })
 	handler.relayRegistrationDelays = []time.Duration{0}
 	handler.relayRegistrationCreate = func(_ context.Context, uid int64, username string) error {
 		calls <- provisionCall{uid: uid, username: username}
@@ -191,6 +193,14 @@ func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("relay key provisioning was not scheduled")
+	}
+	select {
+	case uid := <-ready:
+		if uid != 1 {
+			t.Fatalf("relay ready uid=%d, want 1", uid)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("commercial relay initialization was not scheduled")
 	}
 }
 

@@ -323,7 +323,8 @@ type commercialRelayUsageUser struct {
 }
 
 type commercialRelayUsageResponse struct {
-	Users []commercialRelayUsageUser `json:"users"`
+	Users      []commercialRelayUsageUser `json:"users"`
+	TotalCount int                        `json:"total_count,omitempty"`
 }
 
 type commercialRelayBudgetComparison struct {
