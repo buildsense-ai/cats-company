@@ -413,6 +413,13 @@ type ChannelManagedGroupStore interface {
 	IsChannelManagedGroup(groupID int64) (bool, error)
 }
 
+// ImageUpscaleTaskStore persists the owner of an asynchronous image upscale
+// task so polling remains authorized across restarts and server instances.
+type ImageUpscaleTaskStore interface {
+	UpsertImageUpscaleTaskOwner(ctx context.Context, processID string, ownerUID int64, expiresAt time.Time) error
+	GetImageUpscaleTaskOwner(ctx context.Context, processID string, now time.Time) (ownerUID int64, found bool, err error)
+}
+
 // Store is the complete persistence boundary required by the current server.
 type Store interface {
 	UserStore

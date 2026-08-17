@@ -21,8 +21,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 const (
@@ -39,6 +40,7 @@ const (
 	imageUpscaleMaxRetryDelay                  = 5 * time.Second
 	imageUpscaleTaskPathPrefix                 = "/v1/images/upscale/tasks/"
 	defaultImageUpscaleTaskOwnerTTL            = 24 * time.Hour
+	imageUpscaleTaskStoreTimeout               = 5 * time.Second
 )
 
 var allowedImageUpscaleModels = map[string]struct{}{
@@ -71,16 +73,10 @@ type ImageUpscaleProxyHandler struct {
 	maxSourceBytes   int64
 	maxResponseBytes int64
 	maxTargetEdge    int
-	taskOwnersMu     sync.Mutex
-	taskOwners       map[string]imageUpscaleTaskOwner
+	taskStore        store.ImageUpscaleTaskStore
 	taskOwnerTTL     time.Duration
 	now              func() time.Time
 	configError      error
-}
-
-type imageUpscaleTaskOwner struct {
-	uid       int64
-	expiresAt time.Time
 }
 
 type imageUpscaleProviderHTTPError struct {
@@ -127,7 +123,7 @@ type topazUpscaleDownloadResponse struct {
 
 // NewImageUpscaleProxyHandler builds a Topaz async adapter. upstreamURL may
 // be the full /enhance/async endpoint or the /image/v1 API base.
-func NewImageUpscaleProxyHandler(upstreamURL string, opts ImageUpscaleProxyOptions) *ImageUpscaleProxyHandler {
+func NewImageUpscaleProxyHandler(upstreamURL string, opts ImageUpscaleProxyOptions, taskStore store.ImageUpscaleTaskStore) *ImageUpscaleProxyHandler {
 	handler := &ImageUpscaleProxyHandler{
 		apiKey:           strings.TrimSpace(opts.APIKey),
 		maxRequestBytes:  opts.MaxRequestBytes,
@@ -135,7 +131,7 @@ func NewImageUpscaleProxyHandler(upstreamURL string, opts ImageUpscaleProxyOptio
 		maxResponseBytes: opts.MaxResponseBytes,
 		maxTargetEdge:    opts.MaxTargetEdge,
 		model:            strings.TrimSpace(opts.Model),
-		taskOwners:       make(map[string]imageUpscaleTaskOwner),
+		taskStore:        taskStore,
 		taskOwnerTTL:     defaultImageUpscaleTaskOwnerTTL,
 		now:              time.Now,
 	}
@@ -182,6 +178,8 @@ func NewImageUpscaleProxyHandler(upstreamURL string, opts ImageUpscaleProxyOptio
 	handler.downloadBaseURL = endpoints.downloadBase
 	if handler.apiKey == "" {
 		handler.configError = errors.New("CATSCO_IMAGE_UPSCALE_API_KEY is not set")
+	} else if handler.taskStore == nil {
+		handler.configError = errors.New("image upscale task store is unavailable")
 	}
 	return handler
 }
@@ -193,7 +191,7 @@ type imageUpscaleEndpoints struct {
 }
 
 // NewImageUpscaleProxyHandlerFromEnv loads server-side provider configuration.
-func NewImageUpscaleProxyHandlerFromEnv() *ImageUpscaleProxyHandler {
+func NewImageUpscaleProxyHandlerFromEnv(taskStore store.ImageUpscaleTaskStore) *ImageUpscaleProxyHandler {
 	timeoutSeconds, err := parsePositiveInt64Env(
 		"CATSCO_IMAGE_UPSCALE_TIMEOUT_SECONDS",
 		int64(defaultImageUpscaleRequestTimeout/time.Second),
@@ -255,7 +253,7 @@ func NewImageUpscaleProxyHandlerFromEnv() *ImageUpscaleProxyHandler {
 		MaxResponseBytes: maxResponseBytes,
 		MaxTargetEdge:    int(maxTargetEdge),
 		Model:            model,
-	})
+	}, taskStore)
 }
 
 // ConfigError returns the provider configuration error, if any.
@@ -263,32 +261,19 @@ func (h *ImageUpscaleProxyHandler) ConfigError() error {
 	return h.configError
 }
 
-func (h *ImageUpscaleProxyHandler) registerTaskOwner(taskID string, uid int64) {
-	now := h.now()
-	h.taskOwnersMu.Lock()
-	defer h.taskOwnersMu.Unlock()
-	h.removeExpiredTaskOwnersLocked(now)
-	h.taskOwners[taskID] = imageUpscaleTaskOwner{
-		uid:       uid,
-		expiresAt: now.Add(h.taskOwnerTTL),
+func (h *ImageUpscaleProxyHandler) registerTaskOwner(ctx context.Context, taskID string, uid int64) error {
+	if h.taskStore == nil {
+		return errors.New("image upscale task store is unavailable")
 	}
+	return h.taskStore.UpsertImageUpscaleTaskOwner(ctx, taskID, uid, h.now().Add(h.taskOwnerTTL))
 }
 
-func (h *ImageUpscaleProxyHandler) taskOwnedBy(taskID string, uid int64) bool {
-	now := h.now()
-	h.taskOwnersMu.Lock()
-	defer h.taskOwnersMu.Unlock()
-	h.removeExpiredTaskOwnersLocked(now)
-	owner, ok := h.taskOwners[taskID]
-	return ok && owner.uid == uid
-}
-
-func (h *ImageUpscaleProxyHandler) removeExpiredTaskOwnersLocked(now time.Time) {
-	for taskID, owner := range h.taskOwners {
-		if !now.Before(owner.expiresAt) {
-			delete(h.taskOwners, taskID)
-		}
+func (h *ImageUpscaleProxyHandler) taskOwnedBy(ctx context.Context, taskID string, uid int64) (bool, error) {
+	if h.taskStore == nil {
+		return false, errors.New("image upscale task store is unavailable")
 	}
+	ownerUID, found, err := h.taskStore.GetImageUpscaleTaskOwner(ctx, taskID, h.now())
+	return found && ownerUID == uid, err
 }
 
 // HandleUpscale handles POST /v1/images/upscale. It submits exactly one
@@ -335,7 +320,14 @@ func (h *ImageUpscaleProxyHandler) HandleUpscale(w http.ResponseWriter, r *http.
 		h.writeProviderFailureWithContext(w, r, err, "submit")
 		return
 	}
-	h.registerTaskOwner(submission.ProcessID, uid)
+	storeCtx, cancelStore := context.WithTimeout(context.WithoutCancel(r.Context()), imageUpscaleTaskStoreTimeout)
+	err = h.registerTaskOwner(storeCtx, submission.ProcessID, uid)
+	cancelStore()
+	if err != nil {
+		log.Printf("[image-upscale] failed stage=task_owner_write uid=%d task=%s error=%v", uid, submission.ProcessID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image upscale task could not be recorded"})
+		return
+	}
 
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Retry-After", strconv.Itoa(defaultImageUpscaleRetryAfterSeconds))
@@ -372,7 +364,13 @@ func (h *ImageUpscaleProxyHandler) HandleUpscaleTask(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image upscale task not found"})
 		return
 	}
-	if !h.taskOwnedBy(taskID, uid) {
+	owned, err := h.taskOwnedBy(r.Context(), taskID, uid)
+	if err != nil {
+		log.Printf("[image-upscale] failed stage=task_owner_read uid=%d task=%s error=%v", uid, taskID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image upscale task store unavailable"})
+		return
+	}
+	if !owned {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "image upscale task not found"})
 		return
 	}

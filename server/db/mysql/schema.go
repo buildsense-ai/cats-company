@@ -20,6 +20,7 @@ func (a *Adapter) CreateSchema() error {
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
+		createImageUpscaleTasksTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createBotSkillMutationsTable,
@@ -335,6 +336,18 @@ CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
     INDEX idx_conversation_task_status_sources_state (state),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (source_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createImageUpscaleTasksTable = `
+CREATE TABLE IF NOT EXISTS image_upscale_tasks (
+    process_id VARCHAR(128) COLLATE utf8mb4_bin PRIMARY KEY,
+    owner_uid BIGINT NOT NULL,
+    expires_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    INDEX idx_image_upscale_tasks_expires_at (expires_at),
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

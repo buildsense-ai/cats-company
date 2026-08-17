@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/jpeg"
 	"io"
@@ -61,6 +62,69 @@ func imageUpscaleTestTaskRequest(targetURL string, uid int64) *http.Request {
 
 func imageUpscaleTestRequestWithUID(request *http.Request, uid int64) *http.Request {
 	return request.WithContext(context.WithValue(request.Context(), uidKey, uid))
+}
+
+type imageUpscaleTestTaskOwner struct {
+	uid       int64
+	expiresAt time.Time
+}
+
+type imageUpscaleTestTaskStore struct {
+	mu        sync.Mutex
+	owners    map[string]imageUpscaleTestTaskOwner
+	upsertErr error
+	lookupErr error
+}
+
+func newImageUpscaleTestTaskStore() *imageUpscaleTestTaskStore {
+	return &imageUpscaleTestTaskStore{owners: make(map[string]imageUpscaleTestTaskOwner)}
+}
+
+func (s *imageUpscaleTestTaskStore) UpsertImageUpscaleTaskOwner(ctx context.Context, processID string, ownerUID int64, expiresAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.upsertErr != nil {
+		return s.upsertErr
+	}
+	s.owners[processID] = imageUpscaleTestTaskOwner{uid: ownerUID, expiresAt: expiresAt}
+	return nil
+}
+
+func (s *imageUpscaleTestTaskStore) GetImageUpscaleTaskOwner(ctx context.Context, processID string, now time.Time) (int64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lookupErr != nil {
+		return 0, false, s.lookupErr
+	}
+	owner, ok := s.owners[processID]
+	if !ok {
+		return 0, false, nil
+	}
+	if !now.Before(owner.expiresAt) {
+		delete(s.owners, processID)
+		return 0, false, nil
+	}
+	return owner.uid, true, nil
+}
+
+func (s *imageUpscaleTestTaskStore) ownerCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.owners)
+}
+
+func newImageUpscaleTestHandler(upstreamURL string, opts ImageUpscaleProxyOptions) *ImageUpscaleProxyHandler {
+	return newImageUpscaleTestHandlerWithStore(upstreamURL, opts, newImageUpscaleTestTaskStore())
+}
+
+func newImageUpscaleTestHandlerWithStore(upstreamURL string, opts ImageUpscaleProxyOptions, taskStore *imageUpscaleTestTaskStore) *ImageUpscaleProxyHandler {
+	return NewImageUpscaleProxyHandler(upstreamURL, opts, taskStore)
 }
 
 type topazFakeCapture struct {
@@ -166,7 +230,7 @@ func TestImageUpscaleProxySubmitsTopazTaskAndDownloadsResult(t *testing.T) {
 	upstream, capture := newTopazFakeServer(t, result)
 	defer upstream.Close()
 
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
 		APIKey:  "provider-secret",
 		Timeout: time.Second,
 	})
@@ -224,7 +288,7 @@ func TestImageUpscaleProxyWaitsForPendingTaskWithoutResubmitting(t *testing.T) {
 	result := imageUpscaleTestJPEG(t, 64, 36)
 	upstream, capture := newTopazFakeServer(t, result, "Pending", "Processing", "Completed")
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
 
 	submit := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
 	submitRecorder := httptest.NewRecorder()
@@ -256,7 +320,7 @@ func TestImageUpscaleProxyWaitsForPendingTaskWithoutResubmitting(t *testing.T) {
 func TestImageUpscaleProxyRejectsTaskAccessFromAnotherUser(t *testing.T) {
 	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
 
 	submit := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
 	submitRecorder := httptest.NewRecorder()
@@ -278,10 +342,46 @@ func TestImageUpscaleProxyRejectsTaskAccessFromAnotherUser(t *testing.T) {
 	}
 }
 
+func TestImageUpscaleProxyKeepsTaskOwnershipAcrossHandlerRestart(t *testing.T) {
+	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
+	defer upstream.Close()
+	taskStore := newImageUpscaleTestTaskStore()
+	submitHandler := newImageUpscaleTestHandlerWithStore(
+		upstream.URL+"/image/v1/enhance/async",
+		ImageUpscaleProxyOptions{APIKey: "secret"},
+		taskStore,
+	)
+
+	submit := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
+	submitRecorder := httptest.NewRecorder()
+	submitHandler.HandleUpscale(submitRecorder, submit)
+	if submitRecorder.Code != http.StatusAccepted {
+		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+
+	restartedHandler := newImageUpscaleTestHandlerWithStore(
+		upstream.URL+"/image/v1/enhance/async",
+		ImageUpscaleProxyOptions{APIKey: "secret"},
+		taskStore,
+	)
+	poll := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/fake-process-1?target_width=64&target_height=36", 7)
+	pollRecorder := httptest.NewRecorder()
+	restartedHandler.HandleUpscaleTask(pollRecorder, poll)
+	if pollRecorder.Code != http.StatusOK {
+		t.Fatalf("poll after restart status=%d body=%s", pollRecorder.Code, pollRecorder.Body.String())
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.submitCalls != 1 || capture.statusCalls != 1 || capture.downloadCalls != 1 {
+		t.Fatalf("unexpected provider calls after restart: submit=%d status=%d download=%d", capture.submitCalls, capture.statusCalls, capture.downloadCalls)
+	}
+}
+
 func TestImageUpscaleProxyExpiresTaskOwnership(t *testing.T) {
 	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	taskStore := handler.taskStore.(*imageUpscaleTestTaskStore)
 	now := time.Unix(1_700_000_000, 0)
 	handler.now = func() time.Time { return now }
 	handler.taskOwnerTTL = time.Minute
@@ -300,9 +400,7 @@ func TestImageUpscaleProxyExpiresTaskOwnership(t *testing.T) {
 	if pollRecorder.Code != http.StatusNotFound {
 		t.Fatalf("poll status=%d body=%s", pollRecorder.Code, pollRecorder.Body.String())
 	}
-	handler.taskOwnersMu.Lock()
-	remainingOwners := len(handler.taskOwners)
-	handler.taskOwnersMu.Unlock()
+	remainingOwners := taskStore.ownerCount()
 	if remainingOwners != 0 {
 		t.Fatalf("expired task owners=%d, want 0", remainingOwners)
 	}
@@ -310,6 +408,42 @@ func TestImageUpscaleProxyExpiresTaskOwnership(t *testing.T) {
 	defer capture.mu.Unlock()
 	if capture.statusCalls != 0 {
 		t.Fatalf("provider status calls=%d, want 0", capture.statusCalls)
+	}
+}
+
+func TestImageUpscaleProxyReturnsServiceUnavailableWhenTaskStoreFails(t *testing.T) {
+	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
+	defer upstream.Close()
+	taskStore := newImageUpscaleTestTaskStore()
+	taskStore.upsertErr = errors.New("database unavailable")
+	handler := newImageUpscaleTestHandlerWithStore(
+		upstream.URL+"/image/v1/enhance/async",
+		ImageUpscaleProxyOptions{APIKey: "secret"},
+		taskStore,
+	)
+
+	submit := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
+	submitRecorder := httptest.NewRecorder()
+	handler.HandleUpscale(submitRecorder, submit)
+	if submitRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+
+	taskStore.upsertErr = nil
+	if err := taskStore.UpsertImageUpscaleTaskOwner(context.Background(), "fake-process-1", 7, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	taskStore.lookupErr = errors.New("database unavailable")
+	poll := imageUpscaleTestTaskRequest("/v1/images/upscale/tasks/fake-process-1", 7)
+	pollRecorder := httptest.NewRecorder()
+	handler.HandleUpscaleTask(pollRecorder, poll)
+	if pollRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("poll status=%d body=%s", pollRecorder.Code, pollRecorder.Body.String())
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.submitCalls != 1 || capture.statusCalls != 0 {
+		t.Fatalf("unexpected provider calls with task store failure: submit=%d status=%d", capture.submitCalls, capture.statusCalls)
 	}
 }
 
@@ -334,7 +468,7 @@ func TestImageUpscaleProxyDoesNotFollowProviderRedirect(t *testing.T) {
 	}))
 	defer provider.Close()
 
-	handler := NewImageUpscaleProxyHandler(provider.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "provider-secret"})
+	handler := newImageUpscaleTestHandler(provider.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "provider-secret"})
 	request := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 32, 18), 64, 36)
 	recorder := httptest.NewRecorder()
 	handler.HandleUpscale(recorder, request)
@@ -352,7 +486,7 @@ func TestImageUpscaleProxyDoesNotFollowProviderRedirect(t *testing.T) {
 func TestImageUpscaleProxyRejectsInvalidInputBeforeSubmitting(t *testing.T) {
 	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
 
 	tooLargeTarget := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 2, 2), 7681, 4320)
 	recorder := httptest.NewRecorder()
@@ -383,7 +517,7 @@ func TestImageUpscaleProxyDoesNotRetryProviderSubmission(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"temporarily unavailable"}`))
 	}))
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
 	request := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 2, 2), 3840, 2160)
 	recorder := httptest.NewRecorder()
 	handler.HandleUpscale(recorder, request)
@@ -398,7 +532,7 @@ func TestImageUpscaleProxyDoesNotRetryProviderSubmission(t *testing.T) {
 func TestImageUpscaleProxyRejectsUnexpectedOutputSize(t *testing.T) {
 	upstream, _ := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 32, 18))
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
 
 	submit := imageUpscaleTestRequest(t, "/v1/images/upscale", imageUpscaleTestJPEG(t, 16, 9), 64, 36)
 	submitRecorder := httptest.NewRecorder()
@@ -423,7 +557,7 @@ func TestImageUpscaleProxyLoadsKeyFromFile(t *testing.T) {
 	t.Setenv("CATSCO_IMAGE_UPSCALE_API_KEY_FILE", secretPath)
 	t.Setenv("CATSCO_IMAGE_UPSCALE_URL", "http://127.0.0.1:1/image/v1/enhance/async")
 	t.Setenv("CATSCO_IMAGE_UPSCALE_MODEL", "Standard V2")
-	handler := NewImageUpscaleProxyHandlerFromEnv()
+	handler := NewImageUpscaleProxyHandlerFromEnv(newImageUpscaleTestTaskStore())
 	if handler.ConfigError() != nil {
 		t.Fatal(handler.ConfigError())
 	}
@@ -472,7 +606,7 @@ func TestImageUpscaleProxyRetriesStatusWithoutResubmitting(t *testing.T) {
 	serverURL = upstream.URL
 	defer upstream.Close()
 
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
 		APIKey:  "secret",
 		Timeout: time.Second,
 	})
@@ -531,7 +665,7 @@ func TestImageUpscaleProxyRetriesDownloadWithoutResubmitting(t *testing.T) {
 	serverURL = upstream.URL
 	defer upstream.Close()
 
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
 		APIKey:  "secret",
 		Timeout: time.Second,
 	})
@@ -556,7 +690,7 @@ func TestImageUpscaleProxyRetriesDownloadWithoutResubmitting(t *testing.T) {
 func TestImageUpscaleProxyRejectsOversizedRequestWith413(t *testing.T) {
 	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{
 		APIKey:          "secret",
 		MaxRequestBytes: 128,
 	})
@@ -577,7 +711,7 @@ func TestImageUpscaleProxyRejectsOversizedRequestWith413(t *testing.T) {
 func TestImageUpscaleProxyRejectsTargetSmallerThanSource(t *testing.T) {
 	upstream, capture := newTopazFakeServer(t, imageUpscaleTestJPEG(t, 64, 36))
 	defer upstream.Close()
-	handler := NewImageUpscaleProxyHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
+	handler := newImageUpscaleTestHandler(upstream.URL+"/image/v1/enhance/async", ImageUpscaleProxyOptions{APIKey: "secret"})
 
 	for _, target := range []struct {
 		name   string
