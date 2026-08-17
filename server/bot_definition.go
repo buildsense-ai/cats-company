@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -25,7 +26,8 @@ type BotDefinitionHandler struct {
 	// promptOnlineResolver is optional so focused handlers and legacy callers
 	// remain independent from the process-local Hub. Production wiring sets it
 	// to the Hub's bot-body liveness check.
-	promptOnlineResolver func(botUID int64) bool
+	promptOnlineResolver  func(botUID int64) bool
+	skillMetadataResolver func(context.Context, int64, []types.BotSkillRef) (map[string]string, error)
 }
 
 type botDefinitionModelPatchRequest struct {
@@ -72,6 +74,16 @@ func NewBotDefinitionHandler(
 func (h *BotDefinitionHandler) SetPromptOnlineResolver(resolver func(botUID int64) bool) {
 	if h != nil {
 		h.promptOnlineResolver = resolver
+	}
+}
+
+// SetSkillMetadataResolver supplies display-only metadata for private Skill
+// references without adding presentation fields to the canonical BotDefinition.
+func (h *BotDefinitionHandler) SetSkillMetadataResolver(
+	resolver func(context.Context, int64, []types.BotSkillRef) (map[string]string, error),
+) {
+	if h != nil {
+		h.skillMetadataResolver = resolver
 	}
 }
 

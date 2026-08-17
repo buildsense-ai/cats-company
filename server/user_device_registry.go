@@ -43,6 +43,7 @@ const (
 	DeviceGrantSkillHubWorkspaceGet  DeviceGrantOperation = "skillhub.localWorkspace.get"
 	DeviceGrantSkillHubSkillShare    DeviceGrantOperation = "skillhub.localSkill.share"
 	DeviceGrantSkillHubSkillFinalize DeviceGrantOperation = "skillhub.localSkill.finalize"
+	DeviceGrantSkillHubSkillDelete   DeviceGrantOperation = "skillhub.localSkill.delete"
 	DeviceGrantSkillHubBotSwitch     DeviceGrantOperation = "skillhub.localBot.switch"
 )
 
@@ -890,6 +891,7 @@ func isAllowedDeviceGrantRuntimeOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantSkillHubWorkspaceGet,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubSkillDelete,
 		DeviceGrantSkillHubBotSwitch:
 		return true
 	default:
@@ -991,6 +993,7 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantSkillHubWorkspaceGet,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubSkillDelete,
 		DeviceGrantSkillHubBotSwitch:
 		return true
 	default:
