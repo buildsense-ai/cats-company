@@ -110,6 +110,16 @@ const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 
+export function toWritableBotSkillRefs(skills) {
+  if (!Array.isArray(skills)) return skills;
+  return skills.map((skill) => ({
+    source: skill?.source,
+    skillId: skill?.skillId,
+    version: skill?.version,
+    contentHash: skill?.contentHash,
+  }));
+}
+
 function currentPageVisibility() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
     ? 'hidden'
@@ -811,7 +821,7 @@ export const api = {
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
-    { revision, skills },
+    { revision, skills: toWritableBotSkillRefs(skills) },
   ),
   switchLocalBot: (botUid) => localRequest('POST', '/api/cats/switch-bot', { botUid }),
   getLocalCatsStatus: () => localRequest('GET', '/api/cats/status'),

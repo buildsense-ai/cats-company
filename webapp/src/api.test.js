@@ -374,6 +374,40 @@ describe('WebSocket connection recovery', () => {
     }));
   });
 
+  test('strips response-only Skill metadata before updating BotDefinition', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ revision: 4, skills: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.api.updateBotDefinitionSkills('42', 3, [{
+      source: 'skillhub',
+      skillId: 'priv_local1',
+      version: 'private-v1',
+      contentHash: 'a'.repeat(64),
+      displayName: 'read-pdf',
+      localName: 'read-pdf',
+      localDetails: { path: 'C:\\xiaoba\\skills\\read-pdf' },
+    }]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/bots/definition/skills?uid=42',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          revision: 3,
+          skills: [{
+            source: 'skillhub',
+            skillId: 'priv_local1',
+            version: 'private-v1',
+            contentHash: 'a'.repeat(64),
+          }],
+        }),
+      }),
+    );
+  });
+
   test('can remove every tab registration for the current account endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
