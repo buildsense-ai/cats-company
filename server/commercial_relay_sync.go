@@ -724,6 +724,7 @@ func validateCommercialRelayModels(budgets map[string]float64, relayUser *commer
 
 func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) error {
 	required := map[string]bool{}
+	legacyManual := map[string]bool{}
 	if summary != nil {
 		for _, grant := range summary.Grants {
 			if grant == nil || grant.AmountCNY <= 0 {
@@ -731,6 +732,11 @@ func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, rel
 			}
 			model := strings.TrimSpace(grant.Model)
 			grantType := strings.ToLower(strings.TrimSpace(grant.GrantType))
+			if model != "" && model != "*" && grantType == "manual" && commercialRelayGrantGoverned(summary, grantType) {
+				// Retired manual models keep their value in the shared pool without requiring a live route.
+				legacyManual[model] = true
+				continue
+			}
 			if model != "" && model != "*" && commercialRelayGrantGoverned(summary, grantType) {
 				required[model] = true
 			}
@@ -740,7 +746,7 @@ func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, rel
 				continue
 			}
 			model := strings.TrimSpace(item.Model)
-			if model != "" && model != "*" {
+			if model != "" && model != "*" && (!legacyManual[model] || required[model]) {
 				required[model] = true
 			}
 		}
