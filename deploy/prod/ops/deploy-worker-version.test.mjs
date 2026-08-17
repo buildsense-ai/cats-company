@@ -75,16 +75,18 @@ state.scpCalls = (state.scpCalls || 0) + 1;
 fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
 `;
 
-const FAKE_CURL = `
+const FAKE_TOS_FETCH = `
 import fs from "node:fs";
 const args = process.argv.slice(2);
-const outputIndex = args.indexOf("-o");
-const output = args[outputIndex + 1];
-const url = args.find(value => value.startsWith("http"));
+const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : ""; };
+const output = value("--output");
+const key = value("--key");
 const state = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, "utf8"));
 state.manifestDownloads = state.manifestDownloads || 0;
 state.artifactDownloads = state.artifactDownloads || 0;
-if (url.endsWith("/manifest.json")) {
+state.tosFetchArgs = state.tosFetchArgs || [];
+state.tosFetchArgs.push(args);
+if (key.endsWith("/manifest.json")) {
   state.manifestDownloads += 1;
   fs.writeFileSync(output, JSON.stringify({
     version: "1.4.9",
@@ -134,7 +136,7 @@ function setupSandbox(state = {}) {
   writeCommand(bin, "ctyun-cli", FAKE_CTYUN);
   writeCommand(bin, "ssh", FAKE_SSH);
   writeCommand(bin, "scp", FAKE_SCP);
-  writeCommand(bin, "curl", FAKE_CURL);
+  writeCommand(bin, "tos-fetch", FAKE_TOS_FETCH);
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
 
   const listImages = path.join(sandbox, "list-images.sh");
@@ -167,7 +169,12 @@ function setupSandbox(state = {}) {
       CTYUN_WORKER_STATE_DIR: toMsys(stateDir),
       CATSCO_WORKER_IMAGES_SCRIPT: toMsys(listImages),
       CATSCO_WORKER_ARTIFACT_CACHE_DIR: toMsys(cacheDir),
-      CATSCO_WORKER_ARTIFACT_BASE_URL: "https://artifacts.example/update/worker",
+      CATSCO_WORKER_ARTIFACT_BUCKET: "worker-private-test",
+      CATSCO_WORKER_ARTIFACT_PREFIX: "update/worker",
+      CATSCO_WORKER_ARTIFACT_REGION: "cn-test",
+      CATSCO_WORKER_ARTIFACT_ENDPOINT: "https://tos-cn-test.example",
+      CATSCO_WORKER_ARTIFACT_ACCESS_KEY_ID: "test-access-key",
+      CATSCO_WORKER_ARTIFACT_SECRET_ACCESS_KEY: "test-secret-key",
       FAKE_STATE: statePath,
       FIXTURE_ARTIFACT: artifact,
       FIXTURE_COMMIT: COMMIT,
@@ -221,6 +228,14 @@ test("deploy-worker-version: lazily downloads once and reuses the shared cache",
   const state = readState(sb);
   assert.equal(state.artifactDownloads, 1, "valid shared artifact must not be downloaded twice");
   assert.equal(state.scpCalls, 4, "each uncached worker install transfers artifact + updater");
+  assert.deepEqual(
+    state.tosFetchArgs.slice(0, 2).map(args => args[args.indexOf("--key") + 1]),
+    [
+      "update/worker/1.4.9/manifest.json",
+      "update/worker/1.4.9/catsco-worker-1.4.9.tar.gz",
+    ],
+  );
+  assert.equal(JSON.stringify(state.tosFetchArgs).includes("test-secret-key"), false, "credentials must not enter argv");
 });
 
 test("deploy-worker-version: corrupted shared cache is downloaded again", () => {

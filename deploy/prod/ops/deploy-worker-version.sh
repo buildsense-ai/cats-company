@@ -27,7 +27,7 @@ if [[ -n "$VERSION" && ! "$VERSION" =~ ^v?[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; 
 fi
 VERSION="${VERSION#v}"
 
-for cmd in ctyun-cli jq curl sha256sum tar ssh scp timeout awk cut sort; do
+for cmd in ctyun-cli jq tos-fetch sha256sum tar ssh scp timeout awk cut sort; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "error: missing required command: $cmd" >&2; exit 2; }
 done
 
@@ -40,8 +40,12 @@ else
   STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/$NAME}"
   STATE_ROOT="$(dirname "$STATE_DIR")"
 fi
-ARTIFACT_BASE_URL="${CATSCO_WORKER_ARTIFACT_BASE_URL:-https://github-release.tos-cn-guangzhou.volces.com/update/worker}"
-ARTIFACT_BASE_URL="${ARTIFACT_BASE_URL%/}"
+ARTIFACT_BUCKET="${CATSCO_WORKER_ARTIFACT_BUCKET:-catsco-worker-release}"
+ARTIFACT_PREFIX="${CATSCO_WORKER_ARTIFACT_PREFIX:-update/worker}"
+ARTIFACT_PREFIX="${ARTIFACT_PREFIX#/}"
+ARTIFACT_PREFIX="${ARTIFACT_PREFIX%/}"
+ARTIFACT_REGION="${CATSCO_WORKER_ARTIFACT_REGION:-cn-guangzhou}"
+ARTIFACT_ENDPOINT="${CATSCO_WORKER_ARTIFACT_ENDPOINT:-https://tos-cn-guangzhou.volces.com}"
 ARTIFACT_CACHE_ROOT="${CATSCO_WORKER_ARTIFACT_CACHE_DIR:-$STATE_ROOT/.artifacts}"
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIST_IMAGES_CMD="${CATSCO_WORKER_IMAGES_SCRIPT:-$OPS_DIR/list-worker-images.sh}"
@@ -147,9 +151,18 @@ trap cleanup EXIT
 
 MANIFEST="$TEMP_DIR/manifest.json"
 UPDATER="$TEMP_DIR/update-worker-artifact.sh"
-MANIFEST_URL="$ARTIFACT_BASE_URL/$VERSION/manifest.json"
-curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
-  --connect-timeout 15 --max-time 180 "$MANIFEST_URL" -o "$MANIFEST"
+download_private_object() {
+  local key="$1" destination="$2" timeout_seconds="$3"
+  timeout -s TERM -k 15 "${timeout_seconds}s" tos-fetch \
+    --endpoint "$ARTIFACT_ENDPOINT" \
+    --region "$ARTIFACT_REGION" \
+    --bucket "$ARTIFACT_BUCKET" \
+    --key "$key" \
+    --output "$destination"
+}
+
+MANIFEST_KEY="$ARTIFACT_PREFIX/$VERSION/manifest.json"
+download_private_object "$MANIFEST_KEY" "$MANIFEST" 180
 
 MANIFEST_VERSION="$(jq -r '.version // ""' "$MANIFEST")"
 MANIFEST_COMMIT="$(jq -r '.commit // ""' "$MANIFEST")"
@@ -169,8 +182,7 @@ ACTUAL_SHA=""
 [[ -f "$ARTIFACT" ]] && ACTUAL_SHA="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 if [[ "${ACTUAL_SHA,,}" != "${EXPECTED_SHA,,}" ]]; then
   DOWNLOAD="$TEMP_DIR/$ARTIFACT_FILE.download"
-  curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
-    --connect-timeout 15 --max-time 900 "$ARTIFACT_BASE_URL/$VERSION/$ARTIFACT_FILE" -o "$DOWNLOAD"
+  download_private_object "$ARTIFACT_PREFIX/$VERSION/$ARTIFACT_FILE" "$DOWNLOAD" 900
   ACTUAL_SHA="$(sha256sum "$DOWNLOAD" | awk '{print $1}')"
   [[ "${ACTUAL_SHA,,}" == "${EXPECTED_SHA,,}" ]] || { echo "error: artifact checksum mismatch" >&2; exit 1; }
   mv -f "$DOWNLOAD" "$ARTIFACT"

@@ -53,7 +53,12 @@ CTYUN_WORKER_STATE_ROOT=/var/lib/catsco-worker  # 默认 <root>/<tenant>，见�
 CTYUN_WORKER_BILLING_MODE=month          # month（默认包月）或 ondemand
 CTYUN_WORKER_CYCLE_COUNT=1               # 包月购买月数，1-60
 CTYUN_WORKER_AUTO_RENEW=1                # 包月实例创建后开启按月自动续费
-CATSCO_WORKER_ARTIFACT_BASE_URL=https://github-release.tos-cn-guangzhou.volces.com/update/worker
+CATSCO_WORKER_ARTIFACT_BUCKET=catsco-worker-release
+CATSCO_WORKER_ARTIFACT_PREFIX=update/worker
+CATSCO_WORKER_ARTIFACT_REGION=cn-guangzhou
+CATSCO_WORKER_ARTIFACT_ENDPOINT=https://tos-cn-guangzhou.volces.com
+CATSCO_WORKER_ARTIFACT_ACCESS_KEY_ID=<read-only-ak>
+CATSCO_WORKER_ARTIFACT_SECRET_ACCESS_KEY=<read-only-sk>
 CATSCO_WORKER_ARTIFACT_CACHE_DIR=/var/lib/catsco-worker/.artifacts
 CATSCO_WORKER_HTTP_BASE_URL=https://app.catsco.cc   # 缺省
 CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
@@ -64,6 +69,8 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 - `CTYUN_WORKER_STATE_ROOT` 必须**持久化挂载**：其下每个 tenant 保存
   `id_rsa`（私钥）、`known_hosts`、`inject.env`（身份快照，reset 复用）。
   默认 `/var/lib/catsco-worker/<tenant>`。
+- worker 应用包从私有 TOS 桶下载。生产凭证只授予
+  `catsco-worker-release/update/worker/*` 的只读权限，不下发给浏览器或 worker。
 - 包月实例创建后会配置自动续费，删除时调用退订接口；按量实例沿用直接删除。
   供给失败清理会短暂重试实例目录，并使用创建时记住的实例 ID 和计费模式
   兜底，避免目录最终一致性造成持续计费的孤儿实例。
@@ -74,7 +81,7 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 ## 脚本依赖（Dockerfile 已装）
 
 `bash`、`openssh-client`（ssh/ssh-keygen）、`jq`、GNU `timeout`、`ctyun-cli`
-（SHA256 校验安装）。脚本全部 `set -Eeuo pipefail` + shebang 可执行。
+和镜像内单独构建的 `tos-fetch`。脚本全部 `set -Eeuo pipefail` + shebang 可执行。
 
 ## 安全注意事项
 
