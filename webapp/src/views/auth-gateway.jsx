@@ -47,6 +47,36 @@ function formatAuthError(message) {
   return message || '操作失败，请稍后再试';
 }
 
+function PasswordField({ autoComplete, placeholder, value, onChange }) {
+  const [showPassword, setShowPassword] = useState(false);
+  const toggleLabel = showPassword ? '隐藏密码' : '显示密码';
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        className="oc-auth-input"
+        type={showPassword ? 'text' : 'password'}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        autoComplete={autoComplete}
+        value={value}
+        onChange={onChange}
+        style={{ paddingRight: 48 }}
+      />
+      <button
+        type="button"
+        aria-label={toggleLabel}
+        aria-pressed={showPassword}
+        title={toggleLabel}
+        onClick={() => setShowPassword((current) => !current)}
+        style={passwordToggleStyle}
+      >
+        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+      </button>
+    </div>
+  );
+}
+
 export function AuthView({
   mode,
   nextPath = '/',
@@ -58,7 +88,6 @@ export function AuthView({
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [loginName, setLoginName] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
@@ -147,30 +176,19 @@ export function AuthView({
         <>
           <input
             className="oc-auth-input"
+            type="text"
             placeholder={t('username')}
+            aria-label={t('username')}
+            autoComplete="username"
             value={username}
             onChange={(event) => setUsername(event.target.value)}
           />
-          <div style={{ position: 'relative' }}>
-            <input
-              className="oc-auth-input"
-              type={showPassword ? 'text' : 'password'}
-              placeholder={t('password')}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              style={{ paddingRight: 48 }}
-            />
-            <button
-              type="button"
-              aria-label={showPassword ? '隐藏密码' : '显示密码'}
-              aria-pressed={showPassword}
-              title={showPassword ? '隐藏密码' : '显示密码'}
-              onClick={() => setShowPassword(!showPassword)}
-              style={passwordToggleStyle}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
+          <PasswordField
+            autoComplete="current-password"
+            placeholder={t('password')}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
         </>
       ) : (
         <>
@@ -178,6 +196,8 @@ export function AuthView({
             className="oc-auth-input"
             type="email"
             placeholder="邮箱地址"
+            aria-label="邮箱地址"
+            autoComplete="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
           />
@@ -185,6 +205,8 @@ export function AuthView({
             <input
               className="oc-auth-input"
               placeholder="邮箱验证码"
+              aria-label="邮箱验证码"
+              autoComplete="one-time-code"
               value={code}
               onChange={(event) => setCode(event.target.value)}
             />
@@ -203,29 +225,17 @@ export function AuthView({
           <input
             className="oc-auth-input"
             placeholder="登录名称（可用于登录）"
+            aria-label="登录名称（可用于登录）"
+            autoComplete="username"
             value={loginName}
             onChange={(event) => setLoginName(event.target.value)}
           />
-          <div style={{ position: 'relative' }}>
-            <input
-              className="oc-auth-input"
-              type={showPassword ? 'text' : 'password'}
-              placeholder="设置密码（至少6位）"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              style={{ paddingRight: 48 }}
-            />
-            <button
-              type="button"
-              aria-label={showPassword ? '隐藏密码' : '显示密码'}
-              aria-pressed={showPassword}
-              title={showPassword ? '隐藏密码' : '显示密码'}
-              onClick={() => setShowPassword(!showPassword)}
-              style={passwordToggleStyle}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
+          <PasswordField
+            autoComplete="new-password"
+            placeholder="设置密码（至少6位）"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
         </>
       )}
 

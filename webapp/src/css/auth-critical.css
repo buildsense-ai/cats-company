@@ -411,6 +411,34 @@ samp {
   font-variant-ligatures: none;
 }
 
+.cc-workspace-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 100%;
+  color: var(--cc-muted);
+  font-size: 13px;
+}
+
+.cc-workspace-loading-indicator {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--cc-border-strong);
+  border-top-color: var(--cc-accent);
+  border-radius: 50%;
+  animation: cc-workspace-loading-spin 720ms linear infinite;
+}
+
+@keyframes cc-workspace-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-workspace-loading-indicator { animation: none; }
+}
+
 .oc-auth {
   position: relative;
   isolation: isolate;

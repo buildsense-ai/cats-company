@@ -53,7 +53,7 @@ import {
 } from '../utils/conversation-model-state';
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
-import { normalizeUserProfile } from '../utils/user-profile';
+import { normalizeUserProfile, readStoredUserProfile } from '../utils/user-profile';
 import {
   THEME_STORAGE_KEY,
   isLiquidTheme,
@@ -109,19 +109,11 @@ export function resolveInitialUser({
 
 function getInitialUser() {
   const token = getToken();
-  let savedUser = null;
-  try {
-    const saved = token ? localStorage.getItem('oc_user') : '';
-    savedUser = saved ? JSON.parse(saved) : null;
-  } catch (error) {
-    console.warn('Failed to restore saved user from localStorage:', error);
-    localStorage.removeItem('oc_user');
-  }
   return resolveInitialUser({
     themePreview: DEV_THEME_PREVIEW,
     previewEnabled: DEV_PREVIEW_ENABLED,
     token,
-    savedUser,
+    savedUser: token ? readStoredUserProfile() : null,
   });
 }
 

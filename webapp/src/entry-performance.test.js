@@ -15,7 +15,9 @@ describe('entry bundle split', () => {
     expect(entrySource).toContain("const preloadWorkspace = () => { void importWorkspace(); };");
     expect(entrySource).toContain('const [, startAuthTransition] = useTransition();');
     expect(entrySource).toContain('startAuthTransition(() => {');
-    expect(entrySource).toContain('<Suspense fallback={null}>');
+    expect(entrySource).toContain('function WorkspaceLoadingFallback()');
+    expect(entrySource).toContain('<Suspense fallback={<WorkspaceLoadingFallback />}>');
+    expect(entrySource).toContain('loggedIn: isRestorableSession(token),');
     expect(entrySource).toContain("browserLocation.pathname.startsWith('/mobile-upload/')");
     expect(entrySource).toContain("get('workflow_demo') === '1'");
     expect(entrySource).toContain('onAuthenticationIntent={preloadWorkspace}');
@@ -45,6 +47,7 @@ describe('entry bundle split', () => {
     expect(authCss).toContain('::-webkit-scrollbar-thumb');
     expect(authCss).toContain('--cc-liquid-shadow:');
     expect(authCss).toContain('.oc-auth-card');
+    expect(authCss).toContain('.cc-workspace-loading');
   });
 
   it('allows crawlers to discover the public entrypoint', () => {

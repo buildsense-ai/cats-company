@@ -64,6 +64,10 @@ describe('AuthView route links', () => {
     const login = Array.from(container.querySelectorAll('a'))
       .find((link) => link.textContent === '返回登录');
     expect(login?.getAttribute('href')).toBe('/login?next=%2Fe%2Finvite-1');
+    expect(container.querySelector('input[aria-label="邮箱地址"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="邮箱验证码"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="新密码（至少6位）"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="确认新密码"]')).toBeTruthy();
   });
 
   test('exposes the password reveal control as a named toggle button', async () => {
@@ -85,5 +89,34 @@ describe('AuthView route links', () => {
 
     expect(passwordInput?.getAttribute('type')).toBe('text');
     expect(container.querySelector('button[aria-label="隐藏密码"]')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  test('provides programmatic labels and autocomplete hints for login and registration', async () => {
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.querySelector('input[aria-label="用户名"]')?.getAttribute('autocomplete')).toBe('username');
+    expect(container.querySelector('input[aria-label="密码"]')?.getAttribute('autocomplete')).toBe('current-password');
+
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="register"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.querySelector('input[aria-label="邮箱地址"]')?.getAttribute('autocomplete')).toBe('email');
+    expect(container.querySelector('input[aria-label="邮箱验证码"]')?.getAttribute('autocomplete')).toBe('one-time-code');
+    expect(container.querySelector('input[aria-label="设置密码（至少6位）"]')?.getAttribute('autocomplete')).toBe('new-password');
   });
 });

@@ -102,6 +102,8 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
         className="oc-auth-input"
         type="email"
         placeholder="邮箱地址"
+        aria-label="邮箱地址"
+        autoComplete="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
       />
@@ -109,6 +111,8 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
         <input
           className="oc-auth-input"
           placeholder="邮箱验证码"
+          aria-label="邮箱验证码"
+          autoComplete="one-time-code"
           value={code}
           onChange={(e) => setCode(e.target.value)}
         />
@@ -125,6 +129,8 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
         className="oc-auth-input"
         type="password"
         placeholder="新密码（至少6位）"
+        aria-label="新密码（至少6位）"
+        autoComplete="new-password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
@@ -132,11 +138,13 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
         className="oc-auth-input"
         type="password"
         placeholder="确认新密码"
+        aria-label="确认新密码"
+        autoComplete="new-password"
         value={confirmPassword}
         onChange={(e) => setConfirmPassword(e.target.value)}
       />
-      {error && <div className="oc-form-error">{error}</div>}
-      {status && <div className="oc-settings-secondary" style={{ marginTop: -4, marginBottom: 12 }}>{status}</div>}
+      {error && <div className="oc-form-error" role="alert">{error}</div>}
+      {status && <div className="oc-settings-secondary" role="status" style={{ marginTop: -4, marginBottom: 12 }}>{status}</div>}
       <button className="oc-auth-btn" type="submit" disabled={submitting}>
         {submitting ? '处理中...' : '重置密码'}
       </button>
