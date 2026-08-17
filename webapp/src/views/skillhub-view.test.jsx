@@ -82,7 +82,12 @@ describe('SkillHubView', () => {
     api.getAgentSkills.mockResolvedValue({
       botId: '43',
       skills_visibility: 'owner',
-      skills: [{ source: 'skillhub', skillId: 'private/review', version: 'v2' }],
+      skills: [{
+        source: 'skillhub',
+        skillId: 'private/review',
+        version: 'v2',
+        displayName: 'cloud-html-artifact',
+      }],
     });
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
@@ -1126,7 +1131,8 @@ describe('SkillHubView', () => {
     expect(api.getAgentSkills).toHaveBeenCalledWith('43');
     expect(api.getBotDefinitionSkills).toHaveBeenCalledWith('42');
     expect(api.getDevices).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('私有能力');
+    expect(container.textContent).toContain('cloud-html-artifact');
+    expect(container.textContent).not.toContain('私有能力');
     expect(container.textContent).toContain('v2');
     expect(container.textContent).toContain('只读查看');
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();

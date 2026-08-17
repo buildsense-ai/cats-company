@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/openchat/openchat/server/db/mysql"
 	"github.com/openchat/openchat/server/db/postgres"
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func envString(name string) string {
@@ -343,6 +345,18 @@ func main() {
 		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
+	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+		apiKey, err := db.GetBotAPIKey(botUID)
+		if err != nil {
+			return nil, err
+		}
+		return skillHubProxyHandler.ResolvePrivateSkillMetadata(
+			ctx,
+			strconv.FormatInt(botUID, 10),
+			apiKey,
+			skills,
+		)
+	})
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
 	botModelConfigHandler.SetRollout(botModelCloudPublicEnabled, botModelCloudTestUIDs)
