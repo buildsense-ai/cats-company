@@ -37,6 +37,7 @@ const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const CONSECUTIVE_HUMAN_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 const IDENTITY_TEXT_FIELDS = ['display_name', 'username', 'avatar_url', 'name'];
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
@@ -405,7 +406,6 @@ export default function MessagesView({
   const historyOffsetRef = useRef(0);
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
-  const streamEventSequenceRef = useRef(0);
   const historyLoadingRef = useRef(false);
   const historyAbortControllerRef = useRef(null);
   const olderHistoryAbortControllerRef = useRef(null);
@@ -935,7 +935,6 @@ export default function MessagesView({
           const streamId = getStreamId(msg.data);
           const delta = streamDeltaText(msg.data.content);
           if (streamId && delta) {
-            const eventSequence = ++streamEventSequenceRef.current;
             setMessages((prev) => upsertStreamingMessage(prev, {
               streamId,
               topic,
@@ -944,7 +943,6 @@ export default function MessagesView({
               content: delta,
               metadata: msg.data.metadata || null,
               role: msg.data.role || 'assistant',
-              eventSequence,
             }));
           }
           return;
@@ -978,8 +976,24 @@ export default function MessagesView({
             return mergeMessages([], next);
           }
           const current = removeStaleStreamingMessagesForFinal(prev, serverMsg);
-          // Deduplicate by seq ID
-          if (current.some((m) => m.id === serverMsg.id)) return current;
+          // An HTTP ACK may assign the durable sequence before its matching
+          // WebSocket echo arrives. Merge that echo so its server-canonical
+          // identity and normalized payload are not lost.
+          const existingIdx = current.findIndex((message) => message.id === serverMsg.id);
+          if (existingIdx !== -1) {
+            const existing = current[existingIdx];
+            const metadata = existing.metadata || serverMsg.metadata
+              ? { ...(existing.metadata || {}), ...(serverMsg.metadata || {}) }
+              : null;
+            const next = [...current];
+            next[existingIdx] = {
+              ...existing,
+              ...serverMsg,
+              client_msg_id: messageClientMsgID(serverMsg) || messageClientMsgID(existing),
+              metadata,
+            };
+            return mergeMessages([], next);
+          }
           // If this is our own message echoed back, replace the optimistic entry
           if (sameUID(fromUid, user.uid)) {
             const pendingIdx = current.findIndex((m) => (
@@ -1138,7 +1152,6 @@ export default function MessagesView({
 
   const loadHistory = async (targetTopic = topic, aroundId = 0) => {
     const requestID = ++historyRequestRef.current;
-    const streamEventCheckpoint = streamEventSequenceRef.current;
     historyAbortControllerRef.current?.abort();
     olderHistoryAbortControllerRef.current?.abort();
     const controller = new AbortController();
@@ -1175,7 +1188,7 @@ export default function MessagesView({
         : rawMessages.length === PAGE_SIZE;
       const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
       setMessages((current) => {
-        return mergeHistoryWithCurrentMessages(visibleMessages, current, streamEventCheckpoint);
+        return mergeHistoryWithCurrentMessages(visibleMessages, current);
       });
       historyOffsetRef.current = rawMessages.length;
       historyBeforeIDRef.current = nextBeforeID;
@@ -3973,7 +3986,8 @@ function assistantReplyTurnKey(message) {
     ['response', metadata.responseId],
   ];
   for (const [kind, candidate] of candidates) {
-    const value = candidate == null ? '' : String(candidate).trim();
+    if (typeof candidate !== 'string') continue;
+    const value = candidate.trim();
     if (value) return `${kind}:${value}`;
   }
   return '';
@@ -4020,12 +4034,17 @@ function messageDisplayContext(message, senderIsBot) {
     turn,
     explicitTurnKey: turn.explicitTurnKey,
     isAssistant: isWorkingMessage(message) || isAssistantAuthoredMessage(message, senderIsBot),
+    sentAt: new Date(message?.created_at || Date.now()).getTime(),
   };
 }
 
 function areMessagesConsecutive(previousContext, currentContext) {
   if (!previousContext || !currentContext) return false;
   if (previousContext.senderKey !== currentContext.senderKey) return false;
+
+  if (!previousContext.isAssistant && !currentContext.isAssistant) {
+    return currentContext.sentAt - previousContext.sentAt < CONSECUTIVE_HUMAN_MESSAGE_WINDOW_MS;
+  }
 
   // Identity is a navigation affordance, not expendable decoration. Only
   // compact entries when both rows can be tied to the same Agent execution.
@@ -4559,7 +4578,6 @@ function upsertStreamingMessage(messages, {
   content,
   metadata,
   role,
-  eventSequence = 0,
 }) {
   const executionKey = assistantReplyTurnKey({ metadata });
   const streamKey = streamMessageKey({ streamId, topic, fromUid, from, executionKey });
@@ -4595,7 +4613,6 @@ function upsertStreamingMessage(messages, {
       _streaming: true,
       _stream_id: streamId,
       _stream_key: nextStreamKey,
-      _stream_event_sequence: eventSequence,
     };
     return next;
   }
@@ -4621,7 +4638,6 @@ function upsertStreamingMessage(messages, {
       _streaming: true,
       _stream_id: streamId,
       _stream_key: streamKey,
-      _stream_event_sequence: eventSequence,
     }),
   ];
 }
@@ -4873,7 +4889,14 @@ function historySequenceBeforePending(historyMessages, currentMessages, pendingI
   }, 0);
 }
 
-function mergeHistoryWithCurrentMessages(historyMessages, currentMessages, streamEventCheckpoint = 0) {
+function historyContainsFinalForStreamingMessage(streamingMessage, historyMessages) {
+  return (historyMessages || []).some((historyMessage) => (
+    isFinalTextMessage(historyMessage)
+    && findStreamingMessageForFinal([streamingMessage], historyMessage) !== -1
+  ));
+}
+
+function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
   const visibleMessages = Array.isArray(historyMessages) ? historyMessages : [];
   const current = Array.isArray(currentMessages) ? currentMessages : [];
   const historyIDs = new Set(
@@ -4885,7 +4908,7 @@ function mergeHistoryWithCurrentMessages(historyMessages, currentMessages, strea
   const pendingToKeep = [];
   const streamingToKeep = current.filter((message) => (
     message?._streaming
-    && Number(message?._stream_event_sequence) > streamEventCheckpoint
+    && !historyContainsFinalForStreamingMessage(message, visibleMessages)
   ));
 
   current.forEach((pending, pendingIndex) => {

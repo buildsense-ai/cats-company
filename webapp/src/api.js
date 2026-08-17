@@ -1145,17 +1145,19 @@ export async function setWSPushSubscriptionEndpoint(endpoint = '') {
 }
 
 // Send a chat message via WebSocket, with REST fallback
-export async function wsSendMessage(topicId, content, replyTo, mentions = []) {
+export async function wsSendMessage(topicId, content, replyTo, mentions = [], clientMsgID = '') {
+  const normalizedClientMsgID = String(clientMsgID || '').trim();
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     const id = nextMsgId();
     const pub = { id, topic: topicId, content };
     if (replyTo) pub.reply_to = replyTo;
     if (Array.isArray(mentions) && mentions.length > 0) pub.mentions = mentions;
+    if (normalizedClientMsgID) pub.client_msg_id = normalizedClientMsgID;
     sendWS({ pub });
     return id;
   }
   // Fallback to REST if WebSocket is not connected
-  await api.sendMessage(topicId, content, replyTo, mentions);
+  await api.sendMessage(topicId, content, replyTo, mentions, normalizedClientMsgID);
   return null;
 }
 

@@ -828,6 +828,57 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
   });
 
+  it('keeps a live streamed reply that predates a history retry without a matching final message', async () => {
+    const refreshResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages
+      .mockRejectedValueOnce(new Error('temporary history failure'))
+      .mockReturnValueOnce(refreshResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '仍在生成的文本',
+          metadata: { stream_id: 'live-before-retry-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      container.querySelector('button.v3-history-retry').click();
+      await flushPromises();
+    });
+
+    await act(async () => {
+      refreshResult.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          msg_type: 'text',
+          content: '已有历史消息',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['已有历史消息', '仍在生成的文本']);
+  });
+
   it('does not reuse a stale streamed reply after the next history refresh', async () => {
     const refreshResult = deferred();
     mockTutorialAgentPeer();
@@ -873,6 +924,7 @@ describe('MessagesView composer draft isolation', () => {
           msg_type: 'text',
           role: 'assistant',
           content: '持久化的最终回复',
+          metadata: { stream_id: 'reused-stream-1' },
         }],
       });
       await flushPromises();
@@ -1901,6 +1953,71 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.senderIsBot).toBe('false');
   });
 
+  it('merges canonical self identity from a WebSocket echo after the HTTP ACK', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2', {
+      user: { ...user, display_name: '', avatar_url: '' },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    const sendButton = container.querySelector('button[aria-label="发送"]');
+    await act(async () => {
+      typeDraft(textarea, '等待身份回声的消息');
+      await flushPromises(30);
+    });
+    expect(textarea.value).toBe('等待身份回声的消息');
+    expect(sendButton.disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(sendButton);
+      await flushPromises(30);
+    });
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises(30);
+    });
+
+    expect(container.querySelector('.mock-chat-message[data-message-id="101"]')?.dataset.senderAvatar)
+      .toBe('');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '等待身份回声的消息',
+          metadata: {
+            catsco_identity: {
+              actor: {
+                user_id: 'usr1',
+                display_name: 'Canonical Me',
+                avatar_url: '/uploads/canonical-me-echo.png',
+                account_type: 'human',
+              },
+            },
+          },
+        },
+      });
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="101"]');
+    expect(message?.dataset.senderName).toBe('Canonical Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-me-echo.png');
+  });
+
   it('refreshes an existing self-authored row when the current-user profile changes', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [{
@@ -2808,6 +2925,76 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-message-id="111"]')?.dataset.consecutive)
       .toBe('false');
     expect(container.querySelector('[data-message-id="112"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('keeps adjacent human messages compact within the existing time window', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 120,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: '第一条普通消息。',
+          created_at: '2026-07-20T09:24:00Z',
+        },
+        {
+          id: 121,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: '第二条普通消息。',
+          created_at: '2026-07-20T09:24:12Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-message-id="120"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="121"]')?.dataset.consecutive)
+      .toBe('true');
+  });
+
+  it('keeps Agent rows identity-bearing when execution metadata is not a string key', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 122,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '第一条无效 execution key 的回复。',
+          metadata: { run_id: { value: 'first' } },
+        },
+        {
+          id: 123,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '第二条无效 execution key 的回复。',
+          metadata: { run_id: { value: 'second' } },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+    expect(container.querySelector('[data-message-id="122"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="123"]')?.dataset.consecutive)
       .toBe('false');
   });
 
