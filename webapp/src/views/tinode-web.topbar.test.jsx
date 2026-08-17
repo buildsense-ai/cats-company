@@ -413,6 +413,35 @@ describe('LocalAssistantBar model selector', () => {
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
   });
 
+  it('keeps a revoked current model visible but prevents selecting it again', async () => {
+    const revokedConfig = {
+      ...baseConfig,
+      desired: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 3 },
+      applied: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 3 },
+      models: [
+        baseConfig.models[1],
+        {
+          ...baseConfig.models[3],
+          available: false,
+          unavailable_reason: '当前套餐已不包含该模型，切换后不可再选',
+        },
+      ],
+    };
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(revokedConfig);
+    const update = vi.spyOn(api, 'updateBotModelConfig');
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const terra = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('GPT-5.6 Terra'));
+    expect(terra).toBeTruthy();
+    expect(terra.disabled).toBe(true);
+    expect(terra.classList.contains('unavailable')).toBe(true);
+    expect(terra.textContent).toContain('当前套餐已不包含该模型');
+    await act(async () => terra.click());
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('selects official reasoning strength with an explicit catalog payload', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
     const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
@@ -608,6 +637,10 @@ describe('LocalAssistantBar model selector', () => {
   it('classifies request and runtime apply failures for users', () => {
     expect(describeModelConfigRequestError({ code: 'NETWORK_ERROR' })).toContain('网络连接中断');
     expect(describeModelConfigRequestError({ status: 429 })).toContain('操作过于频繁');
+    expect(describeModelConfigRequestError({ status: 403, data: { code: 'model_not_in_plan' } }))
+      .toContain('当前套餐未包含');
+    expect(describeModelConfigRequestError({ status: 503, data: { code: 'model_entitlement_unavailable' } }))
+      .toContain('套餐额度暂时无法确认');
     expect(describeModelConfigRequestError({ status: 503, message: 'custom model encryption unavailable' }))
       .toContain('安全密钥存储');
     expect(describeModelApplyError('401 Unauthorized: invalid api key')).toContain('鉴权失败');
