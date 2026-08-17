@@ -329,6 +329,26 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localWorkspace.get',
       botUID: '42',
     })).toThrow(/不兼容/);
+    expect(() => assertSkillHubDeviceResult({
+      schema: 'xiaoba.skillhub.local_delete.v1',
+      bot_uid: '42',
+      local_skill_id: 'local-other',
+      deleted: true,
+    }, {
+      toolName: 'skillhub.localSkill.delete',
+      botUID: '42',
+      localSkillID: 'local-selected',
+    })).toThrow(/未确认删除当前选中的 Skill/);
+    expect(() => assertSkillHubDeviceResult({
+      schema: 'xiaoba.skillhub.local_delete.v1',
+      bot_uid: '42',
+      local_skill_id: 'local-selected',
+      deleted: false,
+    }, {
+      toolName: 'skillhub.localSkill.delete',
+      botUID: '42',
+      localSkillID: 'local-selected',
+    })).toThrow(/未确认删除当前选中的 Skill/);
   });
 
   it('remembers the selected Bot per CatsCo user and ignores stale selections', () => {

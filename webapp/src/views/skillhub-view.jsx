@@ -514,7 +514,12 @@ export function resolveSharedSkillHubMetadata(shared, publishedVersion) {
   };
 }
 
-export function assertSkillHubDeviceResult(result, { toolName, botUID, reference } = {}) {
+export function assertSkillHubDeviceResult(result, {
+  toolName,
+  botUID,
+  reference,
+  localSkillID,
+} = {}) {
   const expectedSchema = SKILLHUB_DEVICE_SCHEMAS[toolName];
   if (!expectedSchema || result?.schema !== expectedSchema) {
     const error = new Error('本地 XiaoBa 返回了不兼容的 SkillHub 协议，请更新 XiaoBa 后重试。');
@@ -541,6 +546,14 @@ export function assertSkillHubDeviceResult(result, { toolName, botUID, reference
   )) {
     const error = new Error('本地 XiaoBa 完成了其他 Skill 版本的对齐，已停止显示成功状态。');
     error.code = 'skillhub_device_finalize_mismatch';
+    throw error;
+  }
+  if (toolName === SKILLHUB_DEVICE_TOOLS.delete && (
+    String(result?.local_skill_id || '') !== String(localSkillID || '')
+    || result?.deleted !== true
+  )) {
+    const error = new Error('本地 XiaoBa 未确认删除当前选中的 Skill，已停止显示成功状态。');
+    error.code = 'skillhub_device_delete_mismatch';
     throw error;
   }
   return result;
@@ -1174,7 +1187,11 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
             local_skill_id: localSkill.localSkillId,
           },
           timeoutMs: 30_000,
-        }), { toolName: SKILLHUB_DEVICE_TOOLS.delete, botUID: requestedBotUID });
+        }), {
+          toolName: SKILLHUB_DEVICE_TOOLS.delete,
+          botUID: requestedBotUID,
+          localSkillID: localSkill.localSkillId,
+        });
         await loadLocalWorkspace(requestedBotUID, requestedDeviceID);
       }
       if (requestedBotUID === selectedBotUIDRef.current) {
