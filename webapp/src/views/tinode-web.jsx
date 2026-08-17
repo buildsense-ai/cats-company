@@ -4,7 +4,6 @@ import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPush
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
-import { isValidEmailFormat } from '../utils/email-format';
 import t from '../i18n';
 import RelayAdminPanel from './relay-admin-panel';
 import ChatListView from './sidepanel-view';
@@ -28,11 +27,10 @@ import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
-import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
-import AuthFlowBackground from '../components/auth-flow-background';
-import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import { useFeedback } from '../components/feedback-system';
+import { AuthView } from './auth-gateway';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -62,7 +60,7 @@ import {
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
-  syncThemeColor,
+  applyDocumentTheme,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
 import {
@@ -72,10 +70,8 @@ import {
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
-import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
-import '../css/openchat-theme.css';
-import '../css/catsco-ui-system.css';
-import '../css/catsco-liquid-green.css';
+import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import './workspace-styles';
 
 const TABS = {
   CHATS: 'chats'
@@ -335,14 +331,7 @@ function TinodeWebApp({ location }) {
   }, []);
 
   useEffect(() => {
-    const greenLiquid = theme === 'liquid-green';
-    document.documentElement.dataset.theme = greenLiquid ? 'liquid' : theme;
-    if (greenLiquid) {
-      document.documentElement.dataset.liquidVariant = 'green';
-    } else {
-      delete document.documentElement.dataset.liquidVariant;
-    }
-    syncThemeColor(theme);
+    applyDocumentTheme(theme);
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
@@ -1463,214 +1452,6 @@ function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
         <Settings size={18} />
       </div>
     </button>
-  );
-}
-
-function formatAuthError(message) {
-  const text = String(message || '').toLowerCase();
-  if (text.includes('user not found')) return '账号不存在，请检查用户名或邮箱';
-  if (text.includes('password mismatch')) return '密码错误，请重试';
-  if (text.includes('username taken')) return '登录名称已被占用，请换一个';
-  if (text.includes('email already')) return '该邮箱已经注册，请直接登录';
-  if (text.includes('verification code expired')) return '验证码已过期，请重新获取';
-  if (text.includes('does not match')) return '验证码不正确，请使用最新邮件中的验证码';
-  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期，请重新获取并使用最新验证码';
-  if (text.includes('username min 3')) return '登录名称至少 3 个字符';
-  if (text.includes('password min 6')) return '密码至少 6 位';
-  if (text.includes('invalid email format')) return '邮箱格式无效，请检查域名拼写（如 qq.com）';
-  if (text.includes('failed to send verification code')) return '发送验证码失败，请稍后再试';
-  return message || '操作失败，请稍后再试';
-}
-
-export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister }) {
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [loginName, setLoginName] = useState('');
-  const [code, setCode] = useState('');
-  const [error, setError] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-  const [sentHint, setSentHint] = useState('');
-
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [countdown]);
-
-  const handleSendCode = async () => {
-    if (!email || !isValidEmailFormat(email)) {
-      setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
-      return;
-    }
-    try {
-      await api.sendVerificationCode(email);
-      setCodeSent(true);
-      setCountdown(60);
-      setError('');
-      setSentHint('验证码已发送，请使用最新邮件中的验证码（旧验证码将失效）');
-    } catch (err) {
-      setSentHint('');
-      setError(err.message || '发送验证码失败，请稍后再试');
-    }
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    try {
-      if (mode === 'login') {
-        await onLogin(username, password);
-      } else {
-        await onRegister(email, password, loginName, code);
-      }
-    } catch (err) {
-      setError(formatAuthError(err.message));
-    }
-  };
-
-  const authShell = (content) => (
-    <div className="oc-auth">
-      <AuthFlowBackground />
-      {content}
-    </div>
-  );
-
-  const authPath = (nextMode) => authPathForMode(nextMode, nextPath);
-  const handleAuthLink = (event, nextMode) => {
-    if (event.defaultPrevented || event.button !== 0
-      || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey
-      || typeof onNavigate !== 'function') return;
-    event.preventDefault();
-    onNavigate?.(nextMode);
-  };
-
-  if (mode === 'reset') {
-    return authShell(
-      <div className="oc-auth-card">
-        <div className="oc-auth-logo">CatsCo</div>
-        <div className="oc-settings-secondary" style={{ marginBottom: 14 }}>
-          输入注册邮箱，验证后设置新密码。
-        </div>
-        <PasswordResetForm />
-        <div className="oc-auth-link">
-          <span>
-            想起密码了？
-            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>返回登录</a>
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  return authShell(
-    <form className="oc-auth-card" onSubmit={handleSubmit}>
-      <div className="oc-auth-logo">CatsCo</div>
-      {error && <InlineFeedback tone="error" className="oc-auth-feedback">{error}</InlineFeedback>}
-
-      {mode === 'login' ? (
-        <>
-          <input
-            className="oc-auth-input"
-            placeholder={t('username')}
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <div style={{ position: 'relative' }}>
-            <input
-              className="oc-auth-input"
-              type={showPassword ? 'text' : 'password'}
-              placeholder={t('password')}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ paddingRight: 48 }}
-            />
-            <span
-              onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </span>
-          </div>
-        </>
-      ) : (
-        <>
-          <input
-            className="oc-auth-input"
-            type="email"
-            placeholder="邮箱地址"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <div className="oc-auth-code-row">
-            <input
-              className="oc-auth-input"
-              placeholder="邮箱验证码"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-            />
-            <button
-              type="button"
-              className="oc-auth-btn"
-              onClick={handleSendCode}
-              disabled={countdown > 0}
-            >
-              {countdown > 0 ? `${countdown}秒` : '发送验证码'}
-            </button>
-          </div>
-          {sentHint && (
-            <div className="oc-auth-hint" style={{ color: '#2e8b57', fontSize: 12, marginTop: 6 }}>{sentHint}</div>
-          )}
-          <input
-            className="oc-auth-input"
-            placeholder="登录名称（可用于登录）"
-            value={loginName}
-            onChange={(e) => setLoginName(e.target.value)}
-          />
-          <div style={{ position: 'relative' }}>
-            <input
-              className="oc-auth-input"
-              type={showPassword ? 'text' : 'password'}
-              placeholder="设置密码（至少6位）"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ paddingRight: 48 }}
-            />
-            <span
-              onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </span>
-          </div>
-        </>
-      )}
-
-      <button className="oc-auth-btn" type="submit">
-        {mode === 'login' ? t('login') : t('register')}
-      </button>
-      <div className="oc-auth-link">
-        {mode === 'login' ? (
-          <>
-            <span>
-              还没有账号？
-              <a href={authPath('register')} onClick={(event) => handleAuthLink(event, 'register')}>立即注册</a>
-            </span>
-            <span style={{ marginLeft: 12 }}>
-              <a href={authPath('reset')} onClick={(event) => handleAuthLink(event, 'reset')}>忘记密码？</a>
-            </span>
-          </>
-        ) : (
-          <span>
-            已有账号？
-            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>立即登录</a>
-          </span>
-        )}
-      </div>
-    </form>
   );
 }
 

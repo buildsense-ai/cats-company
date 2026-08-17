@@ -6,7 +6,7 @@ vi.mock('../components/auth-flow-background', () => ({
   default: () => null,
 }));
 
-import { AuthView } from './tinode-web';
+import { AuthView } from './auth-gateway';
 
 describe('AuthView route links', () => {
   let container;

@@ -29,6 +29,18 @@ export function syncThemeColor(value, target = globalThis.document) {
     ?.setAttribute('content', themeColor(value));
 }
 
+export function applyDocumentTheme(value, target = globalThis.document) {
+  const theme = normalizeTheme(value);
+  const root = target?.documentElement;
+  if (root) {
+    root.dataset.theme = theme === 'liquid-green' ? 'liquid' : theme;
+    if (theme === 'liquid-green') root.dataset.liquidVariant = 'green';
+    else delete root.dataset.liquidVariant;
+  }
+  syncThemeColor(theme, target);
+  return theme;
+}
+
 export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {
   try {
     if (storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1') return true;

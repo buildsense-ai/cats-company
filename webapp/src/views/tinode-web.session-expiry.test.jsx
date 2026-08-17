@@ -54,7 +54,7 @@ vi.mock('../utils/theme-access', () => ({
   isLiquidThemeUnlocked: () => false,
   normalizeTheme: () => 'light',
   saveLiquidThemeUnlock: () => true,
-  syncThemeColor: vi.fn(),
+  applyDocumentTheme: vi.fn(),
   verifyLiquidThemePassword: vi.fn(),
 }));
 

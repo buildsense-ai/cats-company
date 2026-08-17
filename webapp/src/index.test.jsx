@@ -47,7 +47,7 @@ vi.mock('./components/feedback-system', () => ({
 }));
 
 vi.mock('./utils/theme-access', () => ({
-  syncThemeColor: vi.fn(),
+  applyDocumentTheme: vi.fn(),
   THEME_STORAGE_KEY: 'theme',
 }));
 

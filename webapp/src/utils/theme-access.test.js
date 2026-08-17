@@ -1,6 +1,7 @@
 import {
   LIQUID_THEME_UNLOCK_STORAGE_KEY,
   THEME_STORAGE_KEY,
+  applyDocumentTheme,
   isLiquidTheme,
   isLiquidThemeUnlocked,
   normalizeTheme,
@@ -38,6 +39,26 @@ describe('theme access', () => {
     syncThemeColor('dark');
 
     expect(meta.content).toBe('#0f0f0f');
+    meta.remove();
+  });
+
+  it('applies the saved theme before the workspace loads', () => {
+    const meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.appendChild(meta);
+
+    expect(applyDocumentTheme('liquid-green')).toBe('liquid-green');
+    expect(document.documentElement.dataset.theme).toBe('liquid');
+    expect(document.documentElement.dataset.liquidVariant).toBe('green');
+    expect(meta.content).toBe('#151718');
+
+    applyDocumentTheme('dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.dataset.liquidVariant).toBeUndefined();
+    expect(meta.content).toBe('#0f0f0f');
+
+    delete document.documentElement.dataset.theme;
+    delete document.documentElement.dataset.liquidVariant;
     meta.remove();
   });
 

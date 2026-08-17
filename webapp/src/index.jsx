@@ -1,21 +1,29 @@
-import React, { useEffect, useLayoutEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/noto-sans-sc/wght.css';
 import '@fontsource-variable/jetbrains-mono/wght.css';
-import TinodeWeb from './views/tinode-web';
+import AuthGateway from './views/auth-gateway';
 import PwaController from './components/pwa-controller';
 import PushCleanupController from './components/push-cleanup-controller';
 import { getAuthRevision, getPushPromptOwner, getToken } from './api';
 import { FeedbackProvider } from './components/feedback-system';
-import { syncThemeColor, THEME_STORAGE_KEY } from './utils/theme-access';
+import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
-import './css/catsco-topbar.css';
-import './css/catsco-secondary-headers.css';
-import './css/catsco-settings-controls.css';
-import './css/search-overlay.css';
+import './css/auth-critical.css';
 
-syncThemeColor(localStorage.getItem(THEME_STORAGE_KEY));
+const importWorkspace = () => import('./views/tinode-web');
+const TinodeWeb = lazy(importWorkspace);
+const preloadWorkspace = () => { void importWorkspace(); };
+const requestedThemePreview = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get('theme_preview')
+  : '';
+const developmentWorkspacePreview = import.meta.env.DEV && (
+  import.meta.env.VITE_DEV_BYPASS_AUTH === 'true'
+  || ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
+);
+
+applyDocumentTheme(localStorage.getItem(THEME_STORAGE_KEY));
 
 function readBrowserLocation() {
   return {
@@ -50,10 +58,17 @@ export function App() {
   }, []);
 
   const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);
+  const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
+    || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
+  const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
 
   return (
     <FeedbackProvider>
-      <TinodeWeb location={browserLocation} />
+      {shouldLoadWorkspace ? (
+        <Suspense fallback={<AuthGateway location={browserLocation} preserveAuthShell />}>
+          <TinodeWeb location={browserLocation} />
+        </Suspense>
+      ) : <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
       {!auth.loggedIn && <PushCleanupController />}
       {mountPwa && (
         <PwaController
