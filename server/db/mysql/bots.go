@@ -42,16 +42,23 @@ func (a *Adapter) SaveBotConfigWithOwner(uid, ownerID int64, apiEndpoint, model 
 // GetBotConfig retrieves bot configuration by user ID.
 func (a *Adapter) GetBotConfig(uid int64) (*types.BotConfig, error) {
 	bc := &types.BotConfig{}
-	var visibility, skillsVisibility string
+	var visibility, skillsVisibility, skillMutationMode string
+	var artifactUploadEnabled bool
 	err := a.db.QueryRow(
-		`SELECT user_id, COALESCE(owner_id, 0), api_endpoint, model, enabled, COALESCE(visibility, 'public'), COALESCE(skills_visibility, 'owner'), COALESCE(body_id, '')
+		`SELECT user_id, COALESCE(owner_id, 0), api_endpoint, model, enabled, COALESCE(visibility, 'public'), COALESCE(skills_visibility, 'owner'), COALESCE(body_id, ''), COALESCE(role, 'general'), COALESCE(description, ''), COALESCE(artifact_upload_enabled, 1), COALESCE(skill_mutation_mode, 'owner_only')
 		 FROM bot_config WHERE user_id = ?`, uid,
-	).Scan(&bc.UserID, &bc.OwnerID, &bc.APIEndpoint, &bc.Model, &bc.Enabled, &visibility, &skillsVisibility, &bc.BodyID)
+	).Scan(&bc.UserID, &bc.OwnerID, &bc.APIEndpoint, &bc.Model, &bc.Enabled, &visibility, &skillsVisibility, &bc.BodyID, &bc.Role, &bc.Description, &artifactUploadEnabled, &skillMutationMode)
 	if err != nil {
 		return nil, fmt.Errorf("get bot config: %w", err)
 	}
 	bc.Visibility = types.BotVisibility(visibility)
 	bc.SkillsVisibility = types.BotSkillsVisibility(skillsVisibility)
+	bc.ArtifactUploadEnabled = &artifactUploadEnabled
+	mode, ok := types.ParseBotSkillMutationMode(skillMutationMode)
+	if !ok {
+		return nil, fmt.Errorf("get bot config: invalid skill mutation mode %q", skillMutationMode)
+	}
+	bc.SkillMutationMode = mode
 	return bc, nil
 }
 
@@ -244,7 +251,11 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		        COALESCE(b.enabled, 1) as enabled,
 		        COALESCE(b.visibility, 'public') as visibility,
 		        COALESCE(b.skills_visibility, 'owner') as skills_visibility,
-		        b.tenant_name
+		        b.tenant_name,
+		        COALESCE(b.role, 'general') as role,
+		        COALESCE(b.description, '') as description,
+		        COALESCE(b.artifact_upload_enabled, 1) as artifact_upload_enabled,
+		        COALESCE(b.skill_mutation_mode, 'owner_only') as skill_mutation_mode
 		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
 		 WHERE u.account_type = 'bot' AND b.owner_id = ?
 		 ORDER BY u.created_at`,
@@ -258,25 +269,33 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 	var bots []map[string]interface{}
 	for rows.Next() {
 		var id int64
-		var username, displayName, avatarURL, apiEndpoint, model, visibility, skillsVisibility string
+		var username, displayName, avatarURL, apiEndpoint, model, visibility, skillsVisibility, role, description, skillMutationMode string
 		var tenantName *string
 		var state int
-		var enabled bool
+		var enabled, artifactUploadEnabled bool
 		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state,
-			&apiEndpoint, &model, &enabled, &visibility, &skillsVisibility, &tenantName); err != nil {
+			&apiEndpoint, &model, &enabled, &visibility, &skillsVisibility, &tenantName, &role, &description, &artifactUploadEnabled, &skillMutationMode); err != nil {
 			return nil, err
 		}
+		mode, ok := types.ParseBotSkillMutationMode(skillMutationMode)
+		if !ok {
+			return nil, fmt.Errorf("list bots by owner: invalid skill mutation mode %q", skillMutationMode)
+		}
 		bot := map[string]interface{}{
-			"id":                id,
-			"username":          username,
-			"display_name":      displayName,
-			"avatar_url":        avatarURL,
-			"state":             state,
-			"api_endpoint":      apiEndpoint,
-			"model":             model,
-			"enabled":           enabled,
-			"visibility":        visibility,
-			"skills_visibility": skillsVisibility,
+			"id":                      id,
+			"username":                username,
+			"display_name":            displayName,
+			"avatar_url":              avatarURL,
+			"state":                   state,
+			"api_endpoint":            apiEndpoint,
+			"model":                   model,
+			"enabled":                 enabled,
+			"visibility":              visibility,
+			"skills_visibility":       skillsVisibility,
+			"role":                    role,
+			"description":             description,
+			"artifact_upload_enabled": artifactUploadEnabled,
+			"skill_mutation_mode":     string(mode),
 		}
 		if tenantName != nil {
 			bot["tenant_name"] = *tenantName
@@ -284,6 +303,64 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		bots = append(bots, bot)
 	}
 	return bots, rows.Err()
+}
+
+// UpdateBotProfile updates owner-defined assistant identity metadata. Nil
+// values preserve the existing field so PATCH requests can be partial.
+func (a *Adapter) UpdateBotProfile(botUID int64, role, description *string) error {
+	_, err := a.db.Exec(
+		`UPDATE bot_config
+		 SET role = COALESCE(?, role), description = COALESCE(?, description), updated_at = CURRENT_TIMESTAMP
+		 WHERE user_id = ?`,
+		role, description, botUID,
+	)
+	return err
+}
+
+func (a *Adapter) UpdateBotArtifactUploadPolicy(botUID int64, enabled bool) error {
+	_, err := a.db.Exec(
+		`UPDATE bot_config SET artifact_upload_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?`,
+		enabled, botUID,
+	)
+	return err
+}
+
+func (a *Adapter) GetBotArtifactUploadPolicy(botUID int64) (bool, error) {
+	var enabled bool
+	if err := a.db.QueryRow(
+		`SELECT COALESCE(artifact_upload_enabled, 1) FROM bot_config WHERE user_id = ?`,
+		botUID,
+	).Scan(&enabled); err != nil {
+		return false, fmt.Errorf("get bot artifact upload policy: %w", err)
+	}
+	return enabled, nil
+}
+
+func (a *Adapter) UpdateBotSkillMutationMode(botUID int64, mode types.BotSkillMutationMode) error {
+	normalized, ok := types.ParseBotSkillMutationMode(string(mode))
+	if !ok {
+		return fmt.Errorf("invalid bot skill mutation mode %q", mode)
+	}
+	_, err := a.db.Exec(
+		`UPDATE bot_config SET skill_mutation_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?`,
+		string(normalized), botUID,
+	)
+	return err
+}
+
+func (a *Adapter) GetBotSkillMutationMode(botUID int64) (types.BotSkillMutationMode, error) {
+	var raw string
+	if err := a.db.QueryRow(
+		`SELECT COALESCE(skill_mutation_mode, 'owner_only') FROM bot_config WHERE user_id = ?`,
+		botUID,
+	).Scan(&raw); err != nil {
+		return "", fmt.Errorf("get bot skill mutation mode: %w", err)
+	}
+	mode, ok := types.ParseBotSkillMutationMode(raw)
+	if !ok {
+		return "", fmt.Errorf("get bot skill mutation mode: invalid value %q", raw)
+	}
+	return mode, nil
 }
 
 // GetBotOwner returns the owner_id for a bot.

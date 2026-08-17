@@ -201,6 +201,14 @@ func (h *RelayCommercialHandler) HandleRedeemInvite(w http.ResponseWriter, r *ht
 	}
 	summary, err := h.store.RedeemCommercialInvite(uid, req.Code)
 	if err != nil {
+		if strings.Contains(err.Error(), "already active") || strings.Contains(err.Error(), "below active plan") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "当前套餐已生效，不能兑换同档或低档套餐"})
+			return
+		}
+		if strings.Contains(err.Error(), "already pending") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "已有待支付套餐订单，请先完成或取消"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invite code could not be redeemed"})
 		return
 	}
@@ -216,6 +224,8 @@ type relayCommercialPublicSummary struct {
 }
 
 type relayCommercialPublicEntitlement struct {
+	PlanID    int64      `json:"plan_id,omitempty"`
+	PlanSlug  string     `json:"plan_slug,omitempty"`
 	PlanName  string     `json:"plan_name,omitempty"`
 	Source    string     `json:"source,omitempty"`
 	State     string     `json:"state"`
@@ -236,6 +246,8 @@ func publicCommercialSummary(summary *types.CommercialSummary) relayCommercialPu
 			continue
 		}
 		out.Entitlements = append(out.Entitlements, relayCommercialPublicEntitlement{
+			PlanID:    entitlement.PlanID,
+			PlanSlug:  entitlement.PlanSlug,
 			PlanName:  entitlement.PlanName,
 			Source:    entitlement.Source,
 			State:     entitlement.State,
@@ -301,16 +313,18 @@ type commercialRelayKeySummary struct {
 }
 
 type commercialRelayUsageUser struct {
-	UID             int64                      `json:"uid"`
-	Username        string                     `json:"username"`
-	Configured      bool                       `json:"configured"`
-	Key             *commercialRelayKeySummary `json:"key,omitempty"`
-	Limits          commercialRelayLimits      `json:"limits"`
-	GovernanceError string                     `json:"governance_error,omitempty"`
+	UID              int64                      `json:"uid"`
+	Username         string                     `json:"username"`
+	Configured       bool                       `json:"configured"`
+	Key              *commercialRelayKeySummary `json:"key,omitempty"`
+	Limits           commercialRelayLimits      `json:"limits"`
+	GovernanceError  string                     `json:"governance_error,omitempty"`
+	UsageWindowStart string                     `json:"usage_window_start,omitempty"`
 }
 
 type commercialRelayUsageResponse struct {
-	Users []commercialRelayUsageUser `json:"users"`
+	Users      []commercialRelayUsageUser `json:"users"`
+	TotalCount int                        `json:"total_count,omitempty"`
 }
 
 type commercialRelayBudgetComparison struct {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -28,16 +29,25 @@ type botDefinitionSkillsPatchRequest struct {
 }
 
 type botDefinitionSkillsResponse struct {
-	BotID     string              `json:"botId"`
-	Skills    []types.BotSkillRef `json:"skills"`
-	Revision  int64               `json:"revision"`
-	UpdatedAt string              `json:"updatedAt,omitempty"`
+	BotID     string                       `json:"botId"`
+	Skills    []botDefinitionSkillResponse `json:"skills"`
+	Revision  int64                        `json:"revision"`
+	UpdatedAt string                       `json:"updatedAt,omitempty"`
 }
 
 type botViewerSkill struct {
-	Source  string `json:"source"`
-	SkillID string `json:"skillId"`
-	Version string `json:"version"`
+	Source      string `json:"source"`
+	SkillID     string `json:"skillId"`
+	Version     string `json:"version"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+type botDefinitionSkillResponse struct {
+	Source      string `json:"source"`
+	SkillID     string `json:"skillId"`
+	Version     string `json:"version"`
+	ContentHash string `json:"contentHash"`
+	DisplayName string `json:"displayName,omitempty"`
 }
 
 type botViewerSkillsResponse struct {
@@ -76,7 +86,7 @@ func (h *BotDefinitionHandler) HandleOwnerSkills(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	h.handleSkillsForBot(w, r, botUID)
+	h.handleSkillsForBot(w, r, botUID, true)
 }
 
 // HandleViewerSkills exposes only the skill identity fields allowed by the
@@ -148,9 +158,11 @@ func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http
 		if strings.TrimSpace(record.Definition.BotID) != "" {
 			response.BotID = strings.TrimSpace(record.Definition.BotID)
 		}
+		metadata := h.resolveSkillDisplayNames(r, botUID, record.Definition.Skills)
 		for _, skill := range record.Definition.Skills {
 			response.Skills = append(response.Skills, botViewerSkill{
 				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
+				DisplayName: metadata[botSkillMetadataKey(skill.SkillID, skill.Version)],
 			})
 		}
 	}
@@ -174,10 +186,15 @@ func (h *BotDefinitionHandler) HandleRuntimeSkills(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "bot api key required"})
 		return
 	}
-	h.handleSkillsForBot(w, r, botUID)
+	h.handleSkillsForBot(w, r, botUID, false)
 }
 
-func (h *BotDefinitionHandler) handleSkillsForBot(w http.ResponseWriter, r *http.Request, botUID int64) {
+func (h *BotDefinitionHandler) handleSkillsForBot(
+	w http.ResponseWriter,
+	r *http.Request,
+	botUID int64,
+	includeDisplayMetadata bool,
+) {
 	w.Header().Set("Cache-Control", "no-store")
 	if h == nil || h.definitions == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition is unavailable"})
@@ -189,7 +206,7 @@ func (h *BotDefinitionHandler) handleSkillsForBot(w http.ResponseWriter, r *http
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot definition"})
 			return
 		}
-		h.writeSkills(w, botUID, record)
+		h.writeSkills(w, r, botUID, record, includeDisplayMetadata)
 		return
 	}
 
@@ -206,23 +223,66 @@ func (h *BotDefinitionHandler) handleSkillsForBot(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save bot skill definition"})
 		return
 	}
-	h.writeSkills(w, botUID, record)
+	h.writeSkills(w, r, botUID, record, includeDisplayMetadata)
 }
 
-func (h *BotDefinitionHandler) writeSkills(w http.ResponseWriter, botUID int64, record *types.BotDefinitionRecord) {
+func (h *BotDefinitionHandler) writeSkills(
+	w http.ResponseWriter,
+	r *http.Request,
+	botUID int64,
+	record *types.BotDefinitionRecord,
+	includeDisplayMetadata bool,
+) {
 	response := botDefinitionSkillsResponse{
 		BotID:  strconv.FormatInt(botUID, 10),
-		Skills: []types.BotSkillRef{},
+		Skills: []botDefinitionSkillResponse{},
 	}
 	if record != nil {
 		if strings.TrimSpace(record.Definition.BotID) != "" {
 			response.BotID = strings.TrimSpace(record.Definition.BotID)
 		}
-		response.Skills = append(response.Skills, record.Definition.Skills...)
+		var metadata map[string]string
+		if includeDisplayMetadata {
+			metadata = h.resolveSkillDisplayNames(r, botUID, record.Definition.Skills)
+		}
+		for _, skill := range record.Definition.Skills {
+			response.Skills = append(response.Skills, botDefinitionSkillResponse{
+				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
+				ContentHash: skill.ContentHash,
+				DisplayName: metadata[botSkillMetadataKey(skill.SkillID, skill.Version)],
+			})
+		}
 		response.Revision = record.Runtime.DesiredRevision
 		response.UpdatedAt = record.Runtime.UpdatedAt
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *BotDefinitionHandler) resolveSkillDisplayNames(
+	r *http.Request,
+	botUID int64,
+	skills []types.BotSkillRef,
+) map[string]string {
+	if h == nil || h.skillMetadataResolver == nil || len(skills) == 0 {
+		return nil
+	}
+	private := make([]types.BotSkillRef, 0, len(skills))
+	for _, skill := range skills {
+		if isPrivateBotSkillReference(skill.SkillID) {
+			private = append(private, skill)
+		}
+	}
+	if len(private) == 0 {
+		return nil
+	}
+	metadata, err := h.skillMetadataResolver(r.Context(), botUID, private)
+	if err != nil {
+		// Display metadata is best-effort. BotDefinition remains usable when
+		// SkillHub is temporarily unavailable.
+		log.Printf("resolve private Skill metadata failed bot_uid=%d: %v", botUID, err)
+		return nil
+	}
+	return metadata
 }
 
 func decodeBotDefinitionSkillsPatch(w http.ResponseWriter, r *http.Request) (int64, []types.BotSkillRef, bool) {
@@ -323,6 +383,18 @@ func validBotSkillContentHash(value string) bool {
 	}
 	for _, char := range value {
 		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validBotSkillDisplayName(value string) bool {
+	if value == "" || len(value) > 256 || !utf8.ValidString(value) {
+		return false
+	}
+	for _, char := range value {
+		if unicode.IsControl(char) {
 			return false
 		}
 	}

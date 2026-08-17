@@ -339,24 +339,25 @@ type ContentBlock struct {
 
 // ConversationSummary is the lightweight chat-list payload for a topic.
 type ConversationSummary struct {
-	ID          string                  `json:"id"`
-	Name        string                  `json:"name"`
-	Preview     string                  `json:"preview,omitempty"`
-	IsGroup     bool                    `json:"is_group"`
-	GroupID     int64                   `json:"group_id,omitempty"`
-	FriendID    int64                   `json:"friend_id,omitempty"`
-	AvatarURL   string                  `json:"avatar_url,omitempty"`
-	IsBot       bool                    `json:"is_bot,omitempty"`
-	HasBot      bool                    `json:"has_bot,omitempty"`
-	IsAgentTask bool                    `json:"is_agent_task,omitempty"`
-	MemberCount int                     `json:"member_count,omitempty"`
-	AgentIDs    []int64                 `json:"agent_ids,omitempty"`
-	IsOnline    bool                    `json:"is_online,omitempty"`
-	LastTime    *time.Time              `json:"last_time,omitempty"`
-	LatestSeq   int64                   `json:"latest_seq,omitempty"`
-	ProjectID   int64                   `json:"project_id,omitempty"`
-	ProjectName string                  `json:"project_name,omitempty"`
-	TaskStatus  *ConversationTaskStatus `json:"task_status,omitempty"`
+	ID                 string                  `json:"id"`
+	Name               string                  `json:"name"`
+	Preview            string                  `json:"preview,omitempty"`
+	IsGroup            bool                    `json:"is_group"`
+	GroupID            int64                   `json:"group_id,omitempty"`
+	FriendID           int64                   `json:"friend_id,omitempty"`
+	AvatarURL          string                  `json:"avatar_url,omitempty"`
+	IsBot              bool                    `json:"is_bot,omitempty"`
+	HasBot             bool                    `json:"has_bot,omitempty"`
+	IsAgentTask        bool                    `json:"is_agent_task,omitempty"`
+	MemberCount        int                     `json:"member_count,omitempty"`
+	AgentIDs           []int64                 `json:"agent_ids,omitempty"`
+	IsOnline           bool                    `json:"is_online,omitempty"`
+	LastTime           *time.Time              `json:"last_time,omitempty"`
+	LatestSeq          int64                   `json:"latest_seq,omitempty"`
+	ProjectID          int64                   `json:"project_id,omitempty"`
+	ProjectName        string                  `json:"project_name,omitempty"`
+	TaskStatus         *ConversationTaskStatus `json:"task_status,omitempty"`
+	NotificationsMuted bool                    `json:"notifications_muted"`
 }
 
 // ConversationTaskStatus is the latest persisted task/run state for a topic.
@@ -492,15 +493,40 @@ const (
 
 // BotConfig holds configuration for a registered bot.
 type BotConfig struct {
-	UserID           int64               `json:"user_id"`
-	OwnerID          int64               `json:"owner_id"`
-	APIEndpoint      string              `json:"api_endpoint,omitempty"`
-	Model            string              `json:"model,omitempty"`
-	Enabled          bool                `json:"enabled"`
-	Visibility       BotVisibility       `json:"visibility"`
-	SkillsVisibility BotSkillsVisibility `json:"skills_visibility"`
-	BodyID           string              `json:"body_id,omitempty"`
-	Config           map[string]string   `json:"config,omitempty"`
+	UserID                int64                `json:"user_id"`
+	OwnerID               int64                `json:"owner_id"`
+	APIEndpoint           string               `json:"api_endpoint,omitempty"`
+	Model                 string               `json:"model,omitempty"`
+	Enabled               bool                 `json:"enabled"`
+	Visibility            BotVisibility        `json:"visibility"`
+	SkillsVisibility      BotSkillsVisibility  `json:"skills_visibility"`
+	BodyID                string               `json:"body_id,omitempty"`
+	Role                  string               `json:"role,omitempty"`
+	Description           string               `json:"description,omitempty"`
+	ArtifactUploadEnabled *bool                `json:"artifact_upload_enabled,omitempty"`
+	SkillMutationMode     BotSkillMutationMode `json:"skill_mutation_mode"`
+	Config                map[string]string    `json:"config,omitempty"`
+}
+
+// BotSkillMutationMode controls who may submit a versioned Skill mutation for
+// a Bot. The default remains owner-only; shared-live still requires the
+// dedicated mutation control plane and never grants general Bot edit access.
+type BotSkillMutationMode string
+
+const (
+	BotSkillMutationOwnerOnly  BotSkillMutationMode = "owner_only"
+	BotSkillMutationSharedLive BotSkillMutationMode = "shared_live"
+)
+
+func ParseBotSkillMutationMode(value string) (BotSkillMutationMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationOwnerOnly):
+		return BotSkillMutationOwnerOnly, true
+	case string(BotSkillMutationSharedLive):
+		return BotSkillMutationSharedLive, true
+	default:
+		return "", false
+	}
 }
 
 // BotModelConfig stores the cloud-selected model and the latest device apply
@@ -574,6 +600,128 @@ type BotSkillRef struct {
 	SkillID     string `json:"skillId"`
 	Version     string `json:"version"`
 	ContentHash string `json:"contentHash"`
+}
+
+// BotSkillMutationOperation is deliberately narrower than general file or Bot
+// editing. The first control-plane release supports one complete Skill create,
+// replacement, or owner/operator rollback per mutation.
+type BotSkillMutationOperation string
+
+const (
+	BotSkillMutationCreate   BotSkillMutationOperation = "create"
+	BotSkillMutationReplace  BotSkillMutationOperation = "replace"
+	BotSkillMutationRollback BotSkillMutationOperation = "rollback"
+)
+
+func ParseBotSkillMutationOperation(value string) (BotSkillMutationOperation, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationCreate):
+		return BotSkillMutationCreate, true
+	case string(BotSkillMutationReplace):
+		return BotSkillMutationReplace, true
+	case string(BotSkillMutationRollback):
+		return BotSkillMutationRollback, true
+	default:
+		return "", false
+	}
+}
+
+// BotSkillMutationStatus records the durable progress of one versioned Skill
+// transaction. Status changes are compare-and-set; callers cannot skip stages.
+type BotSkillMutationStatus string
+
+const (
+	BotSkillMutationValidating          BotSkillMutationStatus = "validating"
+	BotSkillMutationVersionReady        BotSkillMutationStatus = "version_ready"
+	BotSkillMutationDefinitionCommitted BotSkillMutationStatus = "definition_committed"
+	BotSkillMutationActivationPending   BotSkillMutationStatus = "activation_pending"
+	BotSkillMutationActive              BotSkillMutationStatus = "active"
+	BotSkillMutationRejected            BotSkillMutationStatus = "rejected"
+	BotSkillMutationCompensationPending BotSkillMutationStatus = "compensation_pending"
+	BotSkillMutationRolledBack          BotSkillMutationStatus = "rolled_back"
+)
+
+func ParseBotSkillMutationStatus(value string) (BotSkillMutationStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationValidating):
+		return BotSkillMutationValidating, true
+	case string(BotSkillMutationVersionReady):
+		return BotSkillMutationVersionReady, true
+	case string(BotSkillMutationDefinitionCommitted):
+		return BotSkillMutationDefinitionCommitted, true
+	case string(BotSkillMutationActivationPending):
+		return BotSkillMutationActivationPending, true
+	case string(BotSkillMutationActive):
+		return BotSkillMutationActive, true
+	case string(BotSkillMutationRejected):
+		return BotSkillMutationRejected, true
+	case string(BotSkillMutationCompensationPending):
+		return BotSkillMutationCompensationPending, true
+	case string(BotSkillMutationRolledBack):
+		return BotSkillMutationRolledBack, true
+	default:
+		return "", false
+	}
+}
+
+// BotSkillMutationCreateInput contains immutable, server-attributed facts for
+// beginning a mutation. Actor identity is supplied by the canonical CatsCo
+// envelope, never trusted from a model-authored payload.
+type BotSkillMutationCreateInput struct {
+	BotUID                      int64
+	LocalSkillID                string
+	ActorUserUID                int64
+	SourceTopicID               string
+	SourceMessageID             int64
+	RuntimeBodyID               string
+	ClientRequestID             string
+	Operation                   BotSkillMutationOperation
+	CandidateContentHash        string
+	ExpectedDefinitionRevision  int64
+	ExpectedPreviousContentHash string
+	BeforeReference             *BotSkillRef
+	RollbackOf                  *int64
+}
+
+// BotSkillMutation is the auditable control-plane fact. It stores immutable
+// references and hashes, never Skill package bytes or credentials.
+type BotSkillMutation struct {
+	ID                          int64                     `json:"id"`
+	BotUID                      int64                     `json:"bot_uid"`
+	LocalSkillID                string                    `json:"local_skill_id"`
+	ActorUserUID                int64                     `json:"actor_user_uid"`
+	SourceTopicID               string                    `json:"source_topic_id"`
+	SourceMessageID             int64                     `json:"source_message_id"`
+	RuntimeBodyID               string                    `json:"runtime_body_id"`
+	ClientRequestID             string                    `json:"client_request_id"`
+	Operation                   BotSkillMutationOperation `json:"operation"`
+	CandidateContentHash        string                    `json:"candidate_content_hash"`
+	ExpectedDefinitionRevision  int64                     `json:"expected_definition_revision"`
+	ExpectedPreviousContentHash string                    `json:"expected_previous_content_hash,omitempty"`
+	BeforeReference             *BotSkillRef              `json:"before_reference,omitempty"`
+	AfterReference              *BotSkillRef              `json:"after_reference,omitempty"`
+	GitCommitSHA                string                    `json:"git_commit_sha,omitempty"`
+	DefinitionRevision          *int64                    `json:"definition_revision,omitempty"`
+	Status                      BotSkillMutationStatus    `json:"status"`
+	ErrorCode                   string                    `json:"error_code,omitempty"`
+	ErrorSummary                string                    `json:"error_summary,omitempty"`
+	RollbackOf                  *int64                    `json:"rollback_of,omitempty"`
+	LeaseGeneration             int64                     `json:"lease_generation"`
+	LeaseExpiresAt              time.Time                 `json:"lease_expires_at"`
+	CreatedAt                   time.Time                 `json:"created_at"`
+	UpdatedAt                   time.Time                 `json:"updated_at"`
+	ActivatedAt                 *time.Time                `json:"activated_at,omitempty"`
+}
+
+// BotSkillMutationTransition carries only state-dependent output facts. Nil
+// values preserve existing database fields.
+type BotSkillMutationTransition struct {
+	AfterReference     *BotSkillRef
+	GitCommitSHA       *string
+	DefinitionRevision *int64
+	ErrorCode          *string
+	ErrorSummary       *string
+	ActivatedAt        *time.Time
 }
 
 // BotDefinition is the deliberately small portable identity of a XiaoBa bot.

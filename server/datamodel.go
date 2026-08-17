@@ -21,19 +21,23 @@ type ClientMessage struct {
 	Friend      *MsgClientFriend `json:"friend,omitempty"`
 	DeviceRPC   *MsgDeviceRPC    `json:"device_rpc,omitempty"`
 	ThinToolRPC *MsgThinToolRPC  `json:"thin_tool_rpc,omitempty"`
+	// SkillMutationGrant is accepted only from the current authenticated Bot
+	// runtime connection. It issues authorization; it never mutates a Skill.
+	SkillMutationGrant *MsgSkillMutationGrant `json:"skill_mutation_grant,omitempty"`
 }
 
 // ServerMessage is the top-level server-to-client message envelope.
 type ServerMessage struct {
-	Ctrl        *MsgServerCtrl                `json:"ctrl,omitempty"`
-	Data        *MsgServerData                `json:"data,omitempty"`
-	TaskStatus  *types.ConversationTaskStatus `json:"task_status,omitempty"`
-	Pres        *MsgServerPres                `json:"pres,omitempty"`
-	Meta        *MsgServerMeta                `json:"meta,omitempty"`
-	Info        *MsgServerInfo                `json:"info,omitempty"`
-	Friend      *MsgServerFriend              `json:"friend,omitempty"`
-	DeviceRPC   *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
-	ThinToolRPC *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
+	Ctrl               *MsgServerCtrl                `json:"ctrl,omitempty"`
+	Data               *MsgServerData                `json:"data,omitempty"`
+	TaskStatus         *types.ConversationTaskStatus `json:"task_status,omitempty"`
+	Pres               *MsgServerPres                `json:"pres,omitempty"`
+	Meta               *MsgServerMeta                `json:"meta,omitempty"`
+	Info               *MsgServerInfo                `json:"info,omitempty"`
+	Friend             *MsgServerFriend              `json:"friend,omitempty"`
+	DeviceRPC          *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
+	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
+	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
 
 	// suppressPushNotification is server-only provenance. It must never be
 	// serialized to a web client or be set from client-provided metadata.
@@ -59,6 +63,7 @@ type MsgClientHiDevice struct {
 	DisplayName    string             `json:"display_name,omitempty"`
 	BodyID         string             `json:"body_id,omitempty"`
 	InstallationID string             `json:"installation_id,omitempty"`
+	RuntimeRole    string             `json:"runtime_role,omitempty"`
 	OS             string             `json:"os,omitempty"`
 	Status         string             `json:"status,omitempty"`
 	Capabilities   []string           `json:"capabilities,omitempty"`
@@ -167,6 +172,31 @@ type MsgDeviceRPC struct {
 type MsgDeviceRPCError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// MsgSkillMutationGrant is the candidate-bound authorization exchange between
+// one active Bot runtime and CatsCo. Actor, Bot, and runtime identities in the
+// result are server-attributed and cannot be supplied by the request.
+type MsgSkillMutationGrant struct {
+	ID                         string             `json:"id,omitempty"`
+	Type                       string             `json:"type"` // "request" or "result"
+	RequestID                  string             `json:"request_id"`
+	ClientRequestID            string             `json:"client_request_id,omitempty"`
+	SourceTopicID              string             `json:"source_topic_id,omitempty"`
+	SourceMessageID            int64              `json:"source_message_id,omitempty"`
+	LocalSkillID               string             `json:"local_skill_id,omitempty"`
+	Operation                  string             `json:"operation,omitempty"`
+	CandidateContentHash       string             `json:"candidate_content_hash,omitempty"`
+	CandidateSizeBytes         int64              `json:"candidate_size_bytes,omitempty"`
+	ExpectedDefinitionRevision int64              `json:"expected_definition_revision,omitempty"`
+	ExpectedPreviousHash       string             `json:"expected_previous_content_hash,omitempty"`
+	BeforeReference            *types.BotSkillRef `json:"before_reference,omitempty"`
+	Grant                      string             `json:"grant,omitempty"`
+	ExpiresAt                  int64              `json:"expires_at,omitempty"`
+	ActorUserID                string             `json:"actor_user_id,omitempty"`
+	AgentID                    string             `json:"agent_id,omitempty"`
+	RuntimeBodyID              string             `json:"runtime_body_id,omitempty"`
+	Error                      *MsgDeviceRPCError `json:"error,omitempty"`
 }
 
 // MsgThinToolRPC carries a direct tool request/result between two connected

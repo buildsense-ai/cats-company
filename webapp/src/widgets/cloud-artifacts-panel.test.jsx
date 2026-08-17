@@ -5,8 +5,9 @@ vi.mock('../api', () => ({
   resolveMediaURL: vi.fn((url) => url),
   api: {
     getCloudArtifacts: vi.fn(),
-    getAgentFiles: vi.fn(),
-    getAgentSkills: vi.fn(),
+    getTopicFiles: vi.fn(),
+    publishCloudArtifact: vi.fn(),
+    uploadFile: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
   },
@@ -21,13 +22,16 @@ const activeArtifact = {
   kind: 'html',
   url: 'https://example.test/lesson-game/latest/',
   status: 'active',
-  created_at: '2026-07-22T05:00:00.000Z',
   updated_at: '2026-07-22T06:00:00.000Z',
   publish_version: 2,
-  agent_name: '豆包',
   source_title: '课堂任务',
+  source_topic_id: 'p2p_7_440',
+  creator_type: 'user',
+  creator_uid: '8',
+  creator_name: '成员甲',
+  uploader_uid: '8',
+  uploader_name: '成员甲',
   can_delete: true,
-  can_restore: false,
 };
 
 const deletedArtifact = {
@@ -51,34 +55,12 @@ const historicalFile = {
   created_at: '2026-07-29T02:20:00.000Z',
 };
 
-const installedSkill = {
-  source: 'skillhub',
-  skillId: 'catsco/prompt-editor',
-  version: '1.0.0',
-  contentHash: 'a'.repeat(64),
-};
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
-function TestPanel({
-  initialTab = 'active',
-  topicId = 'p2p_7_440',
-  onPreviewArtifact,
-  onPreviewFile,
-}) {
+function TestPanel({ initialTab = 'active', agentUid = 440, onPreviewArtifact, onPreviewFile }) {
   const [tab, setTab] = React.useState(initialTab);
   return (
     <CloudArtifactsPanel
-      agentUid={440}
-      topicId={topicId}
+      agentUid={agentUid}
+      topicId="p2p_7_440"
       tab={tab}
       onTabChange={setTab}
       onClose={vi.fn()}
@@ -95,18 +77,20 @@ describe('CloudArtifactsPanel', () => {
   let onPreviewFile;
 
   beforeEach(() => {
-    api.getCloudArtifacts.mockReset().mockResolvedValue({ artifacts: [activeArtifact] });
-    api.getAgentFiles.mockReset().mockResolvedValue({
+    api.getCloudArtifacts.mockReset().mockResolvedValue({
+      artifacts: [activeArtifact],
+      viewer_relation: 'owner',
+      visibility: 'agent_users',
+    });
+    api.getTopicFiles.mockReset().mockResolvedValue({
       files: [historicalFile],
       has_more: false,
       next_before_id: 0,
     });
-    api.getAgentSkills.mockReset().mockResolvedValue({
-      skills: [installedSkill],
-      revision: 3,
-    });
     api.deleteCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: deletedArtifact });
     api.restoreCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: activeArtifact });
+    api.publishCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: activeArtifact });
+    api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/files/result.html' });
     onPreviewArtifact = vi.fn();
     onPreviewFile = vi.fn();
     Object.defineProperty(navigator, 'clipboard', {
@@ -124,243 +108,152 @@ describe('CloudArtifactsPanel', () => {
     container.remove();
   });
 
-  test('loads active metadata and previews the selected artifact in the parent workspace', async () => {
+  test('shows only files and results, with the result visibility explanation', async () => {
     await renderPanel();
 
-    expect(api.getCloudArtifacts).toHaveBeenCalledWith(440, 'active');
-    expect(container.textContent).toContain('课堂小游戏');
-    expect(container.textContent).toContain('发布 v2');
-    expect(container.textContent).toContain('豆包');
-    expect(container.textContent).toContain('课堂任务');
-    const artifactButton = container.querySelector('.cloud-artifact-main');
-    expect(artifactButton?.tagName).toBe('BUTTON');
-
-    await act(async () => {
-      artifactButton.click();
-    });
-    expect(onPreviewArtifact).toHaveBeenCalledWith(activeArtifact);
-
-    await act(async () => {
-      container.querySelector('button[aria-label="复制 课堂小游戏 链接"]').click();
-      await Promise.resolve();
-    });
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('https://example.test/lesson-game/latest/');
-  });
-
-  test('cancels deletion without making a request', async () => {
-    await renderPanel();
-
-    await act(async () => {
-      container.querySelector('button[aria-label="删除 课堂小游戏"]').click();
-    });
-    expect(container.textContent).toContain('链接会立即失效');
-
-    await act(async () => {
-      container.querySelector('.cloud-artifact-confirm-actions button:not(.danger)').click();
-    });
-    expect(api.deleteCloudArtifact).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('课堂小游戏');
-  });
-
-  test('deletes one exact artifact after confirmation', async () => {
-    await renderPanel();
-
-    await act(async () => {
-      container.querySelector('button[aria-label="删除 课堂小游戏"]').click();
-    });
-    await act(async () => {
-      container.querySelector('.cloud-artifact-confirm-actions button.danger').click();
-      await Promise.resolve();
-    });
-
-    expect(api.deleteCloudArtifact).toHaveBeenCalledTimes(1);
-    expect(api.deleteCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
-    expect(container.textContent).not.toContain('课堂小游戏');
-  });
-
-  test('deleting one similar ID leaves sibling entries visible', async () => {
-    const siblings = [
-      { ...activeArtifact, id: 'witch-poison-game', title: '版本一' },
-      { ...activeArtifact, id: 'witch-poison-game-2', title: '版本二' },
-      { ...activeArtifact, id: 'witch-poison-game-3', title: '版本三' },
-    ];
-    api.getCloudArtifacts.mockResolvedValueOnce({ artifacts: siblings });
-    await renderPanel();
-
-    await act(async () => {
-      container.querySelector('button[aria-label="删除 版本二"]').click();
-    });
-    await act(async () => {
-      container.querySelector('.cloud-artifact-confirm-actions button.danger').click();
-      await Promise.resolve();
-    });
-
-    expect(api.deleteCloudArtifact).toHaveBeenCalledWith(440, 'witch-poison-game-2');
-    expect(container.textContent).toContain('版本一');
-    expect(container.textContent).not.toContain('版本二');
-    expect(container.textContent).toContain('版本三');
-  });
-
-  test('keeps an artifact visible when deletion fails', async () => {
-    api.deleteCloudArtifact.mockRejectedValueOnce(new Error('删除暂时失败'));
-    await renderPanel();
-
-    await act(async () => {
-      container.querySelector('button[aria-label="删除 课堂小游戏"]').click();
-    });
-    await act(async () => {
-      container.querySelector('.cloud-artifact-confirm-actions button.danger').click();
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain('课堂小游戏');
-    expect(container.textContent).toContain('删除暂时失败');
-  });
-
-  test('loads the recycle bin and restores an exact artifact', async () => {
-    api.getCloudArtifacts
-      .mockResolvedValueOnce({ artifacts: [activeArtifact] })
-      .mockResolvedValueOnce({ artifacts: [deletedArtifact] });
-    await renderPanel();
-
-    await act(async () => {
-      container.querySelector('button[aria-label="打开回收站"]').click();
-      await Promise.resolve();
-    });
-
-    expect(api.getCloudArtifacts).toHaveBeenLastCalledWith(440, 'deleted');
-    expect(container.querySelector('.cloud-artifact-main')?.tagName).toBe('DIV');
-    expect(container.querySelector('button[aria-label="复制 课堂小游戏 链接"]')).toBeNull();
-
-    await act(async () => {
-      container.querySelector('button[aria-label="恢复 课堂小游戏"]').click();
-      await Promise.resolve();
-    });
-    expect(api.restoreCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
-    expect(container.textContent).not.toContain('课堂小游戏');
-  });
-
-  test('ignores an older active request that resolves after the recycle bin', async () => {
-    const activeRequest = deferred();
-    const deletedRequest = deferred();
-    const staleActiveArtifact = {
-      ...activeArtifact,
-      id: 'stale-active',
-      title: '较早的网页结果',
-    };
-    const currentDeletedArtifact = {
-      ...deletedArtifact,
-      id: 'current-deleted',
-      title: '当前回收站结果',
-    };
-    api.getCloudArtifacts.mockImplementation((_agentUid, status) => (
-      status === 'active' ? activeRequest.promise : deletedRequest.promise
-    ));
-    await renderPanel();
-
-    await act(async () => {
-      container.querySelector('button[aria-label="打开回收站"]').click();
-      await Promise.resolve();
-    });
-    await act(async () => {
-      deletedRequest.resolve({ artifacts: [currentDeletedArtifact] });
-      await Promise.resolve();
-    });
-    expect(container.textContent).toContain('当前回收站结果');
-
-    await act(async () => {
-      activeRequest.resolve({ artifacts: [staleActiveArtifact] });
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain('当前回收站结果');
-    expect(container.textContent).not.toContain('较早的网页结果');
-    expect(
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物')
-        .getAttribute('aria-selected'),
-    ).toBe('true');
-    expect(container.querySelector('button[aria-label="返回产物列表"]')).not.toBeNull();
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '产物', '技能']);
+      .toEqual(['文件', '成果']);
+    expect(container.textContent).toContain('共享成果');
+    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('所有者');
+    expect(container.textContent).toContain('成员可查看 · 你可管理全部成果');
+    expect(container.textContent).not.toContain('已添加该 Agent');
+    expect(container.querySelector('button[aria-label="筛选成果范围"]')?.textContent).toContain('当前任务');
+    expect(container.textContent).toContain('成员甲');
+    expect(container.textContent).not.toContain('Agent 用户可见');
+    expect(container.textContent).not.toContain('技能');
   });
 
-  test('loads the skills bound to the current Agent', async () => {
+  test('labels legacy results as Agent generated instead of treating visibility as an uploader', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: '',
+        creator_uid: '',
+        creator_name: '',
+        uploader_uid: '',
+        uploader_name: '',
+        agent_name: '豆包',
+      }],
+      viewer_relation: 'owner',
+    });
     await renderPanel();
 
-    await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '技能')
-        .click();
-      await Promise.resolve();
+    expect(container.textContent).toContain('豆包 生成');
+    expect(container.textContent).not.toContain('Agent 用户可见');
+  });
+
+  test('does not guess a creator for historical results with no provenance', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'unknown',
+        creator_uid: '',
+        creator_name: '',
+        uploader_uid: '',
+        uploader_name: '',
+        agent_name: '',
+      }],
+      viewer_relation: 'owner',
     });
-
-    expect(api.getAgentSkills).toHaveBeenCalledWith(440);
-    expect(container.textContent).toContain('catsco/prompt-editor');
-    expect(container.textContent).toContain('SkillHub');
-    expect(container.textContent).toContain('版本 1.0.0');
-    expect(container.querySelector('.cloud-skill-item .cloud-artifact-main')?.tagName).toBe('DIV');
-    expect(container.querySelector('button[aria-label="打开回收站"]')).toBeNull();
-  });
-
-  test('shows the skills empty state', async () => {
-    api.getAgentSkills.mockResolvedValueOnce({ skills: [], skills_visibility: 'owner' });
-    await renderPanel({ initialTab: 'skills' });
-
-    expect(container.textContent).toContain('这个 Agent 还没有添加技能');
-  });
-
-  test('explains when the current account cannot inspect Agent skills', async () => {
-    const error = new Error('Agent 所有者未公开技能列表');
-    error.status = 403;
-    api.getAgentSkills.mockRejectedValueOnce(error);
-    await renderPanel({ initialTab: 'skills' });
-
-    expect(container.querySelector('[role="alert"]')?.textContent)
-      .toContain('Agent 所有者未公开技能列表');
-  });
-
-  test('ignores an older artifact request after switching to skills', async () => {
-    const artifactRequest = deferred();
-    api.getCloudArtifacts.mockReturnValueOnce(artifactRequest.promise);
     await renderPanel();
 
-    await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '技能')
-        .click();
-      await Promise.resolve();
-    });
-    expect(container.textContent).toContain('catsco/prompt-editor');
-
-    await act(async () => {
-      artifactRequest.resolve({ artifacts: [activeArtifact] });
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain('catsco/prompt-editor');
-    expect(container.textContent).not.toContain('课堂小游戏');
+    expect(container.textContent).toContain('来源未知');
   });
 
-  test('indexes historical agent files and opens one in the parent preview', async () => {
+  test('filters results by the current task and can show all Agent results', async () => {
+    const otherTaskArtifact = {
+      ...activeArtifact,
+      id: 'other-task-result',
+      title: '其他任务成果',
+      source_topic_id: 'grp_80',
+    };
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [activeArtifact, otherTaskArtifact],
+      viewer_relation: 'owner',
+    });
     await renderPanel();
 
+    expect(container.textContent).toContain('课堂小游戏');
+    expect(container.textContent).not.toContain('其他任务成果');
+
+    const scopeTrigger = container.querySelector('button[aria-label="筛选成果范围"]');
+    scopeTrigger.getBoundingClientRect = () => ({
+      bottom: 72, height: 32, left: 240, right: 336, top: 40, width: 96,
+      x: 240, y: 40, toJSON: () => ({}),
+    });
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '文件')
-        .click();
-      await Promise.resolve();
+      scopeTrigger.click();
+    });
+    expect(document.querySelector('.cloud-artifacts-scope-options')?.style.width).toBe('96px');
+    await act(async () => {
+      document.querySelector('.cloud-artifacts-scope-options button:not(:disabled):last-child').click();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'p2p_7_440',
+    expect(container.textContent).toContain('课堂小游戏');
+    expect(container.textContent).toContain('其他任务成果');
+  });
+
+  test('supports keyboard selection and Escape without closing the cloud panel', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [
+        activeArtifact,
+        { ...activeArtifact, id: 'other-task-result', source_topic_id: 'grp_80' },
+      ],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    const scopeTrigger = container.querySelector('button[aria-label="筛选成果范围"]');
+    scopeTrigger.getBoundingClientRect = () => ({
+      bottom: 72, height: 32, left: 240, right: 336, top: 40, width: 96,
+      x: 240, y: 40, toJSON: () => ({}),
+    });
+    await act(async () => {
+      scopeTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(scopeTrigger.getAttribute('aria-expanded')).toBe('true');
+
+    let listbox = document.querySelector('.cloud-artifacts-scope-options');
+    await act(async () => {
+      listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(scopeTrigger.textContent).toContain('全部');
+
+    await act(async () => {
+      scopeTrigger.click();
+    });
+    listbox = document.querySelector('.cloud-artifacts-scope-options');
+    await act(async () => {
+      listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(scopeTrigger.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+  });
+
+  test('keeps legacy results without a task source visible in the current-task view', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{ ...activeArtifact, source_topic_id: undefined }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain('课堂小游戏');
+    expect(container.querySelector('button[aria-label="筛选成果范围"]')?.textContent).toContain('全部');
+    await act(async () => {
+      container.querySelector('button[aria-label="筛选成果范围"]').click();
+    });
+    expect(document.querySelector('.cloud-artifacts-scope-options button')?.disabled).toBe(true);
+  });
+
+  test('loads conversation files without an Agent sender filter and opens the preview', async () => {
+    await renderPanel({ initialTab: 'files' });
+
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_7_440', {
       beforeId: 0,
       limit: 40,
     });
     expect(container.textContent).toContain('期末学情报告.pdf');
-    expect(container.textContent).toContain('PDF');
     expect(container.textContent).toContain('711.3 KB');
-    expect(container.textContent).toContain('期末材料');
 
     await act(async () => {
       container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]').click();
@@ -368,110 +261,16 @@ describe('CloudArtifactsPanel', () => {
     expect(onPreviewFile).toHaveBeenCalledWith(historicalFile);
   });
 
-  test('keeps unpreviewable DOCX and ZIP files in the list with open and download actions', async () => {
-    const docxFile = {
-      ...historicalFile,
-      id: '810:0',
-      name: '复习清单.docx',
-      url: '/uploads/files/review-list.docx',
-      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    };
-    const zipFile = {
-      ...historicalFile,
-      id: '800:0',
-      name: '课程素材.zip',
-      url: '/uploads/files/course-assets.zip',
-      mime_type: 'application/zip',
-    };
-    api.getAgentFiles.mockResolvedValueOnce({
-      files: [docxFile, zipFile],
-      has_more: false,
-      next_before_id: 0,
-    });
-    await renderPanel();
-
-    await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '文件')
-        .click();
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('button[aria-label="预览文件 复习清单.docx"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="预览文件 课程素材.zip"]')).toBeNull();
-    expect(
-      container.querySelector('a[aria-label="在新窗口打开 复习清单.docx"]')?.getAttribute('href'),
-    ).toBe('/uploads/files/review-list.docx');
-    expect(
-      container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('href'),
-    ).toBe('/uploads/files/review-list.docx?download=1');
-    expect(
-      container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('target'),
-    ).toBe('_blank');
-    expect(
-      container.querySelector('a[aria-label="在新窗口打开 课程素材.zip"]')?.getAttribute('href'),
-    ).toBe('/uploads/files/course-assets.zip');
-    expect(
-      container.querySelector('a[aria-label="下载 课程素材.zip"]')?.getAttribute('href'),
-    ).toBe('/uploads/files/course-assets.zip?download=1');
-    expect(
-      container.querySelector('a[aria-label="下载 课程素材.zip"]')?.getAttribute('target'),
-    ).toBe('_blank');
-    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
-    expect(onPreviewFile).not.toHaveBeenCalled();
-  });
-
-  test('keeps CatsCo OSS downloads in the current context in an installed PWA', async () => {
-    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
-    api.getAgentFiles.mockResolvedValueOnce({
-      files: [{
-        ...historicalFile,
-        name: '复习清单.docx',
-        url: '/uploads/files/review-list.docx',
-        mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      }],
-      has_more: false,
-      next_before_id: 0,
-    });
-    await renderPanel();
-
-    await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '文件')
-        .click();
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('target')).toBeNull();
-  });
-
-  test('loads older historical files with a stable message cursor', async () => {
-    const olderFile = {
-      ...historicalFile,
-      id: '700:0',
-      name: '复习清单.docx',
-      url: '/uploads/files/review-list.docx',
-      message_id: 700,
-    };
-    api.getAgentFiles
+  test('loads older conversation files with the stable cursor', async () => {
+    api.getTopicFiles
+      .mockResolvedValueOnce({ files: [historicalFile], has_more: true, next_before_id: 820 })
       .mockResolvedValueOnce({
-        files: [historicalFile],
-        has_more: true,
-        next_before_id: 820,
-      })
-      .mockResolvedValueOnce({
-        files: [olderFile],
+        files: [{ ...historicalFile, id: '700:0', message_id: 700, name: '复习清单.docx' }],
         has_more: false,
         next_before_id: 0,
       });
-    await renderPanel();
+    await renderPanel({ initialTab: 'files' });
 
-    await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '文件')
-        .click();
-      await Promise.resolve();
-    });
     await act(async () => {
       [...container.querySelectorAll('button')]
         .find((button) => button.textContent === '加载更多')
@@ -479,59 +278,152 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenLastCalledWith(440, {
-      topicId: 'p2p_7_440',
+    expect(api.getTopicFiles).toHaveBeenLastCalledWith('p2p_7_440', {
       beforeId: 820,
       limit: 40,
     });
-    expect(container.textContent).toContain('期末学情报告.pdf');
     expect(container.textContent).toContain('复习清单.docx');
   });
 
-  test('refreshes the current tab and shows an empty state', async () => {
-    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+  test('previews and copies an active result', async () => {
     await renderPanel();
-    expect(container.textContent).toContain('还没有已部署的网页');
 
+    await act(async () => {
+      container.querySelector('button[aria-label="预览 课堂小游戏"]').click();
+    });
+    expect(onPreviewArtifact).toHaveBeenCalledWith(activeArtifact);
+
+    await act(async () => {
+      container.querySelector('button[aria-label="复制 课堂小游戏 链接"]').click();
+      await Promise.resolve();
+    });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(activeArtifact.url);
+  });
+
+  test('lets the Agent owner delete and restore a result', async () => {
+    api.getCloudArtifacts
+      .mockResolvedValueOnce({ artifacts: [activeArtifact], viewer_relation: 'owner' })
+      .mockResolvedValueOnce({ artifacts: [deletedArtifact], viewer_relation: 'owner' });
+    await renderPanel();
+
+    await act(async () => {
+      container.querySelector('button[aria-label="下架 课堂小游戏"]').click();
+    });
+    await act(async () => {
+      container.querySelector('.cloud-artifact-confirm-actions button.danger').click();
+      await Promise.resolve();
+    });
+    expect(api.deleteCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="打开回收站"]').click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector('button[aria-label="恢复 课堂小游戏"]').click();
+      await Promise.resolve();
+    });
+    expect(api.restoreCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
+  });
+
+  test('keeps a friend viewer read-only', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{ ...activeArtifact, can_delete: false }],
+      viewer_relation: 'friend',
+      visibility: 'agent_users',
+    });
+    await renderPanel();
+
+    expect(container.querySelector('button[aria-label="打开回收站"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="下架 课堂小游戏"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="复制 课堂小游戏 链接"]')).not.toBeNull();
+  });
+
+  test('lets a member publish immediately when the artifact service advertises the capability', async () => {
+    const publishedArtifact = {
+      ...activeArtifact,
+      id: 'member-result',
+      title: '课堂网页',
+      uploader_name: '成员甲',
+      uploaded_by_me: true,
+      can_delete: true,
+    };
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [],
+      viewer_relation: 'friend',
+      visibility: 'agent_users',
+      can_publish: true,
+      publish_mode: 'immediate',
+    });
+    api.publishCloudArtifact.mockResolvedValueOnce({ ok: true, artifact: publishedArtifact });
+    await renderPanel();
+
+    const file = new File(['<h1>result</h1>'], '课堂网页.html', { type: 'text/html' });
+    const input = container.querySelector('input[type="file"]');
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(api.uploadFile).toHaveBeenCalledWith(file, 'file');
+    expect(api.publishCloudArtifact).toHaveBeenCalledWith(440, {
+      title: '课堂网页',
+      kind: 'html',
+      url: 'http://localhost:3000/uploads/files/result.html',
+      source_topic_id: 'p2p_7_440',
+    });
+    expect(container.textContent).toContain('课堂网页');
+    expect(container.textContent).toContain('我上传');
+    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('成员');
+    expect(container.textContent).toContain('你可以查看和上传成果');
+    expect(container.querySelector('button[aria-label="下架 课堂网页"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('待审核');
+  });
+
+  test('keeps the upload control hidden for a legacy artifact service', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [activeArtifact],
+      viewer_relation: 'friend',
+      visibility: 'agent_users',
+    });
+    await renderPanel();
+
+    expect(container.querySelector('button[aria-label="上传成果"]')).toBeNull();
+    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('成员');
+    expect(container.textContent).toContain('你可以查看成果');
+  });
+
+  test('shows only the file tab when the current conversation has no Agent', async () => {
+    await renderPanel({ initialTab: 'files', agentUid: 0 });
+
+    expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
+      .toEqual(['文件']);
+    expect(api.getTopicFiles).toHaveBeenCalled();
+    expect(api.getCloudArtifacts).not.toHaveBeenCalled();
+    expect(container.querySelector('button[aria-label="筛选成果范围"]')).toBeNull();
+  });
+
+  test('shows a useful empty state and retry action', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({ artifacts: [], viewer_relation: 'owner' });
+    await renderPanel();
+    expect(container.textContent).toContain('当前任务还没有共享成果');
+
+    api.getCloudArtifacts.mockRejectedValueOnce(new Error('成果服务暂时不可用'));
     await act(async () => {
       container.querySelector('button[aria-label="刷新当前栏目"]').click();
       await Promise.resolve();
     });
-    expect(api.getCloudArtifacts).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('成果服务暂时不可用');
+    expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
   });
 
-  test('shows 文件、产物 and 技能 at the top and defaults an uncontrolled panel to current-conversation files', async () => {
-    await act(async () => {
-      root.render(
-        <CloudArtifactsPanel
-          agentUid={440}
-          topicId="p2p_7_440"
-          onClose={vi.fn()}
-          onPreviewArtifact={onPreviewArtifact}
-          onPreviewFile={onPreviewFile}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'p2p_7_440',
-      beforeId: 0,
-      limit: 40,
-    });
-    expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '产物', '技能']);
-    expect(container.querySelector('.cloud-artifacts-heading')).toBeNull();
-    expect(container.textContent).not.toContain('共 1 个');
-    expect(container.querySelector('button[aria-label="打开回收站"]')).toBeNull();
-  });
-
-  async function renderPanel({ initialTab = 'active', topicId = 'p2p_7_440' } = {}) {
+  async function renderPanel({ initialTab = 'active', agentUid = 440 } = {}) {
     await act(async () => {
       root.render(
         <TestPanel
           initialTab={initialTab}
-          topicId={topicId}
+          agentUid={agentUid}
           onPreviewArtifact={onPreviewArtifact}
           onPreviewFile={onPreviewFile}
         />,

@@ -259,6 +259,63 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID
 	return scanMessages(rows, "scan agent file message")
 }
 
+// ListTopicFileMessages returns newest file-bearing messages from all senders in one conversation.
+func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if topicID == "" {
+		return []*types.Message{}, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []interface{}{topicID}
+	beforeClause := ""
+	if beforeID > 0 {
+		beforeClause = " AND id < ?"
+		args = append(args, beforeID)
+	}
+	args = append(args, limit)
+	rows, err := a.db.Query(
+		fmt.Sprintf(
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+			 FROM messages
+			 WHERE topic_id = ?
+			   AND (
+			     msg_type = 'file'
+			     OR JSON_SEARCH(content_blocks, 'one', 'file', NULL, '$[*].type') IS NOT NULL
+			   )%s
+			 ORDER BY id DESC
+			 LIMIT ?`,
+			beforeClause,
+		),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list topic file messages: %w", err)
+	}
+	defer rows.Close()
+
+	msgs := make([]*types.Message, 0)
+	for rows.Next() {
+		m := &types.Message{}
+		var blocksJSON []byte
+		var mode, role *string
+		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role); err != nil {
+			return nil, fmt.Errorf("scan topic file message: %w", err)
+		}
+		if len(blocksJSON) > 0 {
+			json.Unmarshal(blocksJSON, &m.ContentBlocks)
+		}
+		if mode != nil {
+			m.Mode = *mode
+		}
+		if role != nil {
+			m.Role = *role
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
 // GetLatestMessagesForTopics returns the newest persisted message for each topic.
 func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error) {
 	if len(topicIDs) == 0 {

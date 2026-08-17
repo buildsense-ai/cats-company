@@ -75,6 +75,9 @@ test("generation returns an OpenAI-compatible completed image", async () => {
   assert.equal(body.provider, "dreamina");
   assert.match(body.task_id, /^dreamina_/);
   assert.ok(Buffer.from(body.data[0].b64_json, "base64").length > 100);
+  const fakeState = JSON.parse(await readFile(process.env.FAKE_DREAMINA_STATE, "utf8"));
+  assert.equal(fakeState.last_submit_command, "text2image");
+  assert.ok(fakeState.last_submit_args.includes("--resolution_type=2k"));
   const metadata = JSON.parse(await readFile(
     path.join(tempRoot, "tasks", body.task_id, "worker-task.json"),
     "utf8",
@@ -100,6 +103,7 @@ test("reference generation preserves the image and uses image2image", async () =
     body: JSON.stringify({
       prompt: "Keep the character identity and make the scene brighter",
       images: [{ image_url: `data:image/png;base64,${source.data[0].b64_json}` }],
+      size: "3840x2160",
       output_format: "png",
     }),
   });
@@ -111,6 +115,47 @@ test("reference generation preserves the image and uses image2image", async () =
   const fakeState = JSON.parse(await readFile(process.env.FAKE_DREAMINA_STATE, "utf8"));
   assert.equal(fakeState.last_submit_command, "image2image");
   assert.ok(fakeState.last_submit_args.some((value) => value.startsWith("--images=")));
+  assert.ok(fakeState.last_submit_args.includes("--resolution_type=4k"));
+});
+
+test("explicit 4K requests select Dreamina 4K for text generation", async () => {
+  process.env.FAKE_DREAMINA_SCENARIO = "success";
+  const response = await workerFetch("/v1/images/generations", {
+    method: "POST",
+    body: JSON.stringify({
+      prompt: "A clean architectural visualization",
+      size: "3840x2160",
+      output_format: "png",
+    }),
+  });
+  assert.equal(response.status, 202);
+  const pending = await response.json();
+  const { response: completedResponse, body } = await waitForTask(pending.task_id);
+  assert.equal(completedResponse.status, 200);
+  assert.equal(body.status, "completed");
+  const fakeState = JSON.parse(await readFile(process.env.FAKE_DREAMINA_STATE, "utf8"));
+  assert.equal(fakeState.last_submit_command, "text2image");
+  assert.ok(fakeState.last_submit_args.includes("--resolution_type=4k"));
+});
+
+test("2K-sized requests are not promoted to Dreamina 4K", async () => {
+  process.env.FAKE_DREAMINA_SCENARIO = "success";
+  const response = await workerFetch("/v1/images/generations", {
+    method: "POST",
+    body: JSON.stringify({
+      prompt: "A wide editorial scene",
+      size: "2560x1440",
+      output_format: "png",
+    }),
+  });
+  assert.equal(response.status, 202);
+  const pending = await response.json();
+  const { response: completedResponse, body } = await waitForTask(pending.task_id);
+  assert.equal(completedResponse.status, 200);
+  assert.equal(body.status, "completed");
+  const fakeState = JSON.parse(await readFile(process.env.FAKE_DREAMINA_STATE, "utf8"));
+  assert.equal(fakeState.last_submit_command, "text2image");
+  assert.ok(fakeState.last_submit_args.includes("--resolution_type=2k"));
 });
 
 test("pending tasks resume without another submission", async () => {

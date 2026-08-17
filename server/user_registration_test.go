@@ -23,12 +23,14 @@ type userRegistrationTestStore struct {
 	usersByUsername map[string]*types.User
 	usersByEmail    map[string]*types.User
 	createdUsers    []*types.User
+	passwordUpdates map[string]int
 }
 
 func newUserRegistrationTestStore() *userRegistrationTestStore {
 	return &userRegistrationTestStore{
 		usersByUsername: make(map[string]*types.User),
 		usersByEmail:    make(map[string]*types.User),
+		passwordUpdates: make(map[string]int),
 	}
 }
 
@@ -49,6 +51,17 @@ func (s *userRegistrationTestStore) GetUserByUsername(username string) (*types.U
 
 func (s *userRegistrationTestStore) GetUserByEmail(email string) (*types.User, error) {
 	return s.usersByEmail[email], nil
+}
+
+func (s *userRegistrationTestStore) UpdateUserPasswordHash(uid int64, passHash []byte) error {
+	for _, u := range s.createdUsers {
+		if u.ID == uid {
+			u.PassHash = passHash
+			s.passwordUpdates[u.Email]++
+			return nil
+		}
+	}
+	return errors.New("user not found")
 }
 
 func performUserRequest(t *testing.T, handler http.HandlerFunc, body map[string]string) *httptest.ResponseRecorder {
@@ -102,8 +115,8 @@ func TestHandleRegisterRequiresVerificationCode(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := responseError(t, rec); got != "invalid or expired verification code" {
-		t.Fatalf("error = %q, want %q", got, "invalid or expired verification code")
+	if got := responseError(t, rec); got != "verification code required" {
+		t.Fatalf("error = %q, want %q", got, "verification code required")
 	}
 	if len(db.createdUsers) != 0 {
 		t.Fatalf("created %d users without a verification code", len(db.createdUsers))
@@ -154,7 +167,9 @@ func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
 		username string
 	}
 	calls := make(chan provisionCall, 1)
+	ready := make(chan int64, 1)
 	handler := NewUserHandler(db)
+	handler.SetRelayRegistrationReadyHook(func(uid int64) { ready <- uid })
 	handler.relayRegistrationDelays = []time.Duration{0}
 	handler.relayRegistrationCreate = func(_ context.Context, uid int64, username string) error {
 		calls <- provisionCall{uid: uid, username: username}
@@ -178,6 +193,14 @@ func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("relay key provisioning was not scheduled")
+	}
+	select {
+	case uid := <-ready:
+		if uid != 1 {
+			t.Fatalf("relay ready uid=%d, want 1", uid)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("commercial relay initialization was not scheduled")
 	}
 }
 
@@ -214,6 +237,41 @@ func TestHandleRegisterIgnoresRelayProvisioningFailure(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("relay provisioning failure path was not exercised")
+	}
+}
+
+func TestHandleResetPasswordConsumesVerificationCode(t *testing.T) {
+	db := newUserRegistrationTestStore()
+	email := "reset-consumed@example.com"
+	password := "newpass123"
+	code := "482913"
+
+	if _, err := db.CreateUser(&types.User{Username: "reset-user", Email: email, AccountType: types.AccountHuman}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	deleteVerificationCode(email, verificationPurposePasswordReset)
+	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposePasswordReset) })
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), verificationPurposePasswordReset)
+
+	handler := NewUserHandler(db)
+	body := map[string]string{"email": email, "code": code, "password": password}
+
+	rec := performUserRequest(t, handler.HandleResetPassword, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first reset status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := db.passwordUpdates[email]; got != 1 {
+		t.Fatalf("password updates = %d, want 1", got)
+	}
+
+	// Replaying the same consumed code must fail.
+	rec2 := performUserRequest(t, handler.HandleResetPassword, body)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("replayed reset status = %d, want %d; body=%s", rec2.Code, http.StatusBadRequest, rec2.Body.String())
+	}
+	if got := db.passwordUpdates[email]; got != 1 {
+		t.Fatalf("password updates after replay = %d, want 1", got)
 	}
 }
 

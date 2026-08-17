@@ -16,11 +16,13 @@ func (a *Adapter) CreateSchema() error {
 		createProjectsTable,
 		createProjectTopicsTable,
 		createConversationTitlesTable,
+		createConversationNotificationMutesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
+		createBotSkillMutationsTable,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
@@ -54,6 +56,10 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddProfileRole,
+		migrateBotConfigAddProfileDescription,
+		migrateBotConfigAddArtifactUploadPolicy,
+		migrateBotConfigAddSkillMutationMode,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
@@ -264,6 +270,18 @@ CREATE TABLE IF NOT EXISTS conversation_titles (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createConversationNotificationMutesTable = `
+CREATE TABLE IF NOT EXISTS conversation_notification_mutes (
+    user_id BIGINT NOT NULL,
+    topic_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id),
+    -- A P2P topic is created on its first message, while a user may mute the
+    -- visible conversation before then.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createMessagesTable = `
 CREATE TABLE IF NOT EXISTS messages (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -338,9 +356,52 @@ CREATE TABLE IF NOT EXISTS bot_config (
     config JSON DEFAULT NULL,
     skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner',
     body_id VARCHAR(128) DEFAULT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'general',
+    description TEXT NULL,
+    artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createBotSkillMutationsTable = `
+CREATE TABLE IF NOT EXISTS bot_skill_mutations (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    bot_uid BIGINT NOT NULL,
+    local_skill_id VARCHAR(128) NOT NULL,
+    actor_user_uid BIGINT NOT NULL,
+    source_topic_id VARCHAR(255) NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    runtime_body_id VARCHAR(128) NOT NULL,
+    client_request_id VARCHAR(128) NOT NULL,
+    request_fingerprint CHAR(64) NOT NULL,
+    operation ENUM('create','replace','rollback') NOT NULL,
+    candidate_content_hash CHAR(64) NOT NULL,
+    expected_definition_revision BIGINT NOT NULL,
+    expected_previous_content_hash CHAR(64) DEFAULT NULL,
+    before_reference JSON DEFAULT NULL,
+    after_reference JSON DEFAULT NULL,
+    git_commit_sha VARCHAR(64) DEFAULT NULL,
+    definition_revision BIGINT DEFAULT NULL,
+    status ENUM('validating','version_ready','definition_committed','activation_pending','active','rejected','compensation_pending','rolled_back') NOT NULL DEFAULT 'validating',
+    error_code VARCHAR(64) DEFAULT NULL,
+    error_summary VARCHAR(512) DEFAULT NULL,
+    rollback_of BIGINT DEFAULT NULL,
+    lease_generation BIGINT NOT NULL DEFAULT 1,
+    lease_expires_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    activated_at TIMESTAMP(6) DEFAULT NULL,
+    active_slot TINYINT GENERATED ALWAYS AS (
+        CASE WHEN status IN ('validating','version_ready','definition_committed','activation_pending','compensation_pending') THEN 1 ELSE NULL END
+    ) STORED,
+    UNIQUE KEY uk_bot_skill_mutations_request (actor_user_uid, bot_uid, client_request_id),
+    UNIQUE KEY uk_bot_skill_mutations_active (bot_uid, active_slot),
+    KEY idx_bot_skill_mutations_audit (bot_uid, updated_at, id),
+    KEY idx_bot_skill_mutations_source (source_topic_id, source_message_id),
+    FOREIGN KEY (bot_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (rollback_of) REFERENCES bot_skill_mutations(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -731,6 +792,22 @@ ALTER TABLE bot_config ADD COLUMN tenant_name VARCHAR(128) DEFAULT NULL;
 // Migration: add persistent bot body binding.
 const migrateBotConfigAddBodyID = `
 ALTER TABLE bot_config ADD COLUMN body_id VARCHAR(128) DEFAULT NULL;
+`
+
+const migrateBotConfigAddProfileRole = `
+ALTER TABLE bot_config ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'general';
+`
+
+const migrateBotConfigAddProfileDescription = `
+ALTER TABLE bot_config ADD COLUMN description TEXT NULL;
+`
+
+const migrateBotConfigAddArtifactUploadPolicy = `
+ALTER TABLE bot_config ADD COLUMN artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1;
+`
+
+const migrateBotConfigAddSkillMutationMode = `
+ALTER TABLE bot_config ADD COLUMN skill_mutation_mode ENUM('owner_only','shared_live') NOT NULL DEFAULT 'owner_only';
 `
 
 // Migration: add code mode support to messages table.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -27,6 +28,11 @@ type conversationTitleStore interface {
 type updateConversationTitleRequest struct {
 	TopicID string `json:"topic_id"`
 	Name    string `json:"name"`
+}
+
+type updateConversationNotificationPreferenceRequest struct {
+	TopicID string `json:"topic_id"`
+	Muted   *bool  `json:"muted"`
 }
 
 // NewConversationHandler creates a new ConversationHandler.
@@ -96,12 +102,14 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	taskStatusByTopic := h.taskStatusesForTopics(topicIDs)
+	mutedTopics := h.loadMutedConversationTopics(r.Context(), uid, topicIDs)
 
 	conversations := make([]*types.ConversationSummary, 0, len(topicIDs))
 	for _, friend := range friends {
 		topicID := p2pTopicID(uid, friend.ID)
 		summary := buildFriendConversationSummary(topicID, friend, latestByTopic[topicID], h.hub)
 		summary.TaskStatus = taskStatusByTopic[topicID]
+		summary.NotificationsMuted = mutedTopics[topicID]
 		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
 	}
@@ -110,6 +118,7 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		topicID := p2pTopicID(uid, bot.ID)
 		summary := buildFriendConversationSummary(topicID, bot, latestByTopic[topicID], h.hub)
 		summary.TaskStatus = taskStatusByTopic[topicID]
+		summary.NotificationsMuted = mutedTopics[topicID]
 		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
 	}
@@ -117,6 +126,7 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		topicID := "grp_" + formatInt64(group.ID)
 		summary := buildGroupConversationSummary(topicID, group, latestByTopic[topicID])
 		summary.TaskStatus = taskStatusByTopic[topicID]
+		summary.NotificationsMuted = mutedTopics[topicID]
 		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
 	}
@@ -156,6 +166,19 @@ func (h *ConversationHandler) taskStatusesForTopics(topicIDs []string) map[strin
 		return map[string]*types.ConversationTaskStatus{}
 	}
 	return statuses
+}
+
+func (h *ConversationHandler) loadMutedConversationTopics(ctx context.Context, uid int64, topicIDs []string) map[string]bool {
+	preferences, ok := h.db.(store.ConversationNotificationPreferenceStore)
+	if !ok || len(topicIDs) == 0 {
+		return map[string]bool{}
+	}
+	muted, err := preferences.ListMutedConversationTopics(ctx, uid, topicIDs)
+	if err != nil {
+		log.Printf("conversations: failed to load notification preferences for uid=%d: %v", uid, err)
+		return map[string]bool{}
+	}
+	return muted
 }
 
 func (h *ConversationHandler) loadProjectTopics(uid int64) map[string]*types.ProjectTopic {
@@ -226,6 +249,87 @@ func (h *ConversationHandler) HandleUpdateTitle(w http.ResponseWriter, r *http.R
 		"topic_id": req.TopicID,
 		"name":     req.Name,
 	})
+}
+
+// HandleNotificationPreference updates the current user's account-level mute
+// state for a single conversation.
+func (h *ConversationHandler) HandleNotificationPreference(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	uid := UIDFromContext(r.Context())
+	var req updateConversationNotificationPreferenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	req.TopicID = strings.TrimSpace(req.TopicID)
+	if req.TopicID == "" || req.Muted == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "topic_id and muted are required"})
+		return
+	}
+
+	accessible, err := h.canUpdateConversationNotificationPreference(uid, req.TopicID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to verify conversation access"})
+		return
+	}
+	if !accessible {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "conversation is not accessible"})
+		return
+	}
+
+	preferences, ok := h.db.(store.ConversationNotificationPreferenceStore)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "conversation notification preferences are unavailable"})
+		return
+	}
+	if err := preferences.SetConversationNotificationsMuted(r.Context(), uid, req.TopicID, *req.Muted); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update conversation notification preference"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"topic_id":            req.TopicID,
+		"notifications_muted": *req.Muted,
+	})
+}
+
+func (h *ConversationHandler) canUpdateConversationNotificationPreference(uid int64, topicID string) (bool, error) {
+	if isGroupTopic(topicID) {
+		groupID := extractGroupID(topicID)
+		if groupID <= 0 || topicID != "grp_"+formatInt64(groupID) {
+			return false, nil
+		}
+		return h.db.IsGroupMember(groupID, uid)
+	}
+	if !p2pTopicIncludesUID(topicID, uid) {
+		return false, nil
+	}
+
+	friends, err := h.db.GetFriends(uid)
+	if err != nil {
+		return false, err
+	}
+	for _, friend := range friends {
+		if friend != nil && p2pTopicID(uid, friend.ID) == topicID {
+			return true, nil
+		}
+	}
+
+	ownedBots, err := h.db.ListBotsByOwner(uid)
+	if err != nil {
+		return false, err
+	}
+	for _, bot := range ownerBotUsersFromMaps(ownedBots) {
+		if p2pTopicID(uid, bot.ID) == topicID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func p2pTopicIncludesUID(topicID string, uid int64) bool {

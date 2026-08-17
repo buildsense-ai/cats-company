@@ -3,6 +3,7 @@ import PCM_WORKLET_URL from './stt-pcm-worklet.js?url&no-inline';
 const MAX_BUFFERED_AUDIO_BYTES = 160_000;
 const MAX_PRE_ROLL_AUDIO_BYTES = 16_000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 300;
+const FINALIZATION_TIMEOUT_MS = 5_000;
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const TRANSCRIPT_BOUNDARY_PUNCTUATION = /[\s,.;:!?，。；：！？、]/u;
 const TRANSCRIPT_BOUNDARY_PUNCTUATION_GLOBAL = /[\s,.;:!?，。；：！？、]/gu;
@@ -399,6 +400,7 @@ export class StreamingSTTSession {
     this.pendingPartial = '';
     this.lastPublishedPartial = '';
     this.durationTimer = null;
+    this.finalizationTimer = null;
     this.handleVisibilityChange = () => {
       if (!isPageHidden()) return;
       this.acceptingAudio = false;
@@ -440,12 +442,17 @@ export class StreamingSTTSession {
     this.durationTimer = window.setTimeout(() => void this.stop(), maxMilliseconds);
   }
 
-  applyDurationLimit(payload) {
-    if (Object.hasOwn(payload || {}, 'max_session_ms')) {
-      this.setDurationLimit(payload.max_session_ms);
-    } else if (Object.hasOwn(payload || {}, 'max_session_seconds')) {
-      this.setDurationLimit(Number(payload.max_session_seconds) * 1000);
-    }
+  applyDurationLimit(payload, fallbackMilliseconds = null) {
+    const hasMilliseconds = Object.hasOwn(payload || {}, 'max_session_ms');
+    const hasSeconds = Object.hasOwn(payload || {}, 'max_session_seconds');
+    if (!hasMilliseconds && !hasSeconds && fallbackMilliseconds === null) return;
+
+    const milliseconds = hasMilliseconds
+      ? payload.max_session_ms
+      : hasSeconds
+        ? Number(payload.max_session_seconds) * 1000
+        : fallbackMilliseconds;
+    this.setDurationLimit(Number.isFinite(Number(milliseconds)) ? milliseconds : (fallbackMilliseconds || 150_000));
   }
 
   prepare() {
@@ -509,7 +516,7 @@ export class StreamingSTTSession {
       const session = await this.sessionPromise;
       if (this.terminal) return;
       if (this.captureError) throw this.captureError;
-      this.applyDurationLimit(session);
+      this.applyDurationLimit(session, 150_000);
       this.setState(this.stopRequested ? 'finalizing' : 'connecting');
       const socket = this.createWebSocket(this.resolveWebSocketURL(session.ticket));
       this.socket = socket;
@@ -631,7 +638,7 @@ export class StreamingSTTSession {
         break;
       }
       case 'error':
-        if (!this.finalReceived) this.fail(new Error(message.message || '语音识别失败'));
+        if (!this.finalReceived) this.fail(this.normalizeRealtimeError(message));
         break;
       default:
         break;
@@ -684,7 +691,10 @@ export class StreamingSTTSession {
       this.terminal = true;
       this.cleanup();
       this.setState('complete');
-      if (text) this.onFinal(text);
+      // The provider may legitimately finish with no recognized text (for
+      // example, after silence). Composer uses this callback to release its
+      // session reference, while its caller already ignores an empty draft.
+      this.onFinal(text);
     };
     if (!needsPreviewPaint) {
       finish();
@@ -702,6 +712,34 @@ export class StreamingSTTSession {
     if (this.socket?.readyState === 1) this.socket.send(JSON.stringify({ type }));
   }
 
+  normalizeRealtimeError(message) {
+    switch (message?.code) {
+      case 'quota_exhausted':
+        return new Error('语音输入额度已用完，请稍后再试');
+      case 'session_active':
+        return new Error('已有语音输入正在进行');
+      case 'capacity_full':
+        return new Error('语音输入服务繁忙，请稍后再试');
+      case 'final_timeout':
+        return new Error('语音识别结束超时，请重试');
+      default:
+        return new Error(message?.message || '语音识别失败');
+    }
+  }
+
+  startFinalizationTimer() {
+    if (this.finalizationTimer !== null || this.terminal || this.finalReceived) return;
+    this.finalizationTimer = window.setTimeout(() => {
+      this.finalizationTimer = null;
+      this.fail(new Error('语音识别结束超时，请重试'));
+    }, FINALIZATION_TIMEOUT_MS);
+  }
+
+  clearFinalizationTimer() {
+    if (this.finalizationTimer !== null) window.clearTimeout(this.finalizationTimer);
+    this.finalizationTimer = null;
+  }
+
   maybeSendStop() {
     if (!this.ready || !this.sendStopRequested || !this.captureStopped || this.stopSent || this.terminal) return;
     this.stopSent = true;
@@ -714,6 +752,7 @@ export class StreamingSTTSession {
     this.stopRequested = true;
     this.sendStopRequested = true;
     this.setState('finalizing');
+    this.startFinalizationTimer();
     this.stopPromise = this.stopCapture();
     await this.stopPromise;
   }
@@ -761,6 +800,7 @@ export class StreamingSTTSession {
     this.finalFrame = null;
     if (this.durationTimer) window.clearTimeout(this.durationTimer);
     this.durationTimer = null;
+    this.clearFinalizationTimer();
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     globalThis.removeEventListener?.('pagehide', this.handlePageHide);
     this.lifecycleListenersInstalled = false;

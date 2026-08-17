@@ -16,11 +16,14 @@ func (a *Adapter) CreateSchema() error {
 		createProjectsTable,
 		createProjectTopicsTable,
 		createConversationTitlesTable,
+		createConversationNotificationMutesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
+		createBotSkillMutationsTable,
+		createBotSkillMutationsActiveIndex,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
@@ -63,6 +66,10 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddRole,
+		migrateBotConfigAddDescription,
+		migrateBotConfigAddArtifactUploadPolicy,
+		migrateBotConfigAddSkillMutationMode,
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentEntriesAddAccessMode,
 		migrateChannelAgentEntriesDefaultAccessMode,
@@ -230,6 +237,17 @@ CREATE TABLE IF NOT EXISTS conversation_titles (
 );
 `
 
+const createConversationNotificationMutesTable = `
+CREATE TABLE IF NOT EXISTS conversation_notification_mutes (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- A P2P topic is created on its first message, while a user may mute the
+    -- visible conversation before then.
+    topic_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id)
+);
+`
+
 const createMessagesTable = `
 CREATE TABLE IF NOT EXISTS messages (
     id BIGSERIAL PRIMARY KEY,
@@ -310,9 +328,57 @@ CREATE TABLE IF NOT EXISTS bot_config (
 	 skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner' CHECK (skills_visibility IN ('owner','authorized','public')),
     tenant_name VARCHAR(128) DEFAULT NULL,
     body_id VARCHAR(128) DEFAULT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'general',
+    description TEXT NOT NULL DEFAULT '',
+    artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    skill_mutation_mode VARCHAR(16) NOT NULL DEFAULT 'owner_only'
+        CONSTRAINT bot_config_skill_mutation_mode_check CHECK (skill_mutation_mode IN ('owner_only','shared_live')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+const createBotSkillMutationsTable = `
+CREATE TABLE IF NOT EXISTS bot_skill_mutations (
+    id BIGSERIAL PRIMARY KEY,
+    bot_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    local_skill_id VARCHAR(128) NOT NULL,
+    actor_user_uid BIGINT NOT NULL,
+    source_topic_id VARCHAR(255) NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    runtime_body_id VARCHAR(128) NOT NULL,
+    client_request_id VARCHAR(128) NOT NULL,
+    request_fingerprint CHAR(64) NOT NULL,
+    operation VARCHAR(16) NOT NULL CHECK (operation IN ('create','replace','rollback')),
+    candidate_content_hash CHAR(64) NOT NULL,
+    expected_definition_revision BIGINT NOT NULL,
+    expected_previous_content_hash CHAR(64) DEFAULT NULL,
+    before_reference JSONB DEFAULT NULL,
+    after_reference JSONB DEFAULT NULL,
+    git_commit_sha VARCHAR(64) DEFAULT NULL,
+    definition_revision BIGINT DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'validating'
+        CHECK (status IN ('validating','version_ready','definition_committed','activation_pending','active','rejected','compensation_pending','rolled_back')),
+    error_code VARCHAR(64) DEFAULT NULL,
+    error_summary VARCHAR(512) DEFAULT NULL,
+    rollback_of BIGINT DEFAULT NULL REFERENCES bot_skill_mutations(id) ON DELETE SET NULL,
+    lease_generation BIGINT NOT NULL DEFAULT 1,
+    lease_expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    activated_at TIMESTAMPTZ DEFAULT NULL,
+    CONSTRAINT uk_bot_skill_mutations_request UNIQUE (actor_user_uid, bot_uid, client_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bot_skill_mutations_audit
+    ON bot_skill_mutations (bot_uid, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_bot_skill_mutations_source
+    ON bot_skill_mutations (source_topic_id, source_message_id);
+`
+
+const createBotSkillMutationsActiveIndex = `
+CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_skill_mutations_active
+    ON bot_skill_mutations (bot_uid)
+    WHERE status IN ('validating','version_ready','definition_committed','activation_pending','compensation_pending');
 `
 
 const createRateLimitTable = `
@@ -860,6 +926,26 @@ const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT 
 const migrateBotConfigAddSkillsVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
+const migrateBotConfigAddRole = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'general';`
+const migrateBotConfigAddDescription = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';`
+const migrateBotConfigAddArtifactUploadPolicy = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE;`
+const migrateBotConfigAddSkillMutationMode = `
+ALTER TABLE bot_config
+    ADD COLUMN IF NOT EXISTS skill_mutation_mode VARCHAR(16) NOT NULL DEFAULT 'owner_only';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'bot_config_skill_mutation_mode_check'
+          AND conrelid = 'bot_config'::regclass
+    ) THEN
+        ALTER TABLE bot_config
+            ADD CONSTRAINT bot_config_skill_mutation_mode_check
+            CHECK (skill_mutation_mode IN ('owner_only','shared_live'));
+    END IF;
+END $$;
+`
 const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`
 const migrateChannelAgentEntriesAddAccessMode = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS access_mode VARCHAR(32) NOT NULL DEFAULT 'approval_required';`
 const migrateChannelAgentEntriesDefaultAccessMode = `ALTER TABLE channel_agent_entries ALTER COLUMN access_mode SET DEFAULT 'approval_required';`
@@ -1013,6 +1099,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_projects_updated_at BEFORE UPDATE ON projects
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_bot_config_updated_at BEFORE UPDATE ON bot_config
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_bot_skill_mutations_updated_at BEFORE UPDATE ON bot_skill_mutations
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

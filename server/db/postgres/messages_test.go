@@ -100,6 +100,35 @@ func TestMessageHistoryReadsMetadataAndLegacyNull(t *testing.T) {
 	}
 }
 
+func TestListTopicFileMessagesReadsMetadata(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2026, time.August, 15, 0, 0, 0, 0, time.UTC)
+	rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "metadata"}).
+		AddRow(
+			int64(14), "grp_1686", int64(7), "", "file", createdAt,
+			[]byte(`[{"type":"file","payload":{"name":"example.pdf"}}]`), "code", "user", []byte(`{"source_channel":"web"}`),
+		)
+	mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM messages.*WHERE topic_id =`).
+		WithArgs("grp_1686", 41).
+		WillReturnRows(rows)
+
+	messages, err := (&Adapter{db: db}).ListTopicFileMessages("grp_1686", 0, 41)
+	if err != nil {
+		t.Fatalf("list topic file messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Metadata["source_channel"] != "web" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestMessagesMetadataSchemaMigrationIsIdempotent(t *testing.T) {
 	if !strings.Contains(createMessagesTable, "metadata JSONB DEFAULT NULL") {
 		t.Fatal("new messages table must include nullable metadata")

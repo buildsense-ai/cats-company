@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,15 @@ import (
 
 	"github.com/openchat/openchat/server/store/types"
 )
+
+type fixedCommercialQuotaStore struct {
+	summary *types.CommercialSummary
+	err     error
+}
+
+func (s fixedCommercialQuotaStore) GetCommercialSummary(_ int64) (*types.CommercialSummary, error) {
+	return s.summary, s.err
+}
 
 func TestRelayKeyRouteRequiresHumanJWT(t *testing.T) {
 	oldSecret := append([]byte(nil), jwtSecret...)
@@ -333,6 +343,88 @@ func TestRelayTotalUsageDeduplicatesSharedPoolsAndIncludesFallbackUsage(t *testi
 	}
 	if out.Summary.LastReset != "2026-08-02T00:00:00Z" {
 		t.Fatalf("expected newest reset metadata, got %+v", out.Summary)
+	}
+}
+
+func TestRelaySharedUsageUsesAccountMonthlyBudget(t *testing.T) {
+	user := &commercialRelayUsageUser{
+		Configured: true,
+		Limits: commercialRelayLimits{
+			MonthlyBudget: commercialRelayBudget{MaxLimit: 33600, CurrentUsage: 3360, ResetDuration: "1M", LastReset: "2026-08-14T07:32:08Z"},
+			ModelLimits: []commercialRelayModelLimit{{
+				Provider: "openai", Model: "gpt-5.6-terra",
+				Budget: commercialRelayBudget{MaxLimit: 31500, CurrentUsage: 900},
+			}},
+		},
+	}
+
+	out := buildRelaySharedUsageResponse(user, "gpt-5.6-terra")
+
+	if out.Summary == nil || out.Summary.Source != "relay_shared" || out.Summary.Percent != 10 || out.Summary.RemainingPercent != 90 {
+		t.Fatalf("shared quota did not use account monthly budget: %#v", out.Summary)
+	}
+	if out.Summary.LastReset != "2026-08-14T07:32:08Z" {
+		t.Fatalf("shared quota lost its package cycle: %#v", out.Summary)
+	}
+}
+
+func TestRelayUsageHandlerKeepsSharedQuotaGrayToAllowedUID(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{
+			{UID: 38, Configured: true, Limits: commercialRelayLimits{
+				MonthlyBudget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 25, ResetDuration: "1M"},
+				ModelLimits:   []commercialRelayModelLimit{{Model: "gpt-5.6-terra", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 90}}},
+			}},
+		}})
+	}))
+	defer admin.Close()
+	store := fixedCommercialQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{"gpt-5.6-terra": 100}}}
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	handler.SetCommercialQuotaSource(store, false, map[int64]bool{38: true})
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=gpt-5.6-terra", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	var out relayUsageResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Summary == nil {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if out.Summary.Source != "relay_shared" || out.Summary.Percent != 25 {
+		t.Fatalf("gray uid did not use shared pool: %#v", out.Summary)
+	}
+}
+
+func TestRelayUsageHandlerKeepsLegacyQuotaVisibleDuringMigration(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{
+			Users: []commercialRelayUsageUser{
+				{
+					UID:        38,
+					Configured: true,
+					Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+						{Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 500, CurrentUsage: 50, ResetDuration: "1M"}},
+					}},
+				},
+			},
+		})
+	}))
+	defer admin.Close()
+	handler := &RelayKeyHandler{admin: &RelayAdminClient{baseURL: admin.URL, token: "test", client: admin.Client()}}
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}}, true, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage?model=MiniMax-M3", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUsage(rec, req)
+
+	var out relayUsageResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out.Summary == nil {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if out.Summary.Source != "relay" || out.Summary.Percent != 10 {
+		t.Fatalf("legacy quota disappeared during migration: %#v", out.Summary)
 	}
 }
 

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
@@ -17,6 +18,13 @@ import {
   requestArtifactPageContext,
   withArtifactRef,
 } from '../artifact-context';
+import {
+  conversationShareMessageKey,
+  conversationShareText,
+  downloadConversationShareImage,
+  downloadConversationShareImages,
+  renderConversationShareImage,
+} from '../utils/conversation-share-image';
 
 const PAGE_SIZE = 50;
 const HISTORY_CACHE_MAX_TOPICS = 12;
@@ -88,6 +96,7 @@ function artifactBindingMatchesFocus(binding, focus) {
     && Number(binding.agentUid || 0) === focus.agentUid
     && String(binding.url || '') === focus.url);
 }
+const MAX_CONVERSATION_SHARE_MESSAGES = 50;
 
 function questionNavigationKey(message, index) {
   return String(message?.id ?? message?.seq_id ?? `question-${index}`);
@@ -343,6 +352,7 @@ export default function MessagesView({
   const [previewFile, setPreviewFile] = useState(null);
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
+  const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
   const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
@@ -381,7 +391,15 @@ export default function MessagesView({
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
-  const sidePanelOpen = Boolean(previewFile || (cloudArtifactsListOpen && cloudArtifactsAgentUID > 0));
+  const [conversationShareMode, setConversationShareMode] = useState(false);
+  const [conversationShareSelectedKeys, setConversationShareSelectedKeys] = useState([]);
+  const [conversationSharePreviewOpen, setConversationSharePreviewOpen] = useState(false);
+  const [conversationShareImages, setConversationShareImages] = useState([]);
+  const [conversationSharePreviewPage, setConversationSharePreviewPage] = useState(0);
+  const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
+  const [conversationShareError, setConversationShareError] = useState('');
+  const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
+  const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const bottomRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -436,6 +454,9 @@ export default function MessagesView({
   const phoneUploadTopicRef = useRef('');
   const phoneUploadSyncRef = useRef(null);
   const sendInFlightRef = useRef(false);
+  const conversationShareGenerateButtonRef = useRef(null);
+  const conversationSharePreviewRef = useRef(null);
+  const conversationSharePreviewCloseRef = useRef(null);
 
   if (artifactTopicRef.current !== topic) {
     artifactTopicRef.current = topic;
@@ -573,6 +594,7 @@ export default function MessagesView({
   const openFilePreview = useCallback((file) => {
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(false);
     setPendingArtifactRefresh(null);
     setPreviewFileWithFocus(file);
   }, [setPreviewFileWithFocus]);
@@ -583,6 +605,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(false);
     setCloudArtifactsTab('files');
   }, [clearActiveArtifactFocus]);
 
@@ -593,6 +616,7 @@ export default function MessagesView({
       agent_uid: artifact?.agent_uid || cloudArtifactsAgentUID,
     }));
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(true);
   }, [cloudArtifactsAgentUID, setPreviewFileWithFocus]);
 
   const captureArtifactMessageContext = useCallback(async () => {
@@ -633,6 +657,7 @@ export default function MessagesView({
       size: file.size,
     });
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(true);
   }, [setPreviewFileWithFocus]);
 
   const returnToCloudArtifacts = useCallback(() => {
@@ -640,7 +665,22 @@ export default function MessagesView({
     clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsListOpen(true);
+    setCloudArtifactsReturnOpen(false);
   }, [clearActiveArtifactFocus]);
+
+  const resizeComposerInput = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const maxHeight = 200;
+    textarea.style.height = 'auto';
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 40), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    resizeComposerInput();
+  }, [input, resizeComposerInput]);
 
   useEffect(() => {
     setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
@@ -744,6 +784,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(false);
     setCloudArtifactsTab('files');
     const cachedGroupProfile = isGroup && groupId
       ? groupProfileCacheRef.current.get(String(groupId))
@@ -802,12 +843,13 @@ export default function MessagesView({
 
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
-    if (agentUID <= 0 || !cloudArtifactsRequest?.requestId) return;
+    if (!cloudArtifactsRequest?.requestId) return;
     clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
     setCloudArtifactsTab('files');
     setCloudArtifactsListOpen(true);
+    setCloudArtifactsReturnOpen(false);
   }, [clearActiveArtifactFocus, cloudArtifactsRequest]);
 
   useEffect(() => {
@@ -2271,6 +2313,9 @@ export default function MessagesView({
         : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
     )
     : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
+  const displayName = isGroup
+    ? (groupInfo?.name || topicName || topic)
+    : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
@@ -2792,6 +2837,158 @@ export default function MessagesView({
     topicName,
     user.uid,
   ]);
+
+  const conversationShareCandidates = useMemo(() => (
+    groupedMessages
+      .filter((group) => group.type === 'text' && Boolean(conversationShareText(group.message)))
+      .map((group, index) => ({
+        key: conversationShareMessageKey(group.message, index),
+        message: group.message,
+        senderName: group.sender?.name || group.message?.from_name || 'CatsCo',
+        isSelf: sameUID(group.message?.from_uid, user.uid),
+      }))
+  ), [groupedMessages, user.uid]);
+  const conversationShareCandidateByMessage = useMemo(() => new Map(
+    conversationShareCandidates.map((candidate) => [candidate.message, candidate]),
+  ), [conversationShareCandidates]);
+  const conversationShareCandidateByKey = useMemo(() => new Map(
+    conversationShareCandidates.map((candidate) => [candidate.key, candidate]),
+  ), [conversationShareCandidates]);
+  const selectedConversationShareItems = useMemo(() => (
+    conversationShareCandidates.filter((candidate) => conversationShareSelectedKeys.includes(candidate.key))
+  ), [conversationShareCandidates, conversationShareSelectedKeys]);
+  const canOpenConversationShare = historyLoaded && (messages.length > 0 || !historyError);
+
+  const resetConversationSharePreview = useCallback(() => {
+    setConversationSharePreviewOpen(false);
+    setConversationShareImages([]);
+    setConversationSharePreviewPage(0);
+  }, []);
+
+  const transitionConversationShare = useCallback(({ mode, selectedKeys = [] }) => {
+    setConversationShareMode(mode);
+    setConversationShareSelectedKeys(selectedKeys);
+    resetConversationSharePreview();
+    setConversationShareError('');
+  }, [resetConversationSharePreview]);
+
+  const closeConversationShare = useCallback(() => {
+    transitionConversationShare({ mode: false });
+  }, [transitionConversationShare]);
+
+  const startConversationShareFromMessage = useCallback((candidate) => {
+    if (!candidate?.key) return;
+    transitionConversationShare({
+      mode: true,
+      selectedKeys: [candidate.key],
+    });
+  }, [transitionConversationShare]);
+
+  useEffect(() => {
+    closeConversationShare();
+  }, [closeConversationShare, topic]);
+
+  const toggleConversationShareMessage = useCallback((candidate) => {
+    if (!candidate?.key) return;
+    setConversationShareSelectedKeys((current) => {
+      if (current.includes(candidate.key)) {
+        setConversationShareError('');
+        return current.filter((key) => key !== candidate.key);
+      }
+      if (current.length >= MAX_CONVERSATION_SHARE_MESSAGES) {
+        setConversationShareError(`一次最多选择 ${MAX_CONVERSATION_SHARE_MESSAGES} 条消息。`);
+        return current;
+      }
+      setConversationShareError('');
+      return [...current, candidate.key];
+    });
+  }, []);
+
+  const generateConversationShareImage = useCallback(async () => {
+    if (selectedConversationShareItems.length === 0) {
+      setConversationShareError('请先选择至少一条有内容的消息。');
+      return;
+    }
+    setConversationShareGenerating(true);
+    setConversationShareError('');
+    try {
+      const root = typeof document === 'undefined' ? null : document.documentElement;
+      const theme = root?.dataset.theme === 'liquid' && root.dataset.liquidVariant === 'green'
+        ? 'liquid-green'
+        : (root?.dataset.theme || 'light');
+      const result = await renderConversationShareImage({
+        items: selectedConversationShareItems,
+        topicName: displayName || topicName || topic || '对话',
+        theme,
+      });
+      const pages = Array.isArray(result.pages) && result.pages.length > 0
+        ? result.pages
+        : [result];
+      if (!pages.every((page) => page?.dataUrl)) {
+        throw new Error('生成分享图失败，请重试。');
+      }
+      setConversationShareImages(pages);
+      setConversationSharePreviewPage(0);
+      setConversationSharePreviewOpen(true);
+    } catch (error) {
+      setConversationShareError(error?.message || '生成分享图失败，请重试。');
+    } finally {
+      setConversationShareGenerating(false);
+    }
+  }, [displayName, selectedConversationShareItems, topic, topicName]);
+
+  useEffect(() => {
+    if (!conversationShareMode) return;
+    setConversationShareSelectedKeys((current) => current.filter(
+      (key) => conversationShareCandidateByKey.has(key),
+    ));
+  }, [conversationShareCandidateByKey, conversationShareMode]);
+
+  useEffect(() => {
+    if (!conversationSharePreviewOpen) return undefined;
+    const previousActiveElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusableSelector = [
+      'a[href]',
+      'button:not([disabled])',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setConversationSharePreviewOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(
+        conversationSharePreviewRef.current?.querySelectorAll(focusableSelector) || [],
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!focusable.includes(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    conversationSharePreviewCloseRef.current?.focus();
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (previousActiveElement?.isConnected) previousActiveElement.focus();
+    };
+  }, [conversationSharePreviewOpen]);
+
   const hasPersistedRuntimePlan = useMemo(() => {
     if (!runtimePlan) return false;
 
@@ -3077,7 +3274,7 @@ export default function MessagesView({
             </button>
           )}
           <div
-            className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
+            className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}${conversationShareMode ? ' is-conversation-share-mode' : ''}`}
             ref={timelineRef}
             onScroll={handleTimelineScroll}
             onWheel={clearPendingQuestionJump}
@@ -3089,6 +3286,38 @@ export default function MessagesView({
             onDrop={handleDrop}
           >
             <div className="v3-timeline-inner">
+              {conversationShareMode && (
+                <section className="cc-conversation-share-toolbar" aria-label="对话分享图选择">
+                  <div className="cc-conversation-share-toolbar-copy">
+                    <span className="cc-conversation-share-toolbar-icon" aria-hidden="true"><CheckSquare size={18} /></span>
+                    <div>
+                      <strong>选择要展示的消息</strong>
+                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareItems.length} 条，最多 ${MAX_CONVERSATION_SHARE_MESSAGES} 条，按原顺序生成分享图` : '没有可展示的消息'}</span>
+                    </div>
+                  </div>
+                  <div className="cc-conversation-share-toolbar-actions">
+                    <button type="button" className="cc-conversation-share-secondary" onClick={closeConversationShare}>
+                      取消
+                    </button>
+                    <button
+                      ref={conversationShareGenerateButtonRef}
+                      type="button"
+                      className="cc-conversation-share-primary"
+                      disabled={!canOpenConversationShare || conversationShareGenerating || selectedConversationShareItems.length === 0}
+                      onClick={() => void generateConversationShareImage()}
+                    >
+                      {conversationShareGenerating ? <LoaderCircle className="is-spinning" size={16} aria-hidden="true" /> : <ImageDown size={16} aria-hidden="true" />}
+                      {conversationShareGenerating ? '正在生成' : '生成分享图'}
+                    </button>
+                  </div>
+                  {conversationShareError && (
+                    <p className="cc-conversation-share-toolbar-error" role="alert">{conversationShareError}</p>
+                  )}
+                  {!canOpenConversationShare && !conversationShareError && (
+                    <p className="cc-conversation-share-toolbar-error" role="status">聊天记录加载失败，暂不能生成分享图。</p>
+                  )}
+                </section>
+              )}
               <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>
@@ -3156,7 +3385,7 @@ export default function MessagesView({
             return (
               <div
                 key={group.messages[0].id || i}
-                className={`oc-working-group cc-message-anchor${group.messages.some((message) => historyMessageID(message) === highlightedMessageId) ? ' cc-message-search-hit' : ''}`}
+                className={`oc-working-group cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && group.messages.some((message) => historyMessageID(message) === highlightedMessageId) ? ' cc-message-search-hit' : ''}`}
               >
                 {group.messages.map((message) => (
                   <span
@@ -3185,39 +3414,62 @@ export default function MessagesView({
               </div>
             );
           }
+          const candidate = conversationShareCandidateByMessage.get(group.message);
+          const selectable = conversationShareMode && Boolean(candidate);
+          const selected = selectable && conversationShareSelectedKeys.includes(candidate.key);
           return (
             <div
               key={group.message.id || i}
-              className={`cc-message-anchor${historyMessageID(group.message) === highlightedMessageId ? ' cc-message-search-hit' : ''}`}
+              className={`cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && historyMessageID(group.message) === highlightedMessageId ? ' cc-message-search-hit' : ''}${selectable ? ' is-conversation-share-selectable' : ''}${selected ? ' is-conversation-share-selected' : ''}`}
               data-search-message-id={historyMessageID(group.message) || undefined}
             >
-            <ChatMessage
-              message={group.message}
-              isSelf={sameUID(group.message.from_uid, user.uid)}
-              isGroup={isGroup}
-              senderName={group.sender.name}
-              senderAvatarUrl={group.sender.avatarUrl}
-              senderIsBot={group.sender.isBot}
-              replyMessage={group.replyMessage}
-              questionAnchorKey={sameUID(group.message.from_uid, user.uid)
-                ? questionNavigationKey(group.message, i)
-                : undefined}
-              onReply={() => setReplyTo(group.message)}
-              onEdit={sameUID(group.message.from_uid, user.uid) ? handleEditMessage : undefined}
-              onRegenerate={canRegenerateAssistantMessages
-                && !sameUID(group.message.from_uid, user.uid)
-                && isAssistantAuthoredMessage(group.message, group.sender.isBot)
-                ? handleRegenerateMessage
-                : undefined}
-              showThinking={showThinking}
-              isConsecutive={showThinking
-                ? group.isConsecutive
-                : (group.isConsecutiveWithoutWorking ?? group.isConsecutive)}
-              artifactsFirst={group.artifactsFirst}
-              onPreviewFile={openFilePreview}
-              activePreviewFile={previewFile}
-              knownArtifacts={knownArtifacts}
-            />
+              {selectable && (
+                <button
+                  type="button"
+                  className={`cc-conversation-share-message-toggle${selected ? ' is-selected' : ''}`}
+                  aria-label={`${selected ? '取消选择' : '选择'}消息：${conversationShareText(group.message).slice(0, 36) || '消息'}`}
+                  aria-pressed={selected}
+                  title={selected ? '取消选择此消息' : '选择此消息'}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggleConversationShareMessage(candidate);
+                  }}
+                >
+                  <span className="cc-conversation-share-message-toggle-indicator" aria-hidden="true">
+                    {selected && <Check size={14} strokeWidth={2.5} />}
+                  </span>
+                </button>
+              )}
+              <ChatMessage
+                message={group.message}
+                isSelf={sameUID(group.message.from_uid, user.uid)}
+                isGroup={isGroup}
+                senderName={group.sender.name}
+                senderAvatarUrl={group.sender.avatarUrl}
+                senderIsBot={group.sender.isBot}
+                replyMessage={group.replyMessage}
+                questionAnchorKey={sameUID(group.message.from_uid, user.uid)
+                  ? questionNavigationKey(group.message, i)
+                  : undefined}
+                onReply={() => setReplyTo(group.message)}
+                onEdit={sameUID(group.message.from_uid, user.uid) ? handleEditMessage : undefined}
+                onRegenerate={canRegenerateAssistantMessages
+                  && !sameUID(group.message.from_uid, user.uid)
+                  && isAssistantAuthoredMessage(group.message, group.sender.isBot)
+                  ? handleRegenerateMessage
+                  : undefined}
+                onCreateConversationShare={candidate && !conversationShareMode
+                  ? () => startConversationShareFromMessage(candidate)
+                  : undefined}
+                showThinking={showThinking}
+                isConsecutive={showThinking
+                  ? group.isConsecutive
+                  : (group.isConsecutiveWithoutWorking ?? group.isConsecutive)}
+                artifactsFirst={group.artifactsFirst}
+                onPreviewFile={openFilePreview}
+                activePreviewFile={previewFile}
+                knownArtifacts={knownArtifacts}
+              />
             </div>
           );
         })}
@@ -3498,7 +3750,7 @@ export default function MessagesView({
               onKeyDown={handlePreviewResizeKeyDown}
               title="拖动调整预览宽度"
             />
-            {cloudArtifactsListOpen && cloudArtifactsAgentUID > 0 ? (
+            {cloudArtifactsListOpen ? (
               <CloudArtifactsPanel
                 agentUid={cloudArtifactsAgentUID}
                 topicId={topic}
@@ -3512,7 +3764,7 @@ export default function MessagesView({
               <FilePreviewPanel
                 file={previewFile}
                 pendingRemoteArtifactFile={pendingArtifactRefresh}
-                onBack={cloudArtifactsAgentUID > 0 ? returnToCloudArtifacts : undefined}
+                onBack={cloudArtifactsReturnOpen ? returnToCloudArtifacts : undefined}
                 onClose={closeSidePanel}
                 backgroundRef={chatColumnRef}
                 onRemoteArtifactRefreshReady={handleArtifactRefreshReady}
@@ -3542,6 +3794,102 @@ export default function MessagesView({
           onApplyPrompt={applyTutorialPrompt}
           onOpenDesktopConnect={onOpenDesktopConnect}
         />
+      )}
+      {conversationSharePreviewOpen && conversationSharePreviewImage && typeof document !== 'undefined' && createPortal(
+        <div
+          className="cc-conversation-share-preview-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setConversationSharePreviewOpen(false);
+          }}
+        >
+          <section
+            ref={conversationSharePreviewRef}
+            className="cc-conversation-share-preview"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="conversation-share-preview-title"
+            aria-describedby="conversation-share-preview-description"
+            tabIndex={-1}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="cc-conversation-share-preview-header">
+              <div>
+                <span className="catsco-brand-mark" aria-hidden="true" />
+                <div>
+                  <strong id="conversation-share-preview-title">对话分享图已生成</strong>
+                  <span id="conversation-share-preview-description">
+                    已保留 {selectedConversationShareItems.length} 条选中消息
+                    {conversationShareImages.length > 1 ? `，共 ${conversationShareImages.length} 张` : ''}
+                  </span>
+                </div>
+              </div>
+              <button ref={conversationSharePreviewCloseRef} type="button" className="v3-tool" aria-label="关闭分享图预览" onClick={() => setConversationSharePreviewOpen(false)}>
+                <X size={17} aria-hidden="true" />
+              </button>
+            </header>
+            {conversationShareImages.length > 1 && (
+              <div className="cc-conversation-share-preview-page-nav" aria-label="分享图分页">
+                <button
+                  type="button"
+                  className="v3-tool"
+                  aria-label="查看上一张分享图"
+                  disabled={conversationSharePreviewPage === 0}
+                  onClick={() => setConversationSharePreviewPage((current) => Math.max(0, current - 1))}
+                >
+                  <ChevronLeft size={17} aria-hidden="true" />
+                </button>
+                <span aria-live="polite">第 {conversationSharePreviewPage + 1} / {conversationShareImages.length} 张</span>
+                <button
+                  type="button"
+                  className="v3-tool"
+                  aria-label="查看下一张分享图"
+                  disabled={conversationSharePreviewPage >= conversationShareImages.length - 1}
+                  onClick={() => setConversationSharePreviewPage((current) => Math.min(conversationShareImages.length - 1, current + 1))}
+                >
+                  <ChevronRight size={17} aria-hidden="true" />
+                </button>
+              </div>
+            )}
+            <div className="cc-conversation-share-preview-canvas">
+              <img
+                src={conversationSharePreviewImage.dataUrl}
+                alt={`${displayName || topicName || '对话'}的 CatsCo 分享图，第 ${conversationSharePreviewPage + 1} 张，共 ${conversationShareImages.length} 张`}
+              />
+            </div>
+            <footer className="cc-conversation-share-preview-actions">
+              <button type="button" className="cc-conversation-share-secondary" onClick={() => setConversationSharePreviewOpen(false)}>
+                返回选择
+              </button>
+              {conversationShareImages.length > 1 && (
+                <button
+                  type="button"
+                  className="cc-conversation-share-secondary"
+                  onClick={() => downloadConversationShareImage(
+                    conversationSharePreviewImage.dataUrl,
+                    `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
+                  )}
+                >
+                  下载当前 PNG
+                </button>
+              )}
+              <button
+                type="button"
+                className="cc-conversation-share-primary"
+                onClick={() => {
+                  if (conversationShareImages.length > 1) {
+                    downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
+                  } else {
+                    downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
+                  }
+                }}
+              >
+                <Download size={16} aria-hidden="true" />
+                {conversationShareImages.length > 1 ? '下载全部 PNG' : '下载 PNG'}
+              </button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
       )}
     </>
   );

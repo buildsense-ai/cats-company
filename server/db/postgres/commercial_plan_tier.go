@@ -1,0 +1,224 @@
+package postgres
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+)
+
+const (
+	commercialPersonalPlanSlug = "catsco-personal"
+	commercialProPlanSlug      = "catsco-pro"
+)
+
+func commercialOfficialPlanTier(slug string) int {
+	switch strings.TrimSpace(slug) {
+	case commercialPersonalPlanSlug:
+		return 1
+	case commercialProPlanSlug:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func lockCommercialOfficialPlanTier(tx *sql.Tx, uid int64) error {
+	_, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("commercial_plan_tier:%d", uid))
+	if err != nil {
+		return fmt.Errorf("lock commercial plan tier: %w", err)
+	}
+	return nil
+}
+
+func activeCommercialOfficialPlanTier(tx *sql.Tx, uid int64, now time.Time) (int, error) {
+	rows, err := tx.Query(`
+		SELECT p.slug
+		FROM commercial_entitlements e
+		JOIN commercial_plans p ON p.id = e.plan_id
+		WHERE e.uid = $1 AND e.state = 'active'
+		  AND e.starts_at <= $2
+		  AND (e.expires_at IS NULL OR e.expires_at > $2)
+		  AND p.slug IN ($3, $4)
+		FOR UPDATE OF e`, uid, now, commercialPersonalPlanSlug, commercialProPlanSlug)
+	if err != nil {
+		return 0, fmt.Errorf("load active commercial plan tier: %w", err)
+	}
+	defer rows.Close()
+	highest := 0
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return 0, fmt.Errorf("scan active commercial plan tier: %w", err)
+		}
+		if tier := commercialOfficialPlanTier(slug); tier > highest {
+			highest = tier
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("read active commercial plan tier: %w", err)
+	}
+	return highest, nil
+}
+
+func validateCommercialOfficialPlanPurchase(tx *sql.Tx, uid int64, targetSlug string, now time.Time) error {
+	targetTier := commercialOfficialPlanTier(targetSlug)
+	if targetTier == 0 {
+		return nil
+	}
+	if err := lockCommercialOfficialPlanTier(tx, uid); err != nil {
+		return err
+	}
+	activeTier, err := activeCommercialOfficialPlanTier(tx, uid, now)
+	if err != nil {
+		return err
+	}
+	switch {
+	case activeTier == targetTier:
+		return fmt.Errorf("commercial plan is already active")
+	case activeTier > targetTier:
+		return fmt.Errorf("commercial plan is below active plan")
+	default:
+		return nil
+	}
+}
+
+func validateCommercialOfficialOpenOrder(tx *sql.Tx, uid, targetPlanID int64, channel, targetSlug string, now time.Time) error {
+	if commercialOfficialPlanTier(targetSlug) == 0 {
+		return nil
+	}
+	var conflictExists bool
+	if err := tx.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1
+			FROM commercial_orders o
+			JOIN commercial_plans p ON p.id = o.plan_id
+			WHERE o.uid = $1 AND o.status IN ('created','pending')
+			  AND (o.expires_at IS NULL OR o.expires_at > $2)
+			  AND p.slug IN ($3, $4)
+			  AND (o.plan_id <> $5 OR o.channel <> $6)
+		)`, uid, now, commercialPersonalPlanSlug, commercialProPlanSlug, targetPlanID, strings.TrimSpace(channel)).Scan(&conflictExists); err != nil {
+		return fmt.Errorf("check open commercial plan orders: %w", err)
+	}
+	if conflictExists {
+		return fmt.Errorf("another commercial plan order is already pending")
+	}
+	return nil
+}
+
+func validateNoOpenCommercialOfficialOrder(tx *sql.Tx, uid int64, now time.Time) error {
+	if err := lockCommercialOfficialPlanTier(tx, uid); err != nil {
+		return err
+	}
+	var exists bool
+	if err := tx.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1
+			FROM commercial_orders o
+			JOIN commercial_plans p ON p.id = o.plan_id
+			WHERE o.uid = $1 AND o.status IN ('created','pending')
+			  AND (o.expires_at IS NULL OR o.expires_at > $2)
+			  AND p.slug IN ($3, $4)
+		)`, uid, now, commercialPersonalPlanSlug, commercialProPlanSlug).Scan(&exists); err != nil {
+		return fmt.Errorf("check open commercial plan orders: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("another commercial plan order is already pending")
+	}
+	return nil
+}
+
+func activateCommercialOfficialPlan(tx *sql.Tx, uid int64, targetSlug string, now time.Time) error {
+	targetTier := commercialOfficialPlanTier(targetSlug)
+	if targetTier == 0 {
+		return nil
+	}
+	if err := lockCommercialOfficialPlanTier(tx, uid); err != nil {
+		return err
+	}
+	activeTier, err := activeCommercialOfficialPlanTier(tx, uid, now)
+	if err != nil {
+		return err
+	}
+	switch {
+	case activeTier == targetTier:
+		return fmt.Errorf("commercial plan is already active")
+	case activeTier > targetTier:
+		return fmt.Errorf("commercial plan is below active plan")
+	}
+	if activeTier > 0 {
+		for _, slug := range commercialOfficialPlanSlugsBelow(targetTier) {
+			if err := revokeCommercialPlanTier(tx, uid, slug, targetSlug, now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func commercialOfficialPlanSlugsBelow(targetTier int) []string {
+	if targetTier > 1 {
+		return []string{commercialPersonalPlanSlug}
+	}
+	return nil
+}
+
+func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, now time.Time) error {
+	if _, err := tx.Exec(`
+		UPDATE commercial_entitlements e
+		SET state = 'revoked'
+		FROM commercial_plans p
+		WHERE e.plan_id = p.id AND e.uid = $1 AND e.state = 'active'
+		  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
+		  AND p.slug = $3`, uid, now, slug); err != nil {
+		return fmt.Errorf("revoke superseded commercial entitlement: %w", err)
+	}
+
+	rows, err := tx.Query(`
+		SELECT g.id, g.model, g.amount_cny
+		FROM commercial_quota_grants g
+		JOIN commercial_plans p ON p.id = g.plan_id
+		WHERE g.uid = $1 AND g.revoked_at IS NULL AND p.slug = $2
+		  AND g.grant_type IN ('order', 'invite')
+		FOR UPDATE OF g`, uid, slug)
+	if err != nil {
+		return fmt.Errorf("lock superseded commercial quota grants: %w", err)
+	}
+	type quotaGrant struct {
+		id     int64
+		model  string
+		amount float64
+	}
+	var grants []quotaGrant
+	for rows.Next() {
+		var grant quotaGrant
+		if err := rows.Scan(&grant.id, &grant.model, &grant.amount); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan superseded commercial quota grant: %w", err)
+		}
+		grants = append(grants, grant)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read superseded commercial quota grants: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close superseded commercial quota grants: %w", err)
+	}
+	for _, grant := range grants {
+		if _, err := tx.Exec(`
+			INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
+			VALUES ($1, $2, $3, 'revoke', 'upgrade', $4, $5)`, uid, grant.model, -grant.amount, grant.id, "upgrade to "+targetSlug); err != nil {
+			return fmt.Errorf("record superseded commercial quota reversal: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE commercial_quota_grants g
+		SET revoked_at = $3, expires_at = LEAST(COALESCE(g.expires_at, $3), $3)
+		FROM commercial_plans p
+		WHERE g.plan_id = p.id AND g.uid = $1 AND p.slug = $2 AND g.revoked_at IS NULL
+		  AND g.grant_type IN ('order', 'invite')`, uid, slug, now); err != nil {
+		return fmt.Errorf("revoke superseded commercial quota grants: %w", err)
+	}
+	return nil
+}

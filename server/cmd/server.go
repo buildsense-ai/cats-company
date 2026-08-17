@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/openchat/openchat/server/db/mysql"
 	"github.com/openchat/openchat/server/db/postgres"
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func envString(name string) string {
@@ -204,6 +206,34 @@ func limitHTTPMethod(method string, middleware func(http.HandlerFunc) http.Handl
 	}
 }
 
+func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
+	if staticDir == "" {
+		return
+	}
+
+	fs := http.FileServer(http.Dir(staticDir))
+	serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+	}
+	for _, path := range []string{
+		"/e/",
+		"/mobile-upload/",
+		"/login",
+		"/login/",
+		"/register",
+		"/register/",
+		"/reset-password",
+		"/reset-password/",
+	} {
+		mux.HandleFunc(path, serveSPAIndex)
+	}
+	mux.Handle("/", fs)
+}
+
 func useRedisRuntime(cfg RuntimeConfig) bool {
 	store := strings.ToLower(strings.TrimSpace(cfg.Store))
 	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
@@ -315,6 +345,18 @@ func main() {
 		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
+	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+		apiKey, err := db.GetBotAPIKey(botUID)
+		if err != nil {
+			return nil, err
+		}
+		return skillHubProxyHandler.ResolvePrivateSkillMetadata(
+			ctx,
+			strconv.FormatInt(botUID, 10),
+			apiKey,
+			skills,
+		)
+	})
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
 	botModelConfigHandler.SetRollout(botModelCloudPublicEnabled, botModelCloudTestUIDs)
@@ -342,6 +384,7 @@ func main() {
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
 	cloudArtifactHandler := server.NewCloudArtifactHandlerFromEnv()
 	cloudArtifactHandler.SetStore(db)
+	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	sttHandler := server.NewSTTHandlerFromEnv()
@@ -377,6 +420,8 @@ func main() {
 	if len(relayCommercialEnforceUIDs) > 0 {
 		log.Printf("relay commercial enforce sync allowlist is enabled for %d uid(s)", len(relayCommercialEnforceUIDs))
 	}
+	relayKeyHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	botModelConfigHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	accountAdminHandler.SetCommercialRelayAdmin(relayAdminClient, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	var commercialRelaySyncer *server.CommercialRelaySyncer
 	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())
@@ -388,6 +433,12 @@ func main() {
 		})
 		commercialRelaySyncer.Start(commercialServiceCtx)
 		accountAdminHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		relayKeyHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		userHandler.SetRelayRegistrationReadyHook(func(uid int64) {
+			if commercialRelaySyncer.EnforcedFor(uid) {
+				commercialRelaySyncer.Enqueue(uid)
+			}
+		})
 	}
 	relayCommercialHandler := server.NewRelayCommercialHandlerWithOptions(commercialStore, server.RelayCommercialOptions{
 		PublicEnabled:  relayCommercialPublicEnabled,
@@ -459,7 +510,10 @@ func main() {
 		Name: "auth_login_ip", Limit: 60, Window: time.Minute, Burst: 10,
 	})
 	authLoginAccountLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_login_account", Limit: 10, Window: 10 * time.Minute, Burst: 5,
+		// 10 attempts per rolling 5 minutes (was 10 minutes): the shorter window
+		// refills tokens twice as fast, so repeated login failures recover sooner
+		// and legitimate retries are less likely to trip the limit.
+		Name: "auth_login_account", Limit: 10, Window: 5 * time.Minute, Burst: 5,
 	}, "account")
 	authRegisterIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "auth_register_ip", Limit: 10, Window: time.Hour, Burst: 3,
@@ -632,12 +686,14 @@ func main() {
 		pushTestUserLimit,
 	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
+	mux.HandleFunc("/api/conversations/notification-preferences", authWithDB(conversationHandler.HandleNotificationPreference))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
 	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("/api/agents/", jwtAuthWithDB(cloudArtifactHandler.HandleAgentArtifacts))
+	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
 	mux.HandleFunc("GET /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleList))
@@ -715,6 +771,7 @@ func main() {
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
+	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))
 	mux.HandleFunc("/api/bots/skills-visibility", ownerAuthWithDB(botHandler.HandleSetBotSkillsVisibility))
 	mux.HandleFunc("/api/bots/avatar", ownerAuthWithDB(botHandler.HandleUpdateBotAvatar))
@@ -792,19 +849,7 @@ func main() {
 	})
 
 	// Static files
-	if cfg.Static.Dir != "" {
-		fs := http.FileServer(http.Dir(cfg.Static.Dir))
-		serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-				return
-			}
-			http.ServeFile(w, r, filepath.Join(cfg.Static.Dir, "index.html"))
-		}
-		mux.HandleFunc("/e/", serveSPAIndex)
-		mux.HandleFunc("/mobile-upload/", serveSPAIndex)
-		mux.Handle("/", fs)
-	}
+	registerStaticRoutes(mux, cfg.Static.Dir)
 
 	// Start HTTP server
 	// Note: no ReadTimeout/WriteTimeout here — WebSocket connections are long-lived.

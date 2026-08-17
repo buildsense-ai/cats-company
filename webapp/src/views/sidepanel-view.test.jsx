@@ -57,9 +57,10 @@ vi.mock('../widgets/friend-request', () => ({
 }));
 
 vi.mock('../widgets/agent-store-modal', () => ({
-  default: function MockAgentStoreModal({ initialAgentId, onClose }) {
+  default: function MockAgentStoreModal({ initialAgentId, onClose, onOpenSkillHub }) {
     return (
       <div data-testid="agent-store-modal" data-initial-agent-id={initialAgentId ?? ''}>
+        <button type="button" onClick={() => onOpenSkillHub?.(initialAgentId)}>管理能力</button>
         <button type="button" onClick={onClose}>关闭助手管理</button>
       </div>
     );
@@ -105,6 +106,7 @@ vi.mock('../api', () => ({
     disbandGroup: vi.fn(),
     updateGroup: vi.fn(),
     updateConversationTitle: vi.fn(),
+    setConversationNotificationsMuted: vi.fn(),
   },
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
@@ -178,6 +180,7 @@ describe('ChatListView sidebar sections', () => {
       group: { id: 77, name: 'New Agent Task', kind: 'agent_task', is_agent_task: true },
     });
     api.updateGroup.mockResolvedValue({ ok: true });
+    api.setConversationNotificationsMuted.mockResolvedValue({ notifications_muted: false });
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
       wsHandler = handler;
@@ -947,6 +950,27 @@ describe('ChatListView sidebar sections', () => {
     expect(onStartAgentTask).not.toHaveBeenCalled();
   });
 
+  it('forwards the managed assistant to SkillHub and closes assistant management', async () => {
+    const onOpenSkillHub = vi.fn();
+    await mount({ onOpenSkillHub });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Dev Agent 任务操作"]'));
+    });
+    const actionMenu = document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]');
+    await act(async () => {
+      Simulate.click(Array.from(actionMenu.querySelectorAll('[role="menuitem"]'))
+        .find((item) => item.textContent.includes('管理 Agent')));
+    });
+    await act(async () => {
+      Simulate.click(Array.from(document.body.querySelectorAll('[data-testid="agent-store-modal"] button'))
+        .find((button) => button.textContent.includes('管理能力')));
+    });
+
+    expect(onOpenSkillHub).toHaveBeenCalledWith(42, undefined);
+    expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeNull();
+  });
+
   it('portals the assistant task menu, supports arrow keys, and restores focus on Escape', async () => {
     await mount();
 
@@ -1114,6 +1138,7 @@ describe('ChatListView sidebar sections', () => {
     expect(row.querySelector('[role="menu"] [aria-label="置顶任务 Review Task"]')).toBeNull();
     expect(row.querySelector('[aria-label="修改任务名称 Review Task"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="加入项目 Review Task"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="静音此会话 Review Task"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="Review Task 手机扫码"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="Review Task 协作管理"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="删除任务 Review Task"]')).toBeTruthy();
@@ -2944,16 +2969,13 @@ describe('ChatListView sidebar sections', () => {
           <button type="button" className="cc-sidebar-primary cc-sidebar-skillhub-entry">
             SkillHub
           </button>
-          <button type="button" className="cc-sidebar-primary cc-sidebar-system-prompt-entry">
-            系统提示词
-          </button>
         </>
       ),
     });
 
     const toolLabels = Array.from(container.querySelectorAll('.cc-sidebar-tools > button'))
       .map((button) => button.textContent.trim());
-    expect(toolLabels).toEqual(['新建任务', 'SkillHub', '系统提示词']);
+    expect(toolLabels).toEqual(['新建任务', 'SkillHub']);
   });
 
   it('shows the four compact navigation tools and recent Agent tasks in a history menu', async () => {
@@ -3208,7 +3230,7 @@ describe('ChatListView sidebar sections', () => {
     expect(menu).toBeTruthy();
     expect(container.querySelector('[aria-label="联系人更多操作"]').getAttribute('aria-expanded')).toBe('true');
     const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', '创建Agent助手']);
+    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', 'Agent 助手']);
     expect(menuItems[0].querySelector('.lucide-user-plus')).toBeTruthy();
     expect(menuItems[1].querySelector('.lucide-users')).toBeTruthy();
     expect(menuItems[2].querySelector('.lucide-bot')).toBeTruthy();
@@ -3236,13 +3258,14 @@ describe('ChatListView sidebar sections', () => {
     });
     menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
     await act(async () => {
-      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('创建Agent助手')));
+      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('Agent 助手')));
     });
     expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeTruthy();
 
     await act(async () => {
-      Simulate.click(document.body.querySelector('[data-testid="agent-store-modal"] button'));
+      Simulate.click(Array.from(document.body.querySelectorAll('[data-testid="agent-store-modal"] button'))
+        .find((button) => button.textContent.includes('关闭助手管理')));
     });
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
@@ -3935,5 +3958,46 @@ describe('ChatListView sidebar sections', () => {
     const offlineAgentTask = Array.from(container.querySelectorAll('[data-task-kind="collaboration"]'))
       .find((row) => row.textContent.includes('Multi Agent Review'));
     expect(offlineAgentTask?.querySelector('.cc-task-agent-icon.offline')?.getAttribute('title')).toBe('0/2 个 Agent 在线');
+  });
+
+  it('uses the server-returned mute state for a contact conversation', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_8',
+        friend_id: 8,
+        name: 'Alice',
+        is_group: false,
+        notifications_muted: false,
+      }],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.setConversationNotificationsMuted.mockResolvedValue({
+      topic_id: 'p2p_7_8',
+      notifications_muted: false,
+    });
+
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
+    });
+    const muteAction = container.querySelector('[aria-label="静音此会话 Alice"]');
+    expect(muteAction).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(muteAction);
+      await Promise.resolve();
+    });
+
+    expect(api.setConversationNotificationsMuted).toHaveBeenCalledWith('p2p_7_8', true);
+    expect(container.querySelector('[aria-label="Alice 已静音"]')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
+    });
+    expect(container.querySelector('[aria-label="静音此会话 Alice"]')).toBeTruthy();
   });
 });

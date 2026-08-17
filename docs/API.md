@@ -126,7 +126,31 @@ Authorization: ApiKey <api_key>
 | POST | `/api/friends/block` | 屏蔽用户 | `{ "user_id": 2 }` |
 | DELETE | `/api/friends/remove?user_id={id}` | 删除好友 | - |
 
-### 2.5 消息接口（需要鉴权）
+### 2.5 会话接口（需要鉴权）
+
+#### GET /api/conversations
+
+获取当前用户可见的会话列表（包含最新消息）。每个会话都返回
+`notifications_muted`；该字段是当前账户针对该会话的浏览器通知屏蔽状态，默认值为
+`false`。
+
+#### PUT /api/conversations/notification-preferences
+
+更新当前账户对一个会话的通知屏蔽状态。当前用户必须是该 P2P 会话的好友（或自己拥有的
+Bot），或属于该群组。
+
+```json
+// Request
+{ "topic_id": "p2p_1_2", "muted": true }
+
+// Response 200
+{ "topic_id": "p2p_1_2", "notifications_muted": true }
+```
+
+请求体缺少 `topic_id` 或 `muted` 时返回 400；会话不可访问时返回 403；存储不可用时返回
+500（服务未实现该能力时返回 501）。
+
+### 2.6 消息接口（需要鉴权）
 
 #### POST /api/messages/send
 
@@ -144,7 +168,36 @@ REST 备用通道（推荐使用 WebSocket）。
 
 获取消息历史。
 
-### 2.6 群组接口（需要鉴权）
+#### GET /api/topics/{topicId}/files?limit={n}&before_id={messageId}
+
+读取当前聊天内的文件历史，结果包含该聊天中所有发送者产生的文件，不按 Agent 或发送者过滤。
+
+- 私聊仅允许双方读取。
+- 群聊仅允许当前群成员读取。
+- `before_id` 使用消息 ID 作为稳定的向前分页游标。
+
+```json
+{
+  "topic_id": "p2p_7_440",
+  "topic_name": "项目材料",
+  "count": 1,
+  "files": [
+    {
+      "id": "820:0",
+      "name": "需求说明.pdf",
+      "url": "/uploads/files/requirements.pdf",
+      "message_id": 820,
+      "topic_id": "p2p_7_440",
+      "created_at": "2026-08-12T02:20:00Z",
+      "block_index": 0
+    }
+  ],
+  "has_more": false,
+  "next_before_id": 0
+}
+```
+
+### 2.7 群组接口（需要鉴权）
 
 | 方法 | 路径 | 说明 | 请求体 |
 |------|------|------|--------|
@@ -160,7 +213,7 @@ REST 备用通道（推荐使用 WebSocket）。
 | POST | `/api/groups/disband` | 解散群组 | `{ "group_id": 1 }` |
 | POST | `/api/groups/role` | 修改角色 | `{ "group_id": 1, "user_id": 4, "role": "admin" }` |
 
-### 2.7 文件上传（需要鉴权，支持 JWT 和 API Key）
+### 2.8 文件上传（需要鉴权，支持 JWT 和 API Key）
 
 #### POST /api/upload?type={image|file}
 
@@ -194,9 +247,9 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 访问已上传的文件（无需鉴权）。
 
-### 2.8 Bot 管理接口
+### 2.9 Bot 管理接口
 
-#### 2.8.1 用户端 Bot 管理（需要用户 JWT 鉴权）
+#### 2.9.1 用户端 Bot 管理（需要用户 JWT 鉴权）
 
 用户可以自行创建、管理自己的 Bot。
 
@@ -207,6 +260,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 | DELETE | `/api/bots?uid={uid}` | 删除我的 Bot | - |
 | PATCH | `/api/bots/visibility` | 设置 Bot 可见性 | `{ "uid": 10, "visibility": "public" }` |
 | PATCH | `/api/bots/skills-visibility?uid={uid}&v={scope}` | 设置技能列表可见范围 | - |
+| POST | `/api/bots/runtime-credential` | 为指定 Bot Runtime 签发受限凭证 | `{ "bot_uid": 10, "body_id": "...", "installation_id": "..." }` |
 | GET | `/api/agents/skills?uid={uid}` | 按所有者权限读取脱敏技能列表 | - |
 
 #### POST /api/bots — 创建 Bot
@@ -227,6 +281,35 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 创建成功后返回 `api_key`，Bot 即可用此 key 通过 WebSocket 接入。
 
+#### POST /api/bots/runtime-credential — 签发 Bot Runtime 凭证
+
+仅 Agent 所有者可调用。该接口为一个明确的 Runtime 实例签发独立于 Bot API Key 的受限凭证，凭证绑定
+`bot_uid`、`body_id` 和 `installation_id`，当前只包含 `skill_mutation:grant` 权限。响应包含敏感凭证，必须
+按密钥保存；服务端设置 `Cache-Control: no-store`，不会把它作为普通用户或 Bot 登录凭证接受。
+
+```json
+// Request
+{
+  "bot_uid": 10,
+  "body_id": "body-prod-1",
+  "installation_id": "install-prod-1"
+}
+
+// Response 201
+{
+  "bot_uid": 10,
+  "body_id": "body-prod-1",
+  "installation_id": "install-prod-1",
+  "scopes": ["skill_mutation:grant"],
+  "credential": "<owner-provisioned-runtime-token>",
+  "expires_at": 1789471200000
+}
+```
+
+Runtime 仍使用 `X-API-Key` 连接 WebSocket，并额外通过 `X-CatsCo-Runtime-Credential` 携带此凭证。
+只持 Bot API Key 的客户端仍可使用原有聊天连接，但不能申请 Skill mutation grant；凭证与连接的 Bot、body
+或 installation 不一致时，WebSocket 握手会被拒绝。
+
 #### PATCH /api/bots/visibility — 设置可见性
 
 ```json
@@ -238,6 +321,24 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 ```
 
 `visibility` 可选值：`"public"`（所有人可见）、`"private"`（仅创建者可见）。
+
+#### PATCH /api/bots?uid={uid} — 更新 Agent 设置
+
+仅 Agent 所有者可调用。除了名称、头像、定位模板和用途说明外，还支持以下协作策略：
+
+- `artifact_upload_enabled`：控制普通成员是否能直接发布共享成果。默认为
+  `true`；关闭后所有者仍可上传和管理成果，普通成员只能查看已有成果。
+- `skill_mutation_mode`：控制专用 Skill 变更控制面接受谁提交的版本化变更。
+  `owner_only`（默认）仅允许所有者；`shared_live` 表示允许成员经专用变更通道提交。
+  该字段不授予普通 Bot 设置编辑权限，也不会绕过后续变更通道的审计、并发控制和校验。
+  在专用变更通道上线前，该策略仅持久化，不会单独开放任何 Skill 修改能力。
+
+```json
+{
+  "artifact_upload_enabled": false,
+  "skill_mutation_mode": "owner_only"
+}
+```
 
 #### PATCH /api/bots/skills-visibility — 设置技能列表可见范围
 
@@ -256,7 +357,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 #### GET /api/agents/skills — 读取 Agent 技能列表
 
-需要用户 JWT 鉴权。Agent 所有者和好友可读取脱敏技能元数据；`skills_visibility=public` 还允许非好友用户读取。响应只包含已经同步到 BotDefinition 的技能标识、来源和版本，不返回内容哈希、Bot definition、模型、提示词、设备路径、技能源码或密钥。
+需要用户 JWT 鉴权。Agent 所有者和好友可读取脱敏技能元数据；`skills_visibility=public` 还允许非好友用户读取。响应只包含已经同步到 BotDefinition 的技能标识、来源、版本，以及 SkillHub 能安全解析时的可选 `displayName`。私有能力名称由服务端使用目标 Bot 的身份向 SkillHub 查询；Bot API key 不会返回浏览器。接口不返回内容哈希、Bot definition、模型、提示词、设备路径、技能源码或密钥。SkillHub 暂时不可用时，`displayName` 会省略，但技能列表仍然可读。
 
 ```json
 // Response 200
@@ -264,7 +365,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
   "botId": "10",
   "skills_visibility": "authorized",
   "skills": [
-    { "source": "skillhub", "skillId": "catsco/example", "version": "1.0.0" }
+    { "source": "skillhub", "skillId": "priv_example", "version": "v_1", "displayName": "example" }
   ]
 }
 ```
@@ -275,7 +376,104 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 { "error": "Agent 所有者未公开技能列表" }
 ```
 
-#### 2.8.2 管理员 Bot 管理（需要管理员鉴权）
+#### GET /api/agents/{agentUid}/artifacts?status={active|deleted} — 读取 Agent 成果
+
+读取当前用户有权访问的 Agent 成果。成果可携带稳定的来源任务标识 `source_topic_id`，前端可据此在“当前任务”和“全部成果”之间筛选；当旧成果列表完全没有该字段时，界面会回退到“全部”以避免误导或隐藏已有成果。
+
+```json
+{
+  "status": "active",
+  "count": 1,
+  "viewer_relation": "owner",
+  "visibility": "agent_users",
+  "can_publish": true,
+  "publish_mode": "immediate",
+  "artifacts": [
+    {
+      "id": "lesson-game",
+      "title": "课堂小游戏",
+      "kind": "html",
+      "url": "https://example.test/lesson-game/latest/",
+      "status": "active",
+      "source_title": "课堂任务",
+      "source_topic_id": "p2p_7_440",
+      "creator_type": "user",
+      "creator_uid": "7",
+      "creator_name": "成员甲",
+      "uploader_uid": "7",
+      "uploader_name": "成员甲",
+      "uploaded_by_me": true,
+      "can_delete": true,
+      "updated_at": "2026-08-12T06:00:00Z"
+    }
+  ]
+}
+```
+
+成果使用“可信成员直接发布”模型：
+
+- Agent 所有者和已添加该 Agent 的成员都可直接发布，不进入待审核状态。
+- Agent 所有者可下架任意成员发布的成果。
+- 普通成员只能下架自己发布的成果。
+- 回收站及恢复操作暂仅向 Agent 所有者开放。
+- 旧成果缺少 `uploader_uid` 时，普通成员不能管理，避免错误授权。
+- 只有成果管理服务返回 `can_publish: true` 且 `publish_mode: "immediate"` 时，客户端才展示发布入口。
+
+成果来源统一使用 `creator_type`、`creator_uid` 和 `creator_name`：
+
+- `creator_type: "user"` 表示成员上传，界面显示“我上传”或成员名称。
+- `creator_type: "agent"` 表示 Agent 生成并发布，界面显示具体 Agent 名称和“生成”。
+- `creator_type: "unknown"` 表示历史记录无法证明创建者，界面显示“来源未知”，不得自动归属给 Agent 所有者。
+- `uploader_uid`、`uploader_name` 暂时保留用于成员下架权限和旧版成果服务兼容；CatsCo 会把它们规范化为用户创建者信息。
+
+#### POST /api/agents/{agentUid}/artifacts — 直接发布 Agent 成果
+
+发布一个已上传到当前 CatsCo 实例的 HTML 网页或 ZIP 小应用。`url` 必须使用服务端 `CATSCO_PUBLIC_BASE_URL` 配置的 HTTPS 来源、位于 `/uploads/files/` 下，并对应本实例上传目录中真实存在的普通文件；请求 `Host` 不参与来源判断。CatsCo 根据 Bearer 登录态注入 `actor_uid`、`creator_type: "user"`、`creator_uid`、`uploader_uid` 和 `publish_mode: "immediate"`；客户端不得提交或覆盖这些身份字段。
+
+成员上传默认无需审批并直接展示。若 Agent 所有者关闭了成员上传权限，普通成员调用此接口返回 `403`；所有者不受该开关影响。
+
+```json
+{
+  "title": "课堂网页",
+  "kind": "html",
+  "url": "https://catsco.example/uploads/files/result.html",
+  "source_title": "课堂任务",
+  "source_topic_id": "p2p_7_440"
+}
+```
+
+成功返回 `201`，成果状态立即为 `active`：
+
+```json
+{
+  "ok": true,
+  "artifact": {
+    "id": "member-result",
+    "title": "课堂网页",
+    "kind": "html",
+    "url": "https://artifacts.example.com/by-agent/440/member-result/latest/",
+    "status": "active",
+    "agent_uid": "440",
+    "creator_type": "user",
+    "creator_uid": "7",
+    "creator_name": "成员甲",
+    "uploader_uid": "7",
+    "uploader_name": "成员甲",
+    "uploaded_by_me": true,
+    "can_delete": true,
+    "created_at": "2026-08-12T07:00:00Z",
+    "updated_at": "2026-08-12T07:00:00Z"
+  }
+}
+```
+
+成果管理服务需要负责导入或注册 CatsCo 上传 URL，并返回成果节点下的最终 URL。未实现该能力时应在列表中省略 `can_publish`，CatsCo 前端不会显示失效入口。
+
+#### DELETE /api/agents/{agentUid}/artifacts/{artifactId} — 下架成果
+
+Agent 所有者可以下架任意活跃成果；普通成员仅可下架 `uploader_uid` 与当前登录用户一致的成果。服务端会再次读取并验证成果归属，不依赖客户端的 `can_delete` 字段。
+
+#### 2.9.2 管理员 Bot 管理（需要管理员鉴权）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|

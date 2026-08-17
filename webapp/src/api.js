@@ -110,6 +110,16 @@ const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 
+export function toWritableBotSkillRefs(skills) {
+  if (!Array.isArray(skills)) return skills;
+  return skills.map((skill) => ({
+    source: skill?.source,
+    skillId: skill?.skillId,
+    version: skill?.version,
+    contentHash: skill?.contentHash,
+  }));
+}
+
 function currentPageVisibility() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
     ? 'hidden'
@@ -355,13 +365,40 @@ async function localRequest(method, path, body, options = {}) {
   }
 }
 
-async function shareLocalSkillWithCatsCo(skillName, expectedBotUid, expectedUserUid) {
-  const body = { skillName, expectedBotUid, expectedUserUid };
+async function shareLocalSkillWithCatsCo(
+  skillName,
+  expectedBotUid,
+  expectedUserUid,
+  { confirmPublish = false } = {},
+) {
+  const body = {
+    skillName,
+    expectedBotUid,
+    expectedUserUid,
+    ...(confirmPublish ? { confirmPublish: true } : {}),
+  };
   // A valid local SkillHub cookie may belong to a previously signed-in
   // CatsCo user. Always exchange the current XiaoBa CatsCo identity before
   // publishing so a stale session cannot attribute the Skill to that user.
   await localRequest('POST', '/api/skillhub/auth/catsco', {});
   return localRequest('POST', '/api/skillhub/share-local-skill', body);
+}
+
+function hasUsableLocalSkillPayload(response) {
+  const skills = Array.isArray(response) ? response : (response?.skills || []);
+  return skills.length === 0 || skills.some((skill) => (
+    skill && typeof skill === 'object' && Object.keys(skill).length > 0
+  ));
+}
+
+async function getLocalSkillsWithFallback() {
+  try {
+    const response = await localRequest('GET', '/api/store');
+    if (hasUsableLocalSkillPayload(response)) return response;
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+  }
+  return localRequest('GET', '/api/skills-all');
 }
 
 function statusMessage(status) {
@@ -585,6 +622,11 @@ export const api = {
       options,
     ),
   getConversations: () => request('GET', '/api/conversations'),
+  setConversationNotificationsMuted: (topicId, muted) => request(
+    'PUT',
+    '/api/conversations/notification-preferences',
+    { topic_id: topicId, muted: Boolean(muted) },
+  ),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
   renameProject: (projectId, name) => request('PATCH', '/api/projects', { project_id: projectId, name }),
@@ -723,22 +765,36 @@ export const api = {
   // Bot management
   getMyBots: () => request('GET', '/api/bots'),
   getBotAPIKey: (uid) => request('GET', `/api/bots/api-key?uid=${uid}`),
-  createBot: ({ username, display_name }) =>
-    request('POST', '/api/bots', { username, display_name }),
+  createBot: ({ username, display_name, role, description }) =>
+    request('POST', '/api/bots', { username, display_name, role, description }),
 
   // Cloud virtual employee control plane (云托管)
   getCloudWorkers: () => request('GET', '/api/cloud-workers'),
   getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
-  createCloudWorker: ({ username, display_name }) =>
-    request('POST', '/api/cloud-workers', { username, display_name }),
+  createCloudWorker: ({ username, display_name, role, description }) =>
+    request('POST', '/api/cloud-workers', { username, display_name, role, description }),
   rollbackCloudWorker: (name, payload = {}) =>
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload),
   resetCloudWorker: (name, payload = {}) =>
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload),
   deleteCloudWorker: (name) =>
     request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}),
-  updateBot: (uid, { display_name, avatar_url }) =>
-    request('PATCH', `/api/bots?uid=${uid}`, { display_name, avatar_url }),
+  updateBot: (uid, {
+    display_name,
+    avatar_url,
+    role,
+    description,
+    artifact_upload_enabled,
+    skill_mutation_mode,
+  }) =>
+    request('PATCH', `/api/bots?uid=${uid}`, {
+      display_name,
+      avatar_url,
+      role,
+      description,
+      artifact_upload_enabled,
+      skill_mutation_mode,
+    }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
   setBotSkillsVisibility: (uid, visibility) => request(
@@ -771,11 +827,11 @@ export const api = {
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
-    { revision, skills },
+    { revision, skills: toWritableBotSkillRefs(skills) },
   ),
   switchLocalBot: (botUid) => localRequest('POST', '/api/cats/switch-bot', { botUid }),
   getLocalCatsStatus: () => localRequest('GET', '/api/cats/status'),
-  getLocalSkills: () => localRequest('GET', '/api/store'),
+  getLocalSkills: getLocalSkillsWithFallback,
   getLocalStatusDetails: () => localRequest('GET', '/api/status/details'),
   shareLocalSkill: shareLocalSkillWithCatsCo,
   searchSkillHubSkills: (query = '', options = {}) => {
@@ -831,6 +887,14 @@ export const api = {
       undefined,
       options,
     ),
+  publishCloudArtifact: (agentUid, artifact) =>
+    request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
+  getTopicFiles: (topicId, { beforeId = 0, limit = 40 } = {}) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    if (beforeId > 0) params.set('before_id', String(beforeId));
+    return request('GET', `/api/topics/${encodeURIComponent(topicId)}/files?${params.toString()}`);
+  },
   getAgentFiles: (agentUid, { topicId, beforeId = 0, limit = 40 } = {}) => {
     const params = new URLSearchParams();
     params.set('topic_id', String(topicId || ''));

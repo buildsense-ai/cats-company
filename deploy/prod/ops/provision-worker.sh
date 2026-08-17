@@ -61,6 +61,24 @@ SUBNET_ID="${CTYUN_WORKER_SUBNET_ID:-}"
 SECURITY_GROUP_ID="${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
 # 内网模式：0 = 不绑定公网 IP（NAT 跳板架构，默认 1 兼容旧行为）
 EXT_IP="${CTYUN_WORKER_EXT_IP:-1}"
+# 计费模式（平台按月售卖，默认 month）：month = 包月 + 到期时间，ondemand = 按量
+# CTYUN_WORKER_CYCLE_COUNT：包月时长（月），默认 1
+# CTYUN_WORKER_AUTO_RENEW：1 = 创建后开自动续费（默认），0 = 不开
+BILLING_MODE="${CTYUN_WORKER_BILLING_MODE:-month}"
+CYCLE_COUNT="${CTYUN_WORKER_CYCLE_COUNT:-1}"
+AUTO_RENEW="${CTYUN_WORKER_AUTO_RENEW:-1}"
+if [[ "$BILLING_MODE" != "month" && "$BILLING_MODE" != "ondemand" ]]; then
+  echo "error: CTYUN_WORKER_BILLING_MODE must be month or ondemand" >&2
+  exit 2
+fi
+if [[ ! "$CYCLE_COUNT" =~ ^[0-9]+$ || "$CYCLE_COUNT" -lt 1 || "$CYCLE_COUNT" -gt 60 ]]; then
+  echo "error: CTYUN_WORKER_CYCLE_COUNT must be 1-60" >&2
+  exit 2
+fi
+if [[ "$AUTO_RENEW" != "1" && "$AUTO_RENEW" != "0" ]]; then
+  echo "error: CTYUN_WORKER_AUTO_RENEW must be 0 or 1" >&2
+  exit 2
+fi
 # SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
 # CTYUN_JUMP_IP：跳板机公网入口 IP；空 = 直连公网 IP（旧模式）
 # CTYUN_JUMP_PORT / CTYUN_JUMP_USER / CTYUN_JUMP_KEY：跳板机连接参数
@@ -127,18 +145,51 @@ gen_uuid() {
   fi
 }
 
+delete_instance_by_id() {
+  # 实测（2026-08-07/08-13）：两个 API 都需 clientToken 且不接受 --projectID。
+  # billing_mode 来自创建请求，可在实例目录暂时不可见时作为可靠兜底。
+  local del_id="$1"
+  local billing_mode="$2"
+  [[ -n "$del_id" ]] || return 1
+  if [[ "$billing_mode" == "month" ]]; then
+    ctyun ecs UnsubscribeEcsInstance --regionID "$REGION_ID" \
+      --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1
+  else
+    ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" \
+      --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1
+  fi
+}
+
+delete_instance() {
+  # 按实例目录里的计费事实删除：包月（expiredTime 非空）→ 退订；按量 → 直接删除。
+  local inst_json="$1"
+  local del_id=""
+  local billing_mode="ondemand"
+  del_id="$(jq -r '.instanceID // ""' <<<"$inst_json")"
+  [[ -n "$del_id" ]] || return 1
+  if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst_json")" ]]; then
+    billing_mode="month"
+  fi
+  delete_instance_by_id "$del_id" "$billing_mode"
+}
+
 cleanup_failed() {
   # fail-closed：删除刚创建的实例 + key pair（尽力，聚合报错）
   local errors=""
   if [[ -n "${CREATED_INSTANCE_ID:-}" ]]; then
-    # 实测（2026-08-07）：DeleteEcsInstance 需 clientToken 且不接受 --projectID；
-    # 实例 ID 用列表返回的 instanceID（UUID）优先，创建返回的 masterResourceID 兜底
-    local del_id="" inst
-    inst="$(find_instance "$INSTANCE_NAME" 2>/dev/null || true)"
-    [[ -n "$inst" ]] && del_id="$(jq -r '.instanceID // ""' <<<"$inst")"
-    [[ -n "$del_id" ]] || del_id="$CREATED_INSTANCE_ID"
-    if ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" \
-        --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1; then
+    # 天翼云创建接口与实例目录存在短暂最终一致性。先重试目录；仍不可见时，
+    # 使用运行等待阶段记住的 instanceID，最后才回退创建响应的 masterResourceID。
+    local inst=""
+    local attempt
+    local cleanup_id="${CREATED_INSTANCE_UUID:-$CREATED_INSTANCE_ID}"
+    for attempt in 1 2 3; do
+      inst="$(find_instance "$INSTANCE_NAME" 2>/dev/null || true)"
+      [[ -n "$inst" ]] && break
+      [[ "$attempt" == "3" ]] || sleep 2
+    done
+    if [[ -n "$inst" ]] && delete_instance "$inst"; then
+      : # ok
+    elif [[ -z "$inst" && -n "$cleanup_id" ]] && delete_instance_by_id "$cleanup_id" "$BILLING_MODE"; then
       : # ok
     else
       errors="instance delete failed; "
@@ -216,6 +267,7 @@ BODY_ID="${BODY_ID:-$(gen_uuid)}"
 INSTALLATION_ID="${INSTALLATION_ID:-$(gen_uuid)}"
 
 # extIP=0 时不传公网相关参数（带宽/线路/计费），API 会拒绝这些组合
+# 计费：month = 包月（--onDemand false + cycleType/cycleCount），ondemand = 按量
 create_args=(ecs CreateEcsInstance \
   --regionID "$REGION_ID" \
   --projectID "$PROJECT_ID" \
@@ -233,24 +285,32 @@ create_args=(ecs CreateEcsInstance \
   --networkCardList "[{\"isMaster\":true,\"subnetID\":\"$SUBNET_ID\"}]" \
   --secGroupList "[\"$SECURITY_GROUP_ID\"]" \
   --keyPairID "$keypair_id" \
-  --onDemand true \
   --extIP "$EXT_IP" \
   --monitorService false \
   --securityProduct false \
   --trustInstance false \
   --labelList "[{\"labelKey\":\"purpose\",\"labelValue\":\"catsco-worker\"},{\"labelKey\":\"tenant\",\"labelValue\":\"$NAME\"}]")
+if [[ "$BILLING_MODE" == "month" ]]; then
+  # 包月：onDemand=false 时 cycleType/cycleCount 生效（MONTH/YEAR）
+  create_args+=(--onDemand false --cycleType MONTH --cycleCount "$CYCLE_COUNT")
+else
+  create_args+=(--onDemand true)
+fi
 if [[ "$EXT_IP" == "1" ]]; then
   create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone --demandBillingType upflowc)
 fi
 create_resp="$(ctyun "${create_args[@]}")"
 CREATED_INSTANCE_ID="$(jq -r '.returnObj.masterResourceID // empty' <<<"$create_resp")"
 [[ -n "$CREATED_INSTANCE_ID" ]] || { echo "error: CreateEcsInstance did not return masterResourceID" >&2; exit 1; }
+CREATED_INSTANCE_UUID=""
 
 # --- 5. 等实例 running + 等 SSH（cloud-init done） ---
 INSTANCE_IP=""
 for _ in $(seq 1 60); do
   inst="$(find_instance "$INSTANCE_NAME")"
   if [[ -n "$inst" ]]; then
+    resolved_instance_id="$(jq -r '.instanceID // ""' <<<"$inst")"
+    [[ -z "$resolved_instance_id" ]] || CREATED_INSTANCE_UUID="$resolved_instance_id"
     state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$inst")"
     # 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
     ip="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
@@ -261,6 +321,20 @@ for _ in $(seq 1 60); do
   sleep 10
 done
 [[ -n "$INSTANCE_IP" ]] || { echo "error: timed out waiting for instance to be running" >&2; exit 1; }
+
+# --- 5.5 自动续费（仅 month 模式） ---
+# 平台按月售卖：实例包月到期自动续费，避免员工到期停机。
+# 失败不阻塞供给（仅警告）——实例已创建，不能因续费配置失败而触发清理删除。
+if [[ "$BILLING_MODE" == "month" && "$AUTO_RENEW" == "1" ]]; then
+  instance_uuid="$(jq -r '.instanceID // ""' <<<"$inst" 2>/dev/null || true)"
+  if [[ -n "$instance_uuid" ]] && ctyun ecs UpdateEcsAutoRenewConfig \
+      --regionID "$REGION_ID" --instanceIDList "$instance_uuid" \
+      --autoRenewStatus 1 --autoRenewCycleType MONTH --autoRenewCycleCount 1 >/dev/null 2>&1; then
+    : # ok
+  else
+    echo "warning: auto-renew configuration failed for $INSTANCE_NAME (manual renew needed)" >&2
+  fi
+fi
 
 # SSH 跳板（NAT 架构）：ProxyCommand 经跳板机转发，凭据全来自环境变量
 # （不依赖容器内 ~/.ssh/config，容器重建后无需手工恢复）
