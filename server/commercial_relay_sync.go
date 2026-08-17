@@ -494,7 +494,7 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		updates, nextManaged = commercialRelaySharedManagedPlan(uid, summary, relayUser, managed)
 	}
 	sharedLimit := commercialRelaySharedLimit(summary)
-	usageWindowStart := commercialRelayUsageWindowStart(summary)
+	usageWindowStart := commercialRelayUsageWindowStartForSync(summary, relayUser)
 	policyNeedsSync := sharedQuota && (!nearlyEqual(relayUser.Limits.MonthlyBudget.MaxLimit, sharedLimit) ||
 		defaultRelayResetDuration(relayUser.Limits.MonthlyBudget.ResetDuration) != "1M" ||
 		!sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart))
@@ -1167,6 +1167,19 @@ func commercialRelayUsageWindowStart(summary *types.CommercialSummary) string {
 		return ""
 	}
 	return earliest.UTC().Format(time.RFC3339)
+}
+
+func commercialRelayUsageWindowStartForSync(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser) string {
+	desired := commercialRelayUsageWindowStart(summary)
+	if desired == "" || relayUser == nil || strings.TrimSpace(relayUser.UsageWindowStart) == "" {
+		return desired
+	}
+	desiredTime, desiredOK := parseCommercialRelayTime(desired)
+	currentTime, currentOK := parseCommercialRelayTime(relayUser.UsageWindowStart)
+	if desiredOK && currentOK && currentTime.After(desiredTime) {
+		return relayUser.UsageWindowStart
+	}
+	return desired
 }
 
 func sameCommercialRelayTimestamp(left, right string) bool {

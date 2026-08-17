@@ -1243,6 +1243,13 @@ func TestCommercialRelayPaidPackageCycleOverridesFreeBaseline(t *testing.T) {
 	if got := commercialRelayUsageWindowStart(summary); got != "2026-08-01T00:00:00Z" {
 		t.Fatalf("free baseline did not resume after refund: %q", got)
 	}
+	paidUser := &commercialRelayUsageUser{UsageWindowStart: "2026-08-14T07:32:08Z"}
+	if got := commercialRelayUsageWindowStartForSync(summary, paidUser); got != "2026-08-14T07:32:08Z" {
+		t.Fatalf("refund moved the quota window backwards: %q", got)
+	}
+	if got := commercialRelayUsageWindowStartForSync(&types.CommercialSummary{}, paidUser); got != "" {
+		t.Fatalf("an account without an active entitlement retained a quota window: %q", got)
+	}
 }
 
 func TestCommercialRelaySyncWritesAndVerifiesSharedPoolPolicy(t *testing.T) {
