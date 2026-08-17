@@ -900,7 +900,7 @@ describe('MessagesView composer draft isolation', () => {
           type: 'stream_delta',
           role: 'assistant',
           content: '旧的临时文本',
-          metadata: { stream_id: 'reused-stream-1' },
+          metadata: { stream_id: 'reused-stream-1', run_id: 'stale-run-1' },
         },
       });
       await flushPromises();
@@ -924,7 +924,7 @@ describe('MessagesView composer draft isolation', () => {
           msg_type: 'text',
           role: 'assistant',
           content: '持久化的最终回复',
-          metadata: { stream_id: 'reused-stream-1' },
+          metadata: { stream_id: 'reused-stream-1', run_id: 'stale-run-1' },
         }],
       });
       await flushPromises();
@@ -942,7 +942,7 @@ describe('MessagesView composer draft isolation', () => {
           type: 'stream_delta',
           role: 'assistant',
           content: '下一轮的新文本',
-          metadata: { stream_id: 'reused-stream-1' },
+          metadata: { stream_id: 'reused-stream-1', run_id: 'next-run-1' },
         },
       });
       await flushPromises();
@@ -951,6 +951,59 @@ describe('MessagesView composer draft isolation', () => {
     expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
       (message) => message.dataset.messageContent,
     )).toEqual(['持久化的最终回复', '下一轮的新文本']);
+  });
+
+  it('keeps a live stream when history only shares a reusable transport stream id', async () => {
+    const refreshResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages
+      .mockRejectedValueOnce(new Error('temporary history failure'))
+      .mockReturnValueOnce(refreshResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '当前仍在输出的文本',
+          metadata: { stream_id: 'reused-history-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      container.querySelector('button.v3-history-retry').click();
+      await flushPromises();
+    });
+
+    await act(async () => {
+      refreshResult.resolve({
+        messages: [{
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '旧轮次的持久化回复',
+          metadata: { stream_id: 'reused-history-stream-1' },
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['旧轮次的持久化回复', '当前仍在输出的文本']);
   });
 
   it('replaces a streamed reply when its final message has no correlation fields', async () => {

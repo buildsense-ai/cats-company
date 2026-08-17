@@ -4890,9 +4890,16 @@ function historySequenceBeforePending(historyMessages, currentMessages, pendingI
 }
 
 function historyContainsFinalForStreamingMessage(streamingMessage, historyMessages) {
+  const streamingTurnKey = assistantReplyTurnKey(streamingMessage);
+  const streamingSenderKey = messageSenderIdentity(streamingMessage);
+  // A history snapshot has no causal ordering relative to an active stream.
+  // Transport stream IDs can be reused, so only a shared execution key proves
+  // that a persisted reply supersedes this placeholder.
+  if (!streamingTurnKey || !streamingSenderKey) return false;
   return (historyMessages || []).some((historyMessage) => (
     isFinalTextMessage(historyMessage)
-    && findStreamingMessageForFinal([streamingMessage], historyMessage) !== -1
+    && messageSenderIdentity(historyMessage) === streamingSenderKey
+    && assistantReplyTurnKey(historyMessage) === streamingTurnKey
   ));
 }
 
