@@ -6,7 +6,7 @@ const MAX_OUTPUT_HEIGHT = 9600;
 const MAX_OUTPUT_PIXELS = 18_000_000;
 const APP_ENTRY_URL = 'https://app.catsco.cc';
 // This fixed QR matrix encodes APP_ENTRY_URL. The four-module quiet zone is part
-// of the matrix so it stays scannable on every share theme.
+// of the matrix so the share-image background provides the surrounding contrast.
 const APP_ENTRY_QR_MODULES = [
   '000000000000000000000000000000000',
   '000000000000000000000000000000000',
@@ -42,8 +42,15 @@ const APP_ENTRY_QR_MODULES = [
   '000000000000000000000000000000000',
   '000000000000000000000000000000000',
 ];
-const APP_ENTRY_QR_MODULE_SIZE = 3;
-const APP_ENTRY_QR_SIZE = APP_ENTRY_QR_MODULES.length * APP_ENTRY_QR_MODULE_SIZE;
+// Two logical pixels per module keeps the code inside the existing compact
+// footer. At the default 1.5x export scale, each module remains 3 physical
+// pixels wide for dependable scanning.
+const APP_ENTRY_QR_MODULE_SIZE = 2;
+const APP_ENTRY_QR_SOURCE_QUIET_ZONE = 4;
+const APP_ENTRY_QR_RENDERED_QUIET_ZONE = 1;
+const APP_ENTRY_QR_CROP = APP_ENTRY_QR_SOURCE_QUIET_ZONE - APP_ENTRY_QR_RENDERED_QUIET_ZONE;
+const APP_ENTRY_QR_RENDERED_MODULES = APP_ENTRY_QR_MODULES.length - APP_ENTRY_QR_CROP * 2;
+const APP_ENTRY_QR_SIZE = APP_ENTRY_QR_RENDERED_MODULES * APP_ENTRY_QR_MODULE_SIZE;
 
 export const CONVERSATION_SHARE_IMAGE_WIDTH = DEFAULT_WIDTH;
 
@@ -268,12 +275,11 @@ function drawLogoFallback(ctx, x, y, size, palette) {
   ctx.restore();
 }
 
-function drawAppEntryQRCode(ctx, x, y) {
-  ctx.fillStyle = '#fcfdfc';
-  ctx.fillRect(x, y, APP_ENTRY_QR_SIZE, APP_ENTRY_QR_SIZE);
-  ctx.fillStyle = '#18201e';
-  APP_ENTRY_QR_MODULES.forEach((row, rowIndex) => {
-    Array.from(row).forEach((module, columnIndex) => {
+function drawAppEntryQRCode(ctx, x, y, palette) {
+  ctx.fillStyle = palette.text;
+  const visibleRows = APP_ENTRY_QR_MODULES.slice(APP_ENTRY_QR_CROP, -APP_ENTRY_QR_CROP);
+  visibleRows.forEach((row, rowIndex) => {
+    Array.from(row.slice(APP_ENTRY_QR_CROP, -APP_ENTRY_QR_CROP)).forEach((module, columnIndex) => {
       if (module !== '1') return;
       ctx.fillRect(
         x + columnIndex * APP_ENTRY_QR_MODULE_SIZE,
@@ -306,7 +312,7 @@ export async function renderConversationShareImage({
 
   const padding = 56;
   const headerHeight = 128;
-  const footerHeight = 120;
+  const footerHeight = 72;
   const bubbleMaxWidth = Math.min(720, width - padding * 2);
   const bodyLineHeight = 28;
   const bubblePaddingX = 24;
@@ -465,24 +471,24 @@ export async function renderConversationShareImage({
     });
 
     const footerTop = height - padding - footerHeight;
-    const qrX = width - padding - APP_ENTRY_QR_SIZE;
-    const qrY = footerTop + 15;
-    const footerCopyMaxWidth = Math.max(1, qrX - padding - 24);
     pageCtx.strokeStyle = palette.border;
     pageCtx.lineWidth = 1;
     pageCtx.beginPath();
-    pageCtx.moveTo(padding, footerTop + 9);
-    pageCtx.lineTo(width - padding, footerTop + 9);
+    pageCtx.moveTo(padding, footerTop + 16);
+    pageCtx.lineTo(width - padding, footerTop + 16);
     pageCtx.stroke();
-    drawAppEntryQRCode(pageCtx, qrX, qrY);
-    pageCtx.fillStyle = palette.accentText;
-    pageCtx.font = '600 18px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText(fitText(pageCtx, '扫码打开 CatsCo', footerCopyMaxWidth), padding, footerTop + 40);
     pageCtx.fillStyle = palette.muted;
-    pageCtx.font = '400 15px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText(fitText(pageCtx, 'app.catsco.cc', footerCopyMaxWidth), padding, footerTop + 66);
-    pageCtx.font = '400 14px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText(fitText(pageCtx, '由 CatsCo 生成 · 保留对话上下文', footerCopyMaxWidth), padding, footerTop + 91);
+    pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText('由 CatsCo 生成 · 保留对话上下文', padding, height - padding - 20);
+    pageCtx.textAlign = 'right';
+    pageCtx.fillStyle = palette.accentText;
+    pageCtx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
+    const qrX = width - padding - APP_ENTRY_QR_SIZE;
+    pageCtx.fillText('CatsCo', qrX - 12, height - padding - 20);
+    pageCtx.textAlign = 'left';
+
+    const qrY = footerTop + 20;
+    drawAppEntryQRCode(pageCtx, qrX, qrY, palette);
 
     return {
       dataUrl: pageCanvas.toDataURL('image/png'),
