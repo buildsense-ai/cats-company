@@ -481,39 +481,38 @@ export async function renderConversationShareImage({
     pageCtx.stroke();
     const qrY = footerTop + 32;
     const qrLabelCenterY = qrY + APP_ENTRY_QR_SIZE / 2;
-    const footerCopy = '由 CatsCo 生成 · 保留对话上下文';
-    const footerGap = 28;
-    const qrLabelGap = 20;
-    pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
-    const footerCopyWidth = pageCtx.measureText(footerCopy).width;
-    pageCtx.font = '600 24px "Inter Variable", "Noto Sans SC", sans-serif';
-    const catsCoLabelWidth = pageCtx.measureText('CatsCo').width;
-    pageCtx.font = '400 14px "Inter Variable", "Noto Sans SC", sans-serif';
-    const appEntryLabelWidth = pageCtx.measureText('app.catsco.cc').width;
-    const qrLabelWidth = Math.max(catsCoLabelWidth, appEntryLabelWidth);
-    const footerGroupWidth = Math.ceil(
-      footerCopyWidth + footerGap + qrLabelWidth + qrLabelGap + APP_ENTRY_QR_SIZE,
-    );
-    const canInlineFooterGroup = footerGroupWidth <= width - padding * 2;
-    const footerGroupX = canInlineFooterGroup
-      ? Math.round((width - footerGroupWidth) / 2)
-      : padding;
-    const qrX = canInlineFooterGroup
-      ? footerGroupX + Math.ceil(footerCopyWidth) + footerGap + Math.ceil(qrLabelWidth) + qrLabelGap
-      : width - padding - APP_ENTRY_QR_SIZE;
-    const qrLabelRight = qrX - (canInlineFooterGroup ? qrLabelGap : 18);
-    const footerCopyMaxWidth = canInlineFooterGroup
-      ? Math.ceil(footerCopyWidth)
-      : Math.max(1, qrX - padding - 84);
-    const footerCopyX = footerGroupX;
-    const footerCopyY = canInlineFooterGroup ? qrLabelCenterY + 6 : height - padding - 20;
-    pageCtx.fillStyle = palette.muted;
-    pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
-    pageCtx.fillText(
-      fitText(pageCtx, footerCopy, footerCopyMaxWidth),
-      footerCopyX,
-      footerCopyY,
-    );
+    const qrX = width - padding - APP_ENTRY_QR_SIZE;
+    const qrLabelRight = qrX - 18;
+    const footerInfoMaxWidth = Math.max(1, qrX - padding - 72);
+    const showFooterDetails = footerInfoMaxWidth >= 220;
+    if (showFooterDetails) {
+      pageCtx.fillStyle = palette.text;
+      pageCtx.font = '600 22px "Inter Variable", "Noto Sans SC", sans-serif';
+      pageCtx.fillText(
+        fitText(pageCtx, '对话已整理为可分享图片', footerInfoMaxWidth),
+        padding,
+        qrLabelCenterY - 5,
+      );
+      pageCtx.fillStyle = palette.muted;
+      pageCtx.font = '400 15px "Inter Variable", "Noto Sans SC", sans-serif';
+      pageCtx.fillText(
+        fitText(
+          pageCtx,
+          `${normalizedItems.length} 条消息 · 保留发送者、时间与附件标签`,
+          footerInfoMaxWidth,
+        ),
+        padding,
+        qrLabelCenterY + 20,
+      );
+    } else {
+      pageCtx.fillStyle = palette.muted;
+      pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
+      pageCtx.fillText(
+        fitText(pageCtx, '由 CatsCo 生成 · 保留对话上下文', footerInfoMaxWidth),
+        padding,
+        height - padding - 20,
+      );
+    }
     pageCtx.textAlign = 'right';
     pageCtx.fillStyle = palette.accentText;
     pageCtx.font = '600 24px "Inter Variable", "Noto Sans SC", sans-serif';

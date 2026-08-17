@@ -210,6 +210,24 @@ describe('conversation share image helpers', () => {
     expect(context.fillText).toHaveBeenCalledWith('app.catsco.cc', 194, 454);
     expect(context.fillRect).toHaveBeenCalledWith(228, 384, 4, 4);
     expect(context.fillRect).not.toHaveBeenCalledWith(212, 368, 4, 4);
+
+    await renderConversationShareImage({
+      logoUrl: '',
+      items: [{
+        message: { id: 2, content: 'hello', created_at: '2026-08-13T03:00:00Z' },
+        senderName: 'Me',
+        isSelf: true,
+      }],
+      topicName: '对话',
+      width: 720,
+      scale: 2,
+    });
+    expect(context.fillText).toHaveBeenCalledWith('对话已整理为可分享图片', 56, 429);
+    expect(context.fillText).toHaveBeenCalledWith('1 条消息 · 保留发送者、时间与附件标签', 56, 454);
+    expect(context.fillText).toHaveBeenCalledWith('CatsCo', 514, 429);
+    expect(context.fillText).toHaveBeenCalledWith('app.catsco.cc', 514, 454);
+    expect(context.fillRect).toHaveBeenCalledWith(548, 384, 4, 4);
+    expect(context.fillRect).not.toHaveBeenCalledWith(532, 368, 4, 4);
   });
 
   it('paginates one long message without truncating its final content', async () => {
