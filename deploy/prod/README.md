@@ -132,6 +132,42 @@ legacy path is represented internally as a one-provider pool.
 base64 references; its 24 MiB default remains below the bundled Nginx 32 MiB
 body limit.
 
+## Image upscale gateway
+
+The upscale route is independent from image generation and its provider race.
+It accepts one authenticated multipart request at `POST /v1/images/upscale`,
+submits one asynchronous Topaz Gigapixel job, and returns its task id. Query
+the same job at `GET /v1/images/upscale/tasks/<process_id>`; the gateway
+queries Topaz and returns `202` while it is pending, then returns the completed
+JPEG when the result is ready. The gateway never retries the paid submission
+and does not switch providers.
+
+Keep the provider key in the persistent secret mount:
+
+```bash
+printf '%s' '<topaz-api-key>' > /srv/catscompany-prod/secrets/image-upscale-api-key
+chmod 600 /srv/catscompany-prod/secrets/image-upscale-api-key
+```
+
+Then configure the mounted path in `prod.env`:
+
+```env
+CATSCO_IMAGE_UPSCALE_API_KEY_FILE=/run/catsco-secrets/image-upscale-api-key
+CATSCO_IMAGE_UPSCALE_MODEL=Standard V2
+CATSCO_IMAGE_UPSCALE_TIMEOUT_SECONDS=45
+CATSCO_IMAGE_UPSCALE_MAX_TARGET_EDGE=7680
+CATSCO_IMAGE_UPSCALE_MAX_REQUEST_BYTES=67108864
+CATSCO_IMAGE_UPSCALE_MAX_SOURCE_BYTES=30000000
+CATSCO_IMAGE_UPSCALE_MAX_RESPONSE_BYTES=134217728
+```
+
+The default upstream URL is
+`https://api.topazlabs.com/image/v1/enhance/async`; override
+`CATSCO_IMAGE_UPSCALE_URL` only for a compatible Topaz-shaped endpoint. The
+source limit remains 30 MB, and the output limit is 128 MiB for large 8K JPEGs.
+The provider key is never returned to the client or sent to the presigned
+download URL.
+
 ## Distributed artifact nodes
 
 With no node registry configured, artifact management keeps using the legacy
