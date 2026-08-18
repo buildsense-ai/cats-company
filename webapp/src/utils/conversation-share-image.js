@@ -64,6 +64,8 @@ function contentBlockText(block) {
   const payload = block.payload || block;
   if (block.type === 'image') return `[图片] ${safeString(payload.name) || '图片附件'}`;
   if (block.type === 'file') return `[文件] ${safeString(payload.name) || '文件附件'}`;
+  if (block.type === 'audio' || block.type === 'voice') return `[音频] ${safeString(payload.name) || '音频附件'}`;
+  if (block.type === 'video') return `[视频] ${safeString(payload.name) || '视频附件'}`;
   return '';
 }
 
@@ -97,7 +99,7 @@ function structuredContentParts(content) {
 export function conversationShareText(message) {
   const blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
   const blockParts = blocks
-    .filter((block) => ['text', 'image', 'file'].includes(block?.type))
+    .filter((block) => ['text', 'image', 'file', 'audio', 'voice', 'video'].includes(block?.type))
     .map(contentBlockText)
     .filter(Boolean);
   const parts = blockParts.length > 0

@@ -58,7 +58,7 @@ vi.mock('read-excel-file/browser', () => ({
   default: vi.fn(),
 }));
 
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from './chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
 import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
@@ -134,6 +134,18 @@ describe('ChatMessage rich file rendering', () => {
     });
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it('recognizes a capability-scoped shared file as safe to preview', () => {
+    const descriptor = previewFileDescriptor({
+      name: 'report.pdf',
+      url: '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef',
+      mime_type: 'application/pdf',
+      size: 128,
+    });
+
+    expect(descriptor?.canPreview).toBe(true);
+    expect(descriptor?.url).toBe('/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef');
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {
@@ -885,7 +897,7 @@ describe('ChatMessage rich file rendering', () => {
     const moreActionsMenu = container.querySelector('.v3-message-action-menu');
     expect(moreActionsButton.getAttribute('aria-expanded')).toBe('true');
     expect(moreActionsMenu?.getAttribute('role')).toBe('menu');
-    expect(moreActionsMenu?.textContent).toContain('制作分享图');
+    expect(moreActionsMenu?.textContent).toContain('分享消息');
     expect(moreActionsButton.parentElement?.classList.contains('v3-message-more-actions')).toBe(true);
     expect(moreActionsMenu?.parentElement).toBe(moreActionsButton.parentElement);
 

@@ -324,6 +324,47 @@ async function request(method, path, body, options = {}) {
   }
 }
 
+// Capability links are intentionally detached from the owner session. Keeping
+// this request separate from `request` makes it impossible to accidentally
+// attach an Authorization header or ambient cookies to public share reads.
+async function publicRequest(path, options = {}) {
+  const { signal } = options;
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      credentials: 'omit',
+      signal,
+    });
+  } catch (cause) {
+    if (signal?.aborted || cause?.name === 'AbortError') {
+      const error = new Error('请求已取消');
+      error.code = 'REQUEST_ABORTED';
+      error.cause = cause;
+      throw error;
+    }
+    const error = new Error('网络连接失败，请检查后端服务是否运行');
+    error.code = 'NETWORK_ERROR';
+    error.cause = cause;
+    throw error;
+  }
+
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    // Keep the public error generic when an intermediary returns HTML.
+  }
+  if (!response.ok) {
+    const error = new Error(data.error || statusMessage(response.status));
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
 async function localRequest(method, path, body, options = {}) {
   const { timeoutMs = 45_000 } = options;
   const controller = new AbortController();
@@ -608,6 +649,24 @@ export const api = {
       undefined,
       options,
     ),
+  createConversationShare: ({ topicId, messageIds, title, expiresIn }) => request(
+    'POST',
+    '/api/conversation-shares',
+    {
+      topic_id: topicId,
+      message_ids: messageIds,
+      title,
+      expires_in: expiresIn,
+    },
+  ),
+  revokeConversationShare: (shareId) => request(
+    'DELETE',
+    `/api/conversation-shares/${encodeURIComponent(shareId)}`,
+  ),
+  getConversationShare: (token, options = {}) => publicRequest(
+    `/api/shared-conversations/${encodeURIComponent(token)}`,
+    options,
+  ),
   getMessageSearch: (query, searchType = 'all', options = {}) =>
     request(
       'GET',

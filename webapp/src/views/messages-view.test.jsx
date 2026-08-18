@@ -202,6 +202,8 @@ vi.mock('../api', () => ({
     getTopicFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
+    createConversationShare: vi.fn(),
+    revokeConversationShare: vi.fn(),
   },
   wsSendMessage: vi.fn(),
   wsSendStreamCancel: vi.fn(),
@@ -415,6 +417,12 @@ describe('MessagesView composer draft isolation', () => {
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
     api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.createConversationShare.mockResolvedValue({
+      id: 'share-1',
+      url: 'https://app.catsco.cc/share/capability',
+      message_count: 1,
+    });
+    api.revokeConversationShare.mockResolvedValue({ revoked: true });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
       url: '/uploads/images/20260610_default.jpg',
@@ -533,7 +541,7 @@ describe('MessagesView composer draft isolation', () => {
         await Promise.resolve();
       });
 
-      const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+      const toolbar = container.querySelector('[aria-label="会话分享选择"]');
       expect(toolbar?.textContent).toContain('已选 1 条');
       expect(container.querySelectorAll('.cc-message-search-hit')).toHaveLength(0);
 
@@ -594,6 +602,69 @@ describe('MessagesView composer draft isolation', () => {
     }
   });
 
+  it('creates a visitor link for exactly the selected messages', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 117,
+          seq_id: 117,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: '请只分享这两条内容。',
+          created_at: '2026-08-17T09:00:00Z',
+        },
+        {
+          id: 123,
+          seq_id: 123,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: '这是明确选中的回复。',
+          created_at: '2026-08-17T09:01:00Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    await act(async () => {
+      container.querySelector('.mock-chat-message[data-message-id="123"] .mock-create-conversation-share').click();
+      await flushPromises();
+    });
+
+    const selectFirstMessage = container.querySelector('button[aria-label^="选择消息"]');
+    await act(async () => {
+      selectFirstMessage.click();
+      await flushPromises();
+    });
+
+    const toolbar = container.querySelector('[aria-label="会话分享选择"]');
+    expect(toolbar?.textContent).toContain('已选 2 条');
+    const createLink = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('创建链接'));
+    await act(async () => {
+      createLink.click();
+      await flushPromises();
+    });
+
+    const review = container.querySelector('.cc-conversation-link-share-review');
+    expect(review).not.toBeNull();
+    await act(async () => {
+      Simulate.submit(review.querySelector('form'));
+      await flushPromises();
+    });
+
+    expect(api.createConversationShare).toHaveBeenCalledWith({
+      topicId: 'p2p_1_2',
+      messageIds: [117, 123],
+      title: '会话片段',
+      expiresIn: 604800,
+    });
+    expect(review.textContent).toContain('分享链接已创建');
+  });
+
   it('allows up to 50 messages and rejects the 51st selection', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: Array.from({ length: 51 }, (_, index) => ({
@@ -613,7 +684,7 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const toolbar = container.querySelector('[aria-label="会话分享选择"]');
     const toggles = container.querySelectorAll('.cc-conversation-share-message-toggle');
     expect(toggles).toHaveLength(51);
 
@@ -653,7 +724,7 @@ describe('MessagesView composer draft isolation', () => {
 
     const shareTrigger = container.querySelector('.mock-create-conversation-share');
     await act(async () => shareTrigger.click());
-    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const toolbar = container.querySelector('[aria-label="会话分享选择"]');
     const generateButton = [...toolbar.querySelectorAll('button')]
       .find((button) => button.textContent.includes('生成分享图'));
     await act(async () => {

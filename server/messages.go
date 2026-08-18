@@ -1066,7 +1066,7 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 		return false
 	}
 	switch displayType {
-	case "text", "image", "voice", "file":
+	case "text", "image", "voice", "audio", "file":
 	default:
 		return false
 	}

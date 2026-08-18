@@ -689,6 +689,44 @@ describe('message history request controls', () => {
   });
 });
 
+describe('public conversation share requests', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ title: '会话片段', items: [] }),
+    });
+    apiModule = await import('./api');
+    apiModule.setToken('owner-session-token');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+  });
+
+  test('loads a capability link without forwarding the owner session', async () => {
+    await expect(apiModule.api.getConversationShare('visitor-capability')).resolves.toEqual({
+      title: '会话片段',
+      items: [],
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/shared-conversations/visitor-capability',
+      expect.objectContaining({
+        method: 'GET',
+        credentials: 'omit',
+        headers: { Accept: 'application/json' },
+      }),
+    );
+    expect(global.fetch.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
+  });
+});
+
 describe('agent file requests', () => {
   let apiModule;
 

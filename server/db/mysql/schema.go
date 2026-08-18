@@ -18,6 +18,9 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTitlesTable,
 		createConversationNotificationMutesTable,
 		createMessagesTable,
+		createConversationSharesTable,
+		createConversationShareItemsTable,
+		createConversationShareAssetsTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
 		createBotConnectionGenerationsTable,
@@ -297,6 +300,53 @@ CREATE TABLE IF NOT EXISTS messages (
     UNIQUE KEY uk_messages_client_msg_id (topic_id, from_uid, client_msg_id),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (from_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createConversationSharesTable = `
+CREATE TABLE IF NOT EXISTS conversation_shares (
+    id VARCHAR(64) PRIMARY KEY,
+    owner_uid BIGINT NOT NULL,
+    topic_id VARCHAR(64) NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    title VARCHAR(80) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'active',
+    expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    revoked_at TIMESTAMP(6) NULL DEFAULT NULL,
+    INDEX idx_conversation_shares_owner_topic (owner_uid, topic_id),
+    INDEX idx_conversation_shares_expires_at (expires_at),
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createConversationShareItemsTable = `
+CREATE TABLE IF NOT EXISTS conversation_share_items (
+    id VARCHAR(64) PRIMARY KEY,
+    share_id VARCHAR(64) NOT NULL,
+    position INT NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    speaker VARCHAR(16) NOT NULL,
+    snapshot LONGTEXT NOT NULL,
+    UNIQUE KEY uk_conversation_share_item_position (share_id, position),
+    FOREIGN KEY (share_id) REFERENCES conversation_shares(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createConversationShareAssetsTable = `
+CREATE TABLE IF NOT EXISTS conversation_share_assets (
+    id VARCHAR(64) PRIMARY KEY,
+    share_id VARCHAR(64) NOT NULL,
+    item_id VARCHAR(64) NOT NULL,
+    storage_key VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(128) NOT NULL,
+    size BIGINT NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    INDEX idx_conversation_share_assets_share (share_id),
+    FOREIGN KEY (share_id) REFERENCES conversation_shares(id) ON DELETE CASCADE,
+    FOREIGN KEY (item_id) REFERENCES conversation_share_items(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

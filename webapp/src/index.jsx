@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/noto-sans-sc/wght.css';
@@ -15,6 +15,8 @@ import './css/catsco-secondary-headers.css';
 import './css/catsco-settings-controls.css';
 import './css/search-overlay.css';
 
+const SharedConversationView = lazy(() => import('./views/shared-conversation-view'));
+
 syncThemeColor(localStorage.getItem(THEME_STORAGE_KEY));
 
 function readBrowserLocation() {
@@ -23,6 +25,14 @@ function readBrowserLocation() {
     search: window.location.search,
     hash: window.location.hash,
   };
+}
+
+function decodeSharedConversationToken(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return '';
+  }
 }
 
 export function App() {
@@ -50,6 +60,15 @@ export function App() {
   }, []);
 
   const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);
+  const sharedConversationMatch = browserLocation.pathname.match(/^\/share\/([^/]+)$/);
+
+  if (sharedConversationMatch) {
+    return (
+      <Suspense fallback={<main className="cc-shared-conversation-state" role="status">正在打开分享片段…</main>}>
+        <SharedConversationView token={decodeSharedConversationToken(sharedConversationMatch[1])} />
+      </Suspense>
+    );
+  }
 
   return (
     <FeedbackProvider>

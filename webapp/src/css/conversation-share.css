@@ -1,0 +1,302 @@
+.cc-shared-conversation {
+  min-height: 100dvh;
+  background: var(--cc-main-bg, #f4f5f7);
+  color: var(--cc-text, #20242c);
+}
+
+.cc-shared-conversation-state {
+  display: grid;
+  min-height: 100dvh;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 32px;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+.cc-shared-conversation-state h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.cc-shared-conversation-state p {
+  max-width: 34ch;
+  margin: 0;
+  color: var(--cc-muted, #68707d);
+}
+
+.cc-shared-conversation-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding: 0 20px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--cc-border, #dce0e6);
+  background: var(--cc-main-header-bg, var(--cc-main-bg, #f4f5f7));
+}
+
+.cc-shared-conversation-brand,
+.cc-shared-conversation-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cc-shared-conversation-brand {
+  justify-self: start;
+  color: var(--cc-text, #20242c);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.cc-shared-conversation-heading {
+  min-width: 0;
+  max-width: min(520px, 42vw);
+  text-align: center;
+}
+
+.cc-shared-conversation-heading h1 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--cc-text, #20242c);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-shared-conversation-heading span {
+  display: block;
+  margin-top: 1px;
+  color: var(--cc-muted, #68707d);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.cc-shared-conversation-readonly {
+  justify-self: end;
+  padding: 4px 8px;
+  border: 1px solid var(--cc-border, #dce0e6);
+  border-radius: 999px;
+  background: var(--cc-panel, #fff);
+  color: var(--cc-muted, #68707d);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.cc-shared-message-workspace {
+  width: 100%;
+  min-height: calc(100dvh - 56px);
+  margin: 0;
+  border: 0;
+}
+
+.cc-shared-conversation .v3-chat-column,
+.cc-shared-timeline {
+  min-height: calc(100dvh - 56px);
+}
+
+.cc-shared-timeline {
+  overflow: visible;
+  padding: 24px 20px 80px;
+}
+
+.cc-shared-timeline .v3-timeline-inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.cc-shared-conversation-notice {
+  max-width: 62ch;
+  margin: 0 auto;
+  color: var(--cc-muted, #68707d);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.cc-shared-timeline .v3-date-divider {
+  margin: 14px 0 10px;
+}
+
+.cc-shared-conversation-empty {
+  padding: 28px;
+  color: var(--cc-muted, #68707d);
+  text-align: center;
+}
+
+/* This panel deliberately has a link-share prefix. The established image-share
+ * toolbar keeps its own selectors and visual rhythm. */
+.cc-conversation-link-share-review {
+  margin: 0 20px 14px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--cc-conversation-share-accent, var(--cc-accent)) 30%, var(--cc-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--cc-panel) 94%, var(--cc-conversation-share-accent-soft, var(--cc-accent-soft)));
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--cc-text) 10%, transparent);
+}
+
+.cc-conversation-link-share-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cc-conversation-link-share-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cc-conversation-share-accent-text, var(--cc-accent-text));
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.cc-conversation-link-share-review h2 {
+  margin: 4px 0 0;
+  color: var(--cc-text);
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.cc-conversation-link-share-review p {
+  margin: 6px 0 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cc-conversation-link-share-close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--cc-muted);
+  cursor: pointer;
+}
+
+.cc-conversation-link-share-close:hover {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.cc-conversation-link-share-close:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
+.cc-conversation-link-share-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.4fr);
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.cc-conversation-link-share-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.cc-conversation-link-share-form input,
+.cc-conversation-link-share-form select,
+.cc-conversation-link-share-url-row input {
+  width: 100%;
+  min-height: 36px;
+  box-sizing: border-box;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: var(--cc-control-surface, var(--cc-panel));
+  color: var(--cc-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.cc-conversation-link-share-form input:focus-visible,
+.cc-conversation-link-share-form select:focus-visible,
+.cc-conversation-link-share-url-row input:focus-visible {
+  border-color: var(--cc-conversation-share-accent, var(--cc-accent));
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 1px;
+}
+
+.cc-conversation-link-share-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.cc-conversation-link-share-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.cc-conversation-link-share-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.cc-conversation-link-share-error {
+  grid-column: 1 / -1;
+  color: var(--cc-danger) !important;
+}
+
+@media (max-width: 700px) {
+  .cc-shared-conversation-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+    min-height: 68px;
+    padding: 8px 16px;
+  }
+
+  .cc-shared-conversation-heading {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: none;
+    text-align: left;
+  }
+
+  .cc-shared-conversation-heading span {
+    display: none;
+  }
+
+  .cc-shared-timeline {
+    padding: 16px 12px 64px;
+  }
+
+  .cc-conversation-link-share-review {
+    margin-inline: 12px;
+  }
+
+  .cc-conversation-link-share-form {
+    grid-template-columns: 1fr;
+  }
+
+  .cc-conversation-link-share-actions {
+    justify-content: stretch;
+  }
+
+  .cc-conversation-link-share-actions button {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+}

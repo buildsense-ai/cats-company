@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, Link2, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
@@ -10,7 +10,9 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import ConversationShareReview from '../widgets/conversation-share-review';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
+import '../css/conversation-share.css';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import {
   artifactRefFromPreviewFile,
@@ -95,6 +97,14 @@ function artifactBindingMatchesFocus(binding, focus) {
     && String(binding.url || '') === focus.url);
 }
 const MAX_CONVERSATION_SHARE_MESSAGES = 50;
+
+function isShareableTranscriptMessage(message) {
+  if (!message || message._streaming || historyMessageID(message) <= 0) return false;
+  const type = String(message.type || message.msg_type || '').trim().toLowerCase();
+  if (WORKING_MESSAGE_TYPES.has(type)) return false;
+  return !['runtime_plan', 'debug', 'stream_delta', 'stream_cancel', 'task_status'].includes(type)
+    && message._display_text_role !== 'process';
+}
 
 function questionNavigationKey(message, index) {
   return String(message?.id ?? message?.seq_id ?? `question-${index}`);
@@ -368,6 +378,7 @@ export default function MessagesView({
   const [conversationSharePreviewPage, setConversationSharePreviewPage] = useState(0);
   const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
   const [conversationShareError, setConversationShareError] = useState('');
+  const [conversationLinkShareReviewOpen, setConversationLinkShareReviewOpen] = useState(false);
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const bottomRef = useRef(null);
@@ -2820,13 +2831,21 @@ export default function MessagesView({
 
   const conversationShareCandidates = useMemo(() => (
     groupedMessages
-      .filter((group) => group.type === 'text' && Boolean(conversationShareText(group.message)))
+      .filter((group) => (
+        group.type === 'text'
+        && isShareableTranscriptMessage(group.message)
+        && Boolean(conversationShareText(group.message))
+      ))
       .map((group, index) => ({
         key: conversationShareMessageKey(group.message, index),
         message: group.message,
+        messageIDs: (group.sourceMessages || [group.message])
+          .map((message) => historyMessageID(message))
+          .filter((messageID) => messageID > 0),
         senderName: group.sender?.name || group.message?.from_name || 'CatsCo',
         isSelf: sameUID(group.message?.from_uid, user.uid),
       }))
+      .filter((candidate) => candidate.messageIDs.length > 0)
   ), [groupedMessages, user.uid]);
   const conversationShareCandidateByMessage = useMemo(() => new Map(
     conversationShareCandidates.map((candidate) => [candidate.message, candidate]),
@@ -2837,6 +2856,13 @@ export default function MessagesView({
   const selectedConversationShareItems = useMemo(() => (
     conversationShareCandidates.filter((candidate) => conversationShareSelectedKeys.includes(candidate.key))
   ), [conversationShareCandidates, conversationShareSelectedKeys]);
+  const selectedConversationShareMessageIDs = useMemo(() => {
+    const selectedIDs = new Set();
+    selectedConversationShareItems.forEach((candidate) => {
+      candidate.messageIDs.forEach((messageID) => selectedIDs.add(messageID));
+    });
+    return Array.from(selectedIDs);
+  }, [selectedConversationShareItems]);
   const canOpenConversationShare = historyLoaded && (messages.length > 0 || !historyError);
 
   const resetConversationSharePreview = useCallback(() => {
@@ -2850,6 +2876,7 @@ export default function MessagesView({
     setConversationShareSelectedKeys(selectedKeys);
     resetConversationSharePreview();
     setConversationShareError('');
+    setConversationLinkShareReviewOpen(false);
   }, [resetConversationSharePreview]);
 
   const closeConversationShare = useCallback(() => {
@@ -3268,17 +3295,26 @@ export default function MessagesView({
           >
             <div className="v3-timeline-inner">
               {conversationShareMode && (
-                <section className="cc-conversation-share-toolbar" aria-label="对话分享图选择">
+                <section className="cc-conversation-share-toolbar" aria-label="会话分享选择">
                   <div className="cc-conversation-share-toolbar-copy">
                     <span className="cc-conversation-share-toolbar-icon" aria-hidden="true"><CheckSquare size={18} /></span>
                     <div>
-                      <strong>选择要展示的消息</strong>
-                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareItems.length} 条，最多 ${MAX_CONVERSATION_SHARE_MESSAGES} 条，按原顺序生成分享图` : '没有可展示的消息'}</span>
+                      <strong>选择要分享的消息</strong>
+                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareMessageIDs.length} 条，可生成分享图或创建只读链接` : '没有可分享的消息'}</span>
                     </div>
                   </div>
                   <div className="cc-conversation-share-toolbar-actions">
                     <button type="button" className="cc-conversation-share-secondary" onClick={closeConversationShare}>
                       取消
+                    </button>
+                    <button
+                      type="button"
+                      className="cc-conversation-share-secondary"
+                      disabled={!canOpenConversationShare || selectedConversationShareMessageIDs.length === 0}
+                      onClick={() => setConversationLinkShareReviewOpen(true)}
+                    >
+                      <Link2 size={16} aria-hidden="true" />
+                      创建链接
                     </button>
                     <button
                       ref={conversationShareGenerateButtonRef}
@@ -3295,9 +3331,17 @@ export default function MessagesView({
                     <p className="cc-conversation-share-toolbar-error" role="alert">{conversationShareError}</p>
                   )}
                   {!canOpenConversationShare && !conversationShareError && (
-                    <p className="cc-conversation-share-toolbar-error" role="status">聊天记录加载失败，暂不能生成分享图。</p>
+                    <p className="cc-conversation-share-toolbar-error" role="status">聊天记录加载失败，暂不能创建分享内容。</p>
                   )}
                 </section>
+              )}
+              {conversationShareMode && conversationLinkShareReviewOpen && (
+                <ConversationShareReview
+                  topicId={topic}
+                  messageIds={selectedConversationShareMessageIDs}
+                  onClose={() => setConversationLinkShareReviewOpen(false)}
+                  onComplete={closeConversationShare}
+                />
               )}
               <div className="v3-date-divider">
                 <span>聊天记录</span>

@@ -322,6 +322,9 @@ func main() {
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
 	friendHandler := server.NewFriendHandler(db, hub)
 	conversationHandler := server.NewConversationHandler(db, hub)
+	// Keep copied public assets under the already-persistent uploads volume, but
+	// outside the regular /uploads/{files,images,feedback} serving surface.
+	conversationShareHandler := server.NewConversationShareHandler(db, hub, "./uploads", "./uploads/conversation-shares")
 	projectHandler := server.NewProjectHandler(db)
 	agentHandler := server.NewAgentHandler(db, hub)
 	channelAgentBindingHandler := server.NewChannelAgentBindingHandler(db, hub)
@@ -672,6 +675,9 @@ func main() {
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))
 	mux.HandleFunc("/api/messages/search", authWithDB(msgHandler.HandleSearchMessages))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
+	mux.HandleFunc("/api/conversation-shares", jwtAuthWithDB(conversationShareHandler.HandleAuthenticated))
+	mux.HandleFunc("/api/conversation-shares/", jwtAuthWithDB(conversationShareHandler.HandleAuthenticated))
+	mux.HandleFunc("/api/shared-conversations/", conversationShareHandler.HandlePublic)
 	mux.HandleFunc("/api/stt/sessions", jwtAuthWithDB(sttHandler.HandleSession))
 	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)
 	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)

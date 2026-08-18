@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, Link2, MoreHorizontal } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -1282,8 +1282,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       role="menuitem"
                       onClick={handleCreateConversationShareClick}
                     >
-                      <ImageDown size={15} aria-hidden="true" />
-                      <span>制作分享图</span>
+                      <Link2 size={15} aria-hidden="true" />
+                      <span>分享消息</span>
                     </button>
                   </div>
                 )}
@@ -1855,7 +1855,9 @@ function isTrustedPreviewURL(url) {
       urlObj.origin === mediaOrigin ||
       (isLocalDev && urlObj.hostname.endsWith('catsco.cc'))
     );
-    const trustedPath = /^\/uploads\/(files|images|feedback)\//.test(urlObj.pathname) ||
+    const trustedUploadPath = /^\/uploads\/(files|images|feedback)\//.test(urlObj.pathname);
+    const trustedShareAssetPath = /^\/api\/shared-conversations\/[A-Za-z0-9_-]{43}\/assets\/[a-f0-9]{32}$/.test(urlObj.pathname);
+    const trustedPath = trustedUploadPath || trustedShareAssetPath ||
       (isLocalDev && urlObj.pathname.startsWith('/demo-artifacts/'));
     return trustedOrigin && trustedPath;
   } catch (e) {
