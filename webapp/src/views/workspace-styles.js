@@ -1,3 +1,7 @@
+import '@fontsource-variable/inter/wght.css';
+import '@fontsource-variable/noto-sans-sc/wght.css';
+import '@fontsource-variable/jetbrains-mono/wght.css';
+
 // Keep the eager entrypoint's original stylesheet cascade after lazy loading.
 import '../css/catsco-topbar.css';
 import '../css/catsco-secondary-headers.css';

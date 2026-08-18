@@ -112,6 +112,20 @@ export function resolveInitialUser({
   return null;
 }
 
+export function commitPreviewSession(session, {
+  writeProfile = writeStoredUserProfile,
+  setSessionToken = setToken,
+} = {}) {
+  const previewUser = normalizeUserProfile(session) || {
+    ...DEV_PREVIEW_USER,
+    uid: DEV_PREVIEW_UID,
+  };
+  const storedPreviewUser = writeProfile(previewUser);
+  if (!storedPreviewUser) return null;
+  setSessionToken(session.token);
+  return storedPreviewUser;
+}
+
 function getInitialUser() {
   const token = getToken();
   return resolveInitialUser({
@@ -446,14 +460,15 @@ function TinodeWebApp({ location }) {
           password: DEV_PREVIEW_PASSWORD,
         });
         if (cancelled) return;
-        setToken(session.token);
+        const previewUser = commitPreviewSession(session);
+        if (!previewUser) {
+          throw new Error('Failed to persist the local preview user profile');
+        }
+        setUser(previewUser);
         const previewSessionRevision = getAuthRevision();
         const profile = normalizeUserProfile(await api.getMe().catch(() => null));
         if (cancelled || !isCurrentAuthSession(session.token, previewSessionRevision)) return;
-        persistUser(profile || {
-          ...DEV_PREVIEW_USER,
-          uid: DEV_PREVIEW_UID,
-        });
+        if (profile) persistUser(profile);
       } catch (error) {
         console.warn('Failed to activate local preview account:', error);
       }

@@ -7,22 +7,70 @@ const WEBAPP_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const OUTPUT_PATH = join(WEBAPP_ROOT, 'src/css/auth-critical.css');
 const ADDITIONS_PATH = join(WEBAPP_ROOT, 'src/css/auth-critical-additions.css');
 const OPENCHAT_AUTH_ROOT_PROPERTIES = new Set(['--oc-danger']);
+const AUTH_ROOT_PROPERTIES = new Set([
+  'color-scheme',
+  '--cc-font-sans',
+  '--cc-font-weight-regular',
+  '--cc-font-weight-medium',
+  '--cc-font-weight-semibold',
+  '--cc-font-weight-bold',
+  '--cc-bg',
+  '--cc-panel',
+  '--cc-border',
+  '--cc-border-strong',
+  '--cc-text',
+  '--cc-text-secondary',
+  '--cc-muted',
+  '--cc-placeholder',
+  '--cc-input-surface',
+  '--cc-accent',
+  '--cc-accent-hover',
+  '--cc-accent-soft',
+  '--cc-focus-ring',
+  '--cc-danger',
+  '--cc-code',
+  '--cc-radius-md',
+  '--cc-radius-lg',
+  '--cc-liquid-edge',
+  '--cc-scrollbar-panel-size',
+  '--cc-scrollbar-size',
+  '--cc-scrollbar-inset',
+  '--cc-scrollbar-track',
+  '--cc-scrollbar-thumb',
+  '--cc-scrollbar-thumb-hover',
+  '--cc-scrollbar-thumb-active',
+  'scrollbar-color',
+  'scrollbar-width',
+  '--v3-primary',
+  '--v3-text-muted',
+]);
 const STYLE_SOURCES = [
   {
     path: 'src/css/openchat-theme.css',
     selectorIsCritical: openchatSelectorIsCritical,
     rootProperties: OPENCHAT_AUTH_ROOT_PROPERTIES,
   },
-  { path: 'src/css/catsco-ui-system.css', selectorIsCritical },
-  { path: 'src/css/catsco-liquid-green.css', selectorIsCritical },
+  {
+    path: 'src/css/catsco-ui-system.css',
+    selectorIsCritical,
+    rootProperties: AUTH_ROOT_PROPERTIES,
+  },
+  {
+    path: 'src/css/catsco-liquid-green.css',
+    selectorIsCritical,
+    rootProperties: AUTH_ROOT_PROPERTIES,
+  },
 ];
 
-const CRITICAL_CLASS = /\.(?:oc-auth(?:-[\w-]+)?|oc-password-reset-code-row|oc-settings-secondary|oc-form-error|cc-inline-feedback(?:-[\w-]+)?|cc-toast(?:-[\w-]+)?|cc-confirm(?:-[\w-]+)?)(?=$|[\s.:#,[>+~])/;
-const GLOBAL_SELECTOR = /^(?::root|\*|\*::before|\*::after|html(?:\[[^\]]+\])*(?:\s+\*)?|(?:html(?:\[[^\]]+\])*\s+)?(?:body|#root)(?:::[\w-]+)?|(?:button|input|textarea|select)(?:::[\w-]+|:[\w-]+(?:\([^)]*\))?)*|(?:input|textarea)::placeholder|strong|b|code|pre|kbd|samp|\[role="button"\]|\[tabindex\]:focus-visible)$/;
+const CRITICAL_CLASS = /\.(?:oc-auth(?:-[\w-]+)?|oc-password-reset-code-row|oc-settings-secondary|oc-form-error|cc-inline-feedback(?:-[\w-]+)?)(?=$|[\s.:#,[>+~])/;
+const GLOBAL_SELECTOR = /^(?::root|\*|\*::before|\*::after|html(?:\[[^\]]+\])*(?:\s+\*)?|body|#root|(?:button|input|textarea|select)(?:::[\w-]+|:[\w-]+(?:\([^)]*\))?)*|(?:input|textarea)::placeholder|\[role="button"\]|\[tabindex\]:focus-visible)$/;
 const GLOBAL_INPUT_GROUP = /^html(?:\[[^\]]+\])*\s+:is\(\s*(?:input|textarea|select)\b/;
-const GLOBAL_SCROLLBAR_SELECTOR = /^::-webkit-scrollbar[\w-]*(?::[\w-]+)*$/;
-const CRITICAL_KEYFRAME = /^(?:cc-liquid-|cc-toast-|cc-confirm-)/;
-const GENERIC_FEEDBACK_SELECTOR = /^(?:\.oc-btn|\.oc-modal|\.oc-modal-overlay)$/;
+// Keep the visible scrollbar geometry and states in the auth shell. The
+// source's verbose arrow reset is compacted below because display:none makes
+// its size and appearance declarations redundant.
+const GLOBAL_SCROLLBAR_SELECTOR = /^::-webkit-scrollbar(?:-track|-thumb(?::(?:hover|active))?|-button|-corner)?$/;
+const GLOBAL_SCROLLBAR_BUTTON_SELECTOR = '::-webkit-scrollbar-button';
+const AUTH_TOKEN_SELECTOR = /^(?::root|html(?:\[[^\]]+\])*)$/;
 const GENERIC_NESTED_SELECTOR = /^(?:input|textarea|select|button|\[role="button"\])(?:$|:)/;
 
 function criticalClassIsInAuthOrGlobalContext(selector) {
@@ -30,14 +78,12 @@ function criticalClassIsInAuthOrGlobalContext(selector) {
   if (!match || match.index === undefined) return false;
   const prefix = selector.slice(0, match.index);
   const outerPrefix = prefix.includes(':is(') ? prefix.slice(0, prefix.lastIndexOf(':is(')) : prefix;
-  return !/[.#][A-Za-z_-]/.test(outerPrefix)
-    || GENERIC_FEEDBACK_SELECTOR.test(outerPrefix.trim());
+  return !/[.#][A-Za-z_-]/.test(outerPrefix);
 }
 
 function selectorIsCritical(selector) {
   const normalized = selector.trim().replace(/\s+/g, ' ');
   return criticalClassIsInAuthOrGlobalContext(normalized)
-    || GENERIC_FEEDBACK_SELECTOR.test(normalized)
     || GLOBAL_SELECTOR.test(normalized)
     || normalized === ':focus-visible'
     || GLOBAL_SCROLLBAR_SELECTOR.test(normalized)
@@ -49,7 +95,6 @@ function openchatSelectorIsCritical(selector) {
   return normalized === '*'
     || normalized === ':root'
     || criticalClassIsInAuthOrGlobalContext(normalized)
-    || GENERIC_FEEDBACK_SELECTOR.test(normalized)
     || normalized === ':focus-visible'
     || GLOBAL_SCROLLBAR_SELECTOR.test(normalized);
 }
@@ -57,7 +102,7 @@ function openchatSelectorIsCritical(selector) {
 function trimNestedSelectorLists(selector) {
   return selector.replace(/:is\(([^()]*)\)/g, (match, contents, offset) => {
     const outerSelector = selector.slice(0, offset);
-    if (CRITICAL_CLASS.test(outerSelector) || GENERIC_FEEDBACK_SELECTOR.test(outerSelector.trim())) return match;
+    if (CRITICAL_CLASS.test(outerSelector)) return match;
     const kept = contents.split(',').filter((part) => (
       selectorIsCritical(part) || GENERIC_NESTED_SELECTOR.test(part.trim())
     ));
@@ -71,7 +116,16 @@ function filterNode(node, predicate, rootProperties) {
     if (selectors.length === 0) return null;
     const rule = node.clone();
     rule.selectors = selectors;
-    if (rootProperties && rule.selector.trim() === ':root') {
+    if (selectors.length === 1 && selectors[0].trim() === GLOBAL_SCROLLBAR_BUTTON_SELECTOR) {
+      const displayDeclaration = rule.nodes.find((child) => (
+        child.type === 'decl' && child.prop === 'display'
+      ));
+      if (displayDeclaration) {
+        rule.removeAll();
+        rule.append(displayDeclaration.clone());
+      }
+    }
+    if (rootProperties && selectors.every((selector) => AUTH_TOKEN_SELECTOR.test(selector.trim()))) {
       const declarations = rule.nodes.filter((child) => (
         child.type === 'decl' && rootProperties.has(child.prop)
       ));
@@ -84,7 +138,7 @@ function filterNode(node, predicate, rootProperties) {
 
   if (node.type !== 'atrule') return null;
   if (node.name.endsWith('keyframes')) {
-    return CRITICAL_KEYFRAME.test(node.params) ? node.clone() : null;
+    return null;
   }
   if (!node.nodes) return null;
 

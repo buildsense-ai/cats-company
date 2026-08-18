@@ -69,7 +69,14 @@ export default defineConfig({
         ],
       },
       injectManifest: {
-        globPatterns: ['assets/**/*.{js,css}', 'offline.html', 'pwa-*.png'],
+        // Keep the app shell available offline without downloading the lazy
+        // workspace, PDF, and media chunks during service worker install.
+        globPatterns: [
+          'index.html',
+          'assets/index-*.{js,css}',
+          'assets/workbox-window.*.js',
+          'offline.html',
+        ],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       devOptions: {

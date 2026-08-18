@@ -5,6 +5,7 @@ import { InlineFeedback } from '../components/feedback-system';
 import AuthFlowBackground from '../components/auth-flow-background';
 import t from '../i18n';
 import { isValidEmailFormat } from '../utils/email-format';
+import { formatSharedAuthError } from '../utils/auth-error';
 import { writeStoredUserProfile } from '../utils/user-profile';
 import {
   authModeForPathname,
@@ -17,11 +18,14 @@ import PasswordResetForm from '../widgets/password-reset-form';
 
 const passwordToggleStyle = {
   position: 'absolute',
-  right: 12,
+  right: 4,
   top: '40%',
   transform: 'translateY(-50%)',
   display: 'flex',
   alignItems: 'center',
+  justifyContent: 'center',
+  width: 32,
+  height: 32,
   margin: 0,
   padding: 0,
   border: 0,
@@ -37,13 +41,10 @@ function formatAuthError(message) {
   if (text.includes('password mismatch')) return '密码错误，请重试';
   if (text.includes('username taken')) return '登录名称已被占用，请换一个';
   if (text.includes('email already')) return '该邮箱已经注册，请直接登录';
-  if (text.includes('verification code expired')) return '验证码已过期，请重新获取';
-  if (text.includes('does not match')) return '验证码不正确，请使用最新邮件中的验证码';
-  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期，请重新获取并使用最新验证码';
   if (text.includes('username min 3')) return '登录名称至少 3 个字符';
-  if (text.includes('password min 6')) return '密码至少 6 位';
   if (text.includes('invalid email format')) return '邮箱格式无效，请检查域名拼写（如 qq.com）';
-  if (text.includes('failed to send verification code')) return '发送验证码失败，请稍后再试';
+  const sharedMessage = formatSharedAuthError(message);
+  if (sharedMessage) return sharedMessage;
   return message || '操作失败，请稍后再试';
 }
 

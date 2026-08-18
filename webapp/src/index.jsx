@@ -1,10 +1,6 @@
 import React, { lazy, Suspense, useEffect, useLayoutEffect, useState, useTransition } from 'react';
 import ReactDOM from 'react-dom/client';
-import '@fontsource-variable/inter/wght.css';
-import '@fontsource-variable/noto-sans-sc/wght.css';
-import '@fontsource-variable/jetbrains-mono/wght.css';
 import AuthGateway from './views/auth-gateway';
-import PwaController from './components/pwa-controller';
 import PushCleanupController from './components/push-cleanup-controller';
 import { getAuthRevision, getPushPromptOwner, getToken, setToken } from './api';
 import { FeedbackProvider } from './components/feedback-system';
@@ -15,8 +11,9 @@ import './css/auth-critical.css';
 
 const importWorkspace = () => import('./views/tinode-web');
 const TinodeWeb = lazy(importWorkspace);
+const PwaController = lazy(() => import('./components/pwa-controller'));
 const preloadWorkspace = () => { void importWorkspace().catch(() => undefined); };
-const WORKSPACE_CHUNK_ERROR_PATTERN = /(?:chunkloaderror|loading chunk|failed to fetch dynamically imported module|importing a module script failed|dynamically imported module)/i;
+const WORKSPACE_CHUNK_ERROR_PATTERN = /(?:chunkloaderror|loading chunk|failed to fetch dynamically imported module|importing a module script failed|dynamically imported module|unable to preload css)/i;
 const requestedThemePreview = import.meta.env.DEV
   ? new URLSearchParams(window.location.search).get('theme_preview')
   : '';
@@ -97,13 +94,18 @@ export function App() {
   useEffect(() => {
     const handleAuthChanged = (event) => {
       const loggedIn = Boolean(event.detail?.loggedIn) && isRestorableSession();
-      startAuthTransition(() => {
-        setAuth({
-          loggedIn,
-          pushPromptOwner: getPushPromptOwner(),
-          revision: event.detail?.revision ?? getAuthRevision(),
+      const nextAuth = {
+        loggedIn,
+        pushPromptOwner: getPushPromptOwner(),
+        revision: event.detail?.revision ?? getAuthRevision(),
+      };
+      if (loggedIn) {
+        startAuthTransition(() => {
+          setAuth(nextAuth);
         });
-      });
+      } else {
+        setAuth(nextAuth);
+      }
     };
     window.addEventListener('cc:auth-changed', handleAuthChanged);
     return () => window.removeEventListener('cc:auth-changed', handleAuthChanged);
@@ -116,12 +118,19 @@ export function App() {
   }, []);
 
   useLayoutEffect(() => {
-    if (auth.loggedIn || !getToken() || readStoredUserProfile()) return;
-    setToken(null);
-    clearStoredUserProfile();
+    if (auth.loggedIn) return;
+
+    const token = getToken();
+    const profile = readStoredUserProfile();
+    if (token && !profile) {
+      setToken(null);
+      clearStoredUserProfile();
+      return;
+    }
+    if (!token && profile) clearStoredUserProfile();
   }, [auth.loggedIn, auth.revision]);
 
-  const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);
+  const mountPwa = auth.loggedIn && shouldMountPwaForPathname(browserLocation.pathname);
   const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
     || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
   const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
@@ -137,11 +146,13 @@ export function App() {
       ) : <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
       {!auth.loggedIn && <PushCleanupController />}
       {mountPwa && (
-        <PwaController
-          loggedIn={auth.loggedIn}
-          pushPromptOwner={auth.pushPromptOwner}
-          sessionRevision={auth.revision}
-        />
+        <Suspense fallback={null}>
+          <PwaController
+            loggedIn={auth.loggedIn}
+            pushPromptOwner={auth.pushPromptOwner}
+            sessionRevision={auth.revision}
+          />
+        </Suspense>
       )}
     </FeedbackProvider>
   );

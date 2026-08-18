@@ -94,15 +94,30 @@ afterEach(async () => {
   window.history.replaceState(null, '', '/');
 });
 
-test('keeps PWA runtime mounted for a signed-out non-authentication route', async () => {
+test('does not load the PWA runtime before authentication on a non-authentication route', async () => {
   window.history.replaceState(null, '', '/e/invite-1');
 
   await act(async () => {
     root.render(<App />);
   });
 
-  expect(container.querySelector('[data-testid="pwa-controller"]')).toBeTruthy();
-  expect(mocks.pwaController).toHaveBeenCalledWith(expect.objectContaining({ loggedIn: false }));
+  expect(container.querySelector('[data-testid="pwa-controller"]')).toBeFalsy();
+  expect(mocks.pwaController).not.toHaveBeenCalled();
+});
+
+test('loads the PWA runtime for a restorable authenticated session', async () => {
+  mocks.getToken.mockReturnValue('active-session-token');
+  mocks.readStoredUserProfile.mockReturnValue({ uid: 42, username: 'cats' });
+  window.history.replaceState(null, '', '/e/invite-1');
+
+  await act(async () => {
+    root.render(<App />);
+  });
+
+  await vi.waitFor(() => {
+    expect(container.querySelector('[data-testid="pwa-controller"]')).toBeTruthy();
+  });
+  expect(mocks.pwaController).toHaveBeenCalledWith(expect.objectContaining({ loggedIn: true }));
 });
 
 test('clears an orphaned token and renders the authentication gateway', async () => {
@@ -117,6 +132,18 @@ test('clears an orphaned token and renders the authentication gateway', async ()
   expect(container.querySelector('[data-testid="tinode-web"]')).toBeFalsy();
   expect(mocks.setToken).toHaveBeenCalledWith(null);
   expect(mocks.clearStoredUserProfile).toHaveBeenCalledTimes(1);
+});
+
+test('clears a profile that remains after the token is removed', async () => {
+  mocks.readStoredUserProfile.mockReturnValue({ uid: 42, username: 'cats' });
+
+  await act(async () => {
+    root.render(<App />);
+  });
+
+  expect(container.querySelector('[data-testid="auth-gateway"]')).toBeTruthy();
+  expect(mocks.clearStoredUserProfile).toHaveBeenCalledTimes(1);
+  expect(mocks.setToken).not.toHaveBeenCalled();
 });
 
 test('does not load the workspace when an auth event has no restorable profile', async () => {
@@ -139,6 +166,7 @@ test('does not load the workspace when an auth event has no restorable profile',
 test('identifies recoverable workspace chunk failures without masking application errors', () => {
   expect(isWorkspaceChunkLoadError(new TypeError('Failed to fetch dynamically imported module'))).toBe(true);
   expect(isWorkspaceChunkLoadError(new Error('Loading chunk 42 failed.'))).toBe(true);
+  expect(isWorkspaceChunkLoadError(new Error('Unable to preload CSS for /assets/tinode-web.css'))).toBe(true);
   expect(isWorkspaceChunkLoadError(new Error('Unexpected application error'))).toBe(false);
 });
 

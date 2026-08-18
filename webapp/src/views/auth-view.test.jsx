@@ -84,6 +84,8 @@ describe('AuthView route links', () => {
     const passwordInput = container.querySelector('input[type="password"]');
     const toggle = container.querySelector('button[aria-label="显示密码"]');
     expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle?.style.width).toBe('32px');
+    expect(toggle?.style.height).toBe('32px');
 
     await act(async () => toggle?.click());
 
