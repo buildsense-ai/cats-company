@@ -57,11 +57,34 @@ const cloudWorkerCreateMessage = (e) => {
       return '云端资源供给失败，请稍后重试或联系管理员';
     case 'cloud_worker_provision_failed_pending_cleanup':
       return '云端实例供给失败，可能有残留实例待清理，可在列表中删除';
+    case 'cloud_worker_operation_busy':
+      return '另一项云员工操作正在执行，请等待完成后再创建';
     case 'cloud_worker_invalid_username':
     case 'cloud_worker_create_failed':
     default:
       return '云端资源创建失败，请稍后重试或联系管理员';
   }
+};
+
+const cloudWorkerActionMessage = (e, actionLabel) => {
+  const code = e?.data?.code;
+  if (code === 'cloud_worker_operation_busy' || e?.status === 409) {
+    return '另一项云员工操作正在执行，请等待完成后再试';
+  }
+  const unavailableMessages = {
+    cloud_worker_update_unconfigured: '云端更新服务尚未配置，请联系管理员',
+    cloud_worker_rollback_unconfigured: '云端回滚服务尚未配置，请联系管理员',
+    cloud_worker_reset_unconfigured: '云端重置服务尚未配置，请联系管理员',
+    cloud_worker_delete_unconfigured: '云端删除服务尚未配置，请联系管理员',
+  };
+  if (unavailableMessages[code]) return unavailableMessages[code];
+  if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(e?.code)) {
+    return `${actionLabel}连接中断，操作可能仍在服务器执行。请先等待并刷新状态，不要重复提交`;
+  }
+  if ([502, 503, 504].includes(e?.status)) {
+    return `${actionLabel}未完成，云端服务暂不可用。请刷新状态确认后再重试`;
+  }
+  return e?.message || `${actionLabel}失败，请稍后重试`;
 };
 
 const CHANNEL_AGENT_ACCESS_MODES = {
@@ -251,6 +274,28 @@ async function resolveSharedLocalSkill(skill, shared) {
 
 const isOwnedBot = (bot) => bot?.is_owner === true || bot?.relation === 'owner';
 
+const mergeCloudWorkerFacts = (bots, workers) => {
+  const byTenant = new Map(
+    (workers || []).filter((worker) => worker?.tenant_name).map((worker) => [worker.tenant_name, worker]),
+  );
+  return bots.map((bot) => {
+    const cloud = byTenant.get(bot.tenant_name);
+    if (!cloud) return bot;
+    const reportedStatus = String(cloud.cloud_status || cloud.status || '').toLowerCase();
+    const presenceFallback = bot.is_online === true || bot.online === true ? 'online' : '';
+    const cloudStatus = !reportedStatus || reportedStatus === 'unknown' || reportedStatus === 'unavailable'
+      ? (presenceFallback || reportedStatus || 'unavailable')
+      : reportedStatus;
+    return {
+      ...bot,
+      cloud_status: cloudStatus,
+      app_version: cloud.app_version,
+      cloud_version: cloud.cloud_version || cloud.version,
+      cloud_image_id: cloud.cloud_image_id || cloud.image_id,
+    };
+  });
+};
+
 const normalizeAssistantRole = (value) => (
   ASSISTANT_ROLES.some((role) => role.value === value) ? value : 'general'
 );
@@ -356,7 +401,8 @@ export default function AgentStoreModal({
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
-  const [cloudActioning, setCloudActioning] = useState(null); // tenant_name being acted on
+  const [cloudActions, setCloudActions] = useState(null); // configured cloud operation capabilities
+  const [cloudActioning, setCloudActioning] = useState(null); // { name, action }
   const [editingBot, setEditingBot] = useState(null);
   const [manageSection, setManageSection] = useState('basic');
   const [managedSkills, setManagedSkills] = useState({ count: 0, skills: [], loading: false, error: '' });
@@ -568,7 +614,10 @@ export default function AgentStoreModal({
   useEffect(() => {
     let cancelled = false;
     api.getCloudWorkerMeta?.().then((meta) => {
-      if (!cancelled) setCloudImages(meta?.images || []);
+      if (!cancelled) {
+        setCloudImages(meta?.images || []);
+        setCloudActions(meta?.actions || null);
+      }
     }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -845,21 +894,13 @@ export default function AgentStoreModal({
         agentsRes.agents || [],
         friendsRes.friends || [],
       ).filter(isOwnedBot);
-      setBots(manageableBots);
       // Distinguish "quota fetch failed" (null + error) from "cloud hosting
       // disabled" (quota.enabled === false) so the UI does not mislead.
       setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
       setCloudQuota(cloudRes.quota || null);
       // Enrich cloud-managed workers with version/status from the control plane.
       const cloudWorkers = cloudRes.workers || [];
-      if (cloudWorkers.length > 0) {
-        setBots(prev => prev.map(bot => {
-          const cloud = cloudWorkers.find(w => w.tenant_name === bot.tenant_name);
-          return cloud
-            ? { ...bot, cloud_status: cloud.status, cloud_version: cloud.version, cloud_image_id: cloud.image_id }
-            : bot;
-        }));
-      }
+      setBots(mergeCloudWorkerFacts(manageableBots, cloudWorkers));
 
       if (
         !initialAgentAppliedRef.current
@@ -882,6 +923,35 @@ export default function AgentStoreModal({
       if (!silent) setLoading(false);
     }
   };
+
+  // Cloud status is operational data, not static bot metadata. Refresh only
+  // while the managed panel is visible so a transient first-request failure
+  // settles automatically without polling the rest of the assistant UI.
+  useEffect(() => {
+    const visible = (tab === 'hub' && hubCloudView)
+      || (tab === 'create' && createMode === CREATE_MODES.MANAGED);
+    if (!visible || !api.getCloudWorkers) return undefined;
+
+    let active = true;
+    const refresh = async () => {
+      try {
+        const cloudRes = await api.getCloudWorkers();
+        if (!active) return;
+        setCloudQuotaError(false);
+        setCloudQuota(cloudRes?.quota || null);
+        setBots((current) => mergeCloudWorkerFacts(current, cloudRes?.workers || []));
+      } catch {
+        if (active) setCloudQuotaError(true);
+      }
+    };
+
+    refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [createMode, hubCloudView, tab]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -1044,7 +1114,9 @@ export default function AgentStoreModal({
       tone: 'danger',
     });
     if (!confirmed) return;
+    const cloudName = owned ? bot.tenant_name : '';
     try {
+      if (cloudName) setCloudActioning({ name: cloudName, action: 'delete' });
       if (owned) {
         if (bot.tenant_name) {
           // Cloud workers are removed through the control plane so the cloud
@@ -1064,7 +1136,35 @@ export default function AgentStoreModal({
       setTab('hub');
       feedback.notify({ tone: 'success', message: owned ? '虚拟员工已删除' : '助手已移除' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudName
+        ? cloudWorkerActionMessage(e, '删除')
+        : (e.message || t('error_server')));
+    } finally {
+      if (cloudName) setCloudActioning(null);
+    }
+  };
+
+  const handleCloudUpdate = async (bot, version = '') => {
+    const name = bot.tenant_name;
+    if (!name) return;
+    const target = version || '最新版本';
+    const confirmed = await feedback.confirm({
+      title: `更新“${bot.display_name}”？`,
+      message: `将应用更新到 ${target}，会保留会话、文件和本地配置。更新期间员工会短暂重启。`,
+      confirmLabel: '确认更新',
+      tone: 'default',
+    });
+    if (!confirmed) return;
+    try {
+      setCloudActioning({ name, action: 'update' });
+      await api.updateCloudWorker(name, version ? { version } : {});
+      await loadBots({ silent: true });
+      feedback.notify({ tone: 'success', message: '应用更新完成' });
+    } catch (e) {
+      setError(cloudWorkerActionMessage(e, '更新'));
+      await loadBots({ silent: true }).catch(() => {});
+    } finally {
+      setCloudActioning(null);
     }
   };
 
@@ -1100,11 +1200,12 @@ export default function AgentStoreModal({
           version = versions[0];
         }
       }
-      setCloudActioning(name);
+      setCloudActioning({ name, action: 'rollback' });
       await api.rollbackCloudWorker(name, version ? { version } : {});
       feedback.notify({ tone: 'success', message: '回滚已触发，稍后刷新查看状态' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudWorkerActionMessage(e, '回滚'));
+      await loadBots({ silent: true }).catch(() => {});
     } finally {
       setCloudActioning(null);
     }
@@ -1128,11 +1229,12 @@ export default function AgentStoreModal({
       if (!confirmed) return;
     }
     try {
-      setCloudActioning(name);
+      setCloudActioning({ name, action: 'reset' });
       await api.resetCloudWorker(name, version ? { version } : {});
       feedback.notify({ tone: 'success', message: '重置已触发，稍后刷新查看状态' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudWorkerActionMessage(e, '重置'));
+      await loadBots({ silent: true }).catch(() => {});
     } finally {
       setCloudActioning(null);
     }
@@ -1237,9 +1339,11 @@ export default function AgentStoreModal({
                   quotaError={cloudQuotaError}
                   workers={cloudWorkers}
                   images={cloudImages}
+                  actions={cloudActions}
                   actioning={cloudActioning}
                   showHostingSwitch={false}
                   onCreate={handleCloudCreate}
+                  onUpdate={handleCloudUpdate}
                   onRollback={handleCloudRollback}
                   onReset={handleCloudReset}
                   onDelete={handleDelete}
@@ -1351,26 +1455,14 @@ export default function AgentStoreModal({
                           </button>
                         )}
                         {owned && bot.tenant_name && (
-                          <>
-                            <button
-                              type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action"
-                              onClick={() => handleCloudRollback(bot)}
-                              disabled={cloudActioning === bot.tenant_name}
-                              title="回滚：切换镜像版本，保留数据"
-                            >
-                              {cloudActioning === bot.tenant_name ? '处理中...' : '回滚'}
-                            </button>
-                            <button
-                              type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
-                              onClick={() => handleCloudReset(bot)}
-                              disabled={cloudActioning === bot.tenant_name}
-                              title="重置：销毁并从镜像重建，数据会丢失"
-                            >
-                              {cloudActioning === bot.tenant_name ? '处理中...' : '重置'}
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action"
+                            onClick={() => setHubCloudView(true)}
+                            title="选择版本并更新、回滚或重置"
+                          >
+                            <Cloud size={14} aria-hidden="true" /> 云托管管理
+                          </button>
                         )}
                         <button
                           type="button"
@@ -1404,8 +1496,10 @@ export default function AgentStoreModal({
                 quotaError={cloudQuotaError}
                 workers={cloudWorkers}
                 images={cloudImages}
+                actions={cloudActions}
                 actioning={cloudActioning}
                 onCreate={handleCloudCreate}
+                onUpdate={handleCloudUpdate}
                 onRollback={handleCloudRollback}
                 onReset={handleCloudReset}
                 onDelete={handleDelete}

@@ -399,6 +399,8 @@ func main() {
 	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
+	imageUpscaleTaskStore, _ := db.(store.ImageUpscaleTaskStore)
+	imageUpscaleHandler := server.NewImageUpscaleProxyHandlerFromEnv(imageUpscaleTaskStore)
 	sttHandler := server.NewSTTHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
@@ -625,6 +627,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
 	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
+	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
 	mux.HandleFunc("/api/account/commercial-ops/order-refunds", commercialOpsHandler.HandleOrderRefund)
@@ -641,6 +644,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/plans", accountAdminHandler.HandleCommercialPlans)
 	mux.HandleFunc("/local/account-admin/commercial/invites", accountAdminHandler.HandleCommercialInvites)
 	mux.HandleFunc("/local/account-admin/commercial/grants", accountAdminHandler.HandleCommercialGrant)
+	mux.HandleFunc("/local/account-admin/commercial/adjustments", accountAdminHandler.HandleCommercialAdjustment)
 	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
 	mux.HandleFunc("/local/account-admin/commercial/relay-sync", accountAdminHandler.HandleCommercialRelaySync)
@@ -834,6 +838,8 @@ func main() {
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
 	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/images/upscale/tasks/", chainHTTP(imageUpscaleHandler.HandleUpscaleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
+	mux.HandleFunc("/v1/images/upscale", chainHTTP(imageUpscaleHandler.HandleUpscale, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/tasks/", chainHTTP(imageGenerationHandler.HandleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
@@ -847,6 +853,9 @@ func main() {
 		if err := imageGenerationHandler.EditConfigError(); err != nil {
 			log.Printf("Reference-image proxy is unavailable until configured: %v", err)
 		}
+	}
+	if err := imageUpscaleHandler.ConfigError(); err != nil {
+		log.Printf("Image upscale proxy is unavailable until configured: %v", err)
 	}
 	if err := sttHandler.ConfigError(); err != nil {
 		log.Printf("Streaming STT is unavailable: %v", err)

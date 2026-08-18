@@ -69,7 +69,11 @@ if [[ ! "$NAME" =~ ^[a-z0-9][a-z0-9_-]{1,63}$ ]]; then
 fi
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
+  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+fi
 
 # --- 版本 → 镜像映射（可选；显式 --image-id 优先） ---
 if [[ -n "$VERSION" ]]; then

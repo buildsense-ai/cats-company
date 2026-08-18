@@ -17,6 +17,7 @@ describe('CloudWorkerPanel', () => {
     display_name: '云端审查助手',
     username: 'bot-cloud-1',
     cloud_status: 'running',
+    app_version: '1.4.9',
     cloud_version: '1.4.8',
     cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
     ...overrides,
@@ -31,6 +32,7 @@ describe('CloudWorkerPanel', () => {
         images: [],
         actioning: null,
         onCreate: vi.fn(),
+        onUpdate: vi.fn(),
         onRollback: vi.fn(),
         onReset: vi.fn(),
         onDelete: vi.fn(),
@@ -140,7 +142,8 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('@bot-cloud-1');
     expect(container.textContent).toContain('运行中');
-    expect(container.textContent).toContain('版本 1.4.8');
+    expect(container.textContent).toContain('应用 1.4.9');
+    expect(container.textContent).toContain('基础镜像 1.4.8');
     expect(container.textContent).toContain('镜像 79f5b7f4');
     expect(container.textContent).toContain('1 个');
   });
@@ -149,7 +152,21 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker({ cloud_status: 'weird_state' })],
     });
-    expect(container.textContent).toContain('状态同步中');
+    expect(container.textContent).toContain('状态未知');
+  });
+
+  test('renders an unavailable probe as a settled state instead of loading forever', async () => {
+    await renderPanel({
+      workers: [worker({
+        cloud_status: 'unavailable',
+        app_version: '',
+        cloud_version: '',
+        cloud_image_id: '',
+      })],
+    });
+    expect(container.textContent).toContain('状态暂不可用');
+    expect(container.textContent).toContain('暂未读取到版本信息');
+    expect(container.textContent).not.toContain('同步中');
   });
 
   test('labels creating / stopped / missing cloud states distinctly', async () => {
@@ -166,7 +183,8 @@ describe('CloudWorkerPanel', () => {
     expect(text).toContain('实例不存在');
   });
 
-  test('calls rollback/reset/delete callbacks from worker actions', async () => {
+  test('calls update/rollback/reset/delete callbacks from worker actions', async () => {
+    const onUpdate = vi.fn();
     const onRollback = vi.fn();
     const onReset = vi.fn();
     const onDelete = vi.fn();
@@ -174,15 +192,25 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker()],
       images,
+      onUpdate,
       onRollback,
       onReset,
       onDelete,
     });
 
     const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
     const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
     const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
     const deleteBtn = buttons[buttons.length - 1];
+
+    await act(async () => {
+      Simulate.click(updateBtn);
+    });
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '',
+    );
 
     // rollback with no explicit version passes '' (latest) + fromPanel flag
     await act(async () => {
@@ -342,6 +370,34 @@ describe('CloudWorkerPanel', () => {
     expect(select.disabled).toBe(true);
   });
 
+  test('disables only cloud actions explicitly reported as unavailable', async () => {
+    await renderPanel({
+      workers: [worker()],
+      images: [{ version: '1.4.9' }],
+      actions: {
+        create: false,
+        update: false,
+        rollback: true,
+        reset: false,
+        delete: false,
+      },
+    });
+
+    expect(container.textContent).toContain('云端创建服务尚未配置');
+    expect(container.textContent).toContain('部分云端管理功能暂不可用');
+    const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
+    const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
+    const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
+    const deleteBtn = buttons[buttons.length - 1];
+    expect(updateBtn.disabled).toBe(true);
+    expect(updateBtn.title).toContain('尚未配置');
+    expect(rollbackBtn.disabled).toBe(false);
+    expect(resetBtn.disabled).toBe(true);
+    expect(deleteBtn.disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-version-select').disabled).toBe(false);
+  });
+
   test('disables worker actions while the worker is being acted on', async () => {
     await renderPanel({
       workers: [worker()],
@@ -351,6 +407,23 @@ describe('CloudWorkerPanel', () => {
     const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     expect(actionButtons.length).toBeGreaterThan(0);
     actionButtons.forEach((btn) => expect(btn.disabled).toBe(true));
+  });
+
+  test('shows the exact wait state and blocks actions on every worker', async () => {
+    await renderPanel({
+      workers: [worker(), worker({ tenant_name: 'tenant-b', id: 92, uid: 92 })],
+      images: [{ version: '1.4.8' }],
+      actioning: { name: 'tenant-a', action: 'update' },
+    });
+
+    const status = container.querySelector('.cc-cloud-operation-status');
+    expect(status).toBeTruthy();
+    expect(status.textContent).toContain('正在更新应用');
+    expect(container.textContent).toContain('更新中...');
+    const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    actionButtons.forEach((button) => expect(button.disabled).toBe(true));
+    const selectors = Array.from(container.querySelectorAll('.cc-cloud-version-select'));
+    selectors.forEach((select) => expect(select.disabled).toBe(true));
   });
 
   test('shows the categorized failure message inline in the create card', async () => {

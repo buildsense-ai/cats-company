@@ -258,7 +258,10 @@ test("reset-worker: happy path destroys then reprovisions", () => {
 
 test("reset-worker: reprovisions an existing worker (destroy old first)", () => {
   const old = { instanceName: "worker-bot-a", instanceID: "i-old", state: "running", floatingIP: "10.0.0.9" };
-  const sb = setupSandbox({ instances: [old] });
+  const sb = setupSandbox({
+    instances: [old],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }],
+  });
   const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--image-id", "img-1"]);
   if (r.status !== 0) {
     const dbg = fs.readFileSync(sb.statePath, "utf8");
@@ -267,6 +270,9 @@ test("reset-worker: reprovisions an existing worker (destroy old first)", () => 
   assert.match(r.stdout, /"status":"provisioned"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.ok((state.deletedInstances || []).includes("i-old"), "old instance destroyed first");
+  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"], "legacy cloud keypair must be removed before reprovisioning");
+  assert.equal(state.keypairs.length, 1, "reset must leave one newly imported tenant keypair");
+  assert.notEqual(state.keypairs[0].keyPairID, "kp-legacy");
   assert.ok(!(state.instances || []).some(i => i.instanceID === "i-old"), "old instance gone");
   assert.ok(state.injectedEnv, "env re-injected");
 });

@@ -938,7 +938,7 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 
 func commercialRelayGovernedGrant(grantType string) bool {
 	switch strings.ToLower(strings.TrimSpace(grantType)) {
-	case "order", "invite", "trial", "bonus", "free", "legacy":
+	case "order", "invite", "trial", "bonus", "free", "legacy", "operator_plan", "adjustment_credit", "adjustment_debit":
 		return true
 	default:
 		return false

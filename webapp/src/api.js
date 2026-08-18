@@ -829,13 +829,15 @@ export const api = {
   getCloudWorkers: () => request('GET', '/api/cloud-workers'),
   getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
   createCloudWorker: ({ username, display_name, role, description }) =>
-    request('POST', '/api/cloud-workers', { username, display_name, role, description }),
+    request('POST', '/api/cloud-workers', { username, display_name, role, description }, { timeoutMs: 630_000 }),
+  updateCloudWorker: (name, payload = {}) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/update`, payload, { timeoutMs: 630_000 }),
   rollbackCloudWorker: (name, payload = {}) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload),
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload, { timeoutMs: 630_000 }),
   resetCloudWorker: (name, payload = {}) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload),
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload, { timeoutMs: 630_000 }),
   deleteCloudWorker: (name) =>
-    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}),
+    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}, { timeoutMs: 630_000 }),
   updateBot: (uid, {
     display_name,
     avatar_url,
