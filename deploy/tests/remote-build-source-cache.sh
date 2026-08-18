@@ -12,10 +12,12 @@ fake_bin="$temp_root/bin"
 docker_log="$temp_root/docker.log"
 docker_images="$temp_root/docker-images"
 revision="0123456789abcdef0123456789abcdef01234567"
+fallback_revision="89abcdef0123456789abcdef0123456789abcdef"
 
 mkdir -p "$stack_root/releases" "$cache_root/releases" "$cache_root/source" "$fixture_root" "$fake_bin"
 printf 'fixture\n' > "$fixture_root/README.md"
 tar -C "$fixture_root" -czf "$cache_root/releases/cats-company-source-${revision}.tar.gz" .
+tar -C "$fixture_root" -czf "$cache_root/releases/cats-company-source-${fallback_revision}.tar.gz" .
 : > "$docker_log"
 : > "$docker_images"
 
@@ -54,22 +56,27 @@ EOF
 chmod +x "$fake_bin/docker"
 
 run_build() {
+  local target_revision="${1:?revision is required}"
+  local web_mode="${2:-pull}"
   PATH="$fake_bin:$PATH" \
   FAKE_DOCKER_LOG="$docker_log" \
   FAKE_DOCKER_IMAGES="$docker_images" \
   CATSCO_SHARED_RELEASE_ROOT="$cache_root/releases" \
   CATSCO_SHARED_SOURCE_ROOT="$cache_root/source" \
-    bash "$repo_root/deploy/remote-build-source.sh" "$stack_root" "$revision" buildsense-ai
+  REMOTE_WEB_IMAGE_MODE="$web_mode" \
+    bash "$repo_root/deploy/remote-build-source.sh" "$stack_root" "$target_revision" buildsense-ai
 }
 
-first_output="$(run_build 2>&1)"
+first_output="$(run_build "$revision" local 2>&1)"
 printf 'preserve\n' > "$cache_root/source/$revision/reuse-marker"
-second_output="$(run_build 2>&1)"
+second_output="$(run_build "$revision" local 2>&1)"
+fallback_output="$(run_build "$fallback_revision" pull 2>&1)"
 
-[ "$(grep -c '^build ' "$docker_log")" -eq 3 ]
+[ "$(grep -c '^build ' "$docker_log")" -eq 6 ]
 [ "$(grep -c '^pull ' "$docker_log")" -eq 1 ]
 [ -f "$cache_root/source/$revision/reuse-marker" ]
-grep -q 'timed out after 30s' <<<"$first_output"
+grep -q 'Building web image locally' <<<"$first_output"
+grep -q 'timed out after 120s' <<<"$fallback_output"
 grep -q 'Source tree already present' <<<"$second_output"
 grep -q 'Server image already present' <<<"$second_output"
 grep -q 'Dreamina worker image already present' <<<"$second_output"

@@ -70,6 +70,7 @@ jobs:
           mkdir -p "${tmpdir}/compose" "${tmpdir}/env"
           cp deploy/test/bootstrap-server.sh "${tmpdir}/compose/"
           cp deploy/remote-build-source.sh "${tmpdir}/compose/"
+          cp deploy/shared/cache-source-bundle.sh "${tmpdir}/compose/"
           cp deploy/test/remote-deploy.sh "${tmpdir}/compose/"
           cp deploy/test/remote-status.sh "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
@@ -81,18 +82,25 @@ jobs:
           cp deploy/test/env.test.postgres.example "${tmpdir}/env/"
           tar -C "${tmpdir}" -czf test-stack-files.tar.gz .
           rm -rf "${tmpdir}"
-          source_bundle="cats-company-source-${{ github.sha }}.tar.gz"
-          git archive --format=tar.gz --output "${source_bundle}" HEAD
-          source_checksum="$(sha256sum "${source_bundle}" | awk '{print $1}')"
-          remote_source="${DEPLOY_CACHE_ROOT}/releases/${source_bundle}"
-          remote_temp="${remote_source}.upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           ssh ${SSH_OPTS} "${REMOTE}" "tar -xzf - -C ${TEST_STACK_ROOT}" < test-stack-files.tar.gz
-          if ssh ${SSH_OPTS} "${REMOTE}" "printf '%s  %s\n' '${source_checksum}' '${remote_source}' | sha256sum --check --status"; then
-            echo "Source bundle already cached: ${remote_source}"
+          cache_script="${TEST_STACK_ROOT}/compose/cache-source-bundle.sh"
+          if ssh ${SSH_OPTS} "${REMOTE}" "bash '${cache_script}' verify '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}'"; then
+            echo "Source bundle already cached for ${GITHUB_SHA}."
           else
-            ssh ${SSH_OPTS} "${REMOTE}" "rm -f '${remote_temp}' && cat > '${remote_temp}'" < "${source_bundle}"
-            ssh ${SSH_OPTS} "${REMOTE}" "printf '%s  %s\n' '${source_checksum}' '${remote_temp}' | sha256sum --check --status && mv '${remote_temp}' '${remote_source}'"
+            source_tree="$(mktemp -d)"
+            trap 'rm -rf "${source_tree}"' EXIT
+            git archive --format=tar HEAD | tar -xf - -C "${source_tree}"
+            remote_mirror="${DEPLOY_CACHE_ROOT}/source-mirror"
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "bash '${cache_script}' prepare '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}'"
+            rsync --archive --compress --checksum --delete \
+              -e "ssh ${SSH_OPTS}" \
+              "${source_tree}/" "${REMOTE}:${remote_mirror}/"
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "bash '${cache_script}' pack '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}' '${remote_mirror}'"
+            rm -rf "${source_tree}"
+            trap - EXIT
           fi
 
       - name: Deploy isolated test stack
@@ -127,6 +135,7 @@ jobs:
           chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
+          export REMOTE_WEB_IMAGE_MODE=local
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"
