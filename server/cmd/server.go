@@ -206,6 +206,38 @@ func limitHTTPMethod(method string, middleware func(http.HandlerFunc) http.Handl
 	}
 }
 
+var sharedConversationPublicSnapshotIPRateLimit = server.HTTPRateLimitConfig{
+	Name: "shared_conversation_snapshot_ip", Limit: 120, Window: time.Minute, Burst: 128,
+}
+
+var sharedConversationPublicAssetIPRateLimit = server.HTTPRateLimitConfig{
+	// The share snapshot caps copied assets at 256. Keep asset fan-out in its
+	// own bucket so a valid share is not cut off by its initial snapshot request.
+	Name: "shared_conversation_asset_ip", Limit: 600, Window: time.Minute, Burst: 256,
+}
+
+func sharedConversationPublicIPLimit(limiter *server.HTTPRateLimiter) func(http.HandlerFunc) http.HandlerFunc {
+	snapshotLimit := limiter.LimitIP(sharedConversationPublicSnapshotIPRateLimit)
+	assetLimit := limiter.LimitIP(sharedConversationPublicAssetIPRateLimit)
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		snapshotHandler := snapshotLimit(next)
+		assetHandler := assetLimit(next)
+		return func(w http.ResponseWriter, r *http.Request) {
+			if sharedConversationPublicAssetPath(r.URL.Path) {
+				assetHandler(w, r)
+				return
+			}
+			snapshotHandler(w, r)
+		}
+	}
+}
+
+func sharedConversationPublicAssetPath(path string) bool {
+	rest := strings.TrimPrefix(path, "/api/shared-conversations/")
+	parts := strings.Split(rest, "/")
+	return len(parts) == 3 && parts[0] != "" && parts[1] == "assets" && parts[2] != ""
+}
+
 func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
 	if staticDir == "" {
 		return
@@ -217,15 +249,17 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
 			server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/share/") {
+		if r.URL.Path == "/share" || strings.HasPrefix(r.URL.Path, "/share/") {
 			// Capability URLs are secrets. Do not let rendered markdown or media
 			// navigations forward the token as a browser referrer.
+			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Referrer-Policy", "no-referrer")
 		}
 		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 	}
 	for _, path := range []string{
 		"/e/",
+		"/share",
 		"/share/",
 		"/mobile-upload/",
 		"/login",
@@ -550,6 +584,7 @@ func main() {
 	pushTestUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "push_test_user", Limit: 6, Window: time.Minute, Burst: 2,
 	})
+	sharedConversationIPLimit := sharedConversationPublicIPLimit(httpLimiter)
 	readerIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "reader_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -690,7 +725,7 @@ func main() {
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
 	mux.HandleFunc("/api/conversation-shares", jwtAuthWithDB(conversationShareHandler.HandleAuthenticated))
 	mux.HandleFunc("/api/conversation-shares/", jwtAuthWithDB(conversationShareHandler.HandleAuthenticated))
-	mux.HandleFunc("/api/shared-conversations/", conversationShareHandler.HandlePublic)
+	mux.HandleFunc("/api/shared-conversations/", sharedConversationIPLimit(conversationShareHandler.HandlePublic))
 	mux.HandleFunc("/api/stt/sessions", jwtAuthWithDB(sttHandler.HandleSession))
 	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)
 	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)

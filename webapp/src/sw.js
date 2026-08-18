@@ -34,6 +34,8 @@ const neverCache = ({ url }) => (
     || url.pathname.startsWith('/local/')
     || url.pathname === '/uploads'
     || url.pathname.startsWith('/uploads/')
+    || url.pathname === '/share'
+    || url.pathname.startsWith('/share/')
   )
 );
 
@@ -62,6 +64,7 @@ registerRoute(new NavigationRoute(navigationHandler, {
     /^\/v1(?:\/|$)/,
     /^\/local(?:\/|$)/,
     /^\/uploads(?:\/|$)/,
+    /^\/share(?:\/|$)/,
     authenticationNavigation,
   ],
 }));

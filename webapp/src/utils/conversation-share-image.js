@@ -60,7 +60,9 @@ function safeString(value) {
 
 function contentBlockText(block) {
   if (!block || typeof block !== 'object') return '';
-  if (block.type === 'text') return safeString(block.text || block.content);
+  if (block.type === 'text' || block.type === 'assistant_text') {
+    return safeString(block.text || block.content);
+  }
   const payload = block.payload || block;
   if (block.type === 'image') return `[图片] ${safeString(payload.name) || '图片附件'}`;
   if (block.type === 'file') return `[文件] ${safeString(payload.name) || '文件附件'}`;
@@ -99,7 +101,7 @@ function structuredContentParts(content) {
 export function conversationShareText(message) {
   const blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
   const blockParts = blocks
-    .filter((block) => ['text', 'image', 'file', 'audio', 'voice', 'video'].includes(block?.type))
+    .filter((block) => ['text', 'assistant_text', 'image', 'file', 'audio', 'voice', 'video'].includes(block?.type))
     .map(contentBlockText)
     .filter(Boolean);
   const parts = blockParts.length > 0

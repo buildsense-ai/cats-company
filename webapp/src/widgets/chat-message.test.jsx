@@ -58,7 +58,7 @@ vi.mock('read-excel-file/browser', () => ({
   default: vi.fn(),
 }));
 
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel, fetchableMediaURL, previewFileDescriptor } from './chat-message';
 import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
@@ -146,6 +146,18 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(descriptor?.canPreview).toBe(true);
     expect(descriptor?.url).toBe('/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef');
+  });
+
+  it('preserves the API origin for cross-origin preview requests', () => {
+    const originalImplementation = resolveMediaURL.getMockImplementation();
+    resolveMediaURL.mockImplementation((url) => `https://api.example.test${url}`);
+    try {
+      expect(fetchableMediaURL('/api/shared-conversations/capability/assets/asset')).toBe(
+        'https://api.example.test/api/shared-conversations/capability/assets/asset',
+      );
+    } finally {
+      resolveMediaURL.mockImplementation(originalImplementation);
+    }
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {

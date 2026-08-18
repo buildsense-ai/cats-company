@@ -96,8 +96,15 @@ function artifactBindingMatchesFocus(binding, focus) {
     && Number(binding.agentUid || 0) === focus.agentUid
     && String(binding.url || '') === focus.url);
 }
-const MAX_CONVERSATION_SHARE_MESSAGES = 50;
+const MAX_CONVERSATION_SHARE_IMAGE_ITEMS = 50;
 const MAX_CONVERSATION_SHARE_LINK_MESSAGES = 100;
+
+function hasShareableTranscriptBlock(message) {
+  const blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+  return blocks.some((block) => (
+    ['text', 'assistant_text', 'image', 'voice', 'audio', 'file', 'video'].includes(block?.type)
+  ));
+}
 
 function isShareableTranscriptMessage(message) {
   if (!message || message._streaming || historyMessageID(message) <= 0) return false;
@@ -2918,12 +2925,9 @@ export default function MessagesView({
         setConversationShareError('');
         return current.filter((key) => key !== candidate.key);
       }
-      if (current.length >= MAX_CONVERSATION_SHARE_MESSAGES) {
-        setConversationShareError(`分享图最多选择 ${MAX_CONVERSATION_SHARE_MESSAGES} 个展示项。`);
-        return current;
-      }
       const next = [...current, candidate.key];
-      if (conversationShareSelectedMessageIDs(conversationShareCandidates, next).length > MAX_CONVERSATION_SHARE_LINK_MESSAGES) {
+      if (next.length > MAX_CONVERSATION_SHARE_LINK_MESSAGES
+        || conversationShareSelectedMessageIDs(conversationShareCandidates, next).length > MAX_CONVERSATION_SHARE_LINK_MESSAGES) {
         setConversationShareError(`只读链接最多选择 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息。`);
         return current;
       }
@@ -2935,6 +2939,10 @@ export default function MessagesView({
   const generateConversationShareImage = useCallback(async () => {
     if (selectedConversationShareItems.length === 0) {
       setConversationShareError('请先选择至少一条有内容的消息。');
+      return;
+    }
+    if (selectedConversationShareItems.length > MAX_CONVERSATION_SHARE_IMAGE_ITEMS) {
+      setConversationShareError(`分享图最多选择 ${MAX_CONVERSATION_SHARE_IMAGE_ITEMS} 个展示项。`);
       return;
     }
     setConversationShareGenerating(true);
@@ -3321,7 +3329,7 @@ export default function MessagesView({
                     <span className="cc-conversation-share-toolbar-icon" aria-hidden="true"><CheckSquare size={18} /></span>
                     <div>
                       <strong>选择要分享的消息</strong>
-                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareMessageIDs.length} 条消息（${selectedConversationShareItems.length} 个展示项），分享图最多 ${MAX_CONVERSATION_SHARE_MESSAGES} 个展示项，只读链接最多 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息` : '没有可分享的消息'}</span>
+                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareMessageIDs.length} 条消息（${selectedConversationShareItems.length} 个展示项），分享图最多 ${MAX_CONVERSATION_SHARE_IMAGE_ITEMS} 个展示项，只读链接最多 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息` : '没有可分享的消息'}</span>
                     </div>
                   </div>
                   <div className="cc-conversation-share-toolbar-actions">
@@ -4884,9 +4892,12 @@ function inferWorkingTypeFromBlocks(blocks) {
 }
 
 function isWorkingMessage(message) {
-  if (WORKING_MESSAGE_TYPES.has(message?.type)) return true;
+  const type = String(message?.type || message?.msg_type || '').trim().toLowerCase();
+  if (WORKING_MESSAGE_TYPES.has(type)) return true;
   if (isWorkingTextMessage(message)) return true;
-  return Boolean(inferWorkingTypeFromBlocks(message?.content_blocks));
+  // A final text message may carry process blocks alongside content that can
+  // be shared. Keep it in the transcript so its source ID remains selectable.
+  return Boolean(inferWorkingTypeFromBlocks(message?.content_blocks)) && !hasShareableTranscriptBlock(message);
 }
 
 function resolveWorkingInitiatorUid(messages, workingIndex, botUIDs) {

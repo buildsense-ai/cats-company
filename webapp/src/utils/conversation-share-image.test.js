@@ -9,10 +9,11 @@ describe('conversation share image helpers', () => {
     expect(conversationShareText({
       content_blocks: [
         { type: 'text', text: '先整理重点' },
+        { type: 'assistant_text', text: '这是最终回答' },
         { type: 'file', payload: { name: 'brief.pdf' } },
         { type: 'image', payload: { name: 'cover.png' } },
       ],
-    })).toBe('先整理重点\n[文件] brief.pdf\n[图片] cover.png');
+    })).toBe('先整理重点\n这是最终回答\n[文件] brief.pdf\n[图片] cover.png');
   });
 
   it('keeps full long text and attachment labels', () => {

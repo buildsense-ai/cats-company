@@ -32,9 +32,12 @@ const (
 	conversationShareMaxItems   = 100
 	// A share is a snapshot of already accepted uploads, so it must not impose
 	// a smaller limit than the normal upload path.
-	conversationShareMaxAsset     = maxFileSize
-	conversationShareMaxAssets    = maxFileSize
-	conversationShareCleanupEvery = time.Hour
+	conversationShareMaxAssetBytes      = maxFileSize
+	conversationShareMaxTotalAssetBytes = maxFileSize
+	// Keep the public asset fan-out bounded independently from the byte budget.
+	// This also gives the public asset rate-limit bucket a deterministic ceiling.
+	conversationShareMaxAssetCount = 256
+	conversationShareCleanupEvery  = time.Hour
 )
 
 var conversationShareUploadKeyPattern = regexp.MustCompile(`^\d{8}_[a-f0-9]{32}\.[a-z0-9]+$`)
@@ -219,11 +222,8 @@ func (h *ConversationShareHandler) handleCreate(w http.ResponseWriter, r *http.R
 		return messages[i].CreatedAt.Before(messages[j].CreatedAt)
 	})
 
-	ttl := conversationShareDefaultTTL
-	if req.ExpiresIn != 0 {
-		ttl = time.Duration(req.ExpiresIn) * time.Second
-	}
-	if ttl < conversationShareMinTTL || ttl > conversationShareMaxTTL {
+	ttl, validTTL := conversationShareTTL(req.ExpiresIn)
+	if !validTTL {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_in must be between 1 hour and 30 days"})
 		return
 	}
@@ -265,7 +265,14 @@ func (h *ConversationShareHandler) handleCreate(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create share"})
 			return
 		}
-		snapshot, itemAssets, assetPaths, snapshotErr := h.makeSnapshot(uid, shareID, itemID, message, conversationShareMaxAssets-assetsSize(assets))
+		snapshot, itemAssets, assetPaths, snapshotErr := h.makeSnapshot(
+			uid,
+			shareID,
+			itemID,
+			message,
+			conversationShareMaxTotalAssetBytes-assetsSize(assets),
+			conversationShareMaxAssetCount-len(assets),
+		)
 		if snapshotErr != nil {
 			h.removeCreatedAssets(append(createdAssetPaths, assetPaths...))
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": snapshotErr.Error()})
@@ -572,7 +579,7 @@ func conversationShareIsActive(share *store.ConversationShare, now time.Time) bo
 	return share.ExpiresAt == nil || share.ExpiresAt.After(now)
 }
 
-func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID string, message *types.Message, remainingAssets int64) (conversationShareSnapshot, []*store.ConversationShareAsset, []string, error) {
+func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID string, message *types.Message, remainingAssetBytes int64, remainingAssetCount int) (conversationShareSnapshot, []*store.ConversationShareAsset, []string, error) {
 	if message == nil {
 		return conversationShareSnapshot{}, nil, nil, fmt.Errorf("selected message is unavailable")
 	}
@@ -606,7 +613,13 @@ func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID 
 	paths := make([]string, 0)
 	hasTextBlock := false
 	for _, block := range blocks {
-		sanitized, asset, assetPath, err := h.sanitizeSnapshotBlock(shareID, itemID, block, remainingAssets-assetsSize(assets))
+		sanitized, asset, assetPath, err := h.sanitizeSnapshotBlock(
+			shareID,
+			itemID,
+			block,
+			remainingAssetBytes-assetsSize(assets),
+			remainingAssetCount-len(assets),
+		)
 		if err != nil {
 			return conversationShareSnapshot{}, nil, paths, err
 		}
@@ -726,7 +739,7 @@ func conversationShareRichBlock(message *types.Message) (types.ContentBlock, boo
 	return types.ContentBlock{Type: raw.Type, Payload: raw.Payload}, true
 }
 
-func (h *ConversationShareHandler) sanitizeSnapshotBlock(shareID, itemID string, block types.ContentBlock, remainingAssets int64) (*types.ContentBlock, *store.ConversationShareAsset, string, error) {
+func (h *ConversationShareHandler) sanitizeSnapshotBlock(shareID, itemID string, block types.ContentBlock, remainingAssetBytes int64, remainingAssetCount int) (*types.ContentBlock, *store.ConversationShareAsset, string, error) {
 	switch strings.ToLower(strings.TrimSpace(block.Type)) {
 	case "text", "assistant_text":
 		text := strings.TrimSpace(block.Text)
@@ -738,7 +751,14 @@ func (h *ConversationShareHandler) sanitizeSnapshotBlock(shareID, itemID string,
 		}
 		return &types.ContentBlock{Type: "text", Text: text}, nil, "", nil
 	case "image", "file", "audio", "voice", "video":
-		asset, assetPath, err := h.copySnapshotAsset(shareID, itemID, strings.ToLower(strings.TrimSpace(block.Type)), block.Payload, remainingAssets)
+		asset, assetPath, err := h.copySnapshotAsset(
+			shareID,
+			itemID,
+			strings.ToLower(strings.TrimSpace(block.Type)),
+			block.Payload,
+			remainingAssetBytes,
+			remainingAssetCount,
+		)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -756,8 +776,11 @@ func (h *ConversationShareHandler) sanitizeSnapshotBlock(shareID, itemID string,
 	}
 }
 
-func (h *ConversationShareHandler) copySnapshotAsset(shareID, itemID, kind string, payload map[string]interface{}, remainingAssets int64) (*store.ConversationShareAsset, string, error) {
-	if h.uploadRoot == "" || h.assetRoot == "" || remainingAssets <= 0 {
+func (h *ConversationShareHandler) copySnapshotAsset(shareID, itemID, kind string, payload map[string]interface{}, remainingAssetBytes int64, remainingAssetCount int) (*store.ConversationShareAsset, string, error) {
+	if remainingAssetCount <= 0 {
+		return nil, "", fmt.Errorf("share contains too many attachments")
+	}
+	if h.uploadRoot == "" || h.assetRoot == "" || remainingAssetBytes <= 0 {
 		return nil, "", fmt.Errorf("selected attachment cannot be shared")
 	}
 	sourceURL := conversationSharePayloadString(payload, "url")
@@ -781,7 +804,7 @@ func (h *ConversationShareHandler) copySnapshotAsset(shareID, itemID, kind strin
 	}
 	defer source.Close()
 	info, err := source.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > conversationShareMaxAsset || info.Size() > remainingAssets {
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > conversationShareMaxAssetBytes || info.Size() > remainingAssetBytes {
 		return nil, "", fmt.Errorf("selected attachment is too large to share")
 	}
 	assetID, err := newConversationShareID()
@@ -801,7 +824,7 @@ func (h *ConversationShareHandler) copySnapshotAsset(shareID, itemID, kind strin
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to prepare attachment")
 	}
-	written, copyErr := io.Copy(destination, io.LimitReader(source, conversationShareMaxAsset+1))
+	written, copyErr := io.Copy(destination, io.LimitReader(source, conversationShareMaxAssetBytes+1))
 	closeErr := destination.Close()
 	if copyErr != nil || closeErr != nil || written != info.Size() {
 		_ = os.Remove(destinationPath)
@@ -1026,14 +1049,26 @@ func conversationShareURL(r *http.Request, token string) string {
 }
 
 func conversationShareConfiguredPublicBaseURL() string {
-	parsed, err := url.Parse(strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL")))
-	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return ""
-	}
-	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+	raw := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
+	parsed, err := url.Parse(raw)
+	if err != nil || raw == "" || parsed == nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" ||
+		(parsed.Path != "" && parsed.Path != "/") {
 		return ""
 	}
 	return strings.TrimRight(parsed.String(), "/")
+}
+
+func conversationShareTTL(expiresIn int64) (time.Duration, bool) {
+	if expiresIn == 0 {
+		return conversationShareDefaultTTL, true
+	}
+	minSeconds := int64(conversationShareMinTTL / time.Second)
+	maxSeconds := int64(conversationShareMaxTTL / time.Second)
+	if expiresIn < minSeconds || expiresIn > maxSeconds {
+		return 0, false
+	}
+	return time.Duration(expiresIn) * time.Second, true
 }
 
 func conversationShareAssetURL(token, assetID string) string {

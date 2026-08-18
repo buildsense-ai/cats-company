@@ -103,10 +103,9 @@ func (a *Adapter) GetConversationShareByID(shareID string) (*store.ConversationS
 func (a *Adapter) ListConversationShares(ownerUID int64, topicID string) ([]*store.ConversationShare, error) {
 	rows, err := a.db.Query(
 		`SELECT id, owner_uid, topic_id, token_hash, title, state, expires_at, created_at, revoked_at
-		 FROM conversation_shares
-		 WHERE owner_uid = $1 AND topic_id = $2
-		 ORDER BY created_at DESC
-		 LIMIT 100`,
+			 FROM conversation_shares
+			 WHERE owner_uid = $1 AND topic_id = $2
+			 ORDER BY created_at DESC`,
 		ownerUID, topicID,
 	)
 	if err != nil {

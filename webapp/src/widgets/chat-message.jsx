@@ -1801,10 +1801,15 @@ function artifactMeta(payload, ext = fileExtension(payload)) {
   };
 }
 
-function fetchableMediaURL(url) {
+export function fetchableMediaURL(url) {
   if (!url) return '';
   try {
-    const urlObj = new URL(url, window.location.origin);
+    const resolvedURL = resolveMediaURL(url);
+    const urlObj = new URL(resolvedURL, window.location.origin);
+    const mediaBase = new URL(resolveMediaURL('/'), window.location.origin);
+    if (mediaBase.origin !== window.location.origin && urlObj.origin === mediaBase.origin) {
+      return urlObj.toString();
+    }
     return urlObj.pathname + urlObj.search;
   } catch (e) {
     return url;

@@ -678,9 +678,9 @@ describe('MessagesView composer draft isolation', () => {
     expect(review.textContent).toContain('分享链接已创建');
   });
 
-  it('allows up to 50 messages and rejects the 51st selection', async () => {
+  it('allows up to 100 messages for links while keeping share images capped at 50 items', async () => {
     api.getMessages.mockResolvedValueOnce({
-      messages: Array.from({ length: 51 }, (_, index) => ({
+      messages: Array.from({ length: 101 }, (_, index) => ({
         id: index + 1,
         seq_id: index + 1,
         topic_id: 'p2p_1_2',
@@ -699,18 +699,85 @@ describe('MessagesView composer draft isolation', () => {
 
     const toolbar = container.querySelector('[aria-label="会话分享选择"]');
     const toggles = container.querySelectorAll('.cc-conversation-share-message-toggle');
-    expect(toggles).toHaveLength(51);
+    expect(toggles).toHaveLength(101);
 
     await act(async () => {
-      for (let index = 1; index < 50; index += 1) {
+      for (let index = 1; index < 100; index += 1) {
         toggles[index].click();
       }
     });
-    expect(toolbar?.textContent).toContain('已选 50 条');
+    expect(toolbar?.textContent).toContain('已选 100 条');
 
-    await act(async () => toggles[50].click());
-    expect(toolbar?.textContent).toContain('已选 50 条');
+    await act(async () => toggles[100].click());
+    expect(toolbar?.textContent).toContain('已选 100 条');
+    expect(toolbar?.textContent).toContain('只读链接最多选择 100 条消息。');
+
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => generateButton.click());
     expect(toolbar?.textContent).toContain('分享图最多选择 50 个展示项。');
+
+    const createLink = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('创建链接'));
+    await act(async () => {
+      createLink.click();
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.submit(container.querySelector('.cc-conversation-link-share-review form'));
+      await flushPromises();
+    });
+    const payload = api.createConversationShare.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      topicId: 'p2p_1_2',
+      title: '会话片段',
+      expiresIn: 604800,
+    });
+    expect([...payload.messageIds].sort((left, right) => left - right)).toEqual(
+      Array.from({ length: 100 }, (_, index) => index + 1),
+    );
+  });
+
+  it('keeps a text message with internal blocks selectable and sends only its source ID', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 190,
+        seq_id: 190,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content_blocks: [
+          { type: 'text', text: '这是可以分享的最终结论。' },
+          { type: 'thinking', thinking: '不能出现在访客页面的推理。' },
+        ],
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    await act(async () => {
+      container.querySelector('.mock-chat-message[data-message-id="190"] .mock-create-conversation-share').click();
+      await flushPromises();
+    });
+
+    const toolbar = container.querySelector('[aria-label="会话分享选择"]');
+    expect(toolbar?.textContent).toContain('已选 1 条');
+    const createLink = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('创建链接'));
+    await act(async () => {
+      createLink.click();
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.submit(container.querySelector('.cc-conversation-link-share-review form'));
+      await flushPromises();
+    });
+    expect(api.createConversationShare).toHaveBeenCalledWith({
+      topicId: 'p2p_1_2',
+      messageIds: [190],
+      title: '会话片段',
+      expiresIn: 604800,
+    });
   });
 
   it('previews and downloads every generated share-image page', async () => {

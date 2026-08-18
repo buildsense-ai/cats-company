@@ -143,7 +143,8 @@ func TestConversationShareSnapshotPreservesLegacyTextAlongsideAttachment(t *test
 				},
 			}},
 		},
-		conversationShareMaxAssets,
+		conversationShareMaxTotalAssetBytes,
+		conversationShareMaxAssetCount,
 	)
 	if err != nil {
 		t.Fatalf("make snapshot: %v", err)
@@ -197,7 +198,8 @@ func TestConversationShareSnapshotsAudioWithoutChangingOrdinaryVisibility(t *tes
 				},
 			}},
 		},
-		conversationShareMaxAssets,
+		conversationShareMaxTotalAssetBytes,
+		conversationShareMaxAssetCount,
 	)
 	if err != nil {
 		t.Fatalf("make audio snapshot: %v", err)
@@ -207,6 +209,48 @@ func TestConversationShareSnapshotsAudioWithoutChangingOrdinaryVisibility(t *tes
 	}
 	if len(assets) != 1 || assets[0].Kind != "audio" {
 		t.Fatalf("snapshot assets = %#v", assets)
+	}
+}
+
+func TestConversationShareSnapshotEnforcesAssetCountBudget(t *testing.T) {
+	sourceRoot := t.TempDir()
+	shareRoot := t.TempDir()
+	const fileKey = "20260817_0123456789abcdef0123456789abcdef.png"
+	sourcePath := filepath.Join(sourceRoot, "images", fileKey)
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create image directory: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("shared image bytes"), 0o644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	handler := NewConversationShareHandler(&conversationShareTestStore{}, nil, sourceRoot, shareRoot)
+	_, _, paths, err := handler.makeSnapshot(
+		7,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		&types.Message{
+			ID:      103,
+			TopicID: "p2p_7_99",
+			FromUID: 7,
+			MsgType: "text",
+			ContentBlocks: []types.ContentBlock{
+				{Type: "image", Payload: map[string]interface{}{"url": "/uploads/images/" + fileKey}},
+				{Type: "image", Payload: map[string]interface{}{"url": "/uploads/images/" + fileKey}},
+			},
+		},
+		conversationShareMaxTotalAssetBytes,
+		1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "too many attachments") {
+		t.Fatalf("make snapshot error = %v, want attachment count error", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("created asset paths = %d, want one path before the budget error", len(paths))
+	}
+	handler.removeCreatedAssets(paths)
+	if _, statErr := os.Stat(paths[0]); !os.IsNotExist(statErr) {
+		t.Fatalf("created asset still exists after cleanup, stat error = %v", statErr)
 	}
 }
 
@@ -613,10 +657,10 @@ func TestConversationShareURLDoesNotTrustForwardedHost(t *testing.T) {
 }
 
 func TestConversationShareURLPrefersConfiguredPublicBaseURL(t *testing.T) {
-	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://public.example.test/catsco/")
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://public.example.test/")
 	request := httptest.NewRequest(http.MethodPost, "http://internal.example.test/api/conversation-shares", nil)
 
-	if got := conversationShareURL(request, "visitor-capability"); got != "https://public.example.test/catsco/share/visitor-capability" {
+	if got := conversationShareURL(request, "visitor-capability"); got != "https://public.example.test/share/visitor-capability" {
 		t.Fatalf("share URL=%q, want configured public base URL", got)
 	}
 }
@@ -627,5 +671,44 @@ func TestConversationShareURLIgnoresInvalidConfiguredPublicBaseURL(t *testing.T)
 
 	if got := conversationShareURL(request, "visitor-capability"); got != "https://app.example.test/share/visitor-capability" {
 		t.Fatalf("share URL=%q, want request host fallback", got)
+	}
+}
+
+func TestConversationShareURLIgnoresHTTPConfiguredPublicBaseURL(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "http://public.example.test/catsco")
+	request := httptest.NewRequest(http.MethodPost, "https://app.example.test/api/conversation-shares", nil)
+
+	if got := conversationShareURL(request, "visitor-capability"); got != "https://app.example.test/share/visitor-capability" {
+		t.Fatalf("share URL=%q, want HTTPS request host fallback", got)
+	}
+}
+
+func TestConversationShareURLIgnoresConfiguredPublicBaseURLPathAndComponents(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "https://app.example.test/api/conversation-shares", nil)
+	for _, value := range []string{
+		"https://public.example.test/catsco/",
+		"https://public.example.test/?source=share",
+		"https://public.example.test/#fragment",
+		"https://public.example.test/%2F",
+		"https://owner@public.example.test",
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CATSCO_PUBLIC_BASE_URL", value)
+			if got := conversationShareURL(request, "visitor-capability"); got != "https://app.example.test/share/visitor-capability" {
+				t.Fatalf("share URL=%q, want request host fallback", got)
+			}
+		})
+	}
+}
+
+func TestConversationShareTTLValidatesSecondsBeforeDurationConversion(t *testing.T) {
+	if got, ok := conversationShareTTL(3600); !ok || got != time.Hour {
+		t.Fatalf("one-hour TTL = (%v, %v), want (1h, true)", got, ok)
+	}
+	if _, ok := conversationShareTTL(3600 + (int64(1) << 55)); ok {
+		t.Fatal("overflowing expires_in must be rejected")
+	}
+	if _, ok := conversationShareTTL(int64(conversationShareMaxTTL/time.Second) + 1); ok {
+		t.Fatal("expires_in above the maximum must be rejected")
 	}
 }

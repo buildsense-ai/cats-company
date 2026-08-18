@@ -67,4 +67,16 @@ describe('service worker API routing', () => {
     expect(denylist.some((pattern) => pattern.test('/reset-password'))).toBe(true);
     expect(denylist.some((pattern) => pattern.test('/login///'))).toBe(true);
   });
+
+  test('leaves capability share navigations out of the app navigation cache', async () => {
+    await import('./sw');
+
+    const navigationRoute = registerRoute.mock.calls
+      .map(([route]) => route)
+      .find((route) => Array.isArray(route?.options?.denylist));
+    const denylist = navigationRoute?.options?.denylist || [];
+
+    expect(denylist.some((pattern) => pattern.test('/share/visitor-capability'))).toBe(true);
+    expect(denylist.some((pattern) => pattern.test('/share'))).toBe(true);
+  });
 });
