@@ -2,6 +2,8 @@ FROM node:24-alpine3.24 AS webapp-build
 
 WORKDIR /app
 
+RUN apk add --no-cache brotli gzip
+
 ARG REACT_APP_API_BASE=""
 ENV VITE_API_BASE=${REACT_APP_API_BASE}
 
@@ -11,8 +13,6 @@ RUN npm ci
 COPY webapp/ ./
 
 RUN npm run build
-
-RUN apk add --no-cache brotli gzip
 
 RUN find build -type f \( \
     -name '*.css' -o \

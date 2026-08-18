@@ -55,28 +55,49 @@ else
     .
 fi
 
-if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
-  printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
-fi
-
 web_image="ghcr.io/${owner}/cats-company-web:${revision}"
-pull_timeout="${REMOTE_WEB_PULL_TIMEOUT_SECONDS:-30}"
+pull_timeout="${REMOTE_WEB_PULL_TIMEOUT_SECONDS:-120}"
+login_timeout="${REMOTE_GHCR_LOGIN_TIMEOUT_SECONDS:-20}"
+web_image_mode="${REMOTE_WEB_IMAGE_MODE:-pull}"
+
+build_web_image() {
+  fallback_build_timeout="${REMOTE_WEB_BUILD_TIMEOUT_SECONDS:-900}"
+  echo "Building web image locally (timeout ${fallback_build_timeout}s)."
+  timeout "$fallback_build_timeout" docker build --progress=plain \
+    --build-arg REACT_APP_API_BASE="${REMOTE_WEB_REACT_APP_API_BASE:-}" \
+    -f deploy/Dockerfile.nginx \
+    -t "$web_image" \
+    .
+}
 
 if docker image inspect "$web_image" >/dev/null 2>&1; then
   echo "Web image already present: ${web_image}"
 else
-  echo "Pulling web image: ${web_image}"
-  if ! timeout "$pull_timeout" docker pull "$web_image"; then
-    fallback_build_timeout="${REMOTE_WEB_BUILD_TIMEOUT_SECONDS:-900}"
-    echo "Web image pull failed or timed out after ${pull_timeout}s; building locally from source (timeout ${fallback_build_timeout}s)."
-    timeout "$fallback_build_timeout" docker build --progress=plain \
-      --build-arg REACT_APP_API_BASE="${REMOTE_WEB_REACT_APP_API_BASE:-}" \
-      -f deploy/Dockerfile.nginx \
-      -t "$web_image" \
-      .
-  fi
+  case "$web_image_mode" in
+    local)
+      build_web_image
+      ;;
+    pull)
+      echo "Pulling web image: ${web_image}"
+      pull_ready=1
+      if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
+        if ! printf '%s\n' "$GHCR_TOKEN" | timeout "$login_timeout" docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null; then
+          echo "GHCR login failed or timed out after ${login_timeout}s."
+          pull_ready=0
+        fi
+      fi
+      if [ "$pull_ready" -ne 1 ] || ! timeout "$pull_timeout" docker pull "$web_image"; then
+        echo "Web image pull failed or timed out after ${pull_timeout}s; falling back to the local build cache."
+        build_web_image
+      fi
+      ;;
+    *)
+      echo "unsupported REMOTE_WEB_IMAGE_MODE: $web_image_mode" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 find "$shared_source_root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} +
-find "$shared_release_root" -mindepth 1 -maxdepth 1 -name 'cats-company-source-*.tar.gz' -type f -mtime +7 -delete
+find "$shared_release_root" -mindepth 1 -maxdepth 1 -name 'cats-company-source-*' -type f -mtime +7 -delete
 find "$root/releases" -mindepth 1 -maxdepth 1 -name 'cats-company-images-*.tar.gz' -type f -delete

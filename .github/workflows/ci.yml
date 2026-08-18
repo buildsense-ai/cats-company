@@ -137,6 +137,8 @@ jobs:
         run: |
           bash -n deploy/shared/ensure-build-cache.sh
           bash deploy/tests/ensure-build-cache.sh
+          bash -n deploy/shared/cache-source-bundle.sh
+          bash deploy/tests/cache-source-bundle.sh
           bash -n deploy/remote-build-source.sh
           bash deploy/tests/remote-build-source-cache.sh
           bash -n deploy/prod/remote-deploy.sh
