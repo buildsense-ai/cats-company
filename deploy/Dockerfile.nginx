@@ -4,11 +4,12 @@ WORKDIR /app
 
 RUN apk add --no-cache brotli gzip
 
+COPY webapp/package.json webapp/package-lock.json ./
+RUN --mount=type=cache,id=catscompany-web-npm,target=/root/.npm,sharing=locked \
+    npm ci --prefer-offline --no-audit --no-fund
+
 ARG REACT_APP_API_BASE=""
 ENV VITE_API_BASE=${REACT_APP_API_BASE}
-
-COPY webapp/package.json webapp/package-lock.json ./
-RUN npm ci
 
 COPY webapp/ ./
 
