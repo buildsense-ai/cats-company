@@ -47,6 +47,7 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          ssh ${SSH_OPTS} "${REMOTE}" "bash -s -- '${DEPLOY_CACHE_ROOT}'" < deploy/shared/ensure-build-cache.sh
           ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/bin ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/data/dreamina-home ${PROD_STACK_ROOT}/data/dreamina-worker ${PROD_STACK_ROOT}/data/catsco-worker ${PROD_STACK_ROOT}/logs ${PROD_STACK_ROOT}/releases ${DEPLOY_CACHE_ROOT}/releases ${DEPLOY_CACHE_ROOT}/source /usr/local/bin"
 
           tmpdir="$(mktemp -d)"

@@ -18,6 +18,9 @@ archives and extracted source trees. A source archive is named by the tested
 commit SHA and verified with SHA-256 before an atomic rename. Production reuses
 the archive and exact-tag Docker images produced by test; if the shared archive
 is missing, production uploads the tested revision as a compatibility fallback.
+The workflows create this root with owner-only permissions. On a fresh server,
+the SSH deployment user needs non-interactive passwordless `sudo` when `/srv`
+is not directly writable.
 
 The first test deployment of a new commit still transfers one source archive
 from GitHub Actions to the server. Retries and the following production deploy
