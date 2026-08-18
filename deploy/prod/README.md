@@ -11,6 +11,20 @@ root as `/srv/catscompany-prod` so the existing GitHub Actions deployment
 workflow can continue to upload compose, env, and release files to the expected
 location.
 
+## Shared revision cache
+
+Test and production deployments use `/srv/catscompany-build-cache` for source
+archives and extracted source trees. A source archive is named by the tested
+commit SHA and verified with SHA-256 before an atomic rename. Production reuses
+the archive and exact-tag Docker images produced by test; if the shared archive
+is missing, production uploads the tested revision as a compatibility fallback.
+
+The first test deployment of a new commit still transfers one source archive
+from GitHub Actions to the server. Retries and the following production deploy
+do not transfer it again. A future domestic object-storage transport can write
+the same verified archive into this cache without changing the remote build
+contract.
+
 The production deploy reconciles the image proxy timeouts in the TLS
 `app.catsco.cc` `/v1/` location and the streaming STT WebSocket route at
 `/api/stt/realtime`. It does not replace the host site file, so unrelated
