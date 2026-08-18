@@ -130,9 +130,15 @@ fi
 RELEASE_ID="${VERSION}-${COMMIT:0:8}"
 RELEASE_ROOT="/opt/catsco/releases/$RELEASE_ID"
 if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
+  "current=\$(readlink -f /opt/catsco/current 2>/dev/null || true); test \"\$current\" = '$RELEASE_ROOT' && systemctl is-active --quiet catsco-agent.service"; then
+  jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
+    '{status:"already-current",instance_name:$name,version:$version,commit:$commit}'
+  exit 0
+fi
+if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "test -f '$RELEASE_ROOT/worker-release.json' && jq -e '.version == \"$VERSION\" and .commit == \"$COMMIT\"' '$RELEASE_ROOT/worker-release.json' >/dev/null"; then
   timeout -s TERM -k 20 90s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
-    "old=\$(readlink -f /opt/catsco/current 2>/dev/null || true); mkdir -p /var/lib/catsco; printf '%s\\n' \"\$old\" > /var/lib/catsco/previous-release; ln -sfn '$RELEASE_ROOT' /opt/catsco/current; systemctl restart catsco-agent.service; sleep 5; systemctl is-active catsco-agent.service" >/dev/null
+    "old=\$(readlink -f /opt/catsco/current 2>/dev/null || true); mkdir -p /var/lib/catsco; if test \"\$old\" != '$RELEASE_ROOT'; then printf '%s\\n' \"\$old\" > /var/lib/catsco/previous-release; fi; ln -sfn '$RELEASE_ROOT' /opt/catsco/current; systemctl restart catsco-agent.service; sleep 5; systemctl is-active catsco-agent.service" >/dev/null
   jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
     '{status:"reused-local-release",instance_name:$name,version:$version,commit:$commit}'
   exit 0

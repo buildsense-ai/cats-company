@@ -37,10 +37,13 @@ done
 
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
-if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
-  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+STATE_ROOT="${CTYUN_WORKER_STATE_ROOT:-}"
+if [[ -n "$STATE_ROOT" ]]; then
+  STATE_ROOT="${STATE_ROOT%/}"
+  STATE_DIR="$STATE_ROOT/${NAME}"
 else
   STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+  STATE_ROOT="$(dirname "$STATE_DIR")"
 fi
 # SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
 JUMP_IP="${CTYUN_JUMP_IP:-}"
@@ -100,7 +103,12 @@ inst="$(find_instance "$INSTANCE_NAME")"
 # 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
 INSTANCE_IP="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
 [[ -n "$INSTANCE_IP" ]] || { echo "error: instance has no IP" >&2; exit 1; }
+mkdir -p "$STATE_DIR"
 PRIVATE_KEY="$STATE_DIR/id_rsa"
+if [[ ! -f "$PRIVATE_KEY" && -f "$STATE_ROOT/id_rsa" ]]; then
+  cp "$STATE_ROOT/id_rsa" "$PRIVATE_KEY"
+  chmod 600 "$PRIVATE_KEY"
+fi
 [[ -f "$PRIVATE_KEY" ]] || { echo "error: private key not found at $PRIVATE_KEY (was the worker provisioned here?)" >&2; exit 1; }
 
 ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \

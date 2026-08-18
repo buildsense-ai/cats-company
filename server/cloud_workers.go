@@ -330,6 +330,13 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 			"used":      len(workers),
 			"remaining": remaining,
 		},
+		"actions": map[string]bool{
+			"create":   h.provisionScript != "",
+			"update":   h.updateScript != "",
+			"rollback": h.rollbackScript != "",
+			"reset":    h.resetScript != "",
+			"delete":   h.destroyScript != "",
+		},
 	}
 	// Image listing is a cheap, read-only probe: use a short timeout and
 	// never block the request for the full scriptTimeout.
@@ -572,7 +579,10 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	}
 
 	if script == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker " + action + " is not configured"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "cloud worker " + action + " is not configured",
+			"code":  "cloud_worker_" + action + "_unconfigured",
+		})
 		return
 	}
 
@@ -700,6 +710,7 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 	if h.destroyScript == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "cloud worker destroy is not configured; refusing to delete the record while the instance may still run",
+			"code":  "cloud_worker_delete_unconfigured",
 		})
 		return
 	}

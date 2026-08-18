@@ -184,6 +184,23 @@ test("rollback-worker: missing private key fails", () => {
   assert.match(r.stderr, /private key not found/);
 });
 
+test("rollback-worker: migrates a legacy shared private key into tenant state", () => {
+  const sb = setupSandbox({ instances: [INSTANCE], releases: ["v1.4.8-abc123"] });
+  const legacyRoot = path.join(sb.sandbox, "legacy-state");
+  fs.mkdirSync(legacyRoot, { recursive: true });
+  fs.writeFileSync(path.join(legacyRoot, "id_rsa"), "legacy-private-key\n");
+
+  const r = run(sb, ["--name", "bot-a", "--dry-run"], {
+    CTYUN_WORKER_STATE_ROOT: toMsys(legacyRoot),
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /"status":"dry-run"/);
+  assert.equal(
+    fs.readFileSync(path.join(legacyRoot, "bot-a", "id_rsa"), "utf8"),
+    "legacy-private-key\n",
+  );
+});
+
 test("rollback-worker: rolls back to latest release without --version", () => {
   const sb = setupSandbox({ instances: [INSTANCE], releases: ["v1.4.8-abc123", "v1.4.7-def456"] });
   const r = run(sb, ["--name", "bot-a"]);

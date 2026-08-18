@@ -67,11 +67,22 @@ const cloudWorkerCreateMessage = (e) => {
 };
 
 const cloudWorkerActionMessage = (e, actionLabel) => {
-  if (e?.data?.code === 'cloud_worker_operation_busy' || e?.status === 409) {
+  const code = e?.data?.code;
+  if (code === 'cloud_worker_operation_busy' || e?.status === 409) {
     return '另一项云员工操作正在执行，请等待完成后再试';
   }
-  if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(e?.code) || [502, 503, 504].includes(e?.status)) {
+  const unavailableMessages = {
+    cloud_worker_update_unconfigured: '云端更新服务尚未配置，请联系管理员',
+    cloud_worker_rollback_unconfigured: '云端回滚服务尚未配置，请联系管理员',
+    cloud_worker_reset_unconfigured: '云端重置服务尚未配置，请联系管理员',
+    cloud_worker_delete_unconfigured: '云端删除服务尚未配置，请联系管理员',
+  };
+  if (unavailableMessages[code]) return unavailableMessages[code];
+  if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(e?.code)) {
     return `${actionLabel}连接中断，操作可能仍在服务器执行。请先等待并刷新状态，不要重复提交`;
+  }
+  if ([502, 503, 504].includes(e?.status)) {
+    return `${actionLabel}未完成，云端服务暂不可用。请刷新状态确认后再重试`;
   }
   return e?.message || `${actionLabel}失败，请稍后重试`;
 };
@@ -390,6 +401,7 @@ export default function AgentStoreModal({
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
+  const [cloudActions, setCloudActions] = useState(null); // configured cloud operation capabilities
   const [cloudActioning, setCloudActioning] = useState(null); // { name, action }
   const [editingBot, setEditingBot] = useState(null);
   const [manageSection, setManageSection] = useState('basic');
@@ -602,7 +614,10 @@ export default function AgentStoreModal({
   useEffect(() => {
     let cancelled = false;
     api.getCloudWorkerMeta?.().then((meta) => {
-      if (!cancelled) setCloudImages(meta?.images || []);
+      if (!cancelled) {
+        setCloudImages(meta?.images || []);
+        setCloudActions(meta?.actions || null);
+      }
     }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -1324,6 +1339,7 @@ export default function AgentStoreModal({
                   quotaError={cloudQuotaError}
                   workers={cloudWorkers}
                   images={cloudImages}
+                  actions={cloudActions}
                   actioning={cloudActioning}
                   showHostingSwitch={false}
                   onCreate={handleCloudCreate}
@@ -1480,6 +1496,7 @@ export default function AgentStoreModal({
                 quotaError={cloudQuotaError}
                 workers={cloudWorkers}
                 images={cloudImages}
+                actions={cloudActions}
                 actioning={cloudActioning}
                 onCreate={handleCloudCreate}
                 onUpdate={handleCloudUpdate}
