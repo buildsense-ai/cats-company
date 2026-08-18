@@ -217,6 +217,42 @@ type CommercialQuotaGrant struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+// CommercialAccountAdjustment is an idempotent operator mutation against a
+// user's commercial package or shared quota pool. AmountCNY is always positive;
+// Action determines whether it is credited or debited.
+type CommercialAccountAdjustment struct {
+	UID              int64
+	Action           string
+	AmountCNY        float64
+	PlanID           int64
+	ExpectedTotalCNY *float64
+	OperationID      string
+	Note             string
+	EffectiveAt      time.Time
+}
+
+type CommercialAccountAdjustmentResult struct {
+	Action           string     `json:"action"`
+	OperationID      string     `json:"operation_id"`
+	Applied          bool       `json:"applied"`
+	PreviousTotalCNY float64    `json:"previous_total_cny"`
+	NextTotalCNY     float64    `json:"next_total_cny"`
+	CycleStartedAt   *time.Time `json:"cycle_started_at,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+}
+
+type CommercialAdjustmentError struct {
+	Code    string
+	Message string
+}
+
+func (e *CommercialAdjustmentError) Error() string {
+	if e == nil {
+		return "commercial adjustment failed"
+	}
+	return e.Message
+}
+
 // CommercialLedgerEntry records quota mutations independently from model
 // provider usage. Usage deduction still comes from relay-admin/Bifrost.
 type CommercialLedgerEntry struct {
