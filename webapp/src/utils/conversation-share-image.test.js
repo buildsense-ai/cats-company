@@ -27,6 +27,16 @@ describe('conversation share image helpers', () => {
     })).toBe(`${longText}\n[文件] brief.pdf\n[图片] cover.png`);
   });
 
+  it('omits process narration from a share image', () => {
+    expect(conversationShareText({
+      content_blocks: [
+        { type: 'text', text: '正在处理的内部说明', presentation_role: ' Process ' },
+        { type: 'text', text: '可以分享的结论', presentation_role: 'result' },
+        { type: 'file', payload: { name: 'brief.pdf' } },
+      ],
+    })).toBe('可以分享的结论\n[文件] brief.pdf');
+  });
+
   it('falls back to legacy content without truncating messages', () => {
     expect(conversationShareText({ content: 'legacy message' })).toBe('legacy message');
     expect(conversationShareText({

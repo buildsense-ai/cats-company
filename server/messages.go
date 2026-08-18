@@ -1438,6 +1438,7 @@ func sanitizeContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 		out[i].Input = sanitizeMessageMap(block.Input)
 		out[i].ToolUseID = stripMessageNullBytes(block.ToolUseID)
 		out[i].Content = stripMessageNullBytes(block.Content)
+		out[i].PresentationRole = stripMessageNullBytes(block.PresentationRole)
 	}
 	return out
 }

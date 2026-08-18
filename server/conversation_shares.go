@@ -612,6 +612,7 @@ func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID 
 	assets := make([]*store.ConversationShareAsset, 0)
 	paths := make([]string, 0)
 	hasTextBlock := false
+	hasOmittedBlock := false
 	for _, block := range blocks {
 		sanitized, asset, assetPath, err := h.sanitizeSnapshotBlock(
 			shareID,
@@ -624,6 +625,7 @@ func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID 
 			return conversationShareSnapshot{}, nil, paths, err
 		}
 		if sanitized == nil {
+			hasOmittedBlock = true
 			continue
 		}
 		if sanitized.Type == "text" {
@@ -635,7 +637,10 @@ func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID 
 			paths = append(paths, assetPath)
 		}
 	}
-	if !hasTextBlock {
+	// Legacy text may accompany an otherwise structured attachment message.
+	// Do not use the raw fallback if any block was omitted: the source content
+	// can contain details the snapshot's whitelist deliberately excluded.
+	if !hasTextBlock && !hasOmittedBlock {
 		snapshot.Content = plainText
 	}
 	if snapshot.Content == "" && len(snapshot.ContentBlocks) == 0 {
@@ -665,7 +670,7 @@ func conversationShareIsInternalAgentWorkingMessage(displayType string, content 
 	hasInternalBlock := false
 	hasShareableBlock := false
 	for _, block := range blocks {
-		if isInternalAgentContentBlock(block.Type) {
+		if isConversationShareInternalBlock(block) {
 			hasInternalBlock = true
 			continue
 		}
@@ -674,6 +679,10 @@ func conversationShareIsInternalAgentWorkingMessage(displayType string, content 
 		}
 	}
 	return hasInternalBlock && !hasShareableBlock
+}
+
+func isConversationShareInternalBlock(block types.ContentBlock) bool {
+	return isInternalAgentContentBlock(block.Type) || strings.EqualFold(strings.TrimSpace(block.PresentationRole), "process")
 }
 
 func isConversationShareableContentBlock(blockType string) bool {
@@ -740,6 +749,9 @@ func conversationShareRichBlock(message *types.Message) (types.ContentBlock, boo
 }
 
 func (h *ConversationShareHandler) sanitizeSnapshotBlock(shareID, itemID string, block types.ContentBlock, remainingAssetBytes int64, remainingAssetCount int) (*types.ContentBlock, *store.ConversationShareAsset, string, error) {
+	if isConversationShareInternalBlock(block) {
+		return nil, nil, "", nil
+	}
 	switch strings.ToLower(strings.TrimSpace(block.Type)) {
 	case "text", "assistant_text":
 		text := strings.TrimSpace(block.Text)

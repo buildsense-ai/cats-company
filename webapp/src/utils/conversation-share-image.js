@@ -60,6 +60,7 @@ function safeString(value) {
 
 function contentBlockText(block) {
   if (!block || typeof block !== 'object') return '';
+  if (typeof block.presentation_role === 'string' && block.presentation_role.trim().toLowerCase() === 'process') return '';
   if (block.type === 'text' || block.type === 'assistant_text') {
     return safeString(block.text || block.content);
   }

@@ -254,6 +254,51 @@ func TestConversationShareSnapshotEnforcesAssetCountBudget(t *testing.T) {
 	}
 }
 
+func TestConversationShareSnapshotDoesNotFallbackWhenBlocksAreOmitted(t *testing.T) {
+	sourceRoot := t.TempDir()
+	shareRoot := t.TempDir()
+	const fileKey = "20260817_0123456789abcdef0123456789abcdef.png"
+	sourcePath := filepath.Join(sourceRoot, "images", fileKey)
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create image directory: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("shared image bytes"), 0o644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	handler := NewConversationShareHandler(&conversationShareTestStore{}, nil, sourceRoot, shareRoot)
+	snapshot, _, paths, err := handler.makeSnapshot(
+		7,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		&types.Message{
+			ID:      104,
+			TopicID: "p2p_7_99",
+			FromUID: 7,
+			Content: "不应分享的内部执行过程",
+			MsgType: "text",
+			ContentBlocks: []types.ContentBlock{
+				{Type: "thinking", Thinking: "不应分享的推理"},
+				{Type: "text", Text: "不应分享的过程说明", PresentationRole: "process"},
+				{Type: "private_extension", Content: "不应分享的未知内容"},
+				{Type: "image", Payload: map[string]interface{}{"url": "/uploads/images/" + fileKey}},
+			},
+		},
+		conversationShareMaxTotalAssetBytes,
+		conversationShareMaxAssetCount,
+	)
+	if err != nil {
+		t.Fatalf("make snapshot: %v", err)
+	}
+	defer handler.removeCreatedAssets(paths)
+	if snapshot.Content != "" {
+		t.Fatalf("snapshot content = %q, want no raw internal fallback", snapshot.Content)
+	}
+	if len(snapshot.ContentBlocks) != 1 || snapshot.ContentBlocks[0].Type != "image" {
+		t.Fatalf("snapshot blocks = %#v, want only the selected image", snapshot.ContentBlocks)
+	}
+}
+
 func TestConversationShareCreatesSanitizedPublicSnapshot(t *testing.T) {
 	sourceRoot := t.TempDir()
 	shareRoot := t.TempDir()
