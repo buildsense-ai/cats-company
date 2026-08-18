@@ -136,6 +136,26 @@ function getInitialUser() {
   });
 }
 
+function SessionRestoreFallback({ error, onRetry }) {
+  if (error) {
+    return (
+      <main className="cc-workspace-loading cc-workspace-loading-error">
+        <p role="alert">恢复登录状态失败，请检查网络后重试。</p>
+        <button type="button" className="oc-auth-btn cc-workspace-loading-retry" onClick={onRetry}>
+          重试
+        </button>
+      </main>
+    );
+  }
+
+  return (
+    <main className="cc-workspace-loading" aria-busy="true">
+      <span className="cc-workspace-loading-indicator" aria-hidden="true" />
+      <span role="status">正在恢复登录状态…</span>
+    </main>
+  );
+}
+
 function loadAppSidebarCollapsed() {
   if (typeof window === 'undefined' || !window.localStorage) return false;
   return window.localStorage.getItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
@@ -186,6 +206,8 @@ function TinodeWebApp({ location }) {
   const channelDeviceLink = pathname === '/channel-device-link';
   const channelAccountLink = pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
+  const [sessionRestoreError, setSessionRestoreError] = useState('');
+  const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
   const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
@@ -231,6 +253,9 @@ function TinodeWebApp({ location }) {
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
 
   useEffect(() => {
+    // A token without its cached profile is being recovered below. Keep
+    // the original deep link stable until the server accepts or rejects it.
+    if (!user && getToken()) return;
     const redirectPath = authenticationRedirectPath({
       authenticated: Boolean(user),
       location: { pathname, search, hash },
@@ -544,6 +569,37 @@ function TinodeWebApp({ location }) {
     setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
+
+  useEffect(() => {
+    if (user?.uid) return undefined;
+
+    const requestToken = getToken();
+    const requestSessionRevision = getAuthRevision();
+    if (!requestToken) return undefined;
+
+    let cancelled = false;
+    setSessionRestoreError('');
+    api.getMe()
+      .then((profile) => {
+        if (cancelled || !isCurrentAuthSession(requestToken, requestSessionRevision)) return;
+        const normalized = normalizeUserProfile(profile);
+        if (!normalized) throw new Error('Profile recovery returned no valid user');
+        persistUser(normalized);
+      })
+      .catch((error) => {
+        if (cancelled || !isCurrentAuthSession(requestToken, requestSessionRevision)) return;
+        if (error?.status === 401 || error?.status === 403) {
+          clearAuthenticatedSession(requestToken, requestSessionRevision);
+          return;
+        }
+        console.warn('Failed to recover the current user profile:', error);
+        setSessionRestoreError(error?.message || 'Profile recovery failed');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clearAuthenticatedSession, persistUser, sessionRestoreAttempt, user?.uid]);
 
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
@@ -952,6 +1008,14 @@ function TinodeWebApp({ location }) {
   }
 
   if (!user) {
+    if (getToken()) {
+      return (
+        <SessionRestoreFallback
+          error={sessionRestoreError}
+          onRetry={() => setSessionRestoreAttempt((attempt) => attempt + 1)}
+        />
+      );
+    }
     return null;
   }
 

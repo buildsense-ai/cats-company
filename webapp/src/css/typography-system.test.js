@@ -16,12 +16,12 @@ const allCss = readdirSync(resolve(process.cwd(), 'src/css'))
   .join('\n');
 
 describe('CatsCo typography system', () => {
-  it('loads variable font families with the authenticated workspace', () => {
-    expect(indexSource).not.toContain("import '@fontsource-variable/inter/wght.css';");
-    expect(indexSource).not.toContain("import '@fontsource-variable/noto-sans-sc/wght.css';");
+  it('loads auth-facing font families before the workspace and defers only monospace', () => {
+    expect(indexSource).toContain("import '@fontsource-variable/inter/wght.css';");
+    expect(indexSource).toContain("import '@fontsource-variable/noto-sans-sc/wght.css';");
     expect(indexSource).not.toContain("import '@fontsource-variable/jetbrains-mono/wght.css';");
-    expect(workspaceStylesSource).toContain("import '@fontsource-variable/inter/wght.css';");
-    expect(workspaceStylesSource).toContain("import '@fontsource-variable/noto-sans-sc/wght.css';");
+    expect(workspaceStylesSource).not.toContain("import '@fontsource-variable/inter/wght.css';");
+    expect(workspaceStylesSource).not.toContain("import '@fontsource-variable/noto-sans-sc/wght.css';");
     expect(workspaceStylesSource).toContain("import '@fontsource-variable/jetbrains-mono/wght.css';");
   });
 

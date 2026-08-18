@@ -8,6 +8,10 @@ const readSource = (path) => readFileSync(resolve(process.cwd(), path), 'utf8')
 const entrySource = readSource('src/index.jsx');
 const authCss = readSource('src/css/auth-critical.css');
 const workspaceStyles = readSource('src/views/workspace-styles.js');
+const authSessionSource = readSource('src/auth-session.js');
+const authGatewaySource = readSource('src/views/auth-gateway.jsx');
+const passwordResetSource = readSource('src/widgets/password-reset-form.jsx');
+const pushCleanupSource = readSource('src/components/push-cleanup-controller.jsx');
 const robots = readSource('public/robots.txt');
 const viteConfig = readSource('vite.config.js');
 
@@ -16,23 +20,30 @@ describe('entry bundle split', () => {
     expect(entrySource).toContain("const TinodeWeb = lazy(importWorkspace);");
     expect(entrySource).toContain("const PwaController = lazy(() => import('./components/pwa-controller'));");
     expect(entrySource).toContain("const preloadWorkspace = () => { void importWorkspace().catch(() => undefined); };");
-    expect(entrySource).toContain('const [, startAuthTransition] = useTransition();');
+    expect(entrySource).toContain("from './auth-session';");
+    expect(entrySource).toContain('  isTokenExpired,');
     expect(entrySource).toContain('const nextAuth = {');
-    expect(entrySource).toContain('if (loggedIn) {');
-    expect(entrySource).toContain('startAuthTransition(() => {');
-    expect(entrySource).toContain('setAuth(nextAuth);');
+    expect(entrySource).toContain('const [preserveAuthShell, setPreserveAuthShell] = useState(false);');
+    expect(entrySource).toContain('if (loggedIn && !auth.loggedIn) setPreserveAuthShell(true);');
+    expect(entrySource).toContain('const showAuthGateway = !shouldLoadWorkspace || preserveAuthShell;');
+    expect(entrySource).toContain('fallback={showAuthGateway ? null : <WorkspaceLoadingFallback />}');
+    expect(entrySource).toContain('preservePreviousScreen={preserveAuthShell}');
     expect(entrySource).toContain('function WorkspaceLoadingFallback()');
-    expect(entrySource).toContain('<Suspense fallback={<WorkspaceLoadingFallback />}>');
-    expect(entrySource).toContain('<WorkspaceLoadErrorBoundary>');
+    expect(entrySource).toContain('preservePreviousScreen={preserveAuthShell}');
+    expect(entrySource).toContain('onRecoverableError={handleWorkspaceLoadError}');
     expect(entrySource).toContain('function isWorkspaceChunkLoadError(error)');
-    expect(entrySource).toContain('loggedIn: isRestorableSession(token),');
+    expect(entrySource).toContain('loggedIn: hasUsableSessionToken(token),');
     expect(entrySource).toContain("browserLocation.pathname.startsWith('/mobile-upload/')");
     expect(entrySource).toContain("get('workflow_demo') === '1'");
     expect(entrySource).toContain('onAuthenticationIntent={preloadWorkspace}');
-    expect(entrySource).toContain('const mountPwa = auth.loggedIn && shouldMountPwaForPathname(browserLocation.pathname);');
+    expect(entrySource).toContain('const mountPwa = auth.loggedIn && shouldRegisterPwa;');
+    expect(entrySource).toContain('const shouldRegisterPwa = shouldMountPwaForPathname(browserLocation.pathname);');
+    expect(entrySource).toContain('if (shouldRegisterPwa) registerPwaServiceWorker();');
     expect(entrySource).toContain('<Suspense fallback={null}>');
+    expect(entrySource).toContain('<PwaLoadErrorBoundary>');
     expect(entrySource).not.toContain("import TinodeWeb from './views/tinode-web';");
     expect(entrySource).not.toContain("import PwaController from './components/pwa-controller';");
+    expect(entrySource).not.toContain("from './api'");
   });
 
   it('precaches only the app shell and PWA runtime, not lazy workspace chunks', () => {
@@ -50,16 +61,14 @@ describe('entry bundle split', () => {
       .map(([, path]) => path);
 
     expect(importedStylesheets).toEqual([
-      '@fontsource-variable/inter/wght.css',
-      '@fontsource-variable/noto-sans-sc/wght.css',
       '@fontsource-variable/jetbrains-mono/wght.css',
+      '../css/openchat-theme.css',
+      '../css/catsco-ui-system.css',
+      '../css/catsco-liquid-green.css',
       '../css/catsco-topbar.css',
       '../css/catsco-secondary-headers.css',
       '../css/catsco-settings-controls.css',
       '../css/search-overlay.css',
-      '../css/openchat-theme.css',
-      '../css/catsco-ui-system.css',
-      '../css/catsco-liquid-green.css',
     ]);
   });
 
@@ -77,6 +86,13 @@ describe('entry bundle split', () => {
     expect(authCss).toContain('::-webkit-scrollbar-corner');
     expect(authCss).toContain(':focus-visible');
     expect(authCss).toContain('html[data-theme="liquid"] :is(input, textarea, select)');
+    expect(authCss).toContain('html[data-theme="liquid"] body {');
+    expect(authCss).toContain("url('/liquid-dark-background.png')");
+    expect(authCss).toContain('@keyframes cc-liquid-drift-a');
+    expect(authCss).toContain('@keyframes cc-liquid-drift-b');
+    expect(authCss).toContain('@keyframes cc-liquid-main-flow');
+    expect(authCss).toContain('input[type="email"]');
+    expect(authCss).toContain('input[type="password"]');
     expect(authCss).not.toContain('--cc-conversation-share-accent:');
     expect(authCss).toContain('html[data-theme="liquid"][data-liquid-variant="green"] {');
     expect(authCss).toContain('.oc-auth-card');
@@ -87,7 +103,7 @@ describe('entry bundle split', () => {
     expect(authCss).not.toContain('.cc-toast');
     expect(authCss).not.toContain('.oc-modal.cc-confirm-dialog');
     expect(authCss).not.toContain('.oc-auth .oc-auth-btn');
-    expect(authCss.length).toBeLessThan(14_500);
+    expect(authCss.length).toBeLessThan(18_000);
   });
 
   it('generates the auth shell stylesheet from the workspace visual sources', () => {
@@ -95,6 +111,20 @@ describe('entry bundle split', () => {
     expect(authCss).toContain('Generated from the workspace CSS sources');
     expect(authCss).not.toContain('.relay-access-primary-btn');
     expect(authCss).not.toContain('.catsco-download-action');
+  });
+
+  it('keeps workspace-only API routes out of the authentication dependency path', () => {
+    expect(authSessionSource).toContain("'/api/auth/login'");
+    expect(authSessionSource).not.toContain('/api/messages');
+    expect(authSessionSource).not.toContain('/api/stt/sessions');
+    expect(authSessionSource).not.toContain('/api/agents');
+    expect(authSessionSource).not.toContain('/api/admin/relay');
+    expect(authGatewaySource).toContain("from '../auth-session'");
+    expect(authGatewaySource).not.toContain("from '../api'");
+    expect(passwordResetSource).toContain("from '../auth-session'");
+    expect(passwordResetSource).not.toContain("from '../api'");
+    expect(pushCleanupSource).toContain("from '../auth-session'");
+    expect(pushCleanupSource).not.toContain("from '../api'");
   });
 
   it('allows crawlers to discover the public entrypoint', () => {

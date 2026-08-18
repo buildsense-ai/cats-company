@@ -44,6 +44,11 @@ const AUTH_ROOT_PROPERTIES = new Set([
   '--v3-primary',
   '--v3-text-muted',
 ]);
+const AUTH_CRITICAL_KEYFRAMES = new Set([
+  'cc-liquid-drift-a',
+  'cc-liquid-drift-b',
+  'cc-liquid-main-flow',
+]);
 const STYLE_SOURCES = [
   {
     path: 'src/css/openchat-theme.css',
@@ -54,6 +59,7 @@ const STYLE_SOURCES = [
     path: 'src/css/catsco-ui-system.css',
     selectorIsCritical,
     rootProperties: AUTH_ROOT_PROPERTIES,
+    keyframes: AUTH_CRITICAL_KEYFRAMES,
   },
   {
     path: 'src/css/catsco-liquid-green.css',
@@ -65,6 +71,8 @@ const STYLE_SOURCES = [
 const CRITICAL_CLASS = /\.(?:oc-auth(?:-[\w-]+)?|oc-password-reset-code-row|oc-settings-secondary|oc-form-error|cc-inline-feedback(?:-[\w-]+)?)(?=$|[\s.:#,[>+~])/;
 const GLOBAL_SELECTOR = /^(?::root|\*|\*::before|\*::after|html(?:\[[^\]]+\])*(?:\s+\*)?|body|#root|(?:button|input|textarea|select)(?:::[\w-]+|:[\w-]+(?:\([^)]*\))?)*|(?:input|textarea)::placeholder|\[role="button"\]|\[tabindex\]:focus-visible)$/;
 const GLOBAL_INPUT_GROUP = /^html(?:\[[^\]]+\])*\s+:is\(\s*(?:input|textarea|select)\b/;
+const THEMED_DOCUMENT_SELECTOR = /^html(?:\[[^\]]+\])*\s+(?:body(?:::(?:before|after))?|#root)$/;
+const MOBILE_TEXT_INPUT_SELECTOR = /^(?:input:not\(\[type\]\)|input\[type=["']?(?:text|search|email|password|tel|url|number)["']?\]|textarea|select)$/;
 // Keep the visible scrollbar geometry and states in the auth shell. The
 // source's verbose arrow reset is compacted below because display:none makes
 // its size and appearance declarations redundant.
@@ -87,7 +95,9 @@ function selectorIsCritical(selector) {
     || GLOBAL_SELECTOR.test(normalized)
     || normalized === ':focus-visible'
     || GLOBAL_SCROLLBAR_SELECTOR.test(normalized)
-    || GLOBAL_INPUT_GROUP.test(normalized);
+    || GLOBAL_INPUT_GROUP.test(normalized)
+    || THEMED_DOCUMENT_SELECTOR.test(normalized)
+    || MOBILE_TEXT_INPUT_SELECTOR.test(normalized);
 }
 
 function openchatSelectorIsCritical(selector) {
@@ -110,7 +120,7 @@ function trimNestedSelectorLists(selector) {
   });
 }
 
-function filterNode(node, predicate, rootProperties) {
+function filterNode(node, predicate, rootProperties, keyframes) {
   if (node.type === 'rule') {
     const selectors = node.selectors.filter(predicate).map(trimNestedSelectorLists);
     if (selectors.length === 0) return null;
@@ -138,23 +148,23 @@ function filterNode(node, predicate, rootProperties) {
 
   if (node.type !== 'atrule') return null;
   if (node.name.endsWith('keyframes')) {
-    return null;
+    return keyframes?.has(node.params.trim()) ? node.clone() : null;
   }
   if (!node.nodes) return null;
 
   const atRule = node.clone({ nodes: [] });
   node.nodes.forEach((child) => {
-    const filtered = filterNode(child, predicate, rootProperties);
+    const filtered = filterNode(child, predicate, rootProperties, keyframes);
     if (filtered) atRule.append(filtered);
   });
   return atRule.nodes.length > 0 ? atRule : null;
 }
 
-function extractCriticalRules(source, predicate, rootProperties) {
+function extractCriticalRules(source, predicate, rootProperties, keyframes) {
   const root = postcss.parse(source);
   const filtered = postcss.root();
   root.nodes.forEach((node) => {
-    const result = filterNode(node, predicate, rootProperties);
+    const result = filterNode(node, predicate, rootProperties, keyframes);
     if (result) filtered.append(result);
   });
   return filtered.toString().trim();
@@ -219,9 +229,10 @@ export function generateAuthCriticalCss({ write = true } = {}) {
     path,
     selectorIsCritical: predicate,
     rootProperties,
+    keyframes,
   }) => {
     const source = readFileSync(join(WEBAPP_ROOT, path), 'utf8');
-    const rules = extractCriticalRules(source, predicate, rootProperties);
+    const rules = extractCriticalRules(source, predicate, rootProperties, keyframes);
     return rules ? `/* Source: ${path} */\n${rules}` : '';
   }).filter(Boolean);
   const additions = readFileSync(ADDITIONS_PATH, 'utf8').trim();

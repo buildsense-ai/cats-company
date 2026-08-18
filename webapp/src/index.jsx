@@ -1,9 +1,18 @@
-import React, { lazy, Suspense, useEffect, useLayoutEffect, useState, useTransition } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
+import '@fontsource-variable/inter/wght.css';
+import '@fontsource-variable/noto-sans-sc/wght.css';
 import AuthGateway from './views/auth-gateway';
 import PushCleanupController from './components/push-cleanup-controller';
-import { getAuthRevision, getPushPromptOwner, getToken, setToken } from './api';
+import {
+  getAuthRevision,
+  getPushPromptOwner,
+  getToken,
+  isTokenExpired,
+  setToken,
+} from './auth-session';
 import { FeedbackProvider } from './components/feedback-system';
+import { registerPwaServiceWorker } from './pwa-registration';
 import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
 import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
@@ -32,14 +41,14 @@ function readBrowserLocation() {
   };
 }
 
-function isRestorableSession(token = getToken()) {
-  return Boolean(token && readStoredUserProfile());
+function hasUsableSessionToken(token = getToken()) {
+  return Boolean(token) && !isTokenExpired(token);
 }
 
 function readInitialAuthState() {
   const token = getToken();
   return {
-    loggedIn: isRestorableSession(token),
+    loggedIn: hasUsableSessionToken(token),
     pushPromptOwner: getPushPromptOwner(),
     revision: getAuthRevision(),
   };
@@ -69,47 +78,74 @@ export function WorkspaceLoadFailure({ onRetry = () => window.location.reload() 
   );
 }
 
-export class WorkspaceLoadErrorBoundary extends React.Component {
+export class RecoverableChunkErrorBoundary extends React.Component {
   state = { error: null };
 
   static getDerivedStateFromError(error) {
     return { error };
   }
 
+  componentDidCatch(error) {
+    if (isWorkspaceChunkLoadError(error)) this.props.onRecoverableError?.(error);
+  }
+
   render() {
     const { error } = this.state;
     if (error) {
       if (!isWorkspaceChunkLoadError(error)) throw error;
-      return <WorkspaceLoadFailure />;
+      return this.props.fallback;
     }
     return this.props.children;
   }
 }
 
+export function WorkspaceLoadErrorBoundary({
+  children,
+  preservePreviousScreen = false,
+  onRecoverableError,
+}) {
+  return (
+    <RecoverableChunkErrorBoundary
+      fallback={preservePreviousScreen ? null : <WorkspaceLoadFailure />}
+      onRecoverableError={onRecoverableError}
+    >
+      {children}
+    </RecoverableChunkErrorBoundary>
+  );
+}
+
+export function PwaLoadErrorBoundary({ children }) {
+  return <RecoverableChunkErrorBoundary fallback={null}>{children}</RecoverableChunkErrorBoundary>;
+}
+
+function WorkspaceEntry({ location, onReady }) {
+  useLayoutEffect(() => {
+    onReady();
+  }, [onReady]);
+
+  return <TinodeWeb location={location} />;
+}
+
 export function App() {
   const [browserLocation, setBrowserLocation] = useState(readBrowserLocation);
-  const [, startAuthTransition] = useTransition();
   const [auth, setAuth] = useState(readInitialAuthState);
+  const [preserveAuthShell, setPreserveAuthShell] = useState(false);
 
   useEffect(() => {
     const handleAuthChanged = (event) => {
-      const loggedIn = Boolean(event.detail?.loggedIn) && isRestorableSession();
+      const loggedIn = Boolean(event.detail?.loggedIn) && hasUsableSessionToken();
       const nextAuth = {
         loggedIn,
         pushPromptOwner: getPushPromptOwner(),
         revision: event.detail?.revision ?? getAuthRevision(),
       };
-      if (loggedIn) {
-        startAuthTransition(() => {
-          setAuth(nextAuth);
-        });
-      } else {
-        setAuth(nextAuth);
-      }
+      if (loggedIn && !auth.loggedIn) setPreserveAuthShell(true);
+      if (!loggedIn) setPreserveAuthShell(false);
+      setAuth(nextAuth);
     };
     window.addEventListener('cc:auth-changed', handleAuthChanged);
     return () => window.removeEventListener('cc:auth-changed', handleAuthChanged);
-  }, [startAuthTransition]);
+  }, [auth.loggedIn]);
 
   useLayoutEffect(() => {
     const handleHistoryChange = () => setBrowserLocation(readBrowserLocation());
@@ -118,41 +154,53 @@ export function App() {
   }, []);
 
   useLayoutEffect(() => {
-    if (auth.loggedIn) return;
-
     const token = getToken();
-    const profile = readStoredUserProfile();
-    if (token && !profile) {
-      setToken(null);
-      clearStoredUserProfile();
-      return;
-    }
-    if (!token && profile) clearStoredUserProfile();
+    if (auth.loggedIn || (token && !isTokenExpired(token))) return;
+    if (token) setToken(null);
+    if (readStoredUserProfile()) clearStoredUserProfile();
   }, [auth.loggedIn, auth.revision]);
 
-  const mountPwa = auth.loggedIn && shouldMountPwaForPathname(browserLocation.pathname);
+  const shouldRegisterPwa = shouldMountPwaForPathname(browserLocation.pathname);
+  useEffect(() => {
+    if (shouldRegisterPwa) registerPwaServiceWorker();
+  }, [shouldRegisterPwa]);
+
+  const mountPwa = auth.loggedIn && shouldRegisterPwa;
   const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
     || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
   const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
+  const showAuthGateway = !shouldLoadWorkspace || preserveAuthShell;
+  const handleWorkspaceReady = useCallback(() => {
+    setPreserveAuthShell(false);
+  }, []);
+  const handleWorkspaceLoadError = useCallback(() => {
+    setPreserveAuthShell(false);
+  }, []);
 
   return (
     <FeedbackProvider>
-      {shouldLoadWorkspace ? (
-        <WorkspaceLoadErrorBoundary>
-          <Suspense fallback={<WorkspaceLoadingFallback />}>
-            <TinodeWeb location={browserLocation} />
+      {showAuthGateway && <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
+      {shouldLoadWorkspace && (
+        <WorkspaceLoadErrorBoundary
+          preservePreviousScreen={preserveAuthShell}
+          onRecoverableError={handleWorkspaceLoadError}
+        >
+          <Suspense fallback={showAuthGateway ? null : <WorkspaceLoadingFallback />}>
+            <WorkspaceEntry location={browserLocation} onReady={handleWorkspaceReady} />
           </Suspense>
         </WorkspaceLoadErrorBoundary>
-      ) : <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
+      )}
       {!auth.loggedIn && <PushCleanupController />}
       {mountPwa && (
-        <Suspense fallback={null}>
-          <PwaController
-            loggedIn={auth.loggedIn}
-            pushPromptOwner={auth.pushPromptOwner}
-            sessionRevision={auth.revision}
-          />
-        </Suspense>
+        <PwaLoadErrorBoundary>
+          <Suspense fallback={null}>
+            <PwaController
+              loggedIn={auth.loggedIn}
+              pushPromptOwner={auth.pushPromptOwner}
+              sessionRevision={auth.revision}
+            />
+          </Suspense>
+        </PwaLoadErrorBoundary>
       )}
     </FeedbackProvider>
   );

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   wsMessage: null,
   connectWS: vi.fn(),
   disconnectWS: vi.fn(),
+  getMe: vi.fn(),
   setToken: vi.fn(),
 }));
 
@@ -16,7 +17,7 @@ vi.mock('../api', () => {
     getRelayAdminAccess: vi.fn().mockResolvedValue({ allowed: false }),
     getRelayUsage: vi.fn().mockResolvedValue({ summary: null }),
     getRelayConfig: vi.fn().mockResolvedValue({}),
-    getMe: vi.fn().mockResolvedValue({ uid: 1, username: 'cats' }),
+    getMe: mocks.getMe,
     getAgents: vi.fn().mockResolvedValue({ agents: [] }),
     getAgentQuota: vi.fn().mockResolvedValue({}),
     getGroupInfo: vi.fn().mockResolvedValue({}),
@@ -67,6 +68,8 @@ beforeEach(() => {
   mocks.token = 'session-token';
   mocks.sessionRevision = 1;
   mocks.wsMessage = null;
+  mocks.getMe.mockResolvedValue({ uid: 1, username: 'cats' });
+  mocks.getMe.mockClear();
   mocks.connectWS.mockImplementation((onMessage) => {
     mocks.wsMessage = onMessage;
     return true;
@@ -105,5 +108,60 @@ test('keeps the current deep link when a WebSocket session expires', async () =>
   await vi.waitFor(() => {
     expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
       .toBe('/login?next=%2Fe%2Finvite-1%3Fsource%3Demail%23accept');
+  });
+});
+
+test('recovers a valid session when its cached profile is missing', async () => {
+  localStorage.removeItem('oc_user');
+
+  await act(async () => {
+    root.render(<TinodeWeb location={{ pathname: '/e/invite-1', search: '', hash: '' }} />);
+  });
+
+  await vi.waitFor(() => {
+    expect(container.querySelector('[data-testid="agent-entry"]')).toBeTruthy();
+  });
+  expect(mocks.getMe).toHaveBeenCalled();
+  expect(JSON.parse(localStorage.getItem('oc_user'))).toMatchObject({ uid: 1, username: 'cats' });
+  expect(mocks.setToken).not.toHaveBeenCalled();
+});
+
+test('keeps a deep link stable while a missing cached profile is recovered', async () => {
+  localStorage.removeItem('oc_user');
+  let resolveProfile;
+  mocks.getMe.mockImplementation(() => new Promise((resolve) => {
+    resolveProfile = resolve;
+  }));
+
+  await act(async () => {
+    root.render(<TinodeWeb />);
+  });
+
+  await vi.waitFor(() => expect(mocks.getMe).toHaveBeenCalledTimes(1));
+  expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+    .toBe('/e/invite-1?source=email#accept');
+
+  await act(async () => {
+    resolveProfile({ uid: 1, username: 'cats' });
+  });
+
+  await vi.waitFor(() => {
+    expect(container.querySelector('[data-testid="agent-entry"]')).toBeTruthy();
+  });
+  expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+    .toBe('/e/invite-1?source=email#accept');
+});
+
+test('clears a missing-profile session only after the server rejects its token', async () => {
+  localStorage.removeItem('oc_user');
+  const unauthorized = Object.assign(new Error('登录状态已失效'), { status: 401 });
+  mocks.getMe.mockRejectedValue(unauthorized);
+
+  await act(async () => {
+    root.render(<TinodeWeb location={{ pathname: '/e/invite-1', search: '', hash: '' }} />);
+  });
+
+  await vi.waitFor(() => {
+    expect(mocks.setToken).toHaveBeenCalledWith(null);
   });
 });

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api } from '../api';
+import { authApi } from '../auth-session';
 import { formatSharedAuthError } from '../utils/auth-error';
 import { isValidEmailFormat } from '../utils/email-format';
 
@@ -43,7 +43,7 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
     setError('');
     setStatus('');
     try {
-      await api.sendPasswordResetCode(trimmedEmail);
+      await authApi.sendPasswordResetCode(trimmedEmail);
       setCodeSent(true);
       setCountdown(60);
       setStatus('如果该邮箱已注册，验证码会发送到对应邮箱。请使用最新邮件中的验证码（旧验证码将失效）。');
@@ -77,7 +77,7 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
 
     setSubmitting(true);
     try {
-      await api.resetPassword({
+      await authApi.resetPassword({
         email: trimmedEmail,
         code: code.trim(),
         password,

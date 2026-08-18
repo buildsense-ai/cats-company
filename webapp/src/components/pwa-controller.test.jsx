@@ -3,8 +3,28 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-vi.mock('virtual:pwa-register', () => ({
-  registerSW: vi.fn(() => vi.fn()),
+const pwaRegistrationMocks = vi.hoisted(() => {
+  const state = {
+    refreshListener: null,
+    updateServiceWorker: vi.fn(),
+  };
+  return {
+    state,
+    getPwaUpdateServiceWorker: vi.fn(() => state.updateServiceWorker),
+    registerPwaServiceWorker: vi.fn(() => state.updateServiceWorker),
+    subscribeToPwaRefresh: vi.fn((listener) => {
+      state.refreshListener = listener;
+      return () => {
+        if (state.refreshListener === listener) state.refreshListener = null;
+      };
+    }),
+  };
+});
+
+vi.mock('../pwa-registration', () => ({
+  getPwaUpdateServiceWorker: pwaRegistrationMocks.getPwaUpdateServiceWorker,
+  registerPwaServiceWorker: pwaRegistrationMocks.registerPwaServiceWorker,
+  subscribeToPwaRefresh: pwaRegistrationMocks.subscribeToPwaRefresh,
 }));
 
 vi.mock('../api', () => ({
@@ -32,8 +52,8 @@ vi.mock('../utils/push-tab-coordination', () => ({
 }));
 
 import PwaController from './pwa-controller';
-import { registerSW } from 'virtual:pwa-register';
 import { api, setWSPushSubscriptionEndpoint } from '../api';
+import { registerPwaServiceWorker, subscribeToPwaRefresh } from '../pwa-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 
 let container;
@@ -57,6 +77,7 @@ beforeEach(() => {
     value: { request: vi.fn() },
   });
   api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
+  pwaRegistrationMocks.state.refreshListener = null;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -232,16 +253,14 @@ test('re-registers an active account when another tab hands off the browser subs
 
 test('activates a waiting service worker immediately so old upload routing cannot persist', async () => {
   renderController('user:1');
-  expect(registerSW).toHaveBeenCalledTimes(1);
+  expect(registerPwaServiceWorker).toHaveBeenCalledTimes(1);
+  expect(subscribeToPwaRefresh).toHaveBeenCalledTimes(1);
 
-  const registrationOptions = registerSW.mock.calls[0][0];
-  expect(registrationOptions.onOfflineReady).toBeUndefined();
-  const updateServiceWorker = registerSW.mock.results[0].value;
   await act(async () => {
-    registrationOptions.onNeedRefresh();
+    pwaRegistrationMocks.state.refreshListener();
     await Promise.resolve();
   });
 
-  expect(updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(pwaRegistrationMocks.state.updateServiceWorker).toHaveBeenCalledWith(true);
   expect(container.textContent).not.toContain('发现新版本');
 });

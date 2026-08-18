@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
-import { api, getToken, setToken } from '../api';
+import { authApi, getToken, isTokenExpired, setToken } from '../auth-session';
 import { InlineFeedback } from '../components/feedback-system';
 import AuthFlowBackground from '../components/auth-flow-background';
 import t from '../i18n';
@@ -109,7 +109,7 @@ export function AuthView({
       return;
     }
     try {
-      await api.sendVerificationCode(email);
+      await authApi.sendVerificationCode(email);
       setCodeSent(true);
       setCountdown(60);
       setError('');
@@ -123,6 +123,7 @@ export function AuthView({
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError('');
+    onAuthenticationIntent?.();
     try {
       if (mode === 'login') {
         await onLogin(username, password);
@@ -135,7 +136,7 @@ export function AuthView({
   };
 
   const authShell = (content) => (
-    <main className="oc-auth" onFocusCapture={onAuthenticationIntent}>
+    <main className="oc-auth">
       <AuthFlowBackground />
       {content}
     </main>
@@ -274,7 +275,7 @@ export default function AuthGateway({
 
   useEffect(() => {
     const redirectPath = authenticationRedirectPath({
-      authenticated: Boolean(getToken()),
+      authenticated: Boolean(getToken()) && !isTokenExpired(),
       location: { pathname, search, hash },
     });
     if (redirectPath) navigateBrowserPath(redirectPath, { replace: true });
@@ -285,7 +286,7 @@ export default function AuthGateway({
   };
 
   const handleLogin = async (account, password) => {
-    const response = await api.login({ account, password });
+    const response = await authApi.login({ account, password });
     if (!writeStoredUserProfile(response)) {
       throw new Error('登录响应缺少有效的用户资料');
     }
@@ -297,7 +298,7 @@ export default function AuthGateway({
     const username = loginName.trim();
     if (!username) throw new Error('请输入登录名称');
     if (username.length < 3) throw new Error('登录名称至少 3 个字符');
-    await api.register({ email, username, password, code });
+    await authApi.register({ email, username, password, code });
     await handleLogin(email, password);
   };
 

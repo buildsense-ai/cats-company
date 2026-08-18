@@ -121,4 +121,31 @@ describe('AuthView route links', () => {
     expect(container.querySelector('input[aria-label="邮箱验证码"]')?.getAttribute('autocomplete')).toBe('one-time-code');
     expect(container.querySelector('input[aria-label="设置密码（至少6位）"]')?.getAttribute('autocomplete')).toBe('new-password');
   });
+
+  test('preloads the workspace after form submission rather than ordinary input focus', async () => {
+    const onAuthenticationIntent = vi.fn();
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onAuthenticationIntent={onAuthenticationIntent}
+          onLogin={vi.fn().mockResolvedValue(undefined)}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('input[aria-label="用户名"]')?.focus();
+    });
+    expect(onAuthenticationIntent).not.toHaveBeenCalled();
+
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(onAuthenticationIntent).toHaveBeenCalledTimes(1);
+  });
 });
