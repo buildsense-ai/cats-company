@@ -126,6 +126,28 @@ test('recovers a valid session when its cached profile is missing', async () => 
   expect(mocks.setToken).not.toHaveBeenCalled();
 });
 
+test('recovers a valid session when caching the recovered profile fails', async () => {
+  localStorage.removeItem('oc_user');
+  const originalSetItem = Storage.prototype.setItem;
+  const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function setItem(key, value) {
+    if (key === 'oc_user') throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+    return originalSetItem.call(this, key, value);
+  });
+
+  try {
+    await act(async () => {
+      root.render(<TinodeWeb location={{ pathname: '/e/invite-1', search: '', hash: '' }} />);
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="agent-entry"]')).toBeTruthy();
+    });
+    expect(mocks.getMe).toHaveBeenCalled();
+  } finally {
+    setItemSpy.mockRestore();
+  }
+});
+
 test('keeps a deep link stable while a missing cached profile is recovered', async () => {
   localStorage.removeItem('oc_user');
   let resolveProfile;

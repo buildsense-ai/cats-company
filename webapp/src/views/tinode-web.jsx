@@ -470,8 +470,13 @@ function TinodeWebApp({ location }) {
 
 
   const persistUser = useCallback((nextUser) => {
-    const profile = writeStoredUserProfile(nextUser);
-    if (profile) setUser(profile);
+    const profile = normalizeUserProfile(nextUser);
+    if (!profile) return;
+
+    // Storage is only a cache. A valid server profile must still unblock this
+    // in-memory session when localStorage is full or unavailable.
+    writeStoredUserProfile(profile);
+    setUser(profile);
   }, []);
 
   useEffect(() => {
