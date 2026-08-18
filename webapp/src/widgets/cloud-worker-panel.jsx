@@ -51,6 +51,7 @@ export default function CloudWorkerPanel({
   quotaError,
   workers = [],
   images = [],
+  actions = null,
   actioning = null,
   showHostingSwitch = true,
   onCreate,
@@ -71,7 +72,12 @@ export default function CloudWorkerPanel({
   const [resetInputs, setResetInputs] = useState({});
   const [resetErrors, setResetErrors] = useState({});
 
-  const canCreate = Boolean(quota && quota.enabled && quota.remaining > 0);
+  // Missing action metadata means an older backend; preserve compatibility
+  // during a rolling web/server deployment. Explicit false always disables.
+  const actionAvailable = (action) => actions?.[action] !== false;
+  const canCreate = Boolean(
+    quota && quota.enabled && quota.remaining > 0 && actionAvailable('create'),
+  );
   const usedPct = quota && quota.total > 0
     ? Math.min(100, Math.round((quota.used / quota.total) * 100))
     : 0;
@@ -128,6 +134,8 @@ export default function CloudWorkerPanel({
 
   const quotaNote = quotaError ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端状态查询失败，请稍后重试</p>
+  ) : !actionAvailable('create') ? (
+    <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端创建服务尚未配置，请联系管理员</p>
   ) : (!quota || !quota.enabled) ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端部署当前未开放，请联系管理员开通</p>
   ) : (
@@ -224,7 +232,11 @@ export default function CloudWorkerPanel({
           </>
         ) : (
           <p className="cc-cloud-quota-err">
-            {quotaError ? '云端状态查询失败，暂时无法创建。' : '配额已用完或未开放，暂时无法继续创建。'}
+            {quotaError
+              ? '云端状态查询失败，暂时无法创建。'
+              : (!actionAvailable('create')
+                  ? '云端创建服务尚未配置，请联系管理员。'
+                  : '配额已用完或未开放，暂时无法继续创建。')}
           </p>
         )}
       </section>
@@ -249,6 +261,7 @@ export default function CloudWorkerPanel({
               const meta = statusMeta(worker.cloud_status);
               const acting = activeAction.name === worker.tenant_name;
               const actionName = acting ? activeAction.action : '';
+              const versionActionsAvailable = ['update', 'rollback', 'reset'].some(actionAvailable);
               return (
                 <div
                   key={worker.tenant_name || id}
@@ -293,7 +306,7 @@ export default function CloudWorkerPanel({
                       <select
                         className="cc-cloud-version-select"
                         value={versions[worker.tenant_name] || ''}
-                        disabled={hasActiveAction || imageVersions.length === 0}
+                        disabled={hasActiveAction || imageVersions.length === 0 || !versionActionsAvailable}
                         onChange={(e) => setVersions((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
                         title={imageVersions.length === 0 ? '暂无可用版本' : '更新、回滚或重置使用的目标版本'}
                       >
@@ -312,8 +325,8 @@ export default function CloudWorkerPanel({
                       type="button"
                       className="oc-btn oc-btn-primary"
                       onClick={() => onUpdate(worker, versions[worker.tenant_name] || '')}
-                      disabled={hasActiveAction || imageVersions.length === 0}
-                      title={imageVersions.length === 0 ? '暂无可用版本，无法更新' : '更新应用到所选版本，保留当前数据'}
+                      disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('update')}
+                      title={!actionAvailable('update') ? '云端更新服务尚未配置' : (imageVersions.length === 0 ? '暂无可用版本，无法更新' : '更新应用到所选版本，保留当前数据')}
                     >
                       {actionName === 'update' ? '更新中...' : <><ArrowUpCircle size={13} /> 更新</>}
                     </button>
@@ -322,8 +335,8 @@ export default function CloudWorkerPanel({
                       type="button"
                       className="oc-btn oc-btn-default"
                       onClick={() => onRollback(worker, versions[worker.tenant_name] || '', { fromPanel: true })}
-                      disabled={hasActiveAction || imageVersions.length === 0}
-                      title={imageVersions.length === 0 ? '暂无可用版本，无法回滚' : '回滚应用到所选版本，保留当前数据'}
+                      disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('rollback')}
+                      title={!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (imageVersions.length === 0 ? '暂无可用版本，无法回滚' : '回滚应用到所选版本，保留当前数据')}
                     >
                       {actionName === 'rollback' ? '回滚中...' : <><RotateCcw size={13} /> 回滚</>}
                     </button>
@@ -372,8 +385,8 @@ export default function CloudWorkerPanel({
                         type="button"
                         className="oc-btn oc-btn-default"
                         onClick={() => beginReset(worker.tenant_name)}
-                        disabled={hasActiveAction}
-                        title="重置：销毁实例并从所选镜像版本重建，所有数据丢失（需验证码）"
+                        disabled={hasActiveAction || !actionAvailable('reset')}
+                        title={!actionAvailable('reset') ? '云端重置服务尚未配置' : '重置：销毁实例并从所选镜像版本重建，所有数据丢失（需验证码）'}
                       >
                         {actionName === 'reset' ? '重置中...' : <><RefreshCw size={13} /> 重置</>}
                       </button>
@@ -383,8 +396,8 @@ export default function CloudWorkerPanel({
                       type="button"
                       className="oc-btn oc-btn-default cc-agent-card-delete"
                       onClick={() => onDelete(worker)}
-                      disabled={hasActiveAction}
-                      title="删除：销毁云端实例并删除该助手"
+                      disabled={hasActiveAction || !actionAvailable('delete')}
+                      title={!actionAvailable('delete') ? '云端删除服务尚未配置' : '删除：销毁云端实例并删除该助手'}
                     >
                       <Trash2 size={13} />
                     </button>
@@ -401,6 +414,12 @@ export default function CloudWorkerPanel({
           </div>
         )}
       </section>
+
+      {actions && Object.entries(actions).some(([, enabled]) => enabled === false) && (
+        <p className="cc-cloud-footnote">
+          <AlertCircle size={13} /> 部分云端管理功能暂不可用，已禁用对应按钮。
+        </p>
+      )}
 
       <p className="cc-cloud-footnote">
         <CheckCircle2 size={13} /> 更新与回滚只切换应用并保留数据；重置会按所选镜像重建并清空数据。

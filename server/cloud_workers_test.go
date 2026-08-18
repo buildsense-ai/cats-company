@@ -482,23 +482,31 @@ func TestCloudWorkerHandleCreateProvisionNotConfigured(t *testing.T) {
 	}
 }
 
-func TestCloudWorkerHandleRollbackResetNotConfigured(t *testing.T) {
+func TestCloudWorkerHandleActionsNotConfigured(t *testing.T) {
 	h, ts := newCloudWorkerTestHandler("7=5")
 	ts.ownerBots = []map[string]interface{}{
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 	}
 
-	for _, path := range []string{
-		"/api/cloud-workers/bot-bot-a/rollback",
-		"/api/cloud-workers/bot-bot-a/reset",
+	for _, tc := range []struct {
+		path string
+		code string
+	}{
+		{"/api/cloud-workers/bot-bot-a/update", "cloud_worker_update_unconfigured"},
+		{"/api/cloud-workers/bot-bot-a/rollback", "cloud_worker_rollback_unconfigured"},
+		{"/api/cloud-workers/bot-bot-a/reset", "cloud_worker_reset_unconfigured"},
 	} {
-		req := cloudWorkerRequest(7, http.MethodPost, path, nil)
+		req := cloudWorkerRequest(7, http.MethodPost, tc.path, nil)
 		rec := httptest.NewRecorder()
 		// route through HandleSub so PathValue gets set, like the mux does
 		h.HandleSub(rec, req)
 
 		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("%s status=%d want 503 body=%s", path, rec.Code, rec.Body.String())
+			t.Fatalf("%s status=%d want 503 body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+		out := decodeCloudWorkerList(t, rec)
+		if out["code"] != tc.code {
+			t.Fatalf("%s code=%v want %s", tc.path, out["code"], tc.code)
 		}
 	}
 }
@@ -572,6 +580,12 @@ func TestCloudWorkerHandleMetaQuota(t *testing.T) {
 	if _, ok := out["images"]; ok {
 		t.Fatalf("images should be absent when no images script configured, got %v", out["images"])
 	}
+	actions := out["actions"].(map[string]interface{})
+	for _, action := range []string{"create", "update", "rollback", "reset", "delete"} {
+		if actions[action] != false {
+			t.Fatalf("actions[%q]=%v want false", action, actions[action])
+		}
+	}
 }
 
 func TestCloudWorkerHandleMetaWithImagesScript(t *testing.T) {
@@ -605,6 +619,31 @@ func TestCloudWorkerHandleMetaWithImagesScript(t *testing.T) {
 	}
 	if first["version"] != "v1.4.8" {
 		t.Fatalf("version=%v", first["version"])
+	}
+}
+
+func TestCloudWorkerHandleMetaReportsConfiguredActions(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=3", map[string]string{
+		"provision": writeWorkerOpScript(t, "ok"),
+		"update":    writeWorkerOpScript(t, "ok"),
+		"destroy":   writeWorkerOpScript(t, "ok"),
+	})
+	h, _ := newCloudWorkerTestHandlerCfg(cfg)
+	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers/meta", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	actions := out["actions"].(map[string]interface{})
+	for action, want := range map[string]bool{
+		"create": true, "update": true, "rollback": false, "reset": false, "delete": true,
+	} {
+		if actions[action] != want {
+			t.Fatalf("actions[%q]=%v want %v", action, actions[action], want)
+		}
 	}
 }
 
@@ -1056,6 +1095,9 @@ func TestCloudWorkerHandleDelete(t *testing.T) {
 	h2.HandleSub(rec2, req2)
 	if rec2.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no-destroy status=%d want 503 body=%s", rec2.Code, rec2.Body.String())
+	}
+	if out := decodeCloudWorkerList(t, rec2); out["code"] != "cloud_worker_delete_unconfigured" {
+		t.Fatalf("no-destroy code=%v want cloud_worker_delete_unconfigured", out["code"])
 	}
 	if len(ts2.deletedBots) != 0 {
 		t.Fatalf("deletedBots=%v want 0 (fail closed)", ts2.deletedBots)

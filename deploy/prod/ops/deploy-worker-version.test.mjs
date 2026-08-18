@@ -54,6 +54,10 @@ const command = args.slice(remoteIndex + 1).join(" ");
 const state = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, "utf8"));
 state.sshCalls = state.sshCalls || [];
 state.sshCalls.push(command);
+if (command.includes("readlink -f /opt/catsco/current") && command.includes("systemctl is-active --quiet")) {
+  fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
+  process.exit(state.currentRelease ? 0 : 1);
+}
 if (command.includes("test -f") && command.includes("worker-release.json")) {
   fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
   process.exit(state.localRelease ? 0 : 1);
@@ -213,6 +217,17 @@ test("deploy-worker-version: reuses an existing worker-local release", () => {
   assert.match(result.stdout, /reused-local-release/);
   const state = readState(sb);
   assert.equal(state.localActivations, 1);
+  assert.equal(state.artifactDownloads || 0, 0);
+  assert.equal(state.scpCalls || 0, 0);
+});
+
+test("deploy-worker-version: current active release is a no-op", () => {
+  const sb = setupSandbox({ currentRelease: true, localRelease: true });
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /already-current/);
+  const state = readState(sb);
+  assert.equal(state.localActivations || 0, 0, "same version must not restart the service");
   assert.equal(state.artifactDownloads || 0, 0);
   assert.equal(state.scpCalls || 0, 0);
 });

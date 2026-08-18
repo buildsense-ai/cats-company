@@ -370,6 +370,34 @@ describe('CloudWorkerPanel', () => {
     expect(select.disabled).toBe(true);
   });
 
+  test('disables only cloud actions explicitly reported as unavailable', async () => {
+    await renderPanel({
+      workers: [worker()],
+      images: [{ version: '1.4.9' }],
+      actions: {
+        create: false,
+        update: false,
+        rollback: true,
+        reset: false,
+        delete: false,
+      },
+    });
+
+    expect(container.textContent).toContain('云端创建服务尚未配置');
+    expect(container.textContent).toContain('部分云端管理功能暂不可用');
+    const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
+    const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
+    const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
+    const deleteBtn = buttons[buttons.length - 1];
+    expect(updateBtn.disabled).toBe(true);
+    expect(updateBtn.title).toContain('尚未配置');
+    expect(rollbackBtn.disabled).toBe(false);
+    expect(resetBtn.disabled).toBe(true);
+    expect(deleteBtn.disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-version-select').disabled).toBe(false);
+  });
+
   test('disables worker actions while the worker is being acted on', async () => {
     await renderPanel({
       workers: [worker()],
