@@ -140,12 +140,18 @@ export function describeModelConfigRequestError(error, action = '切换') {
     return '该模型或推理强度暂不受支持，请刷新列表后重试。';
   }
   if (status === 401) return '登录状态已失效，请重新登录后再管理模型。';
+  if (status === 403 && error?.data?.code === 'model_not_in_plan') {
+    return '当前套餐未包含该模型，请选择套餐内模型或使用自定义模型。';
+  }
   if (status === 403) return '只有机器人创建者可以切换模型，请确认当前登录账号。';
   if (status === 404) return '没有找到这个机器人，它可能已被删除或解绑。';
   if (status === 409) return '机器人配置刚刚发生变化，请重新打开列表后再试。';
   if (status === 429) return '操作过于频繁，请稍等片刻再切换。';
   if (status === 503 && /encrypt|密钥加密|custom model/i.test(detail)) {
     return '云端自定义模型尚未启用安全密钥存储，请联系管理员完成配置。';
+  }
+  if (status === 503 && error?.data?.code === 'model_entitlement_unavailable') {
+    return '套餐额度暂时无法确认，当前模型不会改变，请稍后重试。';
   }
   if (status >= 500) return '模型配置服务暂时不可用，当前模型不会改变，请稍后重试。';
   if (action === '加载') return '模型列表加载失败，请稍后重试。';
@@ -536,7 +542,8 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
               </button>
               {(modelConfig?.models || []).map((model) => {
                 const efforts = model.reasoning_efforts || [];
-                const hasReasoning = efforts.length > 0;
+                const available = model.available !== false;
+                const hasReasoning = available && efforts.length > 0;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
                 const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
 
@@ -549,18 +556,22 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                   >
                     <button
                       type="button"
-                      className={`v3-model-menu-item ${selected ? 'selected' : ''}`}
+                      className={`v3-model-menu-item ${selected ? 'selected' : ''} ${available ? '' : 'unavailable'}`.trim()}
                       role="menuitem"
                       aria-haspopup={hasReasoning ? 'menu' : undefined}
                       aria-expanded={hasReasoning ? expandedModelID === model.id : undefined}
                       onFocus={() => hasReasoning && setExpandedModelID(model.id)}
-                      onClick={() => hasReasoning ? setExpandedModelID(model.id) : saveCatalogSelection(model.id)}
-                      disabled={transitioning}
+                      onClick={() => hasReasoning ? setExpandedModelID(model.id) : available && saveCatalogSelection(model.id)}
+                      disabled={transitioning || !available}
                     >
                       <span>
                         <strong>{model.label}</strong>
                         <small>{[contextWindow ? `上下文 ${contextWindow}` : '', model.description].filter(Boolean).join(' · ')}</small>
-                        <small className={`v3-model-menu-quota ${modelQuotaTone(model.quota)}`.trim()}>{modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)}</small>
+                        <small className={`v3-model-menu-quota ${available ? modelQuotaTone(model.quota) : 'muted'}`.trim()}>
+                          {available
+                            ? modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)
+                            : model.unavailable_reason || '当前套餐暂不可用'}
+                        </small>
                       </span>
                       {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}
                     </button>

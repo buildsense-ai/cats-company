@@ -155,6 +155,11 @@
   color: #dc2626;
 }
 
+.v3-model-menu-item .v3-model-menu-quota.muted {
+  color: var(--cc-muted);
+  font-weight: 500;
+}
+
 [data-theme='dark'] .v3-model-menu-item .v3-model-menu-quota {
   color: #a7f3d0;
 }
@@ -165,6 +170,10 @@
 
 [data-theme='dark'] .v3-model-menu-item .v3-model-menu-quota.danger {
   color: #fecaca;
+}
+
+[data-theme='dark'] .v3-model-menu-item .v3-model-menu-quota.muted {
+  color: var(--cc-muted);
 }
 
 .v3-model-menu-item:hover,
@@ -190,6 +199,11 @@
 .v3-model-reasoning-item:disabled {
   cursor: wait;
   opacity: 0.62;
+}
+
+.v3-model-menu-item.unavailable:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .v3-model-reasoning-menu {
