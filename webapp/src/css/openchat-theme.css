@@ -6235,7 +6235,7 @@ button.catsco-download-action:disabled {
 .oc-plain-text-paragraphs {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .oc-plain-text-paragraph {
   margin: 0;
