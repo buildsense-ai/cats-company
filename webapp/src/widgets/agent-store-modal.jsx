@@ -291,7 +291,7 @@ const mergeCloudWorkerFacts = (bots, workers) => {
     return {
       ...bot,
       cloud_status: cloudStatus,
-      app_version: cloud.app_version,
+      app_version: cloud.app_version || bot.app_version,
       cloud_version: cloud.cloud_version || cloud.version,
       cloud_image_id: cloud.cloud_image_id || cloud.image_id,
     };
