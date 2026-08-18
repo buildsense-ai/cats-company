@@ -8,7 +8,7 @@ import (
 
 func isUserVisibleMessageType(displayType string) bool {
 	switch strings.ToLower(strings.TrimSpace(displayType)) {
-	case "text", "image", "voice", "audio", "file", "video":
+	case "text", "image", "voice", "file", "video":
 		return true
 	default:
 		return false
@@ -35,7 +35,7 @@ func isInternalAgentWorkingMessage(displayType string, content interface{}, bloc
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(block.Type)) {
-		case "text", "assistant_text", "image", "voice", "audio", "file", "video":
+		case "text", "assistant_text", "image", "voice", "file", "video":
 			hasUserVisibleBlock = true
 		}
 	}

@@ -97,6 +97,7 @@ function artifactBindingMatchesFocus(binding, focus) {
     && String(binding.url || '') === focus.url);
 }
 const MAX_CONVERSATION_SHARE_MESSAGES = 50;
+const MAX_CONVERSATION_SHARE_LINK_MESSAGES = 100;
 
 function isShareableTranscriptMessage(message) {
   if (!message || message._streaming || historyMessageID(message) <= 0) return false;
@@ -104,6 +105,18 @@ function isShareableTranscriptMessage(message) {
   if (WORKING_MESSAGE_TYPES.has(type)) return false;
   return !['runtime_plan', 'debug', 'stream_delta', 'stream_cancel', 'task_status'].includes(type)
     && message._display_text_role !== 'process';
+}
+
+export function conversationShareSelectedMessageIDs(candidates, selectedKeys) {
+  const keys = new Set(Array.isArray(selectedKeys) ? selectedKeys : []);
+  const messageIDs = new Set();
+  (Array.isArray(candidates) ? candidates : []).forEach((candidate) => {
+    if (!candidate?.key || !keys.has(candidate.key)) return;
+    (Array.isArray(candidate.messageIDs) ? candidate.messageIDs : []).forEach((messageID) => {
+      if (Number.isSafeInteger(messageID) && messageID > 0) messageIDs.add(messageID);
+    });
+  });
+  return Array.from(messageIDs);
 }
 
 function questionNavigationKey(message, index) {
@@ -379,6 +392,7 @@ export default function MessagesView({
   const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
   const [conversationShareError, setConversationShareError] = useState('');
   const [conversationLinkShareReviewOpen, setConversationLinkShareReviewOpen] = useState(false);
+  const [conversationLinkShareReviewMode, setConversationLinkShareReviewMode] = useState('create');
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const bottomRef = useRef(null);
@@ -2856,13 +2870,9 @@ export default function MessagesView({
   const selectedConversationShareItems = useMemo(() => (
     conversationShareCandidates.filter((candidate) => conversationShareSelectedKeys.includes(candidate.key))
   ), [conversationShareCandidates, conversationShareSelectedKeys]);
-  const selectedConversationShareMessageIDs = useMemo(() => {
-    const selectedIDs = new Set();
-    selectedConversationShareItems.forEach((candidate) => {
-      candidate.messageIDs.forEach((messageID) => selectedIDs.add(messageID));
-    });
-    return Array.from(selectedIDs);
-  }, [selectedConversationShareItems]);
+  const selectedConversationShareMessageIDs = useMemo(() => (
+    conversationShareSelectedMessageIDs(conversationShareCandidates, conversationShareSelectedKeys)
+  ), [conversationShareCandidates, conversationShareSelectedKeys]);
   const canOpenConversationShare = historyLoaded && (messages.length > 0 || !historyError);
 
   const resetConversationSharePreview = useCallback(() => {
@@ -2877,6 +2887,7 @@ export default function MessagesView({
     resetConversationSharePreview();
     setConversationShareError('');
     setConversationLinkShareReviewOpen(false);
+    setConversationLinkShareReviewMode('create');
   }, [resetConversationSharePreview]);
 
   const closeConversationShare = useCallback(() => {
@@ -2885,6 +2896,11 @@ export default function MessagesView({
 
   const startConversationShareFromMessage = useCallback((candidate) => {
     if (!candidate?.key) return;
+    if (conversationShareSelectedMessageIDs([candidate], [candidate.key]).length > MAX_CONVERSATION_SHARE_LINK_MESSAGES) {
+      transitionConversationShare({ mode: true });
+      setConversationShareError(`只读链接最多选择 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息。`);
+      return;
+    }
     transitionConversationShare({
       mode: true,
       selectedKeys: [candidate.key],
@@ -2903,13 +2919,18 @@ export default function MessagesView({
         return current.filter((key) => key !== candidate.key);
       }
       if (current.length >= MAX_CONVERSATION_SHARE_MESSAGES) {
-        setConversationShareError(`一次最多选择 ${MAX_CONVERSATION_SHARE_MESSAGES} 条消息。`);
+        setConversationShareError(`分享图最多选择 ${MAX_CONVERSATION_SHARE_MESSAGES} 个展示项。`);
+        return current;
+      }
+      const next = [...current, candidate.key];
+      if (conversationShareSelectedMessageIDs(conversationShareCandidates, next).length > MAX_CONVERSATION_SHARE_LINK_MESSAGES) {
+        setConversationShareError(`只读链接最多选择 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息。`);
         return current;
       }
       setConversationShareError('');
-      return [...current, candidate.key];
+      return next;
     });
-  }, []);
+  }, [conversationShareCandidates]);
 
   const generateConversationShareImage = useCallback(async () => {
     if (selectedConversationShareItems.length === 0) {
@@ -3300,7 +3321,7 @@ export default function MessagesView({
                     <span className="cc-conversation-share-toolbar-icon" aria-hidden="true"><CheckSquare size={18} /></span>
                     <div>
                       <strong>选择要分享的消息</strong>
-                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareMessageIDs.length} 条，可生成分享图或创建只读链接` : '没有可分享的消息'}</span>
+                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareMessageIDs.length} 条消息（${selectedConversationShareItems.length} 个展示项），分享图最多 ${MAX_CONVERSATION_SHARE_MESSAGES} 个展示项，只读链接最多 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息` : '没有可分享的消息'}</span>
                     </div>
                   </div>
                   <div className="cc-conversation-share-toolbar-actions">
@@ -3311,10 +3332,24 @@ export default function MessagesView({
                       type="button"
                       className="cc-conversation-share-secondary"
                       disabled={!canOpenConversationShare || selectedConversationShareMessageIDs.length === 0}
-                      onClick={() => setConversationLinkShareReviewOpen(true)}
+                      onClick={() => {
+                        setConversationLinkShareReviewMode('create');
+                        setConversationLinkShareReviewOpen(true);
+                      }}
                     >
                       <Link2 size={16} aria-hidden="true" />
                       创建链接
+                    </button>
+                    <button
+                      type="button"
+                      className="cc-conversation-share-secondary"
+                      onClick={() => {
+                        setConversationLinkShareReviewMode('manage');
+                        setConversationLinkShareReviewOpen(true);
+                      }}
+                    >
+                      <Link2 size={16} aria-hidden="true" />
+                      管理链接
                     </button>
                     <button
                       ref={conversationShareGenerateButtonRef}
@@ -3339,6 +3374,7 @@ export default function MessagesView({
                 <ConversationShareReview
                   topicId={topic}
                   messageIds={selectedConversationShareMessageIDs}
+                  mode={conversationLinkShareReviewMode}
                   onClose={() => setConversationLinkShareReviewOpen(false)}
                   onComplete={closeConversationShare}
                 />

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -28,11 +30,15 @@ const (
 	conversationShareMinTTL     = time.Hour
 	conversationShareMaxTTL     = 30 * 24 * time.Hour
 	conversationShareMaxItems   = 100
-	conversationShareMaxAsset   = 64 << 20
-	conversationShareMaxAssets  = 128 << 20
+	// A share is a snapshot of already accepted uploads, so it must not impose
+	// a smaller limit than the normal upload path.
+	conversationShareMaxAsset     = maxFileSize
+	conversationShareMaxAssets    = maxFileSize
+	conversationShareCleanupEvery = time.Hour
 )
 
 var conversationShareUploadKeyPattern = regexp.MustCompile(`^\d{8}_[a-f0-9]{32}\.[a-z0-9]+$`)
+var conversationShareIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 // ConversationShareHandler creates immutable, deliberately limited excerpts
 // from authenticated conversations and serves them to holders of a capability
@@ -43,6 +49,7 @@ type ConversationShareHandler struct {
 	uploadRoot string
 	assetRoot  string
 	now        func() time.Time
+	assetMu    sync.Mutex
 }
 
 func NewConversationShareHandler(db store.Store, hub *Hub, uploadRoot, assetRoot string) *ConversationShareHandler {
@@ -70,6 +77,18 @@ type conversationShareSnapshot struct {
 	ContentBlocks []types.ContentBlock `json:"content_blocks,omitempty"`
 }
 
+// conversationShareOwnerSummary deliberately omits the capability token and
+// source topic metadata. It is only used to let an authenticated owner revoke
+// a previously-created link from the originating conversation.
+type conversationShareOwnerSummary struct {
+	ID        string     `json:"id"`
+	Title     string     `json:"title"`
+	State     string     `json:"state"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+}
+
 // HandleAuthenticated owns the creation and revocation side of a share. It is
 // mounted behind JWT auth; the handler still verifies the context uid so tests
 // and future routes fail closed.
@@ -79,12 +98,15 @@ func (h *ConversationShareHandler) HandleAuthenticated(w http.ResponseWriter, r 
 		return
 	}
 	if r.URL.Path == "/api/conversation-shares" {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
+		switch r.Method {
+		case http.MethodGet:
+			h.handleList(w, r)
+		case http.MethodPost:
+			h.handleCreate(w, r)
+		default:
+			w.Header().Set("Allow", "GET, POST")
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
 		}
-		h.handleCreate(w, r)
 		return
 	}
 
@@ -117,7 +139,7 @@ func (h *ConversationShareHandler) handleCreate(w http.ResponseWriter, r *http.R
 	}
 	req.TopicID = strings.TrimSpace(req.TopicID)
 	req.Title = strings.TrimSpace(req.Title)
-	if req.TopicID == "" || len(req.TopicID) > 128 {
+	if req.TopicID == "" || len(req.TopicID) > 64 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid topic_id required"})
 		return
 	}
@@ -228,6 +250,11 @@ func (h *ConversationShareHandler) handleCreate(w http.ResponseWriter, r *http.R
 		CreatedAt: now,
 	}
 
+	// Keep a freshly-created directory out of a concurrent cleanup pass until
+	// its matching database record has been committed.
+	h.assetMu.Lock()
+	defer h.assetMu.Unlock()
+
 	items := make([]*store.ConversationShareItem, 0, len(messages))
 	assets := make([]*store.ConversationShareAsset, 0)
 	createdAssetPaths := make([]string, 0)
@@ -276,6 +303,49 @@ func (h *ConversationShareHandler) handleCreate(w http.ResponseWriter, r *http.R
 	})
 }
 
+func (h *ConversationShareHandler) handleList(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+	if uid <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
+	topicID := strings.TrimSpace(r.URL.Query().Get("topic_id"))
+	if topicID == "" || len(topicID) > 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid topic_id required"})
+		return
+	}
+	shareStore, ok := h.db.(store.ConversationShareStore)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "conversation sharing is unavailable"})
+		return
+	}
+	shares, err := shareStore.ListConversationShares(uid, topicID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load shares"})
+		return
+	}
+	now := h.clockNow()
+	response := make([]conversationShareOwnerSummary, 0, len(shares))
+	for _, share := range shares {
+		if share == nil {
+			continue
+		}
+		state := string(share.State)
+		if share.State == store.ConversationShareStateActive && !conversationShareIsActive(share, now) {
+			state = "expired"
+		}
+		response = append(response, conversationShareOwnerSummary{
+			ID:        share.ID,
+			Title:     share.Title,
+			State:     state,
+			ExpiresAt: share.ExpiresAt,
+			CreatedAt: share.CreatedAt,
+			RevokedAt: share.RevokedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"shares": response})
+}
+
 func (h *ConversationShareHandler) handleRevoke(w http.ResponseWriter, r *http.Request, shareID string) {
 	uid := UIDFromContext(r.Context())
 	if uid <= 0 {
@@ -296,7 +366,65 @@ func (h *ConversationShareHandler) handleRevoke(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share not found"})
 		return
 	}
+	h.assetMu.Lock()
+	defer h.assetMu.Unlock()
+	h.removeShareAssetDirectory(shareID)
 	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+}
+
+// StartAssetCleanup removes copied files that can no longer be reached through
+// a share: explicit revocations, expiry, and DB-level cascade deletion all
+// converge on the same safe directory sweep. A database error retains files
+// for the next pass rather than deleting a possibly active share.
+func (h *ConversationShareHandler) StartAssetCleanup(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.cleanupInactiveAssetDirectories()
+	go func() {
+		ticker := time.NewTicker(conversationShareCleanupEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.cleanupInactiveAssetDirectories()
+			}
+		}
+	}()
+}
+
+func (h *ConversationShareHandler) cleanupInactiveAssetDirectories() {
+	if h == nil || strings.TrimSpace(h.assetRoot) == "" {
+		return
+	}
+	shareStore, ok := h.db.(store.ConversationShareStore)
+	if !ok {
+		return
+	}
+	h.assetMu.Lock()
+	defer h.assetMu.Unlock()
+	entries, err := os.ReadDir(h.assetRoot)
+	if err != nil {
+		return
+	}
+	now := h.clockNow()
+	for _, entry := range entries {
+		if !entry.IsDir() || !conversationShareIDPattern.MatchString(entry.Name()) {
+			continue
+		}
+		share, err := shareStore.GetConversationShareByID(entry.Name())
+		if err != nil {
+			continue
+		}
+		if !conversationShareIsActive(share, now) {
+			h.removeShareAssetDirectory(entry.Name())
+		}
+	}
 }
 
 // HandlePublic only accepts the capability token route. It intentionally has
@@ -449,7 +577,7 @@ func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID 
 		return conversationShareSnapshot{}, nil, nil, fmt.Errorf("selected message is unavailable")
 	}
 	displayType := inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks)
-	if !isUserVisibleMessageType(displayType) || isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks) {
+	if !isConversationShareableMessageType(displayType) || conversationShareIsInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks) {
 		return conversationShareSnapshot{}, nil, nil, fmt.Errorf("a selected message cannot be shared")
 	}
 	snapshot := conversationShareSnapshot{
@@ -460,19 +588,23 @@ func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID 
 		createdAt := message.CreatedAt.UTC()
 		snapshot.CreatedAt = &createdAt
 	}
+	plainText := conversationSharePlainText(decodeStoredContent(message.Content))
 	blocks := append([]types.ContentBlock(nil), message.ContentBlocks...)
 	if len(blocks) == 0 {
-		if displayType == "text" {
-			if text := conversationSharePlainText(decodeStoredContent(message.Content)); text != "" {
-				snapshot.Content = text
+		if displayType != "text" {
+			if block, ok := conversationShareRichBlock(message); ok {
+				blocks = append(blocks, block)
 			}
-		} else if block, ok := conversationShareRichBlock(message); ok {
-			blocks = append(blocks, block)
+		} else if plainText == "" {
+			if block, ok := conversationShareRichBlock(message); ok {
+				blocks = append(blocks, block)
+			}
 		}
 	}
 
 	assets := make([]*store.ConversationShareAsset, 0)
 	paths := make([]string, 0)
+	hasTextBlock := false
 	for _, block := range blocks {
 		sanitized, asset, assetPath, err := h.sanitizeSnapshotBlock(shareID, itemID, block, remainingAssets-assetsSize(assets))
 		if err != nil {
@@ -481,16 +613,63 @@ func (h *ConversationShareHandler) makeSnapshot(ownerUID int64, shareID, itemID 
 		if sanitized == nil {
 			continue
 		}
+		if sanitized.Type == "text" {
+			hasTextBlock = true
+		}
 		snapshot.ContentBlocks = append(snapshot.ContentBlocks, *sanitized)
 		if asset != nil {
 			assets = append(assets, asset)
 			paths = append(paths, assetPath)
 		}
 	}
+	if !hasTextBlock {
+		snapshot.Content = plainText
+	}
 	if snapshot.Content == "" && len(snapshot.ContentBlocks) == 0 {
 		return conversationShareSnapshot{}, nil, paths, fmt.Errorf("a selected message has no shareable content")
 	}
 	return snapshot, assets, paths, nil
+}
+
+func isConversationShareableMessageType(displayType string) bool {
+	return isUserVisibleMessageType(displayType) || strings.EqualFold(strings.TrimSpace(displayType), "audio")
+}
+
+// Conversation sharing may preserve an audio block without changing the
+// visibility rules used by ordinary message delivery and durable agent context.
+func conversationShareIsInternalAgentWorkingMessage(displayType string, content interface{}, blocks []types.ContentBlock) bool {
+	switch strings.ToLower(strings.TrimSpace(displayType)) {
+	case "runtime_plan", "thinking", "tool_use", "tool_result", "debug",
+		"stream_delta", "stream_cancel", taskStatusType:
+		return true
+	}
+
+	text := strings.TrimSpace(normalizeContentText(content))
+	if strings.HasPrefix(text, "AI文本:") || strings.HasPrefix(text, "AI文本：") {
+		return true
+	}
+
+	hasInternalBlock := false
+	hasShareableBlock := false
+	for _, block := range blocks {
+		if isInternalAgentContentBlock(block.Type) {
+			hasInternalBlock = true
+			continue
+		}
+		if isConversationShareableContentBlock(block.Type) {
+			hasShareableBlock = true
+		}
+	}
+	return hasInternalBlock && !hasShareableBlock
+}
+
+func isConversationShareableContentBlock(blockType string) bool {
+	switch strings.ToLower(strings.TrimSpace(blockType)) {
+	case "text", "assistant_text", "image", "voice", "audio", "file", "video":
+		return true
+	default:
+		return false
+	}
 }
 
 func conversationSharePlainText(content interface{}) string {
@@ -708,6 +887,17 @@ func (h *ConversationShareHandler) removeCreatedAssets(paths []string) {
 	}
 }
 
+func (h *ConversationShareHandler) removeShareAssetDirectory(shareID string) {
+	if h == nil || !conversationShareIDPattern.MatchString(shareID) {
+		return
+	}
+	path, ok := h.assetPath(shareID)
+	if !ok {
+		return
+	}
+	_ = os.RemoveAll(path)
+}
+
 func conversationSharePayloadString(payload map[string]interface{}, key string) string {
 	if payload == nil {
 		return ""
@@ -812,6 +1002,9 @@ func conversationShareTokenHash(token string) string {
 }
 
 func conversationShareURL(r *http.Request, token string) string {
+	if base := conversationShareConfiguredPublicBaseURL(); base != "" {
+		return base + "/share/" + url.PathEscape(token)
+	}
 	if r == nil {
 		return "/share/" + url.PathEscape(token)
 	}
@@ -830,6 +1023,17 @@ func conversationShareURL(r *http.Request, token string) string {
 		return "/share/" + url.PathEscape(token)
 	}
 	return scheme + "://" + host + "/share/" + url.PathEscape(token)
+}
+
+func conversationShareConfiguredPublicBaseURL() string {
+	parsed, err := url.Parse(strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL")))
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ""
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return ""
+	}
+	return strings.TrimRight(parsed.String(), "/")
 }
 
 func conversationShareAssetURL(token, assetID string) string {

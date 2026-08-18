@@ -2,6 +2,7 @@ import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, Link2, MoreHorizontal } from 'lucide-react';
 import t from '../i18n';
+import { copyTextToClipboard } from '../utils/clipboard';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
 import { canDragChatAttachment, clearChatAttachmentDrag, writeChatAttachmentDrag } from '../chat-attachment-drag';
@@ -254,23 +255,6 @@ function buildMessageCopyText(content, renderedTextContent, richBlocks, parsed) 
     if (content != null) return JSON.stringify(content);
   }
   return parts.join('\n\n');
-}
-
-async function copyTextToClipboard(text) {
-  if (!text) return;
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  document.body.appendChild(textarea);
-  textarea.select();
-  document.execCommand('copy');
-  document.body.removeChild(textarea);
 }
 
 function groupBlocks(messages) {
@@ -944,7 +928,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   }, [effectiveWorkingMessages, storedBlocks]);
   const workingPlanComplete = isPlanComplete(latestWorkingPlan(workingBlocks));
   const richBlocks = useMemo(() => (
-    storedBlocks.filter((block) => ['image', 'file', 'audio', 'voice'].includes(block.type))
+    storedBlocks.filter((block) => ['image', 'file', 'audio', 'voice', 'video'].includes(block.type))
   ), [storedBlocks]);
   const storedTextBlocks = useMemo(() => (
     storedBlocks.filter(
@@ -1571,6 +1555,8 @@ function RichContent({ content, onPreviewFile, activePreviewFile }) {
   switch (content.type) {
     case 'image':
       return <ImageContent payload={content.payload} />;
+    case 'video':
+      return <VideoContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
     case 'file':
     case 'audio':
     case 'voice':

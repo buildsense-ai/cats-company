@@ -3214,4 +3214,34 @@ describe('ChatMessage rich file rendering', () => {
     expect(previewButton.disabled).toBe(true);
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1');
   });
+
+  it('renders a capability-scoped video content block with the existing video preview', async () => {
+    const url = '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 'shared-video',
+            from_uid: 2,
+            content: '',
+            content_blocks: [{
+              type: 'video',
+              payload: {
+                name: 'shared-demo.mp4',
+                url,
+                mime_type: 'video/mp4',
+              },
+            }],
+            created_at: '2026-08-17T08:30:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const thumbnail = container.querySelector('video.oc-rich-video-thumb');
+    expect(thumbnail).not.toBeNull();
+    expect(thumbnail.getAttribute('src')).toBe(url);
+    expect(container.querySelector('.v3-message')).not.toBeNull();
+  });
 });

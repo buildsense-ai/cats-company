@@ -63,6 +63,20 @@ func (s *conversationShareTestStore) GetConversationShareByTokenHash(tokenHash s
 	return nil, nil
 }
 
+func (s *conversationShareTestStore) GetConversationShareByID(shareID string) (*store.ConversationShare, error) {
+	return s.shares[shareID], nil
+}
+
+func (s *conversationShareTestStore) ListConversationShares(ownerUID int64, topicID string) ([]*store.ConversationShare, error) {
+	shares := make([]*store.ConversationShare, 0)
+	for _, share := range s.shares {
+		if share != nil && share.OwnerUID == ownerUID && share.TopicID == topicID {
+			shares = append(shares, share)
+		}
+	}
+	return shares, nil
+}
+
 func (s *conversationShareTestStore) GetConversationShareItems(shareID string) ([]*store.ConversationShareItem, error) {
 	return append([]*store.ConversationShareItem(nil), s.items[shareID]...), nil
 }
@@ -95,6 +109,104 @@ func TestConversationSharePlainTextDoesNotSerializeMessageMetadata(t *testing.T)
 		"device_context": "must not be exported",
 	}); got != "" {
 		t.Fatalf("metadata-only content = %q, want empty", got)
+	}
+}
+
+func TestConversationShareSnapshotPreservesLegacyTextAlongsideAttachment(t *testing.T) {
+	sourceRoot := t.TempDir()
+	shareRoot := t.TempDir()
+	const fileKey = "20260817_0123456789abcdef0123456789abcdef.png"
+	sourcePath := filepath.Join(sourceRoot, "images", fileKey)
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create image directory: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("legacy image"), 0o644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	handler := NewConversationShareHandler(&conversationShareTestStore{}, nil, sourceRoot, shareRoot)
+	snapshot, assets, _, err := handler.makeSnapshot(
+		7,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		&types.Message{
+			ID:      101,
+			TopicID: "p2p_7_99",
+			FromUID: 7,
+			Content: "旧格式正文仍应保留",
+			MsgType: "text",
+			ContentBlocks: []types.ContentBlock{{
+				Type: "image",
+				Payload: map[string]interface{}{
+					"name": "legacy.png",
+					"url":  "/uploads/images/" + fileKey,
+				},
+			}},
+		},
+		conversationShareMaxAssets,
+	)
+	if err != nil {
+		t.Fatalf("make snapshot: %v", err)
+	}
+	if snapshot.Content != "旧格式正文仍应保留" {
+		t.Fatalf("snapshot content = %q", snapshot.Content)
+	}
+	if len(snapshot.ContentBlocks) != 1 || snapshot.ContentBlocks[0].Type != "image" {
+		t.Fatalf("snapshot blocks = %#v", snapshot.ContentBlocks)
+	}
+	if len(assets) != 1 {
+		t.Fatalf("asset count = %d, want 1", len(assets))
+	}
+}
+
+func TestConversationShareSnapshotsAudioWithoutChangingOrdinaryVisibility(t *testing.T) {
+	sourceRoot := t.TempDir()
+	shareRoot := t.TempDir()
+	const fileKey = "20260817_0123456789abcdef0123456789abcdef.ogg"
+	sourcePath := filepath.Join(sourceRoot, "files", fileKey)
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create audio directory: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("audio snapshot"), 0o644); err != nil {
+		t.Fatalf("write audio fixture: %v", err)
+	}
+
+	if isUserVisibleMessageType("audio") {
+		t.Fatal("audio must remain outside ordinary message visibility")
+	}
+	if isDurableAgentContextMessage(&types.Message{}, "audio") {
+		t.Fatal("audio must remain outside durable agent context")
+	}
+
+	handler := NewConversationShareHandler(&conversationShareTestStore{}, nil, sourceRoot, shareRoot)
+	snapshot, assets, _, err := handler.makeSnapshot(
+		7,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		&types.Message{
+			ID:      102,
+			TopicID: "p2p_7_99",
+			FromUID: 7,
+			MsgType: "audio",
+			ContentBlocks: []types.ContentBlock{{
+				Type: "audio",
+				Payload: map[string]interface{}{
+					"name":      "voice.ogg",
+					"mime_type": "audio/ogg",
+					"url":       "/uploads/files/" + fileKey,
+				},
+			}},
+		},
+		conversationShareMaxAssets,
+	)
+	if err != nil {
+		t.Fatalf("make audio snapshot: %v", err)
+	}
+	if len(snapshot.ContentBlocks) != 1 || snapshot.ContentBlocks[0].Type != "audio" {
+		t.Fatalf("snapshot blocks = %#v", snapshot.ContentBlocks)
+	}
+	if len(assets) != 1 || assets[0].Kind != "audio" {
+		t.Fatalf("snapshot assets = %#v", assets)
 	}
 }
 
@@ -218,10 +330,84 @@ func TestConversationShareCreatesSanitizedPublicSnapshot(t *testing.T) {
 	}
 }
 
+func TestConversationShareOwnerListIsScopedAndOmitsCapabilityToken(t *testing.T) {
+	now := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(-time.Hour)
+	db := &conversationShareTestStore{
+		shares: map[string]*store.ConversationShare{
+			"share-owner-active": {
+				ID:        "share-owner-active",
+				OwnerUID:  7,
+				TopicID:   "p2p_7_99",
+				TokenHash: "secret-token-hash",
+				Title:     "可管理链接",
+				State:     store.ConversationShareStateActive,
+				CreatedAt: now,
+			},
+			"share-owner-expired": {
+				ID:        "share-owner-expired",
+				OwnerUID:  7,
+				TopicID:   "p2p_7_99",
+				TokenHash: "expired-token-hash",
+				Title:     "已过期链接",
+				State:     store.ConversationShareStateActive,
+				ExpiresAt: &expiresAt,
+				CreatedAt: now.Add(-2 * time.Hour),
+			},
+			"share-other-topic": {
+				ID:        "share-other-topic",
+				OwnerUID:  7,
+				TopicID:   "p2p_7_100",
+				TokenHash: "other-topic-hash",
+				State:     store.ConversationShareStateActive,
+			},
+			"share-other-owner": {
+				ID:        "share-other-owner",
+				OwnerUID:  8,
+				TopicID:   "p2p_7_99",
+				TokenHash: "other-owner-hash",
+				State:     store.ConversationShareStateActive,
+			},
+		},
+	}
+	handler := NewConversationShareHandler(db, nil, t.TempDir(), t.TempDir())
+	handler.now = func() time.Time { return now }
+	request := httptest.NewRequest(http.MethodGet, "/api/conversation-shares?topic_id=p2p_7_99", nil)
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(7)))
+	response := httptest.NewRecorder()
+	handler.HandleAuthenticated(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "token-hash") || strings.Contains(response.Body.String(), "p2p_7_99") {
+		t.Fatalf("owner list leaked private fields: %s", response.Body.String())
+	}
+	var body struct {
+		Shares []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"shares"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode owner list: %v", err)
+	}
+	if len(body.Shares) != 2 {
+		t.Fatalf("owner list count=%d, want 2", len(body.Shares))
+	}
+	states := map[string]string{}
+	for _, share := range body.Shares {
+		states[share.ID] = share.State
+	}
+	if states["share-owner-active"] != "active" || states["share-owner-expired"] != "expired" {
+		t.Fatalf("owner list states=%v", states)
+	}
+}
+
 func TestConversationShareRevocationInvalidatesTranscriptAndAssets(t *testing.T) {
 	assetRoot := t.TempDir()
 	const token = "visitor-capability"
-	const shareID = "share-1"
+	const shareID = "11111111111111111111111111111111"
 	const assetID = "asset-1"
 	storageKey := filepath.Join(shareID, assetID+".pdf")
 	assetPath := filepath.Join(assetRoot, storageKey)
@@ -262,6 +448,9 @@ func TestConversationShareRevocationInvalidatesTranscriptAndAssets(t *testing.T)
 	if revoked.Code != http.StatusOK {
 		t.Fatalf("revoke status=%d body=%s", revoked.Code, revoked.Body.String())
 	}
+	if _, err := os.Stat(assetPath); !os.IsNotExist(err) {
+		t.Fatalf("revoked asset still exists: %v", err)
+	}
 
 	for _, target := range []string{
 		"/api/shared-conversations/" + token,
@@ -272,6 +461,48 @@ func TestConversationShareRevocationInvalidatesTranscriptAndAssets(t *testing.T)
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("%s status=%d body=%s, want 404", target, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestConversationShareCleanupRemovesExpiredAndDeletedShareAssets(t *testing.T) {
+	assetRoot := t.TempDir()
+	expiredAt := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	const expiredID = "22222222222222222222222222222222"
+	const deletedID = "33333333333333333333333333333333"
+	const activeID = "44444444444444444444444444444444"
+	for _, shareID := range []string{expiredID, deletedID, activeID} {
+		path := filepath.Join(assetRoot, shareID, "asset.bin")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create %s directory: %v", shareID, err)
+		}
+		if err := os.WriteFile(path, []byte("private asset"), 0o600); err != nil {
+			t.Fatalf("write %s fixture: %v", shareID, err)
+		}
+	}
+	db := &conversationShareTestStore{
+		shares: map[string]*store.ConversationShare{
+			expiredID: {
+				ID:        expiredID,
+				State:     store.ConversationShareStateActive,
+				ExpiresAt: &expiredAt,
+			},
+			activeID: {
+				ID:    activeID,
+				State: store.ConversationShareStateActive,
+			},
+		},
+	}
+	handler := NewConversationShareHandler(db, nil, t.TempDir(), assetRoot)
+	handler.now = func() time.Time { return expiredAt.Add(time.Second) }
+	handler.cleanupInactiveAssetDirectories()
+
+	for _, shareID := range []string{expiredID, deletedID} {
+		if _, err := os.Stat(filepath.Join(assetRoot, shareID)); !os.IsNotExist(err) {
+			t.Fatalf("inactive share directory %s still exists: %v", shareID, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(assetRoot, activeID)); err != nil {
+		t.Fatalf("active share directory removed: %v", err)
 	}
 }
 
@@ -371,11 +602,30 @@ func TestConversationShareAssetSandboxesSVG(t *testing.T) {
 }
 
 func TestConversationShareURLDoesNotTrustForwardedHost(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "")
 	request := httptest.NewRequest(http.MethodPost, "https://app.example.test/api/conversation-shares", nil)
 	request.Header.Set("X-Forwarded-Host", "attacker.example.test")
 	request.Header.Set("X-Forwarded-Proto", "https")
 
 	if got := conversationShareURL(request, "visitor-capability"); got != "https://app.example.test/share/visitor-capability" {
 		t.Fatalf("share URL=%q, want the request host rather than forwarded host", got)
+	}
+}
+
+func TestConversationShareURLPrefersConfiguredPublicBaseURL(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://public.example.test/catsco/")
+	request := httptest.NewRequest(http.MethodPost, "http://internal.example.test/api/conversation-shares", nil)
+
+	if got := conversationShareURL(request, "visitor-capability"); got != "https://public.example.test/catsco/share/visitor-capability" {
+		t.Fatalf("share URL=%q, want configured public base URL", got)
+	}
+}
+
+func TestConversationShareURLIgnoresInvalidConfiguredPublicBaseURL(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "javascript:alert(1)")
+	request := httptest.NewRequest(http.MethodPost, "https://app.example.test/api/conversation-shares", nil)
+
+	if got := conversationShareURL(request, "visitor-capability"); got != "https://app.example.test/share/visitor-capability" {
+		t.Fatalf("share URL=%q, want request host fallback", got)
 	}
 }

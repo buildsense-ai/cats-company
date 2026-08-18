@@ -12,10 +12,12 @@ vi.mock('../widgets/chat-message', () => ({
   __esModule: true,
   default: function MockChatMessage({ message, senderName, onPreviewFile }) {
     const file = message.content_blocks?.find((block) => block.type === 'file')?.payload;
+    const video = message.content_blocks?.find((block) => block.type === 'video')?.payload;
     return (
       <article className="shared-message" data-created-at={message.created_at || ''} data-sender={senderName}>
         <span>{message.content}</span>
         {file && <button type="button" onClick={() => onPreviewFile(file)}>预览文件</button>}
+        {video && <video className="shared-video" src={video.url} />}
       </article>
     );
   },
@@ -84,5 +86,31 @@ describe('SharedConversationView', () => {
     });
     expect(container.querySelector('.shared-file-preview')?.dataset.url)
       .toBe('/api/shared-conversations/capability/assets/asset-1');
+  });
+
+  it('passes a shared video block to the visitor message renderer', async () => {
+    api.getConversationShare.mockResolvedValue({
+      title: '视频片段',
+      items: [{
+        id: 'shared-video-1',
+        speaker: 'assistant',
+        content_blocks: [{
+          type: 'video',
+          payload: {
+            name: 'demo.mp4',
+            url: '/api/shared-conversations/capability/assets/video-1',
+            mime_type: 'video/mp4',
+          },
+        }],
+      }],
+    });
+    await act(async () => {
+      root.render(<SharedConversationView token="capability" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.shared-video')?.getAttribute('src'))
+      .toBe('/api/shared-conversations/capability/assets/video-1');
   });
 });

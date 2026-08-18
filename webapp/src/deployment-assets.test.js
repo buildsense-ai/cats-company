@@ -59,6 +59,16 @@ describe('production asset caching', () => {
     expectPrivateProxyLocation(nginxConfig, '/v0/channels');
   });
 
+  it('does not expose capability tokens through the SPA referrer', () => {
+    const nginxConfig = readFileSync(
+      resolve(process.cwd(), '../deploy/nginx/nginx.conf'),
+      'utf8',
+    );
+    expect(nginxConfig).toContain('location ^~ /share/ {');
+    const shareBlock = nginxConfig.match(/location \^~ \/share\/ \{([^}]*)\}/)?.[1] || '';
+    expect(shareBlock).toContain('add_header Referrer-Policy "no-referrer" always;');
+  });
+
   it('does not permit HTTP caching at the Internet-facing TLS proxies', () => {
     const privateRoutesByConfig = new Map([
       [

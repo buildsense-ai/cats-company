@@ -60,7 +60,9 @@ type ConversationShareAsset struct {
 // deployments can fail closed until the feature's schema is present.
 type ConversationShareStore interface {
 	CreateConversationShare(share *ConversationShare, items []*ConversationShareItem, assets []*ConversationShareAsset) error
+	GetConversationShareByID(shareID string) (*ConversationShare, error)
 	GetConversationShareByTokenHash(tokenHash string) (*ConversationShare, error)
+	ListConversationShares(ownerUID int64, topicID string) ([]*ConversationShare, error)
 	GetConversationShareItems(shareID string) ([]*ConversationShareItem, error)
 	GetConversationShareAsset(shareID, assetID string) (*ConversationShareAsset, error)
 	RevokeConversationShare(ownerUID int64, shareID string) (bool, error)

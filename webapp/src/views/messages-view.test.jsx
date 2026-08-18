@@ -203,6 +203,7 @@ vi.mock('../api', () => ({
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
     createConversationShare: vi.fn(),
+    listConversationShares: vi.fn(),
     revokeConversationShare: vi.fn(),
   },
   wsSendMessage: vi.fn(),
@@ -215,6 +216,7 @@ vi.mock('../api', () => ({
 }));
 
 import MessagesView, {
+  conversationShareSelectedMessageIDs,
   collectStructuredMentionTargets,
   reconcileStructuredMentionSelections,
   shouldConvertPastedTextToDocument,
@@ -398,6 +400,16 @@ describe('long pasted text detection', () => {
   });
 });
 
+describe('conversation share selection', () => {
+  it('deduplicates the selected source message IDs across display groups', () => {
+    expect(conversationShareSelectedMessageIDs([
+      { key: 'first', messageIDs: [17, 23] },
+      { key: 'second', messageIDs: [23, 29] },
+      { key: 'ignored', messageIDs: [31] },
+    ], ['first', 'second'])).toEqual([17, 23, 29]);
+  });
+});
+
 describe('MessagesView composer draft isolation', () => {
   let container;
   let root;
@@ -422,6 +434,7 @@ describe('MessagesView composer draft isolation', () => {
       url: 'https://app.catsco.cc/share/capability',
       message_count: 1,
     });
+    api.listConversationShares.mockResolvedValue({ shares: [] });
     api.revokeConversationShare.mockResolvedValue({ revoked: true });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
@@ -697,7 +710,7 @@ describe('MessagesView composer draft isolation', () => {
 
     await act(async () => toggles[50].click());
     expect(toolbar?.textContent).toContain('已选 50 条');
-    expect(toolbar?.textContent).toContain('一次最多选择 50 条消息。');
+    expect(toolbar?.textContent).toContain('分享图最多选择 50 个展示项。');
   });
 
   it('previews and downloads every generated share-image page', async () => {

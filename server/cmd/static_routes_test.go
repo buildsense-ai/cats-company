@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,7 @@ func TestStaticRoutesServeAuthenticationPathsAsSPA(t *testing.T) {
 
 	for _, path := range []string{
 		"/e/invite-1",
+		"/share/visitor-capability",
 		"/mobile-upload/session-1",
 		"/login?next=%2Fe%2Finvite-1",
 		"/login/",
@@ -36,6 +38,9 @@ func TestStaticRoutesServeAuthenticationPathsAsSPA(t *testing.T) {
 			}
 			if body := recorder.Body.String(); body != "CatsCo application shell" {
 				t.Fatalf("GET %s body = %q, want application shell", path, body)
+			}
+			if strings.HasPrefix(path, "/share/") && recorder.Header().Get("Referrer-Policy") != "no-referrer" {
+				t.Fatalf("GET %s Referrer-Policy = %q, want no-referrer", path, recorder.Header().Get("Referrer-Policy"))
 			}
 		})
 	}

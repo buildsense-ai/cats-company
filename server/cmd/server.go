@@ -217,10 +217,16 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
 			server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/share/") {
+			// Capability URLs are secrets. Do not let rendered markdown or media
+			// navigations forward the token as a browser referrer.
+			w.Header().Set("Referrer-Policy", "no-referrer")
+		}
 		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 	}
 	for _, path := range []string{
 		"/e/",
+		"/share/",
 		"/mobile-upload/",
 		"/login",
 		"/login/",
@@ -325,6 +331,9 @@ func main() {
 	// Keep copied public assets under the already-persistent uploads volume, but
 	// outside the regular /uploads/{files,images,feedback} serving surface.
 	conversationShareHandler := server.NewConversationShareHandler(db, hub, "./uploads", "./uploads/conversation-shares")
+	conversationShareCleanupCtx, conversationShareCleanupCancel := context.WithCancel(context.Background())
+	defer conversationShareCleanupCancel()
+	conversationShareHandler.StartAssetCleanup(conversationShareCleanupCtx)
 	projectHandler := server.NewProjectHandler(db)
 	agentHandler := server.NewAgentHandler(db, hub)
 	channelAgentBindingHandler := server.NewChannelAgentBindingHandler(db, hub)

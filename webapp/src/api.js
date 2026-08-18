@@ -659,6 +659,10 @@ export const api = {
       expires_in: expiresIn,
     },
   ),
+  listConversationShares: (topicId) => request(
+    'GET',
+    `/api/conversation-shares?topic_id=${encodeURIComponent(topicId)}`,
+  ),
   revokeConversationShare: (shareId) => request(
     'DELETE',
     `/api/conversation-shares/${encodeURIComponent(shareId)}`,

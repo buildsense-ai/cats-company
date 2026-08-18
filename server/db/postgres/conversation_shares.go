@@ -91,6 +91,45 @@ func (a *Adapter) GetConversationShareByTokenHash(tokenHash string) (*store.Conv
 	return scanPostgresConversationShare(row)
 }
 
+func (a *Adapter) GetConversationShareByID(shareID string) (*store.ConversationShare, error) {
+	row := a.db.QueryRow(
+		`SELECT id, owner_uid, topic_id, token_hash, title, state, expires_at, created_at, revoked_at
+		 FROM conversation_shares WHERE id = $1`,
+		shareID,
+	)
+	return scanPostgresConversationShare(row)
+}
+
+func (a *Adapter) ListConversationShares(ownerUID int64, topicID string) ([]*store.ConversationShare, error) {
+	rows, err := a.db.Query(
+		`SELECT id, owner_uid, topic_id, token_hash, title, state, expires_at, created_at, revoked_at
+		 FROM conversation_shares
+		 WHERE owner_uid = $1 AND topic_id = $2
+		 ORDER BY created_at DESC
+		 LIMIT 100`,
+		ownerUID, topicID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list conversation shares: %w", err)
+	}
+	defer rows.Close()
+
+	shares := make([]*store.ConversationShare, 0)
+	for rows.Next() {
+		share, err := scanPostgresConversationShare(rows)
+		if err != nil {
+			return nil, err
+		}
+		if share != nil {
+			shares = append(shares, share)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list conversation shares: %w", err)
+	}
+	return shares, nil
+}
+
 func (a *Adapter) GetConversationShareItems(shareID string) ([]*store.ConversationShareItem, error) {
 	rows, err := a.db.Query(
 		`SELECT id, share_id, position, source_message_id, speaker, snapshot

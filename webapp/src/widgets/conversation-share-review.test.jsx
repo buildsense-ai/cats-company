@@ -5,6 +5,7 @@ import { Simulate } from 'react-dom/test-utils';
 vi.mock('../api', () => ({
   api: {
     createConversationShare: vi.fn(),
+    listConversationShares: vi.fn(),
     revokeConversationShare: vi.fn(),
   },
 }));
@@ -26,6 +27,7 @@ describe('ConversationShareReview', () => {
       message_count: 2,
     });
     api.revokeConversationShare.mockResolvedValue({ revoked: true });
+    api.listConversationShares.mockResolvedValue({ shares: [] });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn(() => Promise.resolve()) },
@@ -76,5 +78,38 @@ describe('ConversationShareReview', () => {
         .find((button) => button.textContent.includes('关闭')));
     });
     expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets an owner reopen the conversation share flow to revoke an existing link', async () => {
+    api.listConversationShares.mockResolvedValue({
+      shares: [{
+        id: 'share-existing',
+        title: '已发送摘要',
+        state: 'active',
+        expires_at: '2026-08-24T09:00:00Z',
+      }],
+    });
+    await act(async () => {
+      root.render(
+        <ConversationShareReview
+          mode="manage"
+          topicId="p2p_1_2"
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.listConversationShares).toHaveBeenCalledWith('p2p_1_2');
+    expect(container.textContent).toContain('已发送摘要');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="撤销分享 已发送摘要"]'));
+      await Promise.resolve();
+    });
+
+    expect(api.revokeConversationShare).toHaveBeenCalledWith('share-existing');
+    expect(container.textContent).toContain('已撤销');
   });
 });
