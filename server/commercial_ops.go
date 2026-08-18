@@ -122,6 +122,10 @@ func (h *CommercialOpsHandler) HandleGrants(w http.ResponseWriter, r *http.Reque
 	h.forward(w, r, "grants.create", "user", h.admin.HandleCommercialGrant)
 }
 
+func (h *CommercialOpsHandler) HandleAdjustments(w http.ResponseWriter, r *http.Request) {
+	h.forward(w, r, "adjustments.apply", "user", h.admin.HandleCommercialAdjustment)
+}
+
 func (h *CommercialOpsHandler) HandleUsers(w http.ResponseWriter, r *http.Request) {
 	h.forward(w, r, "users.read", "user", h.admin.HandleCommercialUserSummary)
 }
