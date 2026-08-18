@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -174,6 +175,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "status-tsv":
 			// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
 			body = "@echo off\r\necho worker-bot-bot-a\trunning\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\necho worker-bot-bot-b\tcreating\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\n"
+		case "slow-status":
+			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
 		case "require-identity":
 			// 校验 argv 含 --login-token 与 --bot-uid（弱校验：只查存在）
 			body = "@echo off\r\necho %* | findstr /C:\"--login-token\" >nul || exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
@@ -203,6 +206,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 	case "status-tsv":
 		// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
 		body = "#!/bin/sh\nprintf 'worker-bot-bot-a\\trunning\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\nworker-bot-bot-b\\tcreating\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\n'\n"
+	case "slow-status":
+		body = "#!/bin/sh\nsleep 1\nprintf 'worker-bot-bot-a\\trunning\\timg-slow\\tv1.4.8\\n'\n"
 	case "require-identity":
 		// 校验 argv 含非空 --login-token/--bot-uid/--user-uid/--user-name/--user-display
 		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail
@@ -261,6 +266,47 @@ func decodeCloudWorkerList(t *testing.T, rec *httptest.ResponseRecorder) map[str
 		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
 	}
 	return out
+}
+
+func waitForCloudWorkerSnapshot(t *testing.T, h *CloudWorkerHandler, images bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		h.cacheMu.Lock()
+		loaded := h.statusLoaded
+		refreshing := h.statusRefreshing
+		if images {
+			loaded = h.imagesLoaded
+			refreshing = h.imagesRefreshing
+		}
+		h.cacheMu.Unlock()
+		if loaded {
+			return
+		}
+		if !refreshing {
+			t.Fatalf("cloud snapshot refresh stopped before producing a snapshot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for cloud snapshot")
+}
+
+func waitForCloudWorkerRefreshIdle(t *testing.T, h *CloudWorkerHandler, images bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		h.cacheMu.Lock()
+		refreshing := h.statusRefreshing
+		if images {
+			refreshing = h.imagesRefreshing
+		}
+		h.cacheMu.Unlock()
+		if !refreshing {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for cloud refresh to stop")
 }
 
 func TestParseWorkerCreateQuota(t *testing.T) {
@@ -355,6 +401,7 @@ func TestParseCloudWorkerStatusTSV(t *testing.T) {
 func TestCloudWorkerHandleListFillsCloudStatus(t *testing.T) {
 	cfg := workerScriptCfg(t, "7=5", map[string]string{"status": writeWorkerOpScript(t, "status-tsv")})
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	waitForCloudWorkerSnapshot(t, h, false)
 	ts.ownerBots = []map[string]interface{}{
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 		{"id": int64(2), "username": "bot-b", "display_name": "B", "tenant_name": "bot-bot-b"},
@@ -389,6 +436,73 @@ func TestCloudWorkerHandleListFillsCloudStatus(t *testing.T) {
 	c := byTenant["bot-bot-c"]
 	if c["cloud_status"] != "missing" {
 		t.Fatalf("bot-c cloud_status=%v want missing", c["cloud_status"])
+	}
+}
+
+func TestCloudWorkerHandleListDoesNotWaitForStatusScript(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"status": writeWorkerOpScript(t, "slow-status")})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	started := time.Now()
+	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleList(rec, req)
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("cloud worker list waited for provider script: %v", elapsed)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	if out["status_refreshing"] != true {
+		t.Fatalf("status_refreshing=%v want true", out["status_refreshing"])
+	}
+
+	// Let the background process complete before TempDir cleanup, and verify
+	// that the next request immediately serves the completed snapshot.
+	waitForCloudWorkerSnapshot(t, h, false)
+	rec = httptest.NewRecorder()
+	h.HandleList(rec, req)
+	worker := decodeCloudWorkerList(t, rec)["workers"].([]interface{})[0].(map[string]interface{})
+	if worker["cloud_status"] != "running" {
+		t.Fatalf("cloud_status=%v want running", worker["cloud_status"])
+	}
+}
+
+func TestCloudWorkerHandleListDoesNotTrustExpiredSnapshot(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"status": writeWorkerOpScript(t, "status-tsv")})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	waitForCloudWorkerSnapshot(t, h, false)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	// Simulate a provider outage after a once-valid status. The old data remains
+	// cached for diagnostics/recovery, but once it exceeds the trust window it
+	// must not keep presenting "running" forever.
+	h.statusScript = writeWorkerOpScript(t, "fail")
+	h.cacheMu.Lock()
+	h.statusUpdatedAt = time.Now().Add(-cloudWorkerStatusMaxTrustAge - time.Second)
+	h.statusLastAttempt = time.Time{}
+	h.cacheMu.Unlock()
+
+	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleList(rec, req)
+	worker := decodeCloudWorkerList(t, rec)["workers"].([]interface{})[0].(map[string]interface{})
+	if worker["cloud_status"] != "unavailable" {
+		t.Fatalf("cloud_status=%v want unavailable for expired snapshot", worker["cloud_status"])
+	}
+	waitForCloudWorkerRefreshIdle(t, h, false)
+
+	h.cacheMu.Lock()
+	_, retained := h.statusSnapshot["bot-bot-a"]
+	h.cacheMu.Unlock()
+	if !retained {
+		t.Fatal("failed refresh should retain the last good snapshot")
 	}
 }
 
@@ -595,6 +709,7 @@ func TestCloudWorkerHandleMetaWithImagesScript(t *testing.T) {
 		t.Skip("no POSIX shell")
 	}
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	waitForCloudWorkerSnapshot(t, h, true)
 	ts.ownerBots = []map[string]interface{}{
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 	}

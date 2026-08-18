@@ -61,7 +61,37 @@ type CloudWorkerHandler struct {
 	// a global lock keeps quota checks atomic and prevents a single user from
 	// piling up concurrent script processes.
 	opMu sync.Mutex
+
+	// Cloud provider reads take seconds and must never sit on the HTTP request
+	// path. Requests read the latest completed snapshot while one background
+	// refresh (at most) updates it. Failed refreshes retain the last good value.
+	cacheMu sync.Mutex
+
+	statusSnapshot       map[string]cloudInstanceInfo
+	statusUpdatedAt      time.Time
+	statusLastAttempt    time.Time
+	statusLoaded         bool
+	statusRefreshing     bool
+	statusRefreshPending bool
+
+	imageSnapshot       []cloudImageSummary
+	imageUpdatedAt      time.Time
+	imageLastAttempt    time.Time
+	imagesLoaded        bool
+	imagesRefreshing    bool
+	imageRefreshPending bool
 }
+
+const (
+	cloudWorkerStatusSnapshotTTL  = 10 * time.Second
+	cloudWorkerStatusRetryDelay   = 15 * time.Second
+	cloudWorkerStatusMaxTrustAge  = 2 * time.Minute
+	cloudWorkerImageSnapshotTTL   = time.Minute
+	cloudWorkerImageRetryDelay    = 15 * time.Second
+	cloudWorkerImageMaxTrustAge   = 10 * time.Minute
+	cloudWorkerStatusProbeTimeout = 20 * time.Second
+	cloudWorkerImageProbeTimeout  = 30 * time.Second
+)
 
 // workerUsernameRe constrains cloud worker usernames so the derived tenant
 // name stays safe to embed in URL paths and script argv.
@@ -95,7 +125,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 
 // NewCloudWorkerHandler creates a CloudWorkerHandler.
 func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConfig) *CloudWorkerHandler {
-	return &CloudWorkerHandler{
+	handler := &CloudWorkerHandler{
 		db:              db,
 		bots:            bots,
 		quota:           parseWorkerCreateQuota(cfg.CreateQuota),
@@ -108,6 +138,13 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		statusScript:    cfg.StatusScript,
 		scriptTimeout:   10 * time.Minute,
 	}
+
+	// Warm snapshots as soon as the service starts. This is deliberately
+	// asynchronous: startup and the first user request remain independent from
+	// Tianyi API latency or availability.
+	handler.requestCloudStatusRefresh(true)
+	handler.requestCloudImageRefresh(true)
+	return handler
 }
 
 func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter) bool {
@@ -231,45 +268,45 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 填云侧事实（实例状态/版本/镜像）。列表本身始终可用：探测未配置
-	// 或失败时明确降级为 unavailable；探测成功但没有对应实例时标记
-	// missing，避免前端把永久未知误显示成“同步中”。
+	// Fill cloud-side facts from the latest completed provider snapshot. A
+	// stale/missing snapshot refreshes in the background; this request never
+	// waits for Tianyi CLI or provider latency.
 	for i := range workers {
 		workers[i].CloudStatus = "unavailable"
 	}
-	if h.statusScript != "" {
-		const statusTimeout = 20 * time.Second
-		if out, statusErr := h.runScriptTimeout(statusTimeout, h.statusScript); statusErr == nil {
-			infos := parseCloudWorkerStatusTSV(out)
-			for i := range workers {
-				workers[i].CloudStatus = "missing"
-				info, ok := infos[workers[i].TenantName]
-				if !ok {
-					continue
-				}
-				if info.Status == "" {
-					workers[i].CloudStatus = "unknown"
-				} else {
-					workers[i].CloudStatus = info.Status
-				}
-				workers[i].CloudImageID = info.ImageID
-				workers[i].CloudVersion = info.Version
+	infos, statusLoaded, statusRefreshing, statusUpdatedAt := h.cloudStatusSnapshot()
+	if statusLoaded {
+		for i := range workers {
+			workers[i].CloudStatus = "missing"
+			info, ok := infos[workers[i].TenantName]
+			if !ok {
+				continue
 			}
-		} else {
-			log.Printf("[cloud-worker] status probe failed: %v", statusErr)
+			if info.Status == "" {
+				workers[i].CloudStatus = "unknown"
+			} else {
+				workers[i].CloudStatus = info.Status
+			}
+			workers[i].CloudImageID = info.ImageID
+			workers[i].CloudVersion = info.Version
 		}
 	}
 
 	total, remaining := h.quotaInfo(uid, len(workers))
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"workers": workers,
+	response := map[string]interface{}{
+		"workers":           workers,
+		"status_refreshing": statusRefreshing,
 		"quota": map[string]interface{}{
 			"enabled":   total > 0,
 			"total":     total,
 			"used":      len(workers),
 			"remaining": remaining,
 		},
-	})
+	}
+	if statusLoaded {
+		response["status_cached_at"] = statusUpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // cloudInstanceInfo is one worker instance's cloud-side fact set.
@@ -301,6 +338,130 @@ func parseCloudWorkerStatusTSV(out string) map[string]cloudInstanceInfo {
 		infos[strings.TrimPrefix(name, "worker-")] = info
 	}
 	return infos
+}
+
+// cloudStatusSnapshot returns immediately with the last completed provider
+// read and starts a stale refresh in the background. The bools report whether
+// a usable snapshot exists and whether a newer one is currently being fetched.
+func (h *CloudWorkerHandler) cloudStatusSnapshot() (map[string]cloudInstanceInfo, bool, bool, time.Time) {
+	h.requestCloudStatusRefresh(false)
+
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	infos := make(map[string]cloudInstanceInfo, len(h.statusSnapshot))
+	for name, info := range h.statusSnapshot {
+		infos[name] = info
+	}
+	trusted := h.statusLoaded && time.Since(h.statusUpdatedAt) <= cloudWorkerStatusMaxTrustAge
+	return infos, trusted, h.statusRefreshing, h.statusUpdatedAt
+}
+
+func (h *CloudWorkerHandler) requestCloudStatusRefresh(force bool) {
+	if h.statusScript == "" {
+		return
+	}
+
+	now := time.Now()
+	h.cacheMu.Lock()
+	due := !h.statusLoaded || now.Sub(h.statusUpdatedAt) >= cloudWorkerStatusSnapshotTTL
+	retryAllowed := h.statusLastAttempt.IsZero() || now.Sub(h.statusLastAttempt) >= cloudWorkerStatusRetryDelay
+	if (!due && !force) || (!retryAllowed && !force) {
+		h.cacheMu.Unlock()
+		return
+	}
+	if h.statusRefreshing {
+		if force {
+			h.statusRefreshPending = true
+		}
+		h.cacheMu.Unlock()
+		return
+	}
+	h.statusRefreshing = true
+	h.statusLastAttempt = now
+	h.cacheMu.Unlock()
+
+	go h.refreshCloudStatusSnapshot()
+}
+
+func (h *CloudWorkerHandler) refreshCloudStatusSnapshot() {
+	out, err := h.runScriptTimeout(cloudWorkerStatusProbeTimeout, h.statusScript)
+
+	h.cacheMu.Lock()
+	if err == nil {
+		h.statusSnapshot = parseCloudWorkerStatusTSV(out)
+		h.statusUpdatedAt = time.Now()
+		h.statusLoaded = true
+	}
+	pending := h.statusRefreshPending
+	h.statusRefreshPending = false
+	h.statusRefreshing = false
+	h.cacheMu.Unlock()
+
+	if err != nil {
+		log.Printf("[cloud-worker] status snapshot refresh failed: %v", err)
+	}
+	if pending {
+		h.requestCloudStatusRefresh(true)
+	}
+}
+
+func (h *CloudWorkerHandler) cloudImageSnapshot() ([]cloudImageSummary, bool, bool, time.Time) {
+	h.requestCloudImageRefresh(false)
+
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	images := append([]cloudImageSummary(nil), h.imageSnapshot...)
+	trusted := h.imagesLoaded && time.Since(h.imageUpdatedAt) <= cloudWorkerImageMaxTrustAge
+	return images, trusted, h.imagesRefreshing, h.imageUpdatedAt
+}
+
+func (h *CloudWorkerHandler) requestCloudImageRefresh(force bool) {
+	if h.imagesScript == "" {
+		return
+	}
+
+	now := time.Now()
+	h.cacheMu.Lock()
+	due := !h.imagesLoaded || now.Sub(h.imageUpdatedAt) >= cloudWorkerImageSnapshotTTL
+	retryAllowed := h.imageLastAttempt.IsZero() || now.Sub(h.imageLastAttempt) >= cloudWorkerImageRetryDelay
+	if (!due && !force) || (!retryAllowed && !force) {
+		h.cacheMu.Unlock()
+		return
+	}
+	if h.imagesRefreshing {
+		if force {
+			h.imageRefreshPending = true
+		}
+		h.cacheMu.Unlock()
+		return
+	}
+	h.imagesRefreshing = true
+	h.imageLastAttempt = now
+	h.cacheMu.Unlock()
+
+	go h.refreshCloudImageSnapshot()
+}
+
+func (h *CloudWorkerHandler) refreshCloudImageSnapshot() {
+	out, err := h.runScriptTimeout(cloudWorkerImageProbeTimeout, h.imagesScript)
+
+	h.cacheMu.Lock()
+	if err == nil {
+		h.imageSnapshot = parseImageLines(out)
+		h.imageUpdatedAt = time.Now()
+		h.imagesLoaded = true
+	}
+	pending := h.imageRefreshPending
+	h.imageRefreshPending = false
+	h.imagesRefreshing = false
+	h.cacheMu.Unlock()
+
+	if err != nil {
+		log.Printf("[cloud-worker] image snapshot refresh failed: %v", err)
+	}
+	if pending {
+		h.requestCloudImageRefresh(true)
+	}
 }
 
 // HandleMeta handles GET /api/cloud-workers/meta — quota + available images.
@@ -338,13 +499,14 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 			"delete":   h.destroyScript != "",
 		},
 	}
-	// Image listing is a cheap, read-only probe: use a short timeout and
-	// never block the request for the full scriptTimeout.
+	// Image listing follows the same stale-while-revalidate contract as worker
+	// status. The HTTP request never waits for the provider CLI.
 	if h.imagesScript != "" {
-		const imageListTimeout = 30 * time.Second
-		// list-worker-images.sh 无参数（TSV 契约，见 parseImageLines）——不传 -Action
-		if out, listErr := h.runScriptTimeout(imageListTimeout, h.imagesScript); listErr == nil {
-			meta["images"] = parseImageLines(out)
+		images, imagesLoaded, imagesRefreshing, imagesUpdatedAt := h.cloudImageSnapshot()
+		meta["images_refreshing"] = imagesRefreshing
+		if imagesLoaded {
+			meta["images"] = images
+			meta["images_cached_at"] = imagesUpdatedAt.UTC().Format(time.RFC3339Nano)
 		}
 	}
 	writeJSON(w, http.StatusOK, meta)
@@ -508,6 +670,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 
 	// The provision script ran synchronously to completion, so the worker is
 	// provisioned/running rather than still "provisioning".
+	h.requestCloudStatusRefresh(true)
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"uid":               result.UID,
 		"username":          result.Username,
@@ -651,6 +814,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		return
 	}
 	// The script ran synchronously to completion.
+	h.requestCloudStatusRefresh(true)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action})
 }
 
@@ -727,6 +891,7 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	h.requestCloudStatusRefresh(true)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "deleted"})
 }
 

@@ -1082,6 +1082,54 @@ describe('AgentStoreModal', () => {
     expect(container.textContent).not.toContain('创建云托管员工');
   });
 
+  test('renders the assistant roster without waiting for cloud reconciliation', async () => {
+    let resolveCloudWorkers;
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 92,
+        uid: 92,
+        tenant_name: 'tenant-a',
+        username: 'bot-cloud-1',
+        display_name: '云端审查助手',
+        relation: 'owner',
+        is_owner: true,
+        is_online: true,
+        visibility: 'public',
+      }],
+    });
+    api.getCloudWorkers.mockImplementation(() => new Promise((resolve) => {
+      resolveCloudWorkers = resolve;
+    }));
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('云端审查助手');
+    expect(container.textContent).not.toContain('加载中...');
+    expect(container.textContent).not.toContain('版本 1.4.8');
+
+    await act(async () => {
+      resolveCloudWorkers({
+        quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+        workers: [{
+          tenant_name: 'tenant-a',
+          cloud_status: 'running',
+          cloud_version: '1.4.8',
+        }],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('版本 1.4.8');
+  });
+
   test('creates a cloud worker from the managed panel', async () => {
     api.getMyBots.mockResolvedValue({ bots: [] });
     api.getCloudWorkers.mockResolvedValue({
