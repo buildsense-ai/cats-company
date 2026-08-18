@@ -808,6 +808,61 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.consecutive).toBe('false');
   });
 
+  it('keeps sender metadata when the first Agent narrative is folded into a tool trace', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 741,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: '整理近期公开的金融行业新闻资讯，生成一份市场洞察摘要。',
+          created_at: '2026-08-18T09:00:00Z',
+        },
+        {
+          id: 742,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '收到。我会先核实公开来源，再生成市场洞察摘要。',
+          created_at: '2026-08-18T09:00:01Z',
+        },
+        {
+          id: 743,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-743' },
+          created_at: '2026-08-18T09:00:02Z',
+        },
+      ],
+    });
+    api.getFriends.mockResolvedValueOnce({
+      friends: [{
+        id: 2,
+        display_name: '市场洞察助理',
+        avatar_url: '/uploads/market-agent.png',
+        is_bot: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', {
+      topicName: '市场洞察助理',
+      topicAvatarUrl: '/uploads/market-agent.png',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingMessage = container.querySelector('[data-working-only="true"]');
+    expect(workingMessage?.dataset.workingMessageIds).toBe('742,743');
+    expect(workingMessage?.dataset.senderName).toBe('市场洞察助理');
+    expect(workingMessage?.dataset.senderAvatar).toBe('/uploads/market-agent.png');
+    expect(workingMessage?.dataset.consecutive).toBe('false');
+  });
+
   it('ignores a stale group profile response after switching conversations', async () => {
     const firstGroupProfile = deferred();
     const secondGroupProfile = deferred();

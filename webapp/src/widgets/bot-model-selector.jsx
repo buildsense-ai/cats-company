@@ -388,9 +388,11 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
     : null;
   const cloudSelectionActive = displayedSelection && displayedSelection.kind !== 'local';
   const headerQuota = cloudSelectionActive
-    ? displayedCatalogModel?.quota
+    ? displayedSelection.kind === 'custom'
+      ? '自备模型'
+      : displayedCatalogModel?.quota
       ? modelQuotaLabel(displayedCatalogModel.quota, 'loaded')
-      : display.meta
+      : ''
     : formatRelayUsagePill(agentModelState?.summary, {
       customLabel: '自备模型',
       showModel: false,
@@ -407,7 +409,11 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
         ? formatModelContextWindowTokens(displayedCatalogModel.context_window_tokens)
         : ''
     : '';
-  const displayTitle = `${display.title}${headerContext ? `；上下文 ${headerContext}` : ''}`;
+  const headerReasoning = String(cloudSelectionActive
+    ? displayedSelection.kind === 'custom'
+      ? modelConfig?.custom?.reasoning_effort || ''
+      : displayedSelection.reasoning_effort || displayedCatalogModel?.default_reasoning_effort || ''
+    : agentModelState?.summary?.reasoning_effort || '').trim();
   const applyState = runtimeUnavailable
     ? '暂时无法切换'
     : savingKey
@@ -417,12 +423,22 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
         : modelApplyPending
           ? applyWaitExpired ? '待应用' : '切换中'
           : '';
+  const displayTitle = [
+    display.title,
+    headerContext ? `上下文 ${headerContext}` : '',
+    applyState ? `状态 ${applyState}` : '',
+  ].filter(Boolean).join('；');
+  const accessibleStatus = [
+    display.model,
+    headerReasoning ? `推理强度 ${headerReasoning}` : '',
+    headerQuota,
+    applyState,
+  ].filter(Boolean).join('；');
   const statusContents = (
     <>
       <span className="v3-current-model-name">{display.model}</span>
-      {headerContext && <span className="v3-model-context">上下文 {headerContext}</span>}
+      {headerReasoning && <span className="v3-model-reasoning-strength">强度 {headerReasoning}</span>}
       {headerQuota && <span className={`v3-model-quota ${headerTone}`.trim()}>{headerQuota}</span>}
-      {applyState && <span className={`v3-model-apply-state ${modelApplyError ? 'error' : ''} ${runtimeUnavailable ? 'muted' : ''}`.trim()}>{applyState}</span>}
       {canManageModel && (transitioning
         ? <Loader2 className="v3-model-switch-spinner" size={14} aria-hidden="true" />
         : <ChevronDown className="v3-model-menu-chevron" size={14} aria-hidden="true" />)}
@@ -435,7 +451,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
         <button
           type="button"
           className="v3-local-assistant-status v3-model-status-button"
-          aria-label={`${displayTitle}，切换模型`}
+          aria-label={`${accessibleStatus}，切换模型`}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-busy={transitioning}
@@ -448,7 +464,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       ) : (
         <div
           className="v3-local-assistant-status"
-          aria-label={runtimeUnavailable ? `${displayTitle}，暂时无法切换` : displayTitle}
+          aria-label={accessibleStatus}
           title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : displayTitle}
         >
           {statusContents}

@@ -123,6 +123,20 @@ describe('model reasoning menu placement', () => {
   });
 });
 
+describe('narrow conversation top bar', () => {
+  it('prioritizes the task title when the artifact panel narrows the chat column', () => {
+    expect(topbarCss).toMatch(
+      /\.v3-chat-column\s*\{[^}]*container-name:\s*catsco-chat-column;[^}]*container-type:\s*inline-size;/s,
+    );
+    expect(topbarCss).toMatch(
+      /@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-model-select, \.v3-shell-actions\)\s*\{[^}]*display:\s*none;/,
+    );
+    expect(topbarCss).toMatch(
+      /@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-shell-title, \.v3-shell-title-input\)\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/,
+    );
+  });
+});
+
 describe('resolveDisplayedActiveAgent', () => {
   it('exposes an owned draft agent to the model selector before the task is created', () => {
     expect(resolveDisplayedActiveAgent('', null, {
@@ -285,17 +299,17 @@ describe('LocalAssistantBar model selector', () => {
     expect(status?.getAttribute('aria-label')).toContain('minimax-m3');
   });
 
-  it('shows the catalog context size in the header for the applied cloud model', async () => {
+  it('keeps catalog context details out of the compact header', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('minimax-m3');
-    expect(status?.textContent).toContain('上下文 1M');
+    expect(status?.textContent).not.toContain('上下文');
     expect(status?.textContent).toContain('剩余 75%');
-    expect(status?.getAttribute('aria-label')).toContain('上下文 1M');
+    expect(status?.title).toContain('上下文 1M');
   });
 
-  it('shows the server-managed context size in the header for a custom model', async () => {
+  it('shows custom model strength without putting context size in the header', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
       ...baseConfig,
       desired: { kind: 'custom', model_id: 'custom', revision: 7 },
@@ -313,9 +327,10 @@ describe('LocalAssistantBar model selector', () => {
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('private-model');
-    expect(status?.textContent).toContain('上下文 128K');
+    expect(status?.textContent).toContain('强度 high');
+    expect(status?.textContent).not.toContain('上下文');
     expect(status?.textContent).toContain('自备模型');
-    expect(status?.getAttribute('aria-label')).toContain('上下文 128K');
+    expect(status?.title).toContain('上下文 128K');
   });
 
   it('shows the applied cloud model instead of a stale local quota snapshot', async () => {
@@ -375,7 +390,8 @@ describe('LocalAssistantBar model selector', () => {
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: false });
     expect(container.querySelector('.v3-model-status-button')).toBeNull();
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('暂时无法切换');
+    expect(container.querySelector('.v3-model-apply-state')).toBeNull();
+    expect(container.querySelector('.v3-local-assistant-status')?.getAttribute('aria-label')).toContain('暂时无法切换');
     expect(container.querySelector('.v3-local-assistant-status')?.title).toContain('请更新桌面端');
   });
 
@@ -611,11 +627,12 @@ describe('LocalAssistantBar model selector', () => {
     const trigger = container.querySelector('.v3-model-status-button');
     expect(trigger.disabled).toBe(true);
     expect(trigger.getAttribute('aria-busy')).toBe('true');
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('切换中');
+    expect(container.querySelector('.v3-model-apply-state')).toBeNull();
+    expect(trigger.getAttribute('aria-label')).toContain('切换中');
 
     await act(async () => vi.advanceTimersByTimeAsync(45000));
     expect(trigger.disabled).toBe(false);
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('待应用');
+    expect(trigger.getAttribute('aria-label')).toContain('待应用');
   });
 
   it('keeps return-to-local locked until the bot acknowledges the handoff', async () => {
@@ -631,7 +648,8 @@ describe('LocalAssistantBar model selector', () => {
     const trigger = container.querySelector('.v3-model-status-button');
     expect(trigger.disabled).toBe(true);
     expect(trigger.getAttribute('aria-busy')).toBe('true');
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('切换中');
+    expect(container.querySelector('.v3-model-apply-state')).toBeNull();
+    expect(trigger.getAttribute('aria-label')).toContain('切换中');
   });
 
   it('classifies request and runtime apply failures for users', () => {

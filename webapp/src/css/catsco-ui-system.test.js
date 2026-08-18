@@ -788,27 +788,21 @@ describe('CatsCo shell styling', () => {
     );
   });
 
-  it('uses filled terminal-state dots that remain distinguishable without color alone', () => {
+  it('uses clean filled terminal-state dots without decorative outer rings', () => {
     const dotRule = ruleFor('.cc-task-status-dot');
 
     expect(dotRule).toContain('width: 8px;');
     expect(dotRule).toContain('height: 8px;');
     expect(dotRule).toContain('border-radius: 999px;');
     expect(dotRule).toContain('background: currentColor;');
-    expect(dotRule).toContain('position: relative;');
+    expect(dotRule).not.toContain('position: relative;');
     expect(ruleFor('.cc-task-row-status.completed')).toContain('color: var(--cc-success-text);');
     expect(ruleFor('.cc-task-row-status.failed')).toContain('color: var(--cc-danger);');
     expect(ruleFor('.cc-task-row-status.cancelled,\n.cc-task-row-status.stale'))
       .toContain('color: var(--cc-warning-text);');
-    expect(css).toContain(`.cc-task-status-dot--failed::after,
-.cc-task-status-dot--cancelled::after,
-.cc-task-status-dot--stale::after {`);
-    expect(css).toContain(`.cc-task-status-dot--cancelled::after {
-  border-style: dashed;
-}`);
-    expect(css).toContain(`.cc-task-status-dot--stale::after {
-  border-style: dotted;
-}`);
+    expect(css).not.toContain('.cc-task-status-dot--failed::after');
+    expect(css).not.toContain('.cc-task-status-dot--cancelled::after');
+    expect(css).not.toContain('.cc-task-status-dot--stale::after');
     expect(css).not.toContain('.cc-task-status-icon');
   });
 
@@ -979,16 +973,18 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
-  it('reveals top-level section actions without adding a row hover surface', () => {
+  it('reveals top-level section actions on hover, expansion, or visible keyboard focus', () => {
     const actionRevealRule = ruleFor(
       `.v3-chat-section:hover > .cc-section-add,
 .v3-chat-section:focus-within > .cc-section-add,
+.v3-chat-section[data-expanded="true"] > .cc-section-add,
 .cc-section-add:focus-visible`,
     );
     const nestedHoverRule = ruleFor('.v3-chat-section:not(.cc-top-level-section):hover');
 
     expect(actionRevealRule).toContain('opacity: 1;');
     expect(actionRevealRule).toContain('visibility: visible;');
+    expect(css).toContain('.v3-chat-section:focus-within > .cc-section-add');
     expect(nestedHoverRule).toContain('background: var(--cc-hover);');
     expect(css).not.toContain('.v3-chat-section:hover {\n  background: var(--cc-hover);');
   });
@@ -1300,7 +1296,7 @@ describe('CatsCo shell styling', () => {
     expect(dotRule).toContain('right: 3px;');
     expect(dotRule).toContain('bottom: 3px;');
     expect(dotRule).toContain('width: 9px;');
-    expect(dotRule).toContain('box-shadow: 0 0 0 2px var(--cc-bg);');
+    expect(dotRule).not.toContain('box-shadow:');
     expect(runningRule).toContain('inset: 0;');
     expect(runningRule).toContain('justify-content: center;');
     expect(spinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
@@ -1309,15 +1305,9 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: var(--cc-danger);');
     expect(ruleFor('.cc-compact-task-status.cancelled,\n.cc-compact-task-status.stale'))
       .toContain('color: var(--cc-warning-text);');
-    expect(css).toContain(`.cc-compact-task-status.failed::after,
-.cc-compact-task-status.cancelled::after,
-.cc-compact-task-status.stale::after {`);
-    expect(css).toContain(`.cc-compact-task-status.cancelled::after {
-  border-style: dashed;
-}`);
-    expect(css).toContain(`.cc-compact-task-status.stale::after {
-  border-style: dotted;
-}`);
+    expect(css).not.toContain('.cc-compact-task-status.failed::after');
+    expect(css).not.toContain('.cc-compact-task-status.cancelled::after');
+    expect(css).not.toContain('.cc-compact-task-status.stale::after');
     expect(css).toContain('.cc-task-row-status.running svg,\n  .cc-compact-task-status.running svg');
   });
 
@@ -1550,18 +1540,38 @@ describe('CatsCo shell styling', () => {
 
   it('separates delivered files from the completion summary without splitting the reply', () => {
     const contentRule = ruleFor('.v3-message.artifacts-first .v3-message-content');
+    const peerBodyRule = ruleFor('.v3-message.is-peer.artifacts-first .v3-msg-body');
     const deliverablesRule = ruleFor('.v3-message.artifacts-first .v3-message-deliverables');
     const summaryRule = ruleFor('.v3-message.artifacts-first .v3-message-followup-text');
+    const artifactCardRule = ruleFor('.v3-message.artifacts-first .v3-attachment-card.v3-artifact-card');
+    const footerRule = ruleFor('.v3-message.is-peer.artifacts-first .v3-message-footer');
     const adjacentCardRule = ruleFor(
       '.oc-working-group + .v3-message.artifacts-first .v3-attachment-card.v3-artifact-card',
     );
 
     expect(contentRule).toContain('display: flex;');
+    expect(contentRule).toContain('width: 100%;');
     expect(contentRule).toContain('flex-direction: column;');
+    expect(peerBodyRule).toContain('width: calc(100% - 46px);');
+    expect(peerBodyRule).toContain('flex: 0 1 auto;');
     expect(deliverablesRule).toContain('width: 100%;');
     expect(deliverablesRule).toContain('gap: 8px;');
     expect(summaryRule).toContain('width: 100%;');
-    expect(summaryRule).toContain('margin-top: 14px;');
+    expect(summaryRule).toContain('margin-top: 8px;');
+    expect(summaryRule).toContain('gap: 4px;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section > span'))
+      .toContain('display: block;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section .oc-plain-text-paragraphs'))
+      .toContain('gap: 2px;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section .oc-markdown p'))
+      .toContain('margin-block: 2px;');
+    expect(artifactCardRule).toContain('width: min(480px, 100%);');
+    expect(artifactCardRule).toContain('max-width: min(480px, 100%);');
+    expect(ruleFor('.v3-message.artifacts-first .v3-attachment-info')).toContain('overflow: hidden;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-attachment-name'))
+      .toContain('text-overflow: ellipsis;');
+    expect(footerRule).toContain('width: 100%;');
+    expect(footerRule).toContain('margin-top: 2px;');
     expect(adjacentCardRule).toContain('margin-bottom: 0;');
   });
 

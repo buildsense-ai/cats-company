@@ -1089,6 +1089,7 @@ describe('SkillHubView', () => {
       toJSON: () => ({}),
     });
     expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger?.title).toBe('Owner Bot');
     await act(async () => {
       Simulate.click(trigger);
     });
@@ -1098,6 +1099,7 @@ describe('SkillHubView', () => {
     expect(listbox.style.left).toBe('100px');
     expect(listbox.style.width).toBe('176px');
     expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('Owner Bot');
+    expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.title).toBe('Owner Bot');
 
     await act(async () => {
       Simulate.keyDown(trigger, { key: 'Escape' });

@@ -2179,6 +2179,22 @@ export default function MessagesView({
     if (sameUID(m.user_id, user.uid)) return false;
     return m.is_bot === true || m.account_type === 'bot';
   });
+  const mentionDisplayNames = useMemo(() => {
+    if (!isGroup) return {};
+    return members.reduce((names, member) => {
+      const uid = parseUid(member?.user_id);
+      if (!uid) return names;
+      const agent = availableAgents.find((candidate) => sameUID(candidate?.uid || candidate?.id, uid));
+      const displayName = member?.display_name
+        || agent?.display_name
+        || agent?.name
+        || member?.username;
+      if (displayName && displayName !== `usr${uid}`) {
+        names[String(uid)] = displayName;
+      }
+      return names;
+    }, {});
+  }, [availableAgents, isGroup, members]);
   const normalizedMentionFilter = mentionFilter.toLowerCase();
   const mentionAllAliases = ['所有人', '所有机器人', '全部机器人', 'all'];
   const mentionAllMatches = groupBots.length > 0 && (
@@ -2684,6 +2700,7 @@ export default function MessagesView({
 
       if (isWorkingMessage(msg)) {
         let leadingNarrativeMessages = [];
+        let leadingNarrativeIsConsecutive = null;
         if (messageHasActionTool(msg)) {
           const previousGroup = groups[groups.length - 1];
           const previousMessage = previousGroup?.message;
@@ -2708,6 +2725,7 @@ export default function MessagesView({
           ) {
             const sourceMessages = previousGroup.sourceMessages || [previousGroup.message];
             leadingNarrativeMessages = sourceMessages.map(assistantProcessMessage);
+            leadingNarrativeIsConsecutive = previousGroup.isConsecutive;
             groups.pop();
           }
         }
@@ -2740,7 +2758,7 @@ export default function MessagesView({
               type: 'working',
               messages: [...leadingNarrativeMessages, msg],
               sender,
-              isConsecutive,
+              isConsecutive: leadingNarrativeIsConsecutive ?? isConsecutive,
               explicitTurnKey: turn.explicitTurnKey,
               fallbackTurnKey: turn.fallbackTurnKey,
             };
@@ -3384,6 +3402,7 @@ export default function MessagesView({
                   senderName={group.sender.name}
                   senderAvatarUrl={group.sender.avatarUrl}
                   senderIsBot={group.sender.isBot}
+                  mentionDisplayNames={mentionDisplayNames}
                   workingOnly
                   workingComplete={group.workingComplete}
                   showThinking={showThinking}
@@ -3428,6 +3447,7 @@ export default function MessagesView({
                 senderName={group.sender.name}
                 senderAvatarUrl={group.sender.avatarUrl}
                 senderIsBot={group.sender.isBot}
+                mentionDisplayNames={mentionDisplayNames}
                 replyMessage={group.replyMessage}
                 questionAnchorKey={sameUID(group.message.from_uid, user.uid)
                   ? questionNavigationKey(group.message, i)
