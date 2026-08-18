@@ -1894,6 +1894,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-chat-section:hover > .cc-section-add,
+.v3-chat-section:focus-within > .cc-section-add,
 .v3-chat-section[data-expanded="true"] > .cc-section-add,
 .cc-section-add:focus-visible {
   opacity: 1;

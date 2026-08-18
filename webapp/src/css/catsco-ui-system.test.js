@@ -976,6 +976,7 @@ describe('CatsCo shell styling', () => {
   it('reveals top-level section actions on hover, expansion, or visible keyboard focus', () => {
     const actionRevealRule = ruleFor(
       `.v3-chat-section:hover > .cc-section-add,
+.v3-chat-section:focus-within > .cc-section-add,
 .v3-chat-section[data-expanded="true"] > .cc-section-add,
 .cc-section-add:focus-visible`,
     );
@@ -983,7 +984,7 @@ describe('CatsCo shell styling', () => {
 
     expect(actionRevealRule).toContain('opacity: 1;');
     expect(actionRevealRule).toContain('visibility: visible;');
-    expect(css).not.toContain('.v3-chat-section:focus-within > .cc-section-add');
+    expect(css).toContain('.v3-chat-section:focus-within > .cc-section-add');
     expect(nestedHoverRule).toContain('background: var(--cc-hover);');
     expect(css).not.toContain('.v3-chat-section:hover {\n  background: var(--cc-hover);');
   });
