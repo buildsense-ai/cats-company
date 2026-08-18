@@ -11,7 +11,9 @@
 | `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
 | `destroy-worker.sh` | 删实例 + key pair + 本地 state | 删除（幂等） |
 | `reset-worker.sh` | 销毁重建（丢数据） | 重置 / 重装 |
+| `deploy-worker-version.sh` | 安装指定应用版本（保数据） | 更新 / 本地版本缺失时回滚 |
 | `rollback-worker.sh` | 切换 `/opt/catsco/current`（保数据） | 版本回滚 |
+| `status-worker.sh` | 批量读取实例、镜像与版本状态 | 云员工管理页状态 |
 
 ## 部署配置（B4-2 对接）
 
@@ -23,8 +25,10 @@
 CATSCO_WORKER_PROVISION_SCRIPT=/opt/catsco/ops/provision-worker.sh
 CATSCO_WORKER_DESTROY_SCRIPT=/opt/catsco/ops/destroy-worker.sh
 CATSCO_WORKER_RESET_SCRIPT=/opt/catsco/ops/reset-worker.sh
+CATSCO_WORKER_UPDATE_SCRIPT=/opt/catsco/ops/deploy-worker-version.sh
 CATSCO_WORKER_ROLLBACK_SCRIPT=/opt/catsco/ops/rollback-worker.sh
 CATSCO_WORKER_IMAGES_SCRIPT=/opt/catsco/ops/list-worker-images.sh
+CATSCO_WORKER_STATUS_SCRIPT=/opt/catsco/ops/status-worker.sh
 CATSCO_WORKER_CREATE_QUOTA=            # "<uid>=<n>;<uid>=<n>"，留空 = 未开放（0）
 ```
 
@@ -45,19 +49,28 @@ CTYUN_WORKER_FLAVOR_ID=<flavor-id>
 CTYUN_WORKER_VPC_ID=<vpc-id>
 CTYUN_WORKER_SUBNET_ID=<subnet-id>
 CTYUN_WORKER_SECURITY_GROUP_ID=<sg-id>
-CTYUN_WORKER_STATE_DIR=/var/lib/catsco-worker   # 默认 <dir>/<tenant>，见下
+CTYUN_WORKER_STATE_ROOT=/var/lib/catsco-worker  # 默认 <root>/<tenant>，见下
 CTYUN_WORKER_BILLING_MODE=month          # month（默认包月）或 ondemand
 CTYUN_WORKER_CYCLE_COUNT=1               # 包月购买月数，1-60
 CTYUN_WORKER_AUTO_RENEW=1                # 包月实例创建后开启按月自动续费
+CATSCO_WORKER_ARTIFACT_BUCKET=catsco-worker-release
+CATSCO_WORKER_ARTIFACT_PREFIX=update/worker
+CATSCO_WORKER_ARTIFACT_REGION=cn-guangzhou
+CATSCO_WORKER_ARTIFACT_ENDPOINT=https://tos-cn-guangzhou.volces.com
+CATSCO_WORKER_ARTIFACT_ACCESS_KEY_ID=<read-only-ak>
+CATSCO_WORKER_ARTIFACT_SECRET_ACCESS_KEY=<read-only-sk>
+CATSCO_WORKER_ARTIFACT_CACHE_DIR=/var/lib/catsco-worker/.artifacts
 CATSCO_WORKER_HTTP_BASE_URL=https://app.catsco.cc   # 缺省
 CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 ```
 
 - `CTYUN_WORKER_*`（region/az/flavor/vpc/subnet/sg）与 XiaoBa-CLI bake 管线的
   repo vars 一致（worker 实例跑在 bake 的 worker 镜像上）。
-- `CTYUN_WORKER_STATE_DIR` 必须**持久化挂载**：其下每个 tenant 保存
+- `CTYUN_WORKER_STATE_ROOT` 必须**持久化挂载**：其下每个 tenant 保存
   `id_rsa`（私钥）、`known_hosts`、`inject.env`（身份快照，reset 复用）。
   默认 `/var/lib/catsco-worker/<tenant>`。
+- worker 应用包从私有 TOS 桶下载。生产凭证只授予
+  `catsco-worker-release/update/worker/*` 的只读权限，不下发给浏览器或 worker。
 - 包月实例创建后会配置自动续费，删除时调用退订接口；按量实例沿用直接删除。
   供给失败清理会短暂重试实例目录，并使用创建时记住的实例 ID 和计费模式
   兜底，避免目录最终一致性造成持续计费的孤儿实例。
@@ -68,7 +81,7 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 ## 脚本依赖（Dockerfile 已装）
 
 `bash`、`openssh-client`（ssh/ssh-keygen）、`jq`、GNU `timeout`、`ctyun-cli`
-（SHA256 校验安装）。脚本全部 `set -Eeuo pipefail` + shebang 可执行。
+和镜像内单独构建的 `tos-fetch`。脚本全部 `set -Eeuo pipefail` + shebang 可执行。
 
 ## 安全注意事项
 
@@ -79,6 +92,9 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 - **fail-closed**：任一步失败聚合报错退出非 0；key pair 只在本次新建时才由
   失败清理删除（复用对象不动）；实例删除必须 `--clientToken` 且不带
   `--projectID`（天翼云 API 实测，2026-08-07）。
+- **旧 key pair 恢复**：若同名实例不存在、云端仍有 tenant key pair，但持久化
+  tenant 目录中的私钥缺失或损坏，provision 会在创建计费实例前替换该孤儿
+  key pair 并生成新的 tenant 私钥，避免创建后等待 SSH 超时。
 
 ## 本地测试
 
@@ -89,5 +105,6 @@ export CATSCO_JQ=/path/to/jq
 cd deploy/prod/ops && node --test *.test.mjs
 ```
 
-测试覆盖 list / provision / destroy / reset / rollback（fake ctyun-cli +
-fake ssh + fake timeout），包含包月、按量、自动续费和失败回收路径。
+测试覆盖 list / status / provision / update / destroy / reset / rollback
+（fake ctyun-cli + fake ssh + fake timeout），包含包月、按量、自动续费、
+失败回收、版本安装与状态同步路径。

@@ -108,8 +108,13 @@ for v in "$REGION_ID" "$AZ_NAME" "$FLAVOR_ID" "$VPC_ID" "$SUBNET_ID" "$SECURITY_
 done
 
 INSTANCE_NAME="worker-${NAME}"
-# 供私钥/known_hosts 持久化（生产应为挂载卷；测试/本地可覆盖）
-STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+# 供私钥/known_hosts/身份快照持久化。生产使用 STATE_ROOT 按 tenant
+# 隔离；STATE_DIR 保留为测试和旧运维命令的精确目录覆盖。
+if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
+  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+fi
 
 # --- 工具 ---
 ctyun() {
@@ -244,6 +249,20 @@ PRIVATE_KEY="$STATE_DIR/id_rsa"
 keypair_id="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
   --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
   | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
+[[ ! -f "$PRIVATE_KEY" ]] || chmod 600 "$PRIVATE_KEY"
+
+# Tenant state became isolated after the first cloud-worker implementation.
+# A legacy or partially cleaned tenant can therefore retain its cloud key pair
+# after the only matching local private key has disappeared. Reusing that pair
+# would create an instance that this control plane can never SSH into. The
+# idempotency check above already proved that no same-name tenant instance is
+# running, so replace the orphan pair before creating any billable resource.
+if [[ -n "$keypair_id" ]] && ! ssh-keygen -y -f "$PRIVATE_KEY" >/dev/null 2>&1; then
+  echo "warning: replacing orphaned key pair $KEYPAIR_NAME because the tenant private key is unavailable" >&2
+  ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null
+  keypair_id=""
+fi
+
 if [[ -z "$keypair_id" ]]; then
   # 本次新建的 key pair 才允许失败清理删除（复用的不动，可能仍绑其他实例）
   KEYPAIR_CREATED=1

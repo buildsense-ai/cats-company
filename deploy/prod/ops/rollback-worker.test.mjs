@@ -133,6 +133,7 @@ function setupSandbox(state) {
     CTYUN_WORKER_REGION_ID: "region-test",
     // MSYS 形式（/c/...）：脚本里 bash 内建 [[ -f ]] / [[ -d ]] 只认 Unix 路径
     CTYUN_WORKER_STATE_DIR: toMsys(path.join(sandbox, "state")),
+    CATSCO_WORKER_UPDATE_SCRIPT: toMsys(path.join(sandbox, "missing-deploy-worker-version.sh")),
     FAKE_STATE: statePath,
     ...extra,
   }) };
