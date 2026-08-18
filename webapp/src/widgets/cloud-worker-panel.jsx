@@ -19,6 +19,7 @@ const CLOUD_STATUS_META = {
   creating: { label: '实例创建中', tone: 'info' },
   running: { label: '运行中', tone: 'ok' },
   online: { label: '在线', tone: 'ok' },
+  offline: { label: '离线', tone: 'muted' },
   stopped: { label: '已停止', tone: 'warn' },
   missing: { label: '实例不存在', tone: 'danger' },
   error: { label: '异常', tone: 'danger' },

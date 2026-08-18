@@ -282,14 +282,16 @@ const mergeCloudWorkerFacts = (bots, workers) => {
     const cloud = byTenant.get(bot.tenant_name);
     if (!cloud) return bot;
     const reportedStatus = String(cloud.cloud_status || cloud.status || '').toLowerCase();
-    const presenceFallback = bot.is_online === true || bot.online === true ? 'online' : '';
+    const presenceFallback = bot.is_online === true || bot.online === true
+      ? 'online'
+      : (bot.is_online === false || bot.online === false ? 'offline' : '');
     const cloudStatus = !reportedStatus || reportedStatus === 'unknown' || reportedStatus === 'unavailable'
       ? (presenceFallback || reportedStatus || 'unavailable')
       : reportedStatus;
     return {
       ...bot,
       cloud_status: cloudStatus,
-      app_version: cloud.app_version,
+      app_version: cloud.app_version || bot.app_version,
       cloud_version: cloud.cloud_version || cloud.version,
       cloud_image_id: cloud.cloud_image_id || cloud.image_id,
     };
@@ -610,16 +612,29 @@ export default function AgentStoreModal({
   }, [initialAgentId]);
 
   // Available worker image versions (used by the cloud panel for version
-  // selection on rollback/reset). Fetched once on mount; the list is stable.
+  // selection on rollback/reset). A cold backend snapshot gets one short
+  // follow-up poll; normal settled responses do not keep polling.
   useEffect(() => {
     let cancelled = false;
-    api.getCloudWorkerMeta?.().then((meta) => {
-      if (!cancelled) {
+    let retryTimer = null;
+    const loadMeta = async () => {
+      try {
+        const meta = await api.getCloudWorkerMeta?.();
+        if (cancelled) return;
         setCloudImages(meta?.images || []);
         setCloudActions(meta?.actions || null);
+        if (meta?.images_refreshing) {
+          retryTimer = window.setTimeout(loadMeta, 2_000);
+        }
+      } catch {
+        // Cloud image metadata is optional; worker management remains usable.
       }
-    }).catch(() => {});
-    return () => { cancelled = true; };
+    };
+    loadMeta();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -879,28 +894,27 @@ export default function AgentStoreModal({
   }, [entryBot, onClose, skillDetail, skillPickerOpen]);
 
   const loadBots = async ({ silent = false } = {}) => {
+    const cloudRequest = api.getCloudWorkers
+      ? api.getCloudWorkers().then((data) => ({ data })).catch((requestError) => ({ requestError }))
+      : Promise.resolve({ data: {} });
+    let manageableBots = null;
     try {
       if (!silent) setLoading(true);
-      const [botsRes, agentsRes, friendsRes, cloudRes] = await Promise.all([
+      const [botsRes, agentsRes, friendsRes] = await Promise.all([
         api.getMyBots().catch((err) => {
           throw err;
         }),
         api.getAgents ? api.getAgents().catch(() => ({})) : Promise.resolve({}),
         api.getFriends ? api.getFriends().catch(() => ({})) : Promise.resolve({}),
-        api.getCloudWorkers ? api.getCloudWorkers().catch(() => ({})) : Promise.resolve({}),
       ]);
-      const manageableBots = mergeManageableBots(
+      manageableBots = mergeManageableBots(
         botsRes.bots || [],
         agentsRes.agents || [],
         friendsRes.friends || [],
       ).filter(isOwnedBot);
-      // Distinguish "quota fetch failed" (null + error) from "cloud hosting
-      // disabled" (quota.enabled === false) so the UI does not mislead.
-      setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
-      setCloudQuota(cloudRes.quota || null);
-      // Enrich cloud-managed workers with version/status from the control plane.
-      const cloudWorkers = cloudRes.workers || [];
-      setBots(mergeCloudWorkerFacts(manageableBots, cloudWorkers));
+      // Core assistant data is entirely local to CatsCompany and should render
+      // without waiting for cloud-provider reconciliation.
+      setBots(manageableBots);
 
       if (
         !initialAgentAppliedRef.current
@@ -922,6 +936,20 @@ export default function AgentStoreModal({
     } finally {
       if (!silent) setLoading(false);
     }
+
+    if (!manageableBots) return;
+    const { data: cloudRes = {}, requestError } = await cloudRequest;
+    if (requestError) {
+      setCloudQuotaError(true);
+      return;
+    }
+    // Distinguish "quota fetch failed" (null + error) from "cloud hosting
+    // disabled" (quota.enabled === false) so the UI does not mislead.
+    setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
+    setCloudQuota(cloudRes.quota || null);
+    // Enrich provider-only facts after the roster is already visible. Online
+    // presence and the application version continue to come from CatsCompany.
+    setBots((current) => mergeCloudWorkerFacts(current, cloudRes.workers || []));
   };
 
   // Cloud status is operational data, not static bot metadata. Refresh only
@@ -933,6 +961,7 @@ export default function AgentStoreModal({
     if (!visible || !api.getCloudWorkers) return undefined;
 
     let active = true;
+    let retryTimer = null;
     const refresh = async () => {
       try {
         const cloudRes = await api.getCloudWorkers();
@@ -940,6 +969,10 @@ export default function AgentStoreModal({
         setCloudQuotaError(false);
         setCloudQuota(cloudRes?.quota || null);
         setBots((current) => mergeCloudWorkerFacts(current, cloudRes?.workers || []));
+        if (cloudRes?.status_refreshing) {
+          if (retryTimer) window.clearTimeout(retryTimer);
+          retryTimer = window.setTimeout(refresh, 2_000);
+        }
       } catch {
         if (active) setCloudQuotaError(true);
       }
@@ -949,6 +982,7 @@ export default function AgentStoreModal({
     const timer = window.setInterval(refresh, 15_000);
     return () => {
       active = false;
+      if (retryTimer) window.clearTimeout(retryTimer);
       window.clearInterval(timer);
     };
   }, [createMode, hubCloudView, tab]);
