@@ -1,13 +1,15 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Check, Copy, Link2, LoaderCircle, RefreshCw, RotateCcw, X } from 'lucide-react';
 
 import { api } from '../api';
+import { useFeedback } from '../components/feedback-system';
+import t from '../i18n';
 import { copyTextToClipboard } from '../utils/clipboard';
 
 const EXPIRY_OPTIONS = [
-  { seconds: 24 * 60 * 60, label: '24 小时后失效' },
-  { seconds: 7 * 24 * 60 * 60, label: '7 天后失效' },
-  { seconds: 30 * 24 * 60 * 60, label: '30 天后失效' },
+  { seconds: 24 * 60 * 60, label: 'conversation_share_expiry_24h' },
+  { seconds: 7 * 24 * 60 * 60, label: 'conversation_share_expiry_7d' },
+  { seconds: 30 * 24 * 60 * 60, label: 'conversation_share_expiry_30d' },
 ];
 
 function formatShareTime(value) {
@@ -22,10 +24,12 @@ function formatShareTime(value) {
 }
 
 function shareStateLabel(share) {
-  if (share?.state === 'revoked') return '已撤销';
-  if (share?.state === 'expired') return '已过期';
+  if (share?.state === 'revoked') return t('conversation_share_state_revoked');
+  if (share?.state === 'expired') return t('conversation_share_state_expired');
   const expiresAt = formatShareTime(share?.expires_at);
-  return expiresAt ? `${expiresAt} 失效` : '有效';
+  return expiresAt
+    ? t('conversation_share_state_expires', { time: expiresAt })
+    : t('conversation_share_state_active');
 }
 
 function normalizeManagedShares(value) {
@@ -34,14 +38,14 @@ function normalizeManagedShares(value) {
     .filter((share) => share && typeof share === 'object' && share.id)
     .map((share) => ({
       id: String(share.id),
-      title: String(share.title || '会话片段'),
+      title: String(share.title || t('conversation_share_default_title')),
       state: ['active', 'revoked', 'expired'].includes(share.state) ? share.state : 'expired',
       expires_at: share.expires_at,
     }));
 }
 
 export default function ConversationShareReview({ topicId, messageIds = [], mode = 'create', onClose, onComplete = onClose }) {
-  const [title, setTitle] = useState('会话片段');
+  const [title, setTitle] = useState(() => t('conversation_share_default_title'));
   const [expiresIn, setExpiresIn] = useState(EXPIRY_OPTIONS[1].seconds);
   const [status, setStatus] = useState('ready');
   const [result, setResult] = useState(null);
@@ -51,7 +55,30 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
   const [manageStatus, setManageStatus] = useState('idle');
   const [manageError, setManageError] = useState('');
   const [revokingShareID, setRevokingShareID] = useState('');
+  const panelHeadingID = useId();
+  const panelHeadingRef = useRef(null);
+  const titleInputRef = useRef(null);
+  const focusBeforePanelRef = useRef(null);
   const selectedMessageIDs = Array.isArray(messageIds) ? messageIds : [];
+  const { confirm } = useFeedback();
+
+  useEffect(() => {
+    focusBeforePanelRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    return () => {
+      const previous = focusBeforePanelRef.current;
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mode === 'manage' || status !== 'ready') {
+      panelHeadingRef.current?.focus();
+      return;
+    }
+    titleInputRef.current?.focus();
+  }, [mode, status]);
 
   const loadManagedShares = useCallback(async () => {
     setManageStatus('loading');
@@ -61,7 +88,7 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
       setManagedShares(normalizeManagedShares(response?.shares));
       setManageStatus('ready');
     } catch (cause) {
-      setManageError(cause?.message || '加载已创建链接失败，请重试。');
+      setManageError(cause?.message || t('conversation_share_load_error'));
       setManageStatus('error');
     }
   }, [topicId]);
@@ -80,13 +107,13 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
       const response = await api.createConversationShare({
         topicId,
         messageIds: selectedMessageIDs,
-        title: title.trim() || '会话片段',
+        title: title.trim() || t('conversation_share_default_title'),
         expiresIn: Number(expiresIn),
       });
       setResult(response);
       setStatus('created');
     } catch (cause) {
-      setError(cause?.message || '创建分享链接失败，请重试。');
+      setError(cause?.message || t('conversation_share_create_error'));
       setStatus('ready');
     }
   };
@@ -98,25 +125,43 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
       setCopied(true);
     } catch {
       setCopied(false);
-      setError('复制链接失败，请手动复制。');
+      setError(t('conversation_share_copy_error'));
     }
   };
 
   const revokeCreatedShare = async () => {
     if (!result?.id || status === 'revoking') return;
+    const confirmed = await confirm({
+      title: t('conversation_share_revoke_confirm_title'),
+      message: t('conversation_share_confirm_revoke'),
+      confirmLabel: t('conversation_share_revoke_current'),
+      cancelLabel: t('cancel'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setStatus('revoking');
     setError('');
     try {
       await api.revokeConversationShare(result.id);
       setStatus('revoked');
     } catch (cause) {
-      setError(cause?.message || '撤销失败，请重试。');
+      setError(cause?.message || t('conversation_share_revoke_error'));
       setStatus('created');
     }
   };
 
   const revokeManagedShare = async (shareID) => {
     if (!shareID || revokingShareID) return;
+    const share = managedShares.find((candidate) => candidate.id === shareID);
+    if (!share) return;
+    const confirmed = await confirm({
+      title: t('conversation_share_revoke_confirm_title'),
+      message: t('conversation_share_confirm_revoke'),
+      confirmLabel: t('conversation_share_revoke_button'),
+      cancelLabel: t('cancel'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setRevokingShareID(shareID);
     setManageError('');
     try {
@@ -125,7 +170,7 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
         share.id === shareID ? { ...share, state: 'revoked' } : share
       )));
     } catch (cause) {
-      setManageError(cause?.message || '撤销失败，请重试。');
+      setManageError(cause?.message || t('conversation_share_revoke_error'));
     } finally {
       setRevokingShareID('');
     }
@@ -133,34 +178,34 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
 
   if (mode === 'manage') {
     return (
-      <section className="cc-conversation-link-share-review" aria-live="polite">
+      <section className="cc-conversation-link-share-review" aria-live="polite" aria-labelledby={panelHeadingID}>
         <div className="cc-conversation-link-share-heading">
           <div>
-            <span className="cc-conversation-link-share-kicker"><Link2 size={15} /> 已创建链接</span>
-            <h2>管理分享链接</h2>
-            <p>撤销后，访客将无法再打开对应的片段和附件。</p>
+            <span className="cc-conversation-link-share-kicker"><Link2 size={15} /> {t('conversation_share_manage_kicker')}</span>
+            <h2 id={panelHeadingID} ref={panelHeadingRef} tabIndex="-1">{t('conversation_share_manage_title')}</h2>
+            <p>{t('conversation_share_manage_description')}</p>
           </div>
-          <button type="button" className="cc-conversation-link-share-close" aria-label="关闭分享面板" onClick={onClose}>
+          <button type="button" className="cc-conversation-link-share-close" aria-label={t('conversation_share_close_panel')} onClick={onClose}>
             <X size={17} />
           </button>
         </div>
         {manageError && <p className="cc-conversation-link-share-error" role="alert">{manageError}</p>}
         {manageStatus === 'loading' && (
           <div className="cc-conversation-link-share-loading" role="status">
-            <LoaderCircle className="is-spinning" size={16} /> 正在加载链接
+            <LoaderCircle className="is-spinning" size={16} /> {t('conversation_share_loading_links')}
           </div>
         )}
         {manageStatus === 'error' && (
           <div className="cc-conversation-link-share-actions">
-            <button type="button" className="v3-btn-secondary" onClick={() => void loadManagedShares()}>
-              <RefreshCw size={16} /> 重试
+            <button type="button" className="cc-conversation-share-secondary" onClick={() => void loadManagedShares()}>
+              <RefreshCw size={16} /> {t('conversation_share_retry')}
             </button>
           </div>
         )}
         {manageStatus === 'ready' && (
           <div className="cc-conversation-link-share-list">
             {managedShares.length === 0 && (
-              <p className="cc-conversation-link-share-empty">当前会话还没有可管理的分享链接。</p>
+              <p className="cc-conversation-link-share-empty">{t('conversation_share_empty_links')}</p>
             )}
             {managedShares.map((share) => (
               <article className="cc-conversation-link-share-item" key={share.id}>
@@ -171,13 +216,13 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
                 {share.state === 'active' && (
                   <button
                     type="button"
-                    className="v3-btn-danger"
-                    aria-label={`撤销分享 ${share.title}`}
+                    className="cc-conversation-share-danger"
+                    aria-label={t('conversation_share_revoke_label', { title: share.title })}
                     disabled={revokingShareID === share.id}
                     onClick={() => void revokeManagedShare(share.id)}
                   >
                     {revokingShareID === share.id ? <LoaderCircle className="is-spinning" size={16} /> : <RotateCcw size={16} />}
-                    撤销
+                    {t('conversation_share_revoke_button')}
                   </button>
                 )}
               </article>
@@ -190,29 +235,29 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
 
   if (status === 'created' || status === 'revoking') {
     return (
-      <section className="cc-conversation-link-share-review" aria-live="polite">
+      <section className="cc-conversation-link-share-review" aria-live="polite" aria-labelledby={panelHeadingID}>
         <div className="cc-conversation-link-share-heading">
           <div>
-            <span className="cc-conversation-link-share-kicker"><Check size={15} /> 只读片段</span>
-            <h2>分享链接已创建</h2>
-            <p>访客只能浏览这 {result?.message_count || selectedMessageIDs.length} 条选中消息及其附件。</p>
+            <span className="cc-conversation-link-share-kicker"><Check size={15} /> {t('conversation_share_created_kicker')}</span>
+            <h2 id={panelHeadingID} ref={panelHeadingRef} tabIndex="-1">{t('conversation_share_created_title')}</h2>
+            <p>{t('conversation_share_created_description', { count: result?.message_count || selectedMessageIDs.length })}</p>
           </div>
-          <button type="button" className="cc-conversation-link-share-close" aria-label="关闭分享面板" onClick={onComplete}>
+          <button type="button" className="cc-conversation-link-share-close" aria-label={t('conversation_share_close_panel')} onClick={onComplete}>
             <X size={17} />
           </button>
         </div>
         <div className="cc-conversation-link-share-url-row">
-          <input aria-label="分享链接" value={result?.url || ''} readOnly onFocus={(event) => event.currentTarget.select()} />
-          <button type="button" className="v3-action-btn" aria-label={copied ? '已复制链接' : '复制分享链接'} onClick={copyLink}>
+          <input aria-label={t('conversation_share_link_label')} value={result?.url || ''} readOnly onFocus={(event) => event.currentTarget.select()} />
+          <button type="button" className="v3-action-btn" aria-label={copied ? t('conversation_share_copied_link') : t('conversation_share_copy_link')} onClick={copyLink}>
             {copied ? <Check size={17} /> : <Copy size={17} />}
           </button>
         </div>
         {error && <p className="cc-conversation-link-share-error" role="alert">{error}</p>}
         <div className="cc-conversation-link-share-actions">
-          <button type="button" className="v3-btn-secondary" onClick={onComplete}>完成</button>
-          <button type="button" className="v3-btn-danger" aria-label="撤销此分享" onClick={revokeCreatedShare} disabled={status === 'revoking'}>
+          <button type="button" className="cc-conversation-share-secondary" onClick={onComplete}>{t('conversation_share_done')}</button>
+          <button type="button" className="cc-conversation-share-danger" aria-label={t('conversation_share_revoke_current_aria')} onClick={revokeCreatedShare} disabled={status === 'revoking'}>
             {status === 'revoking' ? <LoaderCircle className="is-spinning" size={16} /> : <RotateCcw size={16} />}
-            撤销分享
+            {t('conversation_share_revoke_current')}
           </button>
         </div>
       </section>
@@ -221,55 +266,55 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
 
   if (status === 'revoked') {
     return (
-      <section className="cc-conversation-link-share-review" aria-live="polite">
+      <section className="cc-conversation-link-share-review" aria-live="polite" aria-labelledby={panelHeadingID}>
         <div className="cc-conversation-link-share-heading">
           <div>
-            <span className="cc-conversation-link-share-kicker"><Check size={15} /> 已处理</span>
-            <h2>已撤销分享链接</h2>
-            <p>该链接和它的附件预览已无法继续访问。</p>
+            <span className="cc-conversation-link-share-kicker"><Check size={15} /> {t('conversation_share_processed_kicker')}</span>
+            <h2 id={panelHeadingID} ref={panelHeadingRef} tabIndex="-1">{t('conversation_share_processed_title')}</h2>
+            <p>{t('conversation_share_processed_description')}</p>
           </div>
-          <button type="button" className="cc-conversation-link-share-close" aria-label="关闭分享面板" onClick={onComplete}>
+          <button type="button" className="cc-conversation-link-share-close" aria-label={t('conversation_share_close_panel')} onClick={onComplete}>
             <X size={17} />
           </button>
         </div>
         <div className="cc-conversation-link-share-actions">
-          <button type="button" className="v3-btn-secondary" onClick={onComplete}>关闭</button>
+          <button type="button" className="cc-conversation-share-secondary" onClick={onComplete}>{t('conversation_share_close')}</button>
         </div>
       </section>
     );
   }
 
   return (
-    <section className="cc-conversation-link-share-review">
+    <section className="cc-conversation-link-share-review" aria-live="polite" aria-labelledby={panelHeadingID}>
       <div className="cc-conversation-link-share-heading">
         <div>
-          <span className="cc-conversation-link-share-kicker"><Link2 size={15} /> 只读分享</span>
-          <h2>确认分享内容</h2>
-          <p>只会导出已选的 {selectedMessageIDs.length} 条消息。不会携带原会话、成员或设备上下文。</p>
+          <span className="cc-conversation-link-share-kicker"><Link2 size={15} /> {t('conversation_share_create_kicker')}</span>
+          <h2 id={panelHeadingID} ref={panelHeadingRef} tabIndex="-1">{t('conversation_share_create_title')}</h2>
+          <p>{t('conversation_share_create_description', { count: selectedMessageIDs.length })}</p>
         </div>
-        <button type="button" className="cc-conversation-link-share-close" aria-label="关闭分享面板" onClick={onClose}>
+        <button type="button" className="cc-conversation-link-share-close" aria-label={t('conversation_share_close_panel')} onClick={onClose}>
           <X size={17} />
         </button>
       </div>
       <form className="cc-conversation-link-share-form" onSubmit={createShare}>
         <label>
-          <span>访客标题</span>
-          <input value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} />
+          <span>{t('conversation_share_guest_title')}</span>
+          <input ref={titleInputRef} value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} />
         </label>
         <label>
-          <span>有效期</span>
+          <span>{t('conversation_share_expiry_label')}</span>
           <select value={expiresIn} onChange={(event) => setExpiresIn(event.target.value)}>
             {EXPIRY_OPTIONS.map((option) => (
-              <option key={option.seconds} value={option.seconds}>{option.label}</option>
+              <option key={option.seconds} value={option.seconds}>{t(option.label)}</option>
             ))}
           </select>
         </label>
         {error && <p className="cc-conversation-link-share-error" role="alert">{error}</p>}
         <div className="cc-conversation-link-share-actions">
-          <button type="button" className="v3-btn-secondary" onClick={onClose}>返回选择</button>
-          <button type="submit" className="v3-btn-primary" disabled={status === 'saving'}>
+          <button type="button" className="cc-conversation-share-secondary" onClick={onClose}>{t('conversation_share_back_to_selection')}</button>
+          <button type="submit" className="cc-conversation-share-primary" disabled={status === 'saving'}>
             {status === 'saving' ? <LoaderCircle className="is-spinning" size={16} /> : <Link2 size={16} />}
-            创建分享链接
+            {t('conversation_share_create_button')}
           </button>
         </div>
       </form>

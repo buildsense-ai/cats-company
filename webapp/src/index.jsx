@@ -8,7 +8,8 @@ import PwaController from './components/pwa-controller';
 import PushCleanupController from './components/push-cleanup-controller';
 import { getAuthRevision, getPushPromptOwner, getToken } from './api';
 import { FeedbackProvider } from './components/feedback-system';
-import { syncThemeColor, THEME_STORAGE_KEY } from './utils/theme-access';
+import t from './i18n';
+import { applyThemeAttributes, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
 import './css/catsco-topbar.css';
 import './css/catsco-secondary-headers.css';
@@ -17,7 +18,14 @@ import './css/search-overlay.css';
 
 const SharedConversationView = lazy(() => import('./views/shared-conversation-view'));
 
-syncThemeColor(localStorage.getItem(THEME_STORAGE_KEY));
+let storedTheme = '';
+try {
+  storedTheme = localStorage.getItem(THEME_STORAGE_KEY) || '';
+} catch {
+  // A blocked storage area should not prevent the public share route from
+  // rendering with its default theme.
+}
+applyThemeAttributes(storedTheme);
 
 function readBrowserLocation() {
   return {
@@ -60,11 +68,11 @@ export function App() {
   }, []);
 
   const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);
-  const sharedConversationMatch = browserLocation.pathname.match(/^\/share\/([^/]+)$/);
+  const sharedConversationMatch = browserLocation.pathname.match(/^\/share\/([^/]+)\/?$/);
 
   if (sharedConversationMatch) {
     return (
-      <Suspense fallback={<main className="cc-shared-conversation-state" role="status">正在打开分享片段…</main>}>
+      <Suspense fallback={<main className="cc-shared-conversation-state" role="status">{t('conversation_share_loading')}</main>}>
         <SharedConversationView token={decodeSharedConversationToken(sharedConversationMatch[1])} />
       </Suspense>
     );

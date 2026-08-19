@@ -122,6 +122,11 @@ describe('ChatMessage rich file rendering', () => {
       ok: true,
       text: () => Promise.resolve('<!doctype html><h1>Report</h1><script>window.evil=true</script>'),
     }));
+    const NativeURL = globalThis.URL;
+    class TestURL extends NativeURL {}
+    TestURL.createObjectURL = vi.fn(() => 'blob:test');
+    TestURL.revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', TestURL);
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -134,6 +139,7 @@ describe('ChatMessage rich file rendering', () => {
     });
     container.remove();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('recognizes a capability-scoped shared file as safe to preview', () => {
@@ -3261,6 +3267,10 @@ describe('ChatMessage rich file rendering', () => {
 
   it('renders a capability-scoped video content block with the existing video preview', async () => {
     const url = '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(['video'])),
+    });
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -3281,11 +3291,80 @@ describe('ChatMessage rich file rendering', () => {
         />,
       );
       await Promise.resolve();
+      await Promise.resolve();
     });
 
     const thumbnail = container.querySelector('video.oc-rich-video-thumb');
     expect(thumbnail).not.toBeNull();
-    expect(thumbnail.getAttribute('src')).toBe(url);
+    expect(global.fetch).toHaveBeenCalledWith(url, expect.objectContaining({ credentials: 'omit' }));
+    expect(thumbnail.getAttribute('src')).toBe('blob:test');
     expect(container.querySelector('.v3-message')).not.toBeNull();
+  });
+
+  it('does not create a preview blob when a shared media body exceeds its cap without Content-Length', async () => {
+    const url = '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve({ size: (32 << 20) + 1 }),
+    });
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 'oversized-shared-video',
+            from_uid: 2,
+            content: '',
+            content_blocks: [{
+              type: 'video',
+              payload: {
+                name: 'oversized.mp4',
+                url,
+                mime_type: 'video/mp4',
+              },
+            }],
+          }}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(container.querySelector('.oc-rich-video-fallback')).not.toBeNull();
+  });
+
+  it('downloads a non-previewable shared file without credentials', async () => {
+    const url = '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(['archive'])),
+    });
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 'shared-archive',
+            from_uid: 2,
+            content: '',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'shared-archive.zip',
+                url,
+                mime_type: 'application/zip',
+              },
+            }],
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('a.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(url, { credentials: 'omit' });
   });
 });

@@ -28,6 +28,10 @@ vi.mock('./views/tinode-web', () => ({
   default: ({ location }) => <div data-testid="tinode-web">{location.pathname}</div>,
 }));
 
+vi.mock('./views/shared-conversation-view', () => ({
+  default: ({ token }) => <div data-testid="shared-conversation-view">{token}</div>,
+}));
+
 vi.mock('./components/pwa-controller', () => ({
   default: (props) => {
     mocks.pwaController(props);
@@ -47,7 +51,7 @@ vi.mock('./components/feedback-system', () => ({
 }));
 
 vi.mock('./utils/theme-access', () => ({
-  syncThemeColor: vi.fn(),
+  applyThemeAttributes: vi.fn(),
   THEME_STORAGE_KEY: 'theme',
 }));
 
@@ -82,4 +86,17 @@ test('keeps PWA runtime mounted for a signed-out non-authentication route', asyn
 
   expect(container.querySelector('[data-testid="pwa-controller"]')).toBeTruthy();
   expect(mocks.pwaController).toHaveBeenCalledWith(expect.objectContaining({ loggedIn: false }));
+});
+
+test('opens a shared conversation when the copied URL has a trailing slash', async () => {
+  window.history.replaceState(null, '', '/share/visitor-capability/');
+
+  await act(async () => {
+    root.render(<App />);
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('[data-testid="shared-conversation-view"]')?.textContent)
+    .toBe('visitor-capability');
+  expect(container.querySelector('[data-testid="tinode-web"]')).toBeNull();
 });

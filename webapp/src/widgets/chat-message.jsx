@@ -38,6 +38,7 @@ const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]
 const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
+const MAX_SHARED_MEDIA_PREVIEW_BYTES = 32 << 20;
 const trustedArtifactPreviewPayloads = new WeakSet();
 
 function remoteArtifactPreviewKey(file, descriptor) {
@@ -1575,7 +1576,10 @@ function ImageContent({ payload }) {
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
-  const src = payload?.url || payload?.thumbnail;
+  const sourceURL = resolveMediaURL(payload?.url || payload?.thumbnail);
+  const sharedAsset = isSharedConversationAssetURL(sourceURL);
+  const sharedAssetState = useSharedConversationAssetURL(sourceURL);
+  const src = sharedAsset ? sharedAssetState.url : sourceURL;
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -1613,6 +1617,7 @@ function ImageContent({ payload }) {
   }, [expanded]);
 
   if (!payload) return null;
+  if (sharedAsset && !src) return <FileContent payload={payload} inlineMedia={false} />;
 
   const preview = expanded ? createPortal(
     <div
@@ -1633,7 +1638,7 @@ function ImageContent({ payload }) {
         <X size={20} />
       </button>
       <img
-        src={resolveMediaURL(payload.url || src)}
+        src={src}
         alt={payload.name ? `${payload.name} preview` : 'image preview'}
         className="oc-rich-image-preview-media"
         onClick={(event) => event.stopPropagation()}
@@ -1656,7 +1661,7 @@ function ImageContent({ payload }) {
         type="button"
       >
         <img
-          src={resolveMediaURL(src)}
+          src={src}
           alt={payload.name || 'image'}
           className="oc-rich-image-thumb"
           draggable={canDragChatAttachment({ type: 'image', payload })}
@@ -1867,6 +1872,74 @@ function isSharedConversationAssetURL(url) {
   }
 }
 
+// Native media elements cannot opt out of same-origin cookies. Public share
+// assets are therefore fetched without credentials and exposed to the media
+// element through a short-lived blob URL.
+function useSharedConversationAssetURL(url) {
+  const shared = isSharedConversationAssetURL(url);
+  const [state, setState] = useState(() => ({
+    source: url,
+    url: shared ? '' : (url || ''),
+    loading: shared,
+    failed: false,
+  }));
+  const currentState = state.source === url
+    ? state
+    : { source: url, url: shared ? '' : (url || ''), loading: shared, failed: false };
+
+  useEffect(() => {
+    if (!shared) {
+      setState({ source: url, url: url || '', loading: false, failed: false });
+      return undefined;
+    }
+
+    let cancelled = false;
+    let objectURL = '';
+    const controller = new AbortController();
+    setState({ source: url, url: '', loading: true, failed: false });
+
+    fetch(fetchableMediaURL(url), {
+      credentials: 'omit',
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
+        const contentLength = Number(response.headers?.get?.('content-length') || 0);
+        if (contentLength > MAX_SHARED_MEDIA_PREVIEW_BYTES) {
+          throw new Error('shared media preview is too large');
+        }
+        return response.blob().then((blob) => {
+          // Content-Length is commonly present for copied assets, but a proxy
+          // may omit or misreport it. Never turn an unexpectedly large body
+          // into an in-page media preview.
+          if (blob.size > MAX_SHARED_MEDIA_PREVIEW_BYTES) {
+            throw new Error('shared media preview is too large');
+          }
+          return blob;
+        });
+      })
+      .then((blob) => {
+        objectURL = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(objectURL);
+          return;
+        }
+        setState({ source: url, url: objectURL, loading: false, failed: false });
+      })
+      .catch(() => {
+        if (!cancelled) setState({ source: url, url: '', loading: false, failed: true });
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (objectURL) URL.revokeObjectURL(objectURL);
+    };
+  }, [shared, url]);
+
+  return currentState;
+}
+
 function isSameOriginURL(url) {
   if (!url || typeof window === 'undefined' || !window.location?.origin) return false;
   try {
@@ -1925,7 +1998,10 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const closeButtonRef = useRef(null);
   const fallbackActionRef = useRef(null);
   const shouldFocusFallbackRef = useRef(false);
-  const src = resolveMediaURL(payload?.url);
+  const sourceURL = resolveMediaURL(payload?.url);
+  const sharedAsset = isSharedConversationAssetURL(sourceURL);
+  const sharedAssetState = useSharedConversationAssetURL(sourceURL);
+  const src = sharedAsset ? sharedAssetState.url : sourceURL;
 
   useEffect(() => {
     setPlaybackFailed(false);
@@ -2064,8 +2140,14 @@ function AudioContent({ payload, onPreviewFile, activePreviewFile }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const fallbackActionRef = useRef(null);
   const shouldFocusFallbackRef = useRef(false);
-  const src = resolveMediaURL(payload?.url);
-  const downloadURL = downloadableMediaURL(src);
+  const sourceURL = resolveMediaURL(payload?.url);
+  const sharedAsset = isSharedConversationAssetURL(sourceURL);
+  const sharedAssetState = useSharedConversationAssetURL(sourceURL);
+  const src = sharedAsset ? sharedAssetState.url : sourceURL;
+  const downloadURL = downloadableMediaURL(sourceURL);
+  const sharedAssetDownloadProps = isSharedConversationAssetURL(downloadURL)
+    ? { credentialless: true, credentials: 'omit' }
+    : {};
   const sizeStr = payload?.size ? formatFileSize(payload.size) : '';
 
   useEffect(() => {
@@ -2122,6 +2204,7 @@ function AudioContent({ payload, onPreviewFile, activePreviewFile }) {
         您的浏览器暂不支持音频播放。
       </audio>
       <PwaDownloadLink
+        {...sharedAssetDownloadProps}
         className="oc-rich-audio-download"
         download={payload.name || true}
         href={downloadURL || undefined}
@@ -2146,13 +2229,29 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineMedia = 
   if (!payload) return null;
   const descriptor = previewFileDescriptor(payload);
   const { url, ext, canPreview, downloadURL, meta, sizeStr, key } = descriptor;
+  const isSharedAsset = isSharedConversationAssetURL(url);
+  const sharedAssetDownloadProps = isSharedConversationAssetURL(downloadURL)
+    ? { credentialless: true, credentials: 'omit' }
+    : {};
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
   const subtitle = [meta.label, sizeStr].filter(Boolean).join(' · ');
   const openFile = () => {
     if (canPreview && onPreviewFile) onPreviewFile(payload);
-    else if (url) window.open(url, '_blank');
+    else if (url && !isSharedAsset) window.open(url, '_blank');
   };
+
+  const attachmentSummary = (
+    <>
+      <div className="v3-attachment-icon">
+        <FileText size={18} strokeWidth={1.5} />
+      </div>
+      <div className="v3-attachment-info">
+        <span className="v3-attachment-name" title={payload.name || 'File'}>{payload.name || 'File'}</span>
+        <span className="v3-attachment-size">{subtitle}</span>
+      </div>
+    </>
+  );
 
   return (
     <div
@@ -2161,21 +2260,30 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineMedia = 
       onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'file', payload })}
       onDragEnd={clearChatAttachmentDrag}
     >
-      <button
-        className="v3-artifact-main"
-        onClick={openFile}
-        ref={actionRef}
-        title={canPreview ? '预览文件' : '打开或下载文件'}
-        type="button"
-      >
-        <div className="v3-attachment-icon">
-          <FileText size={18} strokeWidth={1.5} />
-        </div>
-        <div className="v3-attachment-info">
-          <span className="v3-attachment-name" title={payload.name || 'File'}>{payload.name || 'File'}</span>
-          <span className="v3-attachment-size">{subtitle}</span>
-        </div>
-      </button>
+      {isSharedAsset && !canPreview ? (
+        <PwaDownloadLink
+          {...sharedAssetDownloadProps}
+          className="v3-artifact-main"
+          download={payload.name || true}
+          href={downloadURL || undefined}
+          linkRef={actionRef}
+          rel="noopener noreferrer"
+          target="_blank"
+          title="下载文件"
+        >
+          {attachmentSummary}
+        </PwaDownloadLink>
+      ) : (
+        <button
+          className="v3-artifact-main"
+          onClick={openFile}
+          ref={actionRef}
+          title={canPreview ? '预览文件' : '打开或下载文件'}
+          type="button"
+        >
+          {attachmentSummary}
+        </button>
+      )}
       <div className="v3-artifact-actions">
         <button
           className="v3-artifact-action"
@@ -2188,6 +2296,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineMedia = 
           <span>预览</span>
         </button>
         <PwaDownloadLink
+          {...sharedAssetDownloadProps}
           className="v3-artifact-action"
           href={downloadURL || undefined}
           download={payload.name || true}
@@ -2245,6 +2354,7 @@ export function FilePreviewPanel({
     [pendingRemoteArtifactFile],
   );
   const url = descriptor?.url || '';
+  const isSharedAssetURL = isSharedConversationAssetURL(url);
   const isPdf = descriptor?.isPdf || false;
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
@@ -2253,6 +2363,9 @@ export function FilePreviewPanel({
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
+  const sharedAssetDownloadProps = isSharedConversationAssetURL(downloadURL)
+    ? { credentialless: true, credentials: 'omit' }
+    : {};
   const currentRemoteArtifactKey = remoteArtifactPreviewKey(file, descriptor);
   const pendingRemoteArtifactKey = remoteArtifactPreviewKey(
     pendingRemoteArtifactFile,
@@ -2639,13 +2752,15 @@ export function FilePreviewPanel({
           </div>
           <div className="v3-file-preview-actions">
             {!isRemoteArtifact && (
-              <PwaDownloadLink href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
+              <PwaDownloadLink {...sharedAssetDownloadProps} href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
                 <Download size={18} />
               </PwaDownloadLink>
             )}
-            <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
-              <ExternalLink size={18} />
-            </a>
+            {!isSharedAssetURL && (
+              <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
+                <ExternalLink size={18} />
+              </a>
+            )}
             <button ref={closeButtonRef} aria-label="关闭预览" onClick={onClose} type="button">
               <X size={18} />
             </button>
@@ -2707,8 +2822,12 @@ export function FilePreviewPanel({
               )}
             </div>
           ) : isPdf ? (
-            shouldUseSheetMode ? (
-              <MobilePdfPreview url={fetchableMediaURL(url)} />
+            shouldUseSheetMode || isSharedAssetURL ? (
+              <MobilePdfPreview
+                url={fetchableMediaURL(url)}
+                withCredentials={!isSharedAssetURL}
+                accessibleURL={isSharedAssetURL ? '' : fetchableMediaURL(url)}
+              />
             ) : (
               <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
             )
@@ -2749,7 +2868,7 @@ export function FilePreviewPanel({
               <span>新标签页打开</span>
             </a>
           ) : (
-            <PwaDownloadLink href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
+            <PwaDownloadLink {...sharedAssetDownloadProps} href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
               <Download size={17} />
               <span>下载原文件</span>
             </PwaDownloadLink>

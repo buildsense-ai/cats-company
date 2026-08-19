@@ -693,6 +693,7 @@ describe('public conversation share requests', () => {
   let apiModule;
 
   beforeEach(async () => {
+    vi.useFakeTimers();
     vi.resetModules();
     localStorage.clear();
     global.fetch = vi.fn().mockResolvedValue({
@@ -707,6 +708,7 @@ describe('public conversation share requests', () => {
   afterEach(() => {
     apiModule.disconnectWS();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   test('loads a capability link without forwarding the owner session', async () => {
@@ -724,6 +726,43 @@ describe('public conversation share requests', () => {
       }),
     );
     expect(global.fetch.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
+  });
+
+  test('aborts a capability-link request when its timeout expires', async () => {
+    global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+
+    const request = apiModule.api.getConversationShare('visitor-capability', { timeoutMs: 15000 });
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  test('distinguishes caller cancellation from a capability-link timeout', async () => {
+    global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    const controller = new AbortController();
+    const request = apiModule.api.getConversationShare('visitor-capability', {
+      signal: controller.signal,
+      timeoutMs: 15000,
+    });
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
+
+    controller.abort();
+    await rejection;
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(true);
   });
 });
 

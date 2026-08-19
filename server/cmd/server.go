@@ -216,6 +216,16 @@ var sharedConversationPublicAssetIPRateLimit = server.HTTPRateLimitConfig{
 	Name: "shared_conversation_asset_ip", Limit: 600, Window: time.Minute, Burst: 256,
 }
 
+var sharedConversationCreateIPRateLimit = server.HTTPRateLimitConfig{
+	// Creating a share may copy up to 300 MiB of attachments. Keep the write
+	// path deliberately separate from cheap list/revoke operations.
+	Name: "shared_conversation_create_ip", Limit: 6, Window: time.Hour, Burst: 2,
+}
+
+var sharedConversationCreateUserRateLimit = server.HTTPRateLimitConfig{
+	Name: "shared_conversation_create_user", Limit: 6, Window: time.Hour, Burst: 2,
+}
+
 func sharedConversationPublicIPLimit(limiter *server.HTTPRateLimiter) func(http.HandlerFunc) http.HandlerFunc {
 	snapshotLimit := limiter.LimitIP(sharedConversationPublicSnapshotIPRateLimit)
 	assetLimit := limiter.LimitIP(sharedConversationPublicAssetIPRateLimit)
@@ -236,6 +246,18 @@ func sharedConversationPublicAssetPath(path string) bool {
 	rest := strings.TrimPrefix(path, "/api/shared-conversations/")
 	parts := strings.Split(rest, "/")
 	return len(parts) == 3 && parts[0] != "" && parts[1] == "assets" && parts[2] != ""
+}
+
+func sharedConversationCreateLimit(limiter *server.HTTPRateLimiter) func(http.HandlerFunc) http.HandlerFunc {
+	ipLimit := limiter.LimitIP(sharedConversationCreateIPRateLimit)
+	userLimit := limiter.LimitUser(sharedConversationCreateUserRateLimit)
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return chainHTTP(
+			next,
+			limitHTTPMethod(http.MethodPost, ipLimit),
+			limitHTTPMethod(http.MethodPost, userLimit),
+		)
+	}
 }
 
 func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
@@ -585,6 +607,7 @@ func main() {
 		Name: "push_test_user", Limit: 6, Window: time.Minute, Burst: 2,
 	})
 	sharedConversationIPLimit := sharedConversationPublicIPLimit(httpLimiter)
+	sharedConversationCreateRateLimit := sharedConversationCreateLimit(httpLimiter)
 	readerIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "reader_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -723,8 +746,16 @@ func main() {
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))
 	mux.HandleFunc("/api/messages/search", authWithDB(msgHandler.HandleSearchMessages))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
-	mux.HandleFunc("/api/conversation-shares", jwtAuthWithDB(conversationShareHandler.HandleAuthenticated))
-	mux.HandleFunc("/api/conversation-shares/", jwtAuthWithDB(conversationShareHandler.HandleAuthenticated))
+	mux.HandleFunc("/api/conversation-shares", chainHTTP(
+		conversationShareHandler.HandleAuthenticated,
+		jwtAuthWithDB,
+		sharedConversationCreateRateLimit,
+	))
+	mux.HandleFunc("/api/conversation-shares/", chainHTTP(
+		conversationShareHandler.HandleAuthenticated,
+		jwtAuthWithDB,
+		sharedConversationCreateRateLimit,
+	))
 	mux.HandleFunc("/api/shared-conversations/", sharedConversationIPLimit(conversationShareHandler.HandlePublic))
 	mux.HandleFunc("/api/stt/sessions", jwtAuthWithDB(sttHandler.HandleSession))
 	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)

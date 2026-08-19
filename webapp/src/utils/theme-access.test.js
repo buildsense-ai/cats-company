@@ -3,6 +3,7 @@ import {
   THEME_STORAGE_KEY,
   isLiquidTheme,
   isLiquidThemeUnlocked,
+  applyThemeAttributes,
   normalizeTheme,
   saveLiquidThemeUnlock,
   syncThemeColor,
@@ -39,6 +40,16 @@ describe('theme access', () => {
 
     expect(meta.content).toBe('#0f0f0f');
     meta.remove();
+  });
+
+  it('applies root theme attributes for standalone routes', () => {
+    applyThemeAttributes('liquid-green');
+    expect(document.documentElement.dataset.theme).toBe('liquid');
+    expect(document.documentElement.dataset.liquidVariant).toBe('green');
+
+    applyThemeAttributes('dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.dataset.liquidVariant).toBeUndefined();
   });
 
   it('stores the local liquid-theme unlock without storing a password', () => {

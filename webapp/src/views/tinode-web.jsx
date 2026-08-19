@@ -58,11 +58,11 @@ import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
 import {
   THEME_STORAGE_KEY,
+  applyThemeAttributes,
   isLiquidTheme,
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
-  syncThemeColor,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
 import {
@@ -335,14 +335,7 @@ function TinodeWebApp({ location }) {
   }, []);
 
   useEffect(() => {
-    const greenLiquid = theme === 'liquid-green';
-    document.documentElement.dataset.theme = greenLiquid ? 'liquid' : theme;
-    if (greenLiquid) {
-      document.documentElement.dataset.liquidVariant = 'green';
-    } else {
-      delete document.documentElement.dataset.liquidVariant;
-    }
-    syncThemeColor(theme);
+    applyThemeAttributes(theme);
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 

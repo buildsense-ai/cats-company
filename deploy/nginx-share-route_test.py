@@ -29,15 +29,19 @@ def location_body(config: str, declaration: str) -> str:
 
 
 class ShareRouteNginxConfigTest(unittest.TestCase):
-    def test_share_fallback_and_final_shell_are_not_cacheable_or_referrable(self) -> None:
+    def test_share_fallback_keeps_capability_shell_private_without_disabling_app_shell_cache(self) -> None:
         config = CONFIG_PATH.read_text(encoding="utf-8")
+        share_root = location_body(config, "location = /share")
         share_location = location_body(config, "location ^~ /share/")
+        share_shell = location_body(config, "location @conversation_share_shell")
         index_location = location_body(config, "location = /index.html")
 
-        self.assertIn("try_files $uri $uri/ /index.html;", share_location)
-        for location in (share_location, index_location):
+        self.assertIn("try_files $uri $uri/ @conversation_share_shell;", share_location)
+        for location in (share_root, share_location, share_shell):
             self.assertIn('add_header Cache-Control "no-store" always;', location)
             self.assertIn('add_header Referrer-Policy "no-referrer" always;', location)
+        self.assertIn('add_header Cache-Control "no-cache" always;', index_location)
+        self.assertNotIn('add_header Cache-Control "no-store" always;', index_location)
 
 
 if __name__ == "__main__":

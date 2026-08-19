@@ -32,6 +32,7 @@ describe('ConversationShareReview', () => {
       configurable: true,
       value: { writeText: vi.fn(() => Promise.resolve()) },
     });
+    window.confirm = vi.fn(() => true);
   });
 
   afterEach(async () => {

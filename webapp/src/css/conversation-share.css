@@ -26,13 +26,40 @@
   color: var(--cc-muted, #68707d);
 }
 
+.cc-shared-conversation-state .cc-conversation-share-secondary {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 8px;
+  color: var(--cc-text-secondary);
+  background: var(--cc-panel);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cc-shared-conversation-state .cc-conversation-share-secondary:hover {
+  background: var(--cc-hover);
+}
+
+.cc-shared-conversation-state .cc-conversation-share-secondary:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
 .cc-shared-conversation-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 16px;
-  min-height: 56px;
-  padding: 0 20px;
+  min-height: 48px;
+  height: 48px;
+  padding: 0 12px;
   box-sizing: border-box;
   border-bottom: 1px solid var(--cc-border, #dce0e6);
   background: var(--cc-main-header-bg, var(--cc-main-bg, #f4f5f7));
@@ -48,10 +75,7 @@
 
 .cc-shared-conversation-brand {
   justify-self: start;
-  color: var(--cc-text, #20242c);
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0;
+  min-width: 0;
 }
 
 .cc-shared-conversation-heading {
@@ -93,14 +117,14 @@
 
 .cc-shared-message-workspace {
   width: 100%;
-  min-height: calc(100dvh - 56px);
+  min-height: calc(100dvh - 48px);
   margin: 0;
   border: 0;
 }
 
 .cc-shared-conversation .v3-chat-column,
 .cc-shared-timeline {
-  min-height: calc(100dvh - 56px);
+  min-height: calc(100dvh - 48px);
 }
 
 .cc-shared-timeline {
@@ -176,8 +200,8 @@
 .cc-conversation-link-share-close {
   display: grid;
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   border: 0;
   border-radius: 7px;
@@ -225,6 +249,19 @@
   font-size: 13px;
 }
 
+.cc-conversation-link-share-url-row input {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-conversation-link-share-url-row .v3-action-btn {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+}
+
 .cc-conversation-link-share-form input:focus-visible,
 .cc-conversation-link-share-form select:focus-visible,
 .cc-conversation-link-share-url-row input:focus-visible {
@@ -246,6 +283,64 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
+}
+
+.cc-conversation-link-share-review :is(
+  .cc-conversation-share-primary,
+  .cc-conversation-share-secondary,
+  .cc-conversation-share-danger
+) {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cc-conversation-link-share-review .cc-conversation-share-primary {
+  border: 1px solid var(--cc-conversation-share-accent-border, var(--cc-accent));
+  color: var(--cc-conversation-share-accent-text, var(--cc-accent-text));
+  background: color-mix(in srgb, var(--cc-conversation-share-accent, var(--cc-accent)) 18%, var(--cc-panel));
+}
+
+.cc-conversation-link-share-review .cc-conversation-share-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cc-conversation-share-accent, var(--cc-accent)) 24%, var(--cc-panel));
+}
+
+.cc-conversation-link-share-review .cc-conversation-share-secondary {
+  border: 1px solid var(--cc-border-strong);
+  color: var(--cc-text-secondary);
+  background: var(--cc-panel);
+}
+
+.cc-conversation-link-share-review .cc-conversation-share-secondary:hover:not(:disabled) {
+  color: var(--cc-text);
+  background: var(--cc-hover);
+}
+
+.cc-conversation-link-share-review .cc-conversation-share-danger {
+  border: 1px solid color-mix(in srgb, var(--cc-danger) 52%, var(--cc-border-strong));
+  color: var(--cc-danger);
+  background: color-mix(in srgb, var(--cc-danger) 8%, var(--cc-panel));
+}
+
+.cc-conversation-link-share-review .cc-conversation-share-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cc-danger) 15%, var(--cc-panel));
+}
+
+.cc-conversation-link-share-review :is(
+  .cc-conversation-share-primary,
+  .cc-conversation-share-secondary,
+  .cc-conversation-share-danger
+):focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
 }
 
 .cc-conversation-link-share-url-row {
@@ -327,6 +422,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 4px 12px;
     min-height: 68px;
+    height: auto;
     padding: 8px 16px;
   }
 
@@ -364,5 +460,25 @@
 
   .cc-conversation-link-share-item {
     align-items: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .cc-conversation-share-toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .cc-conversation-share-toolbar-actions button {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-shared-conversation .is-spinning,
+  .cc-conversation-link-share-review .is-spinning {
+    animation: none;
   }
 }

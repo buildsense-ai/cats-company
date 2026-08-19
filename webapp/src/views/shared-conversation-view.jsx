@@ -1,15 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import { FileText, Link2, LoaderCircle } from 'lucide-react';
+import { FileText, LoaderCircle, RefreshCw } from 'lucide-react';
 
 import { api } from '../api';
+import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
 import '../css/conversation-share.css';
 
 function displayNameForSpeaker(speaker) {
-  if (speaker === 'self') return '分享者';
-  if (speaker === 'assistant') return 'CatsCo';
-  return '参与者';
+  if (speaker === 'self') return t('conversation_share_speaker_self');
+  if (speaker === 'assistant') return t('conversation_share_speaker_assistant');
+  return t('conversation_share_speaker_participant');
 }
 
 function isAssistantSpeaker(speaker) {
@@ -29,21 +30,36 @@ function normalizeSharedItems(items) {
     }));
 }
 
+function isRetryableShareError(error) {
+  const status = Number(error?.status || 0);
+  return error?.code === 'NETWORK_ERROR'
+    || error?.code === 'REQUEST_TIMEOUT'
+    || status === 408
+    || status === 429
+    || status >= 500;
+}
+
 function SharedConversationLoading() {
   return (
     <main className="cc-shared-conversation cc-shared-conversation-state" role="status" aria-live="polite">
       <LoaderCircle className="is-spinning" size={20} aria-hidden="true" />
-      <span>正在打开分享片段…</span>
+      <span>{t('conversation_share_loading')}</span>
     </main>
   );
 }
 
-function SharedConversationUnavailable() {
+function SharedConversationUnavailable({ retryable = false, onRetry }) {
   return (
-    <main className="cc-shared-conversation cc-shared-conversation-state" role="main">
+    <main className="cc-shared-conversation cc-shared-conversation-state" role={retryable ? 'alert' : 'main'}>
       <FileText size={24} aria-hidden="true" />
-      <h1>该分享已不可用</h1>
-      <p>链接可能已过期、被撤销，或不完整。</p>
+      <h1>{t(retryable ? 'conversation_share_retryable_title' : 'conversation_share_unavailable_title')}</h1>
+      <p>{t(retryable ? 'conversation_share_retryable_description' : 'conversation_share_unavailable_description')}</p>
+      {retryable && (
+        <button type="button" className="cc-conversation-share-secondary" onClick={onRetry}>
+          <RefreshCw size={16} aria-hidden="true" />
+          {t('conversation_share_retry')}
+        </button>
+      )}
     </main>
   );
 }
@@ -51,6 +67,7 @@ function SharedConversationUnavailable() {
 export default function SharedConversationView({ token }) {
   const [state, setState] = useState({ status: 'loading', share: null });
   const [previewFile, setPreviewFile] = useState(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const chatColumnRef = useRef(null);
   const normalizedToken = String(token || '').trim();
 
@@ -68,49 +85,60 @@ export default function SharedConversationView({ token }) {
           setState({ status: 'ready', share });
         }
       })
-      .catch(() => {
+      .catch((cause) => {
         if (!controller.signal.aborted) {
-          setState({ status: 'unavailable', share: null });
+          setState({
+            status: isRetryableShareError(cause) ? 'retryable' : 'unavailable',
+            share: null,
+          });
         }
       });
     return () => controller.abort();
-  }, [normalizedToken]);
+  }, [normalizedToken, loadAttempt]);
 
-  const title = String(state.share?.title || '会话片段').trim() || '会话片段';
+  const defaultTitle = t('conversation_share_default_title');
+  const title = String(state.share?.title || defaultTitle).trim() || defaultTitle;
   const items = useMemo(() => normalizeSharedItems(state.share?.items), [state.share?.items]);
 
   useEffect(() => {
     if (state.status !== 'ready') return undefined;
     const previousTitle = document.title;
-    document.title = `${title} · CatsCo`;
+    document.title = t('conversation_share_document_title', { title });
     return () => {
       document.title = previousTitle;
     };
   }, [state.status, title]);
 
   if (state.status === 'loading') return <SharedConversationLoading />;
-  if (state.status !== 'ready') return <SharedConversationUnavailable />;
+  if (state.status !== 'ready') {
+    return (
+      <SharedConversationUnavailable
+        retryable={state.status === 'retryable'}
+        onRetry={() => setLoadAttempt((attempt) => attempt + 1)}
+      />
+    );
+  }
 
   return (
     <main className="cc-shared-conversation" role="main">
-      <div className="cc-shared-conversation-header">
-        <div className="cc-shared-conversation-brand" aria-label="CatsCo 会话片段">
-          <Link2 size={18} aria-hidden="true" />
-          <span>CatsCo</span>
+      <header className="cc-shared-conversation-header v3-sidebar-header">
+        <div className="v3-brand-title cc-shared-conversation-brand" aria-label={t('conversation_share_brand_aria')}>
+          <span className="catsco-brand-mark" aria-hidden="true" />
+          <span className="catsco-brand-name">CatsCo</span>
         </div>
         <div className="cc-shared-conversation-heading">
           <h1>{title}</h1>
-          <span>只读摘录</span>
+          <span>{t('conversation_share_readonly_excerpt')}</span>
         </div>
-        <span className="cc-shared-conversation-readonly">只读分享</span>
-      </div>
+        <span className="cc-shared-conversation-readonly">{t('conversation_share_readonly_badge')}</span>
+      </header>
 
       <section className={`v3-message-workspace cc-shared-message-workspace${previewFile ? ' has-preview' : ''}`}>
         <div ref={chatColumnRef} className="v3-chat-column">
           <div className="v3-timeline cc-shared-timeline">
             <div className="v3-timeline-inner">
-              <p className="cc-shared-conversation-notice">仅显示分享者明确选择的消息，不能继续对话。</p>
-              <div className="v3-date-divider"><span>已分享的内容</span></div>
+              <p className="cc-shared-conversation-notice">{t('conversation_share_notice')}</p>
+              <div className="v3-date-divider"><span>{t('conversation_share_content_divider')}</span></div>
               {items.map((item, index) => {
                 const prior = items[index - 1];
                 const consecutive = prior?.speaker === item.speaker;
@@ -130,7 +158,7 @@ export default function SharedConversationView({ token }) {
                 );
               })}
               {items.length === 0 && (
-                <div className="cc-shared-conversation-empty">此分享中没有可显示的消息。</div>
+                <div className="cc-shared-conversation-empty">{t('conversation_share_empty')}</div>
               )}
             </div>
           </div>

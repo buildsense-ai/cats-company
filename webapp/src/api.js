@@ -3,7 +3,16 @@ const LOCAL_XIAOBA_BASE = import.meta.env.VITE_XIAOBA_LOCAL_API || '/local-xiaob
 const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
-let token = localStorage.getItem('oc_token');
+function readStoredToken() {
+  try {
+    return globalThis.localStorage?.getItem('oc_token') || '';
+  } catch {
+    // Capability-only share routes must still render when storage is blocked.
+    return '';
+  }
+}
+
+let token = readStoredToken();
 const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
 const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
 // A registration ID guards server deletes. sessionStorage preserves it across
@@ -109,6 +118,7 @@ let wsPushSubscriptionID = '';
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
+const PUBLIC_SHARE_REQUEST_TIMEOUT_MS = 15000;
 
 export function toWritableBotSkillRefs(skills) {
   if (!Array.isArray(skills)) return skills;
@@ -176,9 +186,13 @@ export function requestMissedMessages(topicId) {
 export function setToken(t) {
   token = t;
   authRevision += 1;
-  if (t) localStorage.setItem('oc_token', t);
-  else {
-    localStorage.removeItem('oc_token');
+  try {
+    if (t) globalThis.localStorage?.setItem('oc_token', t);
+    else globalThis.localStorage?.removeItem('oc_token');
+  } catch {
+    // Keep the in-memory auth state usable when browser storage is unavailable.
+  }
+  if (!t) {
     clearPushRegistration();
     wsPushSubscriptionID = '';
     wsActiveTopic = '';
@@ -328,41 +342,68 @@ async function request(method, path, body, options = {}) {
 // this request separate from `request` makes it impossible to accidentally
 // attach an Authorization header or ambient cookies to public share reads.
 async function publicRequest(path, options = {}) {
-  const { signal } = options;
-  let response;
+  const { signal, timeoutMs = PUBLIC_SHARE_REQUEST_TIMEOUT_MS } = options;
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutID = null;
+  const abortFromCaller = () => controller.abort(signal?.reason);
+
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else if (signal) {
+    signal.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutID = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(`${API_BASE}${path}`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
       credentials: 'omit',
-      signal,
+      signal: controller.signal,
     });
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (cause) {
+      if (cause?.name === 'AbortError') throw cause;
+      // Keep the public error generic when an intermediary returns HTML.
+    }
+    if (!response.ok) {
+      const error = new Error(data.error || statusMessage(response.status));
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
   } catch (cause) {
+    if (timedOut) {
+      const error = new Error('请求超时，请稍后重试');
+      error.code = 'REQUEST_TIMEOUT';
+      error.cause = cause;
+      throw error;
+    }
     if (signal?.aborted || cause?.name === 'AbortError') {
       const error = new Error('请求已取消');
       error.code = 'REQUEST_ABORTED';
       error.cause = cause;
       throw error;
     }
+    if (cause?.status) throw cause;
     const error = new Error('网络连接失败，请检查后端服务是否运行');
     error.code = 'NETWORK_ERROR';
     error.cause = cause;
     throw error;
+  } finally {
+    if (timeoutID) clearTimeout(timeoutID);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
-
-  let data = {};
-  try {
-    data = await response.json();
-  } catch {
-    // Keep the public error generic when an intermediary returns HTML.
-  }
-  if (!response.ok) {
-    const error = new Error(data.error || statusMessage(response.status));
-    error.status = response.status;
-    error.data = data;
-    throw error;
-  }
-  return data;
 }
 
 async function localRequest(method, path, body, options = {}) {

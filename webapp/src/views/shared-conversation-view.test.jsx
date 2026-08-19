@@ -113,4 +113,27 @@ describe('SharedConversationView', () => {
     expect(container.querySelector('video.shared-video')?.getAttribute('src'))
       .toBe('/api/shared-conversations/capability/assets/video-1');
   });
+
+  it('offers retry for transient public share failures without calling it expired', async () => {
+    api.getConversationShare
+      .mockReset()
+      .mockRejectedValueOnce(Object.assign(new Error('temporarily unavailable'), { status: 503 }))
+      .mockResolvedValueOnce({ title: '恢复后的片段', items: [] });
+
+    await act(async () => {
+      root.render(<SharedConversationView token="capability" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('暂时无法打开分享');
+    expect(container.textContent).not.toContain('链接可能已过期');
+    await act(async () => {
+      Simulate.click(container.querySelector('button'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.getConversationShare).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('恢复后的片段');
+  });
 });

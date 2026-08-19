@@ -112,6 +112,119 @@ func TestConversationSharePlainTextDoesNotSerializeMessageMetadata(t *testing.T)
 	}
 }
 
+func TestConversationSharePlainTextRemovesPrivateAssetURLs(t *testing.T) {
+	got := conversationSharePlainText(map[string]interface{}{
+		"text": "请查看 /uploads/files/20260817_0123456789abcdef0123456789abcdef.pdf 和 https://docs.example.test/guide",
+	})
+	if strings.Contains(got, "/uploads/") || strings.Contains(got, "20260817_") {
+		t.Fatalf("private upload URL survived: %q", got)
+	}
+	if !strings.Contains(got, "https://docs.example.test/guide") {
+		t.Fatalf("ordinary external link was removed: %q", got)
+	}
+	if got := conversationSharePlainText("/api/shared-conversations/visitor-token/assets/0123456789abcdef0123456789abcdef"); got != "" {
+		t.Fatalf("capability URL = %q, want empty", got)
+	}
+	if got := conversationSharePlainText(map[string]interface{}{
+		"text":    "/uploads/files/20260817_0123456789abcdef0123456789abcdef.pdf",
+		"content": "保留这段正文",
+	}); got != "保留这段正文" {
+		t.Fatalf("safe fallback content = %q", got)
+	}
+	for _, privateURL := range []string{
+		"/uploads%2Ffiles%2F20260817_0123456789abcdef0123456789abcdef.pdf",
+		"https://app.example.test/uploads%2Ffeedback%2F20260817_0123456789abcdef0123456789abcdef.png",
+		"/api%2Fshared-conversations%2Fvisitor-token%2Fassets%2F0123456789abcdef0123456789abcdef",
+	} {
+		if got := conversationSharePlainText(privateURL); got != "" {
+			t.Fatalf("encoded private URL %q survived as %q", privateURL, got)
+		}
+	}
+	for _, privateURL := range []string{
+		"/api/foo/../shared-conversations/visitor-token/assets/0123456789abcdef0123456789abcdef",
+		"/api%2Ffoo%2F..%2Fshared-conversations%2Fvisitor-token%2Fassets%2F0123456789abcdef0123456789abcdef",
+		"https://app.example.test/?redirect=%2Fapi%2Ffoo%2F..%2Fshared-conversations%2Fvisitor-token%2Fassets%2F0123456789abcdef0123456789abcdef",
+		"https://app.example.test/#%2Fapi%2Ffoo%2F..%2Fshared-conversations%2Fvisitor-token%2Fassets%2F0123456789abcdef0123456789abcdef",
+		"https://app.example.test/share/visitor-token",
+	} {
+		got := conversationSharePlainText("请查看 " + privateURL + "，后面这段正文必须保留")
+		if strings.Contains(got, "visitor-token") {
+			t.Fatalf("normalized private URL %q survived as %q", privateURL, got)
+		}
+		if !strings.Contains(got, "后面这段正文必须保留") {
+			t.Fatalf("normalized private URL %q removed adjacent prose as %q", privateURL, got)
+		}
+	}
+	legacy := "请查看 /uploads/files/legacy-report.pdf，后面这段正文必须保留"
+	if got := conversationSharePlainText(legacy); got != "请查看 ，后面这段正文必须保留" {
+		t.Fatalf("legacy private URL = %q", got)
+	}
+}
+
+func TestConversationShareSourcePathRejectsSymlinkOutsideUploadRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	fileKey := "20260817_0123456789abcdef0123456789abcdef.txt"
+	outsidePath := filepath.Join(outside, fileKey)
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside fixture: %v", err)
+	}
+	filesDir := filepath.Join(root, "files")
+	if err := os.MkdirAll(filesDir, 0o700); err != nil {
+		t.Fatalf("create files directory: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(filesDir, fileKey)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, ok := safeConversationShareSourcePath(root, filepath.Join("files", fileKey)); ok {
+		t.Fatal("symlink outside upload root was accepted")
+	}
+}
+
+func TestConversationShareSnapshotSanitizesLegacyPlainTextURLs(t *testing.T) {
+	handler := NewConversationShareHandler(&conversationShareTestStore{}, nil, t.TempDir(), t.TempDir())
+	snapshot, _, _, err := handler.makeSnapshot(
+		7,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		&types.Message{
+			ID:      105,
+			TopicID: "p2p_7_99",
+			FromUID: 7,
+			MsgType: "text",
+			Content: "请打开 /uploads/files/20260817_0123456789abcdef0123456789abcdef.pdf，参考 https://docs.example.test/guide",
+		},
+		conversationShareMaxTotalAssetBytes,
+		conversationShareMaxAssetCount,
+	)
+	if err != nil {
+		t.Fatalf("make snapshot: %v", err)
+	}
+	if strings.Contains(snapshot.Content, "/uploads/") {
+		t.Fatalf("snapshot content leaked upload URL: %q", snapshot.Content)
+	}
+	if !strings.Contains(snapshot.Content, "参考 https://docs.example.test/guide") {
+		t.Fatalf("snapshot content removed external link: %q", snapshot.Content)
+	}
+}
+
+func TestConversationShareSourceURLInfersDirectoryForBareFileKey(t *testing.T) {
+	fileKey := "20260817_0123456789abcdef0123456789abcdef.png"
+	if got := conversationShareSourceURL(map[string]interface{}{"file_key": fileKey}, "image"); got != "/uploads/images/"+fileKey {
+		t.Fatalf("image source URL = %q", got)
+	}
+	if got := conversationShareSourceURL(map[string]interface{}{"file_key": fileKey}, "file"); got != "/uploads/files/"+fileKey {
+		t.Fatalf("file source URL = %q", got)
+	}
+}
+
+func TestConversationShareSourceURLPreservesUploadsPrefix(t *testing.T) {
+	fileKey := "uploads/images/20260817_0123456789abcdef0123456789abcdef.png"
+	if got := conversationShareSourceURL(map[string]interface{}{"file_key": fileKey}, "image"); got != "/"+fileKey {
+		t.Fatalf("prefixed source URL = %q", got)
+	}
+}
+
 func TestConversationShareSnapshotPreservesLegacyTextAlongsideAttachment(t *testing.T) {
 	sourceRoot := t.TempDir()
 	shareRoot := t.TempDir()
@@ -157,6 +270,9 @@ func TestConversationShareSnapshotPreservesLegacyTextAlongsideAttachment(t *test
 	}
 	if len(assets) != 1 {
 		t.Fatalf("asset count = %d, want 1", len(assets))
+	}
+	if assets[0].MimeType != "image/png" {
+		t.Fatalf("asset MIME type = %q, want extension-derived image/png", assets[0].MimeType)
 	}
 }
 
@@ -373,7 +489,7 @@ func TestConversationShareCreatesSanitizedPublicSnapshot(t *testing.T) {
 		t.Fatalf("Cache-Control=%q, want no-store", got)
 	}
 	serialized := publicResponse.Body.String()
-	for _, forbidden := range []string{"p2p_7_99", "device_access", "绝不能分享的推理", "原始会话内容不应作为隐式上下文暴露", "/uploads/images/"} {
+	for _, forbidden := range []string{"p2p_7_99", "device_access", "绝不能分享的推理", "/uploads/images/"} {
 		if strings.Contains(serialized, forbidden) {
 			t.Fatalf("public snapshot leaked %q: %s", forbidden, serialized)
 		}
@@ -416,6 +532,40 @@ func TestConversationShareCreatesSanitizedPublicSnapshot(t *testing.T) {
 	handler.HandlePublic(assetResponse, assetRequest)
 	if assetResponse.Code != http.StatusOK || assetResponse.Body.String() != "shared image bytes" {
 		t.Fatalf("asset status=%d body=%q", assetResponse.Code, assetResponse.Body.String())
+	}
+}
+
+func TestConversationShareRejectsOversizedSnapshot(t *testing.T) {
+	db := &conversationShareTestStore{
+		shares: map[string]*store.ConversationShare{},
+		items:  map[string][]*store.ConversationShareItem{},
+		assets: map[string]*store.ConversationShareAsset{},
+		messages: []*types.Message{{
+			ID:      201,
+			TopicID: "p2p_7_99",
+			FromUID: 7,
+			MsgType: "text",
+			Content: strings.Repeat("x", conversationShareMaxSnapshotBytes),
+		}},
+	}
+	handler := NewConversationShareHandler(db, nil, t.TempDir(), t.TempDir())
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/conversation-shares",
+		bytes.NewBufferString(`{"topic_id":"p2p_7_99","message_ids":[201]}`),
+	)
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(7)))
+	response := httptest.NewRecorder()
+	handler.HandleAuthenticated(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("create status=%d body=%s, want 400", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "too large") {
+		t.Fatalf("create body=%s, want size error", response.Body.String())
+	}
+	if len(db.shares) != 0 {
+		t.Fatalf("oversized snapshot created %d shares", len(db.shares))
 	}
 }
 
@@ -687,6 +837,85 @@ func TestConversationShareAssetSandboxesSVG(t *testing.T) {
 	}
 	if got := response.Header().Get("Content-Security-Policy"); got != "sandbox" {
 		t.Fatalf("Content-Security-Policy=%q, want sandbox", got)
+	}
+}
+
+func TestConversationShareAssetDoesNotTrustActiveMimeType(t *testing.T) {
+	assetRoot := t.TempDir()
+	const token = "active-mime-capability"
+	const shareID = "share-active-mime"
+	const assetID = "asset-js"
+	storageKey := filepath.Join(shareID, assetID+".js")
+	assetPath := filepath.Join(assetRoot, storageKey)
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o700); err != nil {
+		t.Fatalf("create asset directory: %v", err)
+	}
+	if err := os.WriteFile(assetPath, []byte("alert('should download')"), 0o600); err != nil {
+		t.Fatalf("write JavaScript fixture: %v", err)
+	}
+
+	db := &conversationShareTestStore{
+		shares: map[string]*store.ConversationShare{
+			shareID: {
+				ID:        shareID,
+				OwnerUID:  7,
+				TokenHash: conversationShareTokenHash(token),
+				State:     store.ConversationShareStateActive,
+				CreatedAt: time.Now().UTC(),
+			},
+		},
+		items: map[string][]*store.ConversationShareItem{},
+		assets: map[string]*store.ConversationShareAsset{
+			assetID: {
+				ID:         assetID,
+				ShareID:    shareID,
+				StorageKey: filepath.ToSlash(storageKey),
+				Name:       "script.js",
+				MimeType:   "text/html",
+			},
+		},
+	}
+	handler := NewConversationShareHandler(db, nil, t.TempDir(), assetRoot)
+	response := httptest.NewRecorder()
+	handler.HandlePublic(response, httptest.NewRequest(http.MethodGet, "/api/shared-conversations/"+token+"/assets/"+assetID, nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("Content-Type=%q, want application/octet-stream", got)
+	}
+	if got := response.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
+		t.Fatalf("Content-Disposition=%q, want attachment", got)
+	}
+	if got := response.Header().Get("Content-Security-Policy"); got != "" {
+		t.Fatalf("unexpected Content-Security-Policy=%q", got)
+	}
+}
+
+func TestConversationShareAssetResponseMetadataUsesStorageExtension(t *testing.T) {
+	tests := []struct {
+		name            string
+		storageKey      string
+		mimeType        string
+		wantType        string
+		wantDisposition string
+		wantPolicy      string
+	}{
+		{name: "spoofed text as html", storageKey: "share/asset.txt", mimeType: "text/html", wantType: "text/plain", wantDisposition: "attachment"},
+		{name: "xml is opaque", storageKey: "share/asset.xml", mimeType: "text/html", wantType: "application/octet-stream", wantDisposition: "attachment"},
+		{name: "html is sandboxed", storageKey: "share/asset.html", mimeType: "application/octet-stream", wantType: "text/html", wantDisposition: "inline", wantPolicy: conversationShareHTMLContentSecurityPolicy},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotType, gotDisposition, gotPolicy := conversationShareAssetResponseMetadata(&store.ConversationShareAsset{
+				StorageKey: test.storageKey,
+				MimeType:   test.mimeType,
+			})
+			if gotType != test.wantType || gotDisposition != test.wantDisposition || gotPolicy != test.wantPolicy {
+				t.Fatalf("metadata=(%q, %q, %q), want (%q, %q, %q)", gotType, gotDisposition, gotPolicy, test.wantType, test.wantDisposition, test.wantPolicy)
+			}
+		})
 	}
 }
 

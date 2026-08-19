@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -37,11 +38,21 @@ const (
 	// Keep the public asset fan-out bounded independently from the byte budget.
 	// This also gives the public asset rate-limit bucket a deterministic ceiling.
 	conversationShareMaxAssetCount = 256
-	conversationShareCleanupEvery  = time.Hour
+	// Snapshot JSON is loaded into memory both while a share is created and
+	// while it is rendered publicly. Keep unusually large messages from turning
+	// a capability link into an unbounded database response or heap allocation.
+	conversationShareMaxSnapshotBytes      = 1 << 20
+	conversationShareMaxTotalSnapshotBytes = 8 << 20
+	conversationShareCleanupEvery          = time.Hour
 )
 
-var conversationShareUploadKeyPattern = regexp.MustCompile(`^\d{8}_[a-f0-9]{32}\.[a-z0-9]+$`)
 var conversationShareIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+
+// Text messages may carry old attachment and capability links. Capture URL-like
+// spans and classify them after URL decoding and path normalization instead of
+// assuming their current route shape or generated filename. CJK prose is a
+// delimiter so a link immediately followed by a Chinese sentence stays intact.
+var conversationShareURLCandidatePattern = regexp.MustCompile(`(?i)(?:https?://[^\s<>"'(),，。！？；：\p{Han}]+|(?:/|%2f)[^\s<>"'(),，。！？；：\p{Han}]+)`)
 
 // ConversationShareHandler creates immutable, deliberately limited excerpts
 // from authenticated conversations and serves them to holders of a capability
@@ -258,6 +269,7 @@ func (h *ConversationShareHandler) handleCreate(w http.ResponseWriter, r *http.R
 	items := make([]*store.ConversationShareItem, 0, len(messages))
 	assets := make([]*store.ConversationShareAsset, 0)
 	createdAssetPaths := make([]string, 0)
+	var snapshotBytes int
 	for position, message := range messages {
 		itemID, itemIDErr := newConversationShareID()
 		if itemIDErr != nil {
@@ -285,6 +297,18 @@ func (h *ConversationShareHandler) handleCreate(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create share"})
 			return
 		}
+		serializedBytes := len(serialized)
+		if serializedBytes > conversationShareMaxSnapshotBytes {
+			h.removeCreatedAssets(createdAssetPaths)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a selected message is too large to share"})
+			return
+		}
+		if snapshotBytes > conversationShareMaxTotalSnapshotBytes-serializedBytes {
+			h.removeCreatedAssets(createdAssetPaths)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "selected messages are too large to share"})
+			return
+		}
+		snapshotBytes += serializedBytes
 		items = append(items, &store.ConversationShareItem{
 			ID:              itemID,
 			ShareID:         shareID,
@@ -480,11 +504,22 @@ func (h *ConversationShareHandler) handlePublicSnapshot(w http.ResponseWriter, t
 		h.writeUnavailableShare(w)
 		return
 	}
+	if len(items) > conversationShareMaxItems {
+		h.writeUnavailableShare(w)
+		return
+	}
 	publicItems := make([]conversationShareSnapshot, 0, len(items))
+	var snapshotBytes int
 	for _, item := range items {
 		if item == nil || item.ShareID != share.ID {
 			continue
 		}
+		serializedBytes := len(item.Snapshot)
+		if serializedBytes > conversationShareMaxSnapshotBytes || snapshotBytes > conversationShareMaxTotalSnapshotBytes-serializedBytes {
+			h.writeUnavailableShare(w)
+			return
+		}
+		snapshotBytes += serializedBytes
 		var snapshot conversationShareSnapshot
 		if err := json.Unmarshal([]byte(item.Snapshot), &snapshot); err != nil {
 			h.writeUnavailableShare(w)
@@ -529,25 +564,126 @@ func (h *ConversationShareHandler) handlePublicAsset(w http.ResponseWriter, r *h
 		return
 	}
 	h.writePublicHeaders(w)
-	if mediaType, _, err := mime.ParseMediaType(asset.MimeType); err == nil && mediaType != "" {
-		w.Header().Set("Content-Type", mediaType)
-		if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
-			// A shared attachment is served from the application origin. Keep an
-			// HTML report in an opaque sandbox so opening it directly cannot read
-			// an owner's browser session or application storage. The permissions
-			// mirror regular uploaded HTML and retain interactive report previews
-			// without restoring its same-origin privileges.
-			w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups allow-modals")
-		} else if mediaType == "image/svg+xml" {
-			// SVG can contain executable content when opened as a document. Shared
-			// copies never need scripting, so keep them opaque and scriptless.
-			w.Header().Set("Content-Security-Policy", "sandbox")
-		}
+	contentType, disposition, contentSecurityPolicy := conversationShareAssetResponseMetadata(asset)
+	w.Header().Set("Content-Type", contentType)
+	if contentSecurityPolicy != "" {
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 	}
-	if asset.Name != "" {
-		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", safeConversationShareFileName(asset.Name)))
+	fileName := safeConversationShareFileName(asset.Name)
+	if fileName == "" {
+		fileName = safeConversationShareFileName(filepath.Base(asset.StorageKey))
 	}
+	if fileName == "" {
+		fileName = "shared-asset"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, fileName))
 	http.ServeFile(w, r, fullPath)
+}
+
+const conversationShareHTMLContentSecurityPolicy = "sandbox allow-scripts allow-forms allow-popups allow-modals"
+
+// conversationShareAssetResponseMetadata treats the validated storage
+// extension as authoritative. The MIME value came from an earlier message
+// payload and must not be allowed to turn a passive upload such as .txt or
+// .js into an executable same-origin response.
+func conversationShareAssetResponseMetadata(asset *store.ConversationShareAsset) (contentType, disposition, contentSecurityPolicy string) {
+	contentType = "application/octet-stream"
+	disposition = "attachment"
+	if asset == nil {
+		return contentType, disposition, ""
+	}
+
+	ext := strings.ToLower(filepath.Ext(asset.StorageKey))
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(asset.Name))
+	}
+	contentType = conversationShareCanonicalMimeType(ext, asset.Kind)
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf":
+		disposition = "inline"
+	case ".mp3", ".ogg", ".wav":
+		// Ogg audio is safe to play inline; unsupported audio extensions stay
+		// downloads even when an old payload reports an audio MIME type.
+		disposition = "inline"
+	case ".mp4", ".m4v", ".webm", ".ogv", ".mov":
+		disposition = "inline"
+	case ".html", ".htm":
+		disposition = "inline"
+		contentSecurityPolicy = conversationShareHTMLContentSecurityPolicy
+	case ".svg":
+		disposition = "inline"
+		contentSecurityPolicy = "sandbox"
+	}
+	if conversationShareActiveAssetExtension(ext) {
+		// Script-like and XML-like uploads are never opened as documents from a
+		// capability URL, even when an old record reports an active MIME type.
+		contentType = "application/octet-stream"
+		disposition = "attachment"
+		contentSecurityPolicy = ""
+	}
+	return contentType, disposition, contentSecurityPolicy
+}
+
+func conversationShareCanonicalMimeType(ext, kind string) string {
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".svg":
+		return "image/svg+xml"
+	case ".pdf":
+		return "application/pdf"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".ogg":
+		if strings.EqualFold(kind, "video") {
+			return "video/ogg"
+		}
+		return "audio/ogg"
+	case ".wav":
+		return "audio/wav"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".ogv":
+		return "video/ogg"
+	case ".mov":
+		return "video/quicktime"
+	case ".html", ".htm":
+		return "text/html"
+	case ".txt":
+		return "text/plain"
+	case ".md":
+		return "text/markdown"
+	case ".csv":
+		return "text/csv"
+	case ".json":
+		return "application/json"
+	case ".xml":
+		return "application/xml"
+	default:
+		if guessed := mime.TypeByExtension(strings.ToLower(ext)); guessed != "" {
+			if mediaType, _, err := mime.ParseMediaType(guessed); err == nil && mediaType != "" {
+				return mediaType
+			}
+		}
+		return "application/octet-stream"
+	}
+}
+
+func conversationShareActiveAssetExtension(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".js", ".mjs", ".py", ".go", ".css", ".xml", ".xhtml":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *ConversationShareHandler) validateSourceAccess(uid int64, topicID string) (int, string) {
@@ -695,24 +831,88 @@ func isConversationShareableContentBlock(blockType string) bool {
 }
 
 func conversationSharePlainText(content interface{}) string {
+	var text string
 	switch value := content.(type) {
 	case string:
-		return strings.TrimSpace(value)
+		text = value
 	case map[string]interface{}:
 		for _, key := range []string{"text", "content"} {
 			if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
-				return strings.TrimSpace(text)
+				if sanitized := sanitizeConversationShareText(text); sanitized != "" {
+					return sanitized
+				}
 			}
 		}
 		if payload, ok := value["payload"].(map[string]interface{}); ok {
 			for _, key := range []string{"text", "content"} {
 				if text, ok := payload[key].(string); ok && strings.TrimSpace(text) != "" {
-					return strings.TrimSpace(text)
+					if sanitized := sanitizeConversationShareText(text); sanitized != "" {
+						return sanitized
+					}
 				}
 			}
 		}
 	}
-	return ""
+	return sanitizeConversationShareText(text)
+}
+
+// sanitizeConversationShareText removes capability-bearing or owner-upload
+// URLs that may survive in legacy plain-text messages. It normalizes encoded
+// separators and dot segments before classifying a path, so a link cannot keep
+// a private route hidden behind a redirect parameter or path traversal. Structured
+// attachment blocks get a fresh share-scoped URL separately; ordinary external
+// links stay intact.
+func sanitizeConversationShareText(value string) string {
+	return strings.TrimSpace(conversationShareURLCandidatePattern.ReplaceAllStringFunc(value, func(candidate string) string {
+		if conversationSharePrivateURLCandidate(candidate, 0) {
+			return ""
+		}
+		return candidate
+	}))
+}
+
+func conversationSharePrivateURLCandidate(value string, depth int) bool {
+	const maxConversationShareURLDecodeDepth = 2
+	if depth > maxConversationShareURLDecodeDepth || strings.TrimSpace(value) == "" {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		decoded, decodeErr := url.PathUnescape(value)
+		if decodeErr != nil || decoded == value {
+			return false
+		}
+		return conversationSharePrivateURLCandidate(decoded, depth+1)
+	}
+	if conversationSharePrivateURLPath(parsed.EscapedPath()) || conversationSharePrivateURLPath(parsed.Path) {
+		return true
+	}
+	for _, values := range parsed.Query() {
+		for _, nested := range values {
+			if conversationSharePrivateURLCandidate(nested, depth+1) {
+				return true
+			}
+		}
+	}
+	return conversationSharePrivateURLCandidate(parsed.Fragment, depth+1)
+}
+
+func conversationSharePrivateURLPath(value string) bool {
+	decoded := value
+	for attempt := 0; attempt < 2; attempt++ {
+		unescaped, err := url.PathUnescape(decoded)
+		if err != nil || unescaped == decoded {
+			break
+		}
+		decoded = unescaped
+	}
+	decoded = strings.ReplaceAll(decoded, "\\", "/")
+	normalized := path.Clean("/" + strings.TrimPrefix(decoded, "/"))
+	return strings.HasPrefix(normalized, "/uploads/files/") ||
+		strings.HasPrefix(normalized, "/uploads/images/") ||
+		strings.HasPrefix(normalized, "/uploads/feedback/") ||
+		strings.HasPrefix(normalized, "/api/shared-conversations/") ||
+		strings.HasPrefix(normalized, "/share/")
 }
 
 func (h *ConversationShareHandler) snapshotSpeaker(ownerUID, fromUID int64) string {
@@ -754,9 +954,9 @@ func (h *ConversationShareHandler) sanitizeSnapshotBlock(shareID, itemID string,
 	}
 	switch strings.ToLower(strings.TrimSpace(block.Type)) {
 	case "text", "assistant_text":
-		text := strings.TrimSpace(block.Text)
+		text := sanitizeConversationShareText(block.Text)
 		if text == "" {
-			text = strings.TrimSpace(block.Content)
+			text = sanitizeConversationShareText(block.Content)
 		}
 		if text == "" {
 			return nil, nil, "", nil
@@ -795,18 +995,12 @@ func (h *ConversationShareHandler) copySnapshotAsset(shareID, itemID, kind strin
 	if h.uploadRoot == "" || h.assetRoot == "" || remainingAssetBytes <= 0 {
 		return nil, "", fmt.Errorf("selected attachment cannot be shared")
 	}
-	sourceURL := conversationSharePayloadString(payload, "url")
-	if sourceURL == "" {
-		fileKey := strings.TrimPrefix(conversationSharePayloadString(payload, "file_key"), "/")
-		if fileKey != "" {
-			sourceURL = "/uploads/" + fileKey
-		}
-	}
+	sourceURL := conversationShareSourceURL(payload, kind)
 	subDir, fileName, ok := conversationShareSourcePath(sourceURL)
 	if !ok {
 		return nil, "", fmt.Errorf("selected attachment cannot be shared")
 	}
-	sourcePath, ok := safeConversationSharePath(h.uploadRoot, filepath.Join(subDir, fileName))
+	sourcePath, ok := safeConversationShareSourcePath(h.uploadRoot, filepath.Join(subDir, fileName))
 	if !ok {
 		return nil, "", fmt.Errorf("selected attachment cannot be shared")
 	}
@@ -847,7 +1041,10 @@ func (h *ConversationShareHandler) copySnapshotAsset(shareID, itemID, kind strin
 	if name == "" {
 		name = fileName
 	}
-	mimeType := safeConversationShareMimeType(conversationSharePayloadFirstString(payload, "mime_type", "content_type"), ext)
+	// The source payload MIME is advisory. Derive the stored metadata from the
+	// extension that passed the upload whitelist so the visitor renderer cannot
+	// be tricked into treating a passive file as HTML or another active type.
+	mimeType := conversationShareCanonicalMimeType(ext, kind)
 	return &store.ConversationShareAsset{
 		ID:         assetID,
 		ShareID:    shareID,
@@ -858,6 +1055,28 @@ func (h *ConversationShareHandler) copySnapshotAsset(shareID, itemID, kind strin
 		Size:       written,
 		Kind:       kind,
 	}, destinationPath, nil
+}
+
+func conversationShareSourceURL(payload map[string]interface{}, kind string) string {
+	sourceURL := conversationSharePayloadString(payload, "url")
+	if sourceURL != "" {
+		return sourceURL
+	}
+	fileKey := strings.TrimPrefix(conversationSharePayloadString(payload, "file_key"), "/")
+	if fileKey == "" {
+		return ""
+	}
+	if strings.HasPrefix(fileKey, "uploads/") {
+		return "/" + fileKey
+	}
+	if strings.Contains(fileKey, "/") {
+		return "/uploads/" + fileKey
+	}
+	subDir := "files"
+	if strings.EqualFold(strings.TrimSpace(kind), "image") {
+		subDir = "images"
+	}
+	return "/uploads/" + subDir + "/" + fileKey
 }
 
 func conversationShareSourcePath(raw string) (string, string, bool) {
@@ -876,7 +1095,11 @@ func conversationShareSourcePath(raw string) (string, string, bool) {
 	if len(segments) != 3 || segments[0] != "uploads" {
 		return "", "", false
 	}
-	if (segments[1] != "images" && segments[1] != "files") || !conversationShareUploadKeyPattern.MatchString(segments[2]) {
+	if (segments[1] != "images" && segments[1] != "files") || !uploadFileNamePattern.MatchString(segments[2]) {
+		return "", "", false
+	}
+	ext := strings.ToLower(filepath.Ext(segments[2]))
+	if (segments[1] == "images" && !allowedImageExts[ext]) || (segments[1] == "files" && !allowedFileExts[ext]) {
 		return "", "", false
 	}
 	return segments[1], segments[2], true
@@ -895,6 +1118,33 @@ func safeConversationSharePath(root, relative string) (string, bool) {
 		return "", false
 	}
 	return full, true
+}
+
+// safeConversationShareSourcePath resolves the source through the filesystem
+// before copying it. A lexical path check alone would follow an uploads-root
+// symlink and could copy a file outside the upload storage into a public share.
+func safeConversationShareSourcePath(root, relative string) (string, bool) {
+	lexical, ok := safeConversationSharePath(root, relative)
+	if !ok {
+		return "", false
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", false
+	}
+	realPath, err := filepath.EvalSymlinks(lexical)
+	if err != nil {
+		return "", false
+	}
+	relativePath, err := filepath.Rel(realRoot, realPath)
+	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	info, err := os.Stat(realPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return realPath, true
 }
 
 func (h *ConversationShareHandler) assetPath(storageKey string) (string, bool) {
@@ -967,18 +1217,6 @@ func safeConversationShareFileName(value string) string {
 		}
 		return r
 	}, name)
-}
-
-func safeConversationShareMimeType(value, ext string) string {
-	if mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(value)); err == nil && mediaType != "" {
-		return mediaType
-	}
-	if guessed := mime.TypeByExtension(ext); guessed != "" {
-		if mediaType, _, err := mime.ParseMediaType(guessed); err == nil && mediaType != "" {
-			return mediaType
-		}
-	}
-	return "application/octet-stream"
 }
 
 func assetsSize(assets []*store.ConversationShareAsset) int64 {

@@ -2905,7 +2905,7 @@ export default function MessagesView({
     if (!candidate?.key) return;
     if (conversationShareSelectedMessageIDs([candidate], [candidate.key]).length > MAX_CONVERSATION_SHARE_LINK_MESSAGES) {
       transitionConversationShare({ mode: true });
-      setConversationShareError(`只读链接最多选择 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息。`);
+      setConversationShareError(t('conversation_share_link_limit_error', { limit: MAX_CONVERSATION_SHARE_LINK_MESSAGES }));
       return;
     }
     transitionConversationShare({
@@ -2928,7 +2928,7 @@ export default function MessagesView({
       const next = [...current, candidate.key];
       if (next.length > MAX_CONVERSATION_SHARE_LINK_MESSAGES
         || conversationShareSelectedMessageIDs(conversationShareCandidates, next).length > MAX_CONVERSATION_SHARE_LINK_MESSAGES) {
-        setConversationShareError(`只读链接最多选择 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息。`);
+        setConversationShareError(t('conversation_share_link_limit_error', { limit: MAX_CONVERSATION_SHARE_LINK_MESSAGES }));
         return current;
       }
       setConversationShareError('');
@@ -2938,11 +2938,11 @@ export default function MessagesView({
 
   const generateConversationShareImage = useCallback(async () => {
     if (selectedConversationShareItems.length === 0) {
-      setConversationShareError('请先选择至少一条有内容的消息。');
+      setConversationShareError(t('conversation_share_select_required'));
       return;
     }
     if (selectedConversationShareItems.length > MAX_CONVERSATION_SHARE_IMAGE_ITEMS) {
-      setConversationShareError(`分享图最多选择 ${MAX_CONVERSATION_SHARE_IMAGE_ITEMS} 个展示项。`);
+      setConversationShareError(t('conversation_share_image_limit_error', { limit: MAX_CONVERSATION_SHARE_IMAGE_ITEMS }));
       return;
     }
     setConversationShareGenerating(true);
@@ -2954,20 +2954,20 @@ export default function MessagesView({
         : (root?.dataset.theme || 'light');
       const result = await renderConversationShareImage({
         items: selectedConversationShareItems,
-        topicName: displayName || topicName || topic || '对话',
+        topicName: displayName || topicName || topic || t('conversation_share_default_title'),
         theme,
       });
       const pages = Array.isArray(result.pages) && result.pages.length > 0
         ? result.pages
         : [result];
       if (!pages.every((page) => page?.dataUrl)) {
-        throw new Error('生成分享图失败，请重试。');
+        throw new Error(t('conversation_share_image_error'));
       }
       setConversationShareImages(pages);
       setConversationSharePreviewPage(0);
       setConversationSharePreviewOpen(true);
     } catch (error) {
-      setConversationShareError(error?.message || '生成分享图失败，请重试。');
+      setConversationShareError(error?.message || t('conversation_share_image_error'));
     } finally {
       setConversationShareGenerating(false);
     }
@@ -3324,17 +3324,24 @@ export default function MessagesView({
           >
             <div className="v3-timeline-inner">
               {conversationShareMode && (
-                <section className="cc-conversation-share-toolbar" aria-label="会话分享选择">
+                <section className="cc-conversation-share-toolbar" aria-label={t('conversation_share_toolbar_aria')}>
                   <div className="cc-conversation-share-toolbar-copy">
                     <span className="cc-conversation-share-toolbar-icon" aria-hidden="true"><CheckSquare size={18} /></span>
                     <div>
-                      <strong>选择要分享的消息</strong>
-                      <span aria-live="polite">{conversationShareCandidates.length > 0 ? `已选 ${selectedConversationShareMessageIDs.length} 条消息（${selectedConversationShareItems.length} 个展示项），分享图最多 ${MAX_CONVERSATION_SHARE_IMAGE_ITEMS} 个展示项，只读链接最多 ${MAX_CONVERSATION_SHARE_LINK_MESSAGES} 条消息` : '没有可分享的消息'}</span>
+                      <strong>{t('conversation_share_select_title')}</strong>
+                      <span aria-live="polite">{conversationShareCandidates.length > 0
+                        ? t('conversation_share_select_status', {
+                          messages: selectedConversationShareMessageIDs.length,
+                          items: selectedConversationShareItems.length,
+                          imageLimit: MAX_CONVERSATION_SHARE_IMAGE_ITEMS,
+                          linkLimit: MAX_CONVERSATION_SHARE_LINK_MESSAGES,
+                        })
+                        : t('conversation_share_no_messages')}</span>
                     </div>
                   </div>
                   <div className="cc-conversation-share-toolbar-actions">
                     <button type="button" className="cc-conversation-share-secondary" onClick={closeConversationShare}>
-                      取消
+                      {t('conversation_share_cancel')}
                     </button>
                     <button
                       type="button"
@@ -3346,7 +3353,7 @@ export default function MessagesView({
                       }}
                     >
                       <Link2 size={16} aria-hidden="true" />
-                      创建链接
+                      {t('conversation_share_create_link')}
                     </button>
                     <button
                       type="button"
@@ -3357,7 +3364,7 @@ export default function MessagesView({
                       }}
                     >
                       <Link2 size={16} aria-hidden="true" />
-                      管理链接
+                      {t('conversation_share_manage_link')}
                     </button>
                     <button
                       ref={conversationShareGenerateButtonRef}
@@ -3367,14 +3374,14 @@ export default function MessagesView({
                       onClick={() => void generateConversationShareImage()}
                     >
                       {conversationShareGenerating ? <LoaderCircle className="is-spinning" size={16} aria-hidden="true" /> : <ImageDown size={16} aria-hidden="true" />}
-                      {conversationShareGenerating ? '正在生成' : '生成分享图'}
+                      {conversationShareGenerating ? t('conversation_share_generating') : t('conversation_share_generate_image')}
                     </button>
                   </div>
                   {conversationShareError && (
                     <p className="cc-conversation-share-toolbar-error" role="alert">{conversationShareError}</p>
                   )}
                   {!canOpenConversationShare && !conversationShareError && (
-                    <p className="cc-conversation-share-toolbar-error" role="status">聊天记录加载失败，暂不能创建分享内容。</p>
+                    <p className="cc-conversation-share-toolbar-error" role="status">{t('conversation_share_history_error')}</p>
                   )}
                 </section>
               )}
@@ -3883,33 +3890,33 @@ export default function MessagesView({
               <div>
                 <span className="catsco-brand-mark" aria-hidden="true" />
                 <div>
-                  <strong id="conversation-share-preview-title">对话分享图已生成</strong>
-                  <span id="conversation-share-preview-description">
-                    已保留 {selectedConversationShareItems.length} 条选中消息
-                    {conversationShareImages.length > 1 ? `，共 ${conversationShareImages.length} 张` : ''}
-                  </span>
+                    <strong id="conversation-share-preview-title">{t('conversation_share_image_created')}</strong>
+                    <span id="conversation-share-preview-description">{t('conversation_share_image_description', {
+                      count: selectedConversationShareItems.length,
+                      pages: conversationShareImages.length > 1 ? `，共 ${conversationShareImages.length} 张` : '',
+                    })}</span>
                 </div>
               </div>
-              <button ref={conversationSharePreviewCloseRef} type="button" className="v3-tool" aria-label="关闭分享图预览" onClick={() => setConversationSharePreviewOpen(false)}>
+              <button ref={conversationSharePreviewCloseRef} type="button" className="v3-tool" aria-label={t('conversation_share_close_image_preview')} onClick={() => setConversationSharePreviewOpen(false)}>
                 <X size={17} aria-hidden="true" />
               </button>
             </header>
             {conversationShareImages.length > 1 && (
-              <div className="cc-conversation-share-preview-page-nav" aria-label="分享图分页">
+              <div className="cc-conversation-share-preview-page-nav" aria-label={t('conversation_share_page_aria')}>
                 <button
                   type="button"
                   className="v3-tool"
-                  aria-label="查看上一张分享图"
+                  aria-label={t('conversation_share_previous_image')}
                   disabled={conversationSharePreviewPage === 0}
                   onClick={() => setConversationSharePreviewPage((current) => Math.max(0, current - 1))}
                 >
                   <ChevronLeft size={17} aria-hidden="true" />
                 </button>
-                <span aria-live="polite">第 {conversationSharePreviewPage + 1} / {conversationShareImages.length} 张</span>
+                <span aria-live="polite">{t('conversation_share_page_status', { current: conversationSharePreviewPage + 1, total: conversationShareImages.length })}</span>
                 <button
                   type="button"
                   className="v3-tool"
-                  aria-label="查看下一张分享图"
+                  aria-label={t('conversation_share_next_image')}
                   disabled={conversationSharePreviewPage >= conversationShareImages.length - 1}
                   onClick={() => setConversationSharePreviewPage((current) => Math.min(conversationShareImages.length - 1, current + 1))}
                 >
@@ -3920,12 +3927,16 @@ export default function MessagesView({
             <div className="cc-conversation-share-preview-canvas">
               <img
                 src={conversationSharePreviewImage.dataUrl}
-                alt={`${displayName || topicName || '对话'}的 CatsCo 分享图，第 ${conversationSharePreviewPage + 1} 张，共 ${conversationShareImages.length} 张`}
+                alt={t('conversation_share_image_alt', {
+                  name: displayName || topicName || t('conversation_share_default_title'),
+                  current: conversationSharePreviewPage + 1,
+                  total: conversationShareImages.length,
+                })}
               />
             </div>
             <footer className="cc-conversation-share-preview-actions">
               <button type="button" className="cc-conversation-share-secondary" onClick={() => setConversationSharePreviewOpen(false)}>
-                返回选择
+                {t('conversation_share_back')}
               </button>
               {conversationShareImages.length > 1 && (
                 <button
@@ -3936,7 +3947,7 @@ export default function MessagesView({
                     `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
                   )}
                 >
-                  下载当前 PNG
+                  {t('conversation_share_download_current')}
                 </button>
               )}
               <button
@@ -3951,7 +3962,7 @@ export default function MessagesView({
                 }}
               >
                 <Download size={16} aria-hidden="true" />
-                {conversationShareImages.length > 1 ? '下载全部 PNG' : '下载 PNG'}
+                {conversationShareImages.length > 1 ? t('conversation_share_download_all') : t('conversation_share_download')}
               </button>
             </footer>
           </section>
