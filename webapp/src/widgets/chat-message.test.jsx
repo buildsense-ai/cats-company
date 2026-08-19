@@ -205,6 +205,38 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
   });
 
+  it('does not forward ambient credentials when previewing a shared asset', async () => {
+    const sharedAssetURL = '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 2,
+            from_uid: 2,
+            content: '[文件] report.html',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'report.html',
+                url: sharedAssetURL,
+                size: 2048,
+                mime_type: 'text/html',
+              },
+            }],
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync();
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(sharedAssetURL, { credentials: 'omit' });
+  });
+
   it('renders an Agent delivery artifact before text from the same message', async () => {
     await act(async () => {
       root.render(

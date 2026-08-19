@@ -1856,6 +1856,17 @@ function isTrustedPreviewURL(url) {
   }
 }
 
+function isSharedConversationAssetURL(url) {
+  try {
+    const urlObj = url instanceof URL
+      ? url
+      : new URL(url, window.location.origin);
+    return /^\/api\/shared-conversations\/[A-Za-z0-9_-]{43}\/assets\/[a-f0-9]{32}$/.test(urlObj.pathname);
+  } catch (e) {
+    return false;
+  }
+}
+
 function isSameOriginURL(url) {
   if (!url || typeof window === 'undefined' || !window.location?.origin) return false;
   try {
@@ -2405,7 +2416,10 @@ export function FilePreviewPanel({
     const load = async () => {
       setLoadingText(true);
       try {
-        const res = await fetch(fetchableMediaURL(url));
+        const fetchURL = fetchableMediaURL(url);
+        const res = isSharedConversationAssetURL(url)
+          ? await fetch(fetchURL, { credentials: 'omit' })
+          : await fetch(fetchURL);
         if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
         if (isSpreadsheet) {
           const contentLength = Number(res.headers?.get?.('Content-Length') || res.headers?.get?.('content-length') || 0);
