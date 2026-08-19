@@ -40,6 +40,6 @@
     "prebuild": "node scripts/generate-auth-critical-css.mjs",
     "start": "vite",
     "test": "vitest run",
-    "build": "vite build"
+    "build": "vite build && node scripts/verify-webapp-build.mjs"
   }
 }

@@ -12,10 +12,17 @@ describe('storage access', () => {
 
   test('converts storage getter failures into safe defaults', () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const sessionDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
       get() {
         throw new Error('storage is blocked');
+      },
+    });
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new Error('session storage is blocked');
       },
     });
 
@@ -23,8 +30,12 @@ describe('storage access', () => {
       expect(readStorageValue('key')).toBeNull();
       expect(writeStorageValue('key', 'value')).toBe(false);
       expect(removeStorageValue('key')).toBe(false);
+      expect(readStorageValue('key', 'sessionStorage')).toBeNull();
+      expect(writeStorageValue('key', 'value', 'sessionStorage')).toBe(false);
+      expect(removeStorageValue('key', 'sessionStorage')).toBe(false);
     } finally {
       Object.defineProperty(globalThis, 'localStorage', descriptor);
+      Object.defineProperty(globalThis, 'sessionStorage', sessionDescriptor);
     }
   });
 
