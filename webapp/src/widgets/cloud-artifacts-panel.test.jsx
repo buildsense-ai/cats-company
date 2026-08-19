@@ -5,6 +5,7 @@ vi.mock('../api', () => ({
   resolveMediaURL: vi.fn((url) => url),
   api: {
     getCloudArtifacts: vi.fn(),
+    getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
     publishCloudArtifact: vi.fn(),
     uploadFile: vi.fn(),
@@ -55,12 +56,12 @@ const historicalFile = {
   created_at: '2026-07-29T02:20:00.000Z',
 };
 
-function TestPanel({ initialTab = 'active', agentUid = 440, onPreviewArtifact, onPreviewFile }) {
+function TestPanel({ initialTab = 'active', topicId = 'p2p_7_440', agentUid = 440, onPreviewArtifact, onPreviewFile }) {
   const [tab, setTab] = React.useState(initialTab);
   return (
     <CloudArtifactsPanel
       agentUid={agentUid}
-      topicId="p2p_7_440"
+      topicId={topicId}
       tab={tab}
       onTabChange={setTab}
       onClose={vi.fn()}
@@ -81,6 +82,11 @@ describe('CloudArtifactsPanel', () => {
       artifacts: [activeArtifact],
       viewer_relation: 'owner',
       visibility: 'agent_users',
+    });
+    api.getAgentFiles.mockReset().mockResolvedValue({
+      files: [historicalFile],
+      has_more: false,
+      next_before_id: 0,
     });
     api.getTopicFiles.mockReset().mockResolvedValue({
       files: [historicalFile],
@@ -252,6 +258,7 @@ describe('CloudArtifactsPanel', () => {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(container.textContent).toContain('期末学情报告.pdf');
     expect(container.textContent).toContain('711.3 KB');
 
@@ -282,6 +289,7 @@ describe('CloudArtifactsPanel', () => {
       beforeId: 820,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(container.textContent).toContain('复习清单.docx');
   });
 
@@ -399,9 +407,35 @@ describe('CloudArtifactsPanel', () => {
 
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
       .toEqual(['文件']);
-    expect(api.getTopicFiles).toHaveBeenCalled();
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_7_440', {
+      beforeId: 0,
+      limit: 40,
+    });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(api.getCloudArtifacts).not.toHaveBeenCalled();
     expect(container.querySelector('button[aria-label="筛选成果范围"]')).toBeNull();
+  });
+
+  test('opens all Agent results when no conversation exists', async () => {
+    const otherTaskArtifact = {
+      ...activeArtifact,
+      id: 'other-task-result',
+      title: '其他任务成果',
+      source_topic_id: 'grp_80',
+    };
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [activeArtifact, otherTaskArtifact],
+      viewer_relation: 'owner',
+    });
+
+    await renderPanel({ topicId: '', initialTab: 'active' });
+
+    expect(container.textContent).toContain('课堂小游戏');
+    expect(container.textContent).toContain('其他任务成果');
+    expect(container.querySelector('button[aria-label="筛选成果范围"]')?.textContent)
+      .toContain('全部');
+    expect(container.querySelector('button[role="tab"][disabled]')?.textContent).toBe('文件');
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
   test('shows a useful empty state and retry action', async () => {
@@ -418,11 +452,12 @@ describe('CloudArtifactsPanel', () => {
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
   });
 
-  async function renderPanel({ initialTab = 'active', agentUid = 440 } = {}) {
+  async function renderPanel({ initialTab = 'active', topicId = 'p2p_7_440', agentUid = 440 } = {}) {
     await act(async () => {
       root.render(
         <TestPanel
           initialTab={initialTab}
+          topicId={topicId}
           agentUid={agentUid}
           onPreviewArtifact={onPreviewArtifact}
           onPreviewFile={onPreviewFile}
