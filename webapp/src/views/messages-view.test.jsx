@@ -176,8 +176,10 @@ vi.mock('../utils/conversation-share-image', () => ({
     }
     return typeof message?.content === 'string' ? message.content : message?.content?.text || '';
   },
-  downloadConversationShareImage: vi.fn(),
-  downloadConversationShareImages: vi.fn(),
+  downloadConversationShareImage: vi.fn(async () => true),
+  downloadConversationShareImages: vi.fn(async () => true),
+  isMobileConversationShareBrowser: vi.fn(() => false),
+  openConversationShareImageForManualSave: vi.fn(() => true),
   renderConversationShareImage: vi.fn(async () => ({
     dataUrl: 'data:image/png;base64,catsco-share',
     width: 1080,
@@ -221,7 +223,13 @@ import MessagesView, {
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
 import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
-import { downloadConversationShareImage, downloadConversationShareImages, renderConversationShareImage } from '../utils/conversation-share-image';
+import {
+  downloadConversationShareImage,
+  downloadConversationShareImages,
+  isMobileConversationShareBrowser,
+  openConversationShareImageForManualSave,
+  renderConversationShareImage,
+} from '../utils/conversation-share-image';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -430,6 +438,7 @@ describe('MessagesView composer draft isolation', () => {
       api_upload_url: '/api/mobile-upload/sessions/abc123/files',
     });
     api.getMobileUploadSession.mockResolvedValue({ session_id: 'abc123', files: [] });
+    isMobileConversationShareBrowser.mockReturnValue(false);
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
       wsHandler = handler;
@@ -576,7 +585,10 @@ describe('MessagesView composer draft isolation', () => {
         }));
       });
       expect(document.activeElement).toBe(downloadButton);
-      await act(async () => downloadButton.click());
+      await act(async () => {
+        downloadButton.click();
+        await flushPromises();
+      });
       expect(downloadConversationShareImage).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
       await act(async () => {
         document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -672,12 +684,96 @@ describe('MessagesView composer draft isolation', () => {
     expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,page-two');
 
     const downloadAllButton = [...preview.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('下载全部 PNG'));
-    await act(async () => downloadAllButton.click());
+      .find((button) => button.textContent.includes('下载全部图片（ZIP）'));
+    expect(downloadAllButton?.textContent).toBe('下载全部图片（ZIP）');
+    await act(async () => {
+      downloadAllButton.click();
+      await flushPromises();
+    });
     expect(downloadConversationShareImages).toHaveBeenCalledWith([
       'data:image/png;base64,page-one',
       'data:image/png;base64,page-two',
     ]);
+  });
+
+  it('labels multi-page mobile sharing as a system share action', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 202,
+        seq_id: 202,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '两张分享图',
+      }],
+    });
+    isMobileConversationShareBrowser.mockReturnValue(true);
+    renderConversationShareImage.mockResolvedValueOnce({
+      dataUrl: 'data:image/png;base64:page-one',
+      pages: [
+        { dataUrl: 'data:image/png;base64:page-one', width: 720, height: 1200, page: 1, total: 2 },
+        { dataUrl: 'data:image/png;base64:page-two', width: 720, height: 1200, page: 2, total: 2 },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    expect([...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('系统分享全部图片'))?.textContent)
+      .toBe('系统分享全部图片');
+  });
+
+  it('shows a visible recovery message when image saving cannot start', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 301,
+        seq_id: 301,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '请保存这张分享图',
+      }],
+    });
+    downloadConversationShareImage.mockResolvedValueOnce(false);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    const downloadButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('下载 PNG'));
+    await act(async () => {
+      downloadButton.click();
+      await flushPromises();
+    });
+
+    expect(preview?.textContent).toContain('无法启动图片保存。请在新标签页中打开图片后，使用浏览器的保存功能。');
+    const manualSaveButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('在新标签页打开图片'));
+    await act(async () => {
+      manualSaveButton.click();
+    });
+    expect(openConversationShareImageForManualSave).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {
