@@ -1142,10 +1142,10 @@ export default function AgentStoreModal({
     if (!botId) return;
     const owned = isOwnedBot(bot);
     const confirmed = await feedback.confirm({
-      title: owned ? `永久删除“${bot.display_name}”？` : `移除“${bot.display_name}”？`,
+      title: owned ? `再次确认：永久删除“${bot.display_name}”？` : `再次确认：移除“${bot.display_name}”？`,
       message: owned
-        ? '该虚拟员工及其相关配置会被永久删除，且无法恢复。'
-        : '这只会解除好友关系，不会删除对方创建的虚拟员工。',
+        ? '该云端实例、员工记录及相关配置会被永久删除，且无法恢复。'
+        : '这只会解除好友关系，不会删除对方创建的虚拟员工。请确认这是你要执行的操作。',
       confirmLabel: owned ? '永久删除' : '移除',
       tone: 'danger',
     });
@@ -1188,8 +1188,8 @@ export default function AgentStoreModal({
       return;
     }
     const confirmed = await feedback.confirm({
-      title: `更新“${bot.display_name}”？`,
-      message: `将应用更新到 ${version}，会保留会话、文件和本地配置。更新期间员工会短暂重启。`,
+      title: `再次确认：更新“${bot.display_name}”？`,
+      message: `将应用更新到版本 ${version}，会保留会话、文件和本地配置。更新期间员工会短暂重启，请确认目标版本无误。`,
       confirmLabel: '确认更新',
       tone: 'default',
     });
@@ -1234,8 +1234,8 @@ export default function AgentStoreModal({
         return;
       }
       const confirmed = await feedback.confirm({
-        title: `回滚“${bot.display_name}”？`,
-        message: `回滚会把云端虚拟员工切换到应用版本 ${version}，但会保留当前数据。`,
+        title: `再次确认：回滚“${bot.display_name}”？`,
+        message: `回滚会把云端虚拟员工切换到应用版本 ${version}，但会保留当前数据。请确认目标版本无误。`,
         confirmLabel: '确认回滚',
         tone: 'default',
       });
@@ -1259,7 +1259,7 @@ export default function AgentStoreModal({
     if (!name) return;
     if (!opts.verified) {
       const confirmed = await feedback.confirm({
-        title: `重置“${bot.display_name}”？`,
+        title: `再次确认：重置“${bot.display_name}”？`,
         message: version
           ? `重置会销毁该云端虚拟员工的实例并从镜像版本 ${version} 重建，所有数据将丢失且无法恢复！`
           : '重置会销毁该云端虚拟员工的实例并从镜像重建，所有数据将丢失且无法恢复！',

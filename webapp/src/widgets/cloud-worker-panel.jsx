@@ -34,9 +34,9 @@ const statusMeta = (status) => (
 );
 
 const CLOUD_ACTION_LABELS = {
-  update: '正在更新应用，期间员工会短暂离线',
-  rollback: '正在回滚应用，期间员工会短暂离线',
-  reset: '正在重建实例，请勿关闭或重复提交',
+  update: '正在更新应用版本，期间员工会短暂离线，请保持页面打开',
+  rollback: '正在回滚应用版本，期间员工会短暂离线，请保持页面打开',
+  reset: '正在按基础镜像重建实例，所有数据会被清空，请勿关闭或重复提交',
   delete: '正在销毁实例并删除员工',
 };
 
@@ -132,9 +132,9 @@ export default function CloudWorkerPanel({
       setResetErrors({ [tenantName]: true });
       return;
     }
-    const version = imageSelections[tenantName] || imageVersions[0] || '';
-    onReset(worker, version, { verified: true });
-    cancelReset();
+    const version = imageSelections[tenantName] || worker.cloud_version || imageVersions[0] || '';
+    Promise.resolve(onReset(worker, version, { verified: true }))
+      .then(cancelReset, () => {});
   };
 
   const quotaNote = quotaError ? (
@@ -266,8 +266,12 @@ export default function CloudWorkerPanel({
               const meta = statusMeta(worker.cloud_status);
               const acting = activeAction.name === worker.tenant_name;
               const actionName = acting ? activeAction.action : '';
-              const releaseTarget = releaseSelections[worker.tenant_name] || releaseVersions[0] || '';
-              const imageTarget = imageSelections[worker.tenant_name] || imageVersions[0] || '';
+              const releaseTarget = releaseSelections[worker.tenant_name]
+                || (releaseVersions.includes(worker.app_version) ? worker.app_version : '')
+                || releaseVersions[0] || '';
+              const imageTarget = imageSelections[worker.tenant_name]
+                || (imageVersions.includes(worker.cloud_version) ? worker.cloud_version : '')
+                || imageVersions[0] || '';
               return (
                 <div
                   key={worker.tenant_name || id}
@@ -288,15 +292,8 @@ export default function CloudWorkerPanel({
                   </div>
 
                   <div className="cc-cloud-worker-meta">
-                    {worker.app_version && (
-                      <span>应用 <b>{worker.app_version}</b></span>
-                    )}
-                    {worker.cloud_version && (
-                      <span>基础镜像 <b>{worker.cloud_version}</b></span>
-                    )}
-                    {worker.cloud_image_id && (
-                      <span>镜像 <b>{worker.cloud_image_id.slice(0, 8)}</b></span>
-                    )}
+                    <span>应用版本 <b>{worker.app_version || '暂未读取'}</b></span>
+                    <span>基础镜像 <b>{worker.cloud_version || '暂未读取'}</b></span>
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
                         {['provisioning', 'creating'].includes(String(worker.cloud_status || '').toLowerCase())
@@ -306,41 +303,45 @@ export default function CloudWorkerPanel({
                     )}
                   </div>
 
-                  <div className="cc-cloud-worker-actions">
-                    <label className="cc-cloud-version-field">
-                      <span>应用版本</span>
-                      <select
-                        className="cc-cloud-version-select"
-                        value={releaseTarget}
-                        disabled={hasActiveAction || releaseVersions.length === 0 || !['update', 'rollback'].some(actionAvailable)}
-                        onChange={(e) => setReleaseSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
-                        title={releaseVersions.length === 0 ? '暂无可用应用版本' : '更新或回滚使用的应用版本'}
-                      >
-                        {releaseVersions.length === 0 ? (
-                          <option value="">暂无应用版本</option>
-                        ) : (
-                          releaseVersions.map((v) => <option key={v} value={v}>{v}</option>)
-                        )}
-                      </select>
-                    </label>
+                  <div className="cc-cloud-worker-controls">
+                    <div className="cc-cloud-version-controls">
+                      <label className="cc-cloud-version-field">
+                        <span>应用版本</span>
+                        <select
+                          className="cc-cloud-version-select"
+                          value={releaseTarget}
+                          disabled={hasActiveAction || releaseVersions.length === 0 || !['update', 'rollback'].some(actionAvailable)}
+                          onChange={(e) => setReleaseSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
+                          title={releaseVersions.length === 0 ? '暂无可用应用版本' : '更新或回滚使用的应用版本'}
+                        >
+                          {releaseVersions.length === 0 ? (
+                            <option value="">暂无应用版本</option>
+                          ) : (
+                            releaseVersions.map((v) => <option key={v} value={v}>{v}</option>)
+                          )}
+                        </select>
+                      </label>
 
-                    <label className="cc-cloud-version-field">
-                      <span>基础镜像</span>
-                      <select
-                        className="cc-cloud-image-select"
-                        value={imageTarget}
-                        disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
-                        onChange={(e) => setImageSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
-                        title={imageVersions.length === 0 ? '暂无可用基础镜像' : '重置实例使用的基础镜像版本'}
-                      >
-                        {imageVersions.length === 0 ? (
-                          <option value="">暂无基础镜像</option>
-                        ) : (
-                          imageVersions.map((v) => <option key={v} value={v}>{v}</option>)
-                        )}
-                      </select>
-                    </label>
+                      <label className="cc-cloud-version-field">
+                        <span>基础镜像</span>
+                        <select
+                          className="cc-cloud-image-select"
+                          value={imageTarget}
+                          disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
+                          onChange={(e) => setImageSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
+                          title={imageVersions.length === 0 ? '暂无可用基础镜像' : '仅重置实例时使用，重置会清空数据'}
+                        >
+                          {imageVersions.length === 0 ? (
+                            <option value="">暂无基础镜像</option>
+                          ) : (
+                            imageVersions.map((v) => <option key={v} value={v}>{v}</option>)
+                          )}
+                        </select>
+                      </label>
+                    </div>
+                    <p className="cc-cloud-version-hint">应用版本只用于更新/回滚并保留数据；基础镜像只用于重置，重置会清空数据。</p>
 
+                    <div className="cc-cloud-worker-actions">
                     <button
                       type="button"
                       className="oc-btn oc-btn-primary"
@@ -348,7 +349,7 @@ export default function CloudWorkerPanel({
                       disabled={hasActiveAction || releaseVersions.length === 0 || !actionAvailable('update')}
                       title={!actionAvailable('update') ? '云端更新服务尚未配置' : (releaseVersions.length === 0 ? '暂无可用应用版本，无法更新' : '更新应用到所选版本，保留当前数据')}
                     >
-                      {actionName === 'update' ? '更新中...' : <><ArrowUpCircle size={13} /> 更新</>}
+                      {actionName === 'update' ? <><RefreshCw size={13} className="cc-spin" /> 更新中...</> : <><ArrowUpCircle size={13} /> 更新</>}
                     </button>
 
                     <button
@@ -358,14 +359,15 @@ export default function CloudWorkerPanel({
                       disabled={hasActiveAction || releaseVersions.length === 0 || !actionAvailable('rollback')}
                       title={!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (releaseVersions.length === 0 ? '暂无可用应用版本，无法回滚' : '回滚应用到所选版本，保留当前数据')}
                     >
-                      {actionName === 'rollback' ? '回滚中...' : <><RotateCcw size={13} /> 回滚</>}
+                      {actionName === 'rollback' ? <><RefreshCw size={13} className="cc-spin" /> 回滚中...</> : <><RotateCcw size={13} /> 回滚</>}
                     </button>
 
                     {resetConfirming === worker.tenant_name ? (
                       <div className="cc-cloud-reset-confirm">
                         <p className="cc-cloud-reset-confirm-title">
-                          <ShieldAlert size={13} /> 重置「{worker.display_name}」会清空数据，请输入验证码确认
+                          <ShieldAlert size={13} /> 重置「{worker.display_name}」会使用基础镜像 {imageTarget} 重建，并清空全部数据
                         </p>
+                        <p className="cc-cloud-reset-confirm-warning">此操作不可撤销，员工会暂时离线。请核对镜像版本后输入验证码完成二次确认。</p>
                         <p className="cc-cloud-reset-confirm-code">
                           验证码 <b>{resetCodes[worker.tenant_name]}</b>
                         </p>
@@ -408,7 +410,7 @@ export default function CloudWorkerPanel({
                         disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
                         title={!actionAvailable('reset') ? '云端重置服务尚未配置' : (imageVersions.length === 0 ? '暂无可用基础镜像，无法重置' : '重置：销毁实例并从所选镜像版本重建，所有数据丢失（需验证码）')}
                       >
-                        {actionName === 'reset' ? '重置中...' : <><RefreshCw size={13} /> 重置</>}
+                          {actionName === 'reset' ? <><RefreshCw size={13} className="cc-spin" /> 重置中...</> : <><RefreshCw size={13} /> 重置</>}
                       </button>
                     )}
 
@@ -417,15 +419,21 @@ export default function CloudWorkerPanel({
                       className="oc-btn oc-btn-default cc-agent-card-delete"
                       onClick={() => onDelete(worker)}
                       disabled={hasActiveAction || !actionAvailable('delete')}
+                      aria-label={actionName === 'delete' ? '删除中' : `删除 ${worker.display_name || worker.username || '员工'}`}
                       title={!actionAvailable('delete') ? '云端删除服务尚未配置' : '删除：销毁云端实例并删除该助手'}
                     >
-                      <Trash2 size={13} />
+                      {actionName === 'delete' ? <RefreshCw size={13} className="cc-spin" /> : <Trash2 size={13} />}
                     </button>
+                    </div>
                   </div>
                   {acting && (
                     <div className="cc-cloud-operation-status" role="status" aria-live="polite">
-                      <RefreshCw size={14} />
-                      <span>{CLOUD_ACTION_LABELS[actionName] || '云端操作正在执行，请勿重复提交'}</span>
+                      <RefreshCw size={14} className="cc-spin" />
+                      <div className="cc-cloud-operation-status-copy">
+                        <strong>{CLOUD_ACTION_LABELS[actionName] || '云端操作正在执行，请勿重复提交'}</strong>
+                        <span>云端正在处理，请勿重复点击；完成后页面会自动刷新状态。</span>
+                        <i className="cc-cloud-operation-progress" aria-hidden="true"><b /></i>
+                      </div>
                     </div>
                   )}
                 </div>
