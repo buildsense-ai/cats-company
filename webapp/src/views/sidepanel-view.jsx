@@ -217,7 +217,17 @@ function SidebarSectionHeader({
       className={`v3-chat-section cc-sidebar-section-row cc-top-level-section ${className}`.trim()}
       data-expanded={expanded ? 'true' : 'false'}
     >
-      <button type="button" className="cc-section-toggle" onClick={onToggle} aria-expanded={expanded}>
+      <button
+        type="button"
+        className="cc-section-toggle"
+        onPointerDown={(event) => {
+          if (event.pointerType === 'mouse' || event.pointerType === 'pen') {
+            event.preventDefault();
+          }
+        }}
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
         <span>{label}</span>
         <ChevronRight size={14} />
         {toggleContent}

@@ -14,6 +14,7 @@ vi.mock('../api', () => ({
 }));
 
 import { api } from '../api';
+import { FeedbackProvider } from '../components/feedback-system';
 import CloudArtifactsPanel from './cloud-artifacts-panel';
 
 const activeArtifact = {
@@ -58,15 +59,17 @@ const historicalFile = {
 function TestPanel({ initialTab = 'active', agentUid = 440, onPreviewArtifact, onPreviewFile }) {
   const [tab, setTab] = React.useState(initialTab);
   return (
-    <CloudArtifactsPanel
-      agentUid={agentUid}
-      topicId="p2p_7_440"
-      tab={tab}
-      onTabChange={setTab}
-      onClose={vi.fn()}
-      onPreviewArtifact={onPreviewArtifact}
-      onPreviewFile={onPreviewFile}
-    />
+    <FeedbackProvider>
+      <CloudArtifactsPanel
+        agentUid={agentUid}
+        topicId="p2p_7_440"
+        tab={tab}
+        onTabChange={setTab}
+        onClose={vi.fn()}
+        onPreviewArtifact={onPreviewArtifact}
+        onPreviewFile={onPreviewFile}
+      />
+    </FeedbackProvider>
   );
 }
 
@@ -112,7 +115,7 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '成果']);
+      .toEqual(['文件', '共享']);
     expect(container.textContent).toContain('共享成果');
     expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('所有者');
     expect(container.textContent).toContain('成员可查看 · 你可管理全部成果');
@@ -379,6 +382,7 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('你可以查看和上传成果');
     expect(container.querySelector('button[aria-label="下架 课堂网页"]')).not.toBeNull();
     expect(container.textContent).not.toContain('待审核');
+    expect(document.body.querySelector('.cc-toast')?.textContent).toContain('已共享内容到云端');
   });
 
   test('keeps the upload control hidden for a legacy artifact service', async () => {

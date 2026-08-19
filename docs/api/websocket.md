@@ -170,6 +170,21 @@ XiaoBa-CLI 等 Agent runtime 在多人群中接收、处理或转发取消事件
 }
 ```
 
+#### 5. 应用通知 (notification)
+
+成员成功把成果共享到 Agent 云端后，Agent 所有者的在线客户端会收到：
+
+```json
+{
+  "notification": {
+    "type": "cloud_artifact_shared",
+    "message": "有新文件在云端共享"
+  }
+}
+```
+
+该事件只表示共享已完成，不包含成果标题、文件 URL、任务名、上传者或其他成果详情。
+
 ## Topic 格式
 
 - **P2P:** `p2p_{smaller_uid}_{larger_uid}`

@@ -5217,6 +5217,72 @@ button.catsco-download-action:disabled {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
 
+.oc-rich-image-gallery-preview {
+  padding: 24px 72px;
+}
+
+.oc-rich-image-gallery-preview .oc-rich-image-preview-media {
+  max-width: min(90vw, calc(100vw - 144px));
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+}
+
+.oc-rich-image-gallery-nav {
+  position: fixed;
+  top: 50%;
+  width: 128px;
+  height: 128px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  color: #fff;
+  background: transparent;
+  cursor: pointer;
+  opacity: 1;
+  transform: translateY(-50%);
+  transition: color 140ms ease, opacity 140ms ease, transform 140ms ease;
+}
+
+.oc-rich-image-gallery-nav:hover,
+.oc-rich-image-gallery-nav:focus-visible {
+  background: transparent;
+  color: #fff;
+  transform: translateY(-50%) scale(1.08);
+}
+
+.oc-rich-image-gallery-nav:disabled {
+  color: rgba(255, 255, 255, 0.34);
+  cursor: default;
+  opacity: 0.62;
+}
+
+.oc-rich-image-gallery-nav:disabled:hover {
+  color: rgba(255, 255, 255, 0.34);
+  transform: translateY(-50%);
+}
+
+.oc-rich-image-gallery-nav.is-previous { left: 4px; }
+.oc-rich-image-gallery-nav.is-next { right: 4px; }
+
+.oc-rich-image-gallery-nav:focus-visible,
+.oc-rich-image-gallery-preview .oc-rich-image-preview-close:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+@media (max-width: 640px) {
+  .oc-rich-image-gallery-preview { padding: 56px 56px; }
+  .oc-rich-image-gallery-preview .oc-rich-image-preview-media {
+    max-width: calc(100vw - 112px);
+    max-height: calc(100dvh - 112px);
+  }
+  .oc-rich-image-gallery-nav { width: 112px; height: 112px; }
+  .oc-rich-image-gallery-nav.is-previous { left: 0; }
+  .oc-rich-image-gallery-nav.is-next { right: 0; }
+}
+
 /* Upload button in input bar */
 .oc-input-actions {
   display: flex;

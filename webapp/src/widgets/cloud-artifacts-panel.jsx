@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, resolveMediaURL } from '../api';
+import { useFeedback } from '../components/feedback-system';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
 import CustomSelect from './custom-select';
@@ -104,6 +105,7 @@ export default function CloudArtifactsPanel({
   onPreviewArtifact,
   onPreviewFile,
 }) {
+  const feedback = useFeedback();
   const [localTab, setLocalTab] = useState('files');
   const tab = controlledTab ?? localTab;
   const [artifacts, setArtifacts] = useState([]);
@@ -237,6 +239,7 @@ export default function CloudArtifactsPanel({
       }
       setArtifactScope('current');
       notifyArtifactsChanged(agentUid);
+      feedback.notify({ tone: 'success', message: '已共享内容到云端' });
     } catch (err) {
       setError(err.message || '成果发布失败，请稍后重试');
     } finally {
@@ -327,7 +330,7 @@ export default function CloudArtifactsPanel({
                 className={artifactTabSelected ? 'active' : ''}
                 onClick={() => selectTab('active')}
               >
-                成果
+                共享
               </button>
             )}
           </div>

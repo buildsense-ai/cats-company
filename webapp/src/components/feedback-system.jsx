@@ -14,6 +14,7 @@ import {
   Info,
   X,
 } from 'lucide-react';
+import AppTooltip from './app-tooltip';
 
 const FeedbackContext = createContext(null);
 const DEFAULT_TOAST_DURATION = 4200;
@@ -98,7 +99,7 @@ export function InlineFeedback({
   );
 }
 
-function ToastViewport({ toasts, onDismiss }) {
+function ToastViewport({ toasts }) {
   return (
     <div className="cc-toast-viewport" aria-label="操作通知">
       {toasts.map((toast) => (
@@ -108,21 +109,10 @@ function ToastViewport({ toasts, onDismiss }) {
           role={toast.tone === 'error' ? 'alert' : 'status'}
           aria-live={toast.tone === 'error' ? 'assertive' : 'polite'}
         >
-          <span className="cc-toast-icon">
-            <ToastIcon tone={toast.tone} />
-          </span>
           <div className="cc-toast-copy">
             {toast.title && <strong>{toast.title}</strong>}
             {toast.message && <span>{toast.message}</span>}
           </div>
-          <button
-            type="button"
-            className="cc-toast-close"
-            onClick={() => onDismiss(toast.id)}
-            aria-label="关闭通知"
-          >
-            <X size={16} />
-          </button>
         </div>
       ))}
     </div>
@@ -285,8 +275,9 @@ export function FeedbackProvider({ children }) {
   return (
     <FeedbackContext.Provider value={value}>
       {children}
+      <AppTooltip />
       {canPortal && createPortal(
-        <ToastViewport toasts={toasts} onDismiss={dismissToast} />,
+        <ToastViewport toasts={toasts} />,
         document.body,
       )}
       {canPortal && confirmation && createPortal(

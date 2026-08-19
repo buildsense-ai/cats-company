@@ -127,6 +127,14 @@ export function resolveInitialUser({
   return null;
 }
 
+export function cloudArtifactNotificationToast(message) {
+  if (message?.notification?.type !== 'cloud_artifact_shared') return null;
+  return {
+    tone: 'info',
+    message: '有新文件在云端共享',
+  };
+}
+
 function getInitialUser() {
   const token = getToken();
   let savedUser = null;
@@ -333,6 +341,13 @@ function TinodeWebApp({ location }) {
     setAppSidebarPreferredWidth(nextWidth);
     saveSidebarWidth(nextWidth);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--cc-toast-sidebar-width',
+      `${appSidebarCollapsed ? 64 : appSidebarWidth}px`,
+    );
+  }, [appSidebarCollapsed, appSidebarWidth]);
 
   useEffect(() => {
     const greenLiquid = theme === 'liquid-green';
@@ -581,6 +596,12 @@ function TinodeWebApp({ location }) {
     }
     if (msg._type === 'ws_close') {
       setWsStatus('reconnecting');
+      return;
+    }
+
+    const notificationToast = cloudArtifactNotificationToast(msg);
+    if (notificationToast) {
+      feedback.notify(notificationToast);
       return;
     }
 

@@ -1111,6 +1111,49 @@ describe('ChatMessage rich file rendering', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('opens a gallery image when its render index differs from the gallery index', async () => {
+    const onOpenImage = vi.fn();
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 2702,
+            from_uid: 1,
+            content: 'Preview image',
+            content_blocks: [{
+              type: 'image',
+              payload: {
+                file_key: 'fallback.png',
+                url: '/uploads/images/fallback.png',
+                name: 'fallback.png',
+              },
+            }],
+          }}
+          imageGallery={[{
+            id: 'stable-gallery-id',
+            payload: { url: '/uploads/images/fallback.png', name: 'fallback.png' },
+          }]}
+          onOpenImage={onOpenImage}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.oc-rich-image-trigger'));
+      await Promise.resolve();
+    });
+
+    expect(onOpenImage).toHaveBeenCalledWith(
+      'stable-gallery-id',
+      expect.anything(),
+      expect.objectContaining({ url: '/uploads/images/fallback.png' }),
+    );
+  });
+
   it('writes an internal attachment token when a system file is dragged', async () => {
     const setData = vi.fn();
     const dataTransfer = { setData, effectAllowed: 'none' };

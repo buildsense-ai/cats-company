@@ -257,6 +257,20 @@ describe('ChatListView sidebar sections', () => {
     expect(contactsToggle.querySelector('.lucide-user-round')).toBeNull();
   });
 
+  it('does not leave pointer-clicked section toggles focused', async () => {
+    await mount();
+
+    const tasksToggle = container.querySelector('.cc-conversation-section > .cc-section-toggle');
+    const mouseDown = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      pointerType: 'mouse',
+    });
+    tasksToggle.dispatchEvent(mouseDown);
+
+    expect(mouseDown.defaultPrevented).toBe(true);
+  });
+
   it('recognizes real sticky lanes and the reachable scroll end as auto-collapse boundaries', () => {
     expect(shouldAutoCollapseSidebarSection({
       scrollTop: 260,
