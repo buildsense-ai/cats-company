@@ -21,6 +21,7 @@ type coordinatorMutationStore struct {
 	beginResultNil   bool
 	advanceResultNil bool
 	commitResultNil  bool
+	beginErr         error
 }
 
 func (s *coordinatorMutationStore) BeginBotSkillMutation(
@@ -29,6 +30,9 @@ func (s *coordinatorMutationStore) BeginBotSkillMutation(
 	leaseTTL time.Duration,
 ) (*types.BotSkillMutation, bool, error) {
 	s.calls = append(s.calls, "begin")
+	if s.beginErr != nil {
+		return nil, false, s.beginErr
+	}
 	if s.mutation != nil {
 		return cloneCoordinatorMutation(s.mutation), false, nil
 	}
@@ -52,6 +56,17 @@ func (s *coordinatorMutationStore) BeginBotSkillMutation(
 func (s *coordinatorMutationStore) GetBotSkillMutation(botUID, mutationID int64) (*types.BotSkillMutation, error) {
 	s.calls = append(s.calls, "get")
 	if s.mutation == nil || s.mutation.BotUID != botUID || s.mutation.ID != mutationID {
+		return nil, store.ErrBotSkillMutationNotFound
+	}
+	return cloneCoordinatorMutation(s.mutation), nil
+}
+
+func (s *coordinatorMutationStore) GetBotSkillMutationByRequest(
+	input types.BotSkillMutationCreateInput,
+) (*types.BotSkillMutation, error) {
+	s.calls = append(s.calls, "get_by_request")
+	if s.mutation == nil || s.mutation.BotUID != input.BotUID ||
+		s.mutation.ActorUserUID != input.ActorUserUID || s.mutation.ClientRequestID != input.ClientRequestID {
 		return nil, store.ErrBotSkillMutationNotFound
 	}
 	return cloneCoordinatorMutation(s.mutation), nil
@@ -136,14 +151,46 @@ func (s *coordinatorMutationStore) RenewBotSkillMutationLease(
 	leaseTTL time.Duration,
 ) (*types.BotSkillMutation, error) {
 	s.calls = append(s.calls, "renew")
-	return nil, errors.New("unexpected lease renewal")
+	if s.mutation == nil || s.mutation.BotUID != botUID || s.mutation.ID != mutationID ||
+		s.mutation.LeaseGeneration != expectedLeaseGeneration || s.mutation.Status != expected {
+		return nil, store.ErrBotSkillMutationStateConflict
+	}
+	if !s.mutation.LeaseExpiresAt.After(now) {
+		return nil, store.ErrBotSkillMutationLeaseExpired
+	}
+	s.mutation.LeaseGeneration++
+	s.mutation.LeaseExpiresAt = now.Add(leaseTTL)
+	s.mutation.UpdatedAt = now
+	return cloneCoordinatorMutation(s.mutation), nil
+}
+
+func (s *coordinatorMutationStore) RecoverBotSkillMutationLease(
+	botUID, mutationID, expectedLeaseGeneration int64,
+	expected types.BotSkillMutationStatus,
+	now time.Time,
+	leaseTTL time.Duration,
+) (*types.BotSkillMutation, error) {
+	s.calls = append(s.calls, "recover")
+	if s.mutation == nil || s.mutation.BotUID != botUID || s.mutation.ID != mutationID ||
+		s.mutation.LeaseGeneration != expectedLeaseGeneration || s.mutation.Status != expected {
+		return nil, store.ErrBotSkillMutationStateConflict
+	}
+	if s.mutation.LeaseExpiresAt.After(now) {
+		return nil, store.ErrBotSkillMutationBusy
+	}
+	s.mutation.LeaseGeneration++
+	s.mutation.LeaseExpiresAt = now.Add(leaseTTL)
+	s.mutation.UpdatedAt = now
+	return cloneCoordinatorMutation(s.mutation), nil
 }
 
 type coordinatorVersionWriter struct {
-	request *skillMutationVersionWriteRequest
-	result  skillMutationVersionWriteResult
-	err     error
-	calls   int
+	request     *skillMutationVersionWriteRequest
+	mutationIDs []int64
+	result      skillMutationVersionWriteResult
+	err         error
+	errors      []error
+	calls       int
 }
 
 func (w *coordinatorVersionWriter) WriteBotPrivateSkillVersion(
@@ -152,6 +199,12 @@ func (w *coordinatorVersionWriter) WriteBotPrivateSkillVersion(
 ) (skillMutationVersionWriteResult, error) {
 	w.calls++
 	w.request = &request
+	w.mutationIDs = append(w.mutationIDs, request.MutationID)
+	if len(w.errors) > 0 {
+		err := w.errors[0]
+		w.errors = w.errors[1:]
+		return w.result, err
+	}
 	return w.result, w.err
 }
 
@@ -180,8 +233,8 @@ func TestSkillMutationCoordinatorOrchestratesVersionDefinitionAndActivationPendi
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	wantCalls := []string{
-		"begin", "validating->version_ready", "commit_definition",
-		"definition_committed->activation_pending",
+		"begin", "renew", "validating->version_ready", "renew",
+		"commit_definition", "renew", "definition_committed->activation_pending",
 	}
 	if strings.Join(mutations.calls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("calls=%v, want %v", mutations.calls, wantCalls)
@@ -242,6 +295,7 @@ func TestSkillMutationCoordinatorResumesVersionReadyWithoutRepeatingVersionWrite
 		ExpectedPreviousContentHash: claims.ExpectedPreviousHash,
 		GitCommitSHA:                strings.Repeat("e", 40),
 		Status:                      types.BotSkillMutationVersionReady, LeaseGeneration: 1,
+		LeaseExpiresAt: now.Add(2 * time.Minute),
 	}}
 	versions := &coordinatorVersionWriter{err: errors.New("must not be called")}
 	coordinator := newSkillMutationCoordinator(mutations, signer, versions, func() time.Time { return now })
@@ -254,7 +308,7 @@ func TestSkillMutationCoordinatorResumesVersionReadyWithoutRepeatingVersionWrite
 	if versions.calls != 0 {
 		t.Fatalf("writerCalls=%d, want 0", versions.calls)
 	}
-	want := "begin,commit_definition,definition_committed->activation_pending"
+	want := "begin,renew,commit_definition,renew,definition_committed->activation_pending"
 	if strings.Join(mutations.calls, ",") != want {
 		t.Fatalf("calls=%v, want %s", mutations.calls, want)
 	}
@@ -276,7 +330,7 @@ func TestSkillMutationCoordinatorRequiresCandidateBeforePersistence(t *testing.T
 	}
 }
 
-func TestSkillMutationCoordinatorRejectsFailedVersionWriteWithoutDefinitionChange(t *testing.T) {
+func TestSkillMutationCoordinatorKeepsUncertainVersionWritePendingWithoutDefinitionChange(t *testing.T) {
 	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	signer := coordinatorGrantSigner(t, now)
 	rawGrant, _ := coordinatorGrant(t, signer)
@@ -286,12 +340,110 @@ func TestSkillMutationCoordinatorRejectsFailedVersionWriteWithoutDefinitionChang
 	coordinator := newSkillMutationCoordinator(mutations, signer, versions, func() time.Time { return now })
 
 	result, err := coordinator.Coordinate(context.Background(), rawGrant, strings.NewReader("candidate"))
-	if !errors.Is(err, writeErr) || result.Mutation.Status != types.BotSkillMutationRejected ||
-		result.Mutation.ErrorCode != "version_write_failed" || result.Definition != nil {
+	if !errors.Is(err, writeErr) || result.Mutation.Status != types.BotSkillMutationValidating ||
+		result.Mutation.ErrorCode != "" || result.Definition != nil {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	if strings.Join(mutations.calls, ",") != "begin,validating->rejected" {
+	if strings.Join(mutations.calls, ",") != "begin,renew" {
 		t.Fatalf("unexpected calls: %v", mutations.calls)
+	}
+}
+
+func TestSkillMutationCoordinatorRetriesUncertainVersionWriteAfterLeaseRecovery(t *testing.T) {
+	issuedAt := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	current := issuedAt
+	signer := coordinatorGrantSigner(t, current)
+	rawGrant, claims := coordinatorGrant(t, signer)
+	ref := types.BotSkillRef{
+		Source: "skillhub", SkillID: claims.LocalSkillID, Version: "1.0.1",
+		ContentHash: claims.CandidateContentHash,
+	}
+	writeErr := errors.New("response lost after remote commit")
+	mutations := &coordinatorMutationStore{}
+	versions := &coordinatorVersionWriter{
+		result: skillMutationVersionWriteResult{AfterReference: ref, GitCommitSHA: strings.Repeat("e", 40)},
+		errors: []error{writeErr},
+	}
+	coordinator := newSkillMutationCoordinator(mutations, signer, versions, func() time.Time { return current })
+
+	result, err := coordinator.Coordinate(context.Background(), rawGrant, strings.NewReader("candidate"))
+	if !errors.Is(err, writeErr) || result.Mutation.Status != types.BotSkillMutationValidating {
+		t.Fatalf("first result=%#v err=%v", result, err)
+	}
+	current = issuedAt.Add(2*time.Minute + 6*time.Second)
+	result, err = coordinator.Coordinate(context.Background(), rawGrant, strings.NewReader("candidate"))
+	if err != nil || result.Mutation.Status != types.BotSkillMutationActivationPending || result.Definition == nil {
+		t.Fatalf("retry result=%#v err=%v", result, err)
+	}
+	if versions.calls != 2 || len(versions.mutationIDs) != 2 || versions.mutationIDs[0] != versions.mutationIDs[1] {
+		t.Fatalf("writer calls=%d mutationIDs=%v", versions.calls, versions.mutationIDs)
+	}
+	if !strings.Contains(strings.Join(mutations.calls, ","), "recover") {
+		t.Fatalf("expired retry did not use recovery path: %v", mutations.calls)
+	}
+}
+
+func TestSkillMutationCoordinatorRecoversExpiredLeaseWithValidGrant(t *testing.T) {
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	signer := coordinatorGrantSigner(t, now)
+	rawGrant, claims := coordinatorGrant(t, signer)
+	ref := types.BotSkillRef{Source: "skillhub", SkillID: claims.LocalSkillID, Version: "1.0.1", ContentHash: claims.CandidateContentHash}
+	mutations := &coordinatorMutationStore{
+		beginErr: store.ErrBotSkillMutationRecoveryRequired,
+		mutation: &types.BotSkillMutation{
+			ID: 101, BotUID: claims.BotUID, LocalSkillID: claims.LocalSkillID,
+			ActorUserUID: claims.ActorUserUID, SourceTopicID: claims.SourceTopicID,
+			SourceMessageID: claims.SourceMessageID, RuntimeBodyID: claims.RuntimeBodyID,
+			ClientRequestID: claims.ClientRequestID, Operation: claims.Operation,
+			CandidateContentHash:       claims.CandidateContentHash,
+			ExpectedDefinitionRevision: claims.ExpectedDefinitionRevision,
+			Status:                     types.BotSkillMutationValidating, LeaseGeneration: 1,
+			LeaseExpiresAt: now.Add(-time.Second),
+		},
+	}
+	versions := &coordinatorVersionWriter{result: skillMutationVersionWriteResult{AfterReference: ref, GitCommitSHA: strings.Repeat("e", 40)}}
+	coordinator := newSkillMutationCoordinator(mutations, signer, versions, func() time.Time { return now })
+
+	result, err := coordinator.Coordinate(context.Background(), rawGrant, strings.NewReader("candidate"))
+	if err != nil || result.Mutation.Status != types.BotSkillMutationActivationPending {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if !strings.Contains(strings.Join(mutations.calls, ","), "get_by_request") || versions.calls != 1 {
+		t.Fatalf("calls=%v writerCalls=%d", mutations.calls, versions.calls)
+	}
+}
+
+type coordinatorDeadlineWriter struct {
+	remaining time.Duration
+}
+
+func (w *coordinatorDeadlineWriter) WriteBotPrivateSkillVersion(
+	ctx context.Context,
+	_ skillMutationVersionWriteRequest,
+) (skillMutationVersionWriteResult, error) {
+	var ok bool
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return skillMutationVersionWriteResult{}, errors.New("writer deadline missing")
+	}
+	w.remaining = time.Until(deadline)
+	return skillMutationVersionWriteResult{}, context.DeadlineExceeded
+}
+
+func TestSkillMutationCoordinatorBoundsVersionWriterByLease(t *testing.T) {
+	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	signer := coordinatorGrantSigner(t, now)
+	rawGrant, _ := coordinatorGrant(t, signer)
+	mutations := &coordinatorMutationStore{}
+	versions := &coordinatorDeadlineWriter{}
+	coordinator := newSkillMutationCoordinator(mutations, signer, versions, func() time.Time { return now })
+
+	result, err := coordinator.Coordinate(context.Background(), rawGrant, strings.NewReader("candidate"))
+	if !errors.Is(err, context.DeadlineExceeded) || result.Mutation.Status != types.BotSkillMutationValidating {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if versions.remaining < 100*time.Second || versions.remaining > 110*time.Second {
+		t.Fatalf("writer budget=%s, want about 105s", versions.remaining)
 	}
 }
 
@@ -314,7 +466,7 @@ func TestSkillMutationCoordinatorRejectsInvalidVersionFactsWithoutDefinitionChan
 		result.Mutation.ErrorCode != "version_facts_invalid" || result.Definition != nil {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	want := "begin,validating->rejected"
+	want := "begin,renew,validating->rejected"
 	if strings.Join(mutations.calls, ",") != want {
 		t.Fatalf("calls=%v, want %s", mutations.calls, want)
 	}
@@ -346,7 +498,7 @@ func TestSkillMutationCoordinatorRedactsVersionWriterError(t *testing.T) {
 	coordinator := newSkillMutationCoordinator(mutations, signer, versions, func() time.Time { return now })
 
 	result, err := coordinator.Coordinate(context.Background(), rawGrant, strings.NewReader("candidate"))
-	if !errors.Is(err, writeErr) || result.Mutation.Status != types.BotSkillMutationRejected {
+	if !errors.Is(err, writeErr) || result.Mutation.Status != types.BotSkillMutationValidating {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	if strings.Contains(err.Error(), "token=secret") || strings.Contains(err.Error(), "candidate.zip") {
@@ -382,7 +534,7 @@ func TestSkillMutationCoordinatorKeepsValidatingOnAdvancePersistenceFailure(t *t
 	if !errors.Is(err, mutations.advanceErr) || result.Mutation.Status != types.BotSkillMutationValidating {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	if strings.Join(mutations.calls, ",") != "begin,validating->version_ready" {
+	if strings.Join(mutations.calls, ",") != "begin,renew,validating->version_ready" {
 		t.Fatalf("calls=%v", mutations.calls)
 	}
 }
@@ -407,7 +559,7 @@ func TestSkillMutationCoordinatorRejectsStaleDefinitionAfterVersionWrite(t *test
 		result.Mutation.ErrorCode != "workspace_stale" || result.Definition != nil {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	want := "begin,validating->version_ready,commit_definition,version_ready->rejected"
+	want := "begin,renew,validating->version_ready,renew,commit_definition,version_ready->rejected"
 	if strings.Join(mutations.calls, ",") != want {
 		t.Fatalf("calls=%v, want %s", mutations.calls, want)
 	}
@@ -426,6 +578,14 @@ func coordinatorGrant(
 	t *testing.T,
 	signer *skillMutationGrantSigner,
 ) (string, *skillMutationGrantClaims) {
+	return coordinatorGrantWithTTL(t, signer, 0)
+}
+
+func coordinatorGrantWithTTL(
+	t *testing.T,
+	signer *skillMutationGrantSigner,
+	ttl time.Duration,
+) (string, *skillMutationGrantClaims) {
 	t.Helper()
 	raw, claims, err := signer.issue(skillMutationGrantInput{
 		Mutation: types.BotSkillMutationCreateInput{
@@ -437,6 +597,7 @@ func coordinatorGrant(
 			ExpectedDefinitionRevision: 10,
 		},
 		CandidateSizeBytes: 9,
+		TTL:                ttl,
 	})
 	if err != nil {
 		t.Fatal(err)

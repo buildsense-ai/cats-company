@@ -305,9 +305,14 @@ type BotSkillMutationPolicyStore interface {
 type BotSkillMutationStore interface {
 	BeginBotSkillMutation(input types.BotSkillMutationCreateInput, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, bool, error)
 	GetBotSkillMutation(botUID, mutationID int64) (*types.BotSkillMutation, error)
+	GetBotSkillMutationByRequest(input types.BotSkillMutationCreateInput) (*types.BotSkillMutation, error)
 	AdvanceBotSkillMutation(botUID, mutationID, expectedLeaseGeneration int64, expected, next types.BotSkillMutationStatus, patch types.BotSkillMutationTransition, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
 	CommitBotSkillMutationDefinition(botUID, mutationID, expectedLeaseGeneration int64, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, *types.BotDefinitionRecord, error)
 	RenewBotSkillMutationLease(botUID, mutationID, expectedLeaseGeneration int64, expected types.BotSkillMutationStatus, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
+	// RecoverBotSkillMutationLease takes over an expired non-terminal mutation
+	// with a generation CAS. It is intentionally separate from Renew so an
+	// active lease can never be silently stolen.
+	RecoverBotSkillMutationLease(botUID, mutationID, expectedLeaseGeneration int64, expected types.BotSkillMutationStatus, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
 }
 
 // BotModelConfigStore is optional so existing narrow Store test doubles do not

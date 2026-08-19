@@ -10,7 +10,10 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-const defaultSkillMutationCoordinatorLeaseTTL = 2 * time.Minute
+const (
+	defaultSkillMutationCoordinatorLeaseTTL   = 2 * time.Minute
+	skillMutationCoordinatorLeaseSafetyWindow = 15 * time.Second
+)
 
 var (
 	errSkillMutationCoordinatorUnavailable = errors.New("skill mutation coordinator is unavailable")
@@ -133,17 +136,38 @@ func (c *skillMutationCoordinator) Coordinate(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	claims, err := c.grants.verify(rawGrant)
-	if err != nil {
-		return nil, safeSkillMutationError("invalid skill mutation grant", err)
-	}
 	if candidate == nil {
 		return nil, errSkillMutationCandidateRequired
+	}
+	claims, err := c.grants.verify(rawGrant)
+	if err != nil {
+		recoveryClaims, recoveryErr := c.grants.verifyExpiredForRecovery(rawGrant)
+		if recoveryErr != nil {
+			return nil, safeSkillMutationError("invalid skill mutation grant", err)
+		}
+		mutation, lookupErr := c.mutations.GetBotSkillMutationByRequest(recoveryClaims.mutationInput())
+		if lookupErr != nil {
+			return nil, safeSkillMutationError("invalid skill mutation grant", lookupErr)
+		}
+		if !mutationMatchesGrant(mutation, recoveryClaims) {
+			return nil, skillMutationPersistenceError(store.ErrBotSkillMutationIdempotencyConflict)
+		}
+		return c.resume(ctx, recoveryClaims, mutation, candidate)
 	}
 	mutation, _, err := c.mutations.BeginBotSkillMutation(
 		claims.mutationInput(), c.now().UTC(), c.leaseTTL,
 	)
 	if err != nil {
+		if errors.Is(err, store.ErrBotSkillMutationRecoveryRequired) {
+			mutation, lookupErr := c.mutations.GetBotSkillMutationByRequest(claims.mutationInput())
+			if lookupErr != nil {
+				return nil, skillMutationPersistenceError(lookupErr)
+			}
+			if !mutationMatchesGrant(mutation, claims) {
+				return nil, skillMutationPersistenceError(store.ErrBotSkillMutationIdempotencyConflict)
+			}
+			return c.resume(ctx, claims, mutation, candidate)
+		}
 		return nil, skillMutationPersistenceError(err)
 	}
 	if !mutationMatchesGrant(mutation, claims) {
@@ -165,7 +189,17 @@ func (c *skillMutationCoordinator) resume(
 	var err error
 
 	if mutation.Status == types.BotSkillMutationValidating {
-		version, err := c.versions.WriteBotPrivateSkillVersion(ctx, skillMutationVersionWriteRequest{
+		mutation, err = c.prepareLease(mutation, true)
+		if err != nil {
+			return result, skillMutationPersistenceError(err)
+		}
+		result.Mutation = mutation
+		writerBudget := mutation.LeaseExpiresAt.Sub(c.now().UTC()) - c.leaseSafetyWindow()
+		if writerBudget <= 0 {
+			return result, skillMutationPersistenceError(store.ErrBotSkillMutationLeaseExpired)
+		}
+		writerCtx, cancel := context.WithTimeout(ctx, writerBudget)
+		version, writeErr := c.versions.WriteBotPrivateSkillVersion(writerCtx, skillMutationVersionWriteRequest{
 			MutationID:           mutation.ID,
 			GrantID:              claims.ID,
 			BotUID:               claims.BotUID,
@@ -182,8 +216,23 @@ func (c *skillMutationCoordinator) resume(
 			BeforeReference:      claims.BeforeReference,
 			Candidate:            candidate,
 		})
-		if err != nil {
-			return c.rejectVersionWrite(mutation, err)
+		cancel()
+		if writeErr != nil {
+			// A remote writer may have committed an immutable version before the
+			// response was lost. Keep validating so MutationID idempotency can
+			// discover that version on a later retry; never turn an uncertain
+			// external result into a terminal rejection.
+			if refreshed, refreshErr := c.prepareLease(mutation, false); refreshErr == nil {
+				mutation = refreshed
+				result.Mutation = mutation
+			}
+			return result, safeSkillMutationError("Skill private version write is pending retry", writeErr)
+		}
+		if refreshed, refreshErr := c.prepareLease(mutation, false); refreshErr != nil {
+			return result, skillMutationPersistenceError(refreshErr)
+		} else {
+			mutation = refreshed
+			result.Mutation = mutation
 		}
 		transition, factsErr := validateSkillMutationVersionFacts(claims, mutation, version)
 		if factsErr != nil {
@@ -209,6 +258,11 @@ func (c *skillMutationCoordinator) resume(
 	}
 
 	if mutation.Status == types.BotSkillMutationVersionReady {
+		mutation, err = c.prepareLease(mutation, true)
+		if err != nil {
+			return result, skillMutationPersistenceError(err)
+		}
+		result.Mutation = mutation
 		committed, definition, commitErr := c.mutations.CommitBotSkillMutationDefinition(
 			mutation.BotUID, mutation.ID, mutation.LeaseGeneration,
 			c.now().UTC(), c.leaseTTL,
@@ -232,6 +286,11 @@ func (c *skillMutationCoordinator) resume(
 	}
 
 	if mutation.Status == types.BotSkillMutationDefinitionCommitted {
+		mutation, err = c.prepareLease(mutation, true)
+		if err != nil {
+			return result, skillMutationPersistenceError(err)
+		}
+		result.Mutation = mutation
 		mutation, err = c.mutations.AdvanceBotSkillMutation(
 			mutation.BotUID, mutation.ID, mutation.LeaseGeneration,
 			types.BotSkillMutationDefinitionCommitted, types.BotSkillMutationActivationPending,
@@ -259,13 +318,39 @@ func (c *skillMutationCoordinator) resume(
 	}
 }
 
-func (c *skillMutationCoordinator) rejectVersionWrite(
+func (c *skillMutationCoordinator) leaseSafetyWindow() time.Duration {
+	window := c.leaseTTL / 4
+	if window > skillMutationCoordinatorLeaseSafetyWindow {
+		return skillMutationCoordinatorLeaseSafetyWindow
+	}
+	return window
+}
+
+func (c *skillMutationCoordinator) prepareLease(
 	mutation *types.BotSkillMutation,
-	writeErr error,
-) (*skillMutationCoordinationResult, error) {
-	return c.rejectMutation(
-		mutation, types.BotSkillMutationValidating,
-		"version_write_failed", "Skill private version could not be created", writeErr,
+	force bool,
+) (*types.BotSkillMutation, error) {
+	if mutation == nil || mutation.ID <= 0 {
+		return nil, store.ErrBotSkillMutationStateConflict
+	}
+	switch mutation.Status {
+	case types.BotSkillMutationValidating, types.BotSkillMutationVersionReady, types.BotSkillMutationDefinitionCommitted:
+	default:
+		return mutation, nil
+	}
+	now := c.now().UTC()
+	if !force && mutation.LeaseExpiresAt.After(now.Add(skillMutationCoordinatorLeaseSafetyWindow)) {
+		return mutation, nil
+	}
+	if !mutation.LeaseExpiresAt.After(now) {
+		return c.mutations.RecoverBotSkillMutationLease(
+			mutation.BotUID, mutation.ID, mutation.LeaseGeneration, mutation.Status,
+			now, c.leaseTTL,
+		)
+	}
+	return c.mutations.RenewBotSkillMutationLease(
+		mutation.BotUID, mutation.ID, mutation.LeaseGeneration, mutation.Status,
+		now, c.leaseTTL,
 	)
 }
 
