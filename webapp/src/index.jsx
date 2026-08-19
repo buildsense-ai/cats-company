@@ -161,15 +161,18 @@ export function App() {
     if (readStoredUserProfile()) clearStoredUserProfile();
   }, [auth.loggedIn, auth.revision]);
 
-  const shouldRegisterPwa = shouldMountPwaForPathname(browserLocation.pathname);
+  const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
+    || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
+  const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
+  // Keep service-worker startup off the anonymous auth shell while preserving
+  // PWA support for authenticated and standalone application entry points.
+  const shouldRegisterPwa = shouldLoadWorkspace
+    && shouldMountPwaForPathname(browserLocation.pathname);
   useEffect(() => {
     if (shouldRegisterPwa) registerPwaServiceWorker();
   }, [shouldRegisterPwa]);
 
   const mountPwa = auth.loggedIn && shouldRegisterPwa;
-  const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
-    || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
-  const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
   const showAuthGateway = !shouldLoadWorkspace || preserveAuthShell;
   const handleWorkspaceReady = useCallback(() => {
     setPreserveAuthShell(false);

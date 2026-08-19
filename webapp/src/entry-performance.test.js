@@ -37,7 +37,8 @@ describe('entry bundle split', () => {
     expect(entrySource).toContain("get('workflow_demo') === '1'");
     expect(entrySource).toContain('onAuthenticationIntent={preloadWorkspace}');
     expect(entrySource).toContain('const mountPwa = auth.loggedIn && shouldRegisterPwa;');
-    expect(entrySource).toContain('const shouldRegisterPwa = shouldMountPwaForPathname(browserLocation.pathname);');
+    expect(entrySource).toContain('const shouldRegisterPwa = shouldLoadWorkspace');
+    expect(entrySource).toContain('&& shouldMountPwaForPathname(browserLocation.pathname);');
     expect(entrySource).toContain('if (shouldRegisterPwa) registerPwaServiceWorker();');
     expect(entrySource).toContain('<Suspense fallback={null}>');
     expect(entrySource).toContain('<PwaLoadErrorBoundary>');

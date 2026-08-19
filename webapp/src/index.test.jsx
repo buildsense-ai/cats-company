@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getPushPromptOwner: vi.fn(() => ''),
   readStoredUserProfile: vi.fn(() => null),
   clearStoredUserProfile: vi.fn(() => true),
+  registerPwaServiceWorker: vi.fn(),
   pwaController: vi.fn(),
   pushCleanupController: vi.fn(),
   suspendWorkspace: false,
@@ -35,6 +36,10 @@ vi.mock('./auth-session', () => ({
 
 vi.mock('virtual:pwa-register', () => ({
   registerSW: vi.fn(() => vi.fn()),
+}));
+
+vi.mock('./pwa-registration', () => ({
+  registerPwaServiceWorker: mocks.registerPwaServiceWorker,
 }));
 
 vi.mock('./views/tinode-web', () => ({
@@ -96,6 +101,7 @@ beforeEach(() => {
   mocks.readStoredUserProfile.mockReturnValue(null);
   mocks.setToken.mockClear();
   mocks.clearStoredUserProfile.mockClear();
+  mocks.registerPwaServiceWorker.mockClear();
   mocks.pwaController.mockClear();
   mocks.pushCleanupController.mockClear();
   mocks.suspendWorkspace = false;
@@ -111,15 +117,26 @@ afterEach(async () => {
   window.history.replaceState(null, '', '/');
 });
 
-test('does not load the PWA runtime before authentication on a non-authentication route', async () => {
+test('does not register the PWA before authentication on the anonymous app shell', async () => {
+  window.history.replaceState(null, '', '/');
+
+  await act(async () => {
+    root.render(<App />);
+  });
+
+  expect(mocks.registerPwaServiceWorker).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-testid="pwa-controller"]')).toBeFalsy();
+  expect(mocks.pwaController).not.toHaveBeenCalled();
+});
+
+test('does not register the PWA before authentication on an anonymous deep link', async () => {
   window.history.replaceState(null, '', '/e/invite-1');
 
   await act(async () => {
     root.render(<App />);
   });
 
-  expect(container.querySelector('[data-testid="pwa-controller"]')).toBeFalsy();
-  expect(mocks.pwaController).not.toHaveBeenCalled();
+  expect(mocks.registerPwaServiceWorker).not.toHaveBeenCalled();
 });
 
 test('loads the PWA runtime for a restorable authenticated session', async () => {
@@ -134,7 +151,18 @@ test('loads the PWA runtime for a restorable authenticated session', async () =>
   await vi.waitFor(() => {
     expect(container.querySelector('[data-testid="pwa-controller"]')).toBeTruthy();
   });
+  expect(mocks.registerPwaServiceWorker).toHaveBeenCalledTimes(1);
   expect(mocks.pwaController).toHaveBeenCalledWith(expect.objectContaining({ loggedIn: true }));
+});
+
+test('registers the PWA for a standalone route without requiring authentication', async () => {
+  window.history.replaceState(null, '', '/mobile-upload/session-1');
+
+  await act(async () => {
+    root.render(<App />);
+  });
+
+  expect(mocks.registerPwaServiceWorker).toHaveBeenCalledTimes(1);
 });
 
 test('loads the workspace to recover a token whose profile cache is missing', async () => {
