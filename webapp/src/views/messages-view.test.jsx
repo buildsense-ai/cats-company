@@ -199,6 +199,7 @@ vi.mock('../api', () => ({
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
@@ -414,6 +415,7 @@ describe('MessagesView composer draft isolation', () => {
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
@@ -3161,7 +3163,8 @@ describe('MessagesView composer draft isolation', () => {
     const workspace = container.querySelector('.v3-message-workspace');
     expect(workspace.className).toContain('has-preview');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
-    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_1_440', {
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_1_440',
       beforeId: 0,
       limit: 40,
     });
@@ -3976,7 +3979,7 @@ describe('MessagesView composer draft isolation', () => {
       size: 728341,
       topic_name: '期末材料',
     };
-    api.getTopicFiles.mockResolvedValue({
+    api.getAgentFiles.mockResolvedValue({
       files: [historicalFile],
       has_more: false,
       next_before_id: 0,
@@ -3990,7 +3993,8 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_1_440', {
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_1_440',
       beforeId: 0,
       limit: 40,
     });
@@ -4014,7 +4018,7 @@ describe('MessagesView composer draft isolation', () => {
     expect([...container.querySelectorAll('button[role="tab"]')]
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
-    expect(api.getTopicFiles).toHaveBeenCalledTimes(2);
+    expect(api.getAgentFiles).toHaveBeenCalledTimes(2);
   });
 
   it('scopes the file panel request to the current group conversation', async () => {
@@ -4028,7 +4032,8 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.getTopicFiles).toHaveBeenCalledWith('grp_80', {
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'grp_80',
       beforeId: 0,
       limit: 40,
     });

@@ -814,13 +814,14 @@ export default function MessagesView({
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
     if (!cloudArtifactsRequest?.requestId) return;
+    if (cloudArtifactsRequest.topicId && cloudArtifactsRequest.topicId !== topic) return;
     clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
-    setCloudArtifactsTab('files');
+    setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
     setCloudArtifactsListOpen(true);
     setCloudArtifactsReturnOpen(false);
-  }, [clearActiveArtifactFocus, cloudArtifactsRequest]);
+  }, [clearActiveArtifactFocus, cloudArtifactsRequest, topic]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {

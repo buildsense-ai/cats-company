@@ -30,6 +30,7 @@ import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
+import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import AuthFlowBackground from '../components/auth-flow-background';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
@@ -261,6 +262,8 @@ function TinodeWebApp({ location }) {
     return () => { cancelled = true; };
   }, [user?.uid]);
   const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
+  const [standaloneCloudArtifactsRequest, setStandaloneCloudArtifactsRequest] = useState(null);
+  const [standaloneCloudArtifactsTab, setStandaloneCloudArtifactsTab] = useState('active');
   const cloudArtifactsRequestSequenceRef = useRef(0);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
@@ -301,24 +304,38 @@ function TinodeWebApp({ location }) {
   }, [activeTopicId]);
   const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
-  const handleOpenCloudArtifacts = useCallback(() => {
-    const agentUid = Number(displayedActiveAgent?.uid || 0);
-    if (!activeTopicId) return;
-    cloudArtifactsRequestSequenceRef.current += 1;
-    setCloudArtifactsRequest({
-      agentUid,
-      requestId: cloudArtifactsRequestSequenceRef.current,
-    });
-  }, [activeTopicId, displayedActiveAgent?.uid]);
-  const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
+  const openCloudArtifactsForAgent = useCallback((agentUid) => {
     const normalizedAgentUid = Number(agentUid || 0);
-    if (!activeTopicId || normalizedAgentUid <= 0) return;
-    setActiveView('chats');
+    if (normalizedAgentUid <= 0 && !activeTopicId) return;
     cloudArtifactsRequestSequenceRef.current += 1;
-    setCloudArtifactsRequest({
+    const request = {
       agentUid: normalizedAgentUid,
       requestId: cloudArtifactsRequestSequenceRef.current,
-    });
+      topicId: activeTopicId,
+      initialTab: activeTopicId ? 'files' : 'active',
+    };
+    if (activeTopicId) {
+      setStandaloneCloudArtifactsRequest(null);
+      setCloudArtifactsRequest(request);
+      return;
+    }
+    setCloudArtifactsRequest(null);
+    setStandaloneCloudArtifactsTab('active');
+    setStandaloneCloudArtifactsRequest(request);
+  }, [activeTopicId]);
+
+  const handleOpenCloudArtifacts = useCallback(() => {
+    openCloudArtifactsForAgent(displayedActiveAgent?.uid || displayedActiveAgent?.id);
+  }, [displayedActiveAgent?.id, displayedActiveAgent?.uid, openCloudArtifactsForAgent]);
+
+  const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
+    setActiveView('chats');
+    setMobileSidebarOpen(false);
+    openCloudArtifactsForAgent(agentUid);
+  }, [openCloudArtifactsForAgent]);
+
+  useEffect(() => {
+    if (activeTopicId) setStandaloneCloudArtifactsRequest(null);
   }, [activeTopicId]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
@@ -919,6 +936,7 @@ function TinodeWebApp({ location }) {
     if (!agentUid) return;
     const projectId = Number(options?.projectId || 0);
     taskDraftSequenceRef.current += 1;
+    setStandaloneCloudArtifactsRequest(null);
     setActiveTopic(null);
     setActiveView('chats');
     setTaskDraft({
@@ -1095,7 +1113,7 @@ function TinodeWebApp({ location }) {
               setActiveView('skillhub');
               setMobileSidebarOpen(false);
             }}
-            onOpenCloudArtifacts={activeTopicId ? handleOpenManagedAgentArtifacts : undefined}
+            onOpenCloudArtifacts={handleOpenManagedAgentArtifacts}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
@@ -1202,13 +1220,30 @@ function TinodeWebApp({ location }) {
             ) : (
               <>
                 {localAssistantBar}
-                <NoActiveTask
-                  key={taskDraft?.key || 'new-task'}
-                  user={user}
-                  initialAgent={taskDraft?.agent}
-                  onResolveAgentTopic={createDraftAgentTaskTopic}
-                  onActivateTopic={activateResolvedTopic}
-                />
+                <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
+                  <NoActiveTask
+                    key={taskDraft?.key || 'new-task'}
+                    user={user}
+                    initialAgent={taskDraft?.agent}
+                    onResolveAgentTopic={createDraftAgentTaskTopic}
+                    onActivateTopic={activateResolvedTopic}
+                  />
+                  {standaloneCloudArtifactsRequest && (
+                    <div className="v3-file-preview-shell">
+                      <CloudArtifactsPanel
+                        key={standaloneCloudArtifactsRequest.requestId}
+                        agentUid={standaloneCloudArtifactsRequest.agentUid}
+                        topicId={standaloneCloudArtifactsRequest.topicId}
+                        initialTab={standaloneCloudArtifactsRequest.initialTab}
+                        tab={standaloneCloudArtifactsTab}
+                        onTabChange={setStandaloneCloudArtifactsTab}
+                        onClose={() => setStandaloneCloudArtifactsRequest(null)}
+                        onPreviewArtifact={openExternalArtifact}
+                        onPreviewFile={openExternalArtifact}
+                      />
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -1305,8 +1340,8 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           className="v3-action-btn v3-cloud-action"
           onClick={onOpenCloudArtifacts}
           disabled={!onOpenCloudArtifacts}
-          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入聊天'}
-          title={onOpenCloudArtifacts ? '云文件' : '请先进入聊天'}
+          aria-label={onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}
+          title={onOpenCloudArtifacts ? '产物' : '选择 Agent 后可查看产物'}
         >
           <Cloud size={17} aria-hidden="true" />
         </button>
@@ -1321,7 +1356,8 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
 export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
 
 function canOpenCloudArtifacts(activeTopic, activeAgent) {
-  return Boolean(activeTopic?.topicId);
+  const agentUID = Number(activeAgent?.uid || activeAgent?.id || 0);
+  return Boolean(activeTopic?.topicId) || agentUID > 0;
 }
 
 function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
@@ -1688,6 +1724,12 @@ function taskDraftTitle(taskDraft) {
   const projectName = String(taskDraft?.projectName || '').trim();
   if (agentName && projectName) return `新任务 · ${agentName} · ${projectName}`;
   return agentName ? `新任务 · ${agentName}` : '新任务';
+}
+
+function openExternalArtifact(resource) {
+  const url = String(resource?.url || '').trim();
+  if (!url) return;
+  window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 function buildAgentTaskName(agent, draft = {}) {
