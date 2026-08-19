@@ -166,16 +166,57 @@ func (s *skillMutationGrantSigner) verify(raw string) (*skillMutationGrantClaims
 	return claims, nil
 }
 
+// verifyExpiredForRecovery authenticates an expired grant only for resuming an
+// already persisted, fact-matched mutation. Callers must never use these claims
+// to create a new mutation.
+func (s *skillMutationGrantSigner) verifyExpiredForRecovery(raw string) (*skillMutationGrantClaims, error) {
+	if s == nil || len(s.key) == 0 || s.now == nil {
+		return nil, errors.New("skill mutation grant signer is not configured")
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, errors.New("skill mutation grant is required")
+	}
+	claims := &skillMutationGrantClaims{}
+	parser := jwt.NewParser(
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithoutClaimsValidation(),
+	)
+	token, err := parser.ParseWithClaims(strings.TrimSpace(raw), claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("invalid skill mutation grant signing method")
+		}
+		return s.key, nil
+	})
+	if err != nil || token == nil || !token.Valid {
+		if err == nil {
+			err = errors.New("invalid skill mutation grant")
+		}
+		return nil, err
+	}
+	now := s.now().UTC()
+	if err := validateSkillMutationGrantClaims(claims, now); err != nil {
+		return nil, err
+	}
+	if !now.After(claims.ExpiresAt.Time.UTC().Add(skillMutationGrantClockSkew)) {
+		return nil, errors.New("skill mutation grant is not expired")
+	}
+	return claims, nil
+}
+
 func validateSkillMutationGrantClaims(claims *skillMutationGrantClaims, now time.Time) error {
 	if claims == nil || claims.TokenType != skillMutationGrantTokenType ||
 		!strings.HasPrefix(claims.ID, "smg_") || len(claims.ID) <= len("smg_") ||
 		claims.IssuedAt == nil || claims.ExpiresAt == nil || claims.NotBefore == nil {
 		return errors.New("invalid skill mutation grant claims")
 	}
+	if claims.Issuer != skillMutationGrantIssuer || !containsSkillMutationAudience(claims.Audience, skillMutationGrantAudience) {
+		return errors.New("invalid skill mutation grant issuer or audience")
+	}
 	issuedAt := claims.IssuedAt.Time.UTC()
 	expiresAt := claims.ExpiresAt.Time.UTC()
+	notBefore := claims.NotBefore.Time.UTC()
 	if !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > maxSkillMutationGrantTTL ||
-		issuedAt.After(now.Add(skillMutationGrantClockSkew)) {
+		issuedAt.After(now.Add(skillMutationGrantClockSkew)) || notBefore.After(now.Add(skillMutationGrantClockSkew)) {
 		return errors.New("invalid skill mutation grant lifetime")
 	}
 	if claims.Subject != fmt.Sprintf("bot:%d:skill:%s", claims.BotUID, claims.LocalSkillID) {
@@ -215,6 +256,15 @@ func validateSkillMutationGrantClaims(claims *skillMutationGrantClaims, now time
 	claims.ExpectedPreviousHash = normalized.ExpectedPreviousContentHash
 	claims.BeforeReference = normalized.BeforeReference
 	return nil
+}
+
+func containsSkillMutationAudience(audience jwt.ClaimStrings, expected string) bool {
+	for _, value := range audience {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *skillMutationGrantClaims) mutationInput() types.BotSkillMutationCreateInput {
