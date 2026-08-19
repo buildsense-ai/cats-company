@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
+import { api, resolveMediaURL, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
@@ -203,6 +203,7 @@ function TinodeWebApp({ location }) {
     user?.uid ? readStoredTopic(user.uid) : null
   ));
   const [taskDraft, setTaskDraft] = useState(null);
+  const [emptyTaskSelectedAgent, setEmptyTaskSelectedAgent] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [messageLocationRequest, setMessageLocationRequest] = useState(null);
   const messageLocationSequenceRef = useRef(0);
@@ -281,7 +282,8 @@ function TinodeWebApp({ location }) {
   const [activeAgentModel, setActiveAgentModel] = useState(null);
   const [activeAgentState, setActiveAgentState] = useState(null);
   const activeTopicId = activeTopic?.topicId || '';
-  const draftAgentUID = Number(taskDraft?.agent?.uid || taskDraft?.agent?.id || 0);
+  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent;
+  const draftAgentUID = Number(draftAgent?.uid || draftAgent?.id || 0);
   const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
   const modelContext = activeTopic || (modelContextId ? { topicId: modelContextId, isGroup: false } : null);
   const modelContextIdRef = useRef(modelContextId);
@@ -302,7 +304,12 @@ function TinodeWebApp({ location }) {
       return { topicId, agent };
     });
   }, [activeTopicId]);
-  const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
+  const displayedActiveAgent = resolveDisplayedActiveAgent(
+    activeTopicId,
+    activeAgentState,
+    taskDraft,
+    emptyTaskSelectedAgent,
+  );
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const openCloudArtifactsForAgent = useCallback((agentUid) => {
     const normalizedAgentUid = Number(agentUid || 0);
@@ -335,7 +342,9 @@ function TinodeWebApp({ location }) {
   }, [openCloudArtifactsForAgent]);
 
   useEffect(() => {
-    if (activeTopicId) setStandaloneCloudArtifactsRequest(null);
+    if (!activeTopicId) return;
+    setStandaloneCloudArtifactsRequest(null);
+    setEmptyTaskSelectedAgent(null);
   }, [activeTopicId]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
@@ -578,6 +587,10 @@ function TinodeWebApp({ location }) {
     setUser(null);
     setOnlineUsers({});
     setTaskDraft(null);
+    setEmptyTaskSelectedAgent(null);
+    setCloudArtifactsRequest(null);
+    setStandaloneCloudArtifactsRequest(null);
+    setStandaloneCloudArtifactsTab('active');
     setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
@@ -687,6 +700,7 @@ function TinodeWebApp({ location }) {
 
   useEffect(() => {
     setTaskDraft(null);
+    setEmptyTaskSelectedAgent(null);
     if (!user?.uid) {
       _setActiveTopic(null);
       return;
@@ -928,6 +942,7 @@ function TinodeWebApp({ location }) {
   const activateResolvedTopic = useCallback((nextTopic) => {
     if (!nextTopic?.topicId) return;
     setTaskDraft(null);
+    setEmptyTaskSelectedAgent(null);
     setActiveTopic(nextTopic);
   }, [setActiveTopic]);
 
@@ -937,6 +952,7 @@ function TinodeWebApp({ location }) {
     const projectId = Number(options?.projectId || 0);
     taskDraftSequenceRef.current += 1;
     setStandaloneCloudArtifactsRequest(null);
+    setEmptyTaskSelectedAgent(agent);
     setActiveTopic(null);
     setActiveView('chats');
     setTaskDraft({
@@ -1101,6 +1117,7 @@ function TinodeWebApp({ location }) {
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
               setTaskDraft(null);
+              setEmptyTaskSelectedAgent(null);
               setMessageLocationRequest(null);
               setActiveView('chats');
               setActiveTopic(topic);
@@ -1225,6 +1242,7 @@ function TinodeWebApp({ location }) {
                     key={taskDraft?.key || 'new-task'}
                     user={user}
                     initialAgent={taskDraft?.agent}
+                    onSelectedAgentChange={setEmptyTaskSelectedAgent}
                     onResolveAgentTopic={createDraftAgentTaskTopic}
                     onActivateTopic={activateResolvedTopic}
                   />
@@ -1360,12 +1378,12 @@ function canOpenCloudArtifacts(activeTopic, activeAgent) {
   return Boolean(activeTopic?.topicId) || agentUID > 0;
 }
 
-function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
+function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft, emptyTaskSelectedAgent) {
   if (activeTopicId) {
     return activeAgentState?.topicId === activeTopicId ? activeAgentState.agent : null;
   }
 
-  const draftAgent = taskDraft?.agent;
+  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent;
   const uid = Number(draftAgent?.uid || draftAgent?.id || 0);
   if (uid <= 0) return null;
 
@@ -1380,7 +1398,7 @@ function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft)
   };
 }
 
-function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic }) {
+function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -1390,6 +1408,7 @@ function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic
         </div>
         <EmptyTaskComposer
           initialAgent={initialAgent}
+          onSelectedAgentChange={onSelectedAgentChange}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}
         />
@@ -1727,7 +1746,7 @@ function taskDraftTitle(taskDraft) {
 }
 
 function openExternalArtifact(resource) {
-  const url = String(resource?.url || '').trim();
+  const url = resolveMediaURL(String(resource?.url || '').trim());
   if (!url) return;
   window.open(url, '_blank', 'noopener,noreferrer');
 }

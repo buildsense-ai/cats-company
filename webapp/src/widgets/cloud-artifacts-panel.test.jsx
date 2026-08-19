@@ -254,11 +254,11 @@ describe('CloudArtifactsPanel', () => {
   test('loads conversation files without an Agent sender filter and opens the preview', async () => {
     await renderPanel({ initialTab: 'files' });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'p2p_7_440',
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_7_440', {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(container.textContent).toContain('期末学情报告.pdf');
     expect(container.textContent).toContain('711.3 KB');
 
@@ -269,7 +269,7 @@ describe('CloudArtifactsPanel', () => {
   });
 
   test('loads older conversation files with the stable cursor', async () => {
-    api.getAgentFiles
+    api.getTopicFiles
       .mockResolvedValueOnce({ files: [historicalFile], has_more: true, next_before_id: 820 })
       .mockResolvedValueOnce({
         files: [{ ...historicalFile, id: '700:0', message_id: 700, name: '复习清单.docx' }],
@@ -285,11 +285,11 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenLastCalledWith(440, {
-      topicId: 'p2p_7_440',
+    expect(api.getTopicFiles).toHaveBeenLastCalledWith('p2p_7_440', {
       beforeId: 820,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(container.textContent).toContain('复习清单.docx');
   });
 

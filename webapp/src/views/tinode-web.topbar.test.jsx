@@ -162,6 +162,17 @@ describe('resolveDisplayedActiveAgent', () => {
     })).toMatchObject({ uid: 407, relation: 'friend', isOwner: false });
   });
 
+  it('exposes the selected empty-task Agent before a task exists', () => {
+    const agent = resolveDisplayedActiveAgent('', null, null, {
+      uid: 440,
+      relation: 'owner',
+      display_name: 'Doubao',
+    });
+
+    expect(agent).toMatchObject({ uid: 440, relation: 'owner', isOwner: true });
+    expect(canOpenCloudArtifacts(null, agent)).toBe(true);
+  });
+
   it('uses the active conversation agent instead of a stale draft', () => {
     const activeAgent = { uid: 63, relation: 'owner', isOwner: true };
     expect(resolveDisplayedActiveAgent(

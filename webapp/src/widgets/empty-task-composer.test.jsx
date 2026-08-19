@@ -188,6 +188,15 @@ describe('EmptyTaskComposer', () => {
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('reports the selected Agent before a new task is sent', async () => {
+    const onSelectedAgentChange = vi.fn();
+    await mountComposer({ onSelectedAgentChange });
+
+    expect(onSelectedAgentChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ uid: 21, display_name: '代码审查助手' }),
+    );
+  });
+
   it('creates the selected Agent task from the first instruction, sends, then activates it on Enter', async () => {
     const order = [];
     const resolvedTopic = {

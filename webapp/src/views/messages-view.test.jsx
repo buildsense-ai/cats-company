@@ -3163,11 +3163,11 @@ describe('MessagesView composer draft isolation', () => {
     const workspace = container.querySelector('.v3-message-workspace');
     expect(workspace.className).toContain('has-preview');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'p2p_1_440',
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_1_440', {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
 
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
@@ -3970,7 +3970,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined);
   });
 
-  it('finds an agent file from history and opens it in the existing file preview', async () => {
+  it('finds a conversation file from history and opens it in the existing file preview', async () => {
     const historicalFile = {
       id: '820:0',
       name: '期末学情报告.pdf',
@@ -3979,7 +3979,7 @@ describe('MessagesView composer draft isolation', () => {
       size: 728341,
       topic_name: '期末材料',
     };
-    api.getAgentFiles.mockResolvedValue({
+    api.getTopicFiles.mockResolvedValue({
       files: [historicalFile],
       has_more: false,
       next_before_id: 0,
@@ -3993,11 +3993,11 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'p2p_1_440',
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_1_440', {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]'));
       await Promise.resolve();
@@ -4018,7 +4018,8 @@ describe('MessagesView composer draft isolation', () => {
     expect([...container.querySelectorAll('button[role="tab"]')]
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
-    expect(api.getAgentFiles).toHaveBeenCalledTimes(2);
+    expect(api.getTopicFiles).toHaveBeenCalledTimes(2);
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
   it('scopes the file panel request to the current group conversation', async () => {
@@ -4032,11 +4033,11 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'grp_80',
+    expect(api.getTopicFiles).toHaveBeenCalledWith('grp_80', {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
   it('opens conversation files without an Agent and hides the results tab', async () => {

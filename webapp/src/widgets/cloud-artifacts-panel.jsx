@@ -149,9 +149,7 @@ export default function CloudArtifactsPanel({
           setError('进入会话后才能查看历史文件');
           return;
         }
-        const result = agentUid > 0
-          ? await api.getAgentFiles(agentUid, { topicId, beforeId, limit: 40 })
-          : await api.getTopicFiles(topicId, { beforeId, limit: 40 });
+        const result = await api.getTopicFiles(topicId, { beforeId, limit: 40 });
         if (!isCurrentRequest()) return;
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
         setFiles((current) => append ? [...current, ...nextFiles] : nextFiles);
