@@ -175,8 +175,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "releases-tsv":
 			body = "@echo off\r\necho 1.4.9\t1787066647\r\necho 1.4.8\t1786066647\r\n"
 		case "status-tsv":
-			// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
-			body = "@echo off\r\necho worker-bot-bot-a\trunning\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\necho worker-bot-bot-b\tcreating\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\n"
+			// status-worker.sh TSV：实例、状态、镜像、镜像版本、实际应用版本。
+			body = "@echo off\r\necho worker-bot-bot-a\trunning\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\t1.4.7\r\necho worker-bot-bot-b\tcreating\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\t\r\n"
 		case "slow-status":
 			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
 		case "require-identity":
@@ -208,8 +208,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 	case "releases-tsv":
 		body = "#!/bin/sh\nprintf '1.4.9\\t1787066647\\n1.4.8\\t1786066647\\n'\n"
 	case "status-tsv":
-		// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
-		body = "#!/bin/sh\nprintf 'worker-bot-bot-a\\trunning\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\nworker-bot-bot-b\\tcreating\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\n'\n"
+		// status-worker.sh TSV：实例、状态、镜像、镜像版本、实际应用版本。
+		body = "#!/bin/sh\nprintf 'worker-bot-bot-a\\trunning\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\t1.4.7\\nworker-bot-bot-b\\tcreating\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\t\\n'\n"
 	case "slow-status":
 		body = "#!/bin/sh\nsleep 1\nprintf 'worker-bot-bot-a\\trunning\\timg-slow\\tv1.4.8\\n'\n"
 	case "require-identity":
@@ -391,8 +391,8 @@ func TestCloudWorkerHandleList(t *testing.T) {
 	if first["tenant_name"] != "bot-bot-a" {
 		t.Fatalf("tenant_name=%v", first["tenant_name"])
 	}
-	if first["app_version"] != "1.4.9" {
-		t.Fatalf("app_version=%v want 1.4.9", first["app_version"])
+	if first["app_version"] != "" {
+		t.Fatalf("app_version=%v want unknown runtime version", first["app_version"])
 	}
 	if first["cloud_status"] != "unavailable" {
 		t.Fatalf("cloud_status=%v want unavailable when status probe is not configured", first["cloud_status"])
@@ -404,12 +404,12 @@ func TestCloudWorkerHandleList(t *testing.T) {
 }
 
 func TestParseCloudWorkerStatusTSV(t *testing.T) {
-	out := "worker-aaa\trunning\timg-1\tv1.2.3\nworker-bbb\tcreating\timg-2\t\nother-instance\trunning\timg-1\tv1\n"
+	out := "worker-aaa\trunning\timg-1\tv1.2.3\t1.2.4\nworker-bbb\tcreating\timg-2\t\nother-instance\trunning\timg-1\tv1\t9.9.9\n"
 	infos := parseCloudWorkerStatusTSV(out)
 	if len(infos) != 2 {
 		t.Fatalf("want 2 infos, got %d (%v)", len(infos), infos)
 	}
-	if got := infos["aaa"]; got.Status != "running" || got.ImageID != "img-1" || got.Version != "v1.2.3" {
+	if got := infos["aaa"]; got.Status != "running" || got.ImageID != "img-1" || got.Version != "v1.2.3" || got.AppVersion != "1.2.4" {
 		t.Fatalf("aaa info = %+v", got)
 	}
 	if got := infos["bbb"]; got.Status != "creating" || got.ImageID != "img-2" || got.Version != "" {
@@ -454,6 +454,9 @@ func TestCloudWorkerHandleListFillsCloudStatus(t *testing.T) {
 	a := byTenant["bot-bot-a"]
 	if a["cloud_status"] != "running" || a["cloud_version"] != "v1.4.8" || a["cloud_image_id"] != "79f5b7f4-c06e-4f97-90fa-d69566f23d63" {
 		t.Fatalf("bot-a cloud facts = %v", a)
+	}
+	if a["app_version"] != "1.4.7" {
+		t.Fatalf("bot-a app_version=%v want actual status version 1.4.7", a["app_version"])
 	}
 	b := byTenant["bot-bot-b"]
 	if b["cloud_status"] != "creating" {

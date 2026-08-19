@@ -121,6 +121,19 @@ ssh_run() {
   timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"
 }
 
+record_current_app_version() {
+  local version
+  version="$(ssh_run "root@$INSTANCE_IP" \
+    "cat /opt/catsco/current/worker-release.json 2>/dev/null" 2>/dev/null \
+    | jq -r '.version // empty' 2>/dev/null || true)"
+  [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || {
+    echo "error: active application version could not be verified after rollback" >&2
+    return 1
+  }
+  printf '%s\n' "$version" > "$STATE_DIR/app_version.tmp"
+  mv -f "$STATE_DIR/app_version.tmp" "$STATE_DIR/app_version"
+}
+
 # --- 2. 无 --version：回滚到最新 release 版本 ---
 # （list 语义不再单独输出：空版本 = 按实例内已部署版本排序取最新并切换）
 if [[ -z "$VERSION" ]]; then
@@ -135,6 +148,7 @@ if [[ -z "$VERSION" ]]; then
   ssh_run "root@$INSTANCE_IP" "ln -sfn /opt/catsco/releases/${target} /opt/catsco/current && systemctl restart catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1 \
     || { echo "error: rollback to $target failed" >&2; exit 1; }
 
+  record_current_app_version || echo "warning: could not persist active application version" >&2
   echo "{\"status\":\"rolled-back\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"
   exit 0
 fi
@@ -161,4 +175,5 @@ fi
 ssh_run "root@$INSTANCE_IP" "ln -sfn /opt/catsco/releases/${target} /opt/catsco/current && systemctl restart catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1 \
   || { echo "error: rollback to $target failed" >&2; exit 1; }
 
+record_current_app_version || echo "warning: could not persist active application version" >&2
 echo "{\"status\":\"rolled-back\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"

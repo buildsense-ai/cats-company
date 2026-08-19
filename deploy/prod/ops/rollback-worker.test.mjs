@@ -66,6 +66,10 @@ if (cmd.includes("ls -1d /opt/catsco/releases")) {
   state.serviceRestarted = true;
   fs.writeFileSync(statePath, JSON.stringify(state));
   process.stdout.write("active\\n");
+} else if (cmd.includes("worker-release.json")) {
+  const release = state.rolledBack || "v1.4.8-abc123";
+  const version = release.replace(/^v/, "").replace(/-[^-]+$/, "");
+  process.stdout.write(JSON.stringify({ version }));
 }
 fs.writeFileSync(statePath, JSON.stringify(state));
 process.exit(0);
@@ -211,6 +215,7 @@ test("rollback-worker: rolls back to latest release without --version", () => {
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.equal(state.rolledBack, "v1.4.8-abc123");
   assert.equal(state.serviceRestarted, true);
+  assert.equal(fs.readFileSync(path.join(sb.sandbox, "state", "app_version"), "utf8"), "1.4.8\n");
 });
 
 test("rollback-worker: latest release rollback honors --dry-run", () => {
@@ -232,6 +237,7 @@ test("rollback-worker: switches current and restarts service", () => {
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.equal(state.rolledBack, "v1.4.7-def456");
   assert.equal(state.serviceRestarted, true);
+  assert.equal(fs.readFileSync(path.join(sb.sandbox, "state", "app_version"), "utf8"), "1.4.7\n");
 });
 
 test("rollback-worker: unknown version fails without touching service", () => {

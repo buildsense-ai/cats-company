@@ -44,6 +44,14 @@ else
   STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/$NAME}"
   STATE_ROOT="$(dirname "$STATE_DIR")"
 fi
+
+record_app_version() {
+  local version="$1"
+  [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || return 1
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$version" > "$STATE_DIR/app_version.tmp"
+  mv -f "$STATE_DIR/app_version.tmp" "$STATE_DIR/app_version"
+}
 ARTIFACT_BUCKET="${CATSCO_WORKER_ARTIFACT_BUCKET:-catsco-worker-release}"
 ARTIFACT_PREFIX="${CATSCO_WORKER_ARTIFACT_PREFIX:-update/worker}"
 ARTIFACT_PREFIX="${ARTIFACT_PREFIX#/}"
@@ -173,6 +181,7 @@ RELEASE_ID="${VERSION}-${COMMIT:0:8}"
 RELEASE_ROOT="/opt/catsco/releases/$RELEASE_ID"
 if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "current=\$(readlink -f /opt/catsco/current 2>/dev/null || true); test \"\$current\" = '$RELEASE_ROOT' && systemctl is-active --quiet catsco-agent.service"; then
+  record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
   jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
     '{status:"already-current",instance_name:$name,version:$version,commit:$commit}'
   exit 0
@@ -181,6 +190,7 @@ if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "test -f '$RELEASE_ROOT/worker-release.json' && jq -e '.version == \"$VERSION\" and .commit == \"$COMMIT\"' '$RELEASE_ROOT/worker-release.json' >/dev/null"; then
   timeout -s TERM -k 20 90s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
     "old=\$(readlink -f /opt/catsco/current 2>/dev/null || true); mkdir -p /var/lib/catsco; if test \"\$old\" != '$RELEASE_ROOT'; then printf '%s\\n' \"\$old\" > /var/lib/catsco/previous-release; fi; ln -sfn '$RELEASE_ROOT' /opt/catsco/current; systemctl restart catsco-agent.service; sleep 5; systemctl is-active catsco-agent.service" >/dev/null
+  record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
   jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
     '{status:"reused-local-release",instance_name:$name,version:$version,commit:$commit}'
   exit 0
@@ -206,5 +216,6 @@ timeout -s TERM -k 15 60s scp "${ssh_opts[@]}" "$UPDATER" "root@$INSTANCE_IP:${R
 timeout -s TERM -k 30 300s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "bash '${REMOTE_PREFIX}.sh' --artifact '${REMOTE_PREFIX}.tar.gz' --sha256 '$EXPECTED_SHA' --version '$VERSION' --commit '$COMMIT'"
 
+record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
 jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
   '{status:"updated",instance_name:$name,version:$version,commit:$commit}'

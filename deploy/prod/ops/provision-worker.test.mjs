@@ -124,6 +124,8 @@ if (cmd.includes("cloud-init status")) {
   state.serviceEnabled = true;
   fs.writeFileSync(statePath, JSON.stringify(state));
   process.stdout.write("active\\n");
+} else if (cmd.includes("worker-release.json")) {
+  process.stdout.write(JSON.stringify({ version: "1.4.8" }));
 }
 fs.writeFileSync(statePath, JSON.stringify(state));
 process.exit(0);
@@ -285,6 +287,7 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.match(state.injectedEnv, /CATSCO_BODY_ID=body-1/);
   assert.match(state.injectedEnv, /CATSCO_INSTALLATION_ID=inst-1/);
   assert.equal(state.serviceEnabled, true, "service should be enabled");
+  assert.equal(fs.readFileSync(path.join(sb.sandbox, "state", "app_version"), "utf8"), "1.4.8\n");
 
   // localConfig（bootstrap 身份）：worker catsco 命令依赖它（bodyId + 绑定确认）
   assert.ok(state.localConfig, "localConfig should be written");
