@@ -210,6 +210,16 @@ test("deploy-worker-version: omitted version selects the newest image in dry-run
   assert.equal(readState(sb).manifestDownloads || 0, 0);
 });
 
+test("deploy-worker-version: explicit application version does not require a matching image", () => {
+  const sb = setupSandbox({ localRelease: false });
+  sb.env.CATSCO_WORKER_IMAGES_SCRIPT = toMsys(path.join(sb.sandbox, "missing-list-images.sh"));
+
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /"status":"updated"/);
+  assert.equal(readState(sb).manifestDownloads, 1);
+});
+
 test("deploy-worker-version: reuses an existing worker-local release", () => {
   const sb = setupSandbox({ localRelease: true });
   const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
