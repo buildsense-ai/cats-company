@@ -1,0 +1,18 @@
+{
+  "nodes": {
+    "node-14": {
+      "public_base_url": "https://artifacts-node-14.example.com/artifacts",
+      "management_url": "https://artifacts-node-14.example.com/internal/artifacts",
+      "management_token_env": "CATSCO_ARTIFACT_MANAGEMENT_TOKEN"
+    },
+    "node-b": {
+      "public_base_url": "http://203.0.113.20:19990/artifacts"
+    }
+  },
+  "agents": {
+    "440": "node-14",
+    "335": "node-14",
+    "310": "node-b"
+  },
+  "fallback_to_legacy": false
+}

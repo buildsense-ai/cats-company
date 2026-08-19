@@ -20,6 +20,9 @@ jobs:
     environment: test
     env:
       TEST_STACK_ROOT: /srv/catscompany-test
+      DEPLOY_CACHE_ROOT: /srv/catscompany-build-cache
+      CATSCO_ARTIFACT_INDEX_URL: https://logs.catsco.fun:9000/artifacts/artifacts-index.json
+      CATSCO_ARTIFACT_MANAGEMENT_URL: https://logs.catsco.fun:9000/internal/artifacts
 
     steps:
       - name: Checkout
@@ -60,14 +63,18 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${TEST_STACK_ROOT}/compose ${TEST_STACK_ROOT}/env ${TEST_STACK_ROOT}/data/mysql ${TEST_STACK_ROOT}/data/uploads ${TEST_STACK_ROOT}/logs ${TEST_STACK_ROOT}/releases /usr/local/bin"
+          ssh ${SSH_OPTS} "${REMOTE}" "bash -s -- '${DEPLOY_CACHE_ROOT}'" < deploy/shared/ensure-build-cache.sh
+          ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${TEST_STACK_ROOT}/compose ${TEST_STACK_ROOT}/env ${TEST_STACK_ROOT}/data/mysql ${TEST_STACK_ROOT}/data/uploads ${TEST_STACK_ROOT}/logs ${TEST_STACK_ROOT}/releases ${DEPLOY_CACHE_ROOT}/releases ${DEPLOY_CACHE_ROOT}/source /usr/local/bin"
 
           tmpdir="$(mktemp -d)"
           mkdir -p "${tmpdir}/compose" "${tmpdir}/env"
           cp deploy/test/bootstrap-server.sh "${tmpdir}/compose/"
           cp deploy/remote-build-source.sh "${tmpdir}/compose/"
+          cp deploy/shared/cache-source-bundle.sh "${tmpdir}/compose/"
           cp deploy/test/remote-deploy.sh "${tmpdir}/compose/"
           cp deploy/test/remote-status.sh "${tmpdir}/compose/"
+          cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
+          cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/test/docker-compose.yml "${tmpdir}/compose/"
           cp deploy/test/tinode.test.conf "${tmpdir}/compose/"
           cp deploy/init-db.sh "${tmpdir}/compose/"
@@ -75,27 +82,60 @@ jobs:
           cp deploy/test/env.test.postgres.example "${tmpdir}/env/"
           tar -C "${tmpdir}" -czf test-stack-files.tar.gz .
           rm -rf "${tmpdir}"
-          git archive --format=tar.gz --output "cats-company-source-${{ github.sha }}.tar.gz" HEAD
 
           ssh ${SSH_OPTS} "${REMOTE}" "tar -xzf - -C ${TEST_STACK_ROOT}" < test-stack-files.tar.gz
-          ssh ${SSH_OPTS} "${REMOTE}" "cat > ${TEST_STACK_ROOT}/releases/cats-company-source-${{ github.sha }}.tar.gz" < "cats-company-source-${{ github.sha }}.tar.gz"
+          cache_script="${TEST_STACK_ROOT}/compose/cache-source-bundle.sh"
+          if ssh ${SSH_OPTS} "${REMOTE}" "bash '${cache_script}' verify '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}'"; then
+            echo "Source bundle already cached for ${GITHUB_SHA}."
+          else
+            source_tree="$(mktemp -d)"
+            trap 'rm -rf "${source_tree}"' EXIT
+            git archive --format=tar HEAD | tar -xf - -C "${source_tree}"
+            remote_mirror="${DEPLOY_CACHE_ROOT}/source-mirror"
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "bash '${cache_script}' prepare '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}'"
+            rsync --archive --compress --checksum --delete \
+              -e "ssh ${SSH_OPTS}" \
+              "${source_tree}/" "${REMOTE}:${remote_mirror}/"
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "bash '${cache_script}' pack '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}' '${remote_mirror}'"
+            rm -rf "${source_tree}"
+            trap - EXIT
+          fi
 
       - name: Deploy isolated test stack
         timeout-minutes: 25
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          CATSCO_ARTIFACT_MANAGEMENT_TOKEN: ${{ secrets.CATSCO_ARTIFACT_MANAGEMENT_TOKEN }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          CATSCO_PUSH_RELAY_URL: ${{ secrets.CATSCO_PUSH_RELAY_URL }}
+          CATSCO_PUSH_RELAY_TOKEN: ${{ secrets.CATSCO_PUSH_RELAY_TOKEN }}
+          VOLCENGINE_STT_API_KEY: ${{ secrets.VOLCENGINE_STT_API_KEY }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh ${SSH_OPTS} "${REMOTE}" "GITHUB_SHA=${GITHUB_SHA} TEST_STACK_ROOT=${TEST_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash -s" <<'EOF'
+          ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/bootstrap-server.sh ${TEST_STACK_ROOT}"
+          printf '%s\0%s\0%s\0%s\0%s\0' \
+            "$VAPID_PUBLIC_KEY" "$VAPID_PRIVATE_KEY" "$VAPID_SUBJECT" "$CATSCO_PUSH_RELAY_URL" "$CATSCO_PUSH_RELAY_TOKEN" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "python3 ${TEST_STACK_ROOT}/compose/sync-vapid-env.py ${TEST_STACK_ROOT}/env/test.env"
+          printf '%s\0' "$VOLCENGINE_STT_API_KEY" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "python3 ${TEST_STACK_ROOT}/compose/sync-stt-env.py ${TEST_STACK_ROOT}/env/test.env"
+          ssh ${SSH_OPTS} "${REMOTE}" "GITHUB_SHA=${GITHUB_SHA} TEST_STACK_ROOT=${TEST_STACK_ROOT} DEPLOY_CACHE_ROOT=${DEPLOY_CACHE_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} bash -s" <<'EOF'
           set -euo pipefail
 
           root="${TEST_STACK_ROOT}"
           revision="${GITHUB_SHA}"
           owner="${GHCR_OWNER}"
-          chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
-          "$root/compose/bootstrap-server.sh" "$root"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
+          export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
+          export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
+          export REMOTE_WEB_IMAGE_MODE=local
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"

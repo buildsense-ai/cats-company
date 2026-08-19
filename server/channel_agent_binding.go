@@ -113,6 +113,21 @@ type channelGroupMobileLinkResponse struct {
 	ClawBotEntryStatus *clawBotEntryConfigStatus `json:"clawbot_entry_status,omitempty"`
 }
 
+type channelPrivateBindingResponse struct {
+	BindingKey  string    `json:"binding_key"`
+	DisplayName string    `json:"display_name"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	SelectedAt  time.Time `json:"selected_at"`
+}
+
+type channelPrivateBindingDeleteRequest struct {
+	BindingKey string    `json:"binding_key"`
+	AgentUID   int64     `json:"agent_uid,omitempty"`
+	GroupID    int64     `json:"group_id,omitempty"`
+	TopicID    string    `json:"topic_id,omitempty"`
+	SelectedAt time.Time `json:"selected_at"`
+}
+
 type feishuEntryConfigStatus struct {
 	Ready                      bool     `json:"ready"`
 	Status                     string   `json:"status"`
@@ -770,6 +785,188 @@ func (h *ChannelAgentBindingHandler) HandleCreateChannelIdentityMobileLink(w htt
 		QRKind:       entryResp.QRKind,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleChannelPrivateBindings lists and revokes the current user's private
+// Feishu selections. Native Feishu groups deliberately live outside this API.
+func (h *ChannelAgentBindingHandler) HandleChannelPrivateBindings(w http.ResponseWriter, r *http.Request) {
+	privateStore, ok := h.db.(store.ChannelPrivateBindingStore)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "channel private binding management is not configured"})
+		return
+	}
+	canonicalUID := UIDFromContext(r.Context())
+	if canonicalUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
+		return
+	}
+	user, err := h.db.GetUser(canonicalUID)
+	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only active human CatsCo users can manage mobile channel bindings"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		h.handleListChannelPrivateBindings(w, r, privateStore, canonicalUID)
+	case http.MethodDelete:
+		h.handleDeleteChannelPrivateBinding(w, r, privateStore, canonicalUID)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (h *ChannelAgentBindingHandler) handleListChannelPrivateBindings(w http.ResponseWriter, r *http.Request, privateStore store.ChannelPrivateBindingStore, canonicalUID int64) {
+	agentUID, groupID, topicID, err := parseChannelPrivateTarget(r.URL.Query().Get("agent_uid"), r.URL.Query().Get("group_id"), r.URL.Query().Get("topic_id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	selections, err := privateStore.ListChannelPrivateSelections(canonicalUID, "feishu")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list Feishu bindings"})
+		return
+	}
+	current := latestChannelPrivateSelections(selections)
+	items := make([]channelPrivateBindingResponse, 0)
+	for _, selection := range current {
+		if !channelPrivateSelectionMatchesTarget(selection, agentUID, groupID, topicID) {
+			continue
+		}
+		displayName := "飞书用户"
+		avatarURL := ""
+		if selection.ActorUID > 0 {
+			if actor, err := h.db.GetUser(selection.ActorUID); err == nil && actor != nil {
+				displayName = displayNameOrUsername(actor.DisplayName, actor.Username)
+				avatarURL = actor.AvatarURL
+			}
+		}
+		items = append(items, channelPrivateBindingResponse{
+			BindingKey:  channelPrivateBindingKey(selection.ChannelAppID, selection.ChannelUserID),
+			DisplayName: displayName,
+			AvatarURL:   avatarURL,
+			SelectedAt:  selection.SelectedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"bindings": items})
+}
+
+func (h *ChannelAgentBindingHandler) handleDeleteChannelPrivateBinding(w http.ResponseWriter, r *http.Request, privateStore store.ChannelPrivateBindingStore, canonicalUID int64) {
+	var req channelPrivateBindingDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	appID, channelUserID, err := parseChannelPrivateBindingKey(req.BindingKey)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid binding_key"})
+		return
+	}
+	if req.AgentUID <= 0 && req.GroupID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a target is required"})
+		return
+	}
+	if req.SelectedAt.IsZero() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "selected_at is required"})
+		return
+	}
+	targetKind := types.ChannelPrivateTargetAgent
+	if req.GroupID > 0 {
+		targetKind = types.ChannelPrivateTargetGroup
+	}
+	result, err := privateStore.RevokeChannelPrivateSelection(canonicalUID, &types.ChannelPrivateSelection{
+		Channel:       "feishu",
+		ChannelAppID:  appID,
+		ChannelUserID: channelUserID,
+		TargetKind:    targetKind,
+		AgentUID:      req.AgentUID,
+		GroupID:       req.GroupID,
+		TopicID:       strings.TrimSpace(req.TopicID),
+		SelectedAt:    req.SelectedAt,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to unbind Feishu user"})
+		return
+	}
+	if result != nil && result.Changed {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Feishu binding changed; refresh and try again"})
+		return
+	}
+	if result == nil || !result.Revoked {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Feishu binding not found"})
+		return
+	}
+	if h.hub != nil {
+		h.hub.clearChannelInboundReplyRoutesForIdentity("feishu", appID, channelUserID)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func parseChannelPrivateTarget(agentValue, groupValue, topicValue string) (int64, int64, string, error) {
+	agentUID, _ := strconv.ParseInt(strings.TrimSpace(agentValue), 10, 64)
+	groupID, _ := strconv.ParseInt(strings.TrimSpace(groupValue), 10, 64)
+	topicID := strings.TrimSpace(topicValue)
+	if agentUID > 0 && groupID > 0 {
+		return 0, 0, "", fmt.Errorf("only one target is allowed")
+	}
+	if agentUID <= 0 && groupID <= 0 {
+		return 0, 0, "", fmt.Errorf("a target is required")
+	}
+	if groupID > 0 {
+		if topicID == "" {
+			topicID = fmt.Sprintf("grp_%d", groupID)
+		}
+		if parseGroupIDFromTopicID(topicID) != groupID {
+			return 0, 0, "", fmt.Errorf("topic_id does not match group_id")
+		}
+	}
+	return agentUID, groupID, topicID, nil
+}
+
+func latestChannelPrivateSelections(selections []*types.ChannelPrivateSelection) []*types.ChannelPrivateSelection {
+	latest := make(map[string]*types.ChannelPrivateSelection)
+	for _, selection := range selections {
+		if selection == nil || selection.ChannelUserID == "" {
+			continue
+		}
+		key := selection.Channel + "\x00" + selection.ChannelAppID + "\x00" + selection.ChannelUserID
+		current := latest[key]
+		if current == nil || selection.SelectedAt.After(current.SelectedAt) ||
+			(selection.SelectedAt.Equal(current.SelectedAt) && selection.TargetKind == types.ChannelPrivateTargetGroup && current.TargetKind == types.ChannelPrivateTargetAgent) {
+			latest[key] = selection
+		}
+	}
+	result := make([]*types.ChannelPrivateSelection, 0, len(latest))
+	for _, selection := range latest {
+		result = append(result, selection)
+	}
+	return result
+}
+
+func channelPrivateSelectionMatchesTarget(selection *types.ChannelPrivateSelection, agentUID, groupID int64, topicID string) bool {
+	if selection == nil {
+		return false
+	}
+	if agentUID > 0 {
+		return selection.TargetKind == types.ChannelPrivateTargetAgent && selection.AgentUID == agentUID
+	}
+	return selection.TargetKind == types.ChannelPrivateTargetGroup && selection.GroupID == groupID && selection.TopicID == topicID
+}
+
+func channelPrivateBindingKey(appID, userID string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(appID + "\x00" + userID))
+}
+
+func parseChannelPrivateBindingKey(value string) (string, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
+	if err != nil {
+		return "", "", err
+	}
+	parts := strings.SplitN(string(raw), "\x00", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return "", "", fmt.Errorf("invalid binding key")
+	}
+	return parts[0], parts[1], nil
 }
 
 // HandleCreateChannelGroupMobileLink creates a short-lived mobile-channel QR

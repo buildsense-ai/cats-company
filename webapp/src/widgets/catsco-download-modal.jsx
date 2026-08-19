@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Apple, Check, Copy, Database, Download, ExternalLink, Laptop, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api, getApiBaseURL, getWebSocketURL, requestExternalHistory } from '../api';
+import PwaDownloadLink from './pwa-download-link';
 
 export const FALLBACK_RELEASE_VERSION = '1.4.1';
 const TOS_BASE_URL = 'https://github-release.tos-cn-guangzhou.volces.com/update';
@@ -701,7 +702,7 @@ export default function CatsCoDownloadModal({ onClose }) {
         </div>
 
         <div className="catsco-download-body">
-          <div className="catsco-download-list">
+        <div className="catsco-download-list">
           <div className="catsco-download-card" style={{ alignItems: 'flex-start' }}>
             <span className="catsco-download-icon">
               <Laptop size={20} />
@@ -765,16 +766,18 @@ export default function CatsCoDownloadModal({ onClose }) {
 
           <ExternalHistoryPanel device={externalHistoryDevice} />
 
-          <div className="catsco-download-list">
+        <h4 className="catsco-download-section-title">可下载版本</h4>
+        <div className="catsco-download-list catsco-download-release-list">
           {downloadOptions.map((option) => {
             const Icon = option.icon;
             return (
-              <a
+              <PwaDownloadLink
                 key={option.key}
                 className="catsco-download-card"
                 href={option.href}
                 target="_blank"
                 rel="noopener noreferrer"
+                download
               >
                 <span className="catsco-download-icon">
                   <Icon size={20} />
@@ -787,12 +790,12 @@ export default function CatsCoDownloadModal({ onClose }) {
                 <span className="catsco-download-action">
                   <Download size={16} />
                 </span>
-              </a>
+              </PwaDownloadLink>
             );
           })}
           </div>
         </div>
+        </div>
       </div>
-    </div>
   );
 }

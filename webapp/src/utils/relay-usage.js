@@ -10,17 +10,8 @@ export function formatRelayUsagePill(summary, { customLabel = '自定义模型',
     return showModel ? `${shortRelayModelName(summary.model)} 已用 100%+` : '已用 100%+';
   }
 
-  const explicitRemaining = Number(summary.remaining_percent);
-  const limit = Number(summary.limit_cny);
-  const usedPercent = Number(summary.percent);
-  let remainingPercent;
-  if (Number.isFinite(explicitRemaining)) {
-    remainingPercent = explicitRemaining;
-  } else if (Number.isFinite(limit) && limit > 0 && Number.isFinite(usedPercent)) {
-    remainingPercent = 100 - usedPercent;
-  } else {
-    return '';
-  }
+  const remainingPercent = Number(summary.remaining_percent);
+  if (!Number.isFinite(remainingPercent)) return '';
 
   const clamped = Math.max(0, Math.min(100, remainingPercent));
   const remainingLabel = `剩余 ${Math.round(clamped)}%`;
@@ -39,6 +30,51 @@ export function resolveCurrentModelName(summary, defaultModel = 'MiniMax-M2.7') 
     return reportedModel && !/^custom$/i.test(reportedModel) ? reportedModel : '自定义模型';
   }
   return reportedModel || String(defaultModel || '').trim() || '模型未知';
+}
+
+export function resolveConversationModelDisplay(currentModelName, agentModelState) {
+  if (agentModelState?.state === 'hidden') return null;
+
+  const accountModel = String(currentModelName || '').trim() || '模型未知';
+  if (!agentModelState?.isBot) {
+    return {
+      model: accountModel,
+      meta: '',
+      title: `当前使用的模型：${accountModel}`,
+    };
+  }
+
+  const summary = agentModelState.summary;
+  if (!summary) {
+    const loading = agentModelState.state === 'loading';
+    return {
+      model: loading ? '模型同步中' : '模型未同步',
+      meta: loading ? '' : '额度未同步',
+      title: loading
+        ? '正在读取当前虚拟员工的模型状态'
+        : '当前虚拟员工尚未上报可用的模型与额度状态',
+    };
+  }
+
+  const model = resolveCurrentModelName(summary, '模型未知');
+  const custom = summary.source === 'custom' || summary.status === 'custom';
+  const reasoningEffort = String(summary.reasoning_effort || '').trim();
+  const quota = formatRelayUsagePill(summary, {
+    customLabel: '自备模型',
+    showModel: false,
+  });
+  const quotaMeta = quota || (custom ? '自备模型' : '额度未同步');
+  const meta = [reasoningEffort, quotaMeta].filter(Boolean).join(' · ');
+  const reasoningTitle = reasoningEffort ? `；推理强度 ${reasoningEffort}` : '';
+  return {
+    model,
+    meta,
+    title: custom
+      ? `${model}${reasoningTitle}；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
+      : quota
+        ? `${model}${reasoningTitle}；使用该虚拟员工所属账号的共享额度，${quota}`
+        : `${model}${reasoningTitle}；当前额度暂未同步`,
+  };
 }
 
 export function relayUsageTone(summary) {

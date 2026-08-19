@@ -1,0 +1,335 @@
+package store
+
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+
+	"github.com/openchat/openchat/server/store/types"
+)
+
+const (
+	botDefinitionJSONKey            = "bot_definition"
+	botDefinitionRuntimeJSONKey     = "bot_definition_runtime"
+	botDefinitionSavedCustomJSONKey = "bot_definition_saved_custom_model"
+	botPromptVisibilityJSONKey      = "bot_prompt_visibility"
+	botDefaultPromptSnapshotJSONKey = "bot_default_prompt_snapshot"
+	legacyBotSkillsJSONKey          = "bot_skills"
+)
+
+// DecodeBotDefinitionJSON reads the canonical definition nodes while
+// preserving all unrelated bot_config.config fields for their owning features.
+// A legacy cloud_model node is exposed as a migration source when the canonical
+// node does not exist.
+func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionRecord, error) {
+	root, err := decodeBotConfigRoot(raw)
+	if err != nil {
+		return nil, err
+	}
+	record := &types.BotDefinitionRecord{}
+	record.PromptVisibility = types.BotPromptOwner
+	if value := root[botDefinitionJSONKey]; len(value) > 0 {
+		if err := json.Unmarshal(value, &record.Definition); err != nil {
+			return nil, err
+		}
+		record.Exists = true
+	}
+	if value := root[botDefinitionRuntimeJSONKey]; len(value) > 0 {
+		if err := json.Unmarshal(value, &record.Runtime); err != nil {
+			return nil, err
+		}
+	}
+	if value := root[botDefinitionSavedCustomJSONKey]; len(value) > 0 {
+		var saved types.BotDefinitionSavedCustomModel
+		if err := json.Unmarshal(value, &saved); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(saved.APIKeyCiphertext) != "" {
+			record.SavedCustomModel = &saved
+		}
+	}
+	if value := root[botPromptVisibilityJSONKey]; len(value) > 0 {
+		if err := json.Unmarshal(value, &record.PromptVisibility); err != nil {
+			return nil, err
+		}
+	}
+	if value := root[botDefaultPromptSnapshotJSONKey]; len(value) > 0 {
+		var snapshot types.BotDefaultPromptSnapshot
+		if err := json.Unmarshal(value, &snapshot); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(snapshot.ContentHash) != "" {
+			record.DefaultPrompt = &snapshot
+		}
+	}
+	if value := root[botModelConfigJSONKey]; len(value) > 0 {
+		var legacy types.BotModelConfig
+		if err := json.Unmarshal(value, &legacy); err != nil {
+			return nil, err
+		}
+		normalizeLegacyModelSelection(&legacy)
+		if !record.Exists {
+			if strings.TrimSpace(legacy.ModelID) != "" {
+				record.Definition = definitionFromLegacyModelConfig(botUID, &legacy)
+				record.Runtime = runtimeFromLegacyModelConfig(&legacy)
+				if strings.TrimSpace(legacy.CustomCiphertext) != "" {
+					record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
+						APIKeyCiphertext: legacy.CustomCiphertext,
+					}
+				}
+			}
+		} else if strings.TrimSpace(legacy.CustomCiphertext) != "" &&
+			record.SavedCustomModel == nil &&
+			strings.TrimSpace(record.Definition.Model.APIKeyCiphertext) == "" {
+			// 防御性合并：canonical 节点已存在时不再整体迁移，但若 canonical
+			// 未携带自定义密文而 legacy cloud_model 仍有 custom_ciphertext，
+			// 保留到 SavedCustomModel，避免后续 encode 时被直接删除而丢失。
+			record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
+				APIKeyCiphertext: legacy.CustomCiphertext,
+			}
+		}
+	}
+	normalizeDefinitionRecord(record, botUID)
+	return record, nil
+}
+
+// EncodeBotDefinitionJSON replaces only the canonical definition nodes.
+func EncodeBotDefinitionJSON(raw []byte, record *types.BotDefinitionRecord) ([]byte, error) {
+	root, err := decodeBotConfigRoot(raw)
+	if err != nil {
+		return nil, err
+	}
+	definition, err := json.Marshal(record.Definition)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := json.Marshal(record.Runtime)
+	if err != nil {
+		return nil, err
+	}
+	root[botDefinitionJSONKey] = definition
+	root[botDefinitionRuntimeJSONKey] = runtime
+	visibility := record.PromptVisibility
+	if visibility != types.BotPromptFriends {
+		visibility = types.BotPromptOwner
+	}
+	visibilityJSON, err := json.Marshal(visibility)
+	if err != nil {
+		return nil, err
+	}
+	root[botPromptVisibilityJSONKey] = visibilityJSON
+	if record.DefaultPrompt != nil && strings.TrimSpace(record.DefaultPrompt.ContentHash) != "" {
+		snapshot, err := json.Marshal(record.DefaultPrompt)
+		if err != nil {
+			return nil, err
+		}
+		root[botDefaultPromptSnapshotJSONKey] = snapshot
+	} else {
+		delete(root, botDefaultPromptSnapshotJSONKey)
+	}
+	if record.SavedCustomModel != nil &&
+		strings.TrimSpace(record.SavedCustomModel.APIKeyCiphertext) != "" {
+		saved, err := json.Marshal(record.SavedCustomModel)
+		if err != nil {
+			return nil, err
+		}
+		root[botDefinitionSavedCustomJSONKey] = saved
+	} else {
+		delete(root, botDefinitionSavedCustomJSONKey)
+	}
+	delete(root, botModelConfigJSONKey)
+	delete(root, legacyBotSkillsJSONKey)
+	return json.Marshal(root)
+}
+
+func DefaultBotDefinitionJSON(botUID int64) ([]byte, error) {
+	record := defaultBotDefinitionRecord(botUID)
+	return EncodeBotDefinitionJSON(nil, record)
+}
+
+func defaultBotDefinitionRecord(botUID int64) *types.BotDefinitionRecord {
+	return &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  strconv.FormatInt(botUID, 10),
+			Model: types.BotDefinitionModel{
+				Kind:    "catalog",
+				ModelID: "minimax-m3",
+			},
+			Prompt: &types.BotPromptDefinition{Selected: "default"},
+			Skills: []types.BotSkillRef{},
+		},
+		PromptVisibility: types.BotPromptOwner,
+		Exists:           true,
+	}
+}
+
+func decodeBotConfigRoot(raw []byte) (map[string]json.RawMessage, error) {
+	root := map[string]json.RawMessage{}
+	if len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &root); err != nil {
+			return nil, err
+		}
+	}
+	return root, nil
+}
+
+func normalizeDefinitionRecord(record *types.BotDefinitionRecord, botUID int64) {
+	if record.PromptVisibility != types.BotPromptFriends {
+		record.PromptVisibility = types.BotPromptOwner
+	}
+	if record.Definition.Schema == "" {
+		record.Definition.Schema = types.BotDefinitionSchema
+	}
+	if record.Definition.BotID == "" {
+		record.Definition.BotID = strconv.FormatInt(botUID, 10)
+	}
+	if record.Definition.Model.Kind == "" && record.Definition.Model.ModelID != "" {
+		record.Definition.Model.Kind = "catalog"
+	}
+	if record.Definition.Model.Kind == "" && record.Definition.Model.ModelID == "" {
+		appliedKind := strings.ToLower(strings.TrimSpace(record.Runtime.AppliedKind))
+		appliedModelID := strings.ToLower(strings.TrimSpace(record.Runtime.AppliedModelID))
+		if record.Runtime.DesiredRevision > 0 || appliedKind == "local" || appliedModelID == "local" {
+			record.Definition.Model = types.BotDefinitionModel{Kind: "local", ModelID: "local"}
+		}
+	}
+	if record.Definition.Skills == nil {
+		record.Definition.Skills = []types.BotSkillRef{}
+	}
+	RememberBotDefinitionCustomModel(record, record.Definition.Model)
+	if record.Definition.Model.Kind != "custom" {
+		record.Definition.Model.APIKeyCiphertext = ""
+	}
+}
+
+// RememberBotDefinitionCustomModel preserves the encrypted custom profile when
+// the active model later changes to a catalog entry.
+func RememberBotDefinitionCustomModel(
+	record *types.BotDefinitionRecord,
+	model types.BotDefinitionModel,
+) {
+	if record == nil || strings.TrimSpace(model.APIKeyCiphertext) == "" {
+		return
+	}
+	record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
+		APIKeyCiphertext: model.APIKeyCiphertext,
+	}
+}
+
+func normalizeLegacyModelSelection(config *types.BotModelConfig) {
+	if config == nil || strings.TrimSpace(config.ModelID) != "" {
+		return
+	}
+	kind := strings.ToLower(strings.TrimSpace(config.Kind))
+	appliedKind := strings.ToLower(strings.TrimSpace(config.AppliedKind))
+	appliedModelID := strings.ToLower(strings.TrimSpace(config.AppliedModelID))
+	if kind == "local" || appliedKind == "local" || appliedModelID == "local" || config.Revision > 0 {
+		config.Kind = "local"
+		config.ModelID = "local"
+	}
+}
+
+func definitionFromLegacyModelConfig(botUID int64, config *types.BotModelConfig) types.BotDefinition {
+	model := types.BotDefinitionModel{
+		Kind:             config.Kind,
+		ModelID:          config.ModelID,
+		ReasoningEffort:  config.ReasoningEffort,
+		APIKeyCiphertext: config.CustomCiphertext,
+	}
+	if model.Kind == "" {
+		model.Kind = "catalog"
+	}
+	return types.BotDefinition{
+		Schema: types.BotDefinitionSchema,
+		BotID:  strconv.FormatInt(botUID, 10),
+		Model:  model,
+		Prompt: &types.BotPromptDefinition{Selected: "default"},
+		Skills: []types.BotSkillRef{},
+	}
+}
+
+func runtimeFromLegacyModelConfig(config *types.BotModelConfig) types.BotDefinitionRuntime {
+	return types.BotDefinitionRuntime{
+		DesiredRevision:     config.Revision,
+		UpdatedAt:           config.UpdatedAt,
+		RuntimeProtocol:     config.RuntimeProtocol,
+		RuntimeProtocolSeen: config.RuntimeProtocolSeen,
+		AppliedKind:         config.AppliedKind,
+		AppliedModelID:      config.AppliedModelID,
+		AppliedReasoning:    config.AppliedReasoning,
+		AppliedRevision:     config.AppliedRevision,
+		AppliedAt:           config.AppliedAt,
+		LastAttemptRevision: config.LastAttemptRevision,
+		LastAttemptAt:       config.LastAttemptAt,
+		LastError:           config.LastError,
+	}
+}
+
+func legacyModelConfigFromRecord(record *types.BotDefinitionRecord) *types.BotModelConfig {
+	model := record.Definition.Model
+	runtime := record.Runtime
+	customCiphertext := model.APIKeyCiphertext
+	if customCiphertext == "" && record.SavedCustomModel != nil {
+		customCiphertext = record.SavedCustomModel.APIKeyCiphertext
+	}
+	return &types.BotModelConfig{
+		Kind:                model.Kind,
+		ModelID:             firstNonEmpty(model.ModelID, model.Model),
+		ReasoningEffort:     model.ReasoningEffort,
+		CustomCiphertext:    customCiphertext,
+		RuntimeProtocol:     runtime.RuntimeProtocol,
+		RuntimeProtocolSeen: runtime.RuntimeProtocolSeen,
+		Revision:            runtime.DesiredRevision,
+		UpdatedAt:           runtime.UpdatedAt,
+		AppliedKind:         runtime.AppliedKind,
+		AppliedModelID:      runtime.AppliedModelID,
+		AppliedReasoning:    runtime.AppliedReasoning,
+		AppliedRevision:     runtime.AppliedRevision,
+		AppliedAt:           runtime.AppliedAt,
+		LastAttemptRevision: runtime.LastAttemptRevision,
+		LastAttemptAt:       runtime.LastAttemptAt,
+		LastError:           runtime.LastError,
+	}
+}
+
+func applyLegacyModelConfig(record *types.BotDefinitionRecord, config *types.BotModelConfig) {
+	switch config.Kind {
+	case "catalog":
+		record.Definition.Model = types.BotDefinitionModel{
+			Kind:            config.Kind,
+			ModelID:         config.ModelID,
+			ReasoningEffort: config.ReasoningEffort,
+		}
+	case "custom":
+		model := record.Definition.Model
+		if model.Kind != "custom" {
+			model = types.BotDefinitionModel{}
+		}
+		model.Kind = config.Kind
+		model.ModelID = ""
+		model.Model = config.ModelID
+		model.ReasoningEffort = config.ReasoningEffort
+		if config.CustomCiphertext != "" {
+			model.APIKeyCiphertext = config.CustomCiphertext
+		}
+		record.Definition.Model = model
+		RememberBotDefinitionCustomModel(record, model)
+	default:
+		record.Definition.Model = types.BotDefinitionModel{
+			Kind:    config.Kind,
+			ModelID: config.ModelID,
+		}
+	}
+	record.Runtime = runtimeFromLegacyModelConfig(config)
+	record.Exists = true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}

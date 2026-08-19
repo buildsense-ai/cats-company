@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -58,14 +59,59 @@ func (a *Adapter) ListProjects(ownerUID int64) ([]*types.Project, error) {
 	return projects, nil
 }
 
-// AssignTopicToProject moves an owned topic into the selected project.
+// RenameProject renames an owner-scoped project.
+func (a *Adapter) RenameProject(ownerUID, projectID int64, name string) error {
+	result, err := a.db.Exec(
+		`UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND owner_uid = $3`,
+		name, projectID, ownerUID,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return store.ErrProjectNameConflict
+		}
+		return fmt.Errorf("rename project: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rename project result: %w", err)
+	}
+	if affected == 0 {
+		return store.ErrProjectNotFound
+	}
+	return nil
+}
+
+// DeleteProject deletes an owner-scoped project without deleting its topics.
+func (a *Adapter) DeleteProject(ownerUID, projectID int64) error {
+	result, err := a.db.Exec(`DELETE FROM projects WHERE id = $1 AND owner_uid = $2`, projectID, ownerUID)
+	if err != nil {
+		return fmt.Errorf("delete project: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read delete project result: %w", err)
+	}
+	if affected == 0 {
+		return store.ErrProjectNotFound
+	}
+	return nil
+}
+
+// AssignTopicToProject moves an accessible topic into the selected personal project.
 func (a *Adapter) AssignTopicToProject(ownerUID, projectID int64, topicID string) error {
 	result, err := a.db.Exec(
 		`INSERT INTO project_topics (owner_uid, topic_id, project_id)
 		 SELECT $1, t.id, p.id
 		 FROM projects p
-		 JOIN topics t ON t.id = $3 AND t.owner_id = $1
-		 WHERE p.id = $2 AND p.owner_uid = $1
+		 JOIN topics t ON t.id = $3
+		 LEFT JOIN group_members gm
+		   ON t.type = 'group'
+		  AND t.id = 'grp_' || gm.group_id::text
+		  AND gm.user_id = $1
+		 WHERE p.id = $2
+		   AND p.owner_uid = $1
+		   AND (t.owner_id = $1 OR gm.user_id IS NOT NULL)
 		 ON CONFLICT (owner_uid, topic_id)
 		 DO UPDATE SET project_id = EXCLUDED.project_id, created_at = CURRENT_TIMESTAMP`,
 		ownerUID, projectID, topicID,

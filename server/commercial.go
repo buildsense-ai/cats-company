@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +31,7 @@ type RelayCommercialHandler struct {
 	testUIDs       map[int64]bool
 	enforceEnabled bool
 	enforceUIDs    map[int64]bool
+	syncer         *CommercialRelaySyncer
 }
 
 type RelayCommercialOptions struct {
@@ -36,6 +39,67 @@ type RelayCommercialOptions struct {
 	TestUIDs       map[int64]bool
 	EnforceEnabled bool
 	EnforceUIDs    map[int64]bool
+	Syncer         *CommercialRelaySyncer
+}
+
+type commercialUserSummary struct {
+	UID          int64                          `json:"uid"`
+	Plans        []*types.CommercialPlan        `json:"plans"`
+	Entitlements []*types.CommercialEntitlement `json:"entitlements"`
+	Models       []string                       `json:"models"`
+}
+
+func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
+	if plan == nil {
+		return nil
+	}
+	copy := *plan
+	copy.MonthlyBudget = 0
+	copy.ModelBudgets = nil
+	copy.InternalQuotaTokens = 0
+	return &copy
+}
+
+func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercialUserSummary {
+	out := &commercialUserSummary{
+		Plans:        []*types.CommercialPlan{},
+		Entitlements: []*types.CommercialEntitlement{},
+		Models:       []string{},
+	}
+	if summary == nil {
+		return out
+	}
+	out.UID = summary.UID
+	out.Entitlements = summary.Entitlements
+	for model, amount := range summary.TotalsByModel {
+		if strings.TrimSpace(model) != "" && amount > 0 {
+			out.Models = append(out.Models, strings.TrimSpace(model))
+		}
+	}
+	sort.Strings(out.Models)
+	return out
+}
+
+func (h *RelayCommercialHandler) summaryForUser(uid int64, summary *types.CommercialSummary) *commercialUserSummary {
+	out := commercialUsageSummaryForUser(summary)
+	if out.UID <= 0 {
+		out.UID = uid
+	}
+	if summary == nil {
+		return out
+	}
+	for _, plan := range summary.Plans {
+		if plan == nil || plan.State != 0 || plan.PriceFen <= 0 || !commercialPlanHasBenefits(plan) {
+			continue
+		}
+		if plan.SaleState == "public" && (h.publicEnabled || h.testUIDs[uid]) {
+			out.Plans = append(out.Plans, commercialPlanForUser(plan))
+		}
+		if plan.SaleState == "test" && h.testUIDs[uid] {
+			out.Plans = append(out.Plans, commercialPlanForUser(plan))
+		}
+	}
+	return out
 }
 
 func NewRelayCommercialHandler(store CommercialStore, publicEnabled ...bool) *RelayCommercialHandler {
@@ -65,6 +129,7 @@ func NewRelayCommercialHandlerWithOptions(store CommercialStore, opts RelayComme
 		testUIDs:       testUIDs,
 		enforceEnabled: opts.EnforceEnabled,
 		enforceUIDs:    enforceUIDs,
+		syncer:         opts.Syncer,
 	}
 }
 
@@ -112,7 +177,7 @@ func (h *RelayCommercialHandler) HandleSummary(w http.ResponseWriter, r *http.Re
 		"enabled":         true,
 		"rollout":         h.rolloutFor(uid),
 		"enforce_enabled": h.enforceFor(uid),
-		"summary":         summary,
+		"summary":         publicCommercialSummary(summary),
 		"note":            "套餐额度内测中；未开启真实接管前，当前 relay 默认额度和重置周期继续保留。",
 	})
 }
@@ -136,22 +201,76 @@ func (h *RelayCommercialHandler) HandleRedeemInvite(w http.ResponseWriter, r *ht
 	}
 	summary, err := h.store.RedeemCommercialInvite(uid, req.Code)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		if strings.Contains(err.Error(), "already active") || strings.Contains(err.Error(), "below active plan") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "当前套餐已生效，不能兑换同档或低档套餐"})
+			return
+		}
+		if strings.Contains(err.Error(), "already pending") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "已有待支付套餐订单，请先完成或取消"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invite code could not be redeemed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": summary})
+	if h.syncer != nil {
+		h.syncer.Enqueue(uid)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": publicCommercialSummary(summary)})
+}
+
+type relayCommercialPublicSummary struct {
+	Models       []string                           `json:"models"`
+	Entitlements []relayCommercialPublicEntitlement `json:"entitlements"`
+}
+
+type relayCommercialPublicEntitlement struct {
+	PlanID    int64      `json:"plan_id,omitempty"`
+	PlanSlug  string     `json:"plan_slug,omitempty"`
+	PlanName  string     `json:"plan_name,omitempty"`
+	Source    string     `json:"source,omitempty"`
+	State     string     `json:"state"`
+	StartsAt  time.Time  `json:"starts_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+func publicCommercialSummary(summary *types.CommercialSummary) relayCommercialPublicSummary {
+	out := relayCommercialPublicSummary{
+		Models:       []string{},
+		Entitlements: []relayCommercialPublicEntitlement{},
+	}
+	if summary == nil {
+		return out
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil {
+			continue
+		}
+		out.Entitlements = append(out.Entitlements, relayCommercialPublicEntitlement{
+			PlanID:    entitlement.PlanID,
+			PlanSlug:  entitlement.PlanSlug,
+			PlanName:  entitlement.PlanName,
+			Source:    entitlement.Source,
+			State:     entitlement.State,
+			StartsAt:  entitlement.StartsAt,
+			ExpiresAt: entitlement.ExpiresAt,
+		})
+	}
+	for model, amount := range summary.TotalsByModel {
+		model = strings.TrimSpace(model)
+		if model != "" && amount > 0 {
+			out.Models = append(out.Models, model)
+		}
+	}
+	sort.Strings(out.Models)
+	return out
 }
 
 func commercialUnavailablePayload() map[string]interface{} {
 	return map[string]interface{}{
 		"enabled": false,
-		"summary": map[string]interface{}{
-			"plans":           []interface{}{},
-			"entitlements":    []interface{}{},
-			"grants":          []interface{}{},
-			"ledger":          []interface{}{},
-			"totals_by_model": map[string]float64{},
-			"total_cny":       0,
+		"summary": relayCommercialPublicSummary{
+			Models:       []string{},
+			Entitlements: []relayCommercialPublicEntitlement{},
 		},
 		"note": "套餐额度功能尚未启用；当前 relay 默认额度和重置周期继续保留。",
 	}
@@ -174,9 +293,16 @@ type commercialRelayModelLimit struct {
 	Budget        commercialRelayBudget `json:"budget"`
 }
 
+type commercialRelayModelScope struct {
+	ManagedModels []string `json:"managed_models"`
+	AllowedModels []string `json:"allowed_models"`
+}
+
 type commercialRelayLimits struct {
-	MonthlyBudget commercialRelayBudget       `json:"monthly_budget"`
-	ModelLimits   []commercialRelayModelLimit `json:"model_limits"`
+	MonthlyBudget        commercialRelayBudget       `json:"monthly_budget"`
+	ModelLimits          []commercialRelayModelLimit `json:"model_limits"`
+	AvailableModelLimits []commercialRelayModelLimit `json:"available_model_limits,omitempty"`
+	ModelScopes          []commercialRelayModelScope `json:"model_scopes,omitempty"`
 }
 
 type commercialRelayKeySummary struct {
@@ -187,16 +313,18 @@ type commercialRelayKeySummary struct {
 }
 
 type commercialRelayUsageUser struct {
-	UID             int64                      `json:"uid"`
-	Username        string                     `json:"username"`
-	Configured      bool                       `json:"configured"`
-	Key             *commercialRelayKeySummary `json:"key,omitempty"`
-	Limits          commercialRelayLimits      `json:"limits"`
-	GovernanceError string                     `json:"governance_error,omitempty"`
+	UID              int64                      `json:"uid"`
+	Username         string                     `json:"username"`
+	Configured       bool                       `json:"configured"`
+	Key              *commercialRelayKeySummary `json:"key,omitempty"`
+	Limits           commercialRelayLimits      `json:"limits"`
+	GovernanceError  string                     `json:"governance_error,omitempty"`
+	UsageWindowStart string                     `json:"usage_window_start,omitempty"`
 }
 
 type commercialRelayUsageResponse struct {
-	Users []commercialRelayUsageUser `json:"users"`
+	Users      []commercialRelayUsageUser `json:"users"`
+	TotalCount int                        `json:"total_count,omitempty"`
 }
 
 type commercialRelayBudgetComparison struct {
@@ -231,6 +359,7 @@ type commercialRelayDryRun struct {
 	Summary              *types.CommercialSummary              `json:"summary"`
 	Comparisons          []commercialRelayBudgetComparison     `json:"comparisons"`
 	ProposedUpdates      []commercialRelayProviderBudgetUpdate `json:"proposed_updates"`
+	ProposedModelScopes  []commercialRelayModelScope           `json:"proposed_model_scopes,omitempty"`
 	CanApply             bool                                  `json:"can_apply"`
 	Note                 string                                `json:"note"`
 }
@@ -295,6 +424,20 @@ func (h *AccountAdminHandler) HandleCommercialRelaySync(w http.ResponseWriter, r
 		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "relay admin is not configured"})
 		return
 	}
+	if h.commercialRelaySyncer != nil {
+		updates, err := h.commercialRelaySyncer.SyncUID(r.Context(), req.UID)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		updated, err := h.buildCommercialRelayDryRun(r.Context(), store, req.UID)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"applied": true, "updates": updates})
+			return
+		}
+		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"applied": true, "updates": updates, "dry_run": updated})
+		return
+	}
 	if len(dryRun.ProposedUpdates) == 0 {
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"applied": false, "dry_run": dryRun, "note": "no syncable model budgets"})
 		return
@@ -304,7 +447,10 @@ func (h *AccountAdminHandler) HandleCommercialRelaySync(w http.ResponseWriter, r
 		r.Context(),
 		http.MethodPost,
 		fmt.Sprintf("/internal/users/%d/key/limits", req.UID),
-		map[string]interface{}{"provider_config_budgets": dryRun.ProposedUpdates},
+		map[string]interface{}{
+			"provider_config_budgets": dryRun.ProposedUpdates,
+			"model_scopes":            dryRun.ProposedModelScopes,
+		},
 		&relayResp,
 	)
 	if err != nil {
@@ -333,6 +479,47 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 		relayUser = user
 	}
 	dryRun := compareCommercialRelayBudgets(uid, summary, relayUser)
+	var managed []*types.CommercialManagedRelayBudget
+	var managedErr error
+	if managedStore, ok := store.(CommercialRelayManagedStore); ok {
+		managed, managedErr = managedStore.ListCommercialManagedRelayBudgets(uid)
+		if managedErr == nil {
+			plannedUpdates, _ := commercialRelayManagedPlan(uid, summary, relayUser, managed)
+			dryRun.ProposedUpdates = plannedUpdates
+			dryRun.ProposedModelScopes = commercialRelayModelScopes(summary, relayUser, managed)
+			for _, item := range managed {
+				if item == nil || summary.TotalsByModel[item.Model] > 0 {
+					continue
+				}
+				if commercialRelayScopeOwnsModels(dryRun.ProposedModelScopes, item.AllowedModels) {
+					continue
+				}
+				needsUpdate := true
+				for index := range dryRun.Comparisons {
+					row := &dryRun.Comparisons[index]
+					if row.Model == item.Model && commercialManagedBudgetKey(row.Provider, row.AllowedModels) == commercialManagedBudgetKey(item.Provider, item.AllowedModels) {
+						if nearlyEqual(row.RelayLimit, commercialRelayBlockedLimit) {
+							row.Status = "managed_blocked"
+							needsUpdate = false
+						} else {
+							row.Status = "managed_expired"
+						}
+					}
+				}
+				if needsUpdate {
+					dryRun.ProposedUpdates = append(dryRun.ProposedUpdates, commercialRelayProviderBudgetUpdate{
+						Provider: item.Provider, AllowedModels: append([]string(nil), item.AllowedModels...),
+						MaxLimit: commercialRelayBlockedLimit, ResetDuration: defaultRelayResetDuration(item.ResetDuration),
+					})
+				}
+			}
+			var currentScopes []commercialRelayModelScope
+			if relayUser != nil {
+				currentScopes = relayUser.Limits.ModelScopes
+			}
+			dryRun.CanApply = len(dryRun.ProposedUpdates) > 0 || !commercialRelayModelScopesMatch(currentScopes, dryRun.ProposedModelScopes)
+		}
+	}
 	dryRun.EnforceEnabled = h.commercialRelayEnforcedFor(uid)
 	dryRun.RelayAdminConfigured = h.relayAdmin != nil
 	if h.relayAdmin == nil {
@@ -357,6 +544,7 @@ func (h *AccountAdminHandler) fetchCommercialRelayUsage(ctx context.Context, uid
 
 func compareCommercialRelayBudgets(uid int64, summary *types.CommercialSummary, relayUser *commercialRelayUsageUser) *commercialRelayDryRun {
 	dryRun := &commercialRelayDryRun{UID: uid, Summary: summary}
+	proposedByKey := map[string]commercialRelayProviderBudgetUpdate{}
 	if summary == nil {
 		summary = &types.CommercialSummary{UID: uid, TotalsByModel: map[string]float64{}}
 		dryRun.Summary = summary
@@ -384,21 +572,22 @@ func compareCommercialRelayBudgets(uid int64, summary *types.CommercialSummary, 
 		commercialModels[model] = true
 		limits := relayByModel[model]
 		limit, ok := bestCommercialRelayLimit(limits)
-		row := relayComparisonForModel(model, amount, limit, ok)
+		row := relayComparisonForModel(model, commercialLimitForRelayConfig(summary, amount, limit), limit, ok)
 
 		var aliasRowsNeedingSync []commercialRelayBudgetComparison
 		for _, aliasLimit := range limits {
-			aliasRow := relayComparisonForModel(model, amount, aliasLimit, true)
+			aliasRow := relayComparisonForModel(model, commercialLimitForRelayConfig(summary, amount, aliasLimit), aliasLimit, true)
 			if !commercialRelayShouldSync(aliasRow) {
 				continue
 			}
 			aliasRowsNeedingSync = append(aliasRowsNeedingSync, aliasRow)
-			dryRun.ProposedUpdates = append(dryRun.ProposedUpdates, commercialRelayProviderBudgetUpdate{
+			update := commercialRelayProviderBudgetUpdate{
 				Provider:      aliasRow.Provider,
 				AllowedModels: aliasRow.AllowedModels,
 				MaxLimit:      aliasRow.CommercialLimit,
 				ResetDuration: defaultRelayResetDuration(aliasRow.ResetDuration),
-			})
+			}
+			proposedByKey[commercialManagedBudgetKey(update.Provider, update.AllowedModels)] = update
 		}
 		if len(aliasRowsNeedingSync) > 0 && row.Status == "match" {
 			row.Status = "mismatch"
@@ -428,8 +617,34 @@ func compareCommercialRelayBudgets(uid int64, summary *types.CommercialSummary, 
 			})
 		}
 	}
+	for _, update := range proposedByKey {
+		dryRun.ProposedUpdates = append(dryRun.ProposedUpdates, update)
+	}
+	sort.Slice(dryRun.ProposedUpdates, func(i, j int) bool {
+		return commercialManagedBudgetKey(dryRun.ProposedUpdates[i].Provider, dryRun.ProposedUpdates[i].AllowedModels) < commercialManagedBudgetKey(dryRun.ProposedUpdates[j].Provider, dryRun.ProposedUpdates[j].AllowedModels)
+	})
 	dryRun.CanApply = len(dryRun.ProposedUpdates) > 0
 	return dryRun
+}
+
+func commercialLimitForRelayConfig(summary *types.CommercialSummary, fallback float64, limit commercialRelayModelLimit) float64 {
+	if summary == nil || (!limit.SharedBudget && len(limit.AllowedModels) <= 1) {
+		return fallback
+	}
+	total := 0.0
+	seen := map[string]bool{}
+	for _, model := range limit.AllowedModels {
+		model = strings.TrimSpace(model)
+		if model == "" || model == "*" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		total += summary.TotalsByModel[model]
+	}
+	if total > 0 {
+		return total
+	}
+	return fallback
 }
 
 func bestCommercialRelayLimit(limits []commercialRelayModelLimit) (commercialRelayModelLimit, bool) {
@@ -519,8 +734,10 @@ func parseCommercialBudgets(value map[string]float64) map[string]float64 {
 }
 
 func (h *AccountAdminHandler) requireCommercialStore(w http.ResponseWriter, r *http.Request) (CommercialStore, bool) {
-	if !h.requireLocal(w, r) {
-		return nil, false
+	if _, serviceAuthorized := commercialOpsServiceFromRequest(r); !serviceAuthorized {
+		if !h.requireLocal(w, r) {
+			return nil, false
+		}
 	}
 	if h.commercial == nil {
 		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial store unavailable"})
@@ -547,8 +764,13 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			Slug          string             `json:"slug"`
 			Name          string             `json:"name"`
 			Description   string             `json:"description"`
+			PriceFen      int64              `json:"price_fen"`
+			Currency      string             `json:"currency"`
+			SaleState     string             `json:"sale_state"`
+			PurchaseLimit int                `json:"purchase_limit"`
 			MonthlyBudget float64            `json:"monthly_budget_cny"`
 			ModelBudgets  map[string]float64 `json:"model_budgets"`
+			InternalQuota int64              `json:"internal_quota_tokens"`
 			DurationDays  int                `json:"duration_days"`
 			State         int                `json:"state"`
 			SortOrder     int                `json:"sort_order"`
@@ -571,19 +793,44 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "monthly budget must be non-negative"})
 			return
 		}
+		if req.PriceFen < 0 || req.PurchaseLimit < 0 || req.InternalQuota < 0 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "price, purchase limit and internal quota must be non-negative"})
+			return
+		}
+		req.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
+		if req.Currency == "" {
+			req.Currency = "CNY"
+		}
+		if req.Currency != "CNY" {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "only CNY plans are supported"})
+			return
+		}
+		req.SaleState = strings.ToLower(strings.TrimSpace(req.SaleState))
+		if req.SaleState == "" {
+			req.SaleState = "hidden"
+		}
+		if req.SaleState != "hidden" && req.SaleState != "test" && req.SaleState != "public" {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported sale state"})
+			return
+		}
 		if req.State != 0 && req.State != 1 {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported plan state"})
 			return
 		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
-			Slug:          req.Slug,
-			Name:          req.Name,
-			Description:   req.Description,
-			MonthlyBudget: req.MonthlyBudget,
-			ModelBudgets:  parseCommercialBudgets(req.ModelBudgets),
-			DurationDays:  req.DurationDays,
-			State:         req.State,
-			SortOrder:     req.SortOrder,
+			Slug:                req.Slug,
+			Name:                req.Name,
+			Description:         req.Description,
+			PriceFen:            req.PriceFen,
+			Currency:            req.Currency,
+			SaleState:           req.SaleState,
+			PurchaseLimit:       req.PurchaseLimit,
+			MonthlyBudget:       req.MonthlyBudget,
+			ModelBudgets:        parseCommercialBudgets(req.ModelBudgets),
+			InternalQuotaTokens: req.InternalQuota,
+			DurationDays:        req.DurationDays,
+			State:               req.State,
+			SortOrder:           req.SortOrder,
 		})
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save plan"})
@@ -614,6 +861,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			Code           string `json:"code"`
 			PlanID         int64  `json:"plan_id"`
 			MaxRedemptions int    `json:"max_redemptions"`
+			State          int    `json:"state"`
 			ExpiresAt      string `json:"expires_at"`
 			Note           string `json:"note"`
 		}
@@ -630,6 +878,10 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan_id is required"})
 			return
 		}
+		if req.State != 0 && req.State != 1 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported invite state"})
+			return
+		}
 		var expiresAt *time.Time
 		if strings.TrimSpace(req.ExpiresAt) != "" {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt))
@@ -643,6 +895,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			Code:           code,
 			PlanID:         req.PlanID,
 			MaxRedemptions: req.MaxRedemptions,
+			State:          req.State,
 			ExpiresAt:      expiresAt,
 			Note:           req.Note,
 		})
@@ -671,6 +924,7 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		Model         string  `json:"model"`
 		AmountCNY     float64 `json:"amount_cny"`
 		ResetDuration string  `json:"reset_duration"`
+		ExpiresAt     string  `json:"expires_at"`
 		Note          string  `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -685,19 +939,95 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "amount_cny must be positive"})
 		return
 	}
+	summary, err := store.GetCommercialSummary(req.UID)
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load current package"})
+		return
+	}
+	model, expiresAt, err := resolveCommercialBonusGrant(summary, req.Model, req.ExpiresAt, time.Now().UTC())
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	grant, err := store.GrantCommercialQuota(&types.CommercialQuotaGrant{
 		UID:           req.UID,
-		GrantType:     "manual",
-		Model:         req.Model,
+		GrantType:     "bonus",
+		Model:         model,
 		AmountCNY:     req.AmountCNY,
 		ResetDuration: req.ResetDuration,
+		ExpiresAt:     &expiresAt,
 		Note:          req.Note,
 	})
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to grant quota"})
 		return
 	}
+	if h.commercialRelaySyncer != nil {
+		h.commercialRelaySyncer.Enqueue(req.UID)
+	}
 	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "grant": grant})
+}
+
+func resolveCommercialBonusGrant(summary *types.CommercialSummary, requestedModel, requestedExpiry string, now time.Time) (string, time.Time, error) {
+	model := strings.TrimSpace(requestedModel)
+	if model == "" || model == "*" {
+		return "", time.Time{}, fmt.Errorf("model is required for a managed bonus")
+	}
+	if summary == nil {
+		return "", time.Time{}, fmt.Errorf("an active package is required before granting a bonus")
+	}
+
+	activeEntitlementsByPlan := map[int64][]*types.CommercialEntitlement{}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil || entitlement.State != "active" || entitlement.StartsAt.After(now) || entitlement.ExpiresAt == nil || !entitlement.ExpiresAt.After(now) {
+			continue
+		}
+		activeEntitlementsByPlan[entitlement.PlanID] = append(activeEntitlementsByPlan[entitlement.PlanID], entitlement)
+	}
+	if len(activeEntitlementsByPlan) == 0 {
+		return "", time.Time{}, fmt.Errorf("an active package with an expiry is required before granting a bonus")
+	}
+
+	canonicalModel := ""
+	var packageExpiry time.Time
+	for _, plan := range summary.Plans {
+		if plan == nil {
+			continue
+		}
+		entitlements := activeEntitlementsByPlan[plan.ID]
+		if len(entitlements) == 0 {
+			continue
+		}
+		for planModel, amount := range plan.ModelBudgets {
+			if amount > 0 && strings.EqualFold(strings.TrimSpace(planModel), model) {
+				canonicalModel = strings.TrimSpace(planModel)
+				for _, entitlement := range entitlements {
+					if entitlement.ExpiresAt.After(packageExpiry) {
+						packageExpiry = entitlement.ExpiresAt.UTC()
+					}
+				}
+			}
+		}
+	}
+	if canonicalModel == "" || packageExpiry.IsZero() {
+		return "", time.Time{}, fmt.Errorf("model is not included in the user's active package")
+	}
+
+	expiresAt := packageExpiry
+	if raw := strings.TrimSpace(requestedExpiry); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("expires_at must be RFC3339")
+		}
+		expiresAt = parsed.UTC()
+	}
+	if !expiresAt.After(now) {
+		return "", time.Time{}, fmt.Errorf("expires_at must be in the future")
+	}
+	if expiresAt.After(packageExpiry) {
+		return "", time.Time{}, fmt.Errorf("bonus expiry cannot exceed the current package expiry")
+	}
+	return canonicalModel, expiresAt, nil
 }
 
 func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter, r *http.Request) {
@@ -707,6 +1037,25 @@ func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter,
 	}
 	if r.Method != http.MethodGet {
 		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
+		if h.users == nil {
+			writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user lookup unavailable"})
+			return
+		}
+		users, err := h.users.SearchUsers(query, 20)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to search users"})
+			return
+		}
+		matches := make([]accountUserResponse, 0, len(users))
+		for _, user := range users {
+			if user != nil {
+				matches = append(matches, accountUserPayload(user))
+			}
+		}
+		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"users": matches})
 		return
 	}
 	uid, err := strconvParsePositiveInt64(r.URL.Query().Get("uid"))
@@ -719,7 +1068,133 @@ func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter,
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load commercial summary"})
 		return
 	}
-	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"summary": summary})
+	payload := map[string]interface{}{"summary": summary}
+	if h.users != nil {
+		if user, userErr := h.users.GetUser(uid); userErr == nil && user != nil {
+			payload["user"] = accountUserPayload(user)
+		}
+	}
+	writeAccountAdminJSON(w, http.StatusOK, payload)
+}
+
+func (h *AccountAdminHandler) HandleCommercialOrders(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.requireCommercialStore(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	paymentStore, ok := store.(CommercialPaymentStore)
+	if !ok {
+		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial payment store unavailable"})
+		return
+	}
+	uid := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("uid")); raw != "" {
+		parsed, err := strconvParsePositiveInt64(raw)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+			return
+		}
+		uid = parsed
+	}
+	_, _ = paymentStore.CloseExpiredCommercialOrders(100)
+	orders, err := paymentStore.ListCommercialOrders(uid, 100)
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list commercial orders"})
+		return
+	}
+	adminOrders := make([]map[string]interface{}, 0, len(orders))
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+		adminOrders = append(adminOrders, map[string]interface{}{
+			"order_no":          order.OrderNo,
+			"uid":               order.UID,
+			"plan_name":         order.PlanName,
+			"plan_slug":         order.PlanSlug,
+			"amount_fen":        order.AmountFen,
+			"channel":           order.Channel,
+			"status":            order.Status,
+			"provider_trade_no": order.ProviderTradeNo,
+			"paid_at":           order.PaidAt,
+			"fulfilled_at":      order.FulfilledAt,
+			"expires_at":        order.ExpiresAt,
+			"closed_at":         order.ClosedAt,
+			"refund_request_no": order.RefundRequestNo,
+			"refunded_at":       order.RefundedAt,
+			"last_error":        order.LastError,
+			"created_at":        order.CreatedAt,
+		})
+	}
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"orders": adminOrders})
+}
+
+func (h *AccountAdminHandler) HandleCommercialOrderRefund(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireCommercialStore(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if h.commercialPayments == nil {
+		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial refund service unavailable"})
+		return
+	}
+	var req struct {
+		OrderNo        string `json:"order_no"`
+		ConfirmOrderNo string `json:"confirm_order_no"`
+		Reason         string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid refund request"})
+		return
+	}
+	req.OrderNo = strings.TrimSpace(req.OrderNo)
+	req.ConfirmOrderNo = strings.TrimSpace(req.ConfirmOrderNo)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.OrderNo == "" || req.ConfirmOrderNo != req.OrderNo {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm_order_no must exactly match order_no"})
+		return
+	}
+	if len([]byte(req.Reason)) > 256 {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "refund reason is too long"})
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "CatsCo operator approved full refund"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	order, changed, err := h.commercialPayments.RefundOrder(ctx, req.OrderNo, req.Reason)
+	if err != nil {
+		status := http.StatusBadGateway
+		switch {
+		case errors.Is(err, errCommercialRefundInvalid):
+			status = http.StatusBadRequest
+		case errors.Is(err, errCommercialRefundNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, errCommercialRefundConflict):
+			status = http.StatusConflict
+		case errors.Is(err, errCommercialRefundUnavailable):
+			status = http.StatusServiceUnavailable
+		}
+		writeAccountAdminJSON(w, status, map[string]interface{}{
+			"error":  "commercial refund failed",
+			"detail": err.Error(),
+			"order":  order,
+		})
+		return
+	}
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"changed": changed,
+		"order":   order,
+	})
 }
 
 func strconvParsePositiveInt64(raw string) (int64, error) {

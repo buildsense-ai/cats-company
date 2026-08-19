@@ -3,7 +3,34 @@ import { X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
+import CustomSelect from './custom-select';
 import FriendRequest from './friend-request';
+
+const FRIEND_SEARCH_MODES = [
+  { value: 'name', label: '按名字' },
+  { value: 'uid', label: '按 UID' },
+];
+function FriendSearchModeSelect({ value, onValueChange }) {
+  const selectedMode = FRIEND_SEARCH_MODES.find((option) => option.value === value)
+    || FRIEND_SEARCH_MODES[0];
+  return (
+    <CustomSelect
+      ariaLabel={`搜索方式：${selectedMode.label}`}
+      className="oc-friend-search-mode-select"
+      density="compact"
+      listboxAriaLabel="搜索方式"
+      menuClassName="oc-friend-search-mode-menu"
+      optionClassName="oc-friend-search-mode-option"
+      triggerClassName="oc-friend-search-mode-trigger"
+      value={value}
+      onValueChange={onValueChange}
+    >
+      {FRIEND_SEARCH_MODES.map((option) => (
+        <option key={option.value} value={option.value}>{option.label}</option>
+      ))}
+    </CustomSelect>
+  );
+}
 
 export default function AddFriend({ currentUser, onClose, onSent }) {
   const [query, setQuery] = useState('');
@@ -87,6 +114,12 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
     }
   };
 
+  const handleSearchModeChange = (nextMode) => {
+    setSearchMode(nextMode);
+    setResults([]);
+    setError('');
+  };
+
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <section
@@ -99,7 +132,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
         <header className="oc-collaboration-modal-header">
           <h2 id="friend-manager-title">好友</h2>
           <button type="button" className="oc-modal-close" onClick={onClose} aria-label="关闭">
-            <X size={18} strokeWidth={1.8} />
+            <X size={18} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </header>
 
@@ -112,30 +145,23 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
 
             <div className="oc-friend-search-row">
               <div className="oc-friend-search-control">
-                <select
-                  className="oc-friend-search-mode"
-                  aria-label="搜索方式"
-                  value={searchMode}
-                  onChange={(e) => {
-                    setSearchMode(e.target.value);
-                    setResults([]);
-                    setError('');
-                  }}
-                >
-                  <option value="name">按名字</option>
-                  <option value="uid">按 UID</option>
-                </select>
                 <input
                   autoFocus
                   className="oc-friend-search-input"
-                  placeholder={searchMode === 'uid' ? '输入对方 UID' : '搜索联系人'}
+                  aria-label={searchMode === 'uid' ? '好友 UID' : '好友名称'}
+                  name="friend-search"
+                  placeholder={t('contacts_search_placeholder')}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                 />
+                <FriendSearchModeSelect
+                  value={searchMode}
+                  onValueChange={handleSearchModeChange}
+                />
               </div>
               <button type="button" className="oc-btn oc-btn-primary oc-friend-search-submit" onClick={handleSearch}>
-                {loading ? t('loading') : '发送申请'}
+                {loading ? t('loading') : '搜索'}
               </button>
             </div>
 

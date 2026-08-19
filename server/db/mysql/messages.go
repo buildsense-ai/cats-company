@@ -54,8 +54,13 @@ func (a *Adapter) SaveMessageWithBlocks(topicID string, fromUID int64, content s
 
 // SaveMessageIdempotent inserts a message once for a client-generated id.
 func (a *Adapter) SaveMessageIdempotent(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, bool, error) {
+	return a.SaveMessageWithMetadata(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, clientMsgID, nil)
+}
+
+// SaveMessageWithMetadata atomically persists a normalized message and metadata.
+func (a *Adapter) SaveMessageWithMetadata(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (int64, bool, error) {
 	if clientMsgID == "" {
-		id, err := a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, "")
+		id, err := a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, "", metadata)
 		return id, false, err
 	}
 
@@ -71,7 +76,7 @@ func (a *Adapter) SaveMessageIdempotent(topicID string, fromUID int64, content s
 		return 0, false, fmt.Errorf("lookup idempotent message: %w", err)
 	}
 
-	id, err = a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, clientMsgID)
+	id, err = a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, clientMsgID, metadata)
 	if err == nil {
 		return id, false, nil
 	}
@@ -86,7 +91,7 @@ func (a *Adapter) SaveMessageIdempotent(topicID string, fromUID int64, content s
 	return 0, false, fmt.Errorf("save idempotent message: %w", err)
 }
 
-func (a *Adapter) saveMessageNormalized(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, error) {
+func (a *Adapter) saveMessageNormalized(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (int64, error) {
 	var blocksJSON []byte
 	var err error
 	if len(blocks) > 0 {
@@ -100,19 +105,26 @@ func (a *Adapter) saveMessageNormalized(topicID string, fromUID int64, content s
 	} else if mode == "" {
 		mode = "normal"
 	}
+	var metadataJSON []byte
+	if metadata != nil {
+		metadataJSON, err = json.Marshal(metadata)
+		if err != nil {
+			return 0, fmt.Errorf("marshal message metadata: %w", err)
+		}
+	}
 
 	var res interface{ LastInsertId() (int64, error) }
 	if replyTo > 0 {
 		res, err = a.db.Exec(
-			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, mode, role, msg_type, reply_to, client_msg_id)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`,
-			topicID, fromUID, content, blocksJSON, mode, role, msgType, replyTo, clientMsgID,
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, mode, role, msg_type, reply_to, client_msg_id, metadata)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
+			topicID, fromUID, content, blocksJSON, mode, role, msgType, replyTo, clientMsgID, metadataJSON,
 		)
 	} else {
 		res, err = a.db.Exec(
-			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, mode, role, msg_type, client_msg_id)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`,
-			topicID, fromUID, content, blocksJSON, mode, role, msgType, clientMsgID,
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, mode, role, msg_type, client_msg_id, metadata)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
+			topicID, fromUID, content, blocksJSON, mode, role, msgType, clientMsgID, metadataJSON,
 		)
 	}
 	if err != nil {
@@ -127,7 +139,7 @@ func (a *Adapter) GetMessagesSince(topicID string, sinceID int64, limit int) ([]
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
 		 FROM messages WHERE topic_id = ? AND id > ?
 		 ORDER BY id ASC LIMIT ?`,
 		topicID, sinceID, limit,
@@ -137,26 +149,7 @@ func (a *Adapter) GetMessagesSince(topicID string, sinceID int64, limit int) ([]
 	}
 	defer rows.Close()
 
-	var msgs []*types.Message
-	for rows.Next() {
-		m := &types.Message{}
-		var blocksJSON []byte
-		var mode, role *string
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role); err != nil {
-			return nil, fmt.Errorf("scan message: %w", err)
-		}
-		if len(blocksJSON) > 0 {
-			json.Unmarshal(blocksJSON, &m.ContentBlocks)
-		}
-		if mode != nil {
-			m.Mode = *mode
-		}
-		if role != nil {
-			m.Role = *role
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs, rows.Err()
+	return scanMessages(rows, "scan message")
 }
 
 // GetMessages returns messages for a topic, ordered by time.
@@ -165,7 +158,7 @@ func (a *Adapter) GetMessages(topicID string, limit, offset int) ([]*types.Messa
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
 		 FROM messages WHERE topic_id = ?
 		 ORDER BY created_at ASC LIMIT ? OFFSET ?`,
 		topicID, limit, offset,
@@ -175,26 +168,7 @@ func (a *Adapter) GetMessages(topicID string, limit, offset int) ([]*types.Messa
 	}
 	defer rows.Close()
 
-	var msgs []*types.Message
-	for rows.Next() {
-		m := &types.Message{}
-		var blocksJSON []byte
-		var mode, role *string
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role); err != nil {
-			return nil, fmt.Errorf("scan message: %w", err)
-		}
-		if len(blocksJSON) > 0 {
-			json.Unmarshal(blocksJSON, &m.ContentBlocks)
-		}
-		if mode != nil {
-			m.Mode = *mode
-		}
-		if role != nil {
-			m.Role = *role
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs, rows.Err()
+	return scanMessages(rows, "scan message")
 }
 
 // GetLatestMessages returns the newest messages for a topic, but in ascending order for rendering.
@@ -203,9 +177,9 @@ func (a *Adapter) GetLatestMessages(topicID string, limit, offset int) ([]*types
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
 		 FROM (
-		 	SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+		   SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
 		 	FROM messages WHERE topic_id = ?
 		 	ORDER BY id DESC LIMIT ? OFFSET ?
 		 ) recent
@@ -217,26 +191,7 @@ func (a *Adapter) GetLatestMessages(topicID string, limit, offset int) ([]*types
 	}
 	defer rows.Close()
 
-	var msgs []*types.Message
-	for rows.Next() {
-		m := &types.Message{}
-		var blocksJSON []byte
-		var mode, role *string
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role); err != nil {
-			return nil, fmt.Errorf("scan latest message: %w", err)
-		}
-		if len(blocksJSON) > 0 {
-			json.Unmarshal(blocksJSON, &m.ContentBlocks)
-		}
-		if mode != nil {
-			m.Mode = *mode
-		}
-		if role != nil {
-			m.Role = *role
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs, rows.Err()
+	return scanMessages(rows, "scan latest message")
 }
 
 // GetLatestMessagesBefore returns the newest messages older than beforeID.
@@ -249,9 +204,9 @@ func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit 
 		return a.GetLatestMessages(topicID, limit, 0)
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
          FROM (
-           SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+           SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
            FROM messages WHERE topic_id = ? AND id < ?
            ORDER BY id DESC LIMIT ?
          ) recent
@@ -262,13 +217,90 @@ func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit 
 		return nil, fmt.Errorf("get latest messages before: %w", err)
 	}
 	defer rows.Close()
+	return scanMessages(rows, "scan latest message before")
+}
+
+// ListAgentFileMessages returns newest file-bearing messages authored by one agent in one conversation.
+func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if topicID == "" {
+		return []*types.Message{}, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []interface{}{agentUID, topicID}
+	beforeClause := ""
+	if beforeID > 0 {
+		beforeClause = " AND id < ?"
+		args = append(args, beforeID)
+	}
+	args = append(args, limit)
+	rows, err := a.db.Query(
+		fmt.Sprintf(
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+			 FROM messages
+			 WHERE from_uid = ?
+			   AND topic_id = ?
+			   AND (
+			     msg_type = 'file'
+			     OR JSON_SEARCH(content_blocks, 'one', 'file', NULL, '$[*].type') IS NOT NULL
+			   )%s
+			 ORDER BY id DESC
+			 LIMIT ?`,
+			beforeClause,
+		),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list agent file messages: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessages(rows, "scan agent file message")
+}
+
+// ListTopicFileMessages returns newest file-bearing messages from all senders in one conversation.
+func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if topicID == "" {
+		return []*types.Message{}, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []interface{}{topicID}
+	beforeClause := ""
+	if beforeID > 0 {
+		beforeClause = " AND id < ?"
+		args = append(args, beforeID)
+	}
+	args = append(args, limit)
+	rows, err := a.db.Query(
+		fmt.Sprintf(
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+			 FROM messages
+			 WHERE topic_id = ?
+			   AND (
+			     msg_type = 'file'
+			     OR JSON_SEARCH(content_blocks, 'one', 'file', NULL, '$[*].type') IS NOT NULL
+			   )%s
+			 ORDER BY id DESC
+			 LIMIT ?`,
+			beforeClause,
+		),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list topic file messages: %w", err)
+	}
+	defer rows.Close()
+
 	msgs := make([]*types.Message, 0)
 	for rows.Next() {
 		m := &types.Message{}
 		var blocksJSON []byte
 		var mode, role *string
 		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role); err != nil {
-			return nil, fmt.Errorf("scan latest message before: %w", err)
+			return nil, fmt.Errorf("scan topic file message: %w", err)
 		}
 		if len(blocksJSON) > 0 {
 			json.Unmarshal(blocksJSON, &m.ContentBlocks)
@@ -301,7 +333,7 @@ func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*typ
 
 	rows, err := a.db.Query(
 		fmt.Sprintf(
-			`SELECT m.id, m.topic_id, m.from_uid, m.content, m.msg_type, m.created_at, m.content_blocks, m.mode, m.role
+			`SELECT m.id, m.topic_id, m.from_uid, m.content, m.msg_type, m.created_at, m.content_blocks, m.mode, m.role, m.metadata
 			 FROM messages m
 			 JOIN (
 			 	SELECT topic_id, MAX(id) AS max_id
@@ -320,26 +352,49 @@ func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*typ
 	}
 	defer rows.Close()
 
+	msgs, err := scanMessages(rows, "scan latest message for topic")
+	if err != nil {
+		return nil, err
+	}
 	latest := make(map[string]*types.Message, len(topicIDs))
-	for rows.Next() {
-		msg := &types.Message{}
-		var blocksJSON []byte
-		var mode, role *string
-		if err := rows.Scan(&msg.ID, &msg.TopicID, &msg.FromUID, &msg.Content, &msg.MsgType, &msg.CreatedAt, &blocksJSON, &mode, &role); err != nil {
-			return nil, fmt.Errorf("scan latest message for topic: %w", err)
-		}
-		if len(blocksJSON) > 0 {
-			json.Unmarshal(blocksJSON, &msg.ContentBlocks)
-		}
-		if mode != nil {
-			msg.Mode = *mode
-		}
-		if role != nil {
-			msg.Role = *role
-		}
+	for _, msg := range msgs {
 		latest[msg.TopicID] = msg
 	}
-	return latest, rows.Err()
+	return latest, nil
+}
+
+type interfaceRows interface {
+	Next() bool
+	Scan(dest ...interface{}) error
+	Err() error
+}
+
+func scanMessages(rows interfaceRows, context string) ([]*types.Message, error) {
+	var msgs []*types.Message
+	for rows.Next() {
+		m := &types.Message{}
+		var blocksJSON, metadataJSON []byte
+		var mode, role *string
+		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role, &metadataJSON); err != nil {
+			return nil, fmt.Errorf("%s: %w", context, err)
+		}
+		if len(blocksJSON) > 0 {
+			json.Unmarshal(blocksJSON, &m.ContentBlocks)
+		}
+		if mode != nil {
+			m.Mode = *mode
+		}
+		if role != nil {
+			m.Role = *role
+		}
+		if len(metadataJSON) > 0 {
+			if err := json.Unmarshal(metadataJSON, &m.Metadata); err != nil {
+				return nil, fmt.Errorf("%s metadata: %w", context, err)
+			}
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
 }
 
 // GetConversationTitles returns non-empty custom P2P task titles owned by a user.

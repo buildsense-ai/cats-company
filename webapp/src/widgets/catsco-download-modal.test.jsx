@@ -41,6 +41,7 @@ describe('CatsCoDownloadModal', () => {
     requestExternalHistory.mockReset();
     getApiBaseURL.mockReturnValue('https://app.catsco.cc');
     getWebSocketURL.mockReturnValue('wss://app.catsco.cc/v0/channels');
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: false });
     clickedHref = '';
     clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click() {
       clickedHref = this.href;
@@ -477,6 +478,28 @@ describe('CatsCoDownloadModal', () => {
     });
 
     expect(container.textContent).toContain('当前版本 v1.4.1');
+    expect(container.querySelector('.catsco-download-section-title')?.textContent).toBe('可下载版本');
+    const scrollRegion = container.querySelector('.catsco-download-body');
+    expect(scrollRegion).not.toBeNull();
+    expect(Array.from(scrollRegion.children).filter((element) => (
+      element.classList.contains('catsco-download-list')
+    ))).toHaveLength(2);
+    expect(Array.from(container.querySelectorAll('.catsco-download-release-list a')).every(
+      (link) => link.getAttribute('target') === '_blank',
+    )).toBe(true);
+  });
+
+  test('uses native new-tab downloads for cross-origin desktop releases in an installed PWA', async () => {
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+
+    await act(async () => {
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
+      await Promise.resolve();
+    });
+
+    expect(Array.from(container.querySelectorAll('.catsco-download-release-list a')).every(
+      (link) => link.getAttribute('target') === '_blank',
+    )).toBe(true);
   });
 
   test('updates download links from the desktop release API', async () => {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"mime"
 	"net/http"
@@ -49,7 +50,12 @@ func (h *ImageGenerationProxyHandler) HandleEdit(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if err := h.EditConfigError(); err != nil {
+	providerPolicy, err := requestedImageProviderPolicy(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := h.EditConfigError(); err != nil && providerPolicy != "dreamina" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
@@ -77,15 +83,11 @@ func (h *ImageGenerationProxyHandler) HandleEdit(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Server policy owns provider selection and prevents accidental batches.
-	payload["model"] = h.model
-	payload["n"] = 1
 	h.forwardImageRequest(
 		w,
 		r,
 		payload,
-		h.editUpstreamURL,
-		"edit",
+		imageOperationEdit,
 		referenceCount,
 		referenceBytes,
 	)
@@ -96,14 +98,18 @@ func validateImageEditPayload(
 	limits imageEditReferenceLimits,
 ) (int, int64, error) {
 	allowedFields := map[string]struct{}{
-		"model":         {},
-		"prompt":        {},
-		"images":        {},
-		"n":             {},
-		"size":          {},
-		"quality":       {},
-		"output_format": {},
-		"async":         {},
+		"model":              {},
+		"prompt":             {},
+		"images":             {},
+		"n":                  {},
+		"size":               {},
+		"quality":            {},
+		"output_format":      {},
+		"background":         {},
+		"output_compression": {},
+		"moderation":         {},
+		"input_fidelity":     {},
+		"async":              {},
 	}
 	for key := range payload {
 		if _, ok := allowedFields[key]; !ok {
@@ -201,6 +207,30 @@ func validateImageEditOutputOptions(payload map[string]interface{}) error {
 			return &imageEditRequestError{status: http.StatusBadRequest, message: "output_format is unsupported"}
 		}
 	}
+	if rawBackground, exists := payload["background"]; exists {
+		background, ok := rawBackground.(string)
+		if !ok || !oneOf(background, "auto", "transparent", "opaque") {
+			return &imageEditRequestError{status: http.StatusBadRequest, message: "background is unsupported"}
+		}
+	}
+	if rawCompression, exists := payload["output_compression"]; exists {
+		value, ok := imageEditInteger(rawCompression)
+		if !ok || value < 0 || value > 100 {
+			return &imageEditRequestError{status: http.StatusBadRequest, message: "output_compression must be an integer from 0 to 100"}
+		}
+	}
+	if rawModeration, exists := payload["moderation"]; exists {
+		moderation, ok := rawModeration.(string)
+		if !ok || !oneOf(moderation, "auto", "low") {
+			return &imageEditRequestError{status: http.StatusBadRequest, message: "moderation is unsupported"}
+		}
+	}
+	if rawFidelity, exists := payload["input_fidelity"]; exists {
+		fidelity, ok := rawFidelity.(string)
+		if !ok || !oneOf(fidelity, "low", "high") {
+			return &imageEditRequestError{status: http.StatusBadRequest, message: "input_fidelity is unsupported"}
+		}
+	}
 	if rawAsync, exists := payload["async"]; exists {
 		async, ok := rawAsync.(bool)
 		if !ok {
@@ -211,6 +241,21 @@ func validateImageEditOutputOptions(payload map[string]interface{}) error {
 		}
 	}
 	return nil
+}
+
+func imageEditInteger(value interface{}) (int, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		parsed, err := strconv.Atoi(typed.String())
+		return parsed, err == nil
+	case float64:
+		parsed := int(typed)
+		return parsed, typed == float64(parsed)
+	case int:
+		return typed, true
+	default:
+		return 0, false
+	}
 }
 
 func validateImageEditDataURL(value string, maxDecodedBytes int64) (int64, [sha256.Size]byte, error) {

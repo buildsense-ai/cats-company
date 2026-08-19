@@ -2,13 +2,12 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -18,14 +17,13 @@ import (
 
 // BotHandler handles bot management API requests.
 type BotHandler struct {
-	db       store.Store
-	deployer *Deployer // nil = deploy functionality not available
-	hub      *Hub
+	db  store.Store
+	hub *Hub
 }
 
 // NewBotHandler creates a new BotHandler.
-func NewBotHandler(db store.Store, deployer *Deployer) *BotHandler {
-	return &BotHandler{db: db, deployer: deployer}
+func NewBotHandler(db store.Store) *BotHandler {
+	return &BotHandler{db: db}
 }
 
 func (h *BotHandler) SetHub(hub *Hub) {
@@ -55,6 +53,25 @@ type BotRegisterRequest struct {
 	Password    string `json:"password"`
 	Model       string `json:"model,omitempty"`
 	APIEndpoint string `json:"api_endpoint,omitempty"`
+	Role        string `json:"role,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+var supportedBotRoles = map[string]struct{}{
+	"code_review": {},
+	"debugging":   {},
+	"writing":     {},
+	"research":    {},
+	"general":     {},
+}
+
+func normalizeBotRole(value string) (string, bool) {
+	role := strings.TrimSpace(value)
+	if role == "" {
+		return "general", true
+	}
+	_, ok := supportedBotRoles[role]
+	return role, ok
 }
 
 // HandleRegisterBot handles POST /api/admin/bots - register a new bot account.
@@ -231,30 +248,18 @@ type createBotResult struct {
 	APIKey   string
 }
 
-func (h *BotHandler) deploymentStatus(ctx context.Context, botUID int64, tenantName string) (string, string) {
-	if tenantName == "" || h.deployer == nil {
-		return "", ""
-	}
-
-	apiKey, err := h.db.GetBotAPIKey(botUID)
-	if err != nil {
-		return "unknown", fmt.Sprintf("failed to load bot api key: %v", err)
-	}
-	if apiKey == "" {
-		return "unknown", "missing bot api key"
-	}
-
-	status, err := h.deployer.Status(ctx, tenantName, apiKey)
-	if err != nil {
-		return "unknown", err.Error()
-	}
-	return status, ""
-}
-
 // createBotAccount is the shared logic for creating a bot account with owner.
 func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*createBotResult, int, error) {
 	if len(req.Username) < 3 {
 		return nil, http.StatusBadRequest, fmt.Errorf("username min 3 chars")
+	}
+	role, validRole := normalizeBotRole(req.Role)
+	if !validRole {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid assistant role")
+	}
+	description := strings.TrimSpace(req.Description)
+	if len([]rune(description)) > 500 {
+		return nil, http.StatusBadRequest, fmt.Errorf("description max 500 chars")
 	}
 
 	existing, err := h.db.GetUserByUsername(req.Username)
@@ -291,6 +296,11 @@ func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*
 	if err := h.db.SaveBotConfigWithOwner(uid, ownerUID, req.APIEndpoint, req.Model); err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("config save failed")
 	}
+	if profiles, ok := h.db.(store.BotProfileStore); ok {
+		if err := profiles.UpdateBotProfile(uid, &role, &description); err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("profile save failed")
+		}
+	}
 
 	apiKey := GenerateAPIKey(uid)
 	if err := h.db.SaveAPIKey(uid, apiKey); err != nil {
@@ -324,96 +334,17 @@ func (h *BotHandler) HandleCreateBot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
+	role, _ := normalizeBotRole(req.Role)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"uid":      result.UID,
-		"username": result.Username,
-		"type":     "bot",
-		"owner_id": ownerUID,
-		"api_key":  result.APIKey,
+		"uid":         result.UID,
+		"username":    result.Username,
+		"type":        "bot",
+		"owner_id":    ownerUID,
+		"api_key":     result.APIKey,
+		"role":        role,
+		"description": strings.TrimSpace(req.Description),
 	})
-}
-
-// HandleDeployBot handles POST /api/bots/deploy — create bot + deploy container via gauz-platform.
-func (h *BotHandler) HandleDeployBot(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-
-	if h.deployer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "deploy not available"})
-		return
-	}
-
-	ownerUID := UIDFromContext(r.Context())
-	if ownerUID == 0 {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-
-	var req BotRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-		return
-	}
-
-	result, status, err := h.createBotAccount(ownerUID, req)
-	if err != nil {
-		writeJSON(w, status, map[string]string{"error": err.Error()})
-		return
-	}
-
-	tenantName := fmt.Sprintf("bot-%s", result.Username)
-
-	if err := h.deployer.Deploy(r.Context(), tenantName, result.APIKey); err != nil {
-		log.Printf("[deploy] failed for tenant %s: %v", tenantName, err)
-		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
-			log.Printf("[deploy] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to deploy managed bot"})
-		return
-	}
-
-	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
-		log.Printf("[deploy] failed to save tenant_name for uid %d: %v", result.UID, err)
-		if removeErr := h.deployer.Remove(r.Context(), tenantName, result.APIKey); removeErr != nil {
-			log.Printf("[deploy] rollback remove for tenant %s failed: %v", tenantName, removeErr)
-		}
-		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
-			log.Printf("[deploy] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize managed bot"})
-		return
-	}
-
-	friendAutoAdded := false
-	if _, err := h.db.CreateFriendRequest(ownerUID, result.UID, ""); err != nil {
-		log.Printf("[deploy] failed to create auto-friend request for uid %d: %v", result.UID, err)
-	} else if err := h.db.AcceptFriendRequest(ownerUID, result.UID); err != nil {
-		log.Printf("[deploy] failed to auto-accept friend request for uid %d: %v", result.UID, err)
-	} else {
-		friendAutoAdded = true
-	}
-
-	deploymentStatus, deploymentError := h.deploymentStatus(r.Context(), result.UID, tenantName)
-	if deploymentStatus == "" {
-		deploymentStatus = "running"
-	}
-
-	resp := map[string]interface{}{
-		"uid":               result.UID,
-		"username":          result.Username,
-		"type":              "bot",
-		"owner_id":          ownerUID,
-		"tenant_name":       tenantName,
-		"deployment_status": deploymentStatus,
-		"friend_auto_added": friendAutoAdded,
-	}
-	if deploymentError != "" {
-		resp["deployment_error"] = deploymentError
-	}
-	writeJSON(w, http.StatusCreated, resp)
 }
 
 // HandleListMyBots handles GET /api/bots — list bots owned by or added by the authenticated user.
@@ -500,28 +431,6 @@ func (h *BotHandler) HandleListMyBots(w http.ResponseWriter, r *http.Request) {
 		return leftName < rightName
 	})
 
-	for _, bot := range bots {
-		relation, _ := bot["relation"].(string)
-		if relation != "owner" {
-			continue
-		}
-		tenantName, _ := bot["tenant_name"].(string)
-		if tenantName == "" {
-			continue
-		}
-		botUID := mapInt64(bot["id"])
-		if botUID <= 0 {
-			continue
-		}
-		status, deployErr := h.deploymentStatus(r.Context(), botUID, tenantName)
-		if status == "" {
-			status = "unknown"
-		}
-		bot["deployment_status"] = status
-		if deployErr != "" {
-			bot["deployment_error"] = deployErr
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"bots": bots})
 }
 
@@ -554,22 +463,6 @@ func (h *BotHandler) HandleDeleteBot(w http.ResponseWriter, r *http.Request) {
 	if actualOwner != ownerUID {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
 		return
-	}
-
-	// Check if this bot has a managed deployment
-	tenantName, _ := h.db.GetTenantName(botUID)
-	apiKey, _ := h.db.GetBotAPIKey(botUID)
-
-	if tenantName != "" && h.deployer != nil {
-		if apiKey == "" {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "managed bot missing api key"})
-			return
-		}
-		if err := h.deployer.Remove(r.Context(), tenantName, apiKey); err != nil {
-			log.Printf("[deploy] remove %s failed before delete: %v", tenantName, err)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to remove managed deployment"})
-			return
-		}
 	}
 
 	if err := h.db.DeleteBot(botUID); err != nil {
@@ -625,6 +518,58 @@ func (h *BotHandler) HandleSetBotVisibility(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"uid":        botUID,
 		"visibility": vis,
+	})
+}
+
+// HandleSetBotSkillsVisibility handles
+// PATCH /api/bots/skills-visibility?uid=xxx&v=owner|authorized|public.
+func (h *BotHandler) HandleSetBotSkillsVisibility(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch && r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+
+	visibility := types.BotSkillsVisibility(r.URL.Query().Get("v"))
+	if !validBotSkillsVisibility(visibility) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "v must be owner, authorized, or public"})
+		return
+	}
+
+	actualOwner, err := h.db.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	if actualOwner != ownerUID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+
+	visibilityStore, ok := h.db.(store.BotSkillsVisibilityStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skills visibility is unavailable"})
+		return
+	}
+	if err := visibilityStore.SetBotSkillsVisibility(botUID, string(visibility)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"uid":               botUID,
+		"skills_visibility": visibility,
 	})
 }
 
@@ -843,12 +788,31 @@ func (h *BotHandler) HandleUpdateBot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		DisplayName string `json:"display_name"`
-		AvatarURL   string `json:"avatar_url"`
+		DisplayName           string  `json:"display_name"`
+		AvatarURL             string  `json:"avatar_url"`
+		Role                  *string `json:"role"`
+		Description           *string `json:"description"`
+		ArtifactUploadEnabled *bool   `json:"artifact_upload_enabled"`
+		SkillMutationMode     *string `json:"skill_mutation_mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
+	}
+	var skillMutationMode types.BotSkillMutationMode
+	var skillMutationPolicies store.BotSkillMutationPolicyStore
+	if req.SkillMutationMode != nil {
+		var ok bool
+		skillMutationMode, ok = types.ParseBotSkillMutationMode(*req.SkillMutationMode)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid skill mutation mode"})
+			return
+		}
+		skillMutationPolicies, ok = h.db.(store.BotSkillMutationPolicyStore)
+		if !ok {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "skill mutation policy is unavailable"})
+			return
+		}
 	}
 
 	if req.DisplayName != "" {
@@ -859,6 +823,49 @@ func (h *BotHandler) HandleUpdateBot(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AvatarURL != "" {
 		if err := h.db.UpdateUserAvatar(botUID, req.AvatarURL); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+			return
+		}
+	}
+	if req.Role != nil || req.Description != nil {
+		role := req.Role
+		if role != nil {
+			normalized, ok := normalizeBotRole(*role)
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid assistant role"})
+				return
+			}
+			role = &normalized
+		}
+		description := req.Description
+		if description != nil {
+			trimmed := strings.TrimSpace(*description)
+			if len([]rune(trimmed)) > 500 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "description max 500 chars"})
+				return
+			}
+			description = &trimmed
+		}
+		if profiles, ok := h.db.(store.BotProfileStore); ok {
+			if err := profiles.UpdateBotProfile(botUID, role, description); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+				return
+			}
+		}
+	}
+	if req.ArtifactUploadEnabled != nil {
+		policies, ok := h.db.(store.BotArtifactPolicyStore)
+		if !ok {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "artifact upload policy is unavailable"})
+			return
+		}
+		if err := policies.UpdateBotArtifactUploadPolicy(botUID, *req.ArtifactUploadEnabled); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+			return
+		}
+	}
+	if req.SkillMutationMode != nil {
+		if err := skillMutationPolicies.UpdateBotSkillMutationMode(botUID, skillMutationMode); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
 			return
 		}

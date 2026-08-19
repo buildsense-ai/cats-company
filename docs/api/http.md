@@ -82,11 +82,38 @@ Authorization: ApiKey <api_key>
       "preview": "最后一条消息",
       "latest_seq": 123,
       "last_time": "2026-03-05T10:00:00Z",
-      "is_online": true
+      "is_online": true,
+      "notifications_muted": false
     }
   ]
 }
 ```
+
+`notifications_muted` 是当前账户针对该会话的浏览器通知屏蔽状态，未设置时为 `false`。
+
+**PUT /api/conversations/notification-preferences**
+
+设置或取消屏蔽当前账户对某个会话的浏览器通知。当前用户必须能访问该 P2P 会话或属于
+该群组。
+
+请求：
+```json
+{
+  "topic_id": "p2p_3_5",
+  "muted": true
+}
+```
+
+返回 200：
+```json
+{
+  "topic_id": "p2p_3_5",
+  "notifications_muted": true
+}
+```
+
+缺少字段返回 400，会话不可访问返回 403，存储操作失败返回 500；服务未实现会话通知偏好
+能力时返回 501。
 
 ### 消息
 
@@ -139,12 +166,28 @@ XiaoBa Skill 从现有 `CATSCO_HTTP_BASE_URL` 自动推导 `/v1/images/generatio
 ### 文件上传
 
 **POST /api/upload**
+
+Multipart（兼容现有 API 客户端）：
+
 ```
 Content-Type: multipart/form-data
 
 file: <binary>
 type: image|file
 ```
+
+Raw body（WebApp 使用）：
+
+```http
+POST /api/upload?type=image&raw=1
+Content-Type: image/jpeg
+X-CatsCo-File-Name: photo.jpg
+X-CatsCo-File-Size: 12345
+
+<raw file bytes>
+```
+
+`X-CatsCo-File-Name` 使用 URL 编码。`upload_incomplete` 表示服务端确认未保存完整文件，可安全重试；`upload_metadata_invalid` 表示声明的大小与实际 body 冲突，不应自动重试；`upload_invalid_request` 表示请求格式错误，不应自动重试；应用层只有在实际读取字节超过限制时才返回 `upload_too_large`。上游代理的请求体限制仍独立生效。
 
 返回：
 ```json
@@ -163,11 +206,17 @@ type: image|file
 **POST /api/bots**
 创建 Bot
 
-**POST /api/bots/deploy**
-部署 managed Bot
+**PATCH /api/bots?uid={uid}**
+更新 Agent 基本信息与协作设置。`artifact_upload_enabled` 用于控制普通成员能否直接发布共享成果；默认开启，关闭后所有者仍可上传和管理。`skill_mutation_mode` 可设为 `owner_only`（默认）或 `shared_live`，仅作为专用 Skill 变更控制面的准入策略，不授予普通 Bot 设置编辑权限；专用变更通道上线前该策略不会单独开放修改能力。
 
-**POST /api/bots/visibility**
+**PATCH /api/bots/visibility**
 设置 Bot 可见性
+
+**PATCH /api/bots/skills-visibility?uid={uid}&v=owner|authorized|public**
+设置 Agent 技能列表的可见范围。仅 Agent 所有者可调用；未设置时默认为 `owner`。
+
+**GET /api/agents/skills?uid={uid}**
+按技能可见范围返回脱敏技能列表。需要用户 JWT；响应不包含内容哈希或完整 Agent 配置。
 
 ### 管理员 API
 

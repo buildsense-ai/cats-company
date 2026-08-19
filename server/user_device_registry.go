@@ -30,17 +30,22 @@ var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}
 type DeviceGrantOperation string
 
 const (
-	DeviceGrantReadFile        DeviceGrantOperation = "read_file"
-	DeviceGrantResolveDir      DeviceGrantOperation = "resolve_common_directory"
-	DeviceGrantWriteFile       DeviceGrantOperation = "write_file"
-	DeviceGrantEditFile        DeviceGrantOperation = "edit_file"
-	DeviceGrantSendFile        DeviceGrantOperation = "send_file"
-	DeviceGrantExecuteShell    DeviceGrantOperation = "execute_shell"
-	DeviceGrantGlob            DeviceGrantOperation = "glob"
-	DeviceGrantGrep            DeviceGrantOperation = "grep"
-	DeviceGrantExternalHistory DeviceGrantOperation = "external_history"
-	DeviceGrantBrowserControl  DeviceGrantOperation = "browser_control"
-	DeviceGrantDesktopControl  DeviceGrantOperation = "desktop_control"
+	DeviceGrantReadFile              DeviceGrantOperation = "read_file"
+	DeviceGrantResolveDir            DeviceGrantOperation = "resolve_common_directory"
+	DeviceGrantWriteFile             DeviceGrantOperation = "write_file"
+	DeviceGrantEditFile              DeviceGrantOperation = "edit_file"
+	DeviceGrantSendFile              DeviceGrantOperation = "send_file"
+	DeviceGrantExecuteShell          DeviceGrantOperation = "execute_shell"
+	DeviceGrantGlob                  DeviceGrantOperation = "glob"
+	DeviceGrantGrep                  DeviceGrantOperation = "grep"
+	DeviceGrantBrowserControl        DeviceGrantOperation = "browser_control"
+	DeviceGrantDesktopControl        DeviceGrantOperation = "desktop_control"
+	DeviceGrantSkillHubWorkspaceGet  DeviceGrantOperation = "skillhub.localWorkspace.get"
+	DeviceGrantSkillHubSkillShare    DeviceGrantOperation = "skillhub.localSkill.share"
+	DeviceGrantSkillHubSkillFinalize DeviceGrantOperation = "skillhub.localSkill.finalize"
+	DeviceGrantSkillHubSkillDelete   DeviceGrantOperation = "skillhub.localSkill.delete"
+	DeviceGrantSkillHubBotSwitch     DeviceGrantOperation = "skillhub.localBot.switch"
+	DeviceGrantExternalHistory       DeviceGrantOperation = "external_history"
 )
 
 type UserDevice struct {
@@ -53,6 +58,7 @@ type UserDevice struct {
 	OS                string                 `json:"os"`
 	BodyID            string                 `json:"bodyId,omitempty"`
 	InstallationID    string                 `json:"installationId,omitempty"`
+	RuntimeRole       string                 `json:"runtimeRole,omitempty"`
 	Status            string                 `json:"status"`
 	Active            bool                   `json:"active"`
 	RouteConnected    bool                   `json:"routeConnected"`
@@ -65,9 +71,10 @@ type UserDevice struct {
 }
 
 type DeviceModelStatus struct {
-	Source    string `json:"source,omitempty"`
-	Model     string `json:"model,omitempty"`
-	UpdatedAt int64  `json:"updatedAt,omitempty"`
+	Source          string `json:"source,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	UpdatedAt       int64  `json:"updatedAt,omitempty"`
 }
 
 type ScopedDeviceGrant struct {
@@ -166,6 +173,7 @@ type RegisterUserDeviceRequest struct {
 	OS             string             `json:"os,omitempty"`
 	BodyID         string             `json:"body_id,omitempty"`
 	InstallationID string             `json:"installation_id,omitempty"`
+	RuntimeRole    string             `json:"runtime_role,omitempty"`
 	Status         string             `json:"status,omitempty"`
 	Capabilities   []string           `json:"capabilities,omitempty"`
 	ModelStatus    *DeviceModelStatus `json:"model_status,omitempty"`
@@ -228,6 +236,7 @@ func (r *userDeviceRegistry) register(ownerUID int64, req RegisterUserDeviceRequ
 		OS:             normalizeDeviceOS(req.OS),
 		BodyID:         normalizeDeviceText(req.BodyID),
 		InstallationID: normalizeDeviceText(req.InstallationID),
+		RuntimeRole:    normalizeDeviceRuntimeRole(req.RuntimeRole),
 		Status:         normalizeDeviceStatus(req.Status),
 		Capabilities:   normalizeDeviceCapabilities(req.Capabilities),
 		ModelStatus:    normalizeDeviceModelStatus(req.ModelStatus, now),
@@ -359,9 +368,10 @@ func normalizeDeviceModelStatus(input *DeviceModelStatus, now time.Time) *Device
 		updatedAt = unixMillis(now)
 	}
 	return &DeviceModelStatus{
-		Source:    source,
-		Model:     model,
-		UpdatedAt: updatedAt,
+		Source:          source,
+		Model:           model,
+		ReasoningEffort: normalizeDeviceText(input.ReasoningEffort),
+		UpdatedAt:       updatedAt,
 	}
 }
 
@@ -369,10 +379,29 @@ func LatestDeviceModelStatus(hub *Hub, ownerUID int64) (DeviceModelStatus, bool)
 	if hub == nil || hub.userDevices == nil || ownerUID <= 0 {
 		return DeviceModelStatus{}, false
 	}
-	devices := hub.userDevices.activeDevices(ownerUID)
+	return latestDeviceModelStatus(hub.userDevices.activeDevices(ownerUID), nil)
+}
+
+// DeviceModelStatusForBody returns the current model reported by the device
+// bound to one bot, without allowing another device owned by the same account
+// to replace it.
+func DeviceModelStatusForBody(hub *Hub, ownerUID int64, bodyID string) (DeviceModelStatus, bool) {
+	bodyID = strings.TrimSpace(bodyID)
+	if hub == nil || hub.userDevices == nil || ownerUID <= 0 || bodyID == "" {
+		return DeviceModelStatus{}, false
+	}
+	return latestDeviceModelStatus(hub.userDevices.activeDevices(ownerUID), func(device UserDevice) bool {
+		return strings.TrimSpace(device.BodyID) == bodyID || strings.TrimSpace(device.DeviceID) == bodyID
+	})
+}
+
+func latestDeviceModelStatus(devices []UserDevice, include func(UserDevice) bool) (DeviceModelStatus, bool) {
 	var best DeviceModelStatus
 	bestSeenAt := int64(0)
 	for _, device := range devices {
+		if include != nil && !include(device) {
+			continue
+		}
 		if device.ModelStatus == nil {
 			continue
 		}
@@ -859,7 +888,13 @@ func isAllowedDeviceGrantRuntimeOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantWriteFile,
 		DeviceGrantEditFile,
 		DeviceGrantSendFile,
-		DeviceGrantExecuteShell:
+		DeviceGrantExecuteShell,
+		DeviceGrantExternalHistory,
+		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubSkillShare,
+		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubSkillDelete,
+		DeviceGrantSkillHubBotSwitch:
 		return true
 	default:
 		return false
@@ -884,6 +919,17 @@ func normalizeUserDeviceID(value string) (string, error) {
 
 func normalizeDeviceText(value string) string {
 	return strings.TrimSpace(value)
+}
+
+func normalizeDeviceRuntimeRole(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "desktop":
+		return "desktop"
+	case "server":
+		return "server"
+	default:
+		return ""
+	}
 }
 
 func normalizeDeviceStatus(value string) string {
@@ -946,7 +992,12 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantGrep,
 		DeviceGrantExternalHistory,
 		DeviceGrantBrowserControl,
-		DeviceGrantDesktopControl:
+		DeviceGrantDesktopControl,
+		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubSkillShare,
+		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubSkillDelete,
+		DeviceGrantSkillHubBotSwitch:
 		return true
 	default:
 		return false

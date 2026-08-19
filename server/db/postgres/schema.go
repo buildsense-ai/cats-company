@@ -10,24 +10,40 @@ func (a *Adapter) CreateSchema() error {
 	statements := []string{
 		createUpdatedAtFunction,
 		createUsersTable,
+		createPushSubscriptionsTable,
 		createFriendsTable,
 		createTopicsTable,
 		createProjectsTable,
 		createProjectTopicsTable,
 		createConversationTitlesTable,
+		createConversationNotificationMutesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
+		createConversationTaskStatusSourcesTable,
+		createImageUpscaleTasksTable,
+		createBotConnectionGenerationsTable,
 		createBotConfigTable,
+		createBotSkillMutationsTable,
+		createBotSkillMutationsActiveIndex,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
+		createGroupInviteRequestsTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,
 		createCommercialPlansTable,
+		migrateCommercialPlansAddSaleFields,
+		migrateCommercialPlansAddInternalQuota,
 		createCommercialInviteCodesTable,
 		createCommercialEntitlementsTable,
 		createCommercialQuotaGrantsTable,
 		createCommercialQuotaLedgerTable,
+		createCommercialOrdersTable,
+		createCommercialOrderRequestIDsTable,
+		createCommercialPaymentEventsTable,
+		createCommercialManagedRelayBudgetsTable,
+		createCommercialOperatorEventsTable,
+		migrateCommercialRefundColumns,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
@@ -48,8 +64,13 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddAPIKey,
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
+		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddRole,
+		migrateBotConfigAddDescription,
+		migrateBotConfigAddArtifactUploadPolicy,
+		migrateBotConfigAddSkillMutationMode,
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentEntriesAddAccessMode,
 		migrateChannelAgentEntriesDefaultAccessMode,
@@ -63,12 +84,14 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelGroupBindingsSelectedAtNotNull,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
+		migrateMessagesAddMetadata,
 		migrateGroupsAddCreatedAtColumn,
 		migrateGroupsBackfillCreatedAt,
 		migrateGroupsCreatedAtDefault,
 		migrateGroupsCreatedAtNotNull,
 		migrateGroupsAddAnnouncement,
 		migrateGroupMembersAddMuted,
+		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
@@ -146,6 +169,21 @@ CREATE TABLE IF NOT EXISTS users (
 );
 `
 
+const createPushSubscriptionsTable = `
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    uid BIGINT NOT NULL,
+    endpoint VARCHAR(512) NOT NULL UNIQUE,
+    p256dh VARCHAR(256) NOT NULL,
+    auth VARCHAR(128) NOT NULL,
+    registration_id VARCHAR(64) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_push_subscriptions_uid FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_uid ON push_subscriptions (uid);
+`
+
 const createFriendsTable = `
 CREATE TABLE IF NOT EXISTS friends (
     id BIGSERIAL PRIMARY KEY,
@@ -200,6 +238,17 @@ CREATE TABLE IF NOT EXISTS conversation_titles (
 );
 `
 
+const createConversationNotificationMutesTable = `
+CREATE TABLE IF NOT EXISTS conversation_notification_mutes (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- A P2P topic is created on its first message, while a user may mute the
+    -- visible conversation before then.
+    topic_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id)
+);
+`
+
 const createMessagesTable = `
 CREATE TABLE IF NOT EXISTS messages (
     id BIGSERIAL PRIMARY KEY,
@@ -212,6 +261,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role VARCHAR(20) DEFAULT NULL,
     reply_to BIGINT DEFAULT NULL,
     client_msg_id VARCHAR(128) DEFAULT NULL,
+    metadata JSONB DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
@@ -230,6 +280,53 @@ CREATE TABLE IF NOT EXISTS conversation_task_statuses (
 );
 `
 
+const createConversationTaskStatusSourcesTable = `
+CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
+    topic_id VARCHAR(64) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    source_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    run_id VARCHAR(128) DEFAULT '',
+    state VARCHAR(20) NOT NULL DEFAULT 'idle' CHECK (state IN ('idle','running','completed','failed','cancelled','stale','waiting')),
+    summary TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    expires_at TIMESTAMPTZ DEFAULT NULL,
+    event_updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (topic_id, source_uid)
+);
+`
+
+const createImageUpscaleTasksTable = `
+CREATE TABLE IF NOT EXISTS image_upscale_tasks (
+    process_id VARCHAR(128) PRIMARY KEY,
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_image_upscale_tasks_expires_at ON image_upscale_tasks (expires_at);
+`
+
+const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
+ALTER TABLE conversation_task_status_sources
+ADD COLUMN IF NOT EXISTS event_updated_at TIMESTAMPTZ;
+UPDATE conversation_task_status_sources
+SET event_updated_at = updated_at
+WHERE event_updated_at IS NULL;
+ALTER TABLE conversation_task_status_sources
+ALTER COLUMN event_updated_at SET DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE conversation_task_status_sources
+ALTER COLUMN event_updated_at SET NOT NULL;
+`
+
+const createBotConnectionGenerationsTable = `
+CREATE TABLE IF NOT EXISTS bot_connection_generations (
+    bot_uid BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    generation BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
 const createBotConfigTable = `
 CREATE TABLE IF NOT EXISTS bot_config (
     user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -240,11 +337,60 @@ CREATE TABLE IF NOT EXISTS bot_config (
     config JSONB DEFAULT NULL,
     api_key VARCHAR(128) DEFAULT NULL,
     visibility VARCHAR(16) NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
+	 skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner' CHECK (skills_visibility IN ('owner','authorized','public')),
     tenant_name VARCHAR(128) DEFAULT NULL,
     body_id VARCHAR(128) DEFAULT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'general',
+    description TEXT NOT NULL DEFAULT '',
+    artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    skill_mutation_mode VARCHAR(16) NOT NULL DEFAULT 'owner_only'
+        CONSTRAINT bot_config_skill_mutation_mode_check CHECK (skill_mutation_mode IN ('owner_only','shared_live')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+const createBotSkillMutationsTable = `
+CREATE TABLE IF NOT EXISTS bot_skill_mutations (
+    id BIGSERIAL PRIMARY KEY,
+    bot_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    local_skill_id VARCHAR(128) NOT NULL,
+    actor_user_uid BIGINT NOT NULL,
+    source_topic_id VARCHAR(255) NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    runtime_body_id VARCHAR(128) NOT NULL,
+    client_request_id VARCHAR(128) NOT NULL,
+    request_fingerprint CHAR(64) NOT NULL,
+    operation VARCHAR(16) NOT NULL CHECK (operation IN ('create','replace','rollback')),
+    candidate_content_hash CHAR(64) NOT NULL,
+    expected_definition_revision BIGINT NOT NULL,
+    expected_previous_content_hash CHAR(64) DEFAULT NULL,
+    before_reference JSONB DEFAULT NULL,
+    after_reference JSONB DEFAULT NULL,
+    git_commit_sha VARCHAR(64) DEFAULT NULL,
+    definition_revision BIGINT DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'validating'
+        CHECK (status IN ('validating','version_ready','definition_committed','activation_pending','active','rejected','compensation_pending','rolled_back')),
+    error_code VARCHAR(64) DEFAULT NULL,
+    error_summary VARCHAR(512) DEFAULT NULL,
+    rollback_of BIGINT DEFAULT NULL REFERENCES bot_skill_mutations(id) ON DELETE SET NULL,
+    lease_generation BIGINT NOT NULL DEFAULT 1,
+    lease_expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    activated_at TIMESTAMPTZ DEFAULT NULL,
+    CONSTRAINT uk_bot_skill_mutations_request UNIQUE (actor_user_uid, bot_uid, client_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bot_skill_mutations_audit
+    ON bot_skill_mutations (bot_uid, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_bot_skill_mutations_source
+    ON bot_skill_mutations (source_topic_id, source_message_id);
+`
+
+const createBotSkillMutationsActiveIndex = `
+CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_skill_mutations_active
+    ON bot_skill_mutations (bot_uid)
+    WHERE status IN ('validating','version_ready','definition_committed','activation_pending','compensation_pending');
 `
 
 const createRateLimitTable = `
@@ -296,6 +442,22 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 `
 
+const createGroupInviteRequestsTable = `
+CREATE TABLE IF NOT EXISTS group_invite_requests (
+    id BIGSERIAL PRIMARY KEY,
+    group_id BIGINT NOT NULL REFERENCES "groups"(id) ON DELETE CASCADE,
+    inviter_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    invitee_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    resolver_id BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_group_invite_request UNIQUE (group_id, invitee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_invite_requests_pending
+    ON group_invite_requests (group_id, status, created_at);
+`
+
 const createFeedbackReportsTable = `
 CREATE TABLE IF NOT EXISTS feedback_reports (
     id BIGSERIAL PRIMARY KEY,
@@ -333,17 +495,53 @@ CREATE TABLE IF NOT EXISTS commercial_plans (
     slug VARCHAR(64) NOT NULL UNIQUE,
     name VARCHAR(128) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+	price_fen BIGINT NOT NULL DEFAULT 0,
+	currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+	sale_state VARCHAR(16) NOT NULL DEFAULT 'hidden',
+	purchase_limit INT NOT NULL DEFAULT 0,
     monthly_budget_cny NUMERIC(14,6) NOT NULL DEFAULT 0,
     model_budgets JSONB NOT NULL DEFAULT '{}'::jsonb,
+    internal_quota_tokens BIGINT NOT NULL DEFAULT 0,
     duration_days INT NOT NULL DEFAULT 30,
     state SMALLINT NOT NULL DEFAULT 0,
     sort_order INT NOT NULL DEFAULT 100,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_commercial_plans_state CHECK (state IN (0, 1)),
+	CONSTRAINT chk_commercial_plans_price CHECK (price_fen >= 0),
+	CONSTRAINT chk_commercial_plans_sale_state CHECK (sale_state IN ('hidden','test','public')),
+	CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0),
+    CONSTRAINT chk_commercial_plans_internal_quota_tokens CHECK (internal_quota_tokens >= 0),
     CONSTRAINT chk_commercial_plans_duration CHECK (duration_days > 0),
     CONSTRAINT chk_commercial_plans_budget CHECK (monthly_budget_cny >= 0)
 );
+`
+
+const migrateCommercialPlansAddSaleFields = `
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS price_fen BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'CNY';
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS sale_state VARCHAR(16) NOT NULL DEFAULT 'hidden';
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS purchase_limit INT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_price') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_price CHECK (price_fen >= 0);
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_sale_state') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_sale_state CHECK (sale_state IN ('hidden','test','public'));
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_purchase_limit') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0);
+	END IF;
+END $$;
+`
+
+const migrateCommercialPlansAddInternalQuota = `
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS internal_quota_tokens BIGINT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_internal_quota_tokens') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_internal_quota_tokens CHECK (internal_quota_tokens >= 0);
+	END IF;
+END $$;
 `
 
 const createCommercialInviteCodesTable = `
@@ -389,10 +587,12 @@ CREATE TABLE IF NOT EXISTS commercial_quota_grants (
     grant_type VARCHAR(32) NOT NULL DEFAULT 'manual',
     model VARCHAR(128) NOT NULL DEFAULT '*',
     amount_cny NUMERIC(14,6) NOT NULL,
-    reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
-    effective_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMPTZ DEFAULT NULL,
-    note TEXT NOT NULL DEFAULT '',
+	reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
+	effective_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	expires_at TIMESTAMPTZ DEFAULT NULL,
+	source_ref VARCHAR(128) NOT NULL DEFAULT '',
+	revoked_at TIMESTAMPTZ DEFAULT NULL,
+	note TEXT NOT NULL DEFAULT '',
     operator_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_commercial_quota_grants_amount CHECK (amount_cny > 0)
@@ -410,6 +610,116 @@ CREATE TABLE IF NOT EXISTS commercial_quota_ledger (
     source_id BIGINT DEFAULT NULL,
     note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+// Keep the application-managed schema path compatible with databases created
+// before refund support. SQL migration files are not executed by CreateSchema.
+const migrateCommercialRefundColumns = `
+ALTER TABLE commercial_orders
+	ADD COLUMN IF NOT EXISTS refund_request_no VARCHAR(64) NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ DEFAULT NULL;
+
+ALTER TABLE commercial_quota_grants
+	ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ DEFAULT NULL;
+
+UPDATE commercial_quota_grants
+SET source_ref = substring(note FROM 7)
+WHERE grant_type = 'order' AND source_ref = '' AND note LIKE 'order %';
+
+UPDATE commercial_quota_grants
+SET source_ref = substring(note FROM 8)
+WHERE grant_type = 'invite' AND source_ref = '' AND note LIKE 'invite %';
+`
+
+const createCommercialOrdersTable = `
+CREATE TABLE IF NOT EXISTS commercial_orders (
+	id BIGSERIAL PRIMARY KEY,
+	order_no VARCHAR(40) NOT NULL UNIQUE,
+	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+	plan_id BIGINT NOT NULL REFERENCES commercial_plans(id) ON DELETE RESTRICT,
+	plan_slug VARCHAR(64) NOT NULL,
+	plan_name VARCHAR(128) NOT NULL,
+	plan_description TEXT NOT NULL DEFAULT '',
+	plan_duration_days INT NOT NULL,
+	plan_monthly_budget_cny NUMERIC(14,6) NOT NULL DEFAULT 0,
+	plan_model_budgets JSONB NOT NULL DEFAULT '{}'::jsonb,
+	amount_fen BIGINT NOT NULL,
+	currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+	channel VARCHAR(32) NOT NULL,
+	status VARCHAR(24) NOT NULL DEFAULT 'created',
+	provider_trade_no VARCHAR(128) NOT NULL DEFAULT '',
+	checkout_url TEXT NOT NULL DEFAULT '',
+	client_request_id VARCHAR(64) NOT NULL,
+	expires_at TIMESTAMPTZ DEFAULT NULL,
+	paid_at TIMESTAMPTZ DEFAULT NULL,
+	fulfilled_at TIMESTAMPTZ DEFAULT NULL,
+	closed_at TIMESTAMPTZ DEFAULT NULL,
+	refund_request_no VARCHAR(64) NOT NULL DEFAULT '',
+	refunded_at TIMESTAMPTZ DEFAULT NULL,
+	last_error TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT chk_commercial_orders_amount CHECK (amount_fen > 0),
+	CONSTRAINT chk_commercial_orders_status CHECK (status IN ('created','pending','paid','fulfilled','closed','failed','refunding','refunded'))
+);
+`
+
+const createCommercialOrderRequestIDsTable = `
+CREATE TABLE IF NOT EXISTS commercial_order_request_ids (
+	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+	client_request_id VARCHAR(64) NOT NULL,
+	order_no VARCHAR(40) NOT NULL REFERENCES commercial_orders(order_no) ON DELETE CASCADE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY(uid, client_request_id)
+);
+
+INSERT INTO commercial_order_request_ids(uid, client_request_id, order_no)
+SELECT uid, client_request_id, order_no
+FROM commercial_orders
+ON CONFLICT(uid, client_request_id) DO NOTHING;
+`
+
+const createCommercialPaymentEventsTable = `
+CREATE TABLE IF NOT EXISTS commercial_payment_events (
+	id BIGSERIAL PRIMARY KEY,
+	channel VARCHAR(32) NOT NULL,
+	event_id VARCHAR(160) NOT NULL,
+	order_no VARCHAR(40) NOT NULL REFERENCES commercial_orders(order_no) ON DELETE RESTRICT,
+	provider_trade_no VARCHAR(128) NOT NULL DEFAULT '',
+	event_type VARCHAR(32) NOT NULL DEFAULT 'payment_success',
+	payload_hash VARCHAR(64) NOT NULL DEFAULT '',
+	status VARCHAR(16) NOT NULL DEFAULT 'processed',
+	error_message TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT chk_commercial_payment_events_status CHECK (status IN ('processed','rejected','ignored')),
+	UNIQUE(channel, event_id)
+);
+`
+
+const createCommercialManagedRelayBudgetsTable = `
+CREATE TABLE IF NOT EXISTS commercial_managed_relay_budgets (
+	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	model VARCHAR(128) NOT NULL,
+	provider VARCHAR(128) NOT NULL,
+	allowed_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+	max_limit NUMERIC(14,6) NOT NULL,
+	reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY(uid, model, provider, allowed_models)
+);
+`
+
+const createCommercialOperatorEventsTable = `
+CREATE TABLE IF NOT EXISTS commercial_operator_events (
+	id BIGSERIAL PRIMARY KEY,
+	service VARCHAR(128) NOT NULL,
+	action VARCHAR(128) NOT NULL,
+	target_type VARCHAR(64) NOT NULL DEFAULT '',
+	target_ref VARCHAR(160) NOT NULL DEFAULT '',
+	status_code INT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
 
@@ -625,8 +935,29 @@ const migrateMessagesAddReplyTo = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS
 const migrateBotConfigAddAPIKey = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS api_key VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddOwnerID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS owner_id BIGINT DEFAULT NULL;`
 const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
+const migrateBotConfigAddSkillsVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
+const migrateBotConfigAddRole = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'general';`
+const migrateBotConfigAddDescription = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';`
+const migrateBotConfigAddArtifactUploadPolicy = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE;`
+const migrateBotConfigAddSkillMutationMode = `
+ALTER TABLE bot_config
+    ADD COLUMN IF NOT EXISTS skill_mutation_mode VARCHAR(16) NOT NULL DEFAULT 'owner_only';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'bot_config_skill_mutation_mode_check'
+          AND conrelid = 'bot_config'::regclass
+    ) THEN
+        ALTER TABLE bot_config
+            ADD CONSTRAINT bot_config_skill_mutation_mode_check
+            CHECK (skill_mutation_mode IN ('owner_only','shared_live'));
+    END IF;
+END $$;
+`
 const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`
 const migrateChannelAgentEntriesAddAccessMode = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS access_mode VARCHAR(32) NOT NULL DEFAULT 'approval_required';`
 const migrateChannelAgentEntriesDefaultAccessMode = `ALTER TABLE channel_agent_entries ALTER COLUMN access_mode SET DEFAULT 'approval_required';`
@@ -654,6 +985,7 @@ ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT NULL;
 `
 const migrateMessagesAddClientMsgID = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_msg_id VARCHAR(128) DEFAULT NULL;`
+const migrateMessagesAddMetadata = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT NULL;`
 const migrateGroupsAddCreatedAtColumn = `ALTER TABLE "groups" ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NULL;`
 const migrateGroupsBackfillCreatedAt = `
 UPDATE "groups" g
@@ -696,6 +1028,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_messages_client_msg_id ON messages (topic_i
 const createConversationTaskStatusIndexes = `
 CREATE INDEX IF NOT EXISTS idx_conversation_task_statuses_updated_at ON conversation_task_statuses (updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_task_statuses_state ON conversation_task_statuses (state);
+CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_updated_at ON conversation_task_status_sources (updated_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_state ON conversation_task_status_sources (state);
 `
 const createBotConfigIndexes = `
 CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_config_api_key ON bot_config (api_key) WHERE api_key IS NOT NULL;
@@ -725,7 +1059,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_invite_once
     WHERE source = 'invite';
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_uid_model ON commercial_quota_grants (uid, model, effective_at);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_expires ON commercial_quota_grants (expires_at);
+CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_source ON commercial_quota_grants (grant_type, source_ref);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_ledger_uid_created ON commercial_quota_ledger (uid, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_refund_ledger_grant
+	ON commercial_quota_ledger (source_type, source_id, entry_type)
+	WHERE source_type = 'refund' AND entry_type = 'revoke';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_order_once
+	ON commercial_entitlements (uid, source, source_ref)
+	WHERE source = 'order';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_trial_once
+	ON commercial_entitlements (uid, source)
+	WHERE source = 'trial';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_orders_uid_request ON commercial_orders (uid, client_request_id);
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_uid_created ON commercial_orders (uid, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_status_expires ON commercial_orders (status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_commercial_order_request_ids_order ON commercial_order_request_ids (order_no);
+CREATE INDEX IF NOT EXISTS idx_commercial_payment_events_order ON commercial_payment_events (order_no, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commercial_managed_relay_uid ON commercial_managed_relay_budgets (uid);
+CREATE INDEX IF NOT EXISTS idx_commercial_operator_events_created ON commercial_operator_events (created_at DESC);
 `
 
 const createChannelAgentIndexes = `
@@ -753,15 +1104,21 @@ CREATE INDEX IF NOT EXISTS idx_weixin_clawbot_tokens_ilink ON weixin_clawbot_tok
 const createUpdatedAtTriggers = `
 CREATE OR REPLACE TRIGGER trg_users_updated_at BEFORE UPDATE ON users
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_push_subscriptions_updated_at BEFORE UPDATE ON push_subscriptions
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_friends_updated_at BEFORE UPDATE ON friends
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_projects_updated_at BEFORE UPDATE ON projects
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_bot_config_updated_at BEFORE UPDATE ON bot_config
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_bot_skill_mutations_updated_at BEFORE UPDATE ON bot_skill_mutations
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_conversation_task_statuses_updated_at BEFORE UPDATE ON conversation_task_statuses
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_conversation_task_status_sources_updated_at BEFORE UPDATE ON conversation_task_status_sources
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_auth_services_updated_at BEFORE UPDATE ON auth_services
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -770,6 +1127,10 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_invite_codes_updated_at BEFORE UPDATE ON commercial_invite_codes
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_entitlements_updated_at BEFORE UPDATE ON commercial_entitlements
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_commercial_orders_updated_at BEFORE UPDATE ON commercial_orders
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_commercial_managed_relay_budgets_updated_at BEFORE UPDATE ON commercial_managed_relay_budgets
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_channel_agent_entries_updated_at BEFORE UPDATE ON channel_agent_entries
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

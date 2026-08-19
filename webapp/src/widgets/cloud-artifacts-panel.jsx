@@ -1,0 +1,624 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  Cloud,
+  Copy,
+  Download,
+  Eye,
+  ExternalLink,
+  FileCode2,
+  FileText,
+  RefreshCw,
+  RotateCcw,
+  Upload,
+  UsersRound,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { api, resolveMediaURL } from '../api';
+import { previewFileDescriptor } from './chat-message';
+import PwaDownloadLink from './pwa-download-link';
+import CustomSelect from './custom-select';
+
+const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
+
+function notifyArtifactsChanged(agentUid) {
+  window.dispatchEvent(new CustomEvent(CLOUD_ARTIFACTS_CHANGED_EVENT, {
+    detail: { agentUid: Number(agentUid) || 0 },
+  }));
+}
+
+function formatUpdatedAt(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function artifactMeta(artifact) {
+  const items = [artifact.kind === 'mini_app' ? '小应用' : '网页'];
+  if (artifact.publish_version) items.push('发布 v' + artifact.publish_version);
+  const creatorType = String(artifact.creator_type || '').trim();
+  const creatorName = String(artifact.creator_name || '').trim();
+  const uploaderName = String(artifact.uploader_name || '').trim();
+  const agentName = String(artifact.agent_name || '').trim();
+  if (creatorType === 'user' || (!creatorType && (artifact.uploader_uid || uploaderName))) {
+    if (artifact.uploaded_by_me) items.push('我上传');
+    else items.push(creatorName || uploaderName || '未知上传者');
+  } else if (creatorType === 'agent' || (!creatorType && agentName)) {
+    items.push((creatorName || agentName || 'Agent') + ' 生成');
+  } else {
+    items.push('来源未知');
+  }
+  if (artifact.source_title) items.push(artifact.source_title);
+  const time = formatUpdatedAt(artifact.status === 'deleted' ? artifact.deleted_at : artifact.updated_at);
+  if (time) items.push(artifact.status === 'deleted' ? '删除于 ' + time : time);
+  return items;
+}
+
+function publishArtifactKind(file) {
+  const name = String(file?.name || '').toLowerCase();
+  if (name.endsWith('.html') || name.endsWith('.htm')) return 'html';
+  if (name.endsWith('.zip')) return 'mini_app';
+  return '';
+}
+
+function publishArtifactTitle(file) {
+  return String(file?.name || '新成果').replace(/\.(?:html?|zip)$/i, '') || '新成果';
+}
+
+function fileExtension(file) {
+  const value = String(file?.name || file?.url || '').split(/[?#]/, 1)[0];
+  const extension = value.includes('.') ? value.slice(value.lastIndexOf('.') + 1) : '';
+  return extension ? extension.toUpperCase() : '文件';
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0);
+  if (size <= 0) return '';
+  if (size < 1024) return size + ' B';
+  if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB';
+  return (size / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function fileMeta(file) {
+  const items = [{ key: 'type', value: fileExtension(file) }];
+  const size = formatFileSize(file.size);
+  if (size) items.push({ key: 'size', value: size });
+  if (file.topic_name) items.push({ key: 'source', value: file.topic_name });
+  const time = formatUpdatedAt(file.created_at);
+  if (time) items.push({ key: 'time', value: time });
+  return items;
+}
+
+export default function CloudArtifactsPanel({
+  agentUid,
+  topicId,
+  tab: controlledTab,
+  onTabChange,
+  onClose,
+  onPreviewArtifact,
+  onPreviewFile,
+}) {
+  const [localTab, setLocalTab] = useState('files');
+  const tab = controlledTab ?? localTab;
+  const [artifacts, setArtifacts] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [viewerRelation, setViewerRelation] = useState('');
+  const [canPublish, setCanPublish] = useState(false);
+  const [fileCursor, setFileCursor] = useState(0);
+  const [fileHasMore, setFileHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [copiedID, setCopiedID] = useState('');
+  const [pendingID, setPendingID] = useState('');
+  const [confirmArtifact, setConfirmArtifact] = useState(null);
+  const [artifactScope, setArtifactScope] = useState('current');
+  const requestSequenceRef = useRef(0);
+  const publishInputRef = useRef(null);
+
+  const selectTab = (nextTab) => {
+    if (controlledTab == null) setLocalTab(nextTab);
+    onTabChange?.(nextTab);
+  };
+
+  const loadContent = useCallback(async ({ append = false, beforeId = 0 } = {}) => {
+    const requestID = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestID;
+    const isCurrentRequest = () => requestSequenceRef.current === requestID;
+    setLoading(true);
+    setError('');
+    try {
+      if (tab === 'files') {
+        const result = await api.getTopicFiles(topicId, { beforeId, limit: 40 });
+        if (!isCurrentRequest()) return;
+        const nextFiles = Array.isArray(result?.files) ? result.files : [];
+        setFiles((current) => append ? [...current, ...nextFiles] : nextFiles);
+        setFileCursor(Number(result?.next_before_id || 0));
+        setFileHasMore(Boolean(result?.has_more));
+        return;
+      }
+      const result = await api.getCloudArtifacts(agentUid, tab);
+      if (!isCurrentRequest()) return;
+      setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
+      setViewerRelation(String(result?.viewer_relation || ''));
+      setCanPublish(Boolean(result?.can_publish) && result?.publish_mode === 'immediate');
+    } catch (err) {
+      if (!isCurrentRequest()) return;
+      setError(err.message || (tab === 'files' ? '聊天文件读取失败' : '成果读取失败'));
+    } finally {
+      if (isCurrentRequest()) setLoading(false);
+    }
+  }, [agentUid, tab, topicId]);
+
+  useEffect(() => {
+    setArtifacts([]);
+    setFiles([]);
+    setViewerRelation('');
+    setCanPublish(false);
+    setFileCursor(0);
+    setFileHasMore(false);
+    loadContent();
+    return () => {
+      requestSequenceRef.current += 1;
+    };
+  }, [loadContent]);
+
+  useEffect(() => {
+    setArtifactScope('current');
+  }, [agentUid, topicId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      if (confirmArtifact) setConfirmArtifact(null);
+      else onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [confirmArtifact, onClose]);
+
+  const copyURL = async (artifact) => {
+    try {
+      await navigator.clipboard.writeText(artifact.url);
+      setCopiedID(artifact.id);
+      window.setTimeout(() => setCopiedID(''), 1600);
+    } catch {
+      setError('链接复制失败，请直接打开后从地址栏复制');
+    }
+  };
+
+  const deleteArtifact = async () => {
+    if (!confirmArtifact || pendingID) return;
+    const artifact = confirmArtifact;
+    setPendingID(artifact.id);
+    setError('');
+    try {
+      await api.deleteCloudArtifact(agentUid, artifact.id);
+      setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
+      setConfirmArtifact(null);
+      notifyArtifactsChanged(agentUid);
+    } catch (err) {
+      setError(err.message || '下架失败，请稍后重试');
+    } finally {
+      setPendingID('');
+    }
+  };
+
+  const publishArtifact = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || pendingID) return;
+    const kind = publishArtifactKind(file);
+    if (!kind) {
+      setError('当前支持发布 HTML 网页或 ZIP 小应用');
+      return;
+    }
+    setPendingID('__publish__');
+    setError('');
+    try {
+      const uploaded = await api.uploadFile(file, 'file');
+      const operation = await api.publishCloudArtifact(agentUid, {
+        title: publishArtifactTitle(file),
+        kind,
+        url: new URL(resolveMediaURL(uploaded?.url), window.location.origin).toString(),
+        source_topic_id: String(topicId || ''),
+      });
+      if (operation?.artifact) {
+        setArtifacts((current) => [operation.artifact, ...current.filter(
+          (artifact) => artifact.id !== operation.artifact.id,
+        )]);
+      } else {
+        await loadContent();
+      }
+      setArtifactScope('current');
+      notifyArtifactsChanged(agentUid);
+    } catch (err) {
+      setError(err.message || '成果发布失败，请稍后重试');
+    } finally {
+      setPendingID('');
+    }
+  };
+
+  const restoreArtifact = async (artifact) => {
+    if (pendingID) return;
+    setPendingID(artifact.id);
+    setError('');
+    try {
+      await api.restoreCloudArtifact(agentUid, artifact.id);
+      setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
+      notifyArtifactsChanged(agentUid);
+    } catch (err) {
+      setError(err.message || '恢复失败，请稍后重试');
+    } finally {
+      setPendingID('');
+    }
+  };
+
+  const canFilterArtifactsByTask = artifacts.length === 0 || artifacts.some(
+    (artifact) => String(artifact?.source_topic_id || '').trim(),
+  );
+  const effectiveArtifactScope = canFilterArtifactsByTask ? artifactScope : 'all';
+  const scopedArtifacts = tab === 'active' && effectiveArtifactScope === 'current'
+    ? artifacts.filter((artifact) => {
+        const sourceTopicID = String(artifact?.source_topic_id || '').trim();
+        return !sourceTopicID || sourceTopicID === String(topicId || '').trim();
+      })
+    : artifacts;
+  const emptyText = tab === 'active'
+    ? effectiveArtifactScope === 'current'
+      ? '当前任务还没有共享成果'
+      : '这个 Agent 还没有共享成果'
+    : tab === 'files'
+      ? '当前聊天还没有文件'
+      : '回收站是空的';
+  const visibleCount = tab === 'files'
+    ? files.length
+    : scopedArtifacts.length;
+  const artifactTabSelected = tab === 'active' || tab === 'deleted';
+  const isOwner = viewerRelation === 'owner';
+  const artifactRoleLabel = isOwner ? '所有者' : viewerRelation ? '成员' : '';
+  const artifactAccessText = !viewerRelation
+    ? '正在读取成果权限…'
+    : isOwner
+      ? canPublish
+        ? '成员可查看和上传 · 你可管理全部成果'
+        : '成员可查看 · 你可管理全部成果'
+      : canPublish
+        ? '你可以查看和上传成果'
+        : '你可以查看成果';
+  const hasAgent = Number(agentUid || 0) > 0;
+
+  return (
+    <>
+      <button
+        className="v3-file-preview-backdrop"
+        type="button"
+        aria-label="关闭云文件"
+        onClick={onClose}
+      />
+      <section className="v3-file-preview-panel cloud-artifacts-panel" aria-label="云文件">
+        <button
+          className="v3-file-preview-drag-handle"
+          type="button"
+          aria-label="关闭云文件"
+          onClick={onClose}
+        />
+        <header className="cloud-artifacts-header">
+          <div className="cloud-artifacts-tabs" role="tablist" aria-label="云文件">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'files'}
+              className={tab === 'files' ? 'active' : ''}
+              onClick={() => selectTab('files')}
+            >
+              文件
+            </button>
+            {hasAgent && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={artifactTabSelected}
+                className={artifactTabSelected ? 'active' : ''}
+                onClick={() => selectTab('active')}
+              >
+                成果
+              </button>
+            )}
+          </div>
+          <div className="cloud-artifacts-header-actions">
+            {tab === 'active' && canPublish && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => publishInputRef.current?.click()}
+                  disabled={Boolean(pendingID)}
+                  aria-label="上传成果"
+                  title="上传成果"
+                >
+                  <Upload size={18} className={pendingID === '__publish__' ? 'is-publishing' : ''} />
+                </button>
+                <input
+                  ref={publishInputRef}
+                  className="cloud-artifacts-publish-input"
+                  type="file"
+                  accept=".html,.htm,.zip,text/html,application/zip"
+                  onChange={publishArtifact}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                />
+              </>
+            )}
+            {tab === 'active' && isOwner && (
+              <button type="button" onClick={() => selectTab('deleted')} aria-label="打开回收站" title="回收站">
+                <Trash2 size={18} />
+              </button>
+            )}
+            {tab === 'deleted' && (
+              <button type="button" onClick={() => selectTab('active')} aria-label="返回成果列表" title="返回成果">
+                <ArrowLeft size={18} />
+              </button>
+            )}
+            <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新当前栏目" title="刷新">
+              <RefreshCw size={18} className={loading ? 'is-spinning' : ''} />
+            </button>
+            <button type="button" onClick={onClose} aria-label="关闭云文件" title="关闭">
+              <X size={18} />
+            </button>
+          </div>
+        </header>
+
+        <div className="cloud-artifacts-body">
+          {artifactTabSelected && tab !== 'deleted' && (
+            <div className="cloud-artifacts-context-note">
+              <UsersRound size={17} aria-hidden="true" />
+              <div className="cloud-artifacts-context-copy">
+                <div className="cloud-artifacts-context-title">
+                  <strong>共享成果</strong>
+                  {artifactRoleLabel && (
+                    <span className="cloud-artifacts-role-badge">{artifactRoleLabel}</span>
+                  )}
+                </div>
+                <span>{artifactAccessText}</span>
+              </div>
+              <ArtifactScopeSelect
+                value={effectiveArtifactScope}
+                canSelectCurrent={canFilterArtifactsByTask}
+                onChange={setArtifactScope}
+              />
+            </div>
+          )}
+          {loading && visibleCount === 0 && (
+            <div className="cloud-artifacts-status" role="status" aria-live="polite">
+              {tab === 'files'
+                ? '正在读取文件…'
+                : '正在读取成果…'}
+            </div>
+          )}
+          {!loading && error && (
+            <div className="cloud-artifacts-status error" role="alert">
+              <span>{error}</span>
+              <button type="button" onClick={() => loadContent()}>重试</button>
+            </div>
+          )}
+          {!loading && !error && visibleCount === 0 && (
+            <div className="cloud-artifacts-status">{emptyText}</div>
+          )}
+          {tab === 'files' && files.length > 0 && (
+            <>
+              <div className="cloud-artifacts-list">
+                {files.map((file) => (
+                  <HistoricalFileItem
+                    file={file}
+                    key={file.id}
+                    onPreviewFile={onPreviewFile}
+                  />
+                ))}
+              </div>
+              {fileHasMore && (
+                <button
+                  type="button"
+                  className="cloud-artifacts-load-more"
+                  disabled={loading}
+                  onClick={() => loadContent({ append: true, beforeId: fileCursor })}
+                >
+                  {loading ? '正在加载...' : '加载更多'}
+                </button>
+              )}
+            </>
+          )}
+          {artifactTabSelected && scopedArtifacts.length > 0 && (
+            <div className="cloud-artifacts-list">
+              {scopedArtifacts.map((artifact) => (
+                <article className="cloud-artifact-item" key={artifact.id}>
+                  {tab === 'active' ? (
+                    <button
+                      type="button"
+                      className="cloud-artifact-main"
+                      onClick={() => onPreviewArtifact?.(artifact)}
+                      aria-label={'预览 ' + artifact.title}
+                    >
+                      <ArtifactSummary artifact={artifact} />
+                      <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+                    </button>
+                  ) : (
+                    <div className="cloud-artifact-main is-deleted">
+                      <ArtifactSummary artifact={artifact} />
+                    </div>
+                  )}
+                  <div className="cloud-artifact-actions">
+                    {tab === 'active' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => copyURL(artifact)}
+                          disabled={pendingID === artifact.id}
+                          aria-label={'复制 ' + artifact.title + ' 链接'}
+                          title={copiedID === artifact.id ? '已复制' : '复制链接'}
+                        >
+                          <Copy size={17} />
+                        </button>
+                        {artifact.can_delete && (
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() => setConfirmArtifact(artifact)}
+                            disabled={pendingID === artifact.id}
+                            aria-label={'下架 ' + artifact.title}
+                            title="下架"
+                          >
+                            <Trash2 size={17} />
+                          </button>
+                        )}
+                      </>
+                    )}
+                    {tab === 'deleted' && artifact.can_restore && (
+                      <button
+                        type="button"
+                        onClick={() => restoreArtifact(artifact)}
+                        disabled={pendingID === artifact.id}
+                        aria-label={'恢复 ' + artifact.title}
+                        title="恢复"
+                      >
+                        <RotateCcw size={17} className={pendingID === artifact.id ? 'is-spinning' : ''} />
+                      </button>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {confirmArtifact && (
+          <div className="cloud-artifact-confirm-backdrop" onClick={() => !pendingID && setConfirmArtifact(null)}>
+            <div
+              className="cloud-artifact-confirm"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label="确认下架成果"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h4>下架“{confirmArtifact.title}”？</h4>
+              <p>下架后其他成员将无法打开，Agent 所有者可以从回收站恢复。</p>
+              <div className="cloud-artifact-confirm-actions">
+                <button type="button" onClick={() => setConfirmArtifact(null)} disabled={Boolean(pendingID)}>
+                  取消
+                </button>
+                <button type="button" className="danger" onClick={deleteArtifact} disabled={Boolean(pendingID)}>
+                  {pendingID ? '正在下架...' : '下架'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+function ArtifactScopeSelect({ value, canSelectCurrent, onChange }) {
+  return (
+    <div className="cloud-artifacts-scope">
+      <CustomSelect
+        ariaLabel="筛选成果范围"
+        className="cloud-artifacts-scope-select"
+        density="compact"
+        menuClassName="cloud-artifacts-scope-options"
+        triggerClassName="cloud-artifacts-scope-trigger"
+        value={value}
+        onValueChange={onChange}
+      >
+        <option value="current" disabled={!canSelectCurrent}>当前任务</option>
+        <option value="all">全部</option>
+      </CustomSelect>
+    </div>
+  );
+}
+
+function ArtifactSummary({ artifact }) {
+  return (
+    <>
+      <span className={'cloud-artifact-kind-icon ' + artifact.kind} aria-hidden="true">
+        {artifact.kind === 'mini_app' ? <Cloud size={18} /> : <FileCode2 size={18} />}
+      </span>
+      <div className="cloud-artifact-copy">
+        <h4>{artifact.title}</h4>
+        <p>
+          {artifactMeta(artifact).map((item, index) => <span key={index}>{item}</span>)}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function FileSummary({ file }) {
+  return (
+    <>
+      <span className="cloud-artifact-kind-icon file" aria-hidden="true">
+        <FileText size={18} />
+      </span>
+      <div className="cloud-artifact-copy">
+        <h4>{file.name}</h4>
+        <p>
+          {fileMeta(file).map((item) => (
+            <span className={'cloud-file-meta-' + item.key} key={item.key}>{item.value}</span>
+          ))}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function HistoricalFileItem({ file, onPreviewFile }) {
+  const descriptor = previewFileDescriptor(file);
+  const canPreview = Boolean(descriptor?.canPreview);
+  const openURL = descriptor?.url || file.url || '';
+  const downloadURL = descriptor?.downloadURL || openURL;
+
+  return (
+    <article className="cloud-artifact-item cloud-file-item">
+      {canPreview ? (
+        <button
+          type="button"
+          className="cloud-artifact-main"
+          onClick={() => onPreviewFile?.(file)}
+          aria-label={'预览文件 ' + file.name}
+        >
+          <FileSummary file={file} />
+          <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+        </button>
+      ) : (
+        <a
+          className="cloud-artifact-main"
+          href={openURL}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={'在新窗口打开 ' + file.name}
+        >
+          <FileSummary file={file} />
+          <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+        </a>
+      )}
+      {!canPreview && downloadURL && (
+        <div className="cloud-artifact-actions">
+          <PwaDownloadLink
+            href={downloadURL}
+            download={file.name || true}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={'下载 ' + file.name}
+            title="下载"
+          >
+            <Download size={17} />
+          </PwaDownloadLink>
+        </div>
+      )}
+    </article>
+  );
+}

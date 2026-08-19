@@ -6,6 +6,10 @@ import { URL } from 'node:url';
 const port = Number(process.env.MOCK_CATS_PORT || 6061);
 const scenario = String(process.env.MOCK_CATS_SCENARIO || 'new').trim().toLowerCase();
 const echoReplies = ['1', 'true', 'yes', 'on'].includes(String(process.env.MOCK_CATS_ECHO || '').trim().toLowerCase());
+const requestedEchoReplyDelayMs = Number(process.env.MOCK_CATS_ECHO_DELAY_MS || 1800);
+const echoReplyDelayMs = Number.isFinite(requestedEchoReplyDelayMs)
+  ? Math.max(0, Math.min(10_000, requestedEchoReplyDelayMs))
+  : 1800;
 const tutorialTasksFile = String(process.env.MOCK_CATS_TUTORIAL_TASKS_FILE || '').trim();
 const tutorialTasksJSON = String(process.env.MOCK_CATS_TUTORIAL_TASKS_JSON || '').trim();
 const showcaseUsername = String(process.env.MOCK_CATS_SHOWCASE_USERNAME || 'ui-reviewer').trim();
@@ -27,7 +31,68 @@ const messagesByTopic = new Map();
 const showcaseByUserId = new Map();
 const projectsByUserId = new Map();
 const projectTopicsByUserId = new Map();
+const botModelConfigs = new Map();
+const commercialOrdersByUserId = new Map();
 let nextSeq = 1;
+
+const mockCommercialPlans = [
+  { id: 21, slug: 'catsco-personal', name: '个人版', description: '适合将 XiaoBa 作为日常个人助手。', price_fen: 39900, currency: 'CNY', sale_state: 'active', duration_days: 30 },
+  { id: 22, slug: 'catsco-pro', name: '专业版', description: '适合高频、多任务并行或复杂工作。', price_fen: 79900, currency: 'CNY', sale_state: 'active', duration_days: 30 },
+];
+
+function mockCommercialOrders(userId) {
+  const now = Date.now();
+  const at = daysAgo => new Date(now - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+  const mutableOrders = commercialOrdersByUserId.get(userId) || [];
+  const mutableOrderNos = new Set(mutableOrders.map(item => item.order_no));
+  const seededOrders = [
+    { order_no: 'CC202608110001PREVIEW', plan_id: 22, plan_name: '专业版', amount_fen: 79900, currency: 'CNY', channel: 'alipay_page', status: 'pending', checkout_url: 'https://openapi.alipay.test/gateway.do', expires_at: at(-1), created_at: at(0), updated_at: at(0) },
+    { order_no: 'CC202608080002PREVIEW', plan_id: 21, plan_name: '个人版', amount_fen: 39900, currency: 'CNY', channel: 'alipay_page', status: 'fulfilled', paid_at: at(3), fulfilled_at: at(3), created_at: at(3), updated_at: at(3) },
+    { order_no: 'CC202607020003PREVIEW', plan_id: 2, plan_name: 'Plus−', amount_fen: 4900, currency: 'CNY', channel: 'alipay_page', status: 'refunded', paid_at: at(40), created_at: at(40), updated_at: at(36) },
+    { order_no: 'CC202606120004PREVIEW', plan_id: 1, plan_name: '3天体验', amount_fen: 990, currency: 'CNY', channel: 'alipay_page', status: 'closed', created_at: at(60), updated_at: at(60) },
+  ];
+  return [...mutableOrders, ...seededOrders.filter(item => !mutableOrderNos.has(item.order_no))];
+}
+
+const mockBotModels = [
+  { id: 'minimax-m2.7', label: 'MiniMax M2.7', description: '标准额度，适合日常任务' },
+  { id: 'minimax-m3', label: 'MiniMax M3', description: '支持多模态与长上下文' },
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash',
+    description: '低额度 Flash，支持推理强度',
+    reasoning_efforts: ['high', 'max', 'disabled'],
+    default_reasoning_effort: 'high',
+  },
+  ...['terra', 'sol'].map((variant) => ({
+    id: `gpt-5.6-${variant}`,
+    label: `GPT-5.6 ${variant[0].toUpperCase()}${variant.slice(1)}`,
+    description: 'OpenAI Responses，支持精细推理强度',
+    provider: 'openai',
+    protocol: 'OpenAI Responses',
+    context_window_tokens: 1000000,
+    reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+    default_reasoning_effort: 'medium',
+  })),
+];
+
+function mockBotModelResponse(botId, includeModels = false) {
+  const config = botModelConfigs.get(botId) || {
+    configured: false,
+    status: 'local',
+    desired: { model_id: 'local', reasoning_effort: '', revision: 0 },
+    applied: { model_id: '', reasoning_effort: '', revision: 0 },
+    last_error: '',
+  };
+  return {
+    uid: botId,
+    management_enabled: true,
+    runtime_supported: true,
+    ...config,
+    apply_mode: 'runtime_reload',
+    ...(includeModels ? { models: mockBotModels } : {}),
+  };
+}
 
 function p2pTopicId(uid1, uid2) {
   const a = Number(uid1);
@@ -40,8 +105,11 @@ function seedExistingBot(user) {
   if (scenario !== 'existing' && scenario !== 'showcase') return;
   const definitions = scenario === 'showcase'
     ? [
-      { username: 'code_review_agent', display_name: '代码审查助手' },
-      { username: 'ops_data_agent', display_name: '运营数据助手' },
+      { username: 'code_review_agent', display_name: '代码审查助手', model: 'gpt-5.6-terra', remaining_percent: 82 },
+      { username: 'ops_data_agent', display_name: '运营数据助手', model: 'MiniMax-M3', remaining_percent: 61 },
+      { username: 'research_agent', display_name: '行业研究助手', model: 'deepseek-v4-flash', remaining_percent: 47 },
+      { username: 'content_agent', display_name: '内容策划助手', model: 'gpt-5.6-terra', remaining_percent: 28 },
+      { username: 'quality_agent', display_name: '质量巡检助手', model: 'MiniMax-M2.7', remaining_percent: 93 },
     ]
     : [{ username: `existing_bot_${user.id}`, display_name: 'Existing Local Bot' }];
   const bots = definitions.map((definition) => {
@@ -54,6 +122,14 @@ function seedExistingBot(user) {
       avatar_url: '',
       api_key: `mock-api-key-${id}`,
       owner_id: user.id,
+      quota_summary: definition.model ? {
+        source: 'relay',
+        model: definition.model,
+        remaining_percent: definition.remaining_percent,
+        status: 'normal',
+      } : null,
+      relation: 'owner',
+      is_owner: true,
     };
   });
   botsByOwner.set(user.id, bots);
@@ -63,9 +139,16 @@ function seedExistingBot(user) {
 function seedChatShowcase(user, bots) {
   const now = Date.now();
   const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+  const [codeAgent, opsAgent, researchAgent, contentAgent, qualityAgent] = bots;
   const friends = [
     { id: 301, uid: 301, username: 'linxiao', display_name: '林晓 · 产品设计', avatar_url: '', is_online: true, bot: false },
     { id: 302, uid: 302, username: 'chenyu', display_name: '陈宇 · 前端开发', avatar_url: '', is_online: false, bot: false },
+    { id: 303, uid: 303, username: 'zhouqi', display_name: '周琦 · 增长运营', avatar_url: '', is_online: true, bot: false },
+    { id: 304, uid: 304, username: 'wangmiao', display_name: '王淼 · 数据分析', avatar_url: '', is_online: true, bot: false },
+    { id: 305, uid: 305, username: 'sunyi', display_name: '孙怡 · 品牌内容', avatar_url: '', is_online: false, bot: false },
+    { id: 306, uid: 306, username: 'haoran', display_name: '郝然 · 后端开发', avatar_url: '', is_online: true, bot: false },
+    { id: 307, uid: 307, username: 'fangning', display_name: '方宁 · 客户成功', avatar_url: '', is_online: false, bot: false },
+    { id: 308, uid: 308, username: 'luyao', display_name: '陆遥 · 项目管理', avatar_url: '', is_online: true, bot: false },
   ];
   const groups = [
     {
@@ -75,30 +158,159 @@ function seedChatShowcase(user, bots) {
       avatar_url: '',
       owner_id: user.id,
       has_bot: true,
+      member_count: 4,
+      member_ids: [friends[0].id, friends[1].id, bots[0].id],
       created_at: at(24 * 60),
     },
+    {
+      id: 402,
+      topic_id: 'grp_402',
+      name: '产品与增长周会',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 5,
+      member_ids: [friends[0].id, friends[2].id, friends[3].id, friends[7].id],
+      created_at: at(6 * 24 * 60),
+    },
+    {
+      id: 403,
+      topic_id: 'grp_403',
+      name: '发布风险排查',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 5,
+      member_ids: [friends[1].id, friends[5].id, friends[7].id, qualityAgent.id],
+      agent_id: qualityAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(2 * 24 * 60),
+    },
+    {
+      id: 404,
+      topic_id: 'grp_404',
+      name: '品牌内容共创',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 4,
+      member_ids: [friends[0].id, friends[4].id, friends[6].id],
+      created_at: at(4 * 24 * 60),
+    },
+    {
+      id: 405,
+      topic_id: 'grp_405',
+      name: '客户声音同步群',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 4,
+      member_ids: [friends[2].id, friends[6].id, friends[7].id],
+      created_at: at(8 * 24 * 60),
+    },
+    {
+      id: 406,
+      topic_id: 'grp_406',
+      name: '竞品动态研究',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 4,
+      member_ids: [friends[2].id, friends[3].id, researchAgent.id],
+      agent_id: researchAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(3 * 24 * 60),
+    },
+    {
+      id: 407,
+      topic_id: 'grp_407',
+      name: '夏季发布会文案',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 2,
+      member_ids: [contentAgent.id],
+      agent_id: contentAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(18 * 60),
+    },
+    {
+      id: 408,
+      topic_id: 'grp_408',
+      name: '移动端回归测试',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 3,
+      member_ids: [friends[1].id, qualityAgent.id],
+      agent_id: qualityAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(7 * 60),
+    },
+    {
+      id: 409,
+      topic_id: 'grp_409',
+      name: '多 Agent 联合任务',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 3,
+      member_ids: [codeAgent.id, opsAgent.id],
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(5 * 60),
+    },
+    {
+      id: 410,
+      topic_id: 'grp_410',
+      name: '等待分配 Agent',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 2,
+      member_ids: [friends[7].id],
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(4 * 60),
+    },
   ];
-  const codeAgent = bots[0];
-  const opsAgent = bots[1];
   const codeTopic = p2pTopicId(user.id, codeAgent.id);
   const opsTopic = p2pTopicId(user.id, opsAgent.id);
+  const researchTopic = p2pTopicId(user.id, researchAgent.id);
+  const contentTopic = p2pTopicId(user.id, contentAgent.id);
+  const qualityTopic = p2pTopicId(user.id, qualityAgent.id);
   const designTopic = p2pTopicId(user.id, friends[0].id);
-  const groupTopic = groups[0].topic_id;
+  const frontendTopic = groups[0].topic_id;
 
   const seeded = [
     [codeTopic, [
-      { from_uid: user.id, content: '帮我检查当前聊天界面的信息层级，重点看侧栏和消息区。', created_at: at(42) },
+      { from_uid: user.id, content: '请帮我检查新版聊天消息的布局，重点确认我的指令气泡、系统回复，以及两者之间的留白是否清晰。', created_at: at(11) },
       {
         from_uid: codeAgent.id,
         role: 'assistant',
-        mode: 'code',
-        content: '我先按桌面端验收，当前建议关注：\n\n1. **会话层级**：标题、预览、时间需要形成稳定对比。\n2. **消息密度**：连续短消息不要显得过散。\n3. **操作反馈**：悬浮、选中和禁用状态应使用同一套颜色。\n\n```css\n.v3-chat-item.active {\n  background: var(--cc-selected);\n}\n```',
-        created_at: at(39),
+        content: '可以。我会先检查用户指令是否靠右且使用独立气泡，再确认系统回复的头像、名称和正文层级，最后观察两类消息之间的垂直间距。',
+        created_at: at(9),
       },
-      { from_uid: user.id, content: '再补一条长文本，看看气泡宽度和换行。这个页面后续还会展示代码、文件和工作流结果，所以普通文本不能抢占太多视觉注意力。', created_at: at(37) },
-      { from_uid: codeAgent.id, role: 'assistant', content: '收到。长文本在当前宽度下会自然换行；建议同时检查 390px、768px 和宽屏三档，尤其留意右侧预览面板打开后的可读宽度。', created_at: at(35) },
+      { from_uid: user.id, content: '再用一条稍长的指令测试自动换行：气泡不要占满整行，文字上下需要有舒适留白，时间和操作按钮应位于气泡外部的右下方。', created_at: at(7) },
+      {
+        from_uid: codeAgent.id,
+        role: 'assistant',
+        content: '检查结果：长指令会在最大宽度内自然换行，气泡只包裹正文；时间、复制和更多操作位于气泡下方，并与右边缘对齐。',
+        created_at: at(5),
+      },
+      { from_uid: user.id, content: '最后确认一下：时间和两个按钮只在鼠标悬浮时出现，按钮大小和间距与系统回复保持一致。', created_at: at(3) },
+      {
+        from_uid: codeAgent.id,
+        role: 'assistant',
+        content: '已确认。桌面端默认隐藏该操作行，悬浮或键盘聚焦时显示；触屏设备仍保留可操作入口。这组数据仅用于本地界面验收。',
+        created_at: at(1),
+      },
     ]],
-    [groupTopic, [
+    [frontendTopic, [
       { from_uid: friends[0].id, from_name: friends[0].display_name, content: '我把今天的视觉验收项整理好了，大家重点看深色模式。', created_at: at(28) },
       { from_uid: user.id, content: '好的，我正在用服务器生成的演示数据检查会话列表。', created_at: at(25) },
       { from_uid: codeAgent.id, from_name: codeAgent.display_name, role: 'assistant', content: '已记录 4 个检查点：侧栏密度、消息对齐、输入框状态、移动端折叠。', created_at: at(22) },
@@ -112,6 +324,68 @@ function seedChatShowcase(user, bots) {
       { from_uid: user.id, content: '生成一份本周活跃会话概览。', created_at: at(9) },
       { from_uid: opsAgent.id, role: 'assistant', content: '演示数据已准备：**18 个活跃会话**，其中私聊 9 个、群聊 5 个、Agent 会话 4 个。当前为本地模拟结果，不代表生产统计。', created_at: at(7) },
     ]],
+    [researchTopic, [
+      { from_uid: user.id, content: '整理近一个月协作类产品的更新，重点看 Agent、项目和知识库能力。', created_at: at(43) },
+      { from_uid: researchAgent.id, role: 'assistant', content: '正在汇总公开信息，目前已完成 12 个产品的功能标签归类，并开始核对发布时间。', created_at: at(40) },
+    ]],
+    [contentTopic, [
+      { from_uid: user.id, content: '把新版首页的核心卖点改写成三组短句，语气专业但不要太像广告。', created_at: at(96) },
+      { from_uid: contentAgent.id, role: 'assistant', content: '第一轮草案已完成，但品牌术语表加载失败。我保留了草稿，等术语表恢复后可以继续统一措辞。', created_at: at(91) },
+    ]],
+    [qualityTopic, [
+      { from_uid: user.id, content: '检查今天合并的侧栏交互，覆盖折叠、搜索、项目展开和任务状态。', created_at: at(14) },
+      { from_uid: qualityAgent.id, role: 'assistant', content: '已完成 31 项检查，未发现阻塞问题；有 2 项窄屏视觉细节建议继续观察。', created_at: at(12) },
+    ]],
+    [p2pTopicId(user.id, friends[1].id), [
+      { from_uid: friends[1].id, content: '移动端侧栏的滚动问题已经修好，等你一起看回归结果。', created_at: at(51) },
+      { from_uid: user.id, content: '收到，我会连同项目展开状态一起检查。', created_at: at(49) },
+    ]],
+    [p2pTopicId(user.id, friends[2].id), [
+      { from_uid: friends[2].id, content: '下周增长实验的名单我更新到了最终版，渠道备注也补全了。', created_at: at(3 * 60 + 12) },
+      { from_uid: user.id, content: '好，明早周会直接用这版。', created_at: at(3 * 60 + 5) },
+    ]],
+    [p2pTopicId(user.id, friends[3].id), [
+      { from_uid: user.id, content: '数据看板里转化率的口径能再确认一下吗？', created_at: at(6 * 60 + 20) },
+      { from_uid: friends[3].id, content: '可以，今晚我把新旧口径对照和影响范围发给你。', created_at: at(6 * 60 + 4) },
+    ]],
+    [p2pTopicId(user.id, friends[4].id), [
+      { from_uid: friends[4].id, content: '品牌手册新增了中文标点和数字格式规范，写作任务可以按新版走。', created_at: at(22 * 60) },
+    ]],
+    ['grp_402', [
+      { from_uid: friends[2].id, content: '本周注册转化率回升了 6%，主要来自新手引导第二步。', created_at: at(2 * 60 + 15) },
+      { from_uid: friends[7].id, content: '周会结论我已经整理成三个负责人和五个截止日期。', created_at: at(2 * 60) },
+    ]],
+    ['grp_403', [
+      { from_uid: user.id, content: '请扫描本次发布清单，把高风险变更和缺少负责人的条目标出来。', created_at: at(34) },
+      { from_uid: qualityAgent.id, role: 'assistant', content: '排查进行中：已核对 18/27 项，发现 2 个数据库变更仍缺少回滚说明。', created_at: at(31) },
+    ]],
+    ['grp_404', [
+      { from_uid: friends[4].id, content: '发布会主视觉已经定稿，接下来集中收敛标题和社媒短文案。', created_at: at(5 * 60 + 35) },
+      { from_uid: friends[0].id, content: '设计侧会给每套文案补一张安全区预览。', created_at: at(5 * 60 + 20) },
+    ]],
+    ['grp_405', [
+      { from_uid: friends[6].id, content: '今天新增的客户反馈里，大家最关心的是任务记录能否快速归档。', created_at: at(26 * 60) },
+    ]],
+    ['grp_406', [
+      { from_uid: user.id, content: '汇总本周竞品发布和价格变化，按影响程度分成三档。', created_at: at(4 * 60 + 15) },
+      { from_uid: researchAgent.id, role: 'assistant', content: '研究已完成：共识别 9 项更新，其中 2 项高影响、3 项中影响、4 项低影响。', created_at: at(4 * 60) },
+    ]],
+    ['grp_407', [
+      { from_uid: user.id, content: '为夏季发布会准备一个 90 秒开场稿，先给结构再写全文。', created_at: at(12 * 60 + 30) },
+      { from_uid: contentAgent.id, role: 'assistant', content: '结构草案已生成，但资料引用校验未通过，需要补充最终产品数据后重试。', created_at: at(12 * 60 + 18) },
+    ]],
+    ['grp_408', [
+      { from_uid: friends[1].id, content: '回归包已经上传，先从消息列表和输入框开始。', created_at: at(6) },
+      { from_uid: qualityAgent.id, role: 'assistant', content: '正在执行移动端回归，目前完成 16/24 项，横屏和键盘弹起场景仍在检查。', created_at: at(4) },
+    ]],
+    ['grp_409', [
+      { from_uid: user.id, content: '请代码和运营两个 Agent 一起复核本周发布数据。', created_at: at(9) },
+      { from_uid: codeAgent.id, role: 'assistant', content: '代码侧检查已经开始。', created_at: at(8) },
+      { from_uid: opsAgent.id, role: 'assistant', content: '运营数据口径正在同步核对。', created_at: at(7) },
+    ]],
+    ['grp_410', [
+      { from_uid: user.id, content: '这个任务暂时还没有指定 Agent。', created_at: at(10) },
+    ]],
   ];
 
   for (const [topic, messages] of seeded) {
@@ -119,22 +393,116 @@ function seedChatShowcase(user, bots) {
   }
 
   const conversations = [
-    conversationFromTopic(opsTopic, '本周活跃会话概览', opsAgent.id, false, at(7), true),
+    {
+      ...conversationFromTopic(qualityTopic, '侧栏交互质量巡检', qualityAgent.id, false, at(12), true),
+      task_status: { topic_id: qualityTopic, run_id: 'run-quality-1', state: 'completed', summary: '31 项检查已完成', updated_at: at(12) },
+    },
+    {
+      ...conversationFromTopic('grp_408', groups[7].name, null, true, at(4), false, groups[7].id, true, groups[7].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_408', run_id: 'run-mobile-1', state: 'running', summary: '正在执行移动端回归：16/24', updated_at: at(4) },
+    },
+    {
+      ...conversationFromTopic(opsTopic, '本周活跃会话概览', opsAgent.id, false, at(7), true),
+      task_status: { topic_id: opsTopic, run_id: 'run-ops-1', state: 'completed', summary: '活跃会话概览已生成', updated_at: at(7) },
+    },
     conversationFromTopic(designTopic, friends[0].display_name, friends[0].id, false, at(13)),
-    conversationFromTopic(groupTopic, groups[0].name, null, true, at(18), false, groups[0].id),
-    conversationFromTopic(codeTopic, 'PR #71 前端迁移复盘', codeAgent.id, false, at(35), true),
+    conversationFromTopic(
+      frontendTopic,
+      groups[0].name,
+      null,
+      true,
+      at(18),
+      false,
+      groups[0].id,
+      groups[0].has_bot,
+      groups[0].member_count,
+    ),
+    conversationFromTopic(codeTopic, '聊天气泡布局验收', codeAgent.id, false, at(1), true),
+    {
+      ...conversationFromTopic(researchTopic, '协作产品趋势研究', researchAgent.id, false, at(40), true),
+      task_status: { topic_id: researchTopic, run_id: 'run-research-1', state: 'running', summary: '正在核对 12 个产品的更新', updated_at: at(40) },
+    },
+    {
+      ...conversationFromTopic(contentTopic, '首页核心卖点改写', contentAgent.id, false, at(91), true),
+      task_status: { topic_id: contentTopic, run_id: 'run-content-1', state: 'failed', error: '品牌术语表加载失败', updated_at: at(91) },
+    },
+    conversationFromTopic(p2pTopicId(user.id, friends[1].id), friends[1].display_name, friends[1].id, false, at(49)),
+    conversationFromTopic(p2pTopicId(user.id, friends[2].id), friends[2].display_name, friends[2].id, false, at(3 * 60 + 5)),
+    conversationFromTopic(p2pTopicId(user.id, friends[3].id), friends[3].display_name, friends[3].id, false, at(6 * 60 + 4)),
+    conversationFromTopic(p2pTopicId(user.id, friends[4].id), friends[4].display_name, friends[4].id, false, at(22 * 60)),
+    conversationFromTopic('grp_402', groups[1].name, null, true, at(2 * 60), false, groups[1].id, false, groups[1].member_count),
+    {
+      ...conversationFromTopic('grp_403', groups[2].name, null, true, at(31), false, groups[2].id, true, groups[2].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_403', run_id: 'run-release-1', state: 'running', summary: '正在核对发布清单：18/27', updated_at: at(31) },
+    },
+    conversationFromTopic('grp_404', groups[3].name, null, true, at(5 * 60 + 20), false, groups[3].id, false, groups[3].member_count),
+    conversationFromTopic('grp_405', groups[4].name, null, true, at(26 * 60), false, groups[4].id, false, groups[4].member_count),
+    {
+      ...conversationFromTopic('grp_406', groups[5].name, null, true, at(4 * 60), false, groups[5].id, true, groups[5].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_406', run_id: 'run-competitor-1', state: 'completed', summary: '本周竞品研究已完成', updated_at: at(4 * 60) },
+    },
+    {
+      ...conversationFromTopic('grp_407', groups[6].name, null, true, at(12 * 60 + 18), false, groups[6].id, true, groups[6].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_407', run_id: 'run-launch-copy-1', state: 'failed', error: '资料引用校验未通过', updated_at: at(12 * 60 + 18) },
+    },
+    {
+      ...conversationFromTopic('grp_409', groups[8].name, null, true, at(7), false, groups[8].id, true, groups[8].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+    },
+    {
+      ...conversationFromTopic('grp_410', groups[9].name, null, true, at(10), false, groups[9].id, false, groups[9].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+    },
   ];
+  const knownAgentIds = new Set(bots.map((bot) => Number(bot.id)));
+  for (const group of groups) {
+    group.agent_ids = [...new Set([
+      group.agent_id,
+      ...(Array.isArray(group.member_ids) ? group.member_ids : []),
+    ].map(Number).filter((memberId) => knownAgentIds.has(memberId)))];
+  }
+  const groupsByTopic = new Map(groups.map((group) => [group.topic_id, group]));
+  for (const conversation of conversations) {
+    const group = groupsByTopic.get(conversation.id);
+    if (!group) continue;
+    conversation.agent_ids = [...group.agent_ids];
+  }
   showcaseByUserId.set(user.id, { friends, groups, conversations });
-  const project = {
+  const projectDefinitions = [
+    { name: 'CatsCo 体验优化', createdAt: at(14 * 24 * 60), updatedAt: at(5) },
+    { name: '增长数据看板', createdAt: at(10 * 24 * 60), updatedAt: at(31) },
+    { name: '2026 市场研究', createdAt: at(7 * 24 * 60), updatedAt: at(4 * 60) },
+    { name: '品牌内容升级', createdAt: at(20 * 24 * 60), updatedAt: at(91) },
+  ];
+  const projects = projectDefinitions.map((definition) => ({
     id: nextProjectId++,
     owner_uid: user.id,
-    name: 'CatsCo 体验优化',
+    name: definition.name,
     task_count: 0,
-    created_at: at(60),
-    updated_at: at(5),
-  };
-  projectsByUserId.set(user.id, [project]);
-  projectTopicsByUserId.set(user.id, new Map([[codeTopic, project.id]]));
+    created_at: definition.createdAt,
+    updated_at: definition.updatedAt,
+  }));
+  projectsByUserId.set(user.id, projects);
+  projectTopicsByUserId.set(user.id, new Map([
+    [codeTopic, projects[0].id],
+    [frontendTopic, projects[0].id],
+    [opsTopic, projects[1].id],
+    ['grp_403', projects[1].id],
+    [researchTopic, projects[2].id],
+    ['grp_406', projects[2].id],
+    [contentTopic, projects[3].id],
+    ['grp_407', projects[3].id],
+  ]));
   refreshProjectAssignments(user.id);
 }
 
@@ -155,7 +523,17 @@ function refreshProjectAssignments(userId) {
   }
 }
 
-function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = false, groupId = null) {
+function conversationFromTopic(
+  id,
+  name,
+  friendId,
+  isGroup,
+  lastTime,
+  isBot = false,
+  groupId = null,
+  hasBot = false,
+  memberCount = 0,
+) {
   const messages = messagesByTopic.get(id) || [];
   const latest = messages[messages.length - 1];
   return {
@@ -169,8 +547,10 @@ function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = fa
     is_group: isGroup,
     avatar_url: '',
     is_bot: isBot,
-    has_bot: isGroup,
+    has_bot: Boolean(hasBot),
+    member_count: Number(memberCount) || 0,
     is_online: isBot || friendId === 301,
+    notifications_muted: false,
     latest_seq: latest?.seq || 0,
   };
 }
@@ -312,7 +692,7 @@ function send(res, status, payload) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key, X-CatsCo-Body-ID, X-CatsCo-Installation-ID',
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   });
   res.end(JSON.stringify(payload));
 }
@@ -378,7 +758,21 @@ async function handleApi(req, res) {
 
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
-      return send(res, 200, { ok: true, mode: 'local-onboarding-mock', scenario });
+      return send(res, 200, {
+        ok: true,
+        mode: 'local-onboarding-mock',
+        scenario,
+        echo_replies: echoReplies,
+        echo_reply_delay_ms: echoReplyDelayMs,
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/admin/relay/access') {
+      return send(res, 200, { allowed: false });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/push/config') {
+      return send(res, 200, { enabled: false });
     }
 
     if (req.method === 'POST' && url.pathname === '/__mock/reset') {
@@ -394,6 +788,7 @@ async function handleApi(req, res) {
       showcaseByUserId.clear();
       projectsByUserId.clear();
       projectTopicsByUserId.clear();
+      commercialOrdersByUserId.clear();
       nextSeq = 1;
       nextUserId = 100;
       nextBotId = 200;
@@ -514,6 +909,19 @@ async function handleApi(req, res) {
       });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/agents/quota') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const agentUid = Number(url.searchParams.get('uid'));
+      const bot = (botsByOwner.get(user.id) || []).find((item) => item.id === agentUid);
+      if (!bot) return send(res, 404, { error: 'agent not found' });
+      return send(res, 200, {
+        configured: Boolean(bot.quota_summary),
+        shared: true,
+        summary: bot.quota_summary || undefined,
+      });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/devices') {
       const user = requireUser(req, res);
       if (!user) return;
@@ -556,6 +964,96 @@ async function handleApi(req, res) {
       return send(res, 200, { bots: botsByOwner.get(user.id) || [] });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/agents/quota') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const uid = Number(url.searchParams.get('uid'));
+      const bot = [...botsByOwner.values()].flat().find((item) => item.id === uid);
+      if (!bot) return send(res, 404, { error: 'agent not found' });
+      return send(res, 200, {
+        configured: true,
+        shared: true,
+        summary: {
+          source: 'relay',
+          model: 'MiniMax-M2.7',
+          remaining_percent: 72,
+          status: 'normal',
+        },
+      });
+    }
+
+    if ((req.method === 'GET' || req.method === 'PATCH') && url.pathname === '/api/bots/model-config') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const uid = Number(url.searchParams.get('uid'));
+      const bot = (botsByOwner.get(user.id) || []).find((item) => item.id === uid);
+      if (!bot) return send(res, 403, { error: 'not your bot' });
+      if (req.method === 'PATCH') {
+        const body = await readBody(req);
+        const modelId = String(body.model_id || '').trim().toLowerCase();
+        const model = mockBotModels.find((item) => item.id === modelId);
+        if (modelId === 'local') {
+          const current = mockBotModelResponse(uid);
+          botModelConfigs.set(uid, {
+            configured: false,
+            status: 'local',
+            desired: { model_id: 'local', reasoning_effort: '', revision: current.desired.revision + 1 },
+            applied: current.applied,
+            last_error: '',
+          });
+        } else if (model) {
+          const requestedEffort = String(body.reasoning_effort || model.default_reasoning_effort || '').trim().toLowerCase();
+          if (model.reasoning_efforts && !model.reasoning_efforts.includes(requestedEffort)) {
+            return send(res, 400, { error: 'unsupported reasoning effort' });
+          }
+          const current = mockBotModelResponse(uid);
+          botModelConfigs.set(uid, {
+            configured: true,
+            status: 'pending',
+            desired: {
+              model_id: model.id,
+              reasoning_effort: model.reasoning_efforts ? requestedEffort : '',
+              revision: current.desired.revision + 1,
+            },
+            applied: current.applied,
+            last_error: '',
+          });
+        } else {
+          return send(res, 400, { error: 'unsupported model' });
+        }
+      }
+      return send(res, 200, mockBotModelResponse(uid, true));
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/bot/model-config') {
+      const bot = getApiKeyBot(req);
+      if (!bot) return send(res, 401, { error: 'bot api key required' });
+      return send(res, 200, mockBotModelResponse(bot.id));
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/bot/model-config/ack') {
+      const bot = getApiKeyBot(req);
+      if (!bot) return send(res, 401, { error: 'bot api key required' });
+      const body = await readBody(req);
+      const current = mockBotModelResponse(bot.id);
+      if (!current.configured || Number(body.revision) !== current.desired.revision) {
+        return send(res, 409, { error: 'bot model configuration changed before it was applied' });
+      }
+      const applyError = String(body.error || '').trim();
+      botModelConfigs.set(bot.id, {
+        ...current,
+        status: applyError ? 'failed' : 'applied',
+        applied: applyError ? current.applied : {
+          model_id: current.desired.model_id,
+          reasoning_effort: current.desired.reasoning_effort,
+          revision: current.desired.revision,
+          applied_at: new Date().toISOString(),
+        },
+        last_error: applyError,
+      });
+      return send(res, 200, mockBotModelResponse(bot.id));
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/bots') {
       const user = requireUser(req, res);
       if (!user) return;
@@ -568,6 +1066,8 @@ async function handleApi(req, res) {
         avatar_url: '',
         api_key: `mock-api-key-${nextBotId - 1}`,
         owner_id: user.id,
+        relation: 'owner',
+        is_owner: true,
       };
       botsByOwner.set(user.id, [...(botsByOwner.get(user.id) || []), bot]);
       return send(res, 201, { uid: bot.id, id: bot.id, api_key: bot.api_key, bot });
@@ -639,6 +1139,8 @@ async function handleApi(req, res) {
       const id = nextGroupId++;
       const topicId = `grp_${id}`;
       const createdAt = new Date().toISOString();
+      const normalizedMemberIds = [...new Set(memberIds.filter((memberId) => Number.isFinite(memberId) && memberId !== user.id))];
+      const memberCount = 1 + normalizedMemberIds.length;
       const group = {
         id,
         topic_id: topicId,
@@ -646,17 +1148,20 @@ async function handleApi(req, res) {
         avatar_url: '',
         owner_id: user.id,
         has_bot: Boolean(agent),
+        member_count: memberCount,
+        member_ids: normalizedMemberIds,
         agent_id: agent?.id || null,
+        agent_ids: agent ? [agent.id] : [],
         kind,
         is_agent_task: kind === 'agent_task',
         created_at: createdAt,
       };
       showcase.groups.unshift(group);
       showcase.conversations.unshift({
-        ...conversationFromTopic(topicId, name, null, true, createdAt, false, id),
-        has_bot: Boolean(agent),
+        ...conversationFromTopic(topicId, name, null, true, createdAt, false, id, Boolean(agent), memberCount),
         kind,
         is_agent_task: kind === 'agent_task',
+        agent_ids: agent ? [agent.id] : [],
       });
       return send(res, 200, {
         group_id: id,
@@ -666,7 +1171,9 @@ async function handleApi(req, res) {
         created_at: createdAt,
         avatar_url: '',
         kind,
+        has_bot: Boolean(agent),
         is_agent_task: kind === 'agent_task',
+        member_count: memberCount,
       });
     }
 
@@ -702,9 +1209,10 @@ async function handleApi(req, res) {
       const groupId = Number(url.searchParams.get('id'));
       const group = (showcase?.groups || []).find((item) => item.id === groupId);
       if (!group) return send(res, 404, { error: 'group not found' });
+      const groupMemberIds = new Set(Array.isArray(group.member_ids) ? group.member_ids.map(Number) : []);
       const members = [
         { user_id: user.id, display_name: user.display_name, username: user.username, role: 'owner', is_bot: false },
-        ...(showcase?.friends || []).map((friend) => ({
+        ...(showcase?.friends || []).filter((friend) => groupMemberIds.has(friend.id)).map((friend) => ({
           user_id: friend.id,
           display_name: friend.display_name,
           username: friend.username,
@@ -712,7 +1220,7 @@ async function handleApi(req, res) {
           role: 'member',
           is_bot: false,
         })),
-        ...(botsByOwner.get(user.id) || []).slice(0, 1).map((bot) => ({
+        ...(botsByOwner.get(user.id) || []).filter((bot) => groupMemberIds.has(bot.id)).map((bot) => ({
           user_id: bot.id,
           display_name: bot.display_name,
           username: bot.username,
@@ -740,16 +1248,21 @@ async function handleApi(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/relay/usage') {
       const user = requireUser(req, res);
       if (!user) return;
+      const totalScope = url.searchParams.get('scope') === 'total';
       return send(res, 200, {
         configured: true,
         summary: {
           source: 'relay',
-          model: String(url.searchParams.get('model') || 'MiniMax-M2.7'),
+          model: totalScope ? '套餐总额度' : String(url.searchParams.get('model') || 'MiniMax-M2.7'),
+          quota_configured: true,
           used_cny: 3.2,
           limit_cny: 50,
           remaining_cny: 46.8,
           percent: 6.4,
+          remaining_percent: 93.6,
           status: 'normal',
+          reset_duration: '1M',
+          last_reset: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
         },
       });
     }
@@ -757,7 +1270,104 @@ async function handleApi(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/relay/commercial') {
       const user = requireUser(req, res);
       if (!user) return;
+      if (scenario === 'showcase') {
+        return send(res, 200, {
+          enabled: true,
+          enforce_enabled: true,
+          note: '本地商业化界面演示',
+          summary: {
+            uid: user.id,
+            models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+            entitlements: [{
+              id: 'preview-entitlement',
+              state: 'active',
+              plan_id: 21,
+              plan_slug: 'catsco-personal',
+              plan_name: '个人版',
+              source: 'invite',
+              source_ref: 'PERSONAL-PREVIEW',
+              starts_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+              expires_at: new Date(Date.now() + 27 * 24 * 60 * 60 * 1000).toISOString(),
+            }],
+          },
+        });
+      }
       return send(res, 200, { enabled: false, packages: [], invite: null });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/relay/commercial/catalog') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      if (scenario !== 'showcase') return send(res, 200, { enabled: false, plans: [], channels: [], trial_available: false });
+      return send(res, 200, {
+        enabled: true,
+        test_mode: false,
+        trial_available: false,
+        channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+        plans: mockCommercialPlans,
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/relay/commercial/orders') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const orders = scenario === 'showcase' ? mockCommercialOrders(user.id) : [];
+      const orderNo = String(url.searchParams.get('order_no') || '').trim();
+      if (orderNo) {
+        const order = orders.find(item => item.order_no === orderNo);
+        return order ? send(res, 200, { order }) : send(res, 404, { error: 'order not found' });
+      }
+      return send(res, 200, { orders });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/relay/commercial/orders') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      if (scenario !== 'showcase') return send(res, 404, { error: 'commercial preview disabled' });
+      const body = await readBody(req);
+      const plan = mockCommercialPlans.find(item => item.id === Number(body.plan_id));
+      if (!plan) return send(res, 404, { error: 'plan not found' });
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      const order = {
+        order_no: `CCPREVIEW${Date.now()}`,
+        plan_id: plan.id,
+        plan_name: plan.name,
+        amount_fen: plan.price_fen,
+        currency: plan.currency,
+        channel: String(body.channel || 'alipay_page'),
+        status: 'pending',
+        checkout_url: 'https://openapi.alipay.test/gateway.do',
+        expires_at: expiresAt,
+        created_at: now,
+        updated_at: now,
+      };
+      commercialOrdersByUserId.set(user.id, [order, ...(commercialOrdersByUserId.get(user.id) || [])]);
+      return send(res, 201, { order });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/relay/commercial/orders/cancel') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const orderNo = String(body.order_no || '').trim();
+      const order = mockCommercialOrders(user.id).find(item => item.order_no === orderNo);
+      if (!order) return send(res, 404, { error: 'order not found' });
+      if (!['created', 'pending', 'failed', 'closed'].includes(order.status)) {
+        return send(res, 409, { error: 'order can no longer be cancelled', order });
+      }
+      const closed = order.status === 'closed' ? order : {
+        ...order,
+        status: 'closed',
+        checkout_url: '',
+        closed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      commercialOrdersByUserId.set(user.id, [
+        closed,
+        ...(commercialOrdersByUserId.get(user.id) || []).filter(item => item.order_no !== orderNo),
+      ]);
+      return send(res, 200, { ok: true, order: closed });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/relay/key') {
@@ -801,6 +1411,25 @@ async function handleApi(req, res) {
       return send(res, 200, { conversations: showcaseByUserId.get(user.id)?.conversations || [] });
     }
 
+    // Showcase-only in-memory implementation for per-conversation notification preferences.
+    if (req.method === 'PUT' && url.pathname === '/api/conversations/notification-preferences') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const topicId = String(body.topic_id || '').trim();
+      if (!topicId || typeof body.muted !== 'boolean') {
+        return send(res, 400, { error: 'topic_id and muted are required' });
+      }
+      const conversation = (showcaseByUserId.get(user.id)?.conversations || [])
+        .find((item) => item.id === topicId);
+      if (!conversation) return send(res, 404, { error: 'conversation not found' });
+      conversation.notifications_muted = body.muted;
+      return send(res, 200, {
+        topic_id: topicId,
+        notifications_muted: conversation.notifications_muted,
+      });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/projects') {
       const user = requireUser(req, res);
       if (!user) return;
@@ -820,6 +1449,41 @@ async function handleApi(req, res) {
       projects.unshift(project);
       projectsByUserId.set(user.id, projects);
       return send(res, 201, { project });
+    }
+
+    if (req.method === 'PATCH' && url.pathname === '/api/projects') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const projectId = Number(body.project_id || 0);
+      const name = String(body.name || '').trim();
+      if (!projectId || !name || [...name].length > 128) return send(res, 400, { error: 'invalid project' });
+      const projects = projectsByUserId.get(user.id) || [];
+      const project = projects.find((item) => Number(item.id) === projectId);
+      if (!project) return send(res, 404, { error: 'project not found' });
+      if (projects.some((item) => Number(item.id) !== projectId && item.name === name)) {
+        return send(res, 409, { error: 'project name already exists' });
+      }
+      project.name = name;
+      project.updated_at = new Date().toISOString();
+      refreshProjectAssignments(user.id);
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === 'DELETE' && url.pathname === '/api/projects') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const projectId = Number(url.searchParams.get('project_id') || 0);
+      const projects = projectsByUserId.get(user.id) || [];
+      if (!projects.some((item) => Number(item.id) === projectId)) return send(res, 404, { error: 'project not found' });
+      projectsByUserId.set(user.id, projects.filter((item) => Number(item.id) !== projectId));
+      const assignments = projectTopicsByUserId.get(user.id) || new Map();
+      for (const [topicId, assignedProjectId] of assignments.entries()) {
+        if (Number(assignedProjectId) === projectId) assignments.delete(topicId);
+      }
+      projectTopicsByUserId.set(user.id, assignments);
+      refreshProjectAssignments(user.id);
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/projects/topic') {
@@ -859,7 +1523,7 @@ async function handleApi(req, res) {
       if (!topicId.startsWith('p2p_') || !name || [...name].length > 80) {
         return send(res, 400, { error: 'invalid task name' });
       }
-      const conversation = showcaseByUserId.get(user.id)?.conversations.find((item) => item.id === topicId && item.is_bot);
+      const conversation = showcaseByUserId.get(user.id)?.conversations.find((item) => item.id === topicId);
       if (!conversation) return send(res, 404, { error: 'task not found' });
       conversation.name = name;
       return send(res, 200, { ok: true, topic_id: topicId, name });
@@ -918,22 +1582,32 @@ async function handleApi(req, res) {
           console.log(`[mock] no agent socket for bot uid=${match.bot.id}; message stored only`);
         }
         if (echoReplies) {
-          const echoMessage = storeMessage(topicId, {
-            from_uid: match.bot.id,
-            from: match.bot.id,
-            content: `mock echo: ${typeof content === 'string' ? content : JSON.stringify(content)}`,
-            type: 'text',
-            msg_type: 'text',
-            role: 'assistant',
-          });
-          const sockets = webSocketsByUserId.get(match.ownerId);
-          console.log(`[mock] echo reply ${sockets?.size || 0} web socket(s)`);
           broadcastToTopicOwner(topicId, {
-            data: {
-              ...echoMessage,
-              from: match.bot.id,
+            info: {
+              topic: topicId,
+              what: 'kp',
+              from: `usr${match.bot.id}`,
             },
           });
+          console.log(`[mock] typing indicator from bot uid=${match.bot.id}; echo in ${echoReplyDelayMs}ms`);
+          setTimeout(() => {
+            const echoMessage = storeMessage(topicId, {
+              from_uid: match.bot.id,
+              from: match.bot.id,
+              content: `mock echo: ${typeof content === 'string' ? content : JSON.stringify(content)}`,
+              type: 'text',
+              msg_type: 'text',
+              role: 'assistant',
+            });
+            const sockets = webSocketsByUserId.get(match.ownerId);
+            console.log(`[mock] echo reply ${sockets?.size || 0} web socket(s)`);
+            broadcastToTopicOwner(topicId, {
+              data: {
+                ...echoMessage,
+                from: match.bot.id,
+              },
+            });
+          }, echoReplyDelayMs);
         }
       } else {
         console.log(`[mock] no bot found for topic=${topicId || '-'}`);
@@ -1118,6 +1792,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`[mock] CatsCo local onboarding mock server listening on http://localhost:${port}`);
   console.log(`[mock] scenario=${scenario} (set MOCK_CATS_SCENARIO=new|existing|showcase)`);
   console.log(`[mock] echoReplies=${echoReplies} (set MOCK_CATS_ECHO=1 to echo without a real model)`);
+  if (echoReplies) console.log(`[mock] echoReplyDelayMs=${echoReplyDelayMs}`);
   if (scenario === 'showcase') {
     console.log(`[mock] showcase login: ${showcaseUsername} / ${showcasePassword}`);
   }

@@ -21,29 +21,41 @@ type ClientMessage struct {
 	Friend      *MsgClientFriend `json:"friend,omitempty"`
 	DeviceRPC   *MsgDeviceRPC    `json:"device_rpc,omitempty"`
 	ThinToolRPC *MsgThinToolRPC  `json:"thin_tool_rpc,omitempty"`
+	// SkillMutationGrant is accepted only from the current authenticated Bot
+	// runtime connection. It issues authorization; it never mutates a Skill.
+	SkillMutationGrant *MsgSkillMutationGrant `json:"skill_mutation_grant,omitempty"`
 }
 
 // ServerMessage is the top-level server-to-client message envelope.
 type ServerMessage struct {
-	Ctrl        *MsgServerCtrl                `json:"ctrl,omitempty"`
-	Data        *MsgServerData                `json:"data,omitempty"`
-	TaskStatus  *types.ConversationTaskStatus `json:"task_status,omitempty"`
-	Pres        *MsgServerPres                `json:"pres,omitempty"`
-	Meta        *MsgServerMeta                `json:"meta,omitempty"`
-	Info        *MsgServerInfo                `json:"info,omitempty"`
-	Friend      *MsgServerFriend              `json:"friend,omitempty"`
-	DeviceRPC   *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
-	ThinToolRPC *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
+	Ctrl               *MsgServerCtrl                `json:"ctrl,omitempty"`
+	Data               *MsgServerData                `json:"data,omitempty"`
+	TaskStatus         *types.ConversationTaskStatus `json:"task_status,omitempty"`
+	Pres               *MsgServerPres                `json:"pres,omitempty"`
+	Meta               *MsgServerMeta                `json:"meta,omitempty"`
+	Info               *MsgServerInfo                `json:"info,omitempty"`
+	Friend             *MsgServerFriend              `json:"friend,omitempty"`
+	DeviceRPC          *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
+	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
+	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
+
+	// suppressPushNotification is server-only provenance. It must never be
+	// serialized to a web client or be set from client-provided metadata.
+	suppressPushNotification bool
 }
 
 // --- Client messages ---
 
 type MsgClientHi struct {
-	ID        string             `json:"id,omitempty"`
-	UserAgent string             `json:"ua,omitempty"`
-	Version   string             `json:"ver,omitempty"`
-	Lang      string             `json:"lang,omitempty"`
-	Device    *MsgClientHiDevice `json:"device,omitempty"`
+	ID                 string             `json:"id,omitempty"`
+	UserAgent          string             `json:"ua,omitempty"`
+	Version            string             `json:"ver,omitempty"`
+	Lang               string             `json:"lang,omitempty"`
+	Visibility         string             `json:"visibility,omitempty"`
+	PushSubscriptionID string             `json:"push_subscription_id,omitempty"`
+	ActiveTopic        string             `json:"active_topic,omitempty"`
+	Focused            bool               `json:"focused,omitempty"`
+	Device             *MsgClientHiDevice `json:"device,omitempty"`
 }
 
 type MsgClientHiDevice struct {
@@ -51,6 +63,7 @@ type MsgClientHiDevice struct {
 	DisplayName    string             `json:"display_name,omitempty"`
 	BodyID         string             `json:"body_id,omitempty"`
 	InstallationID string             `json:"installation_id,omitempty"`
+	RuntimeRole    string             `json:"runtime_role,omitempty"`
 	OS             string             `json:"os,omitempty"`
 	Status         string             `json:"status,omitempty"`
 	Capabilities   []string           `json:"capabilities,omitempty"`
@@ -88,6 +101,7 @@ type MsgClientPub struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
+	Mentions      []string               `json:"mentions,omitempty"`
 }
 
 type MsgClientGet struct {
@@ -110,9 +124,13 @@ type MsgClientDel struct {
 }
 
 type MsgClientNote struct {
-	Topic string `json:"topic"`
-	What  string `json:"what"` // "read", "recv", "kp" (key press / typing)
-	SeqID int    `json:"seq,omitempty"`
+	Topic              string `json:"topic"`
+	What               string `json:"what"` // "read", "recv", "kp" (key press / typing), "attention"
+	SeqID              int    `json:"seq,omitempty"`
+	Visibility         string `json:"visibility,omitempty"`
+	PushSubscriptionID string `json:"push_subscription_id,omitempty"`
+	ActiveTopic        string `json:"active_topic,omitempty"`
+	Focused            bool   `json:"focused,omitempty"`
 }
 
 // MsgClientFriend is the new friend protocol message.
@@ -169,6 +187,31 @@ type MsgDeviceRPCError struct {
 	Details map[string]interface{} `json:"details,omitempty"`
 }
 
+// MsgSkillMutationGrant is the candidate-bound authorization exchange between
+// one active Bot runtime and CatsCo. Actor, Bot, and runtime identities in the
+// result are server-attributed and cannot be supplied by the request.
+type MsgSkillMutationGrant struct {
+	ID                         string             `json:"id,omitempty"`
+	Type                       string             `json:"type"` // "request" or "result"
+	RequestID                  string             `json:"request_id"`
+	ClientRequestID            string             `json:"client_request_id,omitempty"`
+	SourceTopicID              string             `json:"source_topic_id,omitempty"`
+	SourceMessageID            int64              `json:"source_message_id,omitempty"`
+	LocalSkillID               string             `json:"local_skill_id,omitempty"`
+	Operation                  string             `json:"operation,omitempty"`
+	CandidateContentHash       string             `json:"candidate_content_hash,omitempty"`
+	CandidateSizeBytes         int64              `json:"candidate_size_bytes,omitempty"`
+	ExpectedDefinitionRevision int64              `json:"expected_definition_revision,omitempty"`
+	ExpectedPreviousHash       string             `json:"expected_previous_content_hash,omitempty"`
+	BeforeReference            *types.BotSkillRef `json:"before_reference,omitempty"`
+	Grant                      string             `json:"grant,omitempty"`
+	ExpiresAt                  int64              `json:"expires_at,omitempty"`
+	ActorUserID                string             `json:"actor_user_id,omitempty"`
+	AgentID                    string             `json:"agent_id,omitempty"`
+	RuntimeBodyID              string             `json:"runtime_body_id,omitempty"`
+	Error                      *MsgDeviceRPCError `json:"error,omitempty"`
+}
+
 // MsgThinToolRPC carries a direct tool request/result between two connected
 // runtimes. Cats Company only routes this message; tool permissions, argument
 // validity, and execution errors are returned by the target runtime as-is.
@@ -209,7 +252,8 @@ type MsgServerData struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
-	Mentions      []string               `json:"mentions,omitempty"` // @mentioned user IDs (e.g., ["usr123"])
+	Mentions      []string               `json:"mentions,omitempty"` // Structured @mention targets (for example ["usr123"] or ["all"]).
+	MemberCount   int                    `json:"member_count,omitempty"`
 }
 
 type MsgServerPres struct {

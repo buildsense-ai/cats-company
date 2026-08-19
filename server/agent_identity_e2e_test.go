@@ -42,6 +42,10 @@ func (s *agentIdentityE2EStore) GetBotOwner(botUID int64) (int64, error) {
 	return owner, nil
 }
 
+func (s *agentIdentityE2EStore) GetTenantName(botUID int64) (string, error) {
+	return "", nil
+}
+
 func (s *agentIdentityE2EStore) AreFriends(uid1, uid2 int64) (bool, error) {
 	return s.friendPairs[agentPairKey(uid1, uid2)], nil
 }

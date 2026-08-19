@@ -802,16 +802,16 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 	switch messageType {
 	case "text":
 		text = extractFeishuText(event.Message.Content)
-	case "image", "file":
+	case "image", "file", "audio":
 		var err error
 		media, err = extractFeishuInboundMedia(messageType, event.Message.Content)
 		if err != nil {
 			log.Printf("decode feishu media content failed: %v", err)
-			return h.replyToFeishu(ctx, replyIDType, replyID, "未能读取飞书图片或文件，请稍后重试。")
+			return h.replyToFeishu(ctx, replyIDType, replyID, "未能读取飞书图片、文件或语音，请稍后重试。")
 		}
 		text = media.Text
 	default:
-		return h.replyToFeishu(ctx, replyIDType, replyID, "当前飞书入口暂不支持这种消息类型，请发送文本、图片或文件。")
+		return h.replyToFeishu(ctx, replyIDType, replyID, "当前飞书入口暂不支持这种消息类型，请发送文本、图片、文件或语音。")
 	}
 	if strings.TrimSpace(text) == "" && media == nil {
 		return nil
@@ -867,10 +867,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return err
 	} else if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && !channelAgentRouteSelectedAfterGroup(agentRoute, groupBinding) {
 		groupText := strings.TrimSpace(text)
-		if groupText == "" {
-			return nil
-		}
-		return deliverInboundChannelTextToGroup(h.db, h.hub, groupBinding.CanonicalUID, groupBinding, groupText, "feishu-group:"+event.Message.MessageID, "feishu", map[string]interface{}{
+		metadata := map[string]interface{}{
 			"source_channel":            "feishu",
 			"channel_app_id":            appID,
 			"channel_user_id":           channelUserID,
@@ -878,10 +875,37 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 			"channel_conversation_id":   event.Message.ChatID,
 			"channel_conversation_type": chatType,
 			"channel_message_id":        event.Message.MessageID,
+			"channel_message_type":      messageType,
 			"channel_identity_source":   "feishu.event",
 			"channel_identity_trust":    "feishu_event_callback",
 			"channel_group_binding_id":  groupBinding.ID,
-		})
+		}
+		clientMsgID := "feishu-group:" + event.Message.MessageID
+		if media == nil {
+			if groupText == "" {
+				return nil
+			}
+			return deliverInboundChannelTextToGroup(h.db, h.hub, groupBinding.CanonicalUID, groupBinding, groupText, clientMsgID, "feishu", metadata)
+		}
+
+		metadata["channel_media_key"] = media.ResourceKey
+		download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
+		if err != nil {
+			log.Printf("download feishu group media failed: %v", err)
+			return h.replyToFeishu(ctx, replyIDType, replyID, "读取飞书图片、文件或语音失败，请稍后重试。")
+		}
+		if download.FileName == "" {
+			download.FileName = media.FileName
+		}
+		if download.ContentType == "" {
+			download.ContentType = media.ContentType
+		}
+		file, err := saveChannelMediaUpload(media.UploadType, download)
+		if err != nil {
+			log.Printf("save feishu group media failed: %v", err)
+			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
+		}
+		return deliverInboundChannelMessageToGroup(h.db, h.hub, groupBinding.CanonicalUID, groupBinding, groupText, []uploadPayload{file}, clientMsgID, "feishu", metadata)
 	}
 
 	if chatType == "group" && !groupTriggered {
@@ -892,7 +916,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码。绑定完成后，我会把消息转到对应的虚拟员工或群聊。")
 	}
 	if chatType == "group" && cmd.Kind == "" && media != nil {
-		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码，再发送图片或文件。")
+		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码，再发送图片、文件或语音。")
 	}
 
 	binding, err := h.resolveCurrentFeishuBinding(appID, channelUserID, event.Message.ChatID, chatType, actorUID)
@@ -913,7 +937,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
 		if err != nil {
 			log.Printf("download feishu media failed: %v", err)
-			return h.replyToFeishu(ctx, replyIDType, replyID, "读取飞书图片或文件失败，请稍后重试。")
+			return h.replyToFeishu(ctx, replyIDType, replyID, "读取飞书图片、文件或语音失败，请稍后重试。")
 		}
 		if download.FileName == "" {
 			download.FileName = media.FileName
@@ -924,7 +948,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		file, err := saveChannelMediaUpload(media.UploadType, download)
 		if err != nil {
 			log.Printf("save feishu media failed: %v", err)
-			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片或文件失败，请稍后重试。")
+			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
 		}
 		return h.deliverInboundMessageToAgent(actorUID, binding.AgentUID, text, []uploadPayload{file}, "feishu:"+event.Message.MessageID, metadata)
 	}
@@ -1018,7 +1042,7 @@ func (h *FeishuChannelHandler) handleFeishuNativeGroupMessage(ctx context.Contex
 	metadata["channel_media_key"] = media.ResourceKey
 	download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
 	if err != nil {
-		return true, h.replyToFeishu(ctx, "chat_id", chatID, "读取飞书图片或文件失败，请稍后重试。")
+		return true, h.replyToFeishu(ctx, "chat_id", chatID, "读取飞书图片、文件或语音失败，请稍后重试。")
 	}
 	if download.FileName == "" {
 		download.FileName = media.FileName
@@ -2332,6 +2356,19 @@ func extractFeishuInboundMedia(messageType, content string) (*feishuInboundMedia
 			ContentType:  strings.TrimSpace(parsed.ContentType),
 			Text:         strings.TrimSpace(parsed.Text),
 		}, nil
+	case "audio":
+		key := strings.TrimSpace(parsed.FileKey)
+		if key == "" {
+			return nil, errors.New("missing feishu audio key")
+		}
+		return &feishuInboundMedia{
+			ResourceKey:  key,
+			ResourceType: "file",
+			UploadType:   "file",
+			FileName:     firstNonEmpty(strings.TrimSpace(parsed.FileName), strings.TrimSpace(parsed.Name), "feishu-audio-"+key),
+			ContentType:  strings.TrimSpace(parsed.ContentType),
+			Text:         strings.TrimSpace(parsed.Text),
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported feishu media type %q", messageType)
 	}
@@ -2978,6 +3015,18 @@ func (h *Hub) clearChannelInboundReplyRoute(topicID string, canonicalUID int64, 
 	dispatcher.ClearInboundReplyRoute(topicID, canonicalUID, agentUID)
 }
 
+func (h *Hub) clearChannelInboundReplyRoutesForIdentity(channel, appID, userID string) {
+	if h == nil || strings.TrimSpace(channel) == "" || strings.TrimSpace(userID) == "" {
+		return
+	}
+	h.mu.RLock()
+	dispatcher := h.channelOut
+	h.mu.RUnlock()
+	if dispatcher != nil {
+		dispatcher.ClearInboundReplyRoutesForIdentity(channel, appID, userID)
+	}
+}
+
 func channelOutboundReplyRouteKey(topicID string, canonicalUID int64, agentUID int64) string {
 	return fmt.Sprintf("%s:%d:%d", strings.TrimSpace(topicID), canonicalUID, agentUID)
 }
@@ -3017,6 +3066,21 @@ func (d *ChannelOutboundDispatcher) ClearInboundReplyRoute(topicID string, canon
 	d.mu.Lock()
 	delete(d.replyRoutes, key)
 	d.mu.Unlock()
+}
+
+func (d *ChannelOutboundDispatcher) ClearInboundReplyRoutesForIdentity(channel, appID, userID string) {
+	if d == nil || strings.TrimSpace(channel) == "" || strings.TrimSpace(userID) == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for key, route := range d.replyRoutes {
+		if normalizeChannel(route.Query.Channel) == normalizeChannel(channel) &&
+			strings.TrimSpace(route.Query.ChannelAppID) == strings.TrimSpace(appID) &&
+			strings.TrimSpace(route.Query.ChannelUserID) == strings.TrimSpace(userID) {
+			delete(d.replyRoutes, key)
+		}
+	}
 }
 
 func (h *Hub) forwardChannelBotReply(senderUID int64, peerUID int64, topicID string, payload *normalizedMessagePayload, msgID int64) {
@@ -3326,6 +3390,12 @@ func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.Ch
 	binding, err := bindings.ResolveChannelAgentBinding(route.Query)
 	if err != nil || binding == nil {
 		return binding, false, err
+	}
+	if normalizeChannel(binding.Channel) == "feishu" {
+		current, err := channelBindingMatchesCurrentAgentRoute(bindings, binding)
+		if err != nil || !current {
+			return binding, false, err
+		}
 	}
 	return binding, true, nil
 }

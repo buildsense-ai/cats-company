@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -86,6 +87,12 @@ func TestRuntimePlanMessageIsTransient(t *testing.T) {
 	}
 	if payload.DisplayType != "runtime_plan" {
 		t.Fatalf("DisplayType = %q, want runtime_plan", payload.DisplayType)
+	}
+}
+
+func TestVideoMessageDoesNotExpandDurableAgentContext(t *testing.T) {
+	if isDurableAgentContextMessage(&types.Message{}, "video") {
+		t.Fatal("video unexpectedly entered durable agent context")
 	}
 }
 
@@ -272,6 +279,83 @@ func TestSaveNormalizedMessageUsesIdempotentStore(t *testing.T) {
 	}
 }
 
+func TestSaveNormalizedMessagePersistsMetadataThroughOptionalStore(t *testing.T) {
+	messageStore := &metadataMessageStore{idempotentMessageStore: idempotentMessageStore{id: 73, duplicate: true}}
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:     "p2p_1_2",
+		ClientMsgID: "catsco-metadata-1",
+		Content:     json.RawMessage(`"hello"`),
+		Metadata: map[string]interface{}{
+			"source_channel": "feishu",
+			"nested": map[string]interface{}{
+				"attempt": float64(2),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	result, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 12, payload)
+	if err != nil {
+		t.Fatalf("save normalized message: %v", err)
+	}
+	if result.ID != 73 || !result.Duplicate {
+		t.Fatalf("result = %#v, want id=73 duplicate=true", result)
+	}
+	if messageStore.calls != 1 || messageStore.replyTo != 12 || messageStore.clientMsgID != "catsco-metadata-1" {
+		t.Fatalf("metadata save arguments = %#v", messageStore)
+	}
+	if got := firstMetadataString(messageStore.metadata, "source_channel"); got != "feishu" {
+		t.Fatalf("persisted source_channel = %q, want feishu", got)
+	}
+}
+
+func TestSaveNormalizedMessageRejectsArtifactMetadataWithoutPersistenceCapability(t *testing.T) {
+	messageStore := &idempotentMessageStore{id: 73}
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:     "p2p_1_2",
+		ClientMsgID: "legacy-metadata-1",
+		Content:     json.RawMessage(`"hello"`),
+		Metadata: map[string]interface{}{
+			"artifact_context": map[string]interface{}{"id": "lesson-game"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	if _, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload); err == nil || !strings.Contains(err.Error(), "metadata persistence") {
+		t.Fatalf("save error = %v, want metadata persistence failure", err)
+	}
+	if messageStore.calls != 0 {
+		t.Fatalf("legacy store should not receive a lossy fallback save: calls=%d", messageStore.calls)
+	}
+}
+
+func TestSaveNormalizedMessageKeepsLegacyFallbackForUntrustedMetadata(t *testing.T) {
+	messageStore := &idempotentMessageStore{id: 74}
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:     "p2p_1_2",
+		ClientMsgID: "legacy-metadata-1",
+		Content:     json.RawMessage(`"hello"`),
+		Metadata: map[string]interface{}{
+			"source_channel": "feishu",
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	result, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload)
+	if err != nil {
+		t.Fatalf("legacy fallback save: %v", err)
+	}
+	if result.ID != 74 || messageStore.calls != 1 {
+		t.Fatalf("legacy fallback result = %#v store=%#v", result, messageStore)
+	}
+}
+
 func TestExtractPeerUIDRequiresSenderInTopic(t *testing.T) {
 	if got := extractPeerUID("p2p_1_2", 1); got != 2 {
 		t.Fatalf("extractPeerUID for uid 1 = %d, want 2", got)
@@ -328,6 +412,9 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	}
 	if actor["user_id"] != "usr7" || actor["display_name"] != "Alice" {
 		t.Fatalf("unexpected actor identity: %#v", actor)
+	}
+	if actor["account_type"] != string(types.AccountHuman) || actor["is_bot"] != false {
+		t.Fatalf("unexpected actor account type: %#v", actor)
 	}
 	if agent["agent_id"] != "usr42" || agent["body_id"] != "body-mac" || agent["display_name"] != "Dev Agent Runtime" {
 		t.Fatalf("unexpected agent identity: %#v", agent)
@@ -484,6 +571,9 @@ func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	if _, ok := identity["device_grants"]; ok {
 		t.Fatalf("REST history must not reissue grants: %#v", identity["device_grants"])
 	}
+	if store.getUsersByIDsCalls != 1 {
+		t.Fatalf("history identity batch calls=%d, want 1", store.getUsersByIDsCalls)
+	}
 
 	forbiddenReq := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42", nil)
 	forbiddenReq = forbiddenReq.WithContext(context.WithValue(forbiddenReq.Context(), uidKey, int64(99)))
@@ -508,18 +598,26 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 		},
 		history: []*types.Message{
 			{ID: 1, TopicID: "grp_80", FromUID: 7, Content: "大家看一下", MsgType: "text"},
-			{ID: 2, TopicID: "grp_80", FromUID: 7, Content: "@usr43 只让另一个机器人处理", MsgType: "text"},
-			{ID: 3, TopicID: "grp_80", FromUID: 7, Content: "@usr42 请继续", MsgType: "text"},
-			{ID: 4, TopicID: "grp_80", FromUID: 42, Content: "我来处理", MsgType: "text"},
-			{ID: 5, TopicID: "grp_80", FromUID: 43, Content: "另一个机器人的回答", MsgType: "text"},
+			{ID: 2, TopicID: "grp_80", FromUID: 7, Content: "@usr43 只让另一个机器人处理", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@usr43 只让另一个机器人处理", Payload: map[string]interface{}{"mentions": []string{"usr43"}}}}},
+			{ID: 3, TopicID: "grp_80", FromUID: 7, Content: "@usr42 请继续", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@usr42 请继续", Payload: map[string]interface{}{"mentions": []string{"usr42"}}}}},
+			{ID: 4, TopicID: "grp_80", FromUID: 7, Content: "@所有人 一起处理", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@所有人 一起处理", Payload: map[string]interface{}{"mentions": []string{structuredMentionAllBots}}}}},
+			{ID: 5, TopicID: "grp_80", FromUID: 42, Content: "我来处理", MsgType: "text"},
+			{ID: 6, TopicID: "grp_80", FromUID: 43, Content: "另一个机器人的回答", MsgType: "text"},
 			{
-				ID: 6, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
+				ID: 7, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
 				ContentBlocks: []types.ContentBlock{{Type: "thinking", Thinking: "处理中"}},
+			},
+			{
+				ID: 8, TopicID: "grp_80", FromUID: 42, Content: "最终回答", MsgType: "text",
+				ContentBlocks: []types.ContentBlock{
+					{Type: "thinking", Thinking: "内部推理"},
+					{Type: "assistant_text", Text: "最终回答"},
+				},
 			},
 		},
 	}
 	handler := NewMessageHandler(store, NewHub(store, nil))
-	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=7&limit=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=9&limit=20", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
 	rec := httptest.NewRecorder()
 	handler.HandleGetMessages(rec, req)
@@ -535,16 +633,25 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode agent context response: %v", err)
 	}
-	if body.AgentUID != 42 || body.HasMore || len(body.Messages) != 6 {
+	if body.AgentUID != 42 || body.HasMore || len(body.Messages) != 8 {
 		t.Fatalf("unexpected agent context envelope: %#v", body)
 	}
 
-	wantEligible := []bool{true, false, true, true, false, false}
-	wantRoles := []string{"user", "user", "user", "assistant", "other_agent", "assistant"}
+	wantEligible := []bool{true, false, true, true, true, false, false, false}
+	wantRoles := []string{"user", "user", "user", "user", "assistant", "other_agent", "assistant", "assistant"}
 	for i, message := range body.Messages {
 		if message["context_eligible"] != wantEligible[i] || message["context_role"] != wantRoles[i] {
 			t.Fatalf("message %d context=%#v, want eligible=%v role=%s", i, message, wantEligible[i], wantRoles[i])
 		}
+	}
+	if body.Messages[3]["context_reason"] != "group_message_targets_all_agents" {
+		t.Fatalf("all-bots context reason=%#v", body.Messages[3]["context_reason"])
+	}
+	otherAgentMetadata := nestedMap(t, body.Messages[5], "metadata")
+	otherAgentIdentity := nestedMap(t, otherAgentMetadata, "catsco_identity")
+	otherAgentActor := nestedMap(t, otherAgentIdentity, "actor")
+	if otherAgentActor["account_type"] != string(types.AccountBot) || otherAgentActor["is_bot"] != true {
+		t.Fatalf("unexpected restored bot actor identity: %#v", otherAgentActor)
 	}
 }
 
@@ -608,11 +715,47 @@ func TestHandleGetMessagesAgentContextUsesStableBeforeCursor(t *testing.T) {
 	}
 }
 
+func TestHandleGetMessagesUsesStableBeforeCursor(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice"},
+			42: {ID: 42, Username: "dev_agent", AccountType: types.AccountBot},
+		},
+		history: []*types.Message{
+			{ID: 1, TopicID: "p2p_7_42", FromUID: 7, Content: "one", MsgType: "text"},
+			{ID: 2, TopicID: "p2p_7_42", FromUID: 42, Content: "two", MsgType: "text"},
+			{ID: 3, TopicID: "p2p_7_42", FromUID: 7, Content: "three", MsgType: "text"},
+			{ID: 4, TopicID: "p2p_7_42", FromUID: 7, Content: "current", MsgType: "text"},
+		},
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42&latest=1&before_id=4&limit=2", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+	handler.HandleGetMessages(rec, req)
+
+	var body struct {
+		Messages     []map[string]interface{} `json:"messages"`
+		HasMore      bool                     `json:"has_more"`
+		NextBeforeID float64                  `json:"next_before_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode web history cursor response: %v", err)
+	}
+	if rec.Code != http.StatusOK || !body.HasMore || body.NextBeforeID != 2 || len(body.Messages) != 2 {
+		t.Fatalf("unexpected web history cursor response: status=%d body=%#v", rec.Code, body)
+	}
+	if body.Messages[0]["id"] != float64(2) || body.Messages[1]["id"] != float64(3) {
+		t.Fatalf("messages=%#v, want ids 2,3", body.Messages)
+	}
+}
+
 type identityMessageStore struct {
 	store.Store
-	users        map[int64]*types.User
-	groupMembers []*types.GroupMember
-	history      []*types.Message
+	users              map[int64]*types.User
+	groupMembers       []*types.GroupMember
+	history            []*types.Message
+	getUsersByIDsCalls int
 }
 
 func (s *identityMessageStore) GetUser(id int64) (*types.User, error) {
@@ -620,6 +763,17 @@ func (s *identityMessageStore) GetUser(id int64) (*types.User, error) {
 		return user, nil
 	}
 	return nil, errors.New("user not found")
+}
+
+func (s *identityMessageStore) GetUsersByIDs(ids []int64) (map[int64]*types.User, error) {
+	s.getUsersByIDsCalls++
+	users := make(map[int64]*types.User, len(ids))
+	for _, id := range ids {
+		if user, ok := s.users[id]; ok {
+			users[id] = user
+		}
+	}
+	return users, nil
 }
 
 func (s *identityMessageStore) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
@@ -630,6 +784,10 @@ func (s *identityMessageStore) GetGroupMembers(groupID int64) ([]*types.GroupMem
 		}
 	}
 	return members, nil
+}
+
+func (s *identityMessageStore) GetGroup(groupID int64) (*types.Group, error) {
+	return &types.Group{ID: groupID, Kind: types.GroupKindStandard}, nil
 }
 
 func (s *identityMessageStore) IsChannelManagedGroup(groupID int64) (bool, error) {
@@ -764,4 +922,20 @@ func (s *idempotentMessageStore) GetLatestMessages(topicID string, limit, offset
 }
 func (s *idempotentMessageStore) GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error) {
 	return nil, nil
+}
+
+type metadataMessageStore struct {
+	idempotentMessageStore
+	replyTo     int64
+	metadata    map[string]interface{}
+	clientMsgID string
+	calls       int
+}
+
+func (s *metadataMessageStore) SaveMessageWithMetadata(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (int64, bool, error) {
+	s.calls++
+	s.replyTo = replyTo
+	s.clientMsgID = clientMsgID
+	s.metadata = metadata
+	return s.id, s.duplicate, nil
 }

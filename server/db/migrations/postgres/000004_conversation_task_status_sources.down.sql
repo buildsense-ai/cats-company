@@ -1,0 +1,2 @@
+DROP TRIGGER IF EXISTS trg_conversation_task_status_sources_updated_at ON conversation_task_status_sources;
+DROP TABLE IF EXISTS conversation_task_status_sources;

@@ -12,13 +12,29 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 const defaultRelayAdminTimeout = 15 * time.Second
 
+type commercialQuotaSummaryStore interface {
+	GetCommercialSummary(uid int64) (*types.CommercialSummary, error)
+}
+
 type RelayKeyHandler struct {
 	admin                     *RelayAdminClient
 	deviceModelStatusResolver func(uid int64) (DeviceModelStatus, bool)
+	commercialStore           commercialQuotaSummaryStore
+	commercialEnforceEnabled  bool
+	commercialEnforceUIDs     map[int64]bool
+	commercialSyncer          *CommercialRelaySyncer
+}
+
+func (h *RelayKeyHandler) SetCommercialRelaySyncer(syncer *CommercialRelaySyncer) {
+	if h != nil {
+		h.commercialSyncer = syncer
+	}
 }
 
 type RelayAdminClient struct {
@@ -45,6 +61,12 @@ type relayKeyProxyRequest struct {
 	Username string `json:"username,omitempty"`
 }
 
+// defaultRelayKeyName is stable per CatsCompany user while remaining unique
+// in Bifrost, where virtual-key names are globally unique.
+func defaultRelayKeyName(uid int64) string {
+	return fmt.Sprintf("CatsCo API Key %d", uid)
+}
+
 type relayKeyResponse struct {
 	Configured bool          `json:"configured"`
 	Key        *relayKeyInfo `json:"key,omitempty"`
@@ -67,16 +89,18 @@ type relayUsageResponse struct {
 }
 
 type relayUsageSummary struct {
-	Source        string  `json:"source,omitempty"`
-	Model         string  `json:"model"`
-	Provider      string  `json:"provider,omitempty"`
-	UsedCNY       float64 `json:"used_cny"`
-	LimitCNY      float64 `json:"limit_cny"`
-	RemainingCNY  float64 `json:"remaining_cny"`
-	Percent       float64 `json:"percent"`
-	Status        string  `json:"status"`
-	ResetDuration string  `json:"reset_duration,omitempty"`
-	LastReset     string  `json:"last_reset,omitempty"`
+	Source           string  `json:"source,omitempty"`
+	Model            string  `json:"model"`
+	Provider         string  `json:"provider,omitempty"`
+	QuotaConfigured  bool    `json:"quota_configured"`
+	Percent          float64 `json:"percent"`
+	RemainingPercent float64 `json:"remaining_percent"`
+	Status           string  `json:"status"`
+	ResetDuration    string  `json:"reset_duration,omitempty"`
+	LastReset        string  `json:"last_reset,omitempty"`
+	UsedCNY          float64 `json:"-"`
+	LimitCNY         float64 `json:"-"`
+	RemainingCNY     float64 `json:"-"`
 }
 
 func NewRelayKeyHandlerFromEnv() *RelayKeyHandler {
@@ -88,6 +112,25 @@ func (h *RelayKeyHandler) SetDeviceModelStatusResolver(resolver func(uid int64) 
 		return
 	}
 	h.deviceModelStatusResolver = resolver
+}
+
+func (h *RelayKeyHandler) SetCommercialStore(store CommercialStore) {
+	if h != nil {
+		h.commercialStore = store
+	}
+}
+
+func (h *RelayKeyHandler) SetCommercialQuotaSource(store commercialQuotaSummaryStore, enforceEnabled bool, enforceUIDs map[int64]bool) {
+	if h == nil {
+		return
+	}
+	h.commercialStore = store
+	h.commercialEnforceEnabled = enforceEnabled
+	h.commercialEnforceUIDs = copyCommercialUIDSet(enforceUIDs)
+}
+
+func (h *RelayKeyHandler) commercialQuotaEnforced(uid int64) bool {
+	return h != nil && h.commercialStore != nil && uid > 0 && (h.commercialEnforceEnabled || h.commercialEnforceUIDs[uid])
 }
 
 func NewRelayAdminClientFromEnv() *RelayAdminClient {
@@ -133,8 +176,12 @@ func (h *RelayKeyHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = defaultRelayKeyName(uid)
+		}
 		h.forward(w, r, http.MethodPost, uid, "", relayKeyProxyRequest{
-			Name:     strings.TrimSpace(req.Name),
+			Name:     name,
 			Username: UsernameFromContext(r.Context()),
 		})
 	case http.MethodDelete:
@@ -190,13 +237,14 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	source := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
 	model := strings.TrimSpace(r.URL.Query().Get("model"))
-	if source == "" && model == "" && h.deviceModelStatusResolver != nil {
+	scope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope")))
+	if scope != "total" && source == "" && model == "" && h.deviceModelStatusResolver != nil {
 		if status, ok := h.deviceModelStatusResolver(uid); ok {
 			source = strings.ToLower(strings.TrimSpace(status.Source))
 			model = strings.TrimSpace(status.Model)
 		}
 	}
-	if source == "custom" || normalizeRelayModelName(model) == "custom" || strings.EqualFold(model, "自定义模型") {
+	if scope != "total" && (source == "custom" || normalizeRelayModelName(model) == "custom" || strings.EqualFold(model, "自定义模型")) {
 		customModel := model
 		if customModel == "" || normalizeRelayModelName(customModel) == "custom" || strings.EqualFold(customModel, "自定义模型") {
 			customModel = "自定义模型"
@@ -218,20 +266,163 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 	user, err := fetchRelayUsageForUID(r.Context(), h.admin, uid)
 	if err != nil {
 		status := http.StatusBadGateway
-		message := "relay admin request failed"
 		if relayErr, ok := err.(relayAdminError); ok {
-			message = relayErr.message
 			if relayErr.status >= 400 && relayErr.status < 500 {
 				status = relayErr.status
 			}
 		}
-		writeJSON(w, status, map[string]string{"error": message})
+		writeJSON(w, status, map[string]string{"error": "relay admin request failed"})
+		return
+	}
+	if scope == "total" {
+		var commercialSummary *types.CommercialSummary
+		if h.commercialStore != nil {
+			commercialSummary, err = h.commercialStore.GetCommercialSummary(uid)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load total quota"})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, buildRelayTotalUsageResponse(user, commercialSummary))
 		return
 	}
 	if model == "" {
 		model = relayEnv("CATS_RELAY_DEFAULT_MODEL", "MiniMax-M2.7")
 	}
+	if h.commercialQuotaEnforced(uid) {
+		summary, summaryErr := h.commercialStore.GetCommercialSummary(uid)
+		if summaryErr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "commercial quota is unavailable"})
+			return
+		}
+		if !commercialSummaryHasQuota(summary) {
+			writeJSON(w, http.StatusOK, buildRelayUsageResponse(user, model))
+			return
+		}
+		if !commercialQuotaModelAllowed(summary, model) {
+			writeJSON(w, http.StatusOK, relayUsageResponse{Configured: user != nil && user.Configured})
+			return
+		}
+		writeJSON(w, http.StatusOK, buildRelaySharedUsageResponse(user, model))
+		return
+	}
 	writeJSON(w, http.StatusOK, buildRelayUsageResponse(user, model))
+}
+
+func commercialSummaryHasQuota(summary *types.CommercialSummary) bool {
+	if summary == nil {
+		return false
+	}
+	for _, amount := range summary.TotalsByModel {
+		if amount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func buildRelayTotalUsageResponse(user *commercialRelayUsageUser, commercialSummary *types.CommercialSummary) relayUsageResponse {
+	if user == nil || !user.Configured {
+		return relayUsageResponse{Configured: false}
+	}
+	if user.Limits.MonthlyBudget.MaxLimit > 0 {
+		return relayUsageResponseForBudget("套餐总额度", user.Limits.MonthlyBudget)
+	}
+
+	commercialModels := map[string]bool{}
+	totalLimit := 0.0
+	if commercialSummary != nil {
+		for model, amount := range commercialSummary.TotalsByModel {
+			model = normalizeRelayModelName(model)
+			if model == "" || model == "*" || amount <= 0 {
+				continue
+			}
+			commercialModels[model] = true
+			totalLimit += amount
+		}
+	}
+
+	seen := map[string]bool{}
+	totalUsed := 0.0
+	fallbackLimit := 0.0
+	resetDuration := ""
+	lastReset := ""
+	for _, limit := range user.Limits.ModelLimits {
+		if limit.Budget.MaxLimit <= 0 || !relayLimitMatchesCommercialModels(limit, commercialModels) {
+			continue
+		}
+		key := commercialManagedBudgetKey(limit.Provider, limit.AllowedModels)
+		if len(limit.AllowedModels) == 0 {
+			key += "\x00" + normalizeRelayModelName(limit.Model)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		totalUsed += limit.Budget.CurrentUsage
+		fallbackLimit = math.Max(fallbackLimit, limit.Budget.MaxLimit)
+		if resetDuration == "" {
+			resetDuration = limit.Budget.ResetDuration
+		}
+		if lastReset == "" || limit.Budget.LastReset > lastReset {
+			lastReset = limit.Budget.LastReset
+		}
+	}
+	if totalLimit <= 0 {
+		totalLimit = fallbackLimit
+	}
+	return relayUsageResponseForBudget("套餐总额度", commercialRelayBudget{
+		MaxLimit:      totalLimit,
+		CurrentUsage:  totalUsed,
+		ResetDuration: resetDuration,
+		LastReset:     lastReset,
+	})
+}
+
+func relayLimitMatchesCommercialModels(limit commercialRelayModelLimit, models map[string]bool) bool {
+	if len(models) == 0 {
+		return true
+	}
+	if models[normalizeRelayModelName(limit.Model)] {
+		return true
+	}
+	for _, model := range limit.AllowedModels {
+		if models[normalizeRelayModelName(model)] {
+			return true
+		}
+	}
+	return false
+}
+
+func relayUsageResponseForBudget(label string, budget commercialRelayBudget) relayUsageResponse {
+	percent := 0.0
+	remainingPercent := 0.0
+	status := "normal"
+	if budget.MaxLimit > 0 {
+		percent = budget.CurrentUsage / budget.MaxLimit * 100
+		remainingPercent = math.Max(0, 100-percent)
+		if budget.CurrentUsage > budget.MaxLimit+0.000001 {
+			status = "over_limit"
+		} else if percent >= 90 {
+			status = "high"
+		}
+	}
+	return relayUsageResponse{
+		Configured: true,
+		Summary: &relayUsageSummary{
+			Source:           "relay",
+			Model:            label,
+			QuotaConfigured:  budget.MaxLimit > 0,
+			Percent:          percent,
+			RemainingPercent: remainingPercent,
+			UsedCNY:          budget.CurrentUsage,
+			LimitCNY:         budget.MaxLimit,
+			RemainingCNY:     math.Max(0, budget.MaxLimit-budget.CurrentUsage),
+			Status:           status,
+			ResetDuration:    budget.ResetDuration,
+			LastReset:        budget.LastReset,
+		},
+	}
 }
 
 func (h *RelayKeyHandler) forward(w http.ResponseWriter, r *http.Request, method string, uid int64, suffix string, body interface{}) {
@@ -239,20 +430,21 @@ func (h *RelayKeyHandler) forward(w http.ResponseWriter, r *http.Request, method
 	err := h.admin.Do(r.Context(), method, fmt.Sprintf("/internal/users/%d/key%s", uid, suffix), body, &out)
 	if err != nil {
 		status := http.StatusBadGateway
-		message := "relay admin request failed"
 		if relayErr, ok := err.(relayAdminError); ok {
-			message = relayErr.message
 			if relayErr.status >= 400 && relayErr.status < 500 {
 				status = relayErr.status
 			} else if relayErr.status == http.StatusServiceUnavailable {
 				status = http.StatusServiceUnavailable
 			}
 		}
-		writeJSON(w, status, map[string]string{"error": message})
+		writeJSON(w, status, map[string]string{"error": "relay admin request failed"})
 		return
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
 		stripRelayPlaintext(&out)
+	}
+	if method == http.MethodPost && suffix == "" && h.commercialSyncer != nil && h.commercialSyncer.EnforcedFor(uid) {
+		h.commercialSyncer.Enqueue(uid)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -280,6 +472,18 @@ func fetchRelayUsageForUID(ctx context.Context, admin *RelayAdminClient, uid int
 	return nil, nil
 }
 
+func fetchRelayLimitsForUID(ctx context.Context, admin *RelayAdminClient, uid int64) (*commercialRelayUsageUser, error) {
+	if admin == nil {
+		return nil, nil
+	}
+	var out commercialRelayUsageUser
+	if err := admin.Do(ctx, http.MethodGet, fmt.Sprintf("/internal/users/%d/key/limits", uid), nil, &out); err != nil {
+		return nil, err
+	}
+	out.UID = uid
+	return &out, nil
+}
+
 func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel string) relayUsageResponse {
 	if user == nil || !user.Configured {
 		return relayUsageResponse{Configured: false}
@@ -296,12 +500,12 @@ func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel stri
 	}
 	used := limit.Budget.CurrentUsage
 	maxLimit := limit.Budget.MaxLimit
-	remaining := 0.0
 	percent := 0.0
+	remainingPercent := 0.0
 	status := "normal"
 	if maxLimit > 0 {
-		remaining = math.Max(0, maxLimit-used)
 		percent = used / maxLimit * 100
+		remainingPercent = math.Max(0, 100-percent)
 		if used > maxLimit+0.000001 {
 			status = "over_limit"
 		} else if percent >= 90 {
@@ -311,18 +515,75 @@ func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel stri
 	return relayUsageResponse{
 		Configured: true,
 		Summary: &relayUsageSummary{
-			Source:        "relay",
-			Model:         limit.Model,
-			Provider:      limit.Provider,
-			UsedCNY:       used,
-			LimitCNY:      maxLimit,
-			RemainingCNY:  remaining,
-			Percent:       percent,
-			Status:        status,
-			ResetDuration: limit.Budget.ResetDuration,
-			LastReset:     limit.Budget.LastReset,
+			Source:           "relay",
+			Model:            limit.Model,
+			Provider:         limit.Provider,
+			QuotaConfigured:  maxLimit > 0,
+			Percent:          percent,
+			RemainingPercent: remainingPercent,
+			UsedCNY:          used,
+			LimitCNY:         maxLimit,
+			RemainingCNY:     math.Max(0, maxLimit-used),
+			Status:           status,
+			ResetDuration:    limit.Budget.ResetDuration,
+			LastReset:        limit.Budget.LastReset,
 		},
 	}
+}
+
+func buildRelaySharedUsageResponse(user *commercialRelayUsageUser, model string) relayUsageResponse {
+	if user == nil || !user.Configured {
+		return relayUsageResponse{Configured: false}
+	}
+	budget := user.Limits.MonthlyBudget
+	maxLimit := budget.MaxLimit
+	used := budget.CurrentUsage
+	percent := 0.0
+	remainingPercent := 0.0
+	status := "normal"
+	if maxLimit > 0 {
+		percent = used / maxLimit * 100
+		remainingPercent = math.Max(0, 100-percent)
+		if used > maxLimit+0.000001 {
+			status = "over_limit"
+		} else if percent >= 90 {
+			status = "high"
+		}
+	}
+	return relayUsageResponse{
+		Configured: true,
+		Summary: &relayUsageSummary{
+			Source:           "relay_shared",
+			Model:            model,
+			Provider:         "shared",
+			QuotaConfigured:  maxLimit > 0,
+			Percent:          percent,
+			RemainingPercent: remainingPercent,
+			UsedCNY:          used,
+			LimitCNY:         maxLimit,
+			RemainingCNY:     math.Max(0, maxLimit-used),
+			Status:           status,
+			ResetDuration:    budget.ResetDuration,
+			LastReset:        budget.LastReset,
+		},
+	}
+}
+
+func commercialQuotaModelAllowed(summary *types.CommercialSummary, model string) bool {
+	if summary == nil {
+		return false
+	}
+	target := normalizeRelayModelName(model)
+	for candidate, amount := range summary.TotalsByModel {
+		if amount <= 0 {
+			continue
+		}
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || normalizeRelayModelName(candidate) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func findRelayUsageModel(limits []commercialRelayModelLimit, model string) (commercialRelayModelLimit, bool) {

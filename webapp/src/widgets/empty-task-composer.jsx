@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
+import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
   IMAGE_UPLOAD_ACCEPT,
   MAX_ATTACHMENT_SIZE,
@@ -13,19 +14,22 @@ import QRCode from './qr-code';
 
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
-const COMPOSER_MAX_HEIGHT = 200;
 
 export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
   placeholder = '输入指令，我帮您完成',
+  initialAgent,
   onResolveAgentTopic,
   onActivateTopic,
+  voiceInputAvailable,
+  createVoiceSession,
 }) {
   const [input, setInput] = useState('');
-  const [agents, setAgents] = useState([]);
+  const initialAgentId = agentKey(initialAgent);
+  const [agents, setAgents] = useState(() => initialAgentId ? [initialAgent] : []);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsError, setAgentsError] = useState('');
-  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
@@ -42,8 +46,9 @@ export default function EmptyTaskComposer({
   const fileInputRef = useRef(null);
   const mountedRef = useRef(true);
   const inputValueRef = useRef('');
-  const agentsRef = useRef([]);
-  const selectedAgentIdRef = useRef('');
+  const initialAgentRef = useRef(initialAgent);
+  const agentsRef = useRef(initialAgentId ? [initialAgent] : []);
+  const selectedAgentIdRef = useRef(initialAgentId);
   const pendingAttachmentsRef = useRef([]);
   const dragDepthRef = useRef(0);
   const sendInFlightRef = useRef(false);
@@ -58,6 +63,20 @@ export default function EmptyTaskComposer({
     };
   }, []);
 
+  useEffect(() => {
+    initialAgentRef.current = initialAgent;
+    const preferredKey = agentKey(initialAgent);
+    if (!preferredKey) return;
+
+    if (!agentsRef.current.some((agent) => agentKey(agent) === preferredKey)) {
+      agentsRef.current = [initialAgent, ...agentsRef.current];
+      setAgents(agentsRef.current);
+    }
+    selectedAgentIdRef.current = preferredKey;
+    setSelectedAgentId(preferredKey);
+    setAttachmentStatus(null);
+  }, [initialAgent]);
+
   const replaceAttachments = useCallback((nextAttachments) => {
     pendingAttachmentsRef.current = nextAttachments;
     if (mountedRef.current) setPendingAttachments(nextAttachments);
@@ -67,19 +86,6 @@ export default function EmptyTaskComposer({
     if (!attachments?.length) return;
     replaceAttachments([...pendingAttachmentsRef.current, ...attachments]);
   }, [replaceAttachments]);
-
-  const resizeTextarea = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = '0px';
-    const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
-  }, []);
-
-  useEffect(() => {
-    resizeTextarea();
-  }, [input, resizeTextarea]);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,13 +98,21 @@ export default function EmptyTaskComposer({
       try {
         const response = await api.getAgents();
         if (cancelled || !mountedRef.current) return;
-        const nextAgents = Array.isArray(response?.agents) ? response.agents : [];
+        let nextAgents = Array.isArray(response?.agents) ? response.agents : [];
+        const preferredAgent = initialAgentRef.current;
+        const preferredKey = agentKey(preferredAgent);
+        if (preferredKey && !nextAgents.some((agent) => agentKey(agent) === preferredKey)) {
+          nextAgents = [preferredAgent, ...nextAgents];
+        }
         agentsRef.current = nextAgents;
         setAgents(nextAgents);
         setSelectedAgentId((current) => {
           const currentKey = String(current || '');
           const currentExists = nextAgents.some((agent) => agentKey(agent) === currentKey);
-          const nextKey = currentExists ? currentKey : agentKey(nextAgents[0]);
+          const preferredExists = nextAgents.some((agent) => agentKey(agent) === preferredKey);
+          const nextKey = currentExists
+            ? currentKey
+            : (preferredExists ? preferredKey : agentKey(nextAgents[0]));
           selectedAgentIdRef.current = nextKey;
           return nextKey;
         });
@@ -135,6 +149,16 @@ export default function EmptyTaskComposer({
     if (!sessionId) return [];
     if (sendInFlightRef.current && !final) return [];
 
+    if (final && phoneUploadSyncRef.current) {
+      const inFlightOperation = phoneUploadSyncRef.current;
+      try {
+        await inFlightOperation;
+      } catch {
+        // A dedicated final read below gets one more chance to collect the latest files.
+      }
+      if (phoneUploadSyncRef.current === inFlightOperation) phoneUploadSyncRef.current = null;
+    }
+
     let operation = phoneUploadSyncRef.current;
     if (!operation) {
       operation = (async () => {
@@ -153,7 +177,7 @@ export default function EmptyTaskComposer({
           appendAttachments(nextAttachments);
           setAttachmentStatus({
             tone: 'success',
-            message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新对话。`,
+            message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新任务。`,
           });
         }
         setPhoneUploadError('');
@@ -204,13 +228,15 @@ export default function EmptyTaskComposer({
 
     setIsUploadingAttachment(true);
     let uploadedCount = 0;
+    let failedCount = 0;
     try {
       for (const file of fileList) {
         const type = inferAttachmentType(file, requestedType);
         const validationError = validateAttachmentBeforeUpload(file, type);
         if (validationError) {
           setAttachmentStatus({ tone: 'error', message: validationError });
-          break;
+          failedCount += 1;
+          continue;
         }
 
         setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
@@ -221,18 +247,27 @@ export default function EmptyTaskComposer({
           uploadedCount += 1;
         } catch (error) {
           if (mountedRef.current) setAttachmentStatus({ tone: 'error', message: formatUploadError(error) });
-          break;
+          failedCount += 1;
         }
       }
 
-      if (!mountedRef.current || uploadedCount === 0) return;
-      setAttachmentStatus({
-        tone: 'success',
-        message: uploadedCount === 1
-          ? '已添加 1 个附件，发送后会加入新对话。'
-          : `已添加 ${uploadedCount} 个附件，发送后会加入新对话。`,
-      });
-      window.setTimeout(() => textareaRef.current?.focus(), 0);
+      if (!mountedRef.current) return;
+      if (failedCount > 0 && fileList.length > 1) {
+        setAttachmentStatus({
+          tone: 'error',
+          message: uploadedCount > 0
+            ? `已添加 ${uploadedCount} 个附件，另有 ${failedCount} 个上传失败。`
+            : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
+        });
+      } else if (uploadedCount > 0) {
+        setAttachmentStatus({
+          tone: 'success',
+          message: uploadedCount === 1
+            ? '已添加 1 个附件，发送后会加入新任务。'
+            : `已添加 ${uploadedCount} 个附件，发送后会加入新任务。`,
+        });
+      }
+      if (uploadedCount > 0) window.setTimeout(() => textareaRef.current?.focus(), 0);
     } finally {
       if (mountedRef.current) setIsUploadingAttachment(false);
     }
@@ -275,6 +310,18 @@ export default function EmptyTaskComposer({
     const value = event.target.value;
     inputValueRef.current = value;
     setInput(value);
+  }, []);
+
+  const handleVoiceFinal = useCallback((transcript, insertion) => {
+    const textarea = textareaRef.current;
+    const result = insertTranscriptAtSelection(transcript, insertion, textarea, inputValueRef.current);
+    if (!result) return;
+    inputValueRef.current = result.value;
+    setInput(result.value);
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(result.caret, result.caret);
+    }, 0);
   }, []);
 
   const handlePaste = useCallback(async (event) => {
@@ -338,7 +385,7 @@ export default function EmptyTaskComposer({
     }
     if (!inputValueRef.current.trim() && pendingAttachmentsRef.current.length === 0) return;
     if (typeof onResolveAgentTopic !== 'function' || typeof onActivateTopic !== 'function') {
-      setAttachmentStatus({ tone: 'error', message: '暂时无法创建对话，请稍后重试。' });
+      setAttachmentStatus({ tone: 'error', message: '暂时无法创建任务，请稍后重试。' });
       return;
     }
 
@@ -346,16 +393,14 @@ export default function EmptyTaskComposer({
     setIsSubmitting(true);
     setAttachmentMenuOpen(false);
     setAgentPickerOpen(false);
-    setAttachmentStatus({ tone: 'info', message: '正在打开 Agent 并发送...' });
+    setAttachmentStatus({ tone: 'info', message: '正在创建任务并发送...' });
 
     let messageSent = false;
+    let taskCreated = false;
+    let resolvedTopic = null;
     try {
-      const resolvedTopic = await onResolveAgentTopic(agent);
-      const topicId = resolveTopicId(resolvedTopic);
-      if (!topicId) throw new Error('Agent 对话创建失败，请稍后重试。');
-      if (!mountedRef.current) return;
-
       await syncPhoneUploads({ final: true });
+      if (!mountedRef.current) return;
 
       const text = inputValueRef.current.trim();
       const attachments = [...pendingAttachmentsRef.current];
@@ -366,6 +411,15 @@ export default function EmptyTaskComposer({
       const payload = attachments.length > 0
         ? { type: 'text', content: displayContent, content_blocks: contentBlocks }
         : text;
+
+      resolvedTopic = await onResolveAgentTopic(agent, { text, attachments });
+      const topicId = resolveTopicId(resolvedTopic);
+      if (!topicId) throw new Error('任务创建失败，请稍后重试。');
+      taskCreated = true;
+      if (!mountedRef.current) {
+        await rollbackCreatedTask(resolvedTopic);
+        return;
+      }
 
       await api.sendMessage(topicId, payload);
       messageSent = true;
@@ -384,12 +438,16 @@ export default function EmptyTaskComposer({
       await onActivateTopic(resolvedTopic);
       window.dispatchEvent(new Event('cc:data-changed'));
     } catch (error) {
+      if (taskCreated && !messageSent) {
+        const rolledBack = await rollbackCreatedTask(resolvedTopic);
+        if (rolledBack) window.dispatchEvent(new Event('cc:data-changed'));
+      }
       if (!mountedRef.current) return;
       setAttachmentStatus({
         tone: 'error',
         message: messageSent
-          ? '消息已发送，但暂时无法打开新对话。请从历史任务中重新进入。'
-          : (error?.message || '发送失败，请稍后重试。'),
+          ? '消息已发送，但暂时无法打开新任务。请从任务列表中重新进入。'
+          : (error?.message || (taskCreated ? '发送失败，请稍后重试。' : '暂时无法创建任务，请稍后重试。')),
       });
     } finally {
       sendInFlightRef.current = false;
@@ -461,35 +519,21 @@ export default function EmptyTaskComposer({
       {agentsError && agents.length === 0 && (
         <div className="v3-live-input-status v3-live-input-status-error" role="status">{agentsError}</div>
       )}
-      {attachmentStatus?.message && (
-        <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
-          {attachmentStatus.message}
-        </div>
-      )}
-      {(isUploadingAttachment || pendingAttachments.length > 0) && (
-        <div className="v3-composer-attachments">
-          <div className="v3-composer-attachments-copy">
-            <strong>{isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}</strong>
-            {!isUploadingAttachment && pendingAttachments.map((attachment, index) => (
-              <span key={`${attachment.content?.payload?.file_key || attachment.name}-${index}`}>
-                {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
-                {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
-              </span>
-            ))}
-          </div>
-          {pendingAttachments.length > 0 && !isUploadingAttachment && !isSubmitting && (
-            <button
-              className="v3-action-btn"
-              aria-label="移除附件"
-              onClick={() => {
-                replaceAttachments([]);
-                setAttachmentStatus(null);
-              }}
-              type="button"
-            >
-              ×
-            </button>
-          )}
+      {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
+        <div
+          className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+          role="status"
+        >
+          <span>
+            {attachmentStatus?.tone === 'error'
+              ? attachmentStatus.message
+              : isUploadingAttachment
+                ? (attachmentStatus?.message || '正在上传附件...')
+                : attachmentStatus?.message
+                  || (pendingAttachments.length > 0
+                    ? `${pendingAttachments.length} 个附件待发送${pendingAttachments.length === 1 ? `：${pendingAttachments[0].name}` : ''}`
+                    : '')}
+          </span>
         </div>
       )}
     </>
@@ -509,7 +553,7 @@ export default function EmptyTaskComposer({
         <div className="v3-phone-upload-header">
           <div>
             <div className="v3-phone-upload-title">手机扫码上传</div>
-            <div className="v3-phone-upload-subtitle">上传到当前草稿，发送后会加入新对话。</div>
+            <div className="v3-phone-upload-subtitle">上传到当前草稿，发送后会加入新任务。</div>
           </div>
           <button className="v3-tool" type="button" aria-label="关闭手机上传" onClick={() => setPhoneUploadDialogOpen(false)}>
             <X size={16} strokeWidth={2} />
@@ -542,6 +586,11 @@ export default function EmptyTaskComposer({
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        onVoiceFinal={handleVoiceFinal}
+        voiceInputAvailable={voiceInputAvailable}
+        createVoiceSession={createVoiceSession}
+        voiceInputDisabled={isSubmitting || isUploadingAttachment}
+        voiceSessionKey={`new-task:${selectedAgentId || ''}`}
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSubmitting}
         onAttachmentToggle={() => {
@@ -552,6 +601,7 @@ export default function EmptyTaskComposer({
         agentName={selectedAgentName}
         agentOpen={agentPickerOpen}
         agentDisabled={isSubmitting}
+        agentPickerVisible={false}
         onAgentToggle={() => {
           setAttachmentMenuOpen(false);
           setAgentPickerOpen((open) => !open);
@@ -568,6 +618,12 @@ export default function EmptyTaskComposer({
           setAttachmentMenuOpen(false);
           setAgentPickerOpen(false);
         }}
+        attachments={pendingAttachments}
+        attachmentRemovalDisabled={isUploadingAttachment || isSubmitting}
+        onRemoveAttachment={(index) => {
+          replaceAttachments(pendingAttachmentsRef.current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          setAttachmentStatus(null);
+        }}
         notices={notices}
         overlay={phoneUploadOverlay}
         boxOverlay={isDragActive ? (
@@ -577,7 +633,7 @@ export default function EmptyTaskComposer({
           </div>
         ) : null}
         rootProps={{
-          'aria-label': '新对话输入栏',
+          'aria-label': '新任务输入栏',
           onDragEnter: handleDragEnter,
           onDragOver: handleDragOver,
           onDragLeave: handleDragLeave,
@@ -609,6 +665,17 @@ function agentKey(agent) {
 
 function resolveTopicId(topic) {
   return topic?.topicId || topic?.topic_id || topic?.topic || topic?.agent?.topic_id || '';
+}
+
+async function rollbackCreatedTask(topic) {
+  const groupId = topic?.groupId || topic?.group_id || topic?.group?.id;
+  if (!groupId || typeof api.disbandGroup !== 'function') return false;
+  try {
+    await api.disbandGroup(groupId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function resolvePhoneUploadLink(uploadUrl) {
@@ -752,12 +819,4 @@ function readDirectoryEntries(reader) {
     };
     readBatch();
   });
-}
-
-function formatFileSize(size) {
-  if (!size || size <= 0) return '';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

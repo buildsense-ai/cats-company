@@ -49,6 +49,7 @@ mkdir -p \
   "$root/releases" \
   "$compose_dir" \
   "$env_dir" \
+  "$root/secrets" \
   "$root/data/mysql" \
   "$root/data/uploads" \
   "$root/logs"
@@ -70,6 +71,7 @@ if [ ! -f "$env_file" ]; then
 fi
 
 python3 - <<PY
+import os
 from pathlib import Path
 
 p = Path(r"$env_file")
@@ -79,6 +81,9 @@ updates = {
     "GHCR_REGISTRY": "${GHCR_REGISTRY:-ghcr.io}",
     "GHCR_OWNER": "${GHCR_OWNER:-}",
     "IMAGE_TAG": "$revision",
+    "CATSCO_ARTIFACT_INDEX_URL": os.environ.get("CATSCO_ARTIFACT_INDEX_URL", ""),
+    "CATSCO_ARTIFACT_MANAGEMENT_URL": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_URL", ""),
+    "CATSCO_ARTIFACT_MANAGEMENT_TOKEN": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_TOKEN", ""),
 }
 
 values = {}

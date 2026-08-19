@@ -1,0 +1,316 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  ARTIFACT_CONTEXT_RESPONSE_TYPE,
+  ARTIFACT_PAGE_CONTEXT_CONTRACT,
+  ARTIFACT_REF_CONTRACT,
+  artifactRefFromPreviewFile,
+  artifactURLForVersion,
+  normalizeArtifactPageContext,
+  requestArtifactPageContext,
+  withArtifactRef,
+} from './artifact-context';
+
+describe('artifact context message metadata', () => {
+  it('builds a narrow reference from a visible cloud artifact preview', () => {
+    expect(artifactRefFromPreviewFile({
+      artifact_id: 'lesson-game',
+      publish_version: 2,
+      mime_type: 'text/html',
+      url: 'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/',
+      name: '课堂小游戏',
+    })).toEqual({
+      contract_version: ARTIFACT_REF_CONTRACT,
+      id: 'lesson-game',
+      displayed_version: 2,
+      currently_visible: true,
+    });
+  });
+
+  it('rejects ordinary files and invalid artifact identities', () => {
+    expect(artifactRefFromPreviewFile({
+      artifact_id: 'lesson-game',
+      mime_type: 'application/pdf',
+      url: 'https://example.test/report.pdf',
+    })).toBeNull();
+    expect(artifactRefFromPreviewFile({
+      artifact_id: '../lesson-game',
+      mime_type: 'text/html',
+      url: 'https://example.test/report.html',
+    })).toBeNull();
+    expect(artifactRefFromPreviewFile({
+      artifact_id: ' lesson-game ',
+      mime_type: 'text/html',
+      url: 'https://example.test/report.html',
+    })).toBeNull();
+    expect(artifactRefFromPreviewFile({
+      artifact_id: `a${'b'.repeat(64)}`,
+      mime_type: 'text/html',
+      url: 'https://example.test/report.html',
+    })).toBeNull();
+    expect(artifactRefFromPreviewFile({
+      artifact_id: `a${'b'.repeat(63)}`,
+      mime_type: 'text/html',
+      url: 'https://example.test/report.html',
+    })?.id).toHaveLength(64);
+  });
+
+  it('only returns a focused reference for the Agent that owns the preview', () => {
+    const file = {
+      artifact_id: 'lesson-game',
+      artifact_agent_uid: 440,
+      publish_version: 2,
+      mime_type: 'text/html',
+      url: 'https://example.test/by-agent/440/lesson-game/latest/',
+    };
+    expect(artifactRefFromPreviewFile(file, 440)?.id).toBe('lesson-game');
+    expect(artifactRefFromPreviewFile(file, 441)).toBeNull();
+    expect(artifactRefFromPreviewFile(file, 0)).toBeNull();
+    expect(artifactRefFromPreviewFile({ ...file, artifact_agent_uid: undefined }, 440)).toBeNull();
+  });
+
+  it('adds a cache-busting version without changing the Artifact path', () => {
+    expect(artifactURLForVersion(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/?view=compact',
+      3,
+    )).toBe(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/?view=compact&artifact_version=3',
+    );
+    expect(artifactURLForVersion('file:///tmp/lesson-game/index.html', 3)).toBe('');
+    expect(artifactURLForVersion('https://example.test/latest/', 0)).toBe('');
+  });
+
+  it('adds the reference without changing visible message content', () => {
+    expect(withArtifactRef('把标题改短一点', {
+      contract_version: ARTIFACT_REF_CONTRACT,
+      id: 'lesson-game',
+      currently_visible: true,
+    })).toEqual({
+      type: 'text',
+      content: '把标题改短一点',
+      metadata: {
+        artifact_ref: {
+          contract_version: ARTIFACT_REF_CONTRACT,
+          id: 'lesson-game',
+          currently_visible: true,
+        },
+      },
+    });
+  });
+
+  it('adds a bounded page observation beside the Artifact reference', () => {
+    const pageContext = {
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00.000Z',
+      selected_text: '企业客户',
+      controls: [
+        { type: 'checkbox', name: 'feedback', value: 'f12', checked: true },
+        { type: 'password', name: 'secret', value: 'do-not-send' },
+      ],
+      semantic_context: {
+        view: 'customer-comparison',
+        selection: ['c12', 'c18'],
+        filters: { region: 'east' },
+        ignored: () => 'not serializable',
+      },
+      local_storage: { token: 'forged' },
+    };
+    expect(withArtifactRef('分析这些', {
+      contract_version: ARTIFACT_REF_CONTRACT,
+      id: 'lesson-game',
+      currently_visible: true,
+    }, pageContext)).toEqual({
+      type: 'text',
+      content: '分析这些',
+      metadata: {
+        artifact_ref: {
+          contract_version: ARTIFACT_REF_CONTRACT,
+          id: 'lesson-game',
+          currently_visible: true,
+        },
+        artifact_page_context: {
+          contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+          observed_at: '2026-08-07T12:00:00.000Z',
+          selected_text: '企业客户',
+          controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
+          semantic_context: {
+            filters: { region: 'east' },
+            selection: ['c12', 'c18'],
+            view: 'customer-comparison',
+          },
+        },
+      },
+    });
+  });
+
+  it('drops invalid or oversized semantic state without losing the generic observation', () => {
+    const cyclic = { view: 'feedback-list' };
+    cyclic.self = cyclic;
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: cyclic,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: { view: 'feedback-list' },
+    });
+
+    const oversized = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [
+      `field_${index}`,
+      'x'.repeat(1000),
+    ]));
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: oversized,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: revoked.proxy,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+
+    const DisguisedObject = class Object {};
+    const classInstance = new DisguisedObject();
+    classInstance.view = 'must-not-pass';
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: classInstance,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+  });
+
+  it('bounds traversal work and preserves complete Unicode characters', () => {
+    let branching = { leaf: true };
+    for (let depth = 0; depth < 6; depth += 1) {
+      branching = Array.from({ length: 50 }, () => branching);
+    }
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: branching,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+
+    const result = normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      semantic_context: { note: `${'x'.repeat(999)}😀z` },
+    });
+    expect(Array.from(result.semantic_context.note)).toHaveLength(1000);
+    expect(result.semantic_context.note.endsWith('😀')).toBe(true);
+  });
+
+  it('drops only semantic state when the combined page context exceeds 16 KB', () => {
+    const controls = Array.from({ length: 20 }, (_, index) => ({
+      type: 'text',
+      name: `field_${index}`,
+      value: 'v'.repeat(512),
+      text: 't'.repeat(128),
+    }));
+    const semanticContext = Object.fromEntries(
+      Array.from({ length: 6 }, (_, index) => [`section_${index}`, 's'.repeat(1000)]),
+    );
+    const result = normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'x'.repeat(1000),
+      controls,
+      semantic_context: semanticContext,
+    });
+
+    expect(result.controls).toHaveLength(20);
+    expect(result.selected_text).toHaveLength(1000);
+    expect(result.semantic_context).toBeUndefined();
+  });
+
+  it('rejects invalid or observation-only page context envelopes', () => {
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: 'not-a-date',
+      selected_text: 'x',
+    })).toBeNull();
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      controls: [{ type: 'password', value: 'secret' }],
+    })).toBeNull();
+  });
+
+  it('accepts a response only from the active iframe and expected origin', async () => {
+    const origin = 'https://agent-440.artifacts.catsco.fun:19991';
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        window.setTimeout(() => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: frameWindow },
+            origin: { value: origin },
+            data: {
+              value: {
+                type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
+                request_id: message.request_id,
+                context: {
+                  contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+                  observed_at: '2026-08-07T12:00:00Z',
+                  selected_text: '当前选区',
+                  semantic_context: { view: 'feedback-list', selection: ['f12'] },
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        }, 0);
+      },
+    };
+    const result = await requestArtifactPageContext({
+      frame: { contentWindow: frameWindow },
+      artifactId: 'lesson-game',
+      url: `${origin}/artifacts/lesson-game/latest/`,
+    }, {
+      contract_version: ARTIFACT_REF_CONTRACT,
+      id: 'lesson-game',
+      currently_visible: true,
+    }, 50);
+    expect(result?.selected_text).toBe('当前选区');
+    expect(result?.semantic_context).toEqual({ selection: ['f12'], view: 'feedback-list' });
+  });
+
+  it('falls back without blocking when the iframe does not answer', async () => {
+    const result = await requestArtifactPageContext({
+      frame: { contentWindow: { postMessage() {} } },
+      artifactId: 'lesson-game',
+      url: 'https://example.test/artifacts/lesson-game/latest/',
+    }, {
+      contract_version: ARTIFACT_REF_CONTRACT,
+      id: 'lesson-game',
+      currently_visible: true,
+    }, 1);
+    expect(result).toBeNull();
+  });
+});

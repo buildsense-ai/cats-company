@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine3.24 AS builder
+FROM golang:1.26.6-alpine3.24 AS builder
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 WORKDIR /app
@@ -6,11 +6,36 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -mod=readonly -o openchat-server ./server/cmd/
+RUN CGO_ENABLED=0 go build -mod=readonly -o tos-fetch ./cmd/tos-fetch/
 
 FROM alpine:3.24.1
-RUN apk add --no-cache ca-certificates
+# bash + OpenSSH client + jq power the cloud worker provision scripts
+# (deploy/prod/ops/*.sh). gcompat provides glibc compatibility for the
+# linux-amd64 ctyun-cli binary. curl downloads the ctyun-cli package below
+# (not present in the minimal alpine base).
+RUN apk add --no-cache ca-certificates curl bash openssh-client jq gcompat
+
+# Tianyi Cloud CLI for the cloud virtual employee control plane.
+ARG CTYUN_CLI_VERSION=v0.1.1
+ARG CTYUN_CLI_SHA256=93272c3fd377a6f642a89cb326fa2f4a3d2fab7dfc9587e49906527230b767fa
+RUN set -eux; \
+    pkg="$(mktemp)"; \
+    curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+      "https://huabei-2.zos.ctyun.cn/ctyun-cli/${CTYUN_CLI_VERSION}/ctyun-cli-${CTYUN_CLI_VERSION}-linux-amd64-setup.tar.gz" \
+      -o "$pkg"; \
+    # alpine 的 sha256sum 是 busybox 版，不支持 GNU --check/--strict，改为 shell 比较
+    test "$(sha256sum "$pkg" | awk '{print $1}')" = "${CTYUN_CLI_SHA256}"; \
+    tar -xzf "$pkg" -C /tmp; \
+    install -d /usr/local/bin; \
+    install -m 0755 /tmp/ctyun-cli /usr/local/bin/ctyun-cli; \
+    rm -f "$pkg"; \
+    ctyun-cli version
+
 WORKDIR /app
 COPY --from=builder /app/openchat-server .
+COPY --from=builder /app/tos-fetch /usr/local/bin/tos-fetch
 COPY --from=builder /app/server/tinode.conf .
+COPY deploy/prod/ops /opt/catsco/ops
+RUN chmod 0755 /opt/catsco/ops/*.sh
 EXPOSE 6061 6062
 CMD ["./openchat-server", "tinode.conf"]

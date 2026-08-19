@@ -19,6 +19,7 @@ func TestImageGenerationProxyHandlerForwardsRequestAndForcesPolicy(t *testing.T)
 	var upstreamPath string
 	var upstreamUserAgent string
 	var upstreamPayload map[string]interface{}
+	responseBody := testImageResponse(t, 11)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamAuthorization = r.Header.Get("Authorization")
@@ -31,7 +32,7 @@ func TestImageGenerationProxyHandlerForwardsRequestAndForcesPolicy(t *testing.T)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Request-Id", "provider-request-1")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aW1hZ2U="}]}`))
+		_, _ = w.Write([]byte(responseBody))
 	}))
 	defer upstream.Close()
 
@@ -62,7 +63,7 @@ func TestImageGenerationProxyHandlerForwardsRequestAndForcesPolicy(t *testing.T)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"data":[{"b64_json":"aW1hZ2U="}]}` {
+	if got := strings.TrimSpace(rr.Body.String()); got != responseBody {
 		t.Fatalf("unexpected response body: %q", got)
 	}
 	if upstreamMethod != http.MethodPost || upstreamPath != "/v1/images/generations" {
@@ -71,7 +72,7 @@ func TestImageGenerationProxyHandlerForwardsRequestAndForcesPolicy(t *testing.T)
 	if upstreamAuthorization != "Bearer provider-secret" {
 		t.Fatalf("client identity leaked or provider auth missing: %q", upstreamAuthorization)
 	}
-	if upstreamUserAgent != "cats-company-image-proxy/1.0" {
+	if upstreamUserAgent != "cats-company-image-proxy/2.0" {
 		t.Fatalf("unexpected upstream user agent: %q", upstreamUserAgent)
 	}
 	if upstreamPayload["model"] != "gpt-image-2" {
@@ -132,10 +133,11 @@ func TestImageGenerationProxyHandlerRejectsInvalidRequests(t *testing.T) {
 
 func TestImageGenerationIPLimitRejectsSpoofedForwardedForRotation(t *testing.T) {
 	var upstreamRequests atomic.Int32
+	responseBody := testImageResponse(t, 13)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamRequests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aW1hZ2U="}]}`))
+		_, _ = w.Write([]byte(responseBody))
 	}))
 	defer upstream.Close()
 

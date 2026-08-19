@@ -13,6 +13,8 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+const structuredMentionAllBots = "all"
+
 // MessageHandler handles message-related API requests.
 type MessageHandler struct {
 	db  store.Store
@@ -36,6 +38,7 @@ type SendMessageRequest struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
+	Mentions      []string               `json:"mentions,omitempty"`
 }
 
 type normalizedMessagePayload struct {
@@ -49,6 +52,7 @@ type normalizedMessagePayload struct {
 	Metadata            map[string]interface{}
 	Mode                string
 	Role                string
+	Mentions            []string
 }
 
 type savedMessageResult struct {
@@ -78,6 +82,9 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, code, map[string]string{"error": text})
 			return
 		}
+		payload.Metadata = h.hub.canonicalizeArtifactMessageMetadata(r.Context(), uid, req.TopicID, payload.Metadata)
+	} else {
+		payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
 	}
 
 	if isTransientRuntimePayload(payload) {
@@ -141,8 +148,8 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		resp["client_msg_id"] = payload.ClientMsgID
 		resp["duplicate"] = result.Duplicate
 	}
-	if payload.Metadata != nil {
-		resp["metadata"] = payload.Metadata
+	if responseMetadata := artifactMetadataForRecipient(payload.Metadata, uid); responseMetadata != nil {
+		resp["metadata"] = responseMetadata
 	}
 	if len(payload.ContentBlocks) > 0 {
 		resp["content_blocks"] = payload.ContentBlocks
@@ -178,6 +185,17 @@ func (h *MessageHandler) fanoutMessage(uid int64, topicID string, replyTo int, p
 }
 
 func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, replyTo int, payload *normalizedMessagePayload) (*savedMessageResult, error) {
+	if metadataStore, ok := db.(store.MessageMetadataStore); ok {
+		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, payload.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		return &savedMessageResult{ID: id, Duplicate: duplicate}, nil
+	}
+	if _, hasArtifactContext := payload.Metadata[artifactContextMetadataKey]; hasArtifactContext {
+		return nil, errors.New("message store does not support metadata persistence")
+	}
+
 	if payload.ClientMsgID != "" {
 		id, duplicate, err := db.SaveMessageIdempotent(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID)
 		if err != nil {
@@ -215,18 +233,22 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	if dataMsg == nil {
 		return
 	}
+	if h.isTaskStatusPublisher(uid) {
+		h.agentPush.resetVisibleTailAtWorkingBoundary(uid, dataMsg)
+	}
 
 	if isGroupTopic(topicID) {
 		groupID := extractGroupID(topicID)
 		if groupID == 0 {
 			return
 		}
-		mentions := parseMentions(payload.DisplayContent)
+		mentions := payload.Mentions
+		trustedChannelTrigger := trustedChannelBindingDeliveryMetadata(payload.Metadata) && metadataBool(payload.Metadata, "channel_native_group_triggered")
 		dataMsg.Data.Mentions = mentions
 		if !h.isChannelManagedGroup(groupID) {
-			h.SendToUserExcept(uid, dataMsg, exclude)
+			h.SendToUserExcept(uid, h.messageForRecipient(uid, uid, topicID, replyTo, payload, msgID), exclude)
 		}
-		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid)
+		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid, trustedChannelTrigger)
 		h.forwardChannelGroupBotReply(uid, topicID, payload, msgID)
 		return
 	}
@@ -239,8 +261,12 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 		h.clearChannelInboundReplyRoute(topicID, uid, peerUID)
 	}
 
-	h.SendToUserExcept(uid, dataMsg, exclude)
-	h.SendToUser(peerUID, h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID))
+	h.SendToUserExcept(uid, h.messageForRecipient(uid, uid, topicID, replyTo, payload, msgID), exclude)
+	peerMessage := h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID)
+	h.SendToUser(peerUID, peerMessage)
+	if shouldNotifyOfflineForMessage(peerMessage) {
+		h.notifyOfflineUserForMessage(peerUID, uid, peerMessage, h.isTaskStatusPublisher(uid))
+	}
 	h.forwardChannelBotReply(uid, peerUID, topicID, payload, msgID)
 
 	if senderClient := h.getClient(uid); senderClient != nil && senderClient.accountType == types.AccountBot {
@@ -292,8 +318,12 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		return nil
 	}
 	sourceMetadata := payload.Metadata
+	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
 	publicMetadata := withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)
+	if recipientUID > 0 {
+		publicMetadata = artifactMetadataForRecipient(publicMetadata, recipientUID)
+	}
 	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
 	if !nativeChannelGroup {
 		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID))
@@ -312,6 +342,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 			Role:          payload.Role,
 			ReplyTo:       replyTo,
 		},
+		suppressPushNotification: suppressPushNotification,
 	}
 }
 
@@ -324,6 +355,7 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		users = identityUsers[0]
 	}
 	displayContent := decodeStoredContent(message.Content)
+	storedMetadata := artifactMetadataForRecipient(message.Metadata, recipientUID)
 	return &MsgServerData{
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),
@@ -331,7 +363,7 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		Content:       displayContent,
 		Type:          inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
 		MsgType:       message.MsgType,
-		Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(message.FromUID, recipientUID, message.TopicID, message.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true, IdentityUsers: users})),
+		Metadata:      withCatscoIdentityMetadata(storedMetadata, h.buildCatscoIdentityMetadata(message.FromUID, recipientUID, message.TopicID, message.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true, IdentityUsers: users})),
 		ContentBlocks: message.ContentBlocks,
 		Mode:          message.Mode,
 		Role:          message.Role,
@@ -511,6 +543,24 @@ func (h *Hub) isBotUser(uid int64) bool {
 	return false
 }
 
+// isTaskStatusPublisher identifies automated accounts whose visible messages
+// are coordinated with task status before sending a background push. Keep this
+// narrower than isBotUser: group routing still treats only bot accounts as
+// agents, while service accounts are explicitly allowed to publish task state.
+func (h *Hub) isTaskStatusPublisher(uid int64) bool {
+	if h == nil || uid <= 0 {
+		return false
+	}
+	if client := h.getClient(uid); client != nil && canPublishTaskStatus(client.accountType) {
+		return true
+	}
+	if h.db != nil {
+		user, err := h.db.GetUser(uid)
+		return err == nil && user != nil && canPublishTaskStatus(user.AccountType)
+	}
+	return false
+}
+
 type catscoIdentityMetadataOptions struct {
 	OmitDeviceAccess bool
 	Replay           bool
@@ -548,6 +598,12 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 	if opts.IdentityUsers != nil {
 		if actor := opts.IdentityUsers[actorUID]; actor != nil {
 			actorMap := identity["actor"].(map[string]interface{})
+			accountType := actor.AccountType
+			if accountType == "" {
+				accountType = types.AccountHuman
+			}
+			actorMap["account_type"] = accountType
+			actorMap["is_bot"] = accountType == types.AccountBot
 			if actor.DisplayName != "" {
 				actorMap["display_name"] = actor.DisplayName
 			}
@@ -558,6 +614,12 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 	} else if h != nil && h.db != nil {
 		if actor, err := h.db.GetUser(actorUID); err == nil && actor != nil {
 			actorMap := identity["actor"].(map[string]interface{})
+			accountType := actor.AccountType
+			if accountType == "" {
+				accountType = types.AccountHuman
+			}
+			actorMap["account_type"] = accountType
+			actorMap["is_bot"] = accountType == types.AccountBot
 			if actor.DisplayName != "" {
 				actorMap["display_name"] = actor.DisplayName
 			}
@@ -759,6 +821,10 @@ type latestMessagesBeforeStore interface {
 	GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error)
 }
 
+type usersByIDsStore interface {
+	GetUsersByIDs(ids []int64) (map[int64]*types.User, error)
+}
+
 // HandleGetMessages handles GET /api/messages?topic_id=xxx&limit=50&offset=0
 func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
@@ -766,6 +832,14 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 	topicID := r.URL.Query().Get("topic_id")
 	if topicID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "topic_id required"})
+		return
+	}
+	if aroundID, aroundLimit, present := parseAroundRequest(r); present {
+		if aroundID <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "around_id must be positive and limit must be between 1 and 100"})
+			return
+		}
+		h.getMessagesAround(w, r, uid, topicID, aroundID, aroundLimit)
 		return
 	}
 	if h.hub != nil {
@@ -801,7 +875,7 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load agent context history"})
 			return
 		}
-		identityUsers := h.loadAgentContextUsers(uid, rawMsgs)
+		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
 		msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 		for _, message := range rawMsgs {
 			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
@@ -818,10 +892,23 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if limit <= 0 {
+		limit = 50
+	}
+
 	var rawMsgs []*types.Message
 	var err error
 	if latest {
-		rawMsgs, err = h.db.GetLatestMessages(topicID, limit, offset)
+		queryLimit := limit + 1
+		if beforeID > 0 {
+			if storeWithCursor, ok := h.db.(latestMessagesBeforeStore); ok {
+				rawMsgs, err = storeWithCursor.GetLatestMessagesBefore(topicID, beforeID, queryLimit)
+			} else {
+				rawMsgs, err = h.db.GetLatestMessages(topicID, queryLimit, offset)
+			}
+		} else {
+			rawMsgs, err = h.db.GetLatestMessages(topicID, queryLimit, offset)
+		}
 	} else {
 		rawMsgs, err = h.db.GetMessages(topicID, limit, offset)
 	}
@@ -829,10 +916,20 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load messages"})
 		return
 	}
+	hasMore := latest && len(rawMsgs) > limit
+	if hasMore {
+		rawMsgs = rawMsgs[len(rawMsgs)-limit:]
+	}
+	nextBeforeID := int64(0)
+	if latest && len(rawMsgs) > 0 {
+		nextBeforeID = rawMsgs[0].ID
+	}
+
 	msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 	if h.hub != nil {
+		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
 		for _, message := range rawMsgs {
-			if formatted := h.hub.historyAPIMessageForRecipient(uid, message); formatted != nil {
+			if formatted := h.hub.historyAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
 				msgs = append(msgs, formatted)
 			}
 		}
@@ -851,7 +948,12 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"messages": msgs})
+	response := map[string]interface{}{"messages": msgs}
+	if latest {
+		response["has_more"] = hasMore
+		response["next_before_id"] = nextBeforeID
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64, limit int) ([]*types.Message, bool, int64, error) {
@@ -884,15 +986,28 @@ func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64,
 	return messages, hasMore, nextBeforeID, nil
 }
 
-func (h *MessageHandler) loadAgentContextUsers(agentUID int64, messages []*types.Message) map[int64]*types.User {
-	users := make(map[int64]*types.User)
-	uids := map[int64]struct{}{agentUID: {}}
+func (h *MessageHandler) loadHistoryUsers(recipientUID int64, messages []*types.Message) map[int64]*types.User {
+	uids := map[int64]struct{}{recipientUID: {}}
 	for _, message := range messages {
 		if message != nil && message.FromUID > 0 {
 			uids[message.FromUID] = struct{}{}
 		}
 	}
+
+	ids := make([]int64, 0, len(uids))
 	for uid := range uids {
+		if uid > 0 {
+			ids = append(ids, uid)
+		}
+	}
+	if batchStore, ok := h.db.(usersByIDsStore); ok {
+		if users, err := batchStore.GetUsersByIDs(ids); err == nil {
+			return users
+		}
+	}
+
+	users := make(map[int64]*types.User, len(ids))
+	for _, uid := range ids {
 		if user, err := h.db.GetUser(uid); err == nil && user != nil {
 			users[uid] = user
 		}
@@ -922,10 +1037,12 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		reason = "other_agent_message"
 	}
 
-	mentions := parseMentions(normalizeContentText(formatted["content"]))
+	mentions := structuredMentionsFromMessage(formatted)
 	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
 		agentID := formatUID(agentUID)
-		if !containsString(mentions, agentID) {
+		if containsString(mentions, structuredMentionAllBots) {
+			reason = "group_message_targets_all_agents"
+		} else if !containsString(mentions, agentID) {
 			eligible = false
 			reason = "group_message_targets_another_member"
 		} else {
@@ -948,18 +1065,91 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 	if message == nil {
 		return false
 	}
-	for _, block := range message.ContentBlocks {
-		switch block.Type {
-		case "thinking", "tool_use", "tool_result", "runtime_plan":
-			return false
-		}
-	}
 	switch displayType {
 	case "text", "image", "voice", "file":
-		return true
 	default:
 		return false
 	}
+	if isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks) {
+		return false
+	}
+	for _, block := range message.ContentBlocks {
+		if isInternalAgentContentBlock(block.Type) {
+			return false
+		}
+	}
+	return true
+}
+
+func structuredMentionsFromMessage(message map[string]interface{}) []string {
+	if message == nil {
+		return nil
+	}
+	values := make([]string, 0)
+	switch blocks := message["content_blocks"].(type) {
+	case []types.ContentBlock:
+		for _, block := range blocks {
+			values = append(values, mentionValues(block.Payload["mentions"])...)
+		}
+	case []interface{}:
+		for _, rawBlock := range blocks {
+			block, _ := rawBlock.(map[string]interface{})
+			payload, _ := block["payload"].(map[string]interface{})
+			values = append(values, mentionValues(payload["mentions"])...)
+		}
+	}
+	if len(values) == 0 {
+		metadata, _ := message["metadata"].(map[string]interface{})
+		values = append(values, mentionValues(metadata["mentions"])...)
+	}
+	return normalizeStructuredMentions(values)
+}
+
+func mentionValues(raw interface{}) []string {
+	switch values := raw.(type) {
+	case []string:
+		return values
+	case []interface{}:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func withStructuredMentionBlocks(blocks []types.ContentBlock, displayContent interface{}, mentions []string) []types.ContentBlock {
+	if len(mentions) == 0 {
+		return blocks
+	}
+	result := append([]types.ContentBlock(nil), blocks...)
+	for index := range result {
+		if result[index].Type != "text" {
+			continue
+		}
+		payload := make(map[string]interface{}, len(result[index].Payload)+1)
+		for key, value := range result[index].Payload {
+			payload[key] = value
+		}
+		payload["mentions"] = append([]string(nil), mentions...)
+		result[index].Payload = payload
+		return result
+	}
+	text := normalizeContentText(displayContent)
+	if text == "" {
+		return result
+	}
+	return append([]types.ContentBlock{{
+		Type: "text",
+		Text: text,
+		Payload: map[string]interface{}{
+			"mentions": append([]string(nil), mentions...),
+		},
+	}}, result...)
 }
 
 func containsString(values []string, target string) bool {
@@ -988,6 +1178,13 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 
 	blocks := sanitizeContentBlocks(req.ContentBlocks)
 	metadata := sanitizeMessageMap(req.Metadata)
+	mentions := normalizeStructuredMentions(req.Mentions)
+	if len(mentions) > 0 {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["mentions"] = mentions
+	}
 	mode := stripMessageNullBytes(strings.TrimSpace(req.Mode))
 	role := stripMessageNullBytes(strings.TrimSpace(req.Role))
 	if len(blocks) == 0 && isStructuredDisplayType(displayType) {
@@ -999,6 +1196,7 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 			role = "assistant"
 		}
 	}
+	blocks = withStructuredMentionBlocks(blocks, displayContent, mentions)
 
 	if storedContent == "" && len(blocks) == 0 {
 		return nil, errors.New("topic_id and content/content_blocks required")
@@ -1015,7 +1213,43 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 		Metadata:            metadata,
 		Mode:                mode,
 		Role:                role,
+		Mentions:            mentions,
 	}, nil
+}
+
+func isCanonicalMentionTarget(value string) bool {
+	if value == structuredMentionAllBots {
+		return true
+	}
+	if !strings.HasPrefix(value, "usr") || len(value) == len("usr") {
+		return false
+	}
+	for _, char := range value[len("usr"):] {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeStructuredMentions(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	mentions := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		uid := strings.TrimSpace(stripMessageNullBytes(value))
+		if !isCanonicalMentionTarget(uid) {
+			continue
+		}
+		if _, exists := seen[uid]; exists {
+			continue
+		}
+		seen[uid] = struct{}{}
+		mentions = append(mentions, uid)
+	}
+	return mentions
 }
 
 func normalizeClientMsgID(raw string, metadata map[string]interface{}) string {

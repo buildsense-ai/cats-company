@@ -1,12 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
+import { createPortal } from 'react-dom';
+import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
+import { enqueuePushOperation } from '../utils/push-operation';
+import { pushTabCoordinator } from '../utils/push-tab-coordination';
+import { cleanupPushForSession } from '../utils/push-session-cleanup';
+import { isValidEmailFormat } from '../utils/email-format';
 import t from '../i18n';
+import RelayAdminPanel from './relay-admin-panel';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
+import SearchOverlay from './search-overlay';
 import AgentEntryBindView from './agent-entry-bind-view';
 import ChannelDeviceLinkView from './channel-device-link-view';
 import MobileUploadView from './mobile-upload-view';
+import SkillHubView from './skillhub-view';
 import EmptyTaskComposer from '../widgets/empty-task-composer';
 import SidebarResizeHandle, {
   MIN_APP_SIDEBAR_WIDTH,
@@ -22,12 +30,52 @@ import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
+import EditableConversationTitle from '../widgets/editable-conversation-title';
+import AuthFlowBackground from '../components/auth-flow-background';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
-import { resolveCurrentModelName } from '../utils/relay-usage';
-import { Bug, Database, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Sun, Moon } from 'lucide-react';
+import BotModelSelector, {
+  describeModelApplyError,
+  describeModelConfigRequestError,
+} from '../widgets/bot-model-selector';
+import {
+  relayUsageTone,
+  resolveConversationModelDisplay,
+  resolveCurrentModelName,
+} from '../utils/relay-usage';
+import {
+  normalizeActiveTopic,
+  readStoredTopic,
+  shouldForgetStoredTopic,
+  writeStoredTopic,
+} from '../utils/active-topic';
+import {
+  applyScopedModelUpdate,
+  resolveScopedModelState,
+} from '../utils/conversation-model-state';
+import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
+import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
+import {
+  THEME_STORAGE_KEY,
+  isLiquidTheme,
+  isLiquidThemeUnlocked,
+  normalizeTheme,
+  saveLiquidThemeUnlock,
+  syncThemeColor,
+  verifyLiquidThemePassword,
+} from '../utils/theme-access';
+import {
+  authModeForPathname,
+  authPathForMode,
+  authenticationRedirectPath,
+  navigateBrowserPath,
+  postAuthenticationPathFromSearch,
+} from '../utils/auth-routes';
+import { Cloud, Database, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
+import '../css/catsco-liquid-green.css';
 
 const TABS = {
   CHATS: 'chats'
@@ -35,6 +83,15 @@ const TABS = {
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
+const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
+const DEV_PREVIEW_ACCOUNT = import.meta.env.VITE_DEV_PREVIEW_ACCOUNT || 'ui-reviewer';
+const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo123456';
+const requestedThemePreview = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get('theme_preview')
+  : '';
+const DEV_THEME_PREVIEW = ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
+  ? requestedThemePreview
+  : '';
 const DEV_PREVIEW_USER = {
   uid: 'local-preview',
   username: 'preview',
@@ -57,20 +114,35 @@ function normalizeUserProfile(raw) {
   };
 }
 
+export function resolveInitialUser({
+  themePreview = '',
+  previewEnabled = false,
+  token = '',
+  savedUser = null,
+} = {}) {
+  const authenticatedUser = token ? normalizeUserProfile(savedUser) : null;
+  if (authenticatedUser) return authenticatedUser;
+  if (themePreview) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
+  if (previewEnabled || !token) return null;
+  return null;
+}
+
 function getInitialUser() {
-  if (DEV_PREVIEW_ENABLED) return DEV_PREVIEW_USER;
-
   const token = getToken();
-  if (!token) return null;
-
+  let savedUser = null;
   try {
-    const saved = localStorage.getItem('oc_user');
-    return saved ? normalizeUserProfile(JSON.parse(saved)) : null;
+    const saved = token ? localStorage.getItem('oc_user') : '';
+    savedUser = saved ? JSON.parse(saved) : null;
   } catch (error) {
     console.warn('Failed to restore saved user from localStorage:', error);
     localStorage.removeItem('oc_user');
-    return null;
   }
+  return resolveInitialUser({
+    themePreview: DEV_THEME_PREVIEW,
+    previewEnabled: DEV_PREVIEW_ENABLED,
+    token,
+    savedUser,
+  });
 }
 
 function loadAppSidebarCollapsed() {
@@ -81,64 +153,6 @@ function loadAppSidebarCollapsed() {
 function saveAppSidebarCollapsed(collapsed) {
   if (typeof window === 'undefined' || !window.localStorage) return;
   window.localStorage.setItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
-}
-
-function lastTopicStorageKey(uid) {
-  return uid ? `v3_last_topic:${uid}` : 'v3_last_topic';
-}
-
-function normalizeActiveTopic(value) {
-  if (!value) return null;
-
-  if (typeof value === 'string') {
-    if (!value || value === '[object Object]') return null;
-    return { topicId: value, name: '' };
-  }
-
-  if (typeof value === 'object' && value.topicId) {
-    return {
-      topicId: value.topicId,
-      name: value.name || '',
-      isGroup: Boolean(value.isGroup),
-      groupId: value.groupId,
-      avatar_url: value.avatar_url || '',
-      friendId: value.friendId,
-    };
-  }
-
-  return null;
-}
-
-function readStoredTopic(uid) {
-  const keys = [lastTopicStorageKey(uid), 'v3_last_topic'];
-  for (const key of keys) {
-    const raw = localStorage.getItem(key);
-    if (!raw) continue;
-
-    try {
-      const parsed = JSON.parse(raw);
-      const topic = normalizeActiveTopic(parsed);
-      if (topic) return topic;
-    } catch (error) {
-      const topic = normalizeActiveTopic(raw);
-      if (topic) return topic;
-    }
-  }
-
-  return null;
-}
-
-function writeStoredTopic(uid, topic) {
-  const key = lastTopicStorageKey(uid);
-  const normalized = normalizeActiveTopic(topic);
-  if (!normalized) {
-    localStorage.removeItem(key);
-    localStorage.removeItem('v3_last_topic');
-    return;
-  }
-
-  localStorage.setItem(key, JSON.stringify(normalized));
-  localStorage.setItem('v3_last_topic', JSON.stringify(normalized));
 }
 
 function desktopPromptStorageKey(uid) {
@@ -157,29 +171,52 @@ function findConnectedLocalAgent(agents) {
   return (agents || []).find((agent) => agent.relation === 'owner' && agent.is_online);
 }
 
-export default function TinodeWeb() {
-  const mobileUploadMatch = window.location.pathname.match(/^\/mobile-upload\/([^/]+)$/);
+export default function TinodeWeb({ location = window.location } = {}) {
+  const { pathname = '/', search = '' } = location;
+  const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
   if (mobileUploadMatch) {
     return <MobileUploadView sessionId={decodeURIComponent(mobileUploadMatch[1])} />;
   }
 
-  const demoParams = new URLSearchParams(window.location.search);
+  const demoParams = new URLSearchParams(search);
   const showWorkflowDemo = demoParams.get('workflow_demo') === '1';
   if (showWorkflowDemo) {
     return <WorkflowRichMediaDemo />;
   }
 
-  return <TinodeWebApp />;
+  return <TinodeWebApp location={location} />;
 }
 
-function TinodeWebApp() {
-  const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
+function TinodeWebApp({ location }) {
+  const feedback = useFeedback();
+  const { pathname = '/', search = '', hash = '' } = location;
+  const entryMatch = pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
-  const channelDeviceLink = window.location.pathname === '/channel-device-link';
-  const channelAccountLink = window.location.pathname === '/channel-account-link';
+  const channelDeviceLink = pathname === '/channel-device-link';
+  const channelAccountLink = pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
-  const [activeTopic, _setActiveTopic] = useState(null);
+  const [activeView, setActiveView] = useState('chats');
+  const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
+  const [activeTopic, _setActiveTopic] = useState(() => (
+    user?.uid ? readStoredTopic(user.uid) : null
+  ));
+  const [taskDraft, setTaskDraft] = useState(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [messageLocationRequest, setMessageLocationRequest] = useState(null);
+  const messageLocationSequenceRef = useRef(0);
+  const taskDraftSequenceRef = useRef(0);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    const handleGlobalSearchShortcut = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 'k') return;
+      event.preventDefault();
+      setSearchOpen(true);
+    };
+    document.addEventListener('keydown', handleGlobalSearchShortcut);
+    return () => document.removeEventListener('keydown', handleGlobalSearchShortcut);
+  }, [user]);
 
   const setActiveTopic = useCallback((nextValue) => {
     _setActiveTopic((prev) => {
@@ -189,7 +226,7 @@ function TinodeWebApp() {
       return normalized;
     });
   }, [user?.uid]);
-  const [authMode, setAuthMode] = useState('login');
+  const authMode = authModeForPathname(pathname);
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
   const [showProfileEditor, setShowProfileEditor] = useState(false);
@@ -200,6 +237,31 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
+  const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+
+  useEffect(() => {
+    const redirectPath = authenticationRedirectPath({
+      authenticated: Boolean(user),
+      location: { pathname, search, hash },
+    });
+    if (redirectPath) navigateBrowserPath(redirectPath, { replace: true });
+  }, [hash, pathname, search, user]);
+
+  const navigateToAuthMode = useCallback((mode) => {
+    navigateBrowserPath(authPathForMode(mode, postAuthenticationPathFromSearch(search)));
+  }, [search]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) return undefined;
+    api.getRelayAdminAccess()
+      .then((res) => { if (!cancelled) setRelayAdminAllowed(Boolean(res?.allowed)); })
+      .catch(() => { /* non-whitelisted users just see no button */ });
+    return () => { cancelled = true; };
+  }, [user?.uid]);
+  const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
+  const cloudArtifactsRequestSequenceRef = useRef(0);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -207,8 +269,57 @@ function TinodeWebApp() {
   const [sidebarViewportWidth, setSidebarViewportWidth] = useState(() => window.innerWidth);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
+  const [theme, setTheme] = useState(() => DEV_THEME_PREVIEW || normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
+  const [liquidThemeAccess, setLiquidThemeAccess] = useState(() => ({
+    loading: false,
+    unlocked: isLiquidTheme(DEV_THEME_PREVIEW) || isLiquidThemeUnlocked(),
+  }));
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
+  const [activeAgentModel, setActiveAgentModel] = useState(null);
+  const [activeAgentState, setActiveAgentState] = useState(null);
+  const activeTopicId = activeTopic?.topicId || '';
+  const draftAgentUID = Number(taskDraft?.agent?.uid || taskDraft?.agent?.id || 0);
+  const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
+  const modelContext = activeTopic || (modelContextId ? { topicId: modelContextId, isGroup: false } : null);
+  const modelContextIdRef = useRef(modelContextId);
+  modelContextIdRef.current = modelContextId;
+  const handleActiveAgentModelChange = useCallback((modelState) => {
+    const topicId = activeTopicId;
+    setActiveAgentModel((current) => applyScopedModelUpdate(current, {
+      activeTopicId: modelContextIdRef.current,
+      topicId,
+      modelState,
+    }));
+  }, [activeTopicId]);
+  const displayedAgentModel = resolveScopedModelState(modelContext, activeAgentModel);
+  const handleActiveAgentChange = useCallback((agent) => {
+    const topicId = activeTopicId;
+    setActiveAgentState((current) => {
+      if (!topicId || topicId !== modelContextIdRef.current) return current;
+      return { topicId, agent };
+    });
+  }, [activeTopicId]);
+  const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
+  const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
+  const handleOpenCloudArtifacts = useCallback(() => {
+    const agentUid = Number(displayedActiveAgent?.uid || 0);
+    if (!activeTopicId) return;
+    cloudArtifactsRequestSequenceRef.current += 1;
+    setCloudArtifactsRequest({
+      agentUid,
+      requestId: cloudArtifactsRequestSequenceRef.current,
+    });
+  }, [activeTopicId, displayedActiveAgent?.uid]);
+  const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
+    const normalizedAgentUid = Number(agentUid || 0);
+    if (!activeTopicId || normalizedAgentUid <= 0) return;
+    setActiveView('chats');
+    cloudArtifactsRequestSequenceRef.current += 1;
+    setCloudArtifactsRequest({
+      agentUid: normalizedAgentUid,
+      requestId: cloudArtifactsRequestSequenceRef.current,
+    });
+  }, [activeTopicId]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -224,9 +335,47 @@ function TinodeWebApp() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem('catsco_theme', theme);
+    const greenLiquid = theme === 'liquid-green';
+    document.documentElement.dataset.theme = greenLiquid ? 'liquid' : theme;
+    if (greenLiquid) {
+      document.documentElement.dataset.liquidVariant = 'green';
+    } else {
+      delete document.documentElement.dataset.liquidVariant;
+    }
+    syncThemeColor(theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (DEV_THEME_PREVIEW) {
+      setLiquidThemeAccess({ loading: false, unlocked: isLiquidTheme(DEV_THEME_PREVIEW) });
+      setTheme(DEV_THEME_PREVIEW);
+      return;
+    }
+
+    const unlocked = isLiquidThemeUnlocked();
+    setLiquidThemeAccess({ loading: false, unlocked });
+    if (!unlocked) setTheme((current) => isLiquidTheme(current) ? 'light' : current);
+  }, []);
+
+  const selectTheme = useCallback((nextTheme) => {
+    const normalized = normalizeTheme(nextTheme);
+    if (isLiquidTheme(normalized) && !liquidThemeAccess.unlocked) return false;
+    setTheme(normalized);
+    return true;
+  }, [liquidThemeAccess.unlocked]);
+
+  const unlockLiquidTheme = useCallback(async (password, requestedTheme = 'liquid') => {
+    const unlocked = await verifyLiquidThemePassword(password);
+    if (!unlocked) throw new Error('密码不正确。');
+    if (!saveLiquidThemeUnlock()) {
+      throw new Error('浏览器未能保存解锁状态，请检查站点存储设置。');
+    }
+    setLiquidThemeAccess({ loading: false, unlocked: true });
+    const normalized = normalizeTheme(requestedTheme);
+    setTheme(isLiquidTheme(normalized) ? normalized : 'liquid');
+    return { ok: true };
+  }, []);
 
   useEffect(() => {
     const handleViewportResize = () => setSidebarViewportWidth(window.innerWidth);
@@ -261,6 +410,39 @@ function TinodeWebApp() {
   }, [user?.uid]);
 
   useEffect(() => {
+    if (activeTopicId || draftAgentUID <= 0 || !modelContextId) return undefined;
+    let cancelled = false;
+    const updateDraftModel = (modelState) => {
+      setActiveAgentModel((current) => applyScopedModelUpdate(current, {
+        activeTopicId: modelContextIdRef.current,
+        topicId: modelContextId,
+        modelState,
+      }));
+    };
+
+    updateDraftModel({ isBot: true, state: 'loading', summary: null });
+    api.getAgentQuota(draftAgentUID)
+      .then((response) => {
+        if (cancelled) return;
+        const summary = response?.summary || null;
+        updateDraftModel({
+          isBot: true,
+          state: summary ? 'ready' : 'unavailable',
+          summary,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          updateDraftModel({ isBot: true, state: 'unavailable', summary: null });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTopicId, draftAgentUID, modelContextId]);
+
+  useEffect(() => {
     if (!showProfilePopover) return undefined;
 
     const handlePointerDown = (event) => {
@@ -287,6 +469,36 @@ function TinodeWebApp() {
     localStorage.setItem('oc_user', JSON.stringify(nextUser));
     setUser(nextUser);
   }, []);
+
+  useEffect(() => {
+    if (!DEV_PREVIEW_ENABLED) return undefined;
+    let cancelled = false;
+
+    const activatePreviewAccount = async () => {
+      try {
+        const session = await api.login({
+          account: DEV_PREVIEW_ACCOUNT,
+          password: DEV_PREVIEW_PASSWORD,
+        });
+        if (cancelled) return;
+        setToken(session.token);
+        const previewSessionRevision = getAuthRevision();
+        const profile = normalizeUserProfile(await api.getMe().catch(() => null));
+        if (cancelled || !isCurrentAuthSession(session.token, previewSessionRevision)) return;
+        persistUser(profile || {
+          ...DEV_PREVIEW_USER,
+          uid: DEV_PREVIEW_UID,
+        });
+      } catch (error) {
+        console.warn('Failed to activate local preview account:', error);
+      }
+    };
+
+    activatePreviewAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [persistUser]);
 
   const toggleAppSidebar = useCallback(() => {
     if (window.matchMedia('(max-width: 768px)').matches) {
@@ -324,14 +536,39 @@ function TinodeWebApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileSidebarOpen]);
 
+  const clearAuthenticatedSession = useCallback((
+    authToken = getToken(),
+    expectedSessionRevision = getAuthRevision(),
+  ) => {
+    if (!isCurrentAuthSession(authToken, expectedSessionRevision)) return;
+    const registrationIDs = getPushCleanupRegistrationIDs();
+    const registrationID = registrationIDs[0] || '';
+    const sessionRevision = expectedSessionRevision;
+    enqueuePushOperation(() => cleanupPushForSession({
+      coordinator: pushTabCoordinator,
+      registrationID,
+      registrationIDs,
+      getCurrentToken: getToken,
+      sessionRevision,
+      getCurrentSessionRevision: getAuthRevision,
+      unsubscribeOnServer: (endpoint, id) => api.unsubscribePush(endpoint, authToken, id),
+    })).catch((error) => {
+      console.warn('Push subscription cleanup failed while clearing session:', error);
+    });
+    disconnectWS();
+    setToken(null);
+    localStorage.removeItem('oc_user');
+    setUser(null);
+    setOnlineUsers({});
+    setTaskDraft(null);
+    setActiveView('chats');
+    setActiveTopic(null);
+  }, [setActiveTopic]);
+
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
     if (msg._type === 'ws_auth_expired') {
-      disconnectWS();
-      setToken(null);
-      localStorage.removeItem('oc_user');
-      setUser(null);
-      setActiveTopic(null);
+      clearAuthenticatedSession();
       return;
     }
     if (msg._type === 'ws_open') {
@@ -372,7 +609,7 @@ function TinodeWebApp() {
         });
       }
     }
-  }, [setActiveTopic]);
+  }, [clearAuthenticatedSession, setActiveTopic]);
 
   useEffect(() => {
     if (user?.uid) {
@@ -384,8 +621,13 @@ function TinodeWebApp() {
   }, [user?.uid, handleWSMessage]);
 
   useEffect(() => {
+    sendWSActiveTopic(user?.uid ? activeTopicId : '');
+  }, [activeTopicId, user?.uid]);
+
+  useEffect(() => {
     if (!user?.uid) return undefined;
 
+    const syncPageVisibility = () => sendWSPageVisibility(document.visibilityState);
     let hiddenAt = 0;
     const recoverConnection = (force = false) => {
       if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
@@ -393,53 +635,66 @@ function TinodeWebApp() {
       else connectWS(handleWSMessage);
     };
     const handleVisibilityChange = () => {
+      syncPageVisibility();
       if (document.visibilityState === 'hidden') {
         hiddenAt = Date.now();
         return;
       }
+      sendWSPageFocus(document.hasFocus());
       const suspendedLongEnoughToStale = hiddenAt > 0 && Date.now() - hiddenAt >= 30000;
       recoverConnection(suspendedLongEnoughToStale);
       hiddenAt = 0;
     };
     const handlePageShow = (event) => recoverConnection(Boolean(event.persisted));
     const handleOnline = () => recoverConnection(true);
-    const handleFocus = () => recoverConnection(false);
+    const handleFocus = () => {
+      sendWSPageFocus(true);
+      recoverConnection(false);
+    };
+    const handleBlur = () => sendWSPageFocus(false);
 
+    syncPageVisibility();
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('pageshow', handlePageShow);
     window.addEventListener('online', handleOnline);
     window.addEventListener('focus', handleFocus);
+    window.addEventListener('blur', handleBlur);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pageshow', handlePageShow);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('blur', handleBlur);
     };
   }, [user?.uid, handleWSMessage]);
 
   useEffect(() => {
+    setTaskDraft(null);
     if (!user?.uid) {
       _setActiveTopic(null);
       return;
     }
 
     const stored = readStoredTopic(user.uid);
+    _setActiveTopic(stored);
     if (!stored?.topicId?.startsWith('grp_')) {
-      _setActiveTopic(stored);
       return;
     }
 
     let cancelled = false;
     const groupId = stored.groupId || Number(stored.topicId.slice(4));
     api.getGroupInfo(groupId)
-      .then(() => {
-        if (!cancelled) _setActiveTopic(stored);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          writeStoredTopic(user.uid, null);
-          _setActiveTopic(null);
+      .catch((error) => {
+        if (cancelled) return;
+        if (!shouldForgetStoredTopic(error)) {
+          console.warn('Failed to validate the restored task; keeping it for retry:', error);
+          return;
         }
+        _setActiveTopic((current) => {
+          if (current?.topicId !== stored.topicId) return current;
+          writeStoredTopic(user.uid, null);
+          return null;
+        });
       });
     return () => {
       cancelled = true;
@@ -448,31 +703,30 @@ function TinodeWebApp() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    if (DEV_PREVIEW_ENABLED) return undefined;
+    const requestToken = getToken();
+    const requestSessionRevision = getAuthRevision();
+    if (!requestToken) return undefined;
 
     let cancelled = false;
     api.getMe()
       .then((profile) => {
-        if (!cancelled) {
+        if (!cancelled && isCurrentAuthSession(requestToken, requestSessionRevision)) {
           const normalized = normalizeUserProfile(profile);
           if (normalized) persistUser(normalized);
         }
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
-        if (!cancelled && error?.status === 401) {
-          disconnectWS();
-          setToken(null);
-          localStorage.removeItem('oc_user');
-          setUser(null);
-          setActiveTopic(null);
+        if (!cancelled && error?.status === 401
+          && isCurrentAuthSession(requestToken, requestSessionRevision)) {
+          clearAuthenticatedSession(requestToken, requestSessionRevision);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, persistUser]);
+  }, [user?.uid, persistUser, clearAuthenticatedSession]);
 
   const refreshLocalAgentStatus = useCallback(async ({ allowDailyPrompt = false } = {}) => {
     if (!user?.uid) return;
@@ -515,7 +769,7 @@ function TinodeWebApp() {
   useEffect(() => {
     if (!user?.uid) return;
 
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(search);
     if (params.get('relay_login') !== '1') return;
 
     let cancelled = false;
@@ -523,7 +777,7 @@ function TinodeWebApp() {
       params.delete('relay_login');
       const nextSearch = params.toString();
       const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
-      window.history.replaceState(null, '', nextUrl);
+      navigateBrowserPath(nextUrl, { replace: true });
       setShowRelayModal(true);
     };
 
@@ -545,12 +799,13 @@ function TinodeWebApp() {
     return () => {
       cancelled = true;
     };
-  }, [user?.uid]);
+  }, [search, user?.uid]);
 
   const handleLogin = async (account, password) => {
     const res = await api.login({ account, password });
     setToken(res.token);
     persistUser(normalizeUserProfile(res));
+    navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
   const handleRegister = async (email, password, loginName, code) => {
@@ -571,12 +826,7 @@ function TinodeWebApp() {
   };
 
   const handleLogout = () => {
-    disconnectWS();
-    setToken(null);
-    localStorage.removeItem('oc_user');
-    setUser(null);
-    setOnlineUsers({});
-    setActiveTopic(null);
+    clearAuthenticatedSession();
   };
 
   const handleUserUpdated = (nextUser) => {
@@ -590,6 +840,30 @@ function TinodeWebApp() {
       return { ...prev, ...nextTopic };
     });
   };
+
+  const handleRenameActiveTopic = useCallback(async (nextName) => {
+    const topic = activeTopic;
+    if (!topic?.topicId) return;
+
+    try {
+      if (topic.isGroup || topic.topicId.startsWith('grp_')) {
+        const groupId = Number(topic.groupId || topic.topicId.slice(4));
+        if (!groupId) throw new Error('无法识别当前协作任务');
+        await api.updateGroup(groupId, nextName, topic.avatar_url || '');
+      } else {
+        await api.updateConversationTitle(topic.topicId, nextName);
+      }
+
+      setActiveTopic((current) => (
+        current?.topicId === topic.topicId ? { ...current, name: nextName } : current
+      ));
+      window.dispatchEvent(new Event('cc:data-changed'));
+      feedback.notify({ tone: 'success', message: '对话标题已更新' });
+    } catch (error) {
+      feedback.notify({ tone: 'error', title: '修改标题失败', message: error.message || '请稍后重试' });
+      throw error;
+    }
+  }, [activeTopic, feedback, setActiveTopic]);
 
   const resolveAgentTopic = useCallback(async (agent) => {
     const agentUid = agent?.uid || agent?.id;
@@ -620,13 +894,49 @@ function TinodeWebApp() {
       isGroup: false,
       avatar_url: opened.avatar_url || agent.avatar_url,
       friendId: opened.uid || agentUid,
+      isBot: true,
     };
+  }, []);
+
+  const createAgentTaskTopic = useCallback(async (agent, draft = {}) => {
+    const taskName = buildAgentTaskName(agent, draft);
+    return createAgentTaskTopicRecord({
+      agent,
+      taskName,
+      projectId: draft.projectId,
+      projectName: draft.projectName,
+    });
   }, []);
 
   const activateResolvedTopic = useCallback((nextTopic) => {
     if (!nextTopic?.topicId) return;
+    setTaskDraft(null);
     setActiveTopic(nextTopic);
   }, [setActiveTopic]);
+
+  const handleStartAgentTask = useCallback((agent, options = {}) => {
+    const agentUid = agent?.uid || agent?.id;
+    if (!agentUid) return;
+    const projectId = Number(options?.projectId || 0);
+    taskDraftSequenceRef.current += 1;
+    setActiveTopic(null);
+    setActiveView('chats');
+    setTaskDraft({
+      agent,
+      key: `${agentUid}:${taskDraftSequenceRef.current}`,
+      projectId: projectId > 0 ? projectId : 0,
+      projectName: projectId > 0 ? String(options?.projectName || '') : '',
+    });
+    setMobileSidebarOpen(false);
+  }, [setActiveTopic]);
+
+  const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
+    createAgentTaskTopic(agent, {
+      ...draft,
+      projectId: taskDraft?.projectId || 0,
+      projectName: taskDraft?.projectName || '',
+    })
+  ), [createAgentTaskTopic, taskDraft?.projectId, taskDraft?.projectName]);
 
   const activateAgentTopic = useCallback(async (agent) => {
     const nextTopic = await resolveAgentTopic(agent);
@@ -652,6 +962,28 @@ function TinodeWebApp() {
     }
   };
 
+  const handleSearchResultSelect = useCallback((result) => {
+    if (!result?.topicId) return;
+    const targetMessageId = Number(result.messageId) || 0;
+    messageLocationSequenceRef.current += 1;
+    setTaskDraft(null);
+    setActiveView('chats');
+    setActiveTopic({
+      topicId: result.topicId,
+      name: result.source || result.topicId,
+      isGroup: result.isGroup || result.topicId.startsWith('grp_'),
+      groupId: result.groupId,
+      avatar_url: result.avatarUrl,
+    });
+    setMessageLocationRequest(targetMessageId ? {
+      topicId: result.topicId,
+      messageId: targetMessageId,
+      requestId: messageLocationSequenceRef.current,
+    } : null);
+    setSearchOpen(false);
+    setMobileSidebarOpen(false);
+  }, [setActiveTopic]);
+
   if ((channelDeviceLink || channelAccountLink) && user) {
     const params = new URLSearchParams(window.location.search);
     return (
@@ -664,12 +996,34 @@ function TinodeWebApp() {
   }
 
   if (!user) {
-    return <AuthView mode={authMode} setMode={setAuthMode} onLogin={handleLogin} onRegister={handleRegister} />;
+    return (
+      <AuthView
+        mode={authMode}
+        nextPath={postAuthenticationPathFromSearch(search)}
+        onNavigate={navigateToAuthMode}
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+      />
+    );
   }
 
   if (entrySceneKey) {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
+
+  const localAssistantBar = (
+    <LocalAssistantBar
+      agentModelState={displayedAgentModel}
+      activeAgent={displayedActiveAgent}
+      currentModelName={currentModelName}
+      onDownload={() => setShowDownloadModal(true)}
+      onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
+      title={activeTopic?.name || taskDraftTitle(taskDraft)}
+      onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
+      relayAdminAllowed={relayAdminAllowed}
+      onOpenRelayAdmin={() => setRelayAdminOpen(true)}
+    />
+  );
 
   return (
     <div
@@ -694,32 +1048,69 @@ function TinodeWebApp() {
             <span className="catsco-brand-mark" aria-hidden="true" />
             <span className="catsco-brand-name">CatsCo</span>
           </div>
-          <button
-            className="v3-sidebar-collapse-btn"
-            type="button"
-            onClick={toggleAppSidebar}
-            aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
-            title={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
-          >
-            {appSidebarCollapsed ? (
-              <>
-                <span className="catsco-brand-mark v3-collapsed-brand-icon" aria-hidden="true" />
-                <PanelLeftClose size={18} className="v3-collapsed-expand-icon" aria-hidden="true" />
-              </>
-            ) : <PanelLeftClose size={18} />}
-          </button>
+          <div className="v3-sidebar-header-actions">
+            {!appSidebarCollapsed && (
+              <button
+                className="v3-sidebar-collapse-btn v3-sidebar-header-search-btn"
+                type="button"
+                onClick={() => setSearchOpen(true)}
+                aria-label="打开全局搜索"
+                aria-keyshortcuts="Control+K Meta+K"
+                title="搜索"
+              >
+                <Search size={18} aria-hidden="true" />
+              </button>
+            )}
+            <button
+              className="v3-sidebar-collapse-btn"
+              type="button"
+              onClick={toggleAppSidebar}
+              aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
+              title={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
+            >
+              {appSidebarCollapsed ? (
+                <>
+                  <span className="catsco-brand-mark v3-collapsed-brand-icon" aria-hidden="true" />
+                  <PanelLeftClose size={18} className="v3-collapsed-expand-icon" aria-hidden="true" />
+                </>
+              ) : <PanelLeftClose size={18} />}
+            </button>
+          </div>
         </div>
         
         <div className="cc-sidebar-content-shell">
           <SidebarContent
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
+              setTaskDraft(null);
+              setMessageLocationRequest(null);
+              setActiveView('chats');
               setActiveTopic(topic);
               setMobileSidebarOpen(false);
             }}
+            onOpenSearch={() => setSearchOpen(true)}
+            onStartAgentTask={handleStartAgentTask}
+            onOpenSkillHub={(agentId, agent) => {
+              setSkillHubInitialAgent(agent || { uid: agentId, id: agentId });
+              setActiveView('skillhub');
+              setMobileSidebarOpen(false);
+            }}
+            onOpenCloudArtifacts={activeTopicId ? handleOpenManagedAgentArtifacts : undefined}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
+            additionalSidebarTools={(
+              <>
+                <SkillHubSidebarButton
+                  active={activeView === 'skillhub'}
+                  onClick={() => {
+                    setSkillHubInitialAgent(null);
+                    setActiveView('skillhub');
+                    setMobileSidebarOpen(false);
+                  }}
+                />
+              </>
+            )}
             onManageGroup={(group) => {
               setManagedGroup(group);
               setMobileSidebarOpen(false);
@@ -735,9 +1126,16 @@ function TinodeWebApp() {
         />
 
         {showProfilePopover && (
-          <div className="v3-profile-popover" ref={profilePopoverRef}>
+          <ProfilePopover
+            compact={appSidebarCollapsed}
+            popoverRef={profilePopoverRef}
+            onLogout={() => {
+              setShowProfilePopover(false);
+              handleLogout();
+            }}
+          >
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
-              <Bug size={16} style={{marginRight: 10}} /> 意见反馈
+              <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Database size={16} style={{marginRight: 10}} /> 本机设备与历史
@@ -746,15 +1144,12 @@ function TinodeWebApp() {
               <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
-              <KeyRound size={16} style={{marginRight: 10}} /> CatsCo 中转站
+              <KeyRound size={16} style={{marginRight: 10}} /> 套餐与权益
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料
             </div>
-            <div className="v3-popover-item danger" onClick={() => { localStorage.clear(); window.location.reload(); }}>
-              <LogOut size={16} style={{marginRight: 10}} /> 退出登录
-            </div>
-          </div>
+          </ProfilePopover>
         )}
 
         <SidebarResizeHandle
@@ -781,37 +1176,61 @@ function TinodeWebApp() {
         >
           <PanelLeftOpen size={18} />
         </button>
-        <LocalAssistantBar
-          currentModelName={currentModelName}
-          theme={theme}
-          onToggleTheme={() => setTheme((value) => value === 'light' ? 'dark' : 'light')}
-          onDownload={() => setShowDownloadModal(true)}
-          title={activeTopic?.name || '新对话'}
-        />
-        {activeTopic ? (
-          <MessagesView
-            topic={activeTopic.topicId}
-            topicName={activeTopic.name}
-            user={user}
-            isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
-            groupId={activeTopic.groupId}
-            topicAvatarUrl={activeTopic.avatar_url}
-            localAssistantStatus={localAgentStatus}
-            onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
-            onResolveAgentTopic={resolveAgentTopic}
-            onActivateTopic={activateResolvedTopic}
-          />
-        ) : (
-          <NoActiveTask
-            onResolveAgentTopic={resolveAgentTopic}
-            onActivateTopic={activateResolvedTopic}
-          />
-        )}
+        <div className="v3-main-body">
+          <div className="v3-main-content">
+            {activeView === 'skillhub' ? (
+              <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
+            ) : activeTopic ? (
+              <MessagesView
+                topBar={localAssistantBar}
+                topic={activeTopic.topicId}
+                topicName={activeTopic.name}
+                user={user}
+                isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
+                groupId={activeTopic.groupId}
+                topicAvatarUrl={activeTopic.avatar_url}
+                localAssistantStatus={localAgentStatus}
+                onAgentModelChange={handleActiveAgentModelChange}
+                onActiveAgentChange={handleActiveAgentChange}
+                onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
+                onResolveAgentTopic={resolveAgentTopic}
+                onActivateTopic={activateResolvedTopic}
+                cloudArtifactsRequest={cloudArtifactsRequest}
+                messageLocationRequest={messageLocationRequest}
+                onBackToSearch={() => setSearchOpen(true)}
+              />
+            ) : (
+              <>
+                {localAssistantBar}
+                <NoActiveTask
+                  key={taskDraft?.key || 'new-task'}
+                  user={user}
+                  initialAgent={taskDraft?.agent}
+                  onResolveAgentTopic={createDraftAgentTaskTopic}
+                  onActivateTopic={activateResolvedTopic}
+                />
+              </>
+            )}
+          </div>
+          {relayAdminAllowed && relayAdminOpen && (
+            <RelayAdminPanel onClose={() => setRelayAdminOpen(false)} />
+          )}
+        </div>
       </div>
+
+      <SearchOverlay
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelectResult={handleSearchResultSelect}
+      />
 
       {showProfileEditor && (
         <ProfileEditor
           user={user}
+          theme={theme}
+          onThemeChange={selectTheme}
+          liquidThemeAccess={liquidThemeAccess}
+          onUnlockLiquidTheme={unlockLiquidTheme}
           onClose={() => setShowProfileEditor(false)}
           onSaved={handleUserUpdated}
           onOpenRelay={() => setShowRelayModal(true)}
@@ -864,22 +1283,32 @@ function TinodeWebApp() {
   );
 }
 
-function LocalAssistantBar({ currentModelName, theme, onToggleTheme, onDownload, title }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
-        <div
-          className="v3-local-assistant-status"
-          aria-label={`当前使用的模型：${currentModelName}`}
-          title={`当前使用的模型：${currentModelName}`}
-        >
-          <span>{currentModelName}</span>
-        </div>
+        <BotModelSelector
+          currentModelName={currentModelName}
+          agentModelState={agentModelState}
+          activeAgent={activeAgent}
+        />
       </div>
-      <strong className="v3-shell-title">{title}</strong>
+      <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
-        <button type="button" className="v3-action-btn" onClick={onToggleTheme} aria-label="切换日夜模式">
-          {theme === 'light' ? <Sun size={17} /> : <Moon size={17} />}
+        {relayAdminAllowed && (
+          <button type="button" className="v3-action-btn" onClick={onOpenRelayAdmin} aria-label="模型用量" title="模型用量管理">
+            <Settings2 size={17} />
+          </button>
+        )}
+        <button
+          type="button"
+          className="v3-action-btn v3-cloud-action"
+          onClick={onOpenCloudArtifacts}
+          disabled={!onOpenCloudArtifacts}
+          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入聊天'}
+          title={onOpenCloudArtifacts ? '云文件' : '请先进入聊天'}
+        >
+          <Cloud size={17} aria-hidden="true" />
         </button>
         <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
           <Download size={17} />
@@ -889,15 +1318,42 @@ function LocalAssistantBar({ currentModelName, theme, onToggleTheme, onDownload,
   );
 }
 
-function NoActiveTask({ onResolveAgentTopic, onActivateTopic }) {
+export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
+
+function canOpenCloudArtifacts(activeTopic, activeAgent) {
+  return Boolean(activeTopic?.topicId);
+}
+
+function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
+  if (activeTopicId) {
+    return activeAgentState?.topicId === activeTopicId ? activeAgentState.agent : null;
+  }
+
+  const draftAgent = taskDraft?.agent;
+  const uid = Number(draftAgent?.uid || draftAgent?.id || 0);
+  if (uid <= 0) return null;
+
+  const isOwner = draftAgent?.isOwner === true
+    || draftAgent?.is_owner === true
+    || draftAgent?.relation === 'owner';
+  return {
+    ...draftAgent,
+    uid,
+    isOwner,
+    relation: isOwner ? 'owner' : (draftAgent?.relation || 'friend'),
+  };
+}
+
+function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
         <div className="cc-empty-task-heading">
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
-          <h1>需要我为您做什么？</h1>
+          <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
         <EmptyTaskComposer
+          initialAgent={initialAgent}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}
         />
@@ -906,16 +1362,78 @@ function NoActiveTask({ onResolveAgentTopic, onActivateTopic }) {
   );
 }
 
-function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers, compact, onManageGroup }) {
+function SidebarContent({
+  activeTopic,
+  onSelectTopic,
+  onOpenSearch,
+  additionalSidebarTools,
+  onStartAgentTask,
+  onOpenSkillHub,
+  onOpenCloudArtifacts,
+  user,
+  onlineUsers,
+  compact,
+  onManageGroup,
+}) {
   return (
     <ChatListView
       activeTopic={activeTopic}
       onSelectTopic={onSelectTopic}
+      onOpenSearch={onOpenSearch}
+      additionalSidebarTools={additionalSidebarTools}
+      onStartAgentTask={onStartAgentTask}
+      onOpenSkillHub={onOpenSkillHub}
+      onOpenCloudArtifacts={onOpenCloudArtifacts}
       user={user}
       onlineUsers={onlineUsers}
       compact={compact}
       onManageGroup={onManageGroup}
     />
+  );
+}
+
+function SkillHubSidebarButton({ active, onClick }) {
+  return (
+    <button
+      type="button"
+      className={`cc-sidebar-primary cc-sidebar-skillhub-entry${active ? ' active' : ''}`}
+      onClick={onClick}
+      aria-label="打开 SkillHub"
+      aria-current={active ? 'page' : undefined}
+      title="SkillHub"
+    >
+      <Package size={17} />
+      <span>SkillHub</span>
+    </button>
+  );
+}
+
+export function ProfilePopover({ compact = false, popoverRef, children, onLogout }) {
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      className={`v3-profile-popover${compact ? ' is-compact' : ''}`}
+      ref={popoverRef}
+    >
+      {children}
+      {onLogout && (
+        <div
+          className="v3-popover-item danger"
+          role="button"
+          tabIndex={0}
+          aria-label="退出登录"
+          onClick={onLogout}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onLogout();
+          }}
+        >
+          <LogOut size={16} strokeWidth={1.8} style={{ marginRight: 10 }} /> 退出登录
+        </div>
+      )}
+    </div>,
+    document.body,
   );
 }
 
@@ -941,7 +1459,7 @@ function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
            {statusLabel}
         </div>
       </div>
-      <div className="v3-profile-settings" style={{color: '#888'}}>
+      <div className="v3-profile-settings">
         <Settings size={18} />
       </div>
     </button>
@@ -954,14 +1472,17 @@ function formatAuthError(message) {
   if (text.includes('password mismatch')) return '密码错误，请重试';
   if (text.includes('username taken')) return '登录名称已被占用，请换一个';
   if (text.includes('email already')) return '该邮箱已经注册，请直接登录';
-  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期';
+  if (text.includes('verification code expired')) return '验证码已过期，请重新获取';
+  if (text.includes('does not match')) return '验证码不正确，请使用最新邮件中的验证码';
+  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期，请重新获取并使用最新验证码';
   if (text.includes('username min 3')) return '登录名称至少 3 个字符';
   if (text.includes('password min 6')) return '密码至少 6 位';
+  if (text.includes('invalid email format')) return '邮箱格式无效，请检查域名拼写（如 qq.com）';
   if (text.includes('failed to send verification code')) return '发送验证码失败，请稍后再试';
   return message || '操作失败，请稍后再试';
 }
 
-function AuthView({ mode, setMode, onLogin, onRegister }) {
+export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -971,6 +1492,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   const [error, setError] = useState('');
   const [codeSent, setCodeSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [sentHint, setSentHint] = useState('');
 
   useEffect(() => {
     if (countdown > 0) {
@@ -980,8 +1502,8 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   }, [countdown]);
 
   const handleSendCode = async () => {
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setError('请输入有效的邮箱地址');
+    if (!email || !isValidEmailFormat(email)) {
+      setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
       return;
     }
     try {
@@ -989,7 +1511,9 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
       setCodeSent(true);
       setCountdown(60);
       setError('');
+      setSentHint('验证码已发送，请使用最新邮件中的验证码（旧验证码将失效）');
     } catch (err) {
+      setSentHint('');
       setError(err.message || '发送验证码失败，请稍后再试');
     }
   };
@@ -1010,20 +1534,33 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
 
   const authShell = (content) => (
     <div className="oc-auth">
+      <AuthFlowBackground />
       {content}
     </div>
   );
 
+  const authPath = (nextMode) => authPathForMode(nextMode, nextPath);
+  const handleAuthLink = (event, nextMode) => {
+    if (event.defaultPrevented || event.button !== 0
+      || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey
+      || typeof onNavigate !== 'function') return;
+    event.preventDefault();
+    onNavigate?.(nextMode);
+  };
+
   if (mode === 'reset') {
     return authShell(
       <div className="oc-auth-card">
-        <div className="oc-auth-logo"><span className="catsco-brand-mark" aria-hidden="true" /><span>CatsCo</span></div>
+        <div className="oc-auth-logo">CatsCo</div>
         <div className="oc-settings-secondary" style={{ marginBottom: 14 }}>
           输入注册邮箱，验证后设置新密码。
         </div>
         <PasswordResetForm />
         <div className="oc-auth-link">
-          <span>想起密码了？<a href="#" onClick={(e) => { e.preventDefault(); setMode('login'); }}>返回登录</a></span>
+          <span>
+            想起密码了？
+            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>返回登录</a>
+          </span>
         </div>
       </div>
     );
@@ -1031,8 +1568,8 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
 
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
-      <div className="oc-auth-logo"><span className="catsco-brand-mark" aria-hidden="true" /><span>CatsCo</span></div>
-      {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      <div className="oc-auth-logo">CatsCo</div>
+      {error && <InlineFeedback tone="error" className="oc-auth-feedback">{error}</InlineFeedback>}
 
       {mode === 'login' ? (
         <>
@@ -1068,24 +1605,25 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div className="oc-auth-code-row">
             <input
               className="oc-auth-input"
               placeholder="邮箱验证码"
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              style={{ flex: 1 }}
             />
             <button
               type="button"
               className="oc-auth-btn"
               onClick={handleSendCode}
               disabled={countdown > 0}
-              style={{ width: '120px', fontSize: '13px' }}
             >
               {countdown > 0 ? `${countdown}秒` : '发送验证码'}
             </button>
           </div>
+          {sentHint && (
+            <div className="oc-auth-hint" style={{ color: '#2e8b57', fontSize: 12, marginTop: 6 }}>{sentHint}</div>
+          )}
           <input
             className="oc-auth-input"
             placeholder="登录名称（可用于登录）"
@@ -1117,13 +1655,19 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
       <div className="oc-auth-link">
         {mode === 'login' ? (
           <>
-            <span>还没有账号？<a href="#" onClick={(e) => { e.preventDefault(); setMode('register'); }}>立即注册</a></span>
+            <span>
+              还没有账号？
+              <a href={authPath('register')} onClick={(event) => handleAuthLink(event, 'register')}>立即注册</a>
+            </span>
             <span style={{ marginLeft: 12 }}>
-              <a href="#" onClick={(e) => { e.preventDefault(); setMode('reset'); }}>忘记密码？</a>
+              <a href={authPath('reset')} onClick={(event) => handleAuthLink(event, 'reset')}>忘记密码？</a>
             </span>
           </>
         ) : (
-          <span>已有账号？<a href="#" onClick={(e) => { e.preventDefault(); setMode('login'); }}>立即登录</a></span>
+          <span>
+            已有账号？
+            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>立即登录</a>
+          </span>
         )}
       </div>
     </form>
@@ -1136,4 +1680,32 @@ function parseUid(uidStr) {
     return parseInt(uidStr.slice(3), 10) || 0;
   }
   return parseInt(uidStr, 10) || 0;
+}
+
+function taskDraftTitle(taskDraft) {
+  const agent = taskDraft?.agent;
+  const agentName = agent?.display_name || agent?.username || '';
+  const projectName = String(taskDraft?.projectName || '').trim();
+  if (agentName && projectName) return `新任务 · ${agentName} · ${projectName}`;
+  return agentName ? `新任务 · ${agentName}` : '新任务';
+}
+
+function buildAgentTaskName(agent, draft = {}) {
+  const instruction = String(draft.text || '').replace(/\s+/g, ' ').trim();
+  if (instruction) return truncateTaskName(instruction);
+
+  const attachments = Array.isArray(draft.attachments) ? draft.attachments : [];
+  const agentName = agent?.display_name || agent?.username || 'Agent';
+  if (attachments.length === 1) {
+    const attachmentName = String(attachments[0]?.name || '').trim();
+    if (attachmentName) return truncateTaskName(`${agentName} · ${attachmentName}`);
+  }
+  if (attachments.length > 1) return truncateTaskName(`${agentName} · ${attachments.length} 个附件`);
+  return truncateTaskName(`${agentName} 新任务`);
+}
+
+function truncateTaskName(value, maxLength = 36) {
+  const characters = Array.from(String(value || '').trim());
+  if (characters.length <= maxLength) return characters.join('');
+  return `${characters.slice(0, maxLength).join('')}…`;
 }

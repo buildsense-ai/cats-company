@@ -285,6 +285,7 @@ func (h *Hub) bindClientDeviceFromHi(client *Client, msg *MsgClientHi) (map[stri
 		OS:             msg.Device.OS,
 		BodyID:         firstNonEmpty(msg.Device.BodyID, client.bodyID),
 		InstallationID: firstNonEmpty(msg.Device.InstallationID, client.installationID),
+		RuntimeRole:    msg.Device.RuntimeRole,
 		Status:         msg.Device.Status,
 		Capabilities:   msg.Device.Capabilities,
 		ModelStatus:    msg.Device.ModelStatus,

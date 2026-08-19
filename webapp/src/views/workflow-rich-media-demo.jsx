@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
 
 const demoUser = {
@@ -13,6 +13,17 @@ const demoBot = {
   name: 'CatsCo Analyst',
   avatarUrl: '',
   isBot: true,
+};
+
+const demoCloudArtifact = {
+  id: 'teaching-review-dashboard',
+  title: '教研数据复盘看板',
+  kind: 'static_web',
+  url: new URL(
+    '/demo-artifacts/teaching-report.html',
+    typeof window !== 'undefined' ? window.location.origin : 'https://app.catsco.cc',
+  ).toString(),
+  publish_version: 2,
 };
 
 const demoMessages = [
@@ -174,10 +185,23 @@ const demoMessages = [
       '共 15 个页面，全绿。双击打开就能看。',
     ].join('\n'),
   },
+  {
+    id: 11,
+    from_uid: demoUser.uid,
+    created_at: '2026-06-09T09:42:00Z',
+    content: '把正式版发布成一个可以直接打开的网页。',
+  },
+  {
+    id: 12,
+    from_uid: demoBot.uid,
+    created_at: '2026-06-09T09:42:18Z',
+    content: `已发布：[教研数据复盘看板](${demoCloudArtifact.url})`,
+  },
 ];
 
 export default function WorkflowRichMediaDemo() {
   const [previewFile, setPreviewFile] = useState(null);
+  const chatColumnRef = useRef(null);
 
   return (
     <div className="v3-app v3-workflow-demo">
@@ -210,7 +234,7 @@ export default function WorkflowRichMediaDemo() {
       </aside>
       <main className="v3-main">
         <div className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}>
-          <div className="v3-chat-column">
+          <div ref={chatColumnRef} className="v3-chat-column">
             <div className="v3-message-view">
               <div className="v3-chat-header">
                 <div>
@@ -238,6 +262,7 @@ export default function WorkflowRichMediaDemo() {
                         isConsecutive={isConsecutive}
                         onPreviewFile={setPreviewFile}
                         activePreviewFile={previewFile}
+                        knownArtifacts={[demoCloudArtifact]}
                       />
                     );
                   })}
@@ -251,7 +276,7 @@ export default function WorkflowRichMediaDemo() {
             </div>
           </div>
           {previewFile && (
-            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />
+            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
           )}
         </div>
       </main>

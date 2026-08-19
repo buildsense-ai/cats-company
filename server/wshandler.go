@@ -2,11 +2,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,28 +23,55 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
+const (
+	pageVisibilityVisible         = "visible"
+	pageVisibilityHidden          = "hidden"
+	maxPushNotificationBodyRunes  = 180
+	maxPushNotificationTitleRunes = 80
+	// Visibility leases cover a missed heartbeat but expire promptly after a
+	// crashed node, so stale pages do not suppress pushes indefinitely.
+	pageVisibilityLeaseTTL = 2 * pongWait
+)
+
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
-	mu            sync.RWMutex
-	clients       map[int64]map[*Client]struct{}
-	clientsByConn map[string]*Client
-	register      chan *Client
-	unregister    chan *Client
-	presence      chan presenceEvent
-	db            store.Store
-	rateLimiter   *RateLimiter
-	botStats      *BotStats
-	botConvo      botConvoTracker
-	nodeID        string
-	sharedRuntime sharedRuntimeState
-	bodyLeases    *botBodyLeaseManager
-	userDevices   *userDeviceRegistry
-	deviceAudit   *deviceAuditLog
-	deviceRevokes *deviceConnectorRevocationList
-	deviceClients map[int64]map[string]*Client
-	deviceRPC     *deviceRPCRouter
-	thinToolRPC   *thinToolRPCRouter
-	channelOut    *ChannelOutboundDispatcher
+	mu                      sync.RWMutex
+	clients                 map[int64]map[*Client]struct{}
+	clientsByConn           map[string]*Client
+	register                chan *Client
+	unregister              chan *Client
+	presence                chan presenceEvent
+	db                      store.Store
+	rateLimiter             *RateLimiter
+	botStats                *BotStats
+	botConvo                botConvoTracker
+	nodeID                  string
+	sharedRuntime           sharedRuntimeState
+	bodyLeases              *botBodyLeaseManager
+	userDevices             *userDeviceRegistry
+	deviceAudit             *deviceAuditLog
+	deviceRevokes           *deviceConnectorRevocationList
+	deviceClients           map[int64]map[string]*Client
+	deviceRPC               *deviceRPCRouter
+	thinToolRPC             *thinToolRPCRouter
+	botRuntimeCredentials   *botRuntimeCredentialSigner
+	skillMutationGrants     *skillMutationGrantSigner
+	channelOut              *ChannelOutboundDispatcher
+	groupTurns              *groupAgentTurnTracker
+	artifactContextResolver ArtifactContextResolver
+	push                    *PushNotificationService
+	agentPush               *agentPushTurnCoordinator
+	taskGrace               time.Duration
+	// taskReaperInterval is how often the disconnected-task recovery reaper
+	// scans durable rows. It complements the per-disconnect time.AfterFunc so
+	// a crashed/restarted process or transient DB error cannot permanently
+	// skip recovery.
+	taskReaperInterval time.Duration
+	// botConnectionEpochs is incremented every time a bot registers a new
+	// connection. Disconnected-task recovery timers snapshot the current epoch
+	// and skip recovery when a newer connection generation appeared, so an old
+	// timer never marks work owned by a fresh connection as stale.
+	botConnectionEpochs map[int64]uint64
 }
 
 type presenceEvent struct {
@@ -68,6 +95,10 @@ type Client struct {
 	deviceBodyID         string
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
+	botRuntimeCredential *botRuntimeCredentialClaims
+	messagingAttention   messagingClientAttention
+	messagingAttentionMu sync.RWMutex
+	attentionSyncMu      sync.Mutex
 	send                 chan []byte
 	sendMu               sync.RWMutex
 	sendClosed           bool
@@ -82,32 +113,54 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	if strings.TrimSpace(nodeID) == "" {
 		nodeID = newRuntimeNodeID()
 	}
+	runtimeCredentialSigner, _ := newBotRuntimeCredentialSigner(jwtSecret, time.Now)
+	grantSigner, _ := newSkillMutationGrantSigner(jwtSecret, time.Now)
 	hub := &Hub{
-		clients:       make(map[int64]map[*Client]struct{}),
-		clientsByConn: make(map[string]*Client),
-		register:      make(chan *Client, 256),
-		unregister:    make(chan *Client, 256),
-		presence:      make(chan presenceEvent, 256),
-		db:            db,
-		rateLimiter:   rl,
-		botStats:      NewBotStats(),
-		botConvo:      botConvoTracker{counters: make(map[string]*botConvoCount)},
-		nodeID:        nodeID,
-		sharedRuntime: shared,
-		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
-		deviceAudit:   newDeviceAuditLog(),
-		deviceRevokes: newDeviceConnectorRevocationList(),
-		deviceClients: make(map[int64]map[string]*Client),
-		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
-		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
+		clients:               make(map[int64]map[*Client]struct{}),
+		clientsByConn:         make(map[string]*Client),
+		register:              make(chan *Client, 256),
+		unregister:            make(chan *Client, 256),
+		presence:              make(chan presenceEvent, 256),
+		db:                    db,
+		rateLimiter:           rl,
+		botStats:              NewBotStats(),
+		botConvo:              botConvoTracker{counters: make(map[string]*botConvoCount)},
+		nodeID:                nodeID,
+		sharedRuntime:         shared,
+		bodyLeases:            newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		userDevices:           newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		deviceAudit:           newDeviceAuditLog(),
+		deviceRevokes:         newDeviceConnectorRevocationList(),
+		deviceClients:         make(map[int64]map[string]*Client),
+		deviceRPC:             newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
+		thinToolRPC:           newThinToolRPCRouter(defaultThinToolRPCTTL),
+		botRuntimeCredentials: runtimeCredentialSigner,
+		skillMutationGrants:   grantSigner,
+		groupTurns:            newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:             newAgentPushTurnCoordinator(),
+		taskGrace:             90 * time.Second,
+		taskReaperInterval:    30 * time.Second,
+		botConnectionEpochs:   make(map[int64]uint64),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
 	}
 	go hub.runPresence()
 	go hub.runDeviceRPCTimeouts()
+	// Periodic + startup reaper for disconnected bot task recovery. The
+	// disconnect-triggered time.AfterFunc can be lost on process crash/restart
+	// or a transient DB error; the reaper re-scans durable rows so a missed
+	// timer still converges to stale (review 2026-08-05).
+	go hub.runConversationTaskReaper()
 	return hub
+}
+
+// SetPushNotificationService enables optional Web Push delivery for users who
+// do not currently have a visible messaging page.
+func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
+	if h != nil {
+		h.push = service
+	}
 }
 
 // BotStats returns the hub's bot stats tracker.
@@ -155,6 +208,17 @@ func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
 	return status
 }
 
+// BotRuntimeOnline reports cluster-wide runtime presence. BotBodyStatus is
+// intentionally scoped to this hub's registered WebSocket clients because it
+// exposes connection details; callers that only need a presence signal must
+// also account for a valid lease held by another node.
+func (h *Hub) BotRuntimeOnline(botUID int64) bool {
+	if h == nil || botUID <= 0 {
+		return false
+	}
+	return h.BotBodyStatus(botUID).Active || h.botOnlineElsewhere(botUID)
+}
+
 func (h *Hub) hasRegisteredBotBodyClient(lease botBodyLease) bool {
 	if h == nil || lease.botUID <= 0 || lease.bodyID == "" || lease.connectionID == "" {
 		return false
@@ -171,6 +235,23 @@ func (h *Hub) hasRegisteredBotBodyClient(lease botBodyLease) bool {
 		}
 	}
 	return false
+}
+
+// botOnlineElsewhere reports whether the bot holds an active body lease owned
+// by another node. With a shared runtime (Redis / shared memory) the lease is
+// cluster-wide, so a bot that reconnected on node B must not be recovered as
+// stale by node A. Process-local clients are covered by Hub.IsOnline; a lease
+// owned by this node is intentionally ignored so a crash-leaked local lease is
+// still reconciled by the database compare-and-set.
+func (h *Hub) botOnlineElsewhere(botUID int64) bool {
+	if h == nil || h.bodyLeases == nil || botUID <= 0 {
+		return false
+	}
+	lease, ok := h.bodyLeases.status(botUID)
+	if !ok || lease.nodeID == "" {
+		return false
+	}
+	return lease.nodeID != h.nodeID
 }
 
 func (h *Hub) RuntimeMode() string {
@@ -202,6 +283,7 @@ func (h *Hub) Run() {
 			if !removed {
 				continue
 			}
+			h.cancelThinToolRPCRequestsByRequesterRoute(h.clientRoute(client))
 			client.closeSend()
 			h.releaseBotBodyLease(client)
 			h.clearClientRuntimeRoute(client)
@@ -213,6 +295,9 @@ func (h *Hub) Run() {
 			}
 			if lastConn {
 				h.enqueuePresence(client.uid, "off")
+				if client.accountType == types.AccountBot {
+					h.scheduleDisconnectedBotTaskRecovery(client.uid, time.Now())
+				}
 			}
 		}
 	}
@@ -236,8 +321,8 @@ func (h *Hub) GetOnlineUIDs() []int64 {
 	return uids
 }
 
-// BuildOnlineStatusList returns online status for accepted friends plus bots
-// owned by the current user, so the web sidebar can show AI Apps status.
+// BuildOnlineStatusList returns online status for accepted friends, owned bots,
+// and Agents shared through a group so every task icon can show availability.
 func BuildOnlineStatusList(db store.Store, hub *Hub, uid int64) ([]map[string]interface{}, error) {
 	friends, err := db.GetFriends(uid)
 	if err != nil {
@@ -271,10 +356,24 @@ func BuildOnlineStatusList(db store.Store, hub *Hub, uid int64) ([]map[string]in
 	bots, err := db.ListBotsByOwner(uid)
 	if err != nil {
 		log.Printf("online status: failed to list owner bots for uid=%d: %v", uid, err)
+	} else {
+		for _, bot := range bots {
+			addUser(mapID(bot["id"]), true)
+		}
+	}
+
+	groups, err := db.GetUserGroups(uid)
+	if err != nil {
+		log.Printf("online status: failed to list group agents for uid=%d: %v", uid, err)
 		return onlineList, nil
 	}
-	for _, bot := range bots {
-		addUser(mapID(bot["id"]), true)
+	for _, group := range groups {
+		if group == nil {
+			continue
+		}
+		for _, agentID := range group.AgentIDs {
+			addUser(agentID, true)
+		}
 	}
 
 	return onlineList, nil
@@ -329,10 +428,45 @@ func (h *Hub) registerClient(client *Client) bool {
 		return false
 	}
 
+	// A bot registering a new connection starts a new connection generation:
+	// recovery timers scheduled for an earlier disconnection must not recover
+	// tasks owned by this generation. When a cluster-wide generation store is
+	// available the bump must be durable BEFORE this connection is accepted:
+	// a locally-only bump is invisible to other nodes (botConnectionEpoch reads
+	// the persisted value), so accepting a bot whose generation was not
+	// persisted would let an old timer recover the fresh connection's work.
+	// Fail closed: reject the connection instead of carrying tasks without a
+	// durable generation (review 2026-08-05).
+	if client.accountType == types.AccountBot {
+		if genStore, ok := h.db.(store.ConversationTaskGenerationStore); ok {
+			bumped, err := genStore.BumpBotConnectionGeneration(client.uid)
+			if err != nil {
+				log.Printf("client connect: bump bot connection generation failed uid=%d, rejecting connection: %v", client.uid, err)
+				client.closeSend()
+				if client.conn != nil {
+					_ = client.conn.Close()
+				}
+				return false
+			}
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid] = bumped
+			h.mu.Unlock()
+		} else {
+			// No generation store (single-process deployments): the per-process
+			// map is the only fence and there are no other nodes to agree with.
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid]++
+			h.mu.Unlock()
+		}
+	}
+
 	firstConn, deviceCount, onlineUsers, replaced := h.addRegisteredClient(client)
 	for _, stale := range replaced {
+		staleRoute := h.clientRoute(stale)
+		h.cancelThinToolRPCRequestsByRequesterRoute(staleRoute)
 		h.clearClientRuntimeRoute(stale)
 		h.unbindDeviceClient(stale)
+		h.cancelThinToolRPCRequestsByTargetRoute(staleRoute)
 		stale.closeSend()
 		if stale.conn != nil {
 			_ = stale.conn.Close()
@@ -414,13 +548,22 @@ func (h *Hub) bindClientRuntimeRoute(client *Client) {
 	now := nowForRoute(h)
 	route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 	h.sharedRuntime.bindRuntimeRoute(route, now)
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: bind uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 }
 
 func (h *Hub) clearClientRuntimeRoute(client *Client) {
 	if h == nil || client == nil || h.sharedRuntime == nil {
 		return
 	}
-	h.sharedRuntime.clearRuntimeRoute(h.clientRoute(client))
+	client.attentionSyncMu.Lock()
+	defer client.attentionSyncMu.Unlock()
+	route := h.clientRoute(client)
+	if err := h.sharedRuntime.clearMessagingClientAttention(client.uid, route); err != nil {
+		log.Printf("messaging attention: clear uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
+	h.sharedRuntime.clearRuntimeRoute(route)
 }
 
 func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client) {
@@ -428,7 +571,6 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if h.deviceClients == nil {
 		h.deviceClients = make(map[int64]map[string]*Client)
@@ -446,7 +588,9 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		ownerDevices = make(map[string]*Client)
 		h.deviceClients[ownerUID] = ownerDevices
 	}
+	var replacedRoute runtimeRoute
 	if existing := ownerDevices[device.DeviceID]; existing != nil && existing != client {
+		replacedRoute = h.clientRoute(existing)
 		existing.deviceOwnerUID = 0
 		existing.deviceID = ""
 		existing.deviceBodyID = ""
@@ -463,6 +607,11 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 		h.sharedRuntime.bindRuntimeRoute(route, now)
 		h.sharedRuntime.bindUserDeviceRoute(ownerUID, device, route, now)
+	}
+	h.mu.Unlock()
+
+	if replacedRoute.NodeID != "" && replacedRoute.ConnectionID != "" {
+		h.cancelThinToolRPCRequestsByTargetRoute(replacedRoute)
 	}
 }
 
@@ -551,6 +700,119 @@ func hasMessagingClient(clients map[*Client]struct{}) bool {
 	return false
 }
 
+func normalizePageVisibility(value string) string {
+	if value == pageVisibilityVisible {
+		return pageVisibilityVisible
+	}
+	return pageVisibilityHidden
+}
+
+func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
+	if h == nil || client == nil {
+		return
+	}
+	client.messagingAttentionMu.Lock()
+	client.messagingAttention.Visible = normalizePageVisibility(visibility) == pageVisibilityVisible
+	client.messagingAttentionMu.Unlock()
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: visibility uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
+}
+
+func (h *Hub) setClientMessagingAttention(client *Client, attention messagingClientAttention) {
+	if h == nil || client == nil {
+		return
+	}
+	client.messagingAttentionMu.Lock()
+	client.messagingAttention = attention.normalized()
+	client.messagingAttentionMu.Unlock()
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: update uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
+}
+
+func (h *Hub) clientMessagingAttention(client *Client) messagingClientAttention {
+	if client == nil {
+		return messagingClientAttention{}
+	}
+	client.messagingAttentionMu.RLock()
+	defer client.messagingAttentionMu.RUnlock()
+	return client.messagingAttention
+}
+
+func (h *Hub) syncClientMessagingAttention(client *Client) error {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return nil
+	}
+	client.attentionSyncMu.Lock()
+	defer client.attentionSyncMu.Unlock()
+	attention := h.clientMessagingAttention(client)
+	h.mu.RLock()
+	uid := client.uid
+	_, connected := h.clients[uid][client]
+	h.mu.RUnlock()
+	if !connected {
+		return nil
+	}
+
+	route := h.clientRoute(client)
+	now := nowForRoute(h)
+	return h.sharedRuntime.setMessagingClientAttention(
+		uid,
+		route,
+		attention,
+		now,
+		pageVisibilityLeaseTTL,
+	)
+}
+
+func hasMessagingClientAttention(clients map[*Client]struct{}, subscriptionID, topic string) bool {
+	for client := range clients {
+		if client == nil || client.deviceConnector != nil {
+			continue
+		}
+		client.messagingAttentionMu.RLock()
+		suppresses := client.messagingAttention.suppresses(subscriptionID, topic)
+		client.messagingAttentionMu.RUnlock()
+		if suppresses {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) hasMessagingClientAttention(uid int64, subscriptionID, topic string) bool {
+	if h == nil || uid <= 0 {
+		return false
+	}
+	h.mu.RLock()
+	localVisible := hasMessagingClientAttention(h.clients[uid], subscriptionID, topic)
+	h.mu.RUnlock()
+	if localVisible {
+		return true
+	}
+	return h.sharedRuntime != nil && h.sharedRuntime.hasMessagingClientAttention(h.nodeID, uid, subscriptionID, topic, nowForRoute(h))
+}
+
+// hasLocalMessagingClientAttentionForRoute confirms the exact connection that
+// advertised attention. Redis records only locate a candidate; remote nodes
+// must ask this owner before they suppress a Push.
+func (h *Hub) hasLocalMessagingClientAttentionForRoute(uid int64, route runtimeRoute, subscriptionID, topic string) bool {
+	if h == nil || route.NodeID != h.nodeID || route.ConnectionID == "" || uid <= 0 {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	client := h.clientsByConn[route.ConnectionID]
+	if client == nil || client.uid != uid || client.deviceConnector != nil {
+		return false
+	}
+	client.messagingAttentionMu.RLock()
+	defer client.messagingAttentionMu.RUnlock()
+	suppresses := client.messagingAttention.suppresses(subscriptionID, topic)
+	return suppresses
+}
+
 func (h *Hub) releaseBotBodyLease(client *Client) {
 	if client == nil || client.accountType != types.AccountBot {
 		return
@@ -586,7 +848,8 @@ func (h *Hub) sendDeviceRPCToLocalRoute(route runtimeRoute, msg *MsgDeviceRPC) b
 	return true
 }
 
-// broadcastPresence notifies friends and, for bots, their owner of online/offline status.
+// broadcastPresence notifies friends and, for bots, their owner and fellow
+// group members of online/offline status.
 func (h *Hub) broadcastPresence(uid int64, what string) {
 	if h.db == nil {
 		return
@@ -594,7 +857,7 @@ func (h *Hub) broadcastPresence(uid int64, what string) {
 	friends, err := h.db.GetFriends(uid)
 	if err != nil {
 		log.Printf("presence: failed to get friends for uid=%d: %v", uid, err)
-		return
+		friends = nil
 	}
 	msg := &ServerMessage{
 		Pres: &MsgServerPres{
@@ -607,8 +870,30 @@ func (h *Hub) broadcastPresence(uid int64, what string) {
 	for _, f := range friends {
 		recipients[f.ID] = struct{}{}
 	}
-	if ownerID, err := h.db.GetBotOwner(uid); err == nil && ownerID > 0 {
-		recipients[ownerID] = struct{}{}
+	if ownerID, err := h.db.GetBotOwner(uid); err == nil {
+		if ownerID > 0 {
+			recipients[ownerID] = struct{}{}
+		}
+		groups, groupErr := h.db.GetUserGroups(uid)
+		if groupErr != nil {
+			log.Printf("presence: failed to get groups for bot uid=%d: %v", uid, groupErr)
+		} else {
+			for _, group := range groups {
+				if group == nil {
+					continue
+				}
+				members, memberErr := h.db.GetGroupMembers(group.ID)
+				if memberErr != nil {
+					log.Printf("presence: failed to get members for group=%d: %v", group.ID, memberErr)
+					continue
+				}
+				for _, member := range members {
+					if member != nil && member.UserID != uid {
+						recipients[member.UserID] = struct{}{}
+					}
+				}
+			}
+		}
 	}
 	for id := range recipients {
 		h.SendToUser(id, msg)
@@ -636,6 +921,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	displayName := ""
 	isBotAPIKey := false
 	var connectorClaims *DeviceConnectorClaims
+	var runtimeCredentialClaims *botRuntimeCredentialClaims
 	bodyID := ""
 	installationID := ""
 	connectionID := ""
@@ -742,6 +1028,27 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		var err error
 		bodyID, err = normalizeBotBodyID(r.Header.Get(botBodyIDHeader))
 		installationID = normalizeDeviceText(r.Header.Get(botInstallationIDHeader))
+		runtimeCredential := extractBotRuntimeCredential(r)
+		if runtimeCredential != "" {
+			if err != nil || strings.TrimSpace(installationID) == "" {
+				http.Error(w, "Bot Runtime credential requires body and installation ids", http.StatusBadRequest)
+				return
+			}
+			if hub == nil || hub.botRuntimeCredentials == nil {
+				http.Error(w, "Bot Runtime credential service unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			claims, verifyErr := hub.botRuntimeCredentials.verify(runtimeCredential)
+			if verifyErr != nil {
+				http.Error(w, "invalid Bot Runtime credential", http.StatusUnauthorized)
+				return
+			}
+			if claims.BotUID != uid || claims.BodyID != bodyID || claims.InstallationID != installationID {
+				http.Error(w, "Bot Runtime credential does not match this Runtime", http.StatusForbidden)
+				return
+			}
+			runtimeCredentialClaims = claims
+		}
 		if err != nil {
 			if strings.TrimSpace(r.Header.Get(botBodyIDHeader)) != "" || botBodyIDStrictMode() {
 				http.Error(w, "missing or invalid bot body id", http.StatusBadRequest)
@@ -800,17 +1107,18 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		hub:             hub,
-		conn:            conn,
-		uid:             uid,
-		remoteAddr:      requestRemoteAddr(r),
-		displayName:     displayName,
-		accountType:     acctType,
-		bodyID:          bodyID,
-		installationID:  installationID,
-		connectionID:    connectionID,
-		deviceConnector: connectorClaims,
-		send:            make(chan []byte, 256),
+		hub:                  hub,
+		conn:                 conn,
+		uid:                  uid,
+		remoteAddr:           requestRemoteAddr(r),
+		displayName:          displayName,
+		accountType:          acctType,
+		bodyID:               bodyID,
+		installationID:       installationID,
+		connectionID:         connectionID,
+		deviceConnector:      connectorClaims,
+		botRuntimeCredential: runtimeCredentialClaims,
+		send:                 make(chan []byte, 256),
 	}
 
 	if !hub.registerClient(client) {
@@ -882,6 +1190,8 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 		h.handleDeviceRPC(client, msg.DeviceRPC)
 	case msg.ThinToolRPC != nil:
 		h.handleThinToolRPC(client, msg.ThinToolRPC)
+	case msg.SkillMutationGrant != nil:
+		h.handleSkillMutationGrant(client, msg.SkillMutationGrant)
 	}
 }
 
@@ -889,7 +1199,7 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 	if msg == nil {
 		return false
 	}
-	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil {
+	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil || msg.SkillMutationGrant != nil {
 		return false
 	}
 	actions := 0
@@ -914,6 +1224,12 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
+	h.setClientMessagingAttention(client, messagingClientAttention{
+		SubscriptionID: msg.PushSubscriptionID,
+		ActiveTopic:    msg.ActiveTopic,
+		Visible:        normalizePageVisibility(msg.Visibility) == pageVisibilityVisible,
+		Focused:        msg.Focused,
+	})
 	deviceParams, ok := h.bindClientDeviceFromHi(client, msg)
 	if !ok {
 		h.SendToClient(client, &ServerMessage{
@@ -1073,6 +1389,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		})
 		return
 	}
+	payload.Metadata = h.canonicalizeArtifactMessageMetadata(context.Background(), uid, topic, payload.Metadata)
 
 	// Route based on topic type
 	if isGroupTopic(topic) {
@@ -1194,8 +1511,22 @@ func (h *Hub) handleStreamPub(client *Client, msg *MsgClientPub, topic string) {
 			return
 		}
 
+		if streamType == "stream_cancel" {
+			targetBotUID, members, code, text := h.authorizeGroupStreamCancel(groupID, uid, msg.Metadata)
+			if code != 0 {
+				h.SendToClient(client, &ServerMessage{
+					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: code, Text: text},
+				})
+				return
+			}
+			h.SendToClient(client, streamDeltaAck(msg.ID, topic, streamID))
+			h.fanoutGroupStreamCancel(uid, topic, streamID, targetBotUID, msg.Metadata, members)
+			h.groupTurns.clear(groupID, targetBotUID)
+			return
+		}
+
 		h.SendToClient(client, streamDeltaAck(msg.ID, topic, streamID))
-		if delta != "" || streamType == "stream_cancel" {
+		if delta != "" {
 			h.fanoutStreamEvent(uid, topic, streamType, delta, msg.Metadata, client)
 		}
 		return
@@ -1374,6 +1705,7 @@ func messageRequestFromPub(msg *MsgClientPub) *SendMessageRequest {
 		Mode:          msg.Mode,
 		Role:          msg.Role,
 		ReplyTo:       msg.ReplyTo,
+		Mentions:      msg.Mentions,
 	}
 }
 
@@ -1406,12 +1738,13 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 	data := *msg.Data
 	data.Metadata = metadata
 	return &ServerMessage{
-		Ctrl:   msg.Ctrl,
-		Data:   &data,
-		Pres:   msg.Pres,
-		Meta:   msg.Meta,
-		Info:   msg.Info,
-		Friend: msg.Friend,
+		Ctrl:                     msg.Ctrl,
+		Data:                     &data,
+		Pres:                     msg.Pres,
+		Meta:                     msg.Meta,
+		Info:                     msg.Info,
+		Friend:                   msg.Friend,
+		suppressPushNotification: msg.suppressPushNotification,
 	}
 }
 
@@ -1513,6 +1846,22 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 
 // handleNote handles typing indicators and read receipts.
 func (h *Hub) handleNote(client *Client, msg *MsgClientNote) {
+	if client == nil || msg == nil {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(msg.What), "attention") {
+		h.setClientMessagingAttention(client, messagingClientAttention{
+			SubscriptionID: msg.PushSubscriptionID,
+			ActiveTopic:    msg.ActiveTopic,
+			Visible:        normalizePageVisibility(msg.Visibility) == pageVisibilityVisible,
+			Focused:        msg.Focused,
+		})
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(msg.What), "visibility") {
+		h.setClientPageVisibility(client, msg.Visibility)
+		return
+	}
 	uid := client.uid
 	if code, _ := h.validateTopicReadAccess(uid, client.accountType, msg.Topic); code != 0 {
 		return
@@ -1653,84 +2002,259 @@ func max64(a, b int64) int64 {
 	return b
 }
 
-// parseMentions extracts @usr123 style mentions from message content.
-func parseMentions(content interface{}) []string {
-	var text string
-	switch v := content.(type) {
-	case string:
-		text = v
-	case map[string]interface{}:
-		if t, ok := v["text"].(string); ok {
-			text = t
-		}
+func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
+	if msg == nil || msg.Data == nil || msg.Data.SeqID <= 0 {
+		return false
+	}
+	if msg.suppressPushNotification {
+		return false
 	}
 
-	if text == "" {
-		return nil
+	data := msg.Data
+	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(data.Type, data.MsgType)))
+	if !isUserVisibleMessageType(displayType) {
+		return false
 	}
+	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
+}
 
-	// Match @usr123 pattern
-	re := regexp.MustCompile(`@usr(\d+)`)
-	matches := re.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return nil
+func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
+	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 {
+		return false
 	}
+	user, err := h.db.GetUser(uid)
+	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
+		return false
+	}
+	notification := PushNotification{
+		Title: h.pushNotificationTitle(uid, topic),
+		Body:  firstNonEmpty(pushNotificationExcerpt(body), "你有一条新消息"),
+		URL:   "/",
+		Tag:   "catsco-new-message",
+	}
+	return h.push.EnqueueToUserWhen(uid, notification, func(ctx context.Context) bool {
+		return !h.isConversationNotificationsMuted(ctx, uid, topic)
+	}, func(subscription *types.PushSubscription) bool {
+		return !h.hasMessagingClientAttention(uid, pushSubscriptionID(subscription.Endpoint), topic)
+	})
+}
 
-	mentions := make([]string, 0, len(matches))
-	seen := make(map[string]bool)
-	for _, m := range matches {
-		if len(m) > 1 {
-			uid := "usr" + m[1]
-			if !seen[uid] {
-				seen[uid] = true
-				mentions = append(mentions, uid)
+func (h *Hub) isConversationNotificationsMuted(ctx context.Context, uid int64, topic string) bool {
+	preferences, ok := h.db.(store.ConversationNotificationPreferenceStore)
+	if !ok {
+		return false
+	}
+	muted, err := preferences.IsConversationNotificationsMuted(ctx, uid, topic)
+	if err != nil {
+		log.Printf("push notification: failed to load conversation preference for uid=%d topic=%q: %v", uid, topic, err)
+		// Preference storage is an optional filter. If it is unavailable, keep
+		// the normal account-level delivery behavior instead of silently
+		// dropping every conversation notification for this user.
+		return false
+	}
+	return muted
+}
+
+func (h *Hub) pushNotificationTitle(uid int64, topic string) string {
+	if h == nil || h.db == nil {
+		return "CatsCo"
+	}
+	if titleDB, ok := h.db.(conversationTitleStore); ok {
+		if titles, err := titleDB.GetConversationTitles(uid, []string{topic}); err == nil {
+			if title := strings.TrimSpace(titles[topic]); title != "" {
+				return truncateUTF8(title, maxPushNotificationTitleRunes)
 			}
 		}
 	}
-	return mentions
+	if isGroupTopic(topic) {
+		group, err := h.db.GetGroup(extractGroupID(topic))
+		if err == nil && group != nil {
+			if name := strings.TrimSpace(group.Name); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
+			}
+		}
+	} else if peerUID := extractPeerUID(topic, uid); peerUID > 0 {
+		user, err := h.db.GetUser(peerUID)
+		if err == nil && user != nil {
+			if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
+			}
+		}
+	}
+	return "CatsCo"
 }
 
-// broadcastToGroupWithMentions sends a message to all online members with Bot @trigger filtering.
-// Bots only receive the message if they are mentioned or if there are no mentions at all.
-func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64) {
+func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
+	topic := ""
+	if msg != nil && msg.Data != nil {
+		topic = msg.Data.Topic
+	}
+	body := pushNotificationMessageBody(msg)
+	if !senderPublishesTaskStatus {
+		h.enqueueOfflineUserPush(uid, topic, body)
+		return
+	}
+	if h == nil || h.agentPush == nil {
+		return
+	}
+	deliver := func(notificationBody string) bool {
+		return h.enqueueOfflineUserPush(uid, topic, notificationBody)
+	}
+	h.agentPush.observeVisibleMessageBody(uid, senderUID, msg, body, deliver)
+}
+
+func pushNotificationMessageBody(msg *ServerMessage) string {
+	if msg == nil || msg.Data == nil {
+		return ""
+	}
+	var texts []string
+	for _, block := range msg.Data.ContentBlocks {
+		switch strings.ToLower(strings.TrimSpace(block.Type)) {
+		case "text", "assistant_text":
+			if text := strings.TrimSpace(firstNonEmpty(block.Text, block.Content)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	if len(texts) > 0 {
+		return pushNotificationExcerpt(strings.Join(texts, " "))
+	}
+	if text := pushNotificationContentText(msg.Data.Content); text != "" && !hasInternalAgentContentBlocks(msg.Data.ContentBlocks) {
+		return pushNotificationExcerpt(text)
+	}
+	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(msg.Data.Type, msg.Data.MsgType)))
+	for _, block := range msg.Data.ContentBlocks {
+		blockType := strings.ToLower(strings.TrimSpace(block.Type))
+		if blockType != "" && blockType != "text" && blockType != "assistant_text" && !isInternalAgentContentBlock(blockType) {
+			displayType = blockType
+			break
+		}
+	}
+	switch displayType {
+	case "image":
+		return "发来了一张图片"
+	case "file":
+		return "发来了一个文件"
+	case "voice", "audio":
+		return "发来了一条语音消息"
+	default:
+		return ""
+	}
+}
+
+func hasInternalAgentContentBlocks(blocks []types.ContentBlock) bool {
+	for _, block := range blocks {
+		if isInternalAgentContentBlock(block.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func pushNotificationContentText(content interface{}) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case map[string]interface{}:
+		if blockType, ok := value["type"].(string); ok && isInternalAgentContentBlock(blockType) {
+			return ""
+		}
+		for _, key := range []string{"text", "content", "message", "summary", "value", "output", "answer", "result"} {
+			if text := pushNotificationContentText(value[key]); strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+	case []interface{}:
+		texts := make([]string, 0, len(value))
+		for _, item := range value {
+			if text := strings.TrimSpace(pushNotificationContentText(item)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+		return strings.Join(texts, "\n")
+	case []string:
+		return strings.Join(value, "\n")
+	case json.RawMessage:
+		var decoded interface{}
+		if json.Unmarshal(value, &decoded) == nil {
+			return pushNotificationContentText(decoded)
+		}
+	case []byte:
+		return pushNotificationContentText(json.RawMessage(value))
+	}
+	return ""
+}
+
+func pushNotificationExcerpt(value string) string {
+	value = strings.Join(strings.Fields(strings.ReplaceAll(value, "\x00", "")), " ")
+	if value == "" {
+		return ""
+	}
+	truncated := truncateUTF8(value, maxPushNotificationBodyRunes)
+	if truncated != value {
+		return truncateUTF8(value, maxPushNotificationBodyRunes-1) + "…"
+	}
+	return value
+}
+
+// broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
+// Agent-task groups route unmentioned human messages to their current default agent.
+// Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
+func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
 		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
 		return
 	}
+	shouldNotifyOffline := shouldNotifyOfflineForMessage(msg)
 
-	// Convert mentions to a set for quick lookup
+	memberCount := len(members)
+	if msg != nil && msg.Data != nil {
+		msg.Data.MemberCount = memberCount
+	}
+
+	// Convert structured mentions to a set for quick lookup.
 	mentionSet := make(map[string]bool)
 	for _, m := range mentions {
 		mentionSet[m] = true
 	}
 
 	channelManaged := h.isChannelManagedGroup(groupID)
+	senderIsBot := h.isBotUser(senderUID)
+	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
+	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
+	defaultAgentUID := int64(0)
+	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
+		group, groupErr := h.db.GetGroup(groupID)
+		if groupErr == nil && group != nil && group.Kind == types.GroupKindAgentTask && len(group.AgentIDs) > 0 {
+			// The first current task agent is the default. If it leaves, the
+			// next current agent takes over; other agents still require @.
+			defaultAgentUID = group.AgentIDs[0]
+		}
+	}
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
 		}
 
-		// Check if this is a Bot
-		isBot := false
-		if channelManaged {
-			var err error
-			isBot, err = h.db.IsUserBot(m.UserID)
-			if err != nil || !isBot {
-				continue
+		isBot := m.IsBot
+		if !isBot {
+			if client := h.getClient(m.UserID); client != nil {
+				isBot = client.accountType == types.AccountBot
 			}
-		} else if client := h.getClient(m.UserID); client != nil {
-			isBot = client.accountType == types.AccountBot
+		}
+		if channelManaged && !isBot {
+			continue
 		}
 
 		if isBot {
-			// Bots only receive message if:
-			// 1. They are mentioned, OR
-			// 2. There are no mentions at all (broadcast to all)
 			userIDStr := formatUID(m.UserID)
-			if len(mentions) > 0 && !mentionSet[userIDStr] {
-				// Bot not mentioned and there are mentions - skip
+			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
+			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID {
 				continue
+			}
+			if !senderIsBot && isGroupAgentTurnRequest(msg) {
+				h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
 			}
 		}
 
@@ -1741,11 +2265,15 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
 			)
 			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic))
+			metadata = artifactMetadataForRecipient(metadata, m.UserID)
 			out = cloneDataMessageWithMetadata(
 				msg,
 				metadata,
 			)
 		}
 		h.SendToUser(m.UserID, out)
+		if !isBot && shouldNotifyOffline {
+			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderPublishesTaskStatus)
+		}
 	}
 }

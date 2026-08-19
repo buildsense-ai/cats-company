@@ -2,12 +2,25 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
+import { inviteMemberId, mergeInviteMemberCandidates } from '../utils/invite-member-candidates';
 import Avatar from './avatar';
 
-export default function CreateGroup({ onClose, onCreated }) {
-  const [name, setName] = useState('');
-  const [friends, setFriends] = useState([]);
-  const [selected, setSelected] = useState(new Set());
+export default function CreateGroup({
+  onClose,
+  onCreated,
+  onCreate,
+  mode = 'create',
+  initialName = '',
+  lockedMemberIds = [],
+}) {
+  const isTaskUpgrade = mode === 'task_upgrade';
+  const lockedMemberKeys = useMemo(
+    () => new Set(lockedMemberIds.map((id) => String(id))),
+    [lockedMemberIds],
+  );
+  const [name, setName] = useState(initialName);
+  const [memberCandidates, setMemberCandidates] = useState({ friends: [], agents: [] });
+  const [selected, setSelected] = useState(() => new Set(lockedMemberIds));
   const [memberType, setMemberType] = useState('friends');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -15,16 +28,25 @@ export default function CreateGroup({ onClose, onCreated }) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    loadFriends();
+    loadMembers();
   }, []);
 
-  const loadFriends = async () => {
+  const loadMembers = async () => {
     setLoadingMembers(true);
     try {
-      const res = await api.getFriends();
-      setFriends(res.friends || []);
+      const [friendsRes, agentsRes] = await Promise.all([
+        api.getFriends(),
+        api.getAgents().catch((error) => {
+          console.warn('load agents for group:', error);
+          return { agents: [] };
+        }),
+      ]);
+      setMemberCandidates(mergeInviteMemberCandidates(
+        friendsRes.friends || [],
+        agentsRes.agents || [],
+      ));
     } catch (e) {
-      console.error('load friends for group:', e);
+      console.error('load members for group:', e);
       setError(e.message || t('error_server'));
     } finally {
       setLoadingMembers(false);
@@ -32,6 +54,7 @@ export default function CreateGroup({ onClose, onCreated }) {
   };
 
   const toggleMember = (id) => {
+    if (lockedMemberKeys.has(String(id))) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -42,13 +65,21 @@ export default function CreateGroup({ onClose, onCreated }) {
 
   const handleCreate = async () => {
     if (!name.trim()) {
-      setError('请输入群聊名称');
+      setError(isTaskUpgrade ? '请输入任务名称' : '请输入群聊名称');
+      return;
+    }
+    const additionalMemberCount = [...selected]
+      .filter((id) => !lockedMemberKeys.has(String(id)))
+      .length;
+    if (isTaskUpgrade && additionalMemberCount === 0) {
+      setError('请至少选择一名新成员');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      const res = await api.createGroup(name.trim(), Array.from(selected));
+      const create = onCreate || ((nextName, memberIds) => api.createGroup(nextName, memberIds));
+      const res = await create(name.trim(), Array.from(selected));
       if (onCreated) onCreated(res);
       onClose();
     } catch (e) {
@@ -60,21 +91,20 @@ export default function CreateGroup({ onClose, onCreated }) {
 
   const filteredMembers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return friends.filter((friend) => {
-      const isAgent = friend.bot || friend.account_type === 'bot';
-      if ((memberType === 'agents') !== isAgent) return false;
+    return memberCandidates[memberType].filter((member) => {
       if (!normalizedQuery) return true;
-      return [friend.display_name, friend.username, friend.id, friend.uid]
+      return [member.display_name, member.username, member.id, member.uid]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(normalizedQuery);
     });
-  }, [friends, memberType, query]);
+  }, [memberCandidates, memberType, query]);
 
   const selectedMembers = useMemo(
-    () => friends.filter((friend) => selected.has(friend.id)),
-    [friends, selected],
+    () => [...memberCandidates.friends, ...memberCandidates.agents]
+      .filter((member) => selected.has(inviteMemberId(member))),
+    [memberCandidates, selected],
   );
 
   return (
@@ -87,7 +117,7 @@ export default function CreateGroup({ onClose, onCreated }) {
         onClick={(e) => e.stopPropagation()}
       >
         <header className="oc-collaboration-modal-header">
-          <h2 id="create-group-title">创建群聊</h2>
+          <h2 id="create-group-title">{isTaskUpgrade ? '协作管理' : '创建群聊'}</h2>
           <button type="button" className="oc-modal-close" onClick={onClose} aria-label="关闭">
             <X size={18} strokeWidth={1.8} />
           </button>
@@ -97,15 +127,19 @@ export default function CreateGroup({ onClose, onCreated }) {
           <section className="oc-collaboration-section">
             <div className="oc-collaboration-section-intro">
               <div>
-                <h3>群聊信息</h3>
-                <p>设置名称，并从好友或 Agent 中选择成员。</p>
+                <h3>{isTaskUpgrade ? '升级为协作任务' : '群聊信息'}</h3>
+                <p>
+                  {isTaskUpgrade
+                    ? '添加新成员后创建协作任务；原单 Agent 会话仍可从联系人中打开。'
+                    : '设置名称，并从好友或 Agent 中选择成员。'}
+                </p>
               </div>
             </div>
             <label className="oc-collaboration-field">
-              <span>群聊名称</span>
+              <span>{isTaskUpgrade ? '任务名称' : '群聊名称'}</span>
               <input
                 className="oc-collaboration-input"
-                placeholder="#新的话题"
+                placeholder={isTaskUpgrade ? '任务名称' : '#新的话题'}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
@@ -135,21 +169,23 @@ export default function CreateGroup({ onClose, onCreated }) {
                 </div>
               </div>
               <div className="oc-member-picker-list">
-                {filteredMembers.map((friend) => {
-                  const checked = selected.has(friend.id);
+                {filteredMembers.map((member) => {
+                  const memberId = inviteMemberId(member);
+                  const checked = selected.has(memberId);
+                  const locked = lockedMemberKeys.has(String(memberId));
                   return (
-                    <label key={friend.id} className={`oc-member-picker-item ${checked ? 'selected' : ''}`}>
-                      <input type="checkbox" checked={checked} onChange={() => toggleMember(friend.id)} />
+                    <label key={memberId} className={`oc-member-picker-item ${checked ? 'selected' : ''} ${locked ? 'locked' : ''}`.trim()}>
+                      <input type="checkbox" checked={checked} disabled={locked} onChange={() => toggleMember(memberId)} />
                       <Avatar
-                        name={friend.display_name || friend.username}
-                        src={friend.avatar_url}
+                        name={member.display_name || member.username}
+                        src={member.avatar_url}
                         size={34}
-                        isBot={friend.bot || friend.account_type === 'bot'}
+                        isBot={member.isAgent}
                         className="oc-contact-avatar"
                       />
                       <span>
-                        <strong>{friend.display_name || friend.username}</strong>
-                        <small>{friend.bot || friend.account_type === 'bot' ? 'Agent' : friend.description || '好友'}</small>
+                        <strong>{member.display_name || member.username}</strong>
+                        <small>{locked ? '当前任务成员' : member.isAgent ? 'Agent' : member.description || '好友'}</small>
                       </span>
                     </label>
                   );
@@ -166,26 +202,28 @@ export default function CreateGroup({ onClose, onCreated }) {
 
             <section className="oc-member-picker-selected">
               <div className="oc-member-picker-selected-head">
-                <strong>已选成员</strong>
+                <strong>{isTaskUpgrade ? '参与成员' : '已选成员'}</strong>
                 <span>{selected.size} 人</span>
               </div>
               <div className="oc-member-picker-selected-list">
-                {selectedMembers.map((friend) => (
-                  <div key={friend.id} className="oc-member-picker-selected-item">
+                {selectedMembers.map((member) => (
+                  <div key={inviteMemberId(member)} className="oc-member-picker-selected-item">
                     <Avatar
-                      name={friend.display_name || friend.username}
-                      src={friend.avatar_url}
+                      name={member.display_name || member.username}
+                      src={member.avatar_url}
                       size={34}
-                      isBot={friend.bot || friend.account_type === 'bot'}
+                      isBot={member.isAgent}
                       className="oc-contact-avatar"
                     />
                     <span>
-                      <strong>{friend.display_name || friend.username}</strong>
-                      <small>{friend.bot || friend.account_type === 'bot' ? 'Agent' : '好友'}</small>
+                      <strong>{member.display_name || member.username}</strong>
+                      <small>{lockedMemberKeys.has(String(inviteMemberId(member))) ? '当前任务成员' : member.isAgent ? 'Agent' : '好友'}</small>
                     </span>
-                    <button type="button" onClick={() => toggleMember(friend.id)} aria-label={`移除 ${friend.display_name || friend.username}`}>
-                      <X size={15} strokeWidth={1.8} />
-                    </button>
+                    {!lockedMemberKeys.has(String(inviteMemberId(member))) && (
+                      <button type="button" onClick={() => toggleMember(inviteMemberId(member))} aria-label={`移除 ${member.display_name || member.username}`}>
+                        <X size={15} strokeWidth={1.8} />
+                      </button>
+                    )}
                   </div>
                 ))}
                 {selectedMembers.length === 0 && (
@@ -203,8 +241,16 @@ export default function CreateGroup({ onClose, onCreated }) {
 
         <footer className="oc-collaboration-modal-footer">
           <button type="button" className="oc-btn oc-btn-default" onClick={onClose}>取消</button>
-          <button type="button" className="oc-btn oc-btn-primary" onClick={handleCreate} disabled={loading || !name.trim()}>
-            {loading ? t('loading') : '创建'}
+          <button
+            type="button"
+            className="oc-btn oc-btn-primary"
+            onClick={handleCreate}
+            disabled={loading || !name.trim() || (
+              isTaskUpgrade
+              && [...selected].every((id) => lockedMemberKeys.has(String(id)))
+            )}
+          >
+            {loading ? t('loading') : isTaskUpgrade ? '升级并添加' : '创建'}
           </button>
         </footer>
       </section>

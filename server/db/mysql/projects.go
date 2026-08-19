@@ -66,16 +66,66 @@ func (a *Adapter) ListProjects(ownerUID int64) ([]*types.Project, error) {
 	return projects, nil
 }
 
-// AssignTopicToProject moves an owned topic into the selected project.
+// RenameProject renames an owner-scoped project.
+func (a *Adapter) RenameProject(ownerUID, projectID int64, name string) error {
+	result, err := a.db.Exec(
+		`UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_uid = ?`,
+		name, projectID, ownerUID,
+	)
+	if err != nil {
+		var mysqlErr *mysqldriver.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+			return store.ErrProjectNameConflict
+		}
+		return fmt.Errorf("rename project: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rename project result: %w", err)
+	}
+	if affected == 0 {
+		var exists int
+		if err := a.db.QueryRow(`SELECT 1 FROM projects WHERE id = ? AND owner_uid = ?`, projectID, ownerUID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return store.ErrProjectNotFound
+		} else if err != nil {
+			return fmt.Errorf("verify renamed project: %w", err)
+		}
+	}
+	return nil
+}
+
+// DeleteProject deletes an owner-scoped project without deleting its topics.
+func (a *Adapter) DeleteProject(ownerUID, projectID int64) error {
+	result, err := a.db.Exec(`DELETE FROM projects WHERE id = ? AND owner_uid = ?`, projectID, ownerUID)
+	if err != nil {
+		return fmt.Errorf("delete project: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read delete project result: %w", err)
+	}
+	if affected == 0 {
+		return store.ErrProjectNotFound
+	}
+	return nil
+}
+
+// AssignTopicToProject moves an accessible topic into the selected personal project.
 func (a *Adapter) AssignTopicToProject(ownerUID, projectID int64, topicID string) error {
 	result, err := a.db.Exec(
 		`INSERT INTO project_topics (owner_uid, topic_id, project_id)
 		 SELECT ?, t.id, p.id
 		 FROM projects p
-		 JOIN topics t ON t.id = ? AND t.owner_id = ?
-		 WHERE p.id = ? AND p.owner_uid = ?
+		 JOIN topics t ON t.id = ?
+		 LEFT JOIN group_members gm
+		   ON t.type = 'group'
+		  AND t.id = CONCAT('grp_', gm.group_id)
+		  AND gm.user_id = ?
+		 WHERE p.id = ?
+		   AND p.owner_uid = ?
+		   AND (t.owner_id = ? OR gm.user_id IS NOT NULL)
 		 ON DUPLICATE KEY UPDATE project_id = VALUES(project_id), created_at = CURRENT_TIMESTAMP`,
-		ownerUID, topicID, ownerUID, projectID, ownerUID,
+		ownerUID, topicID, ownerUID, projectID, ownerUID, ownerUID,
 	)
 	if err != nil {
 		return fmt.Errorf("assign topic to project: %w", err)
@@ -87,8 +137,17 @@ func (a *Adapter) AssignTopicToProject(ownerUID, projectID int64, topicID string
 	if affected == 0 {
 		var exists int
 		err := a.db.QueryRow(
-			`SELECT 1 FROM projects p JOIN topics t ON t.id = ? AND t.owner_id = ? WHERE p.id = ? AND p.owner_uid = ?`,
-			topicID, ownerUID, projectID, ownerUID,
+			`SELECT 1
+			 FROM projects p
+			 JOIN topics t ON t.id = ?
+			 LEFT JOIN group_members gm
+			   ON t.type = 'group'
+			  AND t.id = CONCAT('grp_', gm.group_id)
+			  AND gm.user_id = ?
+			 WHERE p.id = ?
+			   AND p.owner_uid = ?
+			   AND (t.owner_id = ? OR gm.user_id IS NOT NULL)`,
+			topicID, ownerUID, projectID, ownerUID, ownerUID,
 		).Scan(&exists)
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrProjectTopicNotFound

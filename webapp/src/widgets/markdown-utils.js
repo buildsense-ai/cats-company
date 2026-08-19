@@ -93,12 +93,15 @@ export function markdownPreviewDocument(text) {
       padding: 28px 34px;
       color: #e5e7eb;
       background: #111827;
-      font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: "Inter Variable", "Noto Sans SC Variable", Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      font-weight: 400;
+      line-height: 1.65;
     }
     a { color: #93c5fd; }
     h1, h2, h3, h4, h5, h6 { scroll-margin-top: 20px; }
     pre, code {
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-family: "JetBrains Mono Variable", "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       background: rgba(255,255,255,0.08);
       border-radius: 6px;
     }

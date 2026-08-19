@@ -11,13 +11,30 @@ root as `/srv/catscompany-prod` so the existing GitHub Actions deployment
 workflow can continue to upload compose, env, and release files to the expected
 location.
 
-The production deploy also reconciles only `proxy_read_timeout` and
-`proxy_send_timeout` inside the TLS `app.catsco.cc` `/v1/` location. It does not
-replace the host site file, so unrelated host-only routes remain intact. The
-update keeps a `.catsco-image-timeout.bak` copy, runs `nginx -t`, and restores
-the previous config if validation or reload fails. When the SSH deploy user is
-not root, the updater requires non-interactive passwordless `sudo` and refuses
-to prompt during a deployment.
+## Shared revision cache
+
+Test and production deployments use `/srv/catscompany-build-cache` for source
+archives and extracted source trees. A source archive is named by the tested
+commit SHA and verified with SHA-256 before an atomic rename. Production reuses
+the archive and exact-tag Docker images produced by test; if the shared archive
+is missing, production uploads the tested revision as a compatibility fallback.
+The workflows create this root with owner-only permissions. On a fresh server,
+the SSH deployment user needs non-interactive passwordless `sudo` when `/srv`
+is not directly writable.
+
+The first test deployment of a new commit still transfers one source archive
+from GitHub Actions to the server. Retries and the following production deploy
+do not transfer it again. A future domestic object-storage transport can write
+the same verified archive into this cache without changing the remote build
+contract.
+
+The production deploy reconciles the image proxy timeouts in the TLS
+`app.catsco.cc` `/v1/` location and the streaming STT WebSocket route at
+`/api/stt/realtime`. It does not replace the host site file, so unrelated
+host-only routes remain intact. Each updater keeps a backup, runs `nginx -t`,
+and restores the previous config if validation or reload fails. When the SSH
+deploy user is not root, the updater requires non-interactive passwordless
+`sudo` and refuses to prompt during a deployment.
 
 Default ports bind to `127.0.0.1` and should be published through the host nginx
 instead of exposed directly to the internet:
@@ -47,27 +64,203 @@ Before enabling automatic production deploys:
 5. Fill real secrets in `prod.env`
 6. Point `OC_DB_DSN` at the active database and set `OC_DB_DRIVER`
 
+## Web Push deployment secrets
+
+Web Push is disabled by default, so these GitHub Environment secrets are not
+required for a production deploy. To enable it, configure all three in `prod`:
+
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT` (for example, `mailto:ops@catsco.cc`)
+
+The deploy workflow sends the values over SSH standard input and atomically
+updates the persistent `prod.env`; it does not put the private key in the
+repository or a remote command line. It also hardens `prod.env` to owner-only
+mode (`0600`). Supplying none of the three removes any earlier VAPID values and
+keeps Web Push disabled; supplying only some is rejected. It retains the
+existing first-deploy check, so `prod.env` must already contain the rest of its
+real configuration. Keep the production key pair separate from test.
+
+When the production host cannot reach browser push providers directly, also
+configure these two `prod` environment secrets with the same values used by the
+Cloudflare Worker relay:
+
+- `CATSCO_PUSH_RELAY_URL` (for example, `https://push-relay.example.workers.dev/v1/push/relay`)
+- `CATSCO_PUSH_RELAY_TOKEN`
+
+They are synchronized over SSH standard input as a pair. Leaving both empty
+removes an earlier relay configuration; supplying only one is rejected. The
+Worker never receives the VAPID private key.
+
 ## Image generation gateway
 
-Keep the provider configuration only in the persistent server file
+Keep image-provider credentials only under the persistent server root. For the
+race gateway, create `/srv/catscompany-prod/secrets/image-providers.json` from
+`deploy/prod/image-providers.example.json`, configure exactly three providers,
+and make it
+readable only by the deployment administrator:
+
+```bash
+chmod 600 /srv/catscompany-prod/secrets/image-providers.json
+```
+
+Then point the container at the mounted file from the persistent
 `/srv/catscompany-prod/env/prod.env`:
 
 ```env
-CATSCO_IMAGE_UPSTREAM_URL=https://provider.example/v1/images/generations
-CATSCO_IMAGE_UPSTREAM_API_KEY=replace-with-provider-key
+CATSCO_IMAGE_UPSTREAMS_FILE=/run/catsco-secrets/image-providers.json
 CATSCO_IMAGE_MODEL=gpt-image-2
+CATSCO_IMAGE_TIMEOUT_SECONDS=260
+CATSCO_IMAGE_RACE_DEADLINE_SECONDS=270
+CATSCO_IMAGE_RACE_BACKOFF_MS=750
+CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER=2
 CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES=25165824
+CATSCO_IMAGE_MAX_RESPONSE_BYTES=41943040
 ```
 
-Do not mirror the provider key into repository or GitHub Actions secrets. The
-deployment scripts preserve `prod.env` across releases. After changing these
-values, recreate the server container with the manual start commands below.
+The deployment scripts create and preserve the `secrets` directory across
+releases, and Compose mounts it read-only at `/run/catsco-secrets`. Do not copy
+the real provider file into the repository, image, deployment bundle, or GitHub
+Actions. After changing it, recreate the server container with the manual start
+commands below.
 
-Reference-image requests reuse the same upstream URL, key, and model. The
-server derives the sibling `/images/edits` endpoint from an upstream URL ending
-in `/images/generations`. `CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES` limits only the
-JSON request containing base64 references; its 24 MiB default remains below
-the bundled Nginx 32 MiB body limit.
+Every configured provider must set `generation_url`, `edit_url`, and an explicit
+`edit_transport`. Use `json_data_url` for an upstream that accepts the CatsCo
+JSON reference format and `multipart` for an OpenAI-compatible file upload.
+The gateway removes `async` and accepts only a completed image response, so a
+task ID never wins the race. Both provider lanes start together, which means a
+single user request can create one billable request at each provider even when
+the slower request is cancelled locally. Explicit HTTP 429 and 5xx responses
+can be retried within the configured attempt bound. Network errors, timeouts,
+and invalid 200 responses are not retried because the provider may already have
+accepted or billed the job without returning a trustworthy status.
+`CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER` defaults to 2 and is hard-capped
+at 4. With three providers, the default absolute request bound is six provider
+calls. The race also stops when `CATSCO_IMAGE_RACE_DEADLINE_SECONDS` expires.
+The deadline is capped at 285 seconds so the gateway can return a structured
+failure before the caller's roughly 300-second connection budget ends.
+
+For rollback, clear `CATSCO_IMAGE_UPSTREAMS_FILE` and restore the legacy
+`CATSCO_IMAGE_UPSTREAM_URL`, `CATSCO_IMAGE_UPSTREAM_API_KEY` or
+`CATSCO_IMAGE_UPSTREAM_API_KEY_FILE`, and `CATSCO_IMAGE_MODEL` values. The
+legacy path is represented internally as a one-provider pool.
+
+`CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES` limits only the JSON request containing
+base64 references; its 24 MiB default remains below the bundled Nginx 32 MiB
+body limit.
+
+## Image upscale gateway
+
+The upscale route is independent from image generation and its provider race.
+It accepts one authenticated multipart request at `POST /v1/images/upscale`,
+submits one asynchronous Topaz Gigapixel job, and returns its task id. Query
+the same job at `GET /v1/images/upscale/tasks/<process_id>`; the gateway
+queries Topaz and returns `202` while it is pending, then returns the completed
+JPEG when the result is ready. The gateway never retries the paid submission
+and does not switch providers.
+
+Keep the provider key in the persistent secret mount:
+
+```bash
+printf '%s' '<topaz-api-key>' > /srv/catscompany-prod/secrets/image-upscale-api-key
+chmod 600 /srv/catscompany-prod/secrets/image-upscale-api-key
+```
+
+Then configure the mounted path in `prod.env`:
+
+```env
+CATSCO_IMAGE_UPSCALE_API_KEY_FILE=/run/catsco-secrets/image-upscale-api-key
+CATSCO_IMAGE_UPSCALE_MODEL=Standard V2
+CATSCO_IMAGE_UPSCALE_TIMEOUT_SECONDS=45
+CATSCO_IMAGE_UPSCALE_MAX_TARGET_EDGE=7680
+CATSCO_IMAGE_UPSCALE_MAX_REQUEST_BYTES=67108864
+CATSCO_IMAGE_UPSCALE_MAX_SOURCE_BYTES=30000000
+CATSCO_IMAGE_UPSCALE_MAX_RESPONSE_BYTES=134217728
+```
+
+The default upstream URL is
+`https://api.topazlabs.com/image/v1/enhance/async`; override
+`CATSCO_IMAGE_UPSCALE_URL` only for a compatible Topaz-shaped endpoint. The
+source limit remains 30 MB, and the output limit is 128 MiB for large 8K JPEGs.
+The provider key is never returned to the client or sent to the presigned
+download URL.
+
+## Distributed artifact nodes
+
+With no node registry configured, artifact management keeps using the legacy
+`CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only
+when direct Artifact discovery is disabled.
+
+Production enables one-server-per-Agent static discovery by default:
+
+```env
+CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=https://agent-{uid}.artifacts.catsco.fun:19991/artifacts
+```
+
+For Agent `535`, CatsCo reads:
+
+```text
+https://agent-535.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
+```
+
+The template must use HTTPS, contain exactly one `{uid}` in the hostname, end
+with `/artifacts`, and use a different origin from `CATSCO_PUBLIC_BASE_URL`.
+Set `CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=` explicitly to disable this route.
+An unresolved hostname or index HTTP 404 means the Agent has not published an
+Artifact yet and returns an empty list. Connection failures, HTTP 5xx, invalid
+JSON, invalid Artifact URLs, and wrong-host URLs remain errors.
+
+Direct template nodes are list-only: CatsCo projects the selected Agent UID,
+sets `can_delete=false` and `can_restore=false`, and does not send a management
+token to the employee host.
+
+To route each managed Agent to the artifact host on its deployment node, copy
+`deploy/prod/artifact-nodes.example.json` to the persistent secrets directory
+and set:
+
+```env
+CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
+```
+
+The JSON maps an Agent UID to one node. Every node declares its public artifact
+base URL. A fully managed node also declares a protected management URL and
+exactly one bearer-token source: `management_token_env` or
+`management_token_file`. A static-only node may omit all three management
+fields; CatsCo then reads
+`<public_base_url>/by-agent/<uid>/artifacts-index.json`, verifies that every
+artifact URL stays inside the same Agent namespace, does not offer delete or
+restore, and returns an empty recycle bin. The token itself must not be written
+into the JSON. Prefer a separate file under
+`/run/catsco-secrets` for each managed node; the directory is already mounted
+read-only in the server container.
+Every `public_base_url` must use a different origin (scheme, host, or port) from
+`CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
+so executable Artifact HTML cannot share the CatsCo application origin.
+For example:
+
+```bash
+printf '%s' '<node-b-token>' > /srv/catscompany-prod/secrets/artifact-node-b.token
+chmod 600 /srv/catscompany-prod/secrets/artifact-node-b.token
+```
+
+`management_token_env` remains useful for the legacy node or local testing.
+Several nodes may reference `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only when those
+nodes intentionally share one service token.
+
+Resolution order is: explicit Agent mapping, direct URL template, then legacy.
+An explicit mapping can therefore override one exceptional Agent while all
+other Agents use deterministic direct discovery. If the direct template is
+disabled, an unmapped Agent fails closed by default. During a staged legacy
+migration, set `"fallback_to_legacy": true` to keep those unmapped Agents on
+`CATSCO_ARTIFACT_MANAGEMENT_URL`.
+The registry is loaded at server startup, so changing a node, mapping, or token
+file requires recreating the CatsCo server container. Changing the direct
+template also requires recreating the container.
+
+When a node registry or direct template is enabled, the old unscoped
+`/api/artifacts` endpoint is disabled. All list, delete, and restore requests use
+`/api/agents/{uid}/artifacts`, which prevents a request from silently falling
+back to the legacy node.
 
 ## Manual start
 

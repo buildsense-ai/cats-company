@@ -57,7 +57,6 @@ func TestBotBodyLeaseRejectsDifferentBodyAndAllowsSameBodyReconnect(t *testing.T
 		t.Fatalf("different body should acquire after current release: %v", err)
 	}
 }
-
 func TestBotBodyLeaseDoesNotExpireActiveConnectionByWallClock(t *testing.T) {
 	now := time.Unix(200, 0)
 	leases := newBotBodyLeaseManager(time.Minute)
@@ -105,6 +104,30 @@ func TestSharedRuntimeBotBodyLeaseRejectsDifferentBodyAcrossHubs(t *testing.T) {
 	}
 	if !hubB.bodyLeases.isCurrent(42, "body-a", "conn-b2") {
 		t.Fatal("node-b replacement lease should be current")
+	}
+}
+
+func TestBotRuntimeOnlineIncludesSharedLeaseOnAnotherHub(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	hubA := NewHubWithRuntime(nil, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+
+	if _, err := hubB.bodyLeases.acquire(42, "body-a", "conn-b"); err != nil {
+		t.Fatalf("node-b acquire failed: %v", err)
+	}
+	hubB.addRegisteredClient(&Client{
+		uid: 42, accountType: types.AccountBot, bodyID: "body-a",
+		connectionID: "conn-b", send: make(chan []byte, 1),
+	})
+
+	if hubA.BotBodyStatus(42).Active {
+		t.Fatal("node-a must not expose node-b connection details as local body status")
+	}
+	if !hubA.BotRuntimeOnline(42) {
+		t.Fatal("node-a should project the valid node-b shared lease as online")
+	}
+	if !hubB.BotRuntimeOnline(42) {
+		t.Fatal("node-b should report its registered runtime as online")
 	}
 }
 
@@ -176,7 +199,7 @@ func TestHandleGetBotBodyStatus(t *testing.T) {
 		send:         make(chan []byte, 1),
 	})
 
-	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"}, nil)
+	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"})
 	handler.SetHub(hub)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid=42", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -208,7 +231,7 @@ func TestHandleGetBotBodyStatusIgnoresStaleLeaseWithoutClient(t *testing.T) {
 		t.Fatalf("acquire failed: %v", err)
 	}
 
-	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"}, nil)
+	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"})
 	handler.SetHub(hub)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid=42", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -229,7 +252,7 @@ func TestHandleGetBotBodyStatusIgnoresStaleLeaseWithoutClient(t *testing.T) {
 }
 
 func TestHandleGetBotBodyStatusReturnsOfflineBinding(t *testing.T) {
-	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"}, nil)
+	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"})
 	handler.SetHub(NewHub(nil, nil))
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid=42", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -288,7 +311,7 @@ func TestHandleGetBotBodyStatusRejectsInvalidRequests(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			handler := NewBotHandler(tc.store, nil)
+			handler := NewBotHandler(tc.store)
 			handler.SetHub(NewHub(nil, nil))
 			req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid="+tc.queryUID, nil)
 			req = req.WithContext(context.WithValue(req.Context(), uidKey, tc.ownerUID))

@@ -40,8 +40,15 @@ type Adapter struct {
 
 var _ store.Store = (*Adapter)(nil)
 var _ store.ConversationTaskStatusStore = (*Adapter)(nil)
+var _ store.ConversationTaskStatusRecoveryStore = (*Adapter)(nil)
+var _ store.ConversationTaskGenerationStore = (*Adapter)(nil)
 var _ store.ProjectStore = (*Adapter)(nil)
 var _ store.ProjectTopicStore = (*Adapter)(nil)
+var _ store.PushSubscriptionStore = (*Adapter)(nil)
+var _ store.ConversationNotificationPreferenceStore = (*Adapter)(nil)
+var _ store.BotSkillMutationPolicyStore = (*Adapter)(nil)
+var _ store.BotSkillMutationStore = (*Adapter)(nil)
+var _ store.ImageUpscaleTaskStore = (*Adapter)(nil)
 
 // Config holds MySQL connection configuration.
 type Config struct {

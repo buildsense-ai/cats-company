@@ -44,18 +44,39 @@ type JWTClaims struct {
 	jwt.RegisteredClaims
 }
 
-// GenerateToken creates a signed JWT for the given user.
+const (
+	userTokenType           = "user"
+	persistentUserTokenType = "user_persistent"
+)
+
+// GenerateToken creates a seven-day signed JWT for ordinary web sessions.
 func GenerateToken(uid int64, username string, email string) (string, error) {
+	return generateUserToken(uid, username, email, false)
+}
+
+// GeneratePersistentUserToken creates a non-expiring JWT for a trusted CatsCo
+// desktop installation. Account state and signing-key rotation still revoke it.
+func GeneratePersistentUserToken(uid int64, username string, email string) (string, error) {
+	return generateUserToken(uid, username, email, true)
+}
+
+func generateUserToken(uid int64, username string, email string, persistent bool) (string, error) {
+	tokenType := userTokenType
+	registered := jwt.RegisteredClaims{
+		IssuedAt: jwt.NewNumericDate(time.Now()),
+		Issuer:   "catscompany",
+	}
+	if persistent {
+		tokenType = persistentUserTokenType
+	} else {
+		registered.ExpiresAt = jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour))
+	}
 	claims := JWTClaims{
-		TokenType: "user",
-		UID:       uid,
-		Username:  username,
-		Email:     email,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "catscompany",
-		},
+		TokenType:        tokenType,
+		UID:              uid,
+		Username:         username,
+		Email:            email,
+		RegisteredClaims: registered,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(jwtSecret)
@@ -77,7 +98,7 @@ func ParseToken(tokenStr string) (*JWTClaims, error) {
 		return nil, err
 	}
 	if claims, ok := token.Claims.(*JWTClaims); ok && token.Valid {
-		if claims.TokenType != "" && claims.TokenType != "user" {
+		if claims.TokenType != "" && claims.TokenType != userTokenType && claims.TokenType != persistentUserTokenType {
 			return nil, fmt.Errorf("unsupported token type %q", claims.TokenType)
 		}
 		return claims, nil
@@ -184,6 +205,41 @@ func JWTAuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.Handler
 	}
 }
 
+func botAPIKeyUID(r *http.Request, db store.Store) (int64, int, string) {
+	apiKey := extractAPIKey(r)
+	if apiKey == "" {
+		return 0, http.StatusUnauthorized, "unauthorized"
+	}
+	parsedUID, err := ParseAPIKey(apiKey)
+	if err != nil {
+		return 0, http.StatusUnauthorized, "unauthorized"
+	}
+	botUID, err := db.GetBotByAPIKey(apiKey)
+	if err != nil || botUID != parsedUID {
+		return 0, http.StatusUnauthorized, "unauthorized"
+	}
+	if _, status, msg := activeUserByID(parsedUID, db.GetUser); status != 0 {
+		return 0, status, msg
+	}
+	return parsedUID, 0, ""
+}
+
+// BotAPIKeyMiddlewareWithDB requires an active bot API key and never accepts JWTs.
+// Use it for runtime endpoints that may return bot-only credentials.
+func BotAPIKeyMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			uid, status, msg := botAPIKeyUID(r, db)
+			if status != 0 {
+				writeJSON(w, status, map[string]string{"error": msg})
+				return
+			}
+			ctx := context.WithValue(r.Context(), uidKey, uid)
+			next(w, r.WithContext(ctx))
+		}
+	}
+}
+
 // AuthMiddlewareWithDB returns an auth middleware that accepts both JWT and API Key.
 // JWT is tried first; on failure, it falls back to API Key authentication.
 func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
@@ -205,21 +261,13 @@ func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFun
 			}
 
 			// Fallback: API Key from header or query param
-			apiKey := extractAPIKey(r)
-			if apiKey != "" {
-				parsedUID, err := ParseAPIKey(apiKey)
-				if err == nil {
-					botUID, err := db.GetBotByAPIKey(apiKey)
-					if err == nil && botUID == parsedUID {
-						if _, status, msg := activeUserByID(parsedUID, db.GetUser); status != 0 {
-							writeJSON(w, status, map[string]string{"error": msg})
-							return
-						}
-						ctx := context.WithValue(r.Context(), uidKey, parsedUID)
-						next(w, r.WithContext(ctx))
-						return
-					}
-				}
+			if uid, status, msg := botAPIKeyUID(r, db); status == 0 {
+				ctx := context.WithValue(r.Context(), uidKey, uid)
+				next(w, r.WithContext(ctx))
+				return
+			} else if status == http.StatusForbidden {
+				writeJSON(w, status, map[string]string{"error": msg})
+				return
 			}
 
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})

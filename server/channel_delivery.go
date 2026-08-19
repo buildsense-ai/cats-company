@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"strings"
 
 	"github.com/openchat/openchat/server/store"
@@ -43,7 +44,7 @@ func deliverInboundChannelMessageToAgent(db store.Store, hub *Hub, actorUID, age
 	contentBlocks := channelInboundContentBlocks(text, files)
 	messageType := "text"
 	if strings.TrimSpace(text) == "" && len(files) == 1 {
-		messageType = files[0].Type
+		messageType = channelInboundMessageType(files[0])
 	}
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID:       topicID,
@@ -100,15 +101,20 @@ func deliverInboundChannelMessageToGroupWithTrigger(db store.Store, hub *Hub, ac
 	contentBlocks := channelInboundContentBlocks(text, files)
 	messageType := "text"
 	if strings.TrimSpace(text) == "" && len(files) == 1 {
-		messageType = files[0].Type
+		messageType = channelInboundMessageType(files[0])
 	}
+	trustedMetadata := make(map[string]interface{}, len(metadata)+1)
+	for key, value := range metadata {
+		trustedMetadata[key] = value
+	}
+	trustedMetadata[channelBindingDeliveryTrustMetadataKey] = channelBindingDeliveryTrustToken{}
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID:       binding.TopicID,
 		ClientMsgID:   clientMsgID,
 		Content:       rawContent,
 		Type:          messageType,
 		ContentBlocks: contentBlocks,
-		Metadata:      metadata,
+		Metadata:      trustedMetadata,
 	})
 	if err != nil {
 		return err
@@ -177,10 +183,7 @@ func channelInboundContentBlocks(text string, files []uploadPayload) []types.Con
 		blocks = append(blocks, types.ContentBlock{Type: "text", Text: text})
 	}
 	for _, file := range files {
-		blockType := file.Type
-		if blockType != "image" {
-			blockType = "file"
-		}
+		blockType := channelInboundContentBlockType(file)
 		blocks = append(blocks, types.ContentBlock{
 			Type: blockType,
 			Payload: map[string]interface{}{
@@ -194,4 +197,22 @@ func channelInboundContentBlocks(text string, files []uploadPayload) []types.Con
 		})
 	}
 	return blocks
+}
+
+func channelInboundContentBlockType(file uploadPayload) string {
+	if file.Type == "image" {
+		return "image"
+	}
+	mediaType, _, err := mime.ParseMediaType(file.MimeType)
+	if err == nil && strings.HasPrefix(strings.ToLower(mediaType), "audio/") {
+		return "audio"
+	}
+	return "file"
+}
+
+func channelInboundMessageType(file uploadPayload) string {
+	if channelInboundContentBlockType(file) == "audio" {
+		return "voice"
+	}
+	return file.Type
 }

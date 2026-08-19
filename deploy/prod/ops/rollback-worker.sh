@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# rollback-worker.sh — 云托管虚拟员工版本回滚（B4-1e）
+#
+# 保留 worker 数据（/srv/catsco-agent 不动），SSH 到实例把
+# /opt/catsco/current 软链切换到指定历史 release 版本并重启
+# catsco-agent.service。--version 缺省时回滚到实例内最新 release 版本。
+#
+# 用法：
+#   rollback-worker.sh --name <tenant> [--version <v>] [--dry-run]
+#
+# 保留数据：不删除/不重建实例，不触碰 /srv/catsco-agent。
+#
+# 依赖：ctyun-cli + jq + ssh + timeout
+# 云环境：CTYUN_WORKER_REGION_ID / _PROJECT_ID
+# 本地：CTYUN_WORKER_STATE_DIR（私钥/known_hosts，provision 时生成）
+set -Eeuo pipefail
+
+NAME=""
+VERSION=""
+DRY_RUN=0
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_VERSION_SCRIPT="${CATSCO_WORKER_UPDATE_SCRIPT:-$OPS_DIR/deploy-worker-version.sh}"
+
+usage() {
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while (($#)); do
+  case "$1" in
+    --name) NAME="${2:-}"; shift 2 ;;
+    --version) VERSION="${2:-}"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
+PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
+STATE_ROOT="${CTYUN_WORKER_STATE_ROOT:-}"
+if [[ -n "$STATE_ROOT" ]]; then
+  STATE_ROOT="${STATE_ROOT%/}"
+  STATE_DIR="$STATE_ROOT/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+  STATE_ROOT="$(dirname "$STATE_DIR")"
+fi
+# SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
+JUMP_IP="${CTYUN_JUMP_IP:-}"
+JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
+JUMP_USER="${CTYUN_JUMP_USER:-root}"
+JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
+
+# --- 校验 ---
+if [[ -z "$NAME" ]]; then
+  echo "error: --name is required" >&2
+  usage >&2
+  exit 2
+fi
+if [[ ! "$NAME" =~ ^[a-z0-9][a-z0-9_-]{1,63}$ ]]; then
+  echo "error: --name must match ^[a-z0-9][a-z0-9_-]{1,63}\$" >&2
+  exit 2
+fi
+# version 只允许安全字符（会拼进远程 glob，防注入）
+if [[ -n "$VERSION" && ! "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: --version must match ^[A-Za-z0-9._-]+\$" >&2
+  exit 2
+fi
+for cmd in ctyun-cli jq ssh timeout; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "error: missing required command: $cmd" >&2; exit 2; }
+done
+[[ -n "$REGION_ID" ]] || { echo "error: CTYUN_WORKER_REGION_ID is required" >&2; exit 2; }
+
+INSTANCE_NAME="worker-${NAME}"
+
+# --- 工具 ---
+ctyun() {
+  local raw status
+  raw="$(timeout -s TERM -k 15 120s ctyun-cli "$@" --output json 2>&1)" || {
+    echo "error: ctyun-cli failed: $*" >&2
+    echo "$raw" >&2
+    return 1
+  }
+  status="$(jq -r '.statusCode // empty' <<<"$raw")"
+  if [[ "$status" != "800" ]]; then
+    echo "error: Tianyi Cloud API failed: $(jq -r '.errorCode // ""' <<<"$raw") $(jq -r '.message // ""' <<<"$raw")" >&2
+    return 1
+  fi
+  printf '%s' "$raw"
+}
+
+find_instance() {
+  local resp name
+  name="$1"
+  resp="$(ctyun ecs ListEcsInstances --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+    --instanceName "$name" --pageNo 1 --pageSize 10)"
+  jq -r --arg n "$name" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" || true
+}
+
+# --- 1. 找实例 + IP ---
+inst="$(find_instance "$INSTANCE_NAME")"
+[[ -n "$inst" ]] || { echo "error: instance worker-${NAME} not found" >&2; exit 1; }
+# 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
+INSTANCE_IP="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
+[[ -n "$INSTANCE_IP" ]] || { echo "error: instance has no IP" >&2; exit 1; }
+mkdir -p "$STATE_DIR"
+PRIVATE_KEY="$STATE_DIR/id_rsa"
+if [[ ! -f "$PRIVATE_KEY" && -f "$STATE_ROOT/id_rsa" ]]; then
+  cp "$STATE_ROOT/id_rsa" "$PRIVATE_KEY"
+  chmod 600 "$PRIVATE_KEY"
+fi
+[[ -f "$PRIVATE_KEY" ]] || { echo "error: private key not found at $PRIVATE_KEY (was the worker provisioned here?)" >&2; exit 1; }
+
+ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")
+if [[ -n "$JUMP_IP" ]]; then
+  ssh_opts+=(-o "ProxyCommand=ssh -i ${JUMP_KEY} -p ${JUMP_PORT} -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${STATE_DIR}/jump_known_hosts -W %h:%p ${JUMP_USER}@${JUMP_IP}")
+fi
+ssh_run() {
+  timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"
+}
+
+record_current_app_version() {
+  local version
+  version="$(ssh_run "root@$INSTANCE_IP" \
+    "cat /opt/catsco/current/worker-release.json 2>/dev/null" 2>/dev/null \
+    | jq -r '.version // empty' 2>/dev/null || true)"
+  [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || {
+    echo "error: active application version could not be verified after rollback" >&2
+    return 1
+  }
+  printf '%s\n' "$version" > "$STATE_DIR/app_version.tmp"
+  mv -f "$STATE_DIR/app_version.tmp" "$STATE_DIR/app_version"
+}
+
+# --- 2. 无 --version：回滚到最新 release 版本 ---
+# （list 语义不再单独输出：空版本 = 按实例内已部署版本排序取最新并切换）
+if [[ -z "$VERSION" ]]; then
+  target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/*/ 2>/dev/null | xargs -n1 basename | sort -V | tail -n1" 2>/dev/null || true)"
+  [[ -n "$target" ]] || { echo "error: no releases found on instance" >&2; exit 1; }
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"
+    exit 0
+  fi
+
+  ssh_run "root@$INSTANCE_IP" "ln -sfn /opt/catsco/releases/${target} /opt/catsco/current && systemctl restart catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1 \
+    || { echo "error: rollback to $target failed" >&2; exit 1; }
+
+  record_current_app_version || echo "warning: could not persist active application version" >&2
+  echo "{\"status\":\"rolled-back\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"
+  exit 0
+fi
+
+# --- 3. 切换 current 软链到目标版本并重启 service ---
+# 前缀匹配 <version>-<sha> 的 release 目录（glob 受上面正则约束）
+NORMALIZED_VERSION="${VERSION#v}"
+target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/${NORMALIZED_VERSION}*/ 2>/dev/null | head -n1 | xargs -n1 basename" 2>/dev/null || true)"
+if [[ -z "$target" && "$NORMALIZED_VERSION" != "$VERSION" ]]; then
+  target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/${VERSION}*/ 2>/dev/null | head -n1 | xargs -n1 basename" 2>/dev/null || true)"
+fi
+if [[ -z "$target" ]]; then
+  [[ -x "$DEPLOY_VERSION_SCRIPT" ]] || { echo "error: release $VERSION not found locally and published artifact installer is unavailable" >&2; exit 1; }
+  deploy_args=(--name "$NAME" --version "$VERSION")
+  [[ $DRY_RUN -eq 1 ]] && deploy_args+=(--dry-run)
+  exec "$DEPLOY_VERSION_SCRIPT" "${deploy_args[@]}"
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"
+  exit 0
+fi
+
+ssh_run "root@$INSTANCE_IP" "ln -sfn /opt/catsco/releases/${target} /opt/catsco/current && systemctl restart catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1 \
+  || { echo "error: rollback to $target failed" >&2; exit 1; }
+
+record_current_app_version || echo "warning: could not persist active application version" >&2
+echo "{\"status\":\"rolled-back\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"

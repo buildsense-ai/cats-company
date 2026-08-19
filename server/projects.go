@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -30,7 +31,7 @@ func (h *ProjectHandler) projectStore(w http.ResponseWriter) (store.ProjectStore
 	return projects, ok
 }
 
-// HandleProjects handles GET/POST /api/projects.
+// HandleProjects handles GET/POST/PATCH/DELETE /api/projects.
 func (h *ProjectHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
 	projects, ok := h.projectStore(w)
 	if !ok {
@@ -42,9 +43,58 @@ func (h *ProjectHandler) HandleProjects(w http.ResponseWriter, r *http.Request) 
 		h.handleList(w, r, projects)
 	case http.MethodPost:
 		h.handleCreate(w, r, projects)
+	case http.MethodPatch:
+		h.handleRename(w, r, projects)
+	case http.MethodDelete:
+		h.handleDelete(w, r, projects)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func (h *ProjectHandler) handleRename(w http.ResponseWriter, r *http.Request, projects store.ProjectStore) {
+	var req struct {
+		ProjectID int64  `json:"project_id"`
+		Name      string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if req.ProjectID <= 0 || name == "" || utf8.RuneCountInString(name) > maxProjectNameLength {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id and a 1-128 character name are required"})
+		return
+	}
+	if err := projects.RenameProject(UIDFromContext(r.Context()), req.ProjectID, name); err != nil {
+		switch {
+		case errors.Is(err, store.ErrProjectNameConflict):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "project name already exists"})
+		case errors.Is(err, store.ErrProjectNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to rename project"})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *ProjectHandler) handleDelete(w http.ResponseWriter, r *http.Request, projects store.ProjectStore) {
+	projectID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("project_id")), 10, 64)
+	if err != nil || projectID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id is required"})
+		return
+	}
+	if err := projects.DeleteProject(UIDFromContext(r.Context()), projectID); err != nil {
+		if errors.Is(err, store.ErrProjectNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete project"})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // HandleProjectTopic handles POST/DELETE /api/projects/topic.
@@ -114,7 +164,18 @@ func (h *ProjectHandler) handleAssignTopic(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	err := projects.AssignTopicToProject(UIDFromContext(r.Context()), req.ProjectID, req.TopicID)
+	ownerUID := UIDFromContext(r.Context())
+	err := projects.AssignTopicToProject(ownerUID, req.ProjectID, req.TopicID)
+	if errors.Is(err, store.ErrProjectTopicNotFound) {
+		restored, restoreErr := h.restoreLegacyAgentTopic(ownerUID, req.TopicID)
+		if restoreErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to restore legacy conversation"})
+			return
+		}
+		if restored {
+			err = projects.AssignTopicToProject(ownerUID, req.ProjectID, req.TopicID)
+		}
+	}
 	if errors.Is(err, store.ErrProjectTopicNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project or conversation not found"})
 		return
@@ -124,6 +185,43 @@ func (h *ProjectHandler) handleAssignTopic(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *ProjectHandler) restoreLegacyAgentTopic(ownerUID int64, topicID string) (bool, error) {
+	agentUID, ok := legacyAgentUIDFromTopic(ownerUID, topicID)
+	if !ok {
+		return false, nil
+	}
+	if _, _, status, err := accessibleAgentUser(h.db, ownerUID, agentUID); err != nil {
+		if status >= http.StatusInternalServerError {
+			return false, err
+		}
+		return false, nil
+	}
+	if err := h.db.CreateTopic(topicID, "p2p", ownerUID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func legacyAgentUIDFromTopic(ownerUID int64, topicID string) (int64, bool) {
+	parts := strings.Split(topicID, "_")
+	if ownerUID <= 0 || len(parts) != 3 || parts[0] != "p2p" {
+		return 0, false
+	}
+	firstUID, firstErr := strconv.ParseInt(parts[1], 10, 64)
+	secondUID, secondErr := strconv.ParseInt(parts[2], 10, 64)
+	if firstErr != nil || secondErr != nil || firstUID <= 0 || secondUID <= 0 || firstUID >= secondUID {
+		return 0, false
+	}
+	switch ownerUID {
+	case firstUID:
+		return secondUID, true
+	case secondUID:
+		return firstUID, true
+	default:
+		return 0, false
+	}
 }
 
 func (h *ProjectHandler) handleRemoveTopic(w http.ResponseWriter, r *http.Request, projects store.ProjectStore) {

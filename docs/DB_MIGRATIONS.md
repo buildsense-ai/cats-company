@@ -43,16 +43,32 @@ export CATS_MIGRATION_DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/DB?sslmod
 
 `server/db/mysql/schema.go` 仍可保留历史兼容代码，但不维护 migration 文件，也不会写入 migration 版本表。
 
-## 之后怎么加迁移
+## 之后怎么处理 schema 变更
 
-新增 schema 变更时，不要继续只往 `schema.go` 里加 `ALTER TABLE`。新增一组 migration：
+普通的新表、新列、索引、约束和 trigger 由 `server/db/postgres/schema.go` 的 `CreateSchema()` 统一管理，必须保持幂等。这让新环境和既有环境都从同一个 schema 模块获得相同结果，不再为同一项 DDL 维护两套真相。
 
-```text
-server/db/migrations/postgres/000002_xxx.up.sql
-server/db/migrations/postgres/000002_xxx.down.sql
-```
+只有在需要单独编排、审核或回滚的数据转换中，才添加新的 PostgreSQL SQL migration。此时：
 
-如果某次变更需要兼容 MySQL，也在应用代码里单独说明；生产 schema 迁移以 PostgreSQL migration 为准。
+1. 添加一对唯一编号的 `up` / `down` 文件。
+2. 不要在 `CreateSchema()` 重复同一个数据转换。
+3. 生产执行前仍需备份，先记录 `version` / `dirty`，再执行 `up`。
+
+## 发布门禁
+
+2026-08-13 曾发生“测试环境部署成功、生产历史库启动失败”的事故。根因是新索引依赖的列只存在于全新 schema 和 SQL migration 中，而生产启动路径没有在创建索引前执行该 migration。完整复盘见：
+
+- [`docs/incidents/2026-08-13-commercial-refund-schema-prod-502.md`](incidents/2026-08-13-commercial-refund-schema-prod-502.md)
+
+此后所有 PostgreSQL schema 变更必须满足：
+
+1. 默认通过 PR 合并，不直接推送 `main`。
+2. 同时测试空数据库创建和生产历史 schema 升级。
+3. 升级测试必须重复执行一次，验证幂等性。
+4. DDL 顺序必须是：表 -> 列 -> 数据回填 -> 约束/索引/trigger。
+5. 如果生产仍由 `CreateSchema()` 启动建表，仅添加 SQL migration 文件不代表生产会自动执行；必须同步保证 `CreateSchema()` 兼容旧库，或先修改部署流程让 migration 在应用启动前执行。
+6. PostgreSQL 集成测试不得因为缺少测试 DSN 而在发布流水线中静默跳过。
+
+测试环境当前 schema 已经包含目标列时，只能证明新版本可以在“较新 schema”上启动，不能证明生产历史库可升级。涉及 schema 的 PR 描述中必须写明使用的历史基线和升级验证结果。
 
 ## 服务器执行
 

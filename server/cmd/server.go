@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/openchat/openchat/server/db/mysql"
 	"github.com/openchat/openchat/server/db/postgres"
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func envString(name string) string {
@@ -191,6 +193,47 @@ func chainHTTP(handler http.HandlerFunc, middlewares ...func(http.HandlerFunc) h
 	return handler
 }
 
+func limitHTTPMethod(method string, middleware func(http.HandlerFunc) http.HandlerFunc) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		limited := middleware(next)
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == method {
+				limited(w, r)
+				return
+			}
+			next(w, r)
+		}
+	}
+}
+
+func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
+	if staticDir == "" {
+		return
+	}
+
+	fs := http.FileServer(http.Dir(staticDir))
+	serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+	}
+	for _, path := range []string{
+		"/e/",
+		"/mobile-upload/",
+		"/login",
+		"/login/",
+		"/register",
+		"/register/",
+		"/reset-password",
+		"/reset-password/",
+	} {
+		mux.HandleFunc(path, serveSPAIndex)
+	}
+	mux.Handle("/", fs)
+}
+
 func useRedisRuntime(cfg RuntimeConfig) bool {
 	store := strings.ToLower(strings.TrimSpace(cfg.Store))
 	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
@@ -254,13 +297,6 @@ func main() {
 
 	server.SetBotStats(hub.BotStats())
 
-	// Initialize deployer (optional — only if DEPLOY_API_URL is set)
-	var deployer *server.Deployer
-	if deployURL := os.Getenv("DEPLOY_API_URL"); deployURL != "" {
-		deployer = server.NewDeployer(deployURL)
-		log.Printf("Deploy API enabled: %s", deployURL)
-	}
-
 	userHandler := server.NewUserHandler(db)
 	accountServiceVerifier, err := server.NewAccountServiceVerifier(os.Getenv("OC_ACCOUNT_SERVICE_TOKENS"), db)
 	if err != nil {
@@ -270,9 +306,21 @@ func main() {
 	if candidate, ok := db.(server.CommercialStore); ok {
 		commercialStore = candidate
 	}
+	var commercialPaymentStore server.CommercialPaymentStore
+	if candidate, ok := db.(server.CommercialPaymentStore); ok {
+		commercialPaymentStore = candidate
+	}
+	var commercialRelayManagedStore server.CommercialRelayManagedStore
+	if candidate, ok := db.(server.CommercialRelayManagedStore); ok {
+		commercialRelayManagedStore = candidate
+	}
+	var commercialOperationsStore server.CommercialOperationsStore
+	if candidate, ok := db.(server.CommercialOperationsStore); ok {
+		commercialOperationsStore = candidate
+	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
-	friendHandler := server.NewFriendHandler(db)
+	friendHandler := server.NewFriendHandler(db, hub)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	projectHandler := server.NewProjectHandler(db)
 	agentHandler := server.NewAgentHandler(db, hub)
@@ -285,25 +333,78 @@ func main() {
 	weixinClawBotHandler.InstallOutboundDispatcher()
 	weixinClawBotHandler.Start()
 	defer weixinClawBotHandler.Stop()
-	botHandler := server.NewBotHandler(db, deployer)
+	botHandler := server.NewBotHandler(db)
 	botHandler.SetHub(hub)
+	cloudWorkerHandler := server.NewCloudWorkerHandler(db, botHandler, server.CloudWorkerConfigFromEnv())
+	botModelStore, _ := db.(store.BotModelConfigStore)
+	botModelConfigHandler := server.NewBotModelConfigHandler(db, botModelStore)
+	artifactRuntimeConfigHandler := server.NewArtifactRuntimeConfigHandlerFromEnv()
+	botDefinitionStore, _ := db.(store.BotDefinitionStore)
+	botDefinitionHandler := server.NewBotDefinitionHandler(db, botDefinitionStore, botModelStore, botModelConfigHandler)
+	botDefinitionHandler.SetPromptOnlineResolver(func(uid int64) bool {
+		return hub != nil && hub.BotRuntimeOnline(uid)
+	})
+	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
+	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+		apiKey, err := db.GetBotAPIKey(botUID)
+		if err != nil {
+			return nil, err
+		}
+		return skillHubProxyHandler.ResolvePrivateSkillMetadata(
+			ctx,
+			strconv.FormatInt(botUID, 10),
+			apiKey,
+			skills,
+		)
+	})
+	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
+	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
+	botModelConfigHandler.SetRollout(botModelCloudPublicEnabled, botModelCloudTestUIDs)
+	if botModelCloudPublicEnabled {
+		log.Printf("cloud bot model management is enabled for authenticated owners")
+	} else if len(botModelCloudTestUIDs) > 0 {
+		log.Printf("cloud bot model management allowlist is enabled for %d uid(s)", len(botModelCloudTestUIDs))
+	}
 	desktopConnectHandler := server.NewDesktopConnectHandler(db)
 	msgHandler := server.NewMessageHandler(db, hub)
+	pushSubscriptionStore, _ := db.(store.PushSubscriptionStore)
+	pushNotificationService := server.NewPushNotificationService(pushSubscriptionStore)
+	hub.SetPushNotificationService(pushNotificationService)
+	if pushNotificationService.Enabled() {
+		log.Printf("web push notifications are enabled")
+	} else if err := pushNotificationService.ConfigError(); err != nil {
+		log.Printf("web push notifications are disabled: %v", err)
+	} else {
+		log.Printf("web push notifications are disabled; configure VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT")
+	}
 	deviceHandler := server.NewDeviceHandler(db, hub)
 	deviceConnectorHandler := server.NewDeviceConnectorHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	tutorialTaskHandler := server.NewTutorialTaskHandler("./uploads", "/uploads")
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
+	cloudArtifactHandler := server.NewCloudArtifactHandlerFromEnv()
+	cloudArtifactHandler.SetStore(db)
+	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
+	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
+	imageUpscaleTaskStore, _ := db.(store.ImageUpscaleTaskStore)
+	imageUpscaleHandler := server.NewImageUpscaleProxyHandlerFromEnv(imageUpscaleTaskStore)
+	sttHandler := server.NewSTTHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
 	relayKeyHandler := server.NewRelayKeyHandlerFromEnv()
+	relayKeyHandler.SetCommercialStore(commercialStore)
 	relayKeyHandler.SetDeviceModelStatusResolver(func(uid int64) (server.DeviceModelStatus, bool) {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})
 	relayAdminClient := server.NewRelayAdminClientFromEnv()
-	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64) (server.DeviceModelStatus, bool) {
-		return server.LatestDeviceModelStatus(hub, uid)
+	userHandler.SetRelayRegistrationProvisioning(relayAdminClient)
+	botModelConfigHandler.SetRelayUsageClient(relayAdminClient)
+	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64, bodyID string) (server.DeviceModelStatus, bool) {
+		if strings.TrimSpace(bodyID) == "" {
+			return server.LatestDeviceModelStatus(hub, uid)
+		}
+		return server.DeviceModelStatusForBody(hub, uid, bodyID)
 	})
 	relayCommercialPublicEnabled := envBool("CATS_RELAY_COMMERCIAL_ENABLED")
 	relayCommercialTestUIDs := envInt64Set("CATS_RELAY_COMMERCIAL_TEST_UIDS")
@@ -321,13 +422,72 @@ func main() {
 	if len(relayCommercialEnforceUIDs) > 0 {
 		log.Printf("relay commercial enforce sync allowlist is enabled for %d uid(s)", len(relayCommercialEnforceUIDs))
 	}
+	relayKeyHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	botModelConfigHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	accountAdminHandler.SetCommercialRelayAdmin(relayAdminClient, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	var commercialRelaySyncer *server.CommercialRelaySyncer
+	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())
+	defer commercialServiceCancel()
+	if commercialRelayManagedStore != nil && relayAdminClient != nil {
+		commercialRelaySyncer = server.NewCommercialRelaySyncer(commercialRelayManagedStore, relayAdminClient, server.CommercialRelaySyncerOptions{
+			EnforceEnabled: relayCommercialEnforceEnabled,
+			EnforceUIDs:    relayCommercialEnforceUIDs,
+		})
+		commercialRelaySyncer.Start(commercialServiceCtx)
+		accountAdminHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		relayKeyHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		userHandler.SetRelayRegistrationReadyHook(func(uid int64) {
+			if commercialRelaySyncer.EnforcedFor(uid) {
+				commercialRelaySyncer.Enqueue(uid)
+			}
+		})
+	}
 	relayCommercialHandler := server.NewRelayCommercialHandlerWithOptions(commercialStore, server.RelayCommercialOptions{
 		PublicEnabled:  relayCommercialPublicEnabled,
 		TestUIDs:       relayCommercialTestUIDs,
 		EnforceEnabled: relayCommercialEnforceEnabled,
 		EnforceUIDs:    relayCommercialEnforceUIDs,
+		Syncer:         commercialRelaySyncer,
 	})
+	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
+	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
+	paymentProviders := []server.CommercialPaymentProvider{}
+	paymentSaleChannels := map[string]bool{}
+	alipaySalesEnabled := envBool("CATS_ALIPAY_SALES_ENABLED")
+	if envBool("CATS_COMMERCIAL_TEST_PAYMENT_ENABLED") {
+		paymentProviders = append(paymentProviders, server.NewTestCommercialPaymentProvider())
+		paymentSaleChannels["test"] = true
+		log.Printf("commercial test payment is enabled for %d uid(s)", len(paymentTestUIDs))
+	}
+	if envBool("CATS_ALIPAY_ENABLED") {
+		provider, missing, err := server.NewAlipayPagePaymentProviderFromEnv()
+		if err != nil {
+			log.Printf("Alipay is disabled due to configuration error: %v", err)
+		} else if provider == nil {
+			log.Printf("Alipay is waiting for configuration: %s", strings.Join(missing, ", "))
+		} else {
+			paymentProviders = append(paymentProviders, provider)
+			if alipaySalesEnabled {
+				paymentSaleChannels["alipay_page"] = true
+				log.Printf("Alipay page payment sales are enabled")
+			} else {
+				log.Printf("Alipay payment provider is enabled for callback and reconciliation only")
+			}
+		}
+	}
+	if alipaySalesEnabled && (!relayCommercialEnforceEnabled && len(relayCommercialEnforceUIDs) == 0) {
+		log.Printf("Alipay sales are configured, but no uid is eligible until relay commercial enforcement is enabled")
+	}
+	commercialPaymentHandler := server.NewCommercialPaymentHandler(commercialPaymentStore, server.CommercialPaymentHandlerOptions{
+		PublicEnabled: relayCommercialPublicEnabled,
+		TestUIDs:      relayCommercialTestUIDs,
+		TestPayments:  paymentTestUIDs,
+		TrialPlanSlug: envString("CATS_COMMERCIAL_TRIAL_PLAN_SLUG"),
+		Providers:     paymentProviders,
+		SaleChannels:  paymentSaleChannels,
+		Syncer:        commercialRelaySyncer,
+	})
+	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)
 	// usageHandler := server.NewUsageHandler(db)
 
 	authSendCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
@@ -352,7 +512,10 @@ func main() {
 		Name: "auth_login_ip", Limit: 60, Window: time.Minute, Burst: 10,
 	})
 	authLoginAccountLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_login_account", Limit: 10, Window: 10 * time.Minute, Burst: 5,
+		// 10 attempts per rolling 5 minutes (was 10 minutes): the shorter window
+		// refills tokens twice as fast, so repeated login failures recover sooner
+		// and legitimate retries are less likely to trip the limit.
+		Name: "auth_login_account", Limit: 10, Window: 5 * time.Minute, Burst: 5,
 	}, "account")
 	authRegisterIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "auth_register_ip", Limit: 10, Window: time.Hour, Burst: 3,
@@ -369,6 +532,12 @@ func main() {
 	uploadUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "upload_user", Limit: 30, Window: time.Minute, Burst: 10,
 	})
+	pushSubscriptionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "push_subscription_user", Limit: 30, Window: time.Minute, Burst: 10,
+	})
+	pushTestUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "push_test_user", Limit: 6, Window: time.Minute, Burst: 2,
+	})
 	readerIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "reader_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -381,6 +550,12 @@ func main() {
 	imageGenerationUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "image_generation_user", Limit: 6, Window: time.Minute, Burst: 2,
 	})
+	imageTaskPollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "image_task_poll_ip", Limit: 120, Window: time.Minute, Burst: 30,
+	})
+	imageTaskPollUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "image_task_poll_user", Limit: 60, Window: time.Minute, Burst: 15,
+	})
 	feedbackIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "feedback_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -389,6 +564,21 @@ func main() {
 	})
 	deviceConnectorEnrollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "device_connector_enroll_ip", Limit: 20, Window: time.Minute, Burst: 5,
+	})
+	commercialOrderUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_order_user", Limit: 12, Window: 10 * time.Minute, Burst: 3,
+	})
+	commercialOrderCancelUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_order_cancel_user", Limit: 20, Window: 10 * time.Minute, Burst: 4,
+	})
+	commercialTrialUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_trial_user", Limit: 5, Window: time.Hour, Burst: 2,
+	})
+	commercialTestPaymentUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_test_payment_user", Limit: 10, Window: time.Minute, Burst: 3,
+	})
+	commercialNotifyIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "commercial_alipay_notify_ip", Limit: 3000, Window: time.Minute, Burst: 500,
 	})
 
 	// HTTP routes
@@ -421,6 +611,16 @@ func main() {
 	// Account center (service-to-service auth)
 	mux.HandleFunc("/api/account/introspect", accountCenterHandler.HandleIntrospect)
 	mux.HandleFunc("/api/account/users/", accountCenterHandler.HandleGetUser)
+	mux.HandleFunc("/api/account/commercial-ops/overview", commercialOpsHandler.HandleOverview)
+	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
+	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
+	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
+	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
+	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
+	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
+	mux.HandleFunc("/api/account/commercial-ops/order-refunds", commercialOpsHandler.HandleOrderRefund)
+	mux.HandleFunc("/api/account/commercial-ops/relay-dry-run", commercialOpsHandler.HandleRelayDryRun)
+	mux.HandleFunc("/api/account/commercial-ops/relay-sync", commercialOpsHandler.HandleRelaySync)
 	mux.HandleFunc("/local/account-admin", accountAdminHandler.HandlePage)
 	mux.HandleFunc("/local/account-admin/", accountAdminHandler.HandlePage)
 	mux.HandleFunc("/local/account-admin/users", accountAdminHandler.HandleUserLookup)
@@ -432,9 +632,12 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/plans", accountAdminHandler.HandleCommercialPlans)
 	mux.HandleFunc("/local/account-admin/commercial/invites", accountAdminHandler.HandleCommercialInvites)
 	mux.HandleFunc("/local/account-admin/commercial/grants", accountAdminHandler.HandleCommercialGrant)
+	mux.HandleFunc("/local/account-admin/commercial/adjustments", accountAdminHandler.HandleCommercialAdjustment)
 	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
 	mux.HandleFunc("/local/account-admin/commercial/relay-sync", accountAdminHandler.HandleCommercialRelaySync)
+	mux.HandleFunc("/local/account-admin/commercial/orders", accountAdminHandler.HandleCommercialOrders)
+	mux.HandleFunc("/local/account-admin/commercial/order-refunds", accountAdminHandler.HandleCommercialOrderRefund)
 	mux.HandleFunc("/local/tutorial-admin", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/tasks", tutorialTaskHandler.HandleAdminTasks)
@@ -444,7 +647,16 @@ func main() {
 	authWithDB := server.AuthMiddlewareWithDB(db)
 	jwtAuthWithDB := server.JWTAuthMiddlewareWithDB(db)
 	ownerAuthWithDB := server.OwnerMiddlewareWithDB(db)
+	botAPIKeyAuthWithDB := server.BotAPIKeyMiddlewareWithDB(db)
 	adminAuthWithDB := server.AdminMiddlewareWithDB(db)
+
+	// Relay usage admin portal (internal; session-cookie-first + JWT fallback,
+	// whitelist-only, guarded proxy)
+	relayAdminHandler := server.NewRelayAdminProxyHandler(server.RelayAdminConfigFromEnv(), commercialRelayManagedStore)
+	relayAdminAuth := relayAdminHandler.AuthMiddleware(jwtAuthWithDB)
+	mux.HandleFunc("/api/admin/relay/access", relayAdminAuth(relayAdminHandler.HandleAccess))
+	mux.HandleFunc("/api/admin/relay/", relayAdminAuth(relayAdminHandler.HandleProxy))
+
 	mux.HandleFunc("/api/friends", authWithDB(friendHandler.HandleGetFriends))
 	mux.HandleFunc("/api/friends/pending", authWithDB(friendHandler.HandleGetPendingRequests))
 	mux.HandleFunc("/api/friends/request", authWithDB(friendHandler.HandleSendRequest))
@@ -462,13 +674,35 @@ func main() {
 
 	// Messages (require auth — JWT or API Key for bot access)
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))
+	mux.HandleFunc("/api/messages/search", authWithDB(msgHandler.HandleSearchMessages))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
+	mux.HandleFunc("/api/stt/sessions", jwtAuthWithDB(sttHandler.HandleSession))
+	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)
+	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
+	mux.HandleFunc("/api/push/subscriptions", chainHTTP(
+		pushNotificationService.HandleSubscription,
+		jwtAuthWithDB,
+		pushSubscriptionUserLimit,
+	))
+	mux.HandleFunc("/api/push/test", chainHTTP(
+		pushNotificationService.HandleTest,
+		jwtAuthWithDB,
+		pushTestUserLimit,
+	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
+	mux.HandleFunc("/api/conversations/notification-preferences", authWithDB(conversationHandler.HandleNotificationPreference))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
+	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.Handle))
+	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
+	mux.HandleFunc("/api/agents/", jwtAuthWithDB(cloudArtifactHandler.HandleAgentArtifacts))
+	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
+	mux.HandleFunc("GET /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleList))
+	mux.HandleFunc("POST /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleCreate))
+	mux.HandleFunc("/api/cloud-workers/", jwtAuthWithDB(cloudWorkerHandler.HandleSub))
 	mux.HandleFunc("/api/desktop-connect/session", jwtAuthWithDB(desktopConnectHandler.HandleCreateSession))
 	mux.HandleFunc("/api/desktop-connect/exchange", desktopConnectHandler.HandleExchange)
 	mux.HandleFunc("/api/desktop-connect/status", desktopConnectHandler.HandleStatus)
@@ -481,6 +715,7 @@ func main() {
 	mux.HandleFunc("/api/channel-agent-bindings/link-user", jwtAuthWithDB(channelAgentBindingHandler.HandleLinkChannelAgentBindingUser))
 	mux.HandleFunc("/api/channel-agent-bindings/mobile-link", jwtAuthWithDB(channelAgentBindingHandler.HandleCreateChannelIdentityMobileLink))
 	mux.HandleFunc("/api/channel-agent-bindings/group-mobile-link", jwtAuthWithDB(channelAgentBindingHandler.HandleCreateChannelGroupMobileLink))
+	mux.HandleFunc("/api/channel-private-bindings", jwtAuthWithDB(channelAgentBindingHandler.HandleChannelPrivateBindings))
 	mux.HandleFunc("/api/channel-agent-bindings/weixin-clawbot/qrcode-status", jwtAuthWithDB(weixinClawBotHandler.HandleQRCodeStatus))
 	mux.HandleFunc("/api/f/", feishuChannelHandler.HandleOAuthShortLink)
 	mux.HandleFunc("/api/fn/", feishuChannelHandler.HandleNativeEntryShortLink)
@@ -493,6 +728,12 @@ func main() {
 	mux.HandleFunc("/api/relay/config", ownerAuthWithDB(relayConfigHandler.HandleConfig))
 	mux.HandleFunc("/api/relay/commercial", ownerAuthWithDB(relayCommercialHandler.HandleSummary))
 	mux.HandleFunc("/api/relay/invite/redeem", ownerAuthWithDB(relayCommercialHandler.HandleRedeemInvite))
+	mux.HandleFunc("/api/relay/commercial/catalog", ownerAuthWithDB(commercialPaymentHandler.HandleCatalog))
+	mux.HandleFunc("/api/relay/commercial/orders", chainHTTP(commercialPaymentHandler.HandleOrders, ownerAuthWithDB, limitHTTPMethod(http.MethodPost, commercialOrderUserLimit)))
+	mux.HandleFunc("/api/relay/commercial/orders/cancel", chainHTTP(commercialPaymentHandler.HandleCancel, ownerAuthWithDB, commercialOrderCancelUserLimit))
+	mux.HandleFunc("/api/relay/commercial/orders/test-confirm", chainHTTP(commercialPaymentHandler.HandleTestConfirm, ownerAuthWithDB, commercialTestPaymentUserLimit))
+	mux.HandleFunc("/api/relay/commercial/trial/claim", chainHTTP(commercialPaymentHandler.HandleClaimTrial, ownerAuthWithDB, commercialTrialUserLimit))
+	mux.HandleFunc("/api/payments/alipay/notify", commercialNotifyIPLimit(commercialPaymentHandler.HandleAlipayNotify))
 	mux.HandleFunc("/api/relay/session", ownerAuthWithDB(relayConfigHandler.HandleSession))
 	mux.HandleFunc("/api/relay/key", ownerAuthWithDB(relayKeyHandler.HandleKey))
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))
@@ -532,12 +773,31 @@ func main() {
 
 	// Bot management (user-facing — owner creates/manages their bots)
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
-	mux.HandleFunc("/api/bots/deploy", ownerAuthWithDB(botHandler.HandleDeployBot))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
+	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))
+	mux.HandleFunc("/api/bots/skills-visibility", ownerAuthWithDB(botHandler.HandleSetBotSkillsVisibility))
 	mux.HandleFunc("/api/bots/avatar", ownerAuthWithDB(botHandler.HandleUpdateBotAvatar))
 	mux.HandleFunc("/api/bots/friends", ownerAuthWithDB(botHandler.HandleGetBotFriends))
+	mux.HandleFunc("/api/bots/model-config", ownerAuthWithDB(botModelConfigHandler.HandleOwnerConfig))
+	mux.HandleFunc("/api/bot/model-config", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeConfig))
+	mux.HandleFunc("/api/bot/model-config/ack", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeAck))
+	mux.HandleFunc("/api/bot/identity", botAPIKeyAuthWithDB(server.HandleBotIdentity))
+	mux.HandleFunc("/api/bot/artifact-runtime-config", botAPIKeyAuthWithDB(artifactRuntimeConfigHandler.Handle))
+	mux.HandleFunc("/api/bots/definition", ownerAuthWithDB(botDefinitionHandler.HandleOwnerDefinition))
+	mux.HandleFunc("/api/bots/definition/model", ownerAuthWithDB(botDefinitionHandler.HandleOwnerModel))
+	mux.HandleFunc("/api/bots/definition/prompt", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPrompt))
+	mux.HandleFunc("/api/bots/definition/prompt-visibility", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPromptVisibility))
+	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
+	mux.HandleFunc("/api/agents/prompt", jwtAuthWithDB(botDefinitionHandler.HandleViewerPrompt))
+	mux.HandleFunc("/api/agents/skills", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkills))
+	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
+	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
+	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
+	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
+	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))
+	mux.HandleFunc("/api/bot/definition/ack", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeAck))
 
 	// Groups (require auth)
 	groupHandler := server.NewGroupHandler(db, hub)
@@ -546,6 +806,7 @@ func main() {
 	mux.HandleFunc("/api/groups/info", jwtAuthWithDB(groupHandler.HandleGetGroupInfo))
 	mux.HandleFunc("/api/groups/update", jwtAuthWithDB(groupHandler.HandleUpdateGroup))
 	mux.HandleFunc("/api/groups/invite", jwtAuthWithDB(groupHandler.HandleInviteMembers))
+	mux.HandleFunc("/api/groups/invite/resolve", jwtAuthWithDB(groupHandler.HandleResolveGroupInviteRequest))
 	mux.HandleFunc("/api/groups/leave", jwtAuthWithDB(groupHandler.HandleLeaveGroup))
 	mux.HandleFunc("/api/groups/kick", jwtAuthWithDB(groupHandler.HandleKickMember))
 	mux.HandleFunc("/api/groups/mute", jwtAuthWithDB(groupHandler.HandleMuteMember))
@@ -562,6 +823,9 @@ func main() {
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
 	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/images/upscale/tasks/", chainHTTP(imageUpscaleHandler.HandleUpscaleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
+	mux.HandleFunc("/v1/images/upscale", chainHTTP(imageUpscaleHandler.HandleUpscale, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/tasks/", chainHTTP(imageGenerationHandler.HandleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
 	if err := readerHandler.ConfigError(); err != nil {
@@ -575,6 +839,14 @@ func main() {
 			log.Printf("Reference-image proxy is unavailable until configured: %v", err)
 		}
 	}
+	if err := imageUpscaleHandler.ConfigError(); err != nil {
+		log.Printf("Image upscale proxy is unavailable until configured: %v", err)
+	}
+	if err := sttHandler.ConfigError(); err != nil {
+		log.Printf("Streaming STT is unavailable: %v", err)
+	} else {
+		log.Printf("Streaming STT is enabled with provider %s", server.STTProviderVolcengineDoubaoStreamingV2)
+	}
 
 	// Token usage tracking (API Key auth for bots)
 	// mux.HandleFunc("/api/v1/usage/report", authWithDB(usageHandler.HandleReportUsage))
@@ -586,19 +858,7 @@ func main() {
 	})
 
 	// Static files
-	if cfg.Static.Dir != "" {
-		fs := http.FileServer(http.Dir(cfg.Static.Dir))
-		serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-				return
-			}
-			http.ServeFile(w, r, filepath.Join(cfg.Static.Dir, "index.html"))
-		}
-		mux.HandleFunc("/e/", serveSPAIndex)
-		mux.HandleFunc("/mobile-upload/", serveSPAIndex)
-		mux.Handle("/", fs)
-	}
+	registerStaticRoutes(mux, cfg.Static.Dir)
 
 	// Start HTTP server
 	// Note: no ReadTimeout/WriteTimeout here — WebSocket connections are long-lived.

@@ -31,6 +31,18 @@ type User struct {
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
+// PushSubscription stores the Web Push credentials for one browser endpoint.
+type PushSubscription struct {
+	ID             int64     `json:"id"`
+	UID            int64     `json:"uid"`
+	Endpoint       string    `json:"endpoint"`
+	P256DH         string    `json:"p256dh"`
+	Auth           string    `json:"auth"`
+	RegistrationID string    `json:"registration_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // AuthService represents a trusted internal service which can verify CatsCo
 // user tokens through the account center.
 type AuthService struct {
@@ -53,13 +65,103 @@ type CommercialPlan struct {
 	Slug          string             `json:"slug"`
 	Name          string             `json:"name"`
 	Description   string             `json:"description,omitempty"`
-	MonthlyBudget float64            `json:"monthly_budget_cny"`
+	PriceFen      int64              `json:"price_fen"`
+	Currency      string             `json:"currency"`
+	SaleState     string             `json:"sale_state"`
+	PurchaseLimit int                `json:"purchase_limit"`
+	MonthlyBudget float64            `json:"monthly_budget_cny,omitempty"`
 	ModelBudgets  map[string]float64 `json:"model_budgets,omitempty"`
-	DurationDays  int                `json:"duration_days"`
-	State         int                `json:"state"`
-	SortOrder     int                `json:"sort_order"`
-	CreatedAt     time.Time          `json:"created_at"`
-	UpdatedAt     time.Time          `json:"updated_at"`
+	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
+	// Relay enforcement continues to use the CNY budgets above.
+	InternalQuotaTokens int64     `json:"internal_quota_tokens,omitempty"`
+	DurationDays        int       `json:"duration_days"`
+	State               int       `json:"state"`
+	SortOrder           int       `json:"sort_order"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// CommercialOrder is an immutable purchase snapshot plus its payment and
+// fulfillment state. Provider secrets and raw callback bodies are never stored.
+type CommercialOrder struct {
+	ID                int64              `json:"id"`
+	OrderNo           string             `json:"order_no"`
+	UID               int64              `json:"uid"`
+	PlanID            int64              `json:"plan_id"`
+	PlanSlug          string             `json:"plan_slug"`
+	PlanName          string             `json:"plan_name"`
+	PlanDescription   string             `json:"plan_description,omitempty"`
+	PlanDurationDays  int                `json:"plan_duration_days"`
+	PlanMonthlyBudget float64            `json:"plan_monthly_budget_cny,omitempty"`
+	PlanModelBudgets  map[string]float64 `json:"plan_model_budgets,omitempty"`
+	AmountFen         int64              `json:"amount_fen"`
+	Currency          string             `json:"currency"`
+	Channel           string             `json:"channel"`
+	Status            string             `json:"status"`
+	ProviderTradeNo   string             `json:"provider_trade_no,omitempty"`
+	CheckoutURL       string             `json:"checkout_url,omitempty"`
+	ClientRequestID   string             `json:"-"`
+	ExpiresAt         *time.Time         `json:"expires_at,omitempty"`
+	PaidAt            *time.Time         `json:"paid_at,omitempty"`
+	FulfilledAt       *time.Time         `json:"fulfilled_at,omitempty"`
+	ClosedAt          *time.Time         `json:"closed_at,omitempty"`
+	RefundRequestNo   string             `json:"refund_request_no,omitempty"`
+	RefundedAt        *time.Time         `json:"refunded_at,omitempty"`
+	LastError         string             `json:"-"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+}
+
+// CommercialPaymentConfirmation is the normalized, verified result emitted by
+// a payment provider. PayloadHash is retained for audit without storing PII.
+type CommercialPaymentConfirmation struct {
+	Channel         string
+	EventID         string
+	ProviderTradeNo string
+	AmountFen       int64
+	Currency        string
+	PaidAt          time.Time
+	PayloadHash     string
+}
+
+// CommercialRefundConfirmation is the normalized result of a provider-side
+// full refund. The request identifier is deterministic so retries remain
+// idempotent when the provider succeeds but the local transaction is retried.
+type CommercialRefundConfirmation struct {
+	Channel         string
+	EventID         string
+	ProviderTradeNo string
+	RefundRequestNo string
+	AmountFen       int64
+	Currency        string
+	RefundedAt      time.Time
+	PayloadHash     string
+}
+
+// CommercialPaymentEvent is the operator-safe payment callback audit record.
+// Raw callback payloads and payment credentials are intentionally excluded.
+type CommercialPaymentEvent struct {
+	ID              int64     `json:"id"`
+	Channel         string    `json:"channel"`
+	EventID         string    `json:"event_id"`
+	OrderNo         string    `json:"order_no"`
+	ProviderTradeNo string    `json:"provider_trade_no,omitempty"`
+	EventType       string    `json:"event_type"`
+	Status          string    `json:"status"`
+	ErrorMessage    string    `json:"error_message,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// CommercialManagedRelayBudget records model budgets that CatsCompany owns.
+// Expiry reconciliation only removes entries present in this table.
+type CommercialManagedRelayBudget struct {
+	UID           int64     `json:"uid"`
+	Model         string    `json:"model"`
+	Provider      string    `json:"provider"`
+	AllowedModels []string  `json:"allowed_models"`
+	MaxLimit      float64   `json:"max_limit"`
+	ResetDuration string    `json:"reset_duration"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.
@@ -103,14 +205,52 @@ type CommercialQuotaGrant struct {
 	PlanID        int64      `json:"plan_id,omitempty"`
 	InviteCodeID  int64      `json:"invite_code_id,omitempty"`
 	GrantType     string     `json:"grant_type"`
+	SourceRef     string     `json:"source_ref,omitempty"`
 	Model         string     `json:"model"`
 	AmountCNY     float64    `json:"amount_cny"`
 	ResetDuration string     `json:"reset_duration"`
 	EffectiveAt   time.Time  `json:"effective_at"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
 	Note          string     `json:"note,omitempty"`
 	OperatorUID   int64      `json:"operator_uid,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// CommercialAccountAdjustment is an idempotent operator mutation against a
+// user's commercial package or shared quota pool. AmountCNY is always positive;
+// Action determines whether it is credited or debited.
+type CommercialAccountAdjustment struct {
+	UID              int64
+	Action           string
+	AmountCNY        float64
+	PlanID           int64
+	ExpectedTotalCNY *float64
+	OperationID      string
+	Note             string
+	EffectiveAt      time.Time
+}
+
+type CommercialAccountAdjustmentResult struct {
+	Action           string     `json:"action"`
+	OperationID      string     `json:"operation_id"`
+	Applied          bool       `json:"applied"`
+	PreviousTotalCNY float64    `json:"previous_total_cny"`
+	NextTotalCNY     float64    `json:"next_total_cny"`
+	CycleStartedAt   *time.Time `json:"cycle_started_at,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+}
+
+type CommercialAdjustmentError struct {
+	Code    string
+	Message string
+}
+
+func (e *CommercialAdjustmentError) Error() string {
+	if e == nil {
+		return "commercial adjustment failed"
+	}
+	return e.Message
 }
 
 // CommercialLedgerEntry records quota mutations independently from model
@@ -125,6 +265,41 @@ type CommercialLedgerEntry struct {
 	SourceID   int64     `json:"source_id,omitempty"`
 	Note       string    `json:"note,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// CommercialOperatorEvent records privileged commercial operations without
+// retaining request bodies or payment credentials.
+type CommercialOperatorEvent struct {
+	ID         int64     `json:"id"`
+	Service    string    `json:"service"`
+	Action     string    `json:"action"`
+	TargetType string    `json:"target_type"`
+	TargetRef  string    `json:"target_ref,omitempty"`
+	StatusCode int       `json:"status_code"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// CommercialOperationsOverview is the compact internal control-plane view.
+// Aggregate counts are produced in one database query to keep dashboard reads
+// inexpensive even as order and ledger history grows.
+type CommercialOperationsOverview struct {
+	GeneratedAt                time.Time                  `json:"generated_at"`
+	PlansTotal                 int64                      `json:"plans_total"`
+	PlansOnSale                int64                      `json:"plans_on_sale"`
+	InvitesActive              int64                      `json:"invites_active"`
+	InviteRedemptions          int64                      `json:"invite_redemptions"`
+	InviteRedemptionsRemaining int64                      `json:"invite_redemptions_remaining"`
+	OrdersTotal                int64                      `json:"orders_total"`
+	OrdersByStatus             map[string]int64           `json:"orders_by_status"`
+	RevenueMonthFen            int64                      `json:"revenue_month_fen"`
+	ActiveEntitlements         int64                      `json:"active_entitlements"`
+	EntitlementsExpiring7D     int64                      `json:"entitlements_expiring_7d"`
+	ActiveGrants               int64                      `json:"active_grants"`
+	ManagedUsers               int64                      `json:"managed_users"`
+	RejectedPaymentEvents24H   int64                      `json:"rejected_payment_events_24h"`
+	RecentPaymentEvents        []*CommercialPaymentEvent  `json:"recent_payment_events,omitempty"`
+	RecentEntitlements         []*CommercialEntitlement   `json:"recent_entitlements,omitempty"`
+	RecentOperatorEvents       []*CommercialOperatorEvent `json:"recent_operator_events,omitempty"`
 }
 
 // CommercialSummary is the user/admin view of commercial relay allocation.
@@ -171,15 +346,16 @@ type Topic struct {
 
 // Message represents a chat message.
 type Message struct {
-	ID            int64          `json:"id"`
-	TopicID       string         `json:"topic_id"`
-	FromUID       int64          `json:"from_uid"`
-	Content       string         `json:"content,omitempty"`
-	ContentBlocks []ContentBlock `json:"content_blocks,omitempty"`
-	MsgType       string         `json:"msg_type"` // "text", "image", "voice", "file"
-	Mode          string         `json:"mode,omitempty"`
-	Role          string         `json:"role,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
+	ID            int64                  `json:"id"`
+	TopicID       string                 `json:"topic_id"`
+	FromUID       int64                  `json:"from_uid"`
+	Content       string                 `json:"content,omitempty"`
+	ContentBlocks []ContentBlock         `json:"content_blocks,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	MsgType       string                 `json:"msg_type"` // "text", "image", "voice", "file"
+	Mode          string                 `json:"mode,omitempty"`
+	Role          string                 `json:"role,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
 }
 
 // ContentBlock represents a block of content in code mode.
@@ -198,36 +374,47 @@ type ContentBlock struct {
 
 // ConversationSummary is the lightweight chat-list payload for a topic.
 type ConversationSummary struct {
-	ID          string                  `json:"id"`
-	Name        string                  `json:"name"`
-	Preview     string                  `json:"preview,omitempty"`
-	IsGroup     bool                    `json:"is_group"`
-	GroupID     int64                   `json:"group_id,omitempty"`
-	FriendID    int64                   `json:"friend_id,omitempty"`
-	AvatarURL   string                  `json:"avatar_url,omitempty"`
-	IsBot       bool                    `json:"is_bot,omitempty"`
-	HasBot      bool                    `json:"has_bot,omitempty"`
-	IsAgentTask bool                    `json:"is_agent_task,omitempty"`
-	IsOnline    bool                    `json:"is_online,omitempty"`
-	LastTime    *time.Time              `json:"last_time,omitempty"`
-	LatestSeq   int64                   `json:"latest_seq,omitempty"`
-	ProjectID   int64                   `json:"project_id,omitempty"`
-	ProjectName string                  `json:"project_name,omitempty"`
-	TaskStatus  *ConversationTaskStatus `json:"task_status,omitempty"`
+	ID                 string                  `json:"id"`
+	Name               string                  `json:"name"`
+	Preview            string                  `json:"preview,omitempty"`
+	IsGroup            bool                    `json:"is_group"`
+	GroupID            int64                   `json:"group_id,omitempty"`
+	FriendID           int64                   `json:"friend_id,omitempty"`
+	AvatarURL          string                  `json:"avatar_url,omitempty"`
+	IsBot              bool                    `json:"is_bot,omitempty"`
+	HasBot             bool                    `json:"has_bot,omitempty"`
+	IsAgentTask        bool                    `json:"is_agent_task,omitempty"`
+	MemberCount        int                     `json:"member_count,omitempty"`
+	AgentIDs           []int64                 `json:"agent_ids,omitempty"`
+	IsOnline           bool                    `json:"is_online,omitempty"`
+	LastTime           *time.Time              `json:"last_time,omitempty"`
+	LatestSeq          int64                   `json:"latest_seq,omitempty"`
+	ProjectID          int64                   `json:"project_id,omitempty"`
+	ProjectName        string                  `json:"project_name,omitempty"`
+	TaskStatus         *ConversationTaskStatus `json:"task_status,omitempty"`
+	NotificationsMuted bool                    `json:"notifications_muted"`
 }
 
 // ConversationTaskStatus is the latest persisted task/run state for a topic.
 // It is intentionally separate from normal messages so runtime status can
 // survive reloads without polluting the chat transcript.
 type ConversationTaskStatus struct {
-	TopicID   string     `json:"topic_id"`
-	RunID     string     `json:"run_id,omitempty"`
-	State     string     `json:"state"`
-	Summary   string     `json:"summary,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	SourceUID int64      `json:"source_uid,omitempty"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	TopicID   string    `json:"topic_id"`
+	RunID     string    `json:"run_id,omitempty"`
+	State     string    `json:"state"`
+	Summary   string    `json:"summary,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	SourceUID int64     `json:"source_uid,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// EventUpdatedAt orders publisher lifecycle events. UpdatedAt remains the
+	// server-observed liveness timestamp used by recovery and reaping.
+	EventUpdatedAt time.Time  `json:"-"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+}
+
+// IsTerminalConversationTaskState reports whether a task run has finished.
+func IsTerminalConversationTaskState(state string) bool {
+	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
 }
 
 // Project groups existing conversation topics without copying their messages.
@@ -330,16 +517,289 @@ const (
 	BotPrivate BotVisibility = "private"
 )
 
+// BotSkillsVisibility controls who can inspect a bot's redacted skill list.
+type BotSkillsVisibility string
+
+const (
+	BotSkillsOwner      BotSkillsVisibility = "owner"
+	BotSkillsAuthorized BotSkillsVisibility = "authorized"
+	BotSkillsPublic     BotSkillsVisibility = "public"
+)
+
 // BotConfig holds configuration for a registered bot.
 type BotConfig struct {
-	UserID      int64             `json:"user_id"`
-	OwnerID     int64             `json:"owner_id"`
-	APIEndpoint string            `json:"api_endpoint,omitempty"`
-	Model       string            `json:"model,omitempty"`
-	Enabled     bool              `json:"enabled"`
-	Visibility  BotVisibility     `json:"visibility"`
-	BodyID      string            `json:"body_id,omitempty"`
-	Config      map[string]string `json:"config,omitempty"`
+	UserID                int64                `json:"user_id"`
+	OwnerID               int64                `json:"owner_id"`
+	APIEndpoint           string               `json:"api_endpoint,omitempty"`
+	Model                 string               `json:"model,omitempty"`
+	Enabled               bool                 `json:"enabled"`
+	Visibility            BotVisibility        `json:"visibility"`
+	SkillsVisibility      BotSkillsVisibility  `json:"skills_visibility"`
+	BodyID                string               `json:"body_id,omitempty"`
+	Role                  string               `json:"role,omitempty"`
+	Description           string               `json:"description,omitempty"`
+	ArtifactUploadEnabled *bool                `json:"artifact_upload_enabled,omitempty"`
+	SkillMutationMode     BotSkillMutationMode `json:"skill_mutation_mode"`
+	Config                map[string]string    `json:"config,omitempty"`
+}
+
+// BotSkillMutationMode controls who may submit a versioned Skill mutation for
+// a Bot. The default remains owner-only; shared-live still requires the
+// dedicated mutation control plane and never grants general Bot edit access.
+type BotSkillMutationMode string
+
+const (
+	BotSkillMutationOwnerOnly  BotSkillMutationMode = "owner_only"
+	BotSkillMutationSharedLive BotSkillMutationMode = "shared_live"
+)
+
+func ParseBotSkillMutationMode(value string) (BotSkillMutationMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationOwnerOnly):
+		return BotSkillMutationOwnerOnly, true
+	case string(BotSkillMutationSharedLive):
+		return BotSkillMutationSharedLive, true
+	default:
+		return "", false
+	}
+}
+
+// BotModelConfig stores the cloud-selected model and the latest device apply
+// result. Custom credentials are persisted only as authenticated ciphertext.
+type BotModelConfig struct {
+	Kind                string `json:"kind,omitempty"`
+	ModelID             string `json:"model_id"`
+	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
+	CustomCiphertext    string `json:"custom_ciphertext,omitempty"`
+	RuntimeProtocol     string `json:"runtime_protocol,omitempty"`
+	RuntimeProtocolSeen string `json:"runtime_protocol_seen_at,omitempty"`
+	Revision            int64  `json:"revision"`
+	UpdatedAt           string `json:"updated_at,omitempty"`
+	AppliedKind         string `json:"applied_kind,omitempty"`
+	AppliedModelID      string `json:"applied_model_id,omitempty"`
+	AppliedReasoning    string `json:"applied_reasoning_effort,omitempty"`
+	AppliedRevision     int64  `json:"applied_revision,omitempty"`
+	AppliedAt           string `json:"applied_at,omitempty"`
+	LastAttemptRevision int64  `json:"last_attempt_revision,omitempty"`
+	LastAttemptAt       string `json:"last_attempt_at,omitempty"`
+	LastError           string `json:"last_error,omitempty"`
+}
+
+const BotDefinitionSchema = "xiaoba.bot-definition.v1"
+
+// BotDefinitionModel is the portable model selection stored in the canonical
+// bot definition. API keys are encrypted before reaching this persistence
+// boundary.
+type BotDefinitionModel struct {
+	Kind                string   `json:"kind"`
+	ModelID             string   `json:"modelId,omitempty"`
+	ReasoningEffort     string   `json:"reasoningEffort,omitempty"`
+	Protocol            string   `json:"protocol,omitempty"`
+	APIBase             string   `json:"apiBase,omitempty"`
+	Model               string   `json:"model,omitempty"`
+	APIKeyCiphertext    string   `json:"apiKeyCiphertext,omitempty"`
+	ContextWindowTokens int64    `json:"contextWindowTokens,omitempty"`
+	MaxTokens           int64    `json:"maxTokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+}
+
+type BotPromptDefinition struct {
+	Selected           string `json:"selected"`
+	CustomSystemPrompt string `json:"customSystemPrompt,omitempty"`
+}
+
+// BotPromptVisibility controls who may inspect the currently selected system
+// prompt. Editing remains owner-only regardless of this value.
+type BotPromptVisibility string
+
+const (
+	BotPromptOwner   BotPromptVisibility = "owner"
+	BotPromptFriends BotPromptVisibility = "friends"
+)
+
+// BotDefaultPromptSnapshot is runtime-observed state, kept separate from the
+// owner-managed definition so reporting a bundled default never changes the
+// desired revision or overwrites an owner's selection.
+type BotDefaultPromptSnapshot struct {
+	Content        string `json:"content"`
+	ContentHash    string `json:"contentHash"`
+	XiaoBaVersion  string `json:"xiaobaVersion,omitempty"`
+	RuntimeVersion string `json:"runtimeVersion,omitempty"`
+	ReportedAt     string `json:"reportedAt"`
+}
+
+// BotSkillRef identifies one exact, immutable SkillHub package version.
+// Package content and display metadata remain owned by SkillHub.
+type BotSkillRef struct {
+	Source      string `json:"source"`
+	SkillID     string `json:"skillId"`
+	Version     string `json:"version"`
+	ContentHash string `json:"contentHash"`
+}
+
+// BotSkillMutationOperation is deliberately narrower than general file or Bot
+// editing. The first control-plane release supports one complete Skill create,
+// replacement, or owner/operator rollback per mutation.
+type BotSkillMutationOperation string
+
+const (
+	BotSkillMutationCreate   BotSkillMutationOperation = "create"
+	BotSkillMutationReplace  BotSkillMutationOperation = "replace"
+	BotSkillMutationRollback BotSkillMutationOperation = "rollback"
+)
+
+func ParseBotSkillMutationOperation(value string) (BotSkillMutationOperation, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationCreate):
+		return BotSkillMutationCreate, true
+	case string(BotSkillMutationReplace):
+		return BotSkillMutationReplace, true
+	case string(BotSkillMutationRollback):
+		return BotSkillMutationRollback, true
+	default:
+		return "", false
+	}
+}
+
+// BotSkillMutationStatus records the durable progress of one versioned Skill
+// transaction. Status changes are compare-and-set; callers cannot skip stages.
+type BotSkillMutationStatus string
+
+const (
+	BotSkillMutationValidating          BotSkillMutationStatus = "validating"
+	BotSkillMutationVersionReady        BotSkillMutationStatus = "version_ready"
+	BotSkillMutationDefinitionCommitted BotSkillMutationStatus = "definition_committed"
+	BotSkillMutationActivationPending   BotSkillMutationStatus = "activation_pending"
+	BotSkillMutationActive              BotSkillMutationStatus = "active"
+	BotSkillMutationRejected            BotSkillMutationStatus = "rejected"
+	BotSkillMutationCompensationPending BotSkillMutationStatus = "compensation_pending"
+	BotSkillMutationRolledBack          BotSkillMutationStatus = "rolled_back"
+)
+
+func ParseBotSkillMutationStatus(value string) (BotSkillMutationStatus, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(BotSkillMutationValidating):
+		return BotSkillMutationValidating, true
+	case string(BotSkillMutationVersionReady):
+		return BotSkillMutationVersionReady, true
+	case string(BotSkillMutationDefinitionCommitted):
+		return BotSkillMutationDefinitionCommitted, true
+	case string(BotSkillMutationActivationPending):
+		return BotSkillMutationActivationPending, true
+	case string(BotSkillMutationActive):
+		return BotSkillMutationActive, true
+	case string(BotSkillMutationRejected):
+		return BotSkillMutationRejected, true
+	case string(BotSkillMutationCompensationPending):
+		return BotSkillMutationCompensationPending, true
+	case string(BotSkillMutationRolledBack):
+		return BotSkillMutationRolledBack, true
+	default:
+		return "", false
+	}
+}
+
+// BotSkillMutationCreateInput contains immutable, server-attributed facts for
+// beginning a mutation. Actor identity is supplied by the canonical CatsCo
+// envelope, never trusted from a model-authored payload.
+type BotSkillMutationCreateInput struct {
+	BotUID                      int64
+	LocalSkillID                string
+	ActorUserUID                int64
+	SourceTopicID               string
+	SourceMessageID             int64
+	RuntimeBodyID               string
+	ClientRequestID             string
+	Operation                   BotSkillMutationOperation
+	CandidateContentHash        string
+	ExpectedDefinitionRevision  int64
+	ExpectedPreviousContentHash string
+	BeforeReference             *BotSkillRef
+	RollbackOf                  *int64
+}
+
+// BotSkillMutation is the auditable control-plane fact. It stores immutable
+// references and hashes, never Skill package bytes or credentials.
+type BotSkillMutation struct {
+	ID                          int64                     `json:"id"`
+	BotUID                      int64                     `json:"bot_uid"`
+	LocalSkillID                string                    `json:"local_skill_id"`
+	ActorUserUID                int64                     `json:"actor_user_uid"`
+	SourceTopicID               string                    `json:"source_topic_id"`
+	SourceMessageID             int64                     `json:"source_message_id"`
+	RuntimeBodyID               string                    `json:"runtime_body_id"`
+	ClientRequestID             string                    `json:"client_request_id"`
+	Operation                   BotSkillMutationOperation `json:"operation"`
+	CandidateContentHash        string                    `json:"candidate_content_hash"`
+	ExpectedDefinitionRevision  int64                     `json:"expected_definition_revision"`
+	ExpectedPreviousContentHash string                    `json:"expected_previous_content_hash,omitempty"`
+	BeforeReference             *BotSkillRef              `json:"before_reference,omitempty"`
+	AfterReference              *BotSkillRef              `json:"after_reference,omitempty"`
+	GitCommitSHA                string                    `json:"git_commit_sha,omitempty"`
+	DefinitionRevision          *int64                    `json:"definition_revision,omitempty"`
+	Status                      BotSkillMutationStatus    `json:"status"`
+	ErrorCode                   string                    `json:"error_code,omitempty"`
+	ErrorSummary                string                    `json:"error_summary,omitempty"`
+	RollbackOf                  *int64                    `json:"rollback_of,omitempty"`
+	LeaseGeneration             int64                     `json:"lease_generation"`
+	LeaseExpiresAt              time.Time                 `json:"lease_expires_at"`
+	CreatedAt                   time.Time                 `json:"created_at"`
+	UpdatedAt                   time.Time                 `json:"updated_at"`
+	ActivatedAt                 *time.Time                `json:"activated_at,omitempty"`
+}
+
+// BotSkillMutationTransition carries only state-dependent output facts. Nil
+// values preserve existing database fields.
+type BotSkillMutationTransition struct {
+	AfterReference     *BotSkillRef
+	GitCommitSHA       *string
+	DefinitionRevision *int64
+	ErrorCode          *string
+	ErrorSummary       *string
+	ActivatedAt        *time.Time
+}
+
+// BotDefinition is the deliberately small portable identity of a XiaoBa bot.
+// Device runtime material, sessions, quotas, and device identities do not
+// belong here. Skills are immutable SkillHub references rather than packages.
+type BotDefinition struct {
+	Schema string               `json:"schema"`
+	BotID  string               `json:"botId"`
+	Model  BotDefinitionModel   `json:"model"`
+	Prompt *BotPromptDefinition `json:"prompt,omitempty"`
+	Skills []BotSkillRef        `json:"skills"`
+}
+
+// BotDefinitionRuntime tracks application progress without polluting the
+// portable definition itself.
+type BotDefinitionRuntime struct {
+	DesiredRevision     int64  `json:"desiredRevision"`
+	UpdatedAt           string `json:"updatedAt,omitempty"`
+	RuntimeProtocol     string `json:"runtimeProtocol,omitempty"`
+	RuntimeProtocolSeen string `json:"runtimeProtocolSeenAt,omitempty"`
+	AppliedKind         string `json:"appliedKind,omitempty"`
+	AppliedModelID      string `json:"appliedModelId,omitempty"`
+	AppliedReasoning    string `json:"appliedReasoningEffort,omitempty"`
+	AppliedRevision     int64  `json:"appliedRevision,omitempty"`
+	AppliedAt           string `json:"appliedAt,omitempty"`
+	LastAttemptRevision int64  `json:"lastAttemptRevision,omitempty"`
+	LastAttemptAt       string `json:"lastAttemptAt,omitempty"`
+	LastError           string `json:"lastError,omitempty"`
+}
+
+// BotDefinitionSavedCustomModel keeps the encrypted alternate custom profile
+// separate from the currently selected portable model.
+type BotDefinitionSavedCustomModel struct {
+	APIKeyCiphertext string `json:"apiKeyCiphertext,omitempty"`
+}
+
+type BotDefinitionRecord struct {
+	Definition       BotDefinition
+	Runtime          BotDefinitionRuntime
+	SavedCustomModel *BotDefinitionSavedCustomModel
+	PromptVisibility BotPromptVisibility
+	DefaultPrompt    *BotDefaultPromptSnapshot
+	Exists           bool
 }
 
 const (
@@ -598,6 +1058,38 @@ type ChannelAgentRouteQuery struct {
 	ActorUID                int64
 }
 
+const (
+	ChannelPrivateTargetAgent = "agent"
+	ChannelPrivateTargetGroup = "group"
+)
+
+// ChannelPrivateSelection is the current private-chat target selected by one
+// external-channel identity. Native channel groups are intentionally excluded.
+type ChannelPrivateSelection struct {
+	Channel       string    `json:"channel"`
+	ChannelAppID  string    `json:"-"`
+	ChannelUserID string    `json:"-"`
+	ActorUID      int64     `json:"actor_uid,omitempty"`
+	TargetKind    string    `json:"target_kind"`
+	AgentUID      int64     `json:"agent_uid,omitempty"`
+	GroupID       int64     `json:"group_id,omitempty"`
+	TopicID       string    `json:"topic_id,omitempty"`
+	SelectedAt    time.Time `json:"selected_at"`
+}
+
+// ChannelPrivateIdentity identifies one external private-chat identity. The
+// canonical CatsCo user is always supplied separately by the authenticated caller.
+type ChannelPrivateIdentity struct {
+	Channel       string
+	ChannelAppID  string
+	ChannelUserID string
+}
+
+type ChannelPrivateUnbindResult struct {
+	Revoked bool
+	Changed bool
+}
+
 // Group represents a chat group.
 type Group struct {
 	ID           int64     `json:"id"`
@@ -607,6 +1099,8 @@ type Group struct {
 	AvatarURL    string    `json:"avatar_url,omitempty"`
 	Announcement string    `json:"announcement,omitempty"`
 	HasBot       bool      `json:"has_bot,omitempty"`
+	MemberCount  int       `json:"member_count,omitempty"`
+	AgentIDs     []int64   `json:"agent_ids,omitempty"`
 	MaxMembers   int       `json:"max_members"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -630,6 +1124,33 @@ type GroupMember struct {
 	DisplayName string `json:"display_name,omitempty"`
 	AvatarURL   string `json:"avatar_url,omitempty"`
 	IsBot       bool   `json:"is_bot,omitempty"`
+}
+
+// GroupInviteStatus represents the approval state of a member-proposed invite.
+type GroupInviteStatus string
+
+const (
+	GroupInvitePending  GroupInviteStatus = "pending"
+	GroupInviteApproved GroupInviteStatus = "approved"
+	GroupInviteRejected GroupInviteStatus = "rejected"
+)
+
+// GroupInviteRequest records a group member's proposal to invite another user.
+type GroupInviteRequest struct {
+	ID                 int64             `json:"id"`
+	GroupID            int64             `json:"group_id"`
+	InviterID          int64             `json:"inviter_id"`
+	InviteeID          int64             `json:"invitee_id"`
+	ResolverID         int64             `json:"resolver_id,omitempty"`
+	Status             GroupInviteStatus `json:"status"`
+	InviterUsername    string            `json:"inviter_username,omitempty"`
+	InviterDisplayName string            `json:"inviter_display_name,omitempty"`
+	InviteeUsername    string            `json:"invitee_username,omitempty"`
+	InviteeDisplayName string            `json:"invitee_display_name,omitempty"`
+	InviteeAvatarURL   string            `json:"invitee_avatar_url,omitempty"`
+	InviteeIsBot       bool              `json:"invitee_is_bot,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 // RateLimitConfig defines rate limits per account type.

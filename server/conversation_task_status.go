@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -39,11 +40,13 @@ func canPublishTaskStatus(accountType types.AccountType) bool {
 }
 
 func (h *MessageHandler) handleTaskStatus(uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {
-	status, err := persistConversationTaskStatus(h.db, uid, topicID, payload)
+	status, sourceStatus, err := persistConversationTaskStatus(h.db, uid, topicID, payload)
 	if err != nil {
 		return nil, err
 	}
 	if h != nil && h.hub != nil {
+		h.hub.observeGroupAgentTaskStatus(sourceStatus)
+		h.hub.observeAgentPushTaskStatus(sourceStatus)
 		h.hub.fanoutConversationTaskStatus(uid, status, nil)
 	}
 	return status, nil
@@ -59,7 +62,7 @@ func (h *Hub) handleTaskStatusPub(client *Client, msg *MsgClientPub, topicID str
 		})
 		return
 	}
-	status, err := persistConversationTaskStatus(h.db, client.uid, topicID, payload)
+	status, sourceStatus, err := persistConversationTaskStatus(h.db, client.uid, topicID, payload)
 	if err != nil {
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topicID, Code: 400, Text: err.Error()},
@@ -67,50 +70,34 @@ func (h *Hub) handleTaskStatusPub(client *Client, msg *MsgClientPub, topicID str
 		return
 	}
 	h.SendToClient(client, taskStatusAck(msg.ID, topicID, status))
+	h.observeGroupAgentTaskStatus(sourceStatus)
+	h.observeAgentPushTaskStatus(sourceStatus)
 	h.fanoutConversationTaskStatus(client.uid, status, client)
 }
 
-func persistConversationTaskStatus(db store.Store, uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {
+func persistConversationTaskStatus(db store.Store, uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, *types.ConversationTaskStatus, error) {
 	statusStore, ok := db.(store.ConversationTaskStatusStore)
 	if !ok {
-		return nil, errors.New("conversation task status store unavailable")
+		return nil, nil, errors.New("conversation task status store unavailable")
 	}
 	status, err := normalizeConversationTaskStatus(uid, topicID, payload)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !isGroupTopic(topicID) && db != nil {
 		if err := db.CreateTopic(topicID, "p2p", uid); err != nil {
-			return nil, fmt.Errorf("ensure task status topic: %w", err)
+			return nil, nil, fmt.Errorf("ensure task status topic: %w", err)
 		}
 	}
-	if existing, err := statusStore.GetConversationTaskStatuses([]string{topicID}); err != nil {
-		return nil, fmt.Errorf("load current task status: %w", err)
-	} else if current := existing[topicID]; current != nil {
-		if err := validateTaskStatusTransition(current, status); err != nil {
-			return nil, err
-		}
+	aggregate, err := statusStore.UpsertConversationTaskStatus(status)
+	if err != nil {
+		return nil, nil, err
 	}
-	return statusStore.UpsertConversationTaskStatus(status)
-}
-
-func validateTaskStatusTransition(current, next *types.ConversationTaskStatus) error {
-	if current == nil || next == nil {
-		return nil
-	}
-	if current.SourceUID != 0 && current.SourceUID != next.SourceUID && !isTerminalTaskStatus(current.State) {
-		return errors.New("another task source already owns the active status for this topic")
-	}
-	// A run identifier lets us reject late progress events after that run has
-	// reached a terminal state, while still allowing a new run to supersede it.
-	if current.RunID != "" && current.RunID == next.RunID && isTerminalTaskStatus(current.State) && !isTerminalTaskStatus(next.State) {
-		return errors.New("cannot resume a terminal task run; publish a new run_id")
-	}
-	return nil
+	return aggregate, status, nil
 }
 
 func isTerminalTaskStatus(state string) bool {
-	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
+	return types.IsTerminalConversationTaskState(state)
 }
 
 func normalizeConversationTaskStatus(uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {
@@ -127,20 +114,25 @@ func normalizeConversationTaskStatus(uid int64, topicID string, payload *normali
 	}
 
 	now := time.Now().UTC()
+	var eventUpdatedAt time.Time
+	if publisherUpdatedAt := firstTaskStatusTime(body, payload.Metadata, "updated_at", "updatedAt"); publisherUpdatedAt != nil {
+		eventUpdatedAt = store.BoundConversationTaskStatusEventTime(*publisherUpdatedAt, now)
+	}
 	expiresAt := firstTaskStatusTime(body, payload.Metadata, "expires_at", "expiresAt")
 	if expiresAt == nil && (state == "running" || state == "waiting") {
 		defaultExpiry := now.Add(defaultActiveTaskStatusTTL)
 		expiresAt = &defaultExpiry
 	}
 	status := &types.ConversationTaskStatus{
-		TopicID:   topicID,
-		RunID:     truncateUTF8(firstTaskStatusString(body, payload.Metadata, "run_id", "runId", "run"), maxTaskRunIDLength),
-		State:     state,
-		Summary:   truncateUTF8(firstTaskStatusString(body, payload.Metadata, "summary", "text", "message"), maxTaskSummaryLength),
-		Error:     truncateUTF8(firstTaskStatusString(body, payload.Metadata, "error", "error_message", "errorMessage"), maxTaskErrorLength),
-		SourceUID: uid,
-		UpdatedAt: now,
-		ExpiresAt: expiresAt,
+		TopicID:        topicID,
+		RunID:          truncateUTF8(firstTaskStatusString(body, payload.Metadata, "run_id", "runId", "run"), maxTaskRunIDLength),
+		State:          state,
+		Summary:        truncateUTF8(firstTaskStatusString(body, payload.Metadata, "summary", "text", "message"), maxTaskSummaryLength),
+		Error:          truncateUTF8(firstTaskStatusString(body, payload.Metadata, "error", "error_message", "errorMessage"), maxTaskErrorLength),
+		SourceUID:      uid,
+		UpdatedAt:      now,
+		EventUpdatedAt: eventUpdatedAt,
+		ExpiresAt:      expiresAt,
 	}
 	return status, nil
 }
@@ -291,4 +283,192 @@ func (h *Hub) fanoutConversationTaskStatus(sourceUID int64, status *types.Conver
 	}
 	h.SendToUserExcept(sourceUID, msg, exclude)
 	h.SendToUser(peerUID, msg)
+}
+
+func (h *Hub) observeAgentPushTaskStatus(status *types.ConversationTaskStatus) {
+	if h == nil || h.agentPush == nil || status == nil {
+		return
+	}
+	h.agentPush.observeStatus(status)
+}
+
+func (h *Hub) scheduleDisconnectedBotTaskRecovery(sourceUID int64, disconnectedAt time.Time) {
+	if h == nil || sourceUID <= 0 {
+		return
+	}
+	grace := h.taskGrace
+	if grace < 0 {
+		grace = 0
+	}
+	generation := h.botConnectionEpoch(sourceUID)
+	time.AfterFunc(grace, func() {
+		h.recoverDisconnectedBotTasksIfSameGeneration(sourceUID, disconnectedAt, generation)
+	})
+}
+
+// botConnectionEpoch returns the current connection generation for a bot.
+//
+// With a generation store the value is cluster-wide (persisted and bumped in
+// the shared database), so a reconnect on another node bumps the same counter
+// this node reads and an old timer can never recover a fresh generation. The
+// per-process map is only a fallback for stores without generation support.
+func (h *Hub) botConnectionEpoch(uid int64) uint64 {
+	if h == nil {
+		return 0
+	}
+	if genStore, ok := h.db.(store.ConversationTaskGenerationStore); ok {
+		if generation, err := genStore.BotConnectionGeneration(uid); err == nil {
+			return generation
+		}
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.botConnectionEpochs[uid]
+}
+
+// recoverDisconnectedBotTasksIfSameGeneration recovers disconnected bot tasks
+// only when the bot's connection generation still matches the one observed when
+// the recovery timer was scheduled. A bot that reconnects (and thus bumps the
+// generation) and disconnects again must not have its freshly-reconnected work
+// marked stale by an older timer with a stale disconnectedAt timestamp.
+func (h *Hub) recoverDisconnectedBotTasksIfSameGeneration(sourceUID int64, disconnectedAt time.Time, generation uint64) {
+	if h == nil || h.botConnectionEpoch(sourceUID) != generation {
+		return
+	}
+	h.recoverDisconnectedBotTasks(sourceUID, disconnectedAt, generation)
+}
+
+func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.Time, generation uint64) {
+	// Local clients and a cluster-wide lease held by another node both mean the
+	// bot is still reachable; only recover when it is offline everywhere.
+	if h == nil || h.IsOnline(sourceUID) || h.botOnlineElsewhere(sourceUID) {
+		return
+	}
+	recoveryStore, ok := h.db.(store.ConversationTaskStatusRecoveryStore)
+	if !ok {
+		return
+	}
+
+	statuses, err := recoveryStore.ListActiveConversationTaskStatusesForSource(sourceUID, disconnectedAt)
+	if err != nil {
+		log.Printf("task status recovery: list failed for uid=%d: %v", sourceUID, err)
+		return
+	}
+	for _, candidate := range statuses {
+		if candidate == nil {
+			continue
+		}
+		recovered, updated, err := recoveryStore.MarkConversationTaskStatusStaleIfUnchanged(
+			candidate.TopicID, sourceUID, candidate.RunID, disconnectedAt, generation)
+		if err != nil {
+			log.Printf("task status recovery: persist failed for uid=%d topic=%s: %v", sourceUID, candidate.TopicID, err)
+			continue
+		}
+		if !updated {
+			// A concurrent reconnect or a newer run already won the race; do not fanout.
+			continue
+		}
+		h.observeAgentPushTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
+		h.observeGroupAgentTaskStatus(recovered)
+		h.fanoutConversationTaskStatus(sourceUID, recovered, nil)
+		log.Printf("task status recovery: marked stale uid=%d topic=%s run=%s", sourceUID, candidate.TopicID, candidate.RunID)
+	}
+}
+
+func recoveredTaskSourceStatus(candidate *types.ConversationTaskStatus, recoveredAt time.Time) *types.ConversationTaskStatus {
+	if candidate == nil {
+		return nil
+	}
+	recovered := *candidate
+	recovered.State = "stale"
+	recovered.Summary = "机器人连接中断，任务已自动中止，可重新发送"
+	recovered.Error = "bot disconnected before terminal task status"
+	recovered.ExpiresAt = nil
+	recovered.UpdatedAt = recoveredAt
+	if recovered.EventUpdatedAt.Before(recoveredAt) {
+		recovered.EventUpdatedAt = recoveredAt
+	}
+	return &recovered
+}
+
+// runConversationTaskReaper periodically re-scans durable active task rows and
+// recovers any that have outlived the grace period while their bot is offline.
+//
+// It is the durable complement to the per-disconnect time.AfterFunc: a process
+// crash/restart or a transient List/CAS error can lose the one-shot timer, and
+// without this reaper the row would stay running/waiting until expiry. The
+// reaper reuses the same generation fence and compare-and-set, so it is safe
+// to run on multiple nodes: only one CAS wins per row, and a bot that
+// reconnected (bumping generation) or updated its run after the cutoff is
+// never marked stale.
+func (h *Hub) runConversationTaskReaper() {
+	if h == nil {
+		return
+	}
+	interval := h.taskReaperInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	grace := h.taskGrace
+	if grace < 0 {
+		grace = 0
+	}
+
+	// Startup sweep: catch rows whose disconnect timer was lost in a previous
+	// process before the first tick.
+	h.recoverStaleDisconnectedBotTasks(time.Now().Add(-grace))
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.recoverStaleDisconnectedBotTasks(time.Now().Add(-grace))
+	}
+}
+
+// recoverStaleDisconnectedBotTasks marks stale every active source run that was
+// last updated before the cutoff and whose bot is offline everywhere. Each row
+// is fenced on the bot's current cluster-wide generation, so a reconnect on any
+// node (which bumps the generation) makes the CAS a no-op. Errors are logged
+// and retried on the next sweep, matching the reaper's durable-retry contract.
+func (h *Hub) recoverStaleDisconnectedBotTasks(cutoff time.Time) {
+	if h == nil || h.db == nil {
+		return
+	}
+	recoveryStore, ok := h.db.(store.ConversationTaskStatusRecoveryStore)
+	if !ok {
+		return
+	}
+
+	statuses, err := recoveryStore.ListAllActiveConversationTaskStatusesBefore(cutoff)
+	if err != nil {
+		log.Printf("task status reaper: list failed: %v", err)
+		return
+	}
+	for _, candidate := range statuses {
+		if candidate == nil || candidate.SourceUID <= 0 {
+			continue
+		}
+		// Local clients and a cluster-wide lease held by another node both mean
+		// the bot is still reachable; only recover when it is offline everywhere.
+		if h.IsOnline(candidate.SourceUID) || h.botOnlineElsewhere(candidate.SourceUID) {
+			continue
+		}
+		// Use the bot's current generation: a reconnect on any node bumps it and
+		// makes the CAS a no-op, so a fresh connection's work is never recovered.
+		generation := h.botConnectionEpoch(candidate.SourceUID)
+		recovered, updated, err := recoveryStore.MarkConversationTaskStatusStaleIfUnchanged(
+			candidate.TopicID, candidate.SourceUID, candidate.RunID, cutoff, generation)
+		if err != nil {
+			log.Printf("task status reaper: persist failed for uid=%d topic=%s: %v", candidate.SourceUID, candidate.TopicID, err)
+			continue
+		}
+		if !updated {
+			// A concurrent reconnect or a newer run already won the race; do not fanout.
+			continue
+		}
+		h.observeAgentPushTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
+		h.observeGroupAgentTaskStatus(recovered)
+		h.fanoutConversationTaskStatus(candidate.SourceUID, recovered, nil)
+		log.Printf("task status reaper: marked stale uid=%d topic=%s run=%s", candidate.SourceUID, candidate.TopicID, candidate.RunID)
+	}
 }

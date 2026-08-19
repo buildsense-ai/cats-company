@@ -753,6 +753,119 @@ func TestWeixinImageMessageDeliversAttachmentBlocks(t *testing.T) {
 	}
 }
 
+func TestWeixinVoiceMessageDeliversAudioBlock(t *testing.T) {
+	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:       "weixin",
+		ChannelAppID:  "wx_app",
+		ChannelUserID: "openid-1",
+		ActorUID:      8,
+		CanonicalUID:  8,
+		OwnerUID:      7,
+		AgentUID:      43,
+		Status:        types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	api := &fakeWeixinAPI{
+		appID: "wx_app",
+		media: map[string]fakeWeixinMedia{
+			"voice-1": {ContentType: "audio/amr", Body: "fake-amr"},
+		},
+	}
+	handler := NewWeixinChannelHandler(db, nil, WeixinChannelConfig{
+		AppID:      "wx_app",
+		EventToken: "token-1",
+	}, api)
+	body := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-1]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[voice]]></MsgType><MediaId><![CDATA[voice-1]]></MediaId><MsgId>msg-voice-1</MsgId></xml>`
+	req := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=1&nonce=2&signature="+weixinTestSignature("token-1", "1", "2"), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, req)
+
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 1 {
+		t.Fatalf("messages=%d", len(db.messages))
+	}
+	msg := db.messages[0]
+	if msg.TopicID != "p2p_8_43" || msg.FromUID != 8 || msg.MsgType != "voice" {
+		t.Fatalf("message=%+v", msg)
+	}
+	if len(msg.ContentBlocks) != 1 || msg.ContentBlocks[0].Type != "audio" {
+		t.Fatalf("content blocks=%+v", msg.ContentBlocks)
+	}
+	payload := msg.ContentBlocks[0].Payload
+	name, _ := payload["name"].(string)
+	if payload["mime_type"] != "audio/amr" || !strings.HasSuffix(name, ".amr") {
+		t.Fatalf("payload=%+v", payload)
+	}
+}
+
+func TestWeixinGroupMobileVoiceMessageDeliversAudioBlock(t *testing.T) {
+	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
+	db := newChannelAgentTestStore()
+	db.users[85] = &types.User{ID: 85, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[453] = &types.User{ID: 453, Username: channelActorUsername("weixin", "wx_app", "openid-group-mobile"), DisplayName: "Weixin Mobile User", AccountType: types.AccountHuman}
+	db.groups[500] = &types.Group{ID: 500, Name: "Project Group", OwnerID: 85}
+	db.groupMembers[500] = map[int64]*types.GroupMember{
+		85: {GroupID: 500, UserID: 85, Role: "owner"},
+	}
+	if _, err := db.UpsertChannelGroupBinding(&types.ChannelGroupBinding{
+		Channel:                 "weixin",
+		ChannelAppID:            "wx_app",
+		ChannelUserID:           "openid-group-mobile",
+		ChannelConversationType: "p2p",
+		ActorUID:                453,
+		CanonicalUID:            85,
+		GroupID:                 500,
+		TopicID:                 "grp_500",
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed group binding: %v", err)
+	}
+	api := &fakeWeixinAPI{
+		appID: "wx_app",
+		media: map[string]fakeWeixinMedia{
+			"voice-group-1": {ContentType: "audio/ogg", Body: "fake-ogg"},
+		},
+	}
+	handler := NewWeixinChannelHandler(db, nil, WeixinChannelConfig{
+		AppID:      "wx_app",
+		EventToken: "token-1",
+	}, api)
+	body := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-group-mobile]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[voice]]></MsgType><MediaId><![CDATA[voice-group-1]]></MediaId><MsgId>msg-group-voice-1</MsgId></xml>`
+	req := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=1&nonce=2&signature="+weixinTestSignature("token-1", "1", "2"), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, req)
+
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 1 {
+		t.Fatalf("messages=%d", len(db.messages))
+	}
+	msg := db.messages[0]
+	if msg.TopicID != "grp_500" || msg.FromUID != 85 || msg.MsgType != "voice" {
+		t.Fatalf("message=%+v", msg)
+	}
+	if len(msg.ContentBlocks) != 1 || msg.ContentBlocks[0].Type != "audio" {
+		t.Fatalf("content blocks=%+v", msg.ContentBlocks)
+	}
+	payload := msg.ContentBlocks[0].Payload
+	name, _ := payload["name"].(string)
+	if payload["mime_type"] != "audio/ogg" || !strings.HasSuffix(name, ".ogg") {
+		t.Fatalf("payload=%+v", payload)
+	}
+}
+
 func TestWeixinTextMessageDeduplicatesRetry(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
@@ -1561,6 +1674,87 @@ func TestWeixinClawBotPollDeliversAgentMessageAndSendsReply(t *testing.T) {
 	}
 }
 
+func TestWeixinClawBotPollUsesVoiceTranscriptWhenMediaDownloadFails(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "virtual-catsco", DisplayName: "Virtual Catsco", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:   "scene-clawbot-voice",
+		Channel:    "weixin_clawbot",
+		AccessMode: types.ChannelAgentAccessPublic,
+		OwnerUID:   7,
+		AgentUID:   43,
+		Status:     "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	botToken := "poll-bot-token-voice"
+	tokenHash := hashWeixinClawBotToken(botToken)
+	if _, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash:      tokenHash,
+		BotToken:       botToken,
+		TokenLast4:     last4(botToken),
+		Status:         types.WeixinClawBotTokenActive,
+		OwnerUID:       7,
+		SourceSceneKey: "m.clawbot",
+	}); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	seedClawBotAgentBinding(t, db, tokenHash, "wx-user-1", 9, 43, entry)
+	api := &fakeWeixinClawBotAPI{
+		updates: &weixinClawBotUpdates{
+			GetUpdatesBuf: "buf-next",
+			Messages: []weixinClawBotMessage{
+				{
+					MessageID:    json.RawMessage(`"msg-voice-1"`),
+					MessageType:  1,
+					FromUserID:   "wx-user-1",
+					ToUserID:     "wx-bot-1",
+					ContextToken: "ctx-1",
+					ItemList: []weixinClawBotMessageItem{
+						clawBotVoiceItem("请把刚才的内容整理成一段文字", "https://media.example/download", "voice-param-1"),
+					},
+				},
+			},
+		},
+	}
+	handler := NewWeixinClawBotHandler(db, nil, WeixinClawBotConfig{WorkerEnabled: false}, api)
+	token, _ := db.GetWeixinClawBotTokenByHash(tokenHash)
+	if err := handler.pollTokenOnce(context.Background(), token); err != nil {
+		t.Fatalf("poll token: %v", err)
+	}
+	if len(db.messages) != 1 {
+		t.Fatalf("messages=%+v", db.messages)
+	}
+	if got := db.messages[0].Content; got != "请把刚才的内容整理成一段文字" {
+		t.Fatalf("voice transcript=%q", got)
+	}
+	if strings.Contains(db.messages[0].Content, "ClawBot 附件") || strings.Contains(db.messages[0].Content, "download") {
+		t.Fatalf("voice transcript was replaced by attachment fallback: %q", db.messages[0].Content)
+	}
+	if len(api.downloadCalls) != 1 || api.downloadCalls[0].EncryptedQueryParam != "voice-param-1" || api.downloadCalls[0].Name != "微信语音" {
+		t.Fatalf("download calls=%+v", api.downloadCalls)
+	}
+}
+
+func TestWeixinClawBotVoiceWithoutTranscriptUsesVoiceFallback(t *testing.T) {
+	item := clawBotVoiceItem("", "", "")
+	got := weixinClawBotUnsupportedAttachmentText([]weixinClawBotUnsupportedItem{{
+		Type:   item.Type,
+		Reason: "unrecognized_item",
+		Raw:    weixinClawBotItemRaw(item),
+	}})
+	if !strings.Contains(got, "微信语音") || !strings.Contains(got, "未提供可用的转写文本") {
+		t.Fatalf("voice fallback=%q", got)
+	}
+	if strings.Contains(got, "ClawBot 附件") {
+		t.Fatalf("voice fallback should not look like a generic attachment: %q", got)
+	}
+}
+
 func TestWeixinClawBotPollDeliversTextAndFileAttachmentBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
 	db := newChannelAgentTestStore()
@@ -2216,6 +2410,23 @@ func TestHTTPWeixinClawBotMediaURLValidation(t *testing.T) {
 	if _, _, err := client.resolveMediaDownloadURL("http://media.example/files/a.pdf"); err == nil {
 		t.Fatalf("non-same-origin http host should be rejected")
 	}
+	endpoint, authenticated, err = client.resolveMediaDownloadURL(defaultWeixinClawBotCDNBaseURL + "/download?encrypted_query_param=voice-param")
+	if err != nil || endpoint == "" || authenticated {
+		t.Fatalf("default cdn endpoint=%q auth=%v err=%v", endpoint, authenticated, err)
+	}
+}
+
+func TestHTTPWeixinClawBotVoiceEncryptedQueryDownloadURL(t *testing.T) {
+	client := newHTTPWeixinClawBotAPI(WeixinClawBotConfig{
+		CDNBaseURL: "https://media.example/c2c",
+	})
+	got := client.mediaDownloadURLFromRef(weixinClawBotMediaRef{
+		EncryptedQueryParam: "voice-param+/=",
+	})
+	want := "https://media.example/c2c/download?encrypted_query_param=voice-param%2B%2F%3D"
+	if got != want {
+		t.Fatalf("download url=%q want=%q", got, want)
+	}
 }
 
 func TestHTTPWeixinClawBotSendMediaMessageUploadsEncryptedFile(t *testing.T) {
@@ -2565,6 +2776,20 @@ func clawBotTextItem(text string) weixinClawBotMessageItem {
 	item.Type = 1
 	item.TextItem.Text = text
 	return item
+}
+
+func clawBotVoiceItem(text, downloadURL, encryptedQueryParam string) weixinClawBotMessageItem {
+	return clawBotItemFromPayload(map[string]interface{}{
+		"type": 3,
+		"voice_item": map[string]interface{}{
+			"text": text,
+			"media": map[string]interface{}{
+				"full_url":            downloadURL,
+				"encrypt_query_param": encryptedQueryParam,
+				"aes_key":             "YzJjYjAzNDM0ZDIxYWQzMzA0ODcxMThjNWY4NDM5NjY=",
+			},
+		},
+	})
 }
 
 func clawBotFileItem(downloadURL, name, contentType string) weixinClawBotMessageItem {

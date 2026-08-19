@@ -2,27 +2,42 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	urlpath "path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	maxUploadSizeMB = 300
-	maxImageSize    = maxUploadSizeMB << 20
-	maxFileSize     = maxUploadSizeMB << 20
-	uploadDir       = "uploads"
+	maxUploadSizeMB           = 300
+	maxImageSize              = maxUploadSizeMB << 20
+	maxFileSize               = maxUploadSizeMB << 20
+	uploadDir                 = "uploads"
+	rawUploadQueryParam       = "raw"
+	rawUploadQueryValue       = "1"
+	rawUploadFileNameHeader   = "X-CatsCo-File-Name"
+	rawUploadFileSizeHeader   = "X-CatsCo-File-Size"
+	uploadIncompleteCode      = "upload_incomplete"
+	uploadInvalidRequestCode  = "upload_invalid_request"
+	uploadMetadataInvalidCode = "upload_metadata_invalid"
+	uploadTooLargeCode        = "upload_too_large"
 )
 
 var allowedImageExts = map[string]bool{
@@ -63,7 +78,9 @@ var allowedFileExts = map[string]bool{
 	".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
 	".zip": true, ".rar": true, ".7z": true,
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
-	".mp3": true, ".mp4": true, ".wav": true,
+	".mp3": true, ".mp4": true, ".webm": true, ".ogg": true, ".ogv": true,
+	".m4v": true, ".mov": true, ".wav": true, ".amr": true, ".opus": true,
+	".aac": true, ".m4a": true, ".silk": true,
 	".csv": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true,
 	".md": true, ".go": true, ".py": true, ".js": true,
@@ -75,6 +92,45 @@ type UploadHandler struct {
 	baseURL        string
 	mobileSessions map[string]*mobileUploadSession
 	mobileMu       sync.Mutex
+}
+
+// ValidateArtifactSourcePath confirms that path names an existing regular file
+// in this instance's uploaded-file storage.
+func (h *UploadHandler) ValidateArtifactSourcePath(value string) error {
+	const prefix = "/uploads/files/"
+	if h == nil || !strings.HasPrefix(value, prefix) {
+		return errors.New("artifact source is not an uploaded file")
+	}
+	fileName := strings.TrimPrefix(value, prefix)
+	if !uploadFileNamePattern.MatchString(fileName) || !allowedFileExts[strings.ToLower(filepath.Ext(fileName))] {
+		return errors.New("artifact source file key is invalid")
+	}
+
+	baseDir, err := filepath.Abs(filepath.Join(h.baseDir, "files"))
+	if err != nil {
+		return errors.New("artifact upload storage is unavailable")
+	}
+	fullPath, err := filepath.Abs(filepath.Join(baseDir, fileName))
+	if err != nil || !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
+		return errors.New("artifact source file path is invalid")
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("artifact source file does not exist")
+	}
+	realBaseDir, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return errors.New("artifact upload storage is unavailable")
+	}
+	realPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		return errors.New("artifact source file does not exist")
+	}
+	relative, err := filepath.Rel(realBaseDir, realPath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return errors.New("artifact source file escapes upload storage")
+	}
+	return nil
 }
 
 type mobileUploadSession struct {
@@ -92,6 +148,17 @@ type uploadPayload struct {
 	Size     int64  `json:"size"`
 	Type     string `json:"type"`
 	MimeType string `json:"mime_type"`
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	bytesRead int64
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.bytesRead += int64(n)
+	return n, err
 }
 
 // NewUploadHandler creates a new UploadHandler.
@@ -121,10 +188,14 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if isImageUpload {
 		maxSize = maxImageSize
 	}
+	if r.URL.Query().Get(rawUploadQueryParam) == rawUploadQueryValue {
+		if payload, ok := h.receiveRawUpload(w, r, uploadType, maxSize, isImageUpload); ok {
+			writeUploadJSON(w, http.StatusOK, payload)
+		}
+		return
+	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
-	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
-		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("file too large; maximum supported size is %dMB", maxUploadSizeMB)})
+	if !parseUploadMultipart(w, r, maxSize) {
 		return
 	}
 
@@ -155,8 +226,9 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate unique file key
-	fileKey := generateFileKey(ext)
+	// Preserve the audio/video distinction for Ogg containers in the stored key.
+	storedExt, mimeType := normalizedUploadMetadata(ext, header.Header.Get("Content-Type"), file)
+	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
 		subDir = "images"
@@ -192,7 +264,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(ext, header.Header.Get("Content-Type")),
+		MimeType: mimeType,
 	})
 }
 
@@ -332,10 +404,21 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 	if isImageUpload {
 		maxSize = maxImageSize
 	}
+	if r.URL.Query().Get(rawUploadQueryParam) == rawUploadQueryValue {
+		payload, ok := h.receiveRawUpload(w, r, uploadType, maxSize, isImageUpload)
+		if !ok {
+			return
+		}
+		h.mobileMu.Lock()
+		if current := h.mobileSessions[sessionID]; current != nil {
+			current.Files = append(current.Files, payload)
+		}
+		h.mobileMu.Unlock()
+		writeUploadJSON(w, http.StatusOK, payload)
+		return
+	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
-	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
-		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("file too large; maximum supported size is %dMB", maxUploadSizeMB)})
+	if !parseUploadMultipart(w, r, maxSize) {
 		return
 	}
 
@@ -363,7 +446,8 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	fileKey := generateFileKey(ext)
+	storedExt, mimeType := normalizedUploadMetadata(ext, header.Header.Get("Content-Type"), file)
+	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
 		subDir = "images"
@@ -392,7 +476,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(ext, header.Header.Get("Content-Type")),
+		MimeType: mimeType,
 	}
 
 	h.mobileMu.Lock()
@@ -464,19 +548,22 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cache-Control", cacheControlForUpload(subDir))
+	w.Header().Set("Cache-Control", "no-store")
 	if subDir == "files" {
 		forceDownload := r.URL.Query().Get("download") == "1"
 		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, forceDownload))
+		if videoMime, ok := inlineVideoMimeType(ext); ok {
+			w.Header().Set("Content-Type", videoMime)
+		} else if audioMime, ok := inlineAudioMimeType(ext); ok {
+			w.Header().Set("Content-Type", audioMime)
+		}
+		if isHTMLUploadExtension(ext) && !forceDownload {
+			// Uploaded HTML may contain active content. Let browsers render it for
+			// navigation/preview, but keep it in an opaque sandboxed origin.
+			w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups allow-modals")
+		}
 	}
 	http.ServeFile(w, r, fullPath)
-}
-
-func cacheControlForUpload(subDir string) string {
-	if subDir == "images" || subDir == "feedback" {
-		return "public, max-age=31536000, immutable"
-	}
-	return "private, max-age=86400"
 }
 
 func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {
@@ -484,13 +571,74 @@ func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) s
 		return "attachment"
 	}
 	disposition := "attachment"
-	if strings.EqualFold(ext, ".pdf") {
+	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext) || isInlineAudioExt(ext) {
 		disposition = "inline"
 	}
 	return fmt.Sprintf("%s; filename=%q", disposition, fileName)
 }
 
+func isInlineVideoExt(ext string) bool {
+	_, ok := inlineVideoMimeType(ext)
+	return ok
+}
+
+func inlineVideoMimeType(ext string) (string, bool) {
+	switch strings.ToLower(ext) {
+	case ".mp4", ".m4v":
+		return "video/mp4", true
+	case ".webm":
+		return "video/webm", true
+	case ".ogv":
+		return "video/ogg", true
+	case ".mov":
+		return "video/quicktime", true
+	default:
+		return "", false
+	}
+}
+
+func isInlineAudioExt(ext string) bool {
+	_, ok := inlineAudioMimeType(ext)
+	return ok
+}
+
+func inlineAudioMimeType(ext string) (string, bool) {
+	switch strings.ToLower(ext) {
+	case ".mp3":
+		return "audio/mpeg", true
+	case ".ogg":
+		return "audio/ogg", true
+	case ".wav":
+		return "audio/wav", true
+	default:
+		return "", false
+	}
+}
+
+func isHTMLUploadExtension(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".html", ".htm":
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizedUploadMimeType(ext, headerType string) string {
+	if videoMime, ok := inlineVideoMimeType(ext); ok {
+		return videoMime
+	}
+	if audioMime, ok := inlineAudioMimeType(ext); ok {
+		return audioMime
+	}
+	// Opus is intentionally download-only in the web client. Do not let the
+	// host MIME table or an upstream audio/ogg response erase its extension
+	// distinction, otherwise the client could mistake it for a supported Ogg
+	// attachment and render a broken inline player.
+	if strings.EqualFold(ext, ".opus") {
+		return "audio/opus"
+	}
+
 	switch strings.ToLower(ext) {
 	case ".md":
 		return "text/markdown"
@@ -500,6 +648,12 @@ func normalizedUploadMimeType(ext, headerType string) string {
 		return "application/json"
 	case ".xml":
 		return "application/xml"
+	}
+
+	// Preserve channel-provided audio types before consulting the host MIME
+	// database. Legacy formats can otherwise be mislabeled by that database.
+	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && strings.HasPrefix(strings.ToLower(mediaType), "audio/") {
+		return strings.ToLower(mediaType)
 	}
 
 	if extType := mime.TypeByExtension(strings.ToLower(ext)); extType != "" {
@@ -513,6 +667,243 @@ func normalizedUploadMimeType(ext, headerType string) string {
 	}
 
 	return "application/octet-stream"
+}
+
+func normalizedUploadMetadata(ext, headerType string, file io.ReaderAt) (string, string) {
+	storedExt := normalizedUploadExtension(ext, headerType, file)
+	return storedExt, normalizedUploadMimeType(storedExt, headerType)
+}
+
+func normalizedUploadExtension(ext, headerType string, file io.ReaderAt) string {
+	mediaType, _, _ := mime.ParseMediaType(headerType)
+	if strings.EqualFold(mediaType, "audio/opus") {
+		// The web client intentionally keeps Opus download-only. A channel may
+		// label such media as an Ogg file, but retaining .ogg would make the
+		// stored URL look previewable and serve it inline.
+		return ".opus"
+	}
+	if !strings.EqualFold(ext, ".ogg") {
+		return ext
+	}
+	mediaType, _, err := mime.ParseMediaType(headerType)
+	if (err == nil && strings.EqualFold(mediaType, "video/ogg")) || containsTheoraIdentificationHeader(file) {
+		return ".ogv"
+	}
+	return ext
+}
+
+func containsTheoraIdentificationHeader(file io.ReaderAt) bool {
+	if file == nil {
+		return false
+	}
+	probe := make([]byte, 64<<10)
+	n, _ := file.ReadAt(probe, 0)
+	return bytes.Contains(probe[:n], []byte("\x80theora"))
+}
+
+func (h *UploadHandler) receiveRawUpload(
+	w http.ResponseWriter,
+	r *http.Request,
+	uploadType string,
+	maxSize int,
+	isImageUpload bool,
+) (uploadPayload, bool) {
+	encodedName := strings.TrimSpace(r.Header.Get(rawUploadFileNameHeader))
+	expectedSize, sizeErr := strconv.ParseInt(strings.TrimSpace(r.Header.Get(rawUploadFileSizeHeader)), 10, 64)
+	decodedName, nameErr := url.PathUnescape(encodedName)
+	fileName := filepath.Base(strings.ReplaceAll(decodedName, "\\", "/"))
+	if encodedName == "" || nameErr != nil || sizeErr != nil || expectedSize < 0 || fileName == "" || fileName == "." {
+		writeUploadMetadataInvalid(w)
+		return uploadPayload{}, false
+	}
+	ext := strings.ToLower(filepath.Ext(fileName))
+	if isImageUpload && !allowedImageExts[ext] {
+		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image type"})
+		return uploadPayload{}, false
+	}
+	if !isImageUpload && !allowedFileExts[ext] {
+		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "file type not allowed"})
+		return uploadPayload{}, false
+	}
+	contentType := r.Header.Get("Content-Type")
+	if isImageUpload && !isAllowedImageContentType(contentType) {
+		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image type"})
+		return uploadPayload{}, false
+	}
+
+	subDir := "files"
+	if uploadType == "image" {
+		subDir = "images"
+	} else if uploadType == "feedback" {
+		subDir = "feedback"
+	}
+	destinationDir := filepath.Join(h.baseDir, subDir)
+	if err := os.MkdirAll(destinationDir, 0755); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+
+	temp, err := os.CreateTemp(destinationDir, ".upload-*")
+	if err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		if tempPath != "" {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	declaredContentLength := r.ContentLength
+	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
+	written, copyErr := io.Copy(temp, r.Body)
+	if copyErr != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(copyErr, &maxBytesError) {
+			writeUploadTooLarge(w)
+			return uploadPayload{}, false
+		}
+		var pathError *os.PathError
+		if errors.As(copyErr, &pathError) {
+			log.Printf("[upload] raw storage failure path=%q user_agent=%q err=%v",
+				r.URL.Path, r.UserAgent(), copyErr)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+			return uploadPayload{}, false
+		}
+		log.Printf("[upload] interrupted raw body path=%q expected_size=%d written=%d user_agent=%q err=%v",
+			r.URL.Path, expectedSize, written, r.UserAgent(), copyErr)
+		writeUploadIncomplete(w)
+		return uploadPayload{}, false
+	}
+	if declaredContentLength >= 0 && written != declaredContentLength {
+		if written > declaredContentLength {
+			writeUploadMetadataInvalid(w)
+			return uploadPayload{}, false
+		}
+		log.Printf("[upload] incomplete raw content length path=%q content_length=%d written=%d user_agent=%q",
+			r.URL.Path, declaredContentLength, written, r.UserAgent())
+		writeUploadIncomplete(w)
+		return uploadPayload{}, false
+	}
+	if written != expectedSize {
+		if written > expectedSize {
+			writeUploadMetadataInvalid(w)
+			return uploadPayload{}, false
+		}
+		log.Printf("[upload] incomplete raw body path=%q expected_size=%d written=%d user_agent=%q",
+			r.URL.Path, expectedSize, written, r.UserAgent())
+		writeUploadIncomplete(w)
+		return uploadPayload{}, false
+	}
+
+	storedExt, mimeType := normalizedUploadMetadata(ext, contentType, temp)
+	fileKey := generateFileKey(storedExt)
+	destPath := filepath.Join(destinationDir, fileKey)
+	if err := temp.Chmod(0644); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	if err := temp.Close(); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	if err := os.Rename(tempPath, destPath); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	tempPath = ""
+
+	return uploadPayload{
+		FileKey:  fileKey,
+		URL:      fmt.Sprintf("%s/%s/%s", h.baseURL, subDir, fileKey),
+		Name:     fileName,
+		Size:     written,
+		Type:     uploadType,
+		MimeType: mimeType,
+	}, true
+}
+
+func parseUploadMultipart(w http.ResponseWriter, r *http.Request, maxSize int) bool {
+	body := &countingReadCloser{ReadCloser: r.Body}
+	r.Body = http.MaxBytesReader(w, body, int64(maxSize))
+	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeUploadTooLarge(w)
+			return false
+		}
+
+		var pathError *os.PathError
+		if errors.As(err, &pathError) {
+			log.Printf("[upload] multipart storage failure path=%q user_agent=%q err=%v",
+				r.URL.Path, r.UserAgent(), err)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+			return false
+		}
+
+		if isUploadBodyInterrupted(err, r.ContentLength, body.bytesRead) {
+			log.Printf("[upload] incomplete multipart path=%q content_length=%d user_agent=%q err=%v",
+				r.URL.Path, r.ContentLength, r.UserAgent(), err)
+			writeUploadIncomplete(w)
+			return false
+		}
+
+		log.Printf("[upload] invalid multipart path=%q content_length=%d user_agent=%q err=%v",
+			r.URL.Path, r.ContentLength, r.UserAgent(), err)
+		writeUploadInvalidRequest(w)
+		return false
+	}
+	return true
+}
+
+func isUploadBodyInterrupted(err error, contentLength, bytesRead int64) bool {
+	interrupted := errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+	var networkError net.Error
+	interrupted = interrupted || errors.As(err, &networkError)
+	if !interrupted {
+		return false
+	}
+	if contentLength >= 0 {
+		return bytesRead < contentLength
+	}
+	return true
+}
+
+func writeUploadTooLarge(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{
+		"code":        uploadTooLargeCode,
+		"error":       fmt.Sprintf("file too large; maximum supported size is %dMB", maxUploadSizeMB),
+		"max_size_mb": maxUploadSizeMB,
+	})
+}
+
+func writeUploadIncomplete(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"code":      uploadIncompleteCode,
+		"error":     "upload request is incomplete; please retry",
+		"retryable": true,
+	})
+}
+
+func writeUploadMetadataInvalid(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"code":      uploadMetadataInvalidCode,
+		"error":     "upload metadata is invalid",
+		"retryable": false,
+	})
+}
+
+func writeUploadInvalidRequest(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"code":      uploadInvalidRequestCode,
+		"error":     "upload request is invalid",
+		"retryable": false,
+	})
 }
 
 func generateFileKey(ext string) string {

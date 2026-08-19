@@ -10,17 +10,24 @@ import (
 func (a *Adapter) CreateSchema() error {
 	tables := []string{
 		createUsersTable,
+		createPushSubscriptionsTable,
 		createFriendsTable,
 		createTopicsTable,
 		createProjectsTable,
 		createProjectTopicsTable,
 		createConversationTitlesTable,
+		createConversationNotificationMutesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
+		createConversationTaskStatusSourcesTable,
+		createImageUpscaleTasksTable,
+		createBotConnectionGenerationsTable,
 		createBotConfigTable,
+		createBotSkillMutationsTable,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
+		createGroupInviteRequestsTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,
 		createChannelAgentEntriesTable,
@@ -47,11 +54,17 @@ func (a *Adapter) CreateSchema() error {
 		migrateMessagesAddReplyTo,
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
+		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddProfileRole,
+		migrateBotConfigAddProfileDescription,
+		migrateBotConfigAddArtifactUploadPolicy,
+		migrateBotConfigAddSkillMutationMode,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
+		migrateMessagesAddMetadata,
 		migrateGroupsAddCreatedAtColumn,
 		migrateGroupsBackfillCreatedAt,
 		migrateGroupsCreatedAtNotNull,
@@ -83,6 +96,15 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelAgentAccessOwnerAgentIndex,
 		migrateChannelAgentAccessActorAgentIndex,
 		migrateChannelAgentAccessLookupIndex,
+		migrateConversationTaskStatusesTimestampPrecision,
+		migrateConversationTaskStatusesCreatedAtPrecision,
+		migrateConversationTaskStatusesUpdatedAtPrecision,
+		migrateConversationTaskStatusSourcesExpiresAtPrecision,
+		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
+		migrateConversationTaskStatusSourcesBackfillEventUpdatedAt,
+		migrateConversationTaskStatusSourcesEventUpdatedAtNotNull,
+		migrateConversationTaskStatusSourcesCreatedAtPrecision,
+		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -164,6 +186,22 @@ CREATE TABLE IF NOT EXISTS users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createPushSubscriptionsTable = `
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    uid BIGINT NOT NULL,
+    endpoint VARCHAR(512) COLLATE utf8mb4_bin NOT NULL,
+    p256dh VARCHAR(256) NOT NULL,
+    auth VARCHAR(128) NOT NULL,
+    registration_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_push_subscriptions_endpoint (endpoint),
+    INDEX idx_push_subscriptions_uid (uid),
+    CONSTRAINT fk_push_subscriptions_uid FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createFriendsTable = `
 CREATE TABLE IF NOT EXISTS friends (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -233,6 +271,18 @@ CREATE TABLE IF NOT EXISTS conversation_titles (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createConversationNotificationMutesTable = `
+CREATE TABLE IF NOT EXISTS conversation_notification_mutes (
+    user_id BIGINT NOT NULL,
+    topic_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id),
+    -- A P2P topic is created on its first message, while a user may mute the
+    -- visible conversation before then.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createMessagesTable = `
 CREATE TABLE IF NOT EXISTS messages (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -241,6 +291,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     msg_type ENUM('text','image','voice','file') NOT NULL DEFAULT 'text',
     client_msg_id VARCHAR(128) DEFAULT NULL,
+    metadata JSON DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_messages_topic (topic_id, created_at),
     INDEX idx_messages_topic_id (topic_id, id),
@@ -258,13 +309,54 @@ CREATE TABLE IF NOT EXISTS conversation_task_statuses (
     summary TEXT NOT NULL,
     error TEXT NOT NULL,
     source_uid BIGINT DEFAULT NULL,
-    expires_at TIMESTAMP NULL DEFAULT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     INDEX idx_conversation_task_statuses_updated_at (updated_at),
     INDEX idx_conversation_task_statuses_state (state),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (source_uid) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createConversationTaskStatusSourcesTable = `
+CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
+    topic_id VARCHAR(64) NOT NULL,
+    source_uid BIGINT NOT NULL,
+    run_id VARCHAR(128) DEFAULT '',
+    state ENUM('idle','running','completed','failed','cancelled','stale','waiting') NOT NULL DEFAULT 'idle',
+    summary TEXT NOT NULL,
+    error TEXT NOT NULL,
+    expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    event_updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (topic_id, source_uid),
+    INDEX idx_conversation_task_status_sources_updated_at (updated_at),
+    INDEX idx_conversation_task_status_sources_state (state),
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createImageUpscaleTasksTable = `
+CREATE TABLE IF NOT EXISTS image_upscale_tasks (
+    process_id VARCHAR(128) COLLATE utf8mb4_bin PRIMARY KEY,
+    owner_uid BIGINT NOT NULL,
+    expires_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    INDEX idx_image_upscale_tasks_expires_at (expires_at),
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createBotConnectionGenerationsTable = `
+CREATE TABLE IF NOT EXISTS bot_connection_generations (
+    bot_uid BIGINT PRIMARY KEY,
+    generation BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    FOREIGN KEY (bot_uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -275,10 +367,54 @@ CREATE TABLE IF NOT EXISTS bot_config (
     model VARCHAR(128) DEFAULT '',
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     config JSON DEFAULT NULL,
+    skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner',
     body_id VARCHAR(128) DEFAULT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'general',
+    description TEXT NULL,
+    artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createBotSkillMutationsTable = `
+CREATE TABLE IF NOT EXISTS bot_skill_mutations (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    bot_uid BIGINT NOT NULL,
+    local_skill_id VARCHAR(128) NOT NULL,
+    actor_user_uid BIGINT NOT NULL,
+    source_topic_id VARCHAR(255) NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    runtime_body_id VARCHAR(128) NOT NULL,
+    client_request_id VARCHAR(128) NOT NULL,
+    request_fingerprint CHAR(64) NOT NULL,
+    operation ENUM('create','replace','rollback') NOT NULL,
+    candidate_content_hash CHAR(64) NOT NULL,
+    expected_definition_revision BIGINT NOT NULL,
+    expected_previous_content_hash CHAR(64) DEFAULT NULL,
+    before_reference JSON DEFAULT NULL,
+    after_reference JSON DEFAULT NULL,
+    git_commit_sha VARCHAR(64) DEFAULT NULL,
+    definition_revision BIGINT DEFAULT NULL,
+    status ENUM('validating','version_ready','definition_committed','activation_pending','active','rejected','compensation_pending','rolled_back') NOT NULL DEFAULT 'validating',
+    error_code VARCHAR(64) DEFAULT NULL,
+    error_summary VARCHAR(512) DEFAULT NULL,
+    rollback_of BIGINT DEFAULT NULL,
+    lease_generation BIGINT NOT NULL DEFAULT 1,
+    lease_expires_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    activated_at TIMESTAMP(6) DEFAULT NULL,
+    active_slot TINYINT GENERATED ALWAYS AS (
+        CASE WHEN status IN ('validating','version_ready','definition_committed','activation_pending','compensation_pending') THEN 1 ELSE NULL END
+    ) STORED,
+    UNIQUE KEY uk_bot_skill_mutations_request (actor_user_uid, bot_uid, client_request_id),
+    UNIQUE KEY uk_bot_skill_mutations_active (bot_uid, active_slot),
+    KEY idx_bot_skill_mutations_audit (bot_uid, updated_at, id),
+    KEY idx_bot_skill_mutations_source (source_topic_id, source_message_id),
+    FOREIGN KEY (bot_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (rollback_of) REFERENCES bot_skill_mutations(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -342,6 +478,25 @@ CREATE TABLE IF NOT EXISTS group_members (
     INDEX idx_gm_user (user_id),
     FOREIGN KEY (group_id) REFERENCES ` + "`groups`" + `(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createGroupInviteRequestsTable = `
+CREATE TABLE IF NOT EXISTS group_invite_requests (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    group_id BIGINT NOT NULL,
+    inviter_id BIGINT NOT NULL,
+    invitee_id BIGINT NOT NULL,
+    resolver_id BIGINT DEFAULT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_group_invite_request (group_id, invitee_id),
+    INDEX idx_group_invite_requests_pending (group_id, status, created_at),
+    FOREIGN KEY (group_id) REFERENCES ` + "`groups`" + `(id) ON DELETE CASCADE,
+    FOREIGN KEY (inviter_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (invitee_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (resolver_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -636,6 +791,11 @@ const migrateBotConfigAddVisibility = `
 ALTER TABLE bot_config ADD COLUMN visibility ENUM('public','private') NOT NULL DEFAULT 'public';
 `
 
+// Migration: add redacted skill-list visibility to bot_config.
+const migrateBotConfigAddSkillsVisibility = `
+ALTER TABLE bot_config ADD COLUMN skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner';
+`
+
 // Migration: add tenant_name column to bot_config table.
 // NULL = self-hosted (third-party), non-NULL = platform-managed deployment.
 const migrateBotConfigAddTenantName = `
@@ -645,6 +805,22 @@ ALTER TABLE bot_config ADD COLUMN tenant_name VARCHAR(128) DEFAULT NULL;
 // Migration: add persistent bot body binding.
 const migrateBotConfigAddBodyID = `
 ALTER TABLE bot_config ADD COLUMN body_id VARCHAR(128) DEFAULT NULL;
+`
+
+const migrateBotConfigAddProfileRole = `
+ALTER TABLE bot_config ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'general';
+`
+
+const migrateBotConfigAddProfileDescription = `
+ALTER TABLE bot_config ADD COLUMN description TEXT NULL;
+`
+
+const migrateBotConfigAddArtifactUploadPolicy = `
+ALTER TABLE bot_config ADD COLUMN artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1;
+`
+
+const migrateBotConfigAddSkillMutationMode = `
+ALTER TABLE bot_config ADD COLUMN skill_mutation_mode ENUM('owner_only','shared_live') NOT NULL DEFAULT 'owner_only';
 `
 
 // Migration: add code mode support to messages table.
@@ -663,6 +839,11 @@ ALTER TABLE messages ADD COLUMN client_msg_id VARCHAR(128) DEFAULT NULL;
 // Migration: add a retry deduplication index for client-generated ids.
 const migrateMessagesAddClientMsgIDIndex = `
 ALTER TABLE messages ADD UNIQUE KEY uk_messages_client_msg_id (topic_id, from_uid, client_msg_id);
+`
+
+// Migration: persist optional normalized message metadata.
+const migrateMessagesAddMetadata = `
+ALTER TABLE messages ADD COLUMN metadata JSON DEFAULT NULL;
 `
 
 // Migration: add and backfill created_at for legacy groups tables.
@@ -788,4 +969,48 @@ ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_act
 
 const migrateChannelAgentAccessLookupIndex = `
 ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_lookup (channel, channel_app_id, channel_user_id, status);
+`
+
+// Migration: upgrade task-status timestamps to fractional-second precision.
+// Recovery compares a Go time.Now() (with sub-second precision) against the
+// stored updated_at; a second-precision TIMESTAMP would treat progress written
+// later in the same wall-clock second as <= disconnectedAt and could mark
+// healthy work stale. TIMESTAMP(6) keeps the cutoff CAS exact. Statements are
+// kept one-per-Exec because the MySQL driver does not enable multiStatements.
+const migrateConversationTaskStatusesTimestampPrecision = `
+ALTER TABLE conversation_task_statuses
+  MODIFY expires_at TIMESTAMP(6) NULL DEFAULT NULL;
+`
+const migrateConversationTaskStatusesCreatedAtPrecision = `
+ALTER TABLE conversation_task_statuses
+  MODIFY created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
+`
+const migrateConversationTaskStatusesUpdatedAtPrecision = `
+ALTER TABLE conversation_task_statuses
+  MODIFY updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6);
+`
+const migrateConversationTaskStatusSourcesExpiresAtPrecision = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY expires_at TIMESTAMP(6) NULL DEFAULT NULL;
+`
+const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
+ALTER TABLE conversation_task_status_sources
+  ADD COLUMN event_updated_at TIMESTAMP(6) NULL DEFAULT NULL AFTER expires_at;
+`
+const migrateConversationTaskStatusSourcesBackfillEventUpdatedAt = `
+UPDATE conversation_task_status_sources
+  SET event_updated_at = updated_at
+  WHERE event_updated_at IS NULL;
+`
+const migrateConversationTaskStatusSourcesEventUpdatedAtNotNull = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY event_updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
+`
+const migrateConversationTaskStatusSourcesCreatedAtPrecision = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
+`
+const migrateConversationTaskStatusSourcesUpdatedAtPrecision = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6);
 `

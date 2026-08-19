@@ -29,6 +29,8 @@ local.tinode.conf
 deploy/.env
 *.pem
 *.key
+api_v3_key
+secrets/
 
 # SSL certificates (keep README and script)
 deploy/nginx/ssl/privkey.pem
@@ -46,6 +48,8 @@ server/cmd/uploads/
 .claude/
 CLAUDE.md
 packages/skills/scripts/__pycache__/
+__pycache__/
+*.py[cod]
 
 # 部署脚本（包含敏感信息）
 deploy/*.sh

@@ -25,6 +25,13 @@ func TestAccountAdminPageAllowsTunnelAddress(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
 		t.Fatalf("unexpected content-type %q", got)
 	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "commercial.ops.read") || !strings.Contains(body, "commercial.ops.write") {
+		t.Fatal("account admin must retain commercial operations service-token scopes")
+	}
+	if strings.Contains(body, "模型服务商业化测试") || strings.Contains(body, "commercial-plan-form") {
+		t.Fatal("legacy commercial operations UI must be removed from account admin")
+	}
 }
 
 func TestAccountAdminRejectsPublicAddress(t *testing.T) {

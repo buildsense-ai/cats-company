@@ -3,6 +3,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -55,6 +56,14 @@ type GroupActionRequest struct {
 	Role    string  `json:"role,omitempty"`
 }
 
+// ResolveGroupInviteRequest is the JSON body for approving or rejecting a
+// member-proposed invitation.
+type ResolveGroupInviteRequest struct {
+	GroupID   int64  `json:"group_id"`
+	RequestID int64  `json:"request_id"`
+	Action    string `json:"action"`
+}
+
 // UpdateGroupRequest is the JSON body for updating group profile fields.
 type UpdateGroupRequest struct {
 	GroupID   int64  `json:"group_id"`
@@ -92,10 +101,12 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 
 	// Count bots in the member list
 	botCount := 0
+	requestedAgentIDs := make(map[int64]struct{})
 	for _, mid := range req.MemberIDs {
 		isBot, _ := h.db.IsUserBot(mid)
 		if isBot {
 			botCount++
+			requestedAgentIDs[mid] = struct{}{}
 		}
 	}
 	if botCount > 10 {
@@ -127,16 +138,37 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Add initial members
+	// Add initial members. Keep a local count as a fallback in case the
+	// persistence count cannot be read back after creation.
+	memberCount := 1
+	agentIDs := make([]int64, 0, len(requestedAgentIDs))
+	addedAgentIDs := make(map[int64]struct{}, len(requestedAgentIDs))
 	for _, mid := range req.MemberIDs {
 		if mid == uid {
 			continue // owner already added
 		}
-		if err := h.db.AddGroupMember(groupID, mid, "member"); err != nil && req.Kind == types.GroupKindAgentTask {
-			_ = h.db.DeleteGroup(groupID)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to add agent to task"})
-			return
+		if err := h.db.AddGroupMember(groupID, mid, "member"); err != nil {
+			if req.Kind == types.GroupKindAgentTask {
+				_ = h.db.DeleteGroup(groupID)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to add agent to task"})
+				return
+			}
+			continue
 		}
+		memberCount++
+		if _, isAgent := requestedAgentIDs[mid]; isAgent {
+			if _, alreadyAdded := addedAgentIDs[mid]; !alreadyAdded {
+				agentIDs = append(agentIDs, mid)
+				addedAgentIDs[mid] = struct{}{}
+			}
+		}
+	}
+	if persistedCount, countErr := h.db.GetGroupMemberCount(groupID); countErr == nil {
+		memberCount = persistedCount
+	}
+	hasBot := botCount > 0
+	if persistedBotCount, countErr := h.db.GetGroupBotCount(groupID); countErr == nil {
+		hasBot = persistedBotCount > 0
 	}
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
@@ -150,11 +182,17 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		"avatar_url":    avatarURL,
 		"created_at":    createdAt,
 		"kind":          req.Kind,
+		"has_bot":       hasBot,
 		"is_agent_task": req.Kind == types.GroupKindAgentTask,
+		"member_count":  memberCount,
+		"agent_ids":     agentIDs,
 	}
 	if groupErr == nil && group != nil {
 		createdAt = group.CreatedAt
 		avatarURL = group.AvatarURL
+		if group.AgentIDs != nil {
+			agentIDs = append([]int64(nil), group.AgentIDs...)
+		}
 		responseGroup = map[string]interface{}{
 			"id":            group.ID,
 			"name":          group.Name,
@@ -163,7 +201,10 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 			"max_members":   group.MaxMembers,
 			"created_at":    group.CreatedAt,
 			"kind":          group.Kind,
+			"has_bot":       hasBot,
 			"is_agent_task": group.Kind == types.GroupKindAgentTask,
+			"member_count":  memberCount,
+			"agent_ids":     agentIDs,
 		}
 	}
 
@@ -182,7 +223,10 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		"created_at":   createdAt,
 		"avatar_url":   avatarURL,
 		"kind":         req.Kind,
+		"has_bot":      hasBot,
 		"is_agent_task": req.Kind == types.GroupKindAgentTask,
+		"member_count": memberCount,
+		"agent_ids":    agentIDs,
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -258,7 +302,11 @@ func (h *GroupHandler) HandleGetGroupInfo(w http.ResponseWriter, r *http.Request
 
 	// Verify caller is a member
 	isMember, err := h.db.IsGroupMember(groupID, uid)
-	if err != nil || !isMember {
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to verify group membership"})
+		return
+	}
+	if !isMember {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not a group member"})
 		return
 	}
@@ -279,10 +327,23 @@ func (h *GroupHandler) HandleGetGroupInfo(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"group":   group,
 		"members": members,
-	})
+	}
+	role, roleErr := h.db.GetMemberRole(groupID, uid)
+	if roleErr == nil && (role == "owner" || role == "admin") {
+		if inviteStore, ok := h.db.(store.GroupInviteRequestStore); ok {
+			requests, requestErr := inviteStore.ListPendingGroupInviteRequests(groupID)
+			if requestErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get invite requests"})
+				return
+			}
+			response["invite_requests"] = requests
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 // HandleInviteMembers handles POST /api/groups/invite
@@ -298,16 +359,55 @@ func (h *GroupHandler) HandleInviteMembers(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Check caller is owner or admin
+	// All group members may propose an invite. Owners and admins add members
+	// immediately; regular members create requests for approval.
 	role, err := h.db.GetMemberRole(req.GroupID, uid)
-	if err != nil || (role != "owner" && role != "admin") {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only owner or admin can invite"})
+	if err != nil || (role != "owner" && role != "admin" && role != "member") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only group members can invite"})
+		return
+	}
+
+	seen := make(map[int64]struct{}, len(req.UserIDs))
+	candidates := make([]int64, 0, len(req.UserIDs))
+	for _, candidateID := range req.UserIDs {
+		if candidateID <= 0 || candidateID == uid {
+			continue
+		}
+		if _, exists := seen[candidateID]; exists {
+			continue
+		}
+		seen[candidateID] = struct{}{}
+		isMember, memberErr := h.db.IsGroupMember(req.GroupID, candidateID)
+		if memberErr == nil && !isMember {
+			candidates = append(candidates, candidateID)
+		}
+	}
+
+	if role == "member" {
+		inviteStore, ok := h.db.(store.GroupInviteRequestStore)
+		if !ok {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "group invite approval is unavailable"})
+			return
+		}
+		requested := 0
+		for _, candidateID := range candidates {
+			if _, requestErr := inviteStore.CreateGroupInviteRequest(req.GroupID, uid, candidateID); requestErr == nil {
+				requested++
+			}
+		}
+		if requested > 0 {
+			h.notifyGroupEvent(req.GroupID, "group_invite_requests_updated", map[string]interface{}{
+				"group_id": req.GroupID,
+				"by":       uid,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"added": 0, "requested": requested})
 		return
 	}
 
 	// Check member count limit
 	currentCount, _ := h.db.GetGroupMemberCount(req.GroupID)
-	if currentCount+len(req.UserIDs) > 200 {
+	if currentCount+len(candidates) > 200 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "would exceed max 200 members"})
 		return
 	}
@@ -315,7 +415,7 @@ func (h *GroupHandler) HandleInviteMembers(w http.ResponseWriter, r *http.Reques
 	// Check bot limit
 	currentBots, _ := h.db.GetGroupBotCount(req.GroupID)
 	newBots := 0
-	for _, mid := range req.UserIDs {
+	for _, mid := range candidates {
 		isBot, _ := h.db.IsUserBot(mid)
 		if isBot {
 			newBots++
@@ -327,20 +427,121 @@ func (h *GroupHandler) HandleInviteMembers(w http.ResponseWriter, r *http.Reques
 	}
 
 	added := 0
-	for _, mid := range req.UserIDs {
+	addedIDs := make([]int64, 0, len(candidates))
+	for _, mid := range candidates {
 		if err := h.db.AddGroupMember(req.GroupID, mid, "member"); err == nil {
 			added++
+			addedIDs = append(addedIDs, mid)
 		}
 	}
 
 	// Notify new members
-	h.notifyGroupEvent(req.GroupID, "members_invited", map[string]interface{}{
-		"group_id": req.GroupID,
-		"invited":  req.UserIDs,
-		"by":       uid,
-	})
+	if added > 0 {
+		h.notifyGroupEvent(req.GroupID, "members_invited", map[string]interface{}{
+			"group_id": req.GroupID,
+			"invited":  addedIDs,
+			"by":       uid,
+		})
+	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"added": added})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"added": added, "requested": 0})
+}
+
+// HandleResolveGroupInviteRequest handles POST /api/groups/invite/resolve.
+func (h *GroupHandler) HandleResolveGroupInviteRequest(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+	var req ResolveGroupInviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.GroupID <= 0 || req.RequestID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Action != "approve" && req.Action != "reject" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action must be approve or reject"})
+		return
+	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
+		return
+	}
+	role, err := h.db.GetMemberRole(req.GroupID, uid)
+	if err != nil || (role != "owner" && role != "admin") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only owner or admin can resolve invite requests"})
+		return
+	}
+	inviteStore, ok := h.db.(store.GroupInviteRequestStore)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "group invite approval is unavailable"})
+		return
+	}
+	inviteRequest, err := inviteStore.GetGroupInviteRequest(req.RequestID)
+	if err != nil || inviteRequest.GroupID != req.GroupID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "invite request not found"})
+		return
+	}
+	if inviteRequest.Status != types.GroupInvitePending {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "invite request is no longer pending"})
+		return
+	}
+
+	var resolved *types.GroupInviteRequest
+	if req.Action == "approve" {
+		isMember, memberErr := h.db.IsGroupMember(req.GroupID, inviteRequest.InviteeID)
+		if memberErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check group membership"})
+			return
+		}
+		if !isMember {
+			memberCount, countErr := h.db.GetGroupMemberCount(req.GroupID)
+			if countErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check group member limit"})
+				return
+			}
+			if memberCount >= 200 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "would exceed max 200 members"})
+				return
+			}
+			isBot, botErr := h.db.IsUserBot(inviteRequest.InviteeID)
+			if botErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check invited user"})
+				return
+			}
+			if isBot {
+				botCount, countErr := h.db.GetGroupBotCount(req.GroupID)
+				if countErr != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check group bot limit"})
+					return
+				}
+				if botCount >= 10 {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "would exceed max 10 bots"})
+					return
+				}
+			}
+		}
+		resolved, err = inviteStore.ApproveGroupInviteRequest(req.RequestID, uid)
+	} else {
+		resolved, err = inviteStore.RejectGroupInviteRequest(req.RequestID, uid)
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrGroupInviteRequestNotPending) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "invite request is no longer pending"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve invite request"})
+		return
+	}
+
+	if req.Action == "approve" {
+		h.notifyGroupEvent(req.GroupID, "members_invited", map[string]interface{}{
+			"group_id": req.GroupID,
+			"invited":  []int64{inviteRequest.InviteeID},
+			"by":       uid,
+		})
+	} else {
+		h.notifyGroupEvent(req.GroupID, "group_invite_requests_updated", map[string]interface{}{
+			"group_id": req.GroupID,
+			"by":       uid,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"request": resolved})
 }
 
 // HandleLeaveGroup handles POST /api/groups/leave
@@ -527,6 +728,9 @@ func (h *GroupHandler) notifyGroupEvent(groupID int64, event string, data map[st
 }
 
 func (h *GroupHandler) notifyGroupUserIDs(userIDs []int64, groupID int64, event string) {
+	if h.hub == nil {
+		return
+	}
 	msg := &ServerMessage{
 		Pres: &MsgServerPres{
 			Topic: fmt.Sprintf("grp_%d", groupID),

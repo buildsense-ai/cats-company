@@ -3,10 +3,29 @@ import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
+import NotificationSettings from './notification-settings';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
-import { X } from 'lucide-react';
+import { Check, Droplets, LockKeyhole, Moon, Sun, X } from 'lucide-react';
 
-export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
+const THEME_OPTIONS = [
+  { id: 'light', label: '浅色', description: '明亮、克制的工作界面。', Icon: Sun },
+  { id: 'dark', label: '深色', description: '低亮度的专注工作界面。', Icon: Moon },
+  { id: 'liquid', label: '液态浅色', description: '浅色玻璃、蓝紫折射的通透界面。', Icon: Droplets },
+  { id: 'liquid-green', label: '液态绿色', description: '深色玻璃、绿色高光的经典界面。', Icon: Droplets },
+];
+
+const isLiquidThemeOption = (theme) => theme === 'liquid' || theme === 'liquid-green';
+
+export default function ProfileEditor({
+  user,
+  theme = 'light',
+  onThemeChange,
+  liquidThemeAccess = { loading: false, unlocked: false },
+  onUnlockLiquidTheme,
+  onClose,
+  onSaved,
+  onOpenRelay,
+}) {
   const fileInputRef = useRef(null);
   const [displayName, setDisplayName] = useState(user?.display_name || '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
@@ -18,6 +37,11 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
   const [error, setError] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
   const [showPasswordReset, setShowPasswordReset] = useState(false);
+  const [showLiquidUnlock, setShowLiquidUnlock] = useState(false);
+  const [pendingLiquidTheme, setPendingLiquidTheme] = useState('liquid');
+  const [liquidPassword, setLiquidPassword] = useState('');
+  const [liquidPasswordLoading, setLiquidPasswordLoading] = useState(false);
+  const [liquidPasswordError, setLiquidPasswordError] = useState('');
   const resetEmail = user?.email || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user?.username || '') ? user.username : '');
   const userUID = user?.uid || user?.id || '';
 
@@ -71,6 +95,38 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
     }
   };
 
+  const handleThemeChoice = (nextTheme) => {
+    if (isLiquidThemeOption(nextTheme) && !liquidThemeAccess.unlocked) {
+      setPendingLiquidTheme(nextTheme);
+      setShowLiquidUnlock(true);
+      setLiquidPasswordError('');
+      return;
+    }
+    onThemeChange?.(nextTheme);
+  };
+
+  const handleLiquidUnlock = async (event) => {
+    event.preventDefault();
+    const password = liquidPassword.trim();
+    if (!password) {
+      setLiquidPasswordError('请输入液态主题密码。');
+      return;
+    }
+
+    setLiquidPasswordLoading(true);
+    setLiquidPasswordError('');
+    try {
+      if (!onUnlockLiquidTheme) throw new Error('密码验证暂不可用。');
+      await onUnlockLiquidTheme(password, pendingLiquidTheme);
+      setLiquidPassword('');
+      setShowLiquidUnlock(false);
+    } catch (err) {
+      setLiquidPasswordError(err.message || '密码验证失败，请稍后重试。');
+    } finally {
+      setLiquidPasswordLoading(false);
+    }
+  };
+
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal oc-profile-editor-modal" onClick={(e) => e.stopPropagation()}>
@@ -117,6 +173,68 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
             </button>
           </div>
           {copyStatus && <div className="oc-settings-secondary" style={{ marginTop: -6, marginBottom: 12 }}>{copyStatus}</div>}
+          {onThemeChange && (
+            <div className="oc-settings-section">
+              <div className="oc-settings-section-title">外观</div>
+              <div className="oc-theme-picker" role="radiogroup" aria-label="界面主题">
+                {THEME_OPTIONS.map(({ id, label, description, Icon }) => {
+                  const locked = isLiquidThemeOption(id) && !liquidThemeAccess.unlocked;
+                  const selected = theme === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`oc-theme-option${selected ? ' is-selected' : ''}${locked ? ' is-locked' : ''}`}
+                      role="radio"
+                      aria-checked={selected}
+                      aria-label={`${label}主题${locked ? '，需要密码' : ''}`}
+                      disabled={isLiquidThemeOption(id) && liquidThemeAccess.loading}
+                      onClick={() => handleThemeChoice(id)}
+                    >
+                      <span className={`oc-theme-preview oc-theme-preview-${id}`} aria-hidden="true">
+                        <Icon size={18} strokeWidth={1.8} />
+                      </span>
+                      <span className="oc-theme-option-copy">
+                        <strong>{label}</strong>
+                        <span>{description}</span>
+                      </span>
+                      <span className="oc-theme-option-state" aria-hidden="true">
+                        {selected ? <Check size={16} /> : locked ? <LockKeyhole size={15} /> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {showLiquidUnlock && !liquidThemeAccess.unlocked && (
+                <form className="oc-liquid-unlock" onSubmit={handleLiquidUnlock}>
+                  <div className="oc-liquid-unlock-heading">
+                    <span className="oc-liquid-unlock-icon" aria-hidden="true"><Droplets size={17} /></span>
+                    <span>
+                      <strong>解锁液态主题</strong>
+                      <small>密码验证成功后，当前浏览器会保存解锁状态。</small>
+                    </span>
+                  </div>
+                  <div className="oc-liquid-unlock-row">
+                    <input
+                      type="password"
+                      value={liquidPassword}
+                      onChange={(event) => setLiquidPassword(event.target.value)}
+                      placeholder="输入液态主题密码"
+                      aria-label="液态主题密码"
+                      autoComplete="off"
+                      spellCheck="false"
+                      disabled={liquidPasswordLoading}
+                    />
+                    <button type="submit" disabled={liquidPasswordLoading}>
+                      {liquidPasswordLoading ? '验证中' : '验证并解锁'}
+                    </button>
+                  </div>
+                  {liquidPasswordError && <div className="oc-liquid-unlock-error" role="alert">{liquidPasswordError}</div>}
+                </form>
+              )}
+            </div>
+          )}
+          <NotificationSettings user={user} />
           <div className="oc-settings-section">
             <div className="oc-settings-section-title">账号安全</div>
             {showPasswordReset ? (
@@ -142,8 +260,8 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
                 }}
               >
                 <div className="oc-settings-list-text">
-                  <div>CatsCo 中转站</div>
-                  <div className="oc-settings-secondary">查看 OpenAI / Anthropic 兼容接入地址。</div>
+                  <div>套餐与权益</div>
+                  <div className="oc-settings-secondary">查看当前权益、用量、套餐和订单记录。</div>
                 </div>
               </button>
             </div>

@@ -2280,6 +2280,127 @@ type channelAgentTestStore struct {
 	nextID         int64
 }
 
+type channelPrivateBindingTestStore struct {
+	*channelAgentTestStore
+	selections []*types.ChannelPrivateSelection
+	revoked    []types.ChannelPrivateIdentity
+}
+
+func (s *channelPrivateBindingTestStore) ListChannelPrivateSelections(canonicalUID int64, channel string) ([]*types.ChannelPrivateSelection, error) {
+	var result []*types.ChannelPrivateSelection
+	for _, selection := range s.selections {
+		if selection != nil && selection.Channel == channel {
+			copy := *selection
+			result = append(result, &copy)
+		}
+	}
+	return result, nil
+}
+
+func (s *channelPrivateBindingTestStore) RevokeChannelPrivateSelection(canonicalUID int64, expected *types.ChannelPrivateSelection) (*types.ChannelPrivateUnbindResult, error) {
+	if canonicalUID != 7 {
+		return &types.ChannelPrivateUnbindResult{}, nil
+	}
+	current := latestChannelPrivateSelections(s.selections)
+	matched := false
+	for _, selection := range current {
+		if selection.Channel == expected.Channel && selection.ChannelAppID == expected.ChannelAppID && selection.ChannelUserID == expected.ChannelUserID {
+			if !channelPrivateSelectionMatchesTarget(selection, expected.AgentUID, expected.GroupID, expected.TopicID) || !selection.SelectedAt.Equal(expected.SelectedAt) {
+				return &types.ChannelPrivateUnbindResult{Changed: true}, nil
+			}
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return &types.ChannelPrivateUnbindResult{}, nil
+	}
+	found := false
+	remaining := make([]*types.ChannelPrivateSelection, 0, len(s.selections))
+	for _, selection := range s.selections {
+		if selection != nil && selection.Channel == expected.Channel && selection.ChannelAppID == expected.ChannelAppID && selection.ChannelUserID == expected.ChannelUserID {
+			found = true
+			continue
+		}
+		remaining = append(remaining, selection)
+	}
+	if found {
+		s.selections = remaining
+		s.revoked = append(s.revoked, types.ChannelPrivateIdentity{Channel: expected.Channel, ChannelAppID: expected.ChannelAppID, ChannelUserID: expected.ChannelUserID})
+	}
+	return &types.ChannelPrivateUnbindResult{Revoked: found}, nil
+}
+
+func TestChannelPrivateBindingsListAndUnbindCurrentFeishuTarget(t *testing.T) {
+	base := newChannelAgentTestStore()
+	base.users[7] = &types.User{ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	base.users[70] = &types.User{ID: 70, Username: "ch_feishu_alice", DisplayName: "陈大为", AccountType: types.AccountHuman}
+	base.nativeGroups["feishu:cli_app:oc_group"] = &types.ChannelNativeGroupBinding{ID: 9, Channel: "feishu", ChannelAppID: "cli_app", ConversationID: "oc_group", Status: types.ChannelNativeGroupActive}
+	now := time.Now()
+	db := &channelPrivateBindingTestStore{
+		channelAgentTestStore: base,
+		selections: []*types.ChannelPrivateSelection{
+			{Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_alice", ActorUID: 70, TargetKind: types.ChannelPrivateTargetAgent, AgentUID: 99, SelectedAt: now.Add(-time.Minute)},
+			{Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_alice", ActorUID: 70, TargetKind: types.ChannelPrivateTargetAgent, AgentUID: 42, SelectedAt: now},
+		},
+	}
+	handler := NewChannelAgentBindingHandler(db, nil)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/channel-private-bindings?agent_uid=42", nil)
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), uidKey, int64(7)))
+	listRec := httptest.NewRecorder()
+	handler.HandleChannelPrivateBindings(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Bindings []channelPrivateBindingResponse `json:"bindings"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Bindings) != 1 || listed.Bindings[0].DisplayName != "陈大为" || listed.Bindings[0].BindingKey == "" {
+		t.Fatalf("bindings=%#v", listed.Bindings)
+	}
+
+	body, _ := json.Marshal(channelPrivateBindingDeleteRequest{BindingKey: listed.Bindings[0].BindingKey, AgentUID: 42, SelectedAt: listed.Bindings[0].SelectedAt})
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/channel-private-bindings", bytes.NewReader(body))
+	deleteReq = deleteReq.WithContext(context.WithValue(deleteReq.Context(), uidKey, int64(7)))
+	deleteRec := httptest.NewRecorder()
+	handler.HandleChannelPrivateBindings(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if len(db.revoked) != 1 || db.revoked[0].ChannelUserID != "ou_alice" {
+		t.Fatalf("revoked=%#v", db.revoked)
+	}
+	if native := base.nativeGroups["feishu:cli_app:oc_group"]; native == nil || native.Status != types.ChannelNativeGroupActive {
+		t.Fatalf("native group changed: %#v", native)
+	}
+}
+
+func TestChannelPrivateBindingsRejectsStaleTarget(t *testing.T) {
+	base := newChannelAgentTestStore()
+	base.users[7] = &types.User{ID: 7, Username: "alice", AccountType: types.AccountHuman}
+	db := &channelPrivateBindingTestStore{
+		channelAgentTestStore: base,
+		selections: []*types.ChannelPrivateSelection{{
+			Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_alice",
+			TargetKind: types.ChannelPrivateTargetAgent, AgentUID: 42, SelectedAt: time.Now(),
+		}},
+	}
+	handler := NewChannelAgentBindingHandler(db, nil)
+	key := channelPrivateBindingKey("cli_app", "ou_alice")
+	body, _ := json.Marshal(channelPrivateBindingDeleteRequest{BindingKey: key, AgentUID: 99, SelectedAt: db.selections[0].SelectedAt})
+	req := httptest.NewRequest(http.MethodDelete, "/api/channel-private-bindings", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleChannelPrivateBindings(rec, req)
+	if rec.Code != http.StatusConflict || len(db.revoked) != 0 {
+		t.Fatalf("status=%d revoked=%#v body=%s", rec.Code, db.revoked, rec.Body.String())
+	}
+}
+
 type channelAgentLinkCall struct {
 	BindingID    int64
 	ActorUID     int64

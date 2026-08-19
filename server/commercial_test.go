@@ -17,6 +17,7 @@ type commercialTestStore struct {
 	nextID          int64
 	plans           []*types.CommercialPlan
 	invites         []*types.CommercialInviteCode
+	entitlements    map[int64][]*types.CommercialEntitlement
 	grants          map[int64][]*types.CommercialQuotaGrant
 	ledger          map[int64][]*types.CommercialLedgerEntry
 	redeemedInvites map[int64]map[string]struct{}
@@ -25,9 +26,27 @@ type commercialTestStore struct {
 func newCommercialTestStore() *commercialTestStore {
 	return &commercialTestStore{
 		nextID:          1,
+		entitlements:    map[int64][]*types.CommercialEntitlement{},
 		grants:          map[int64][]*types.CommercialQuotaGrant{},
 		ledger:          map[int64][]*types.CommercialLedgerEntry{},
 		redeemedInvites: map[int64]map[string]struct{}{},
+	}
+}
+
+func TestPublicCommercialSummaryIncludesPlanIdentity(t *testing.T) {
+	startsAt := time.Now().UTC()
+	summary := publicCommercialSummary(&types.CommercialSummary{
+		Entitlements: []*types.CommercialEntitlement{{
+			PlanID: 7, PlanSlug: "catsco-pro", PlanName: "专业版", Source: "invite",
+			State: "active", StartsAt: startsAt,
+		}},
+	})
+	if len(summary.Entitlements) != 1 {
+		t.Fatalf("unexpected public entitlements: %#v", summary.Entitlements)
+	}
+	got := summary.Entitlements[0]
+	if got.PlanID != 7 || got.PlanSlug != "catsco-pro" || got.PlanName != "专业版" {
+		t.Fatalf("public entitlement lost plan identity: %#v", got)
 	}
 }
 
@@ -152,6 +171,12 @@ func (s *commercialTestStore) RedeemCommercialInvite(uid int64, code string) (*t
 			}
 			s.redeemedInvites[uid][code] = struct{}{}
 			invite.RedeemedCount++
+			startsAt := time.Now().UTC()
+			expiresAt := startsAt.AddDate(0, 0, plan.DurationDays)
+			s.entitlements[uid] = append(s.entitlements[uid], &types.CommercialEntitlement{
+				ID: s.next(), UID: uid, PlanID: plan.ID, PlanSlug: plan.Slug, PlanName: plan.Name,
+				Source: "invite", SourceRef: code, State: "active", StartsAt: startsAt, ExpiresAt: &expiresAt,
+			})
 			for model, amount := range plan.ModelBudgets {
 				if _, err := s.GrantCommercialQuota(&types.CommercialQuotaGrant{
 					UID:          uid,
@@ -160,6 +185,8 @@ func (s *commercialTestStore) RedeemCommercialInvite(uid int64, code string) (*t
 					GrantType:    "invite",
 					Model:        model,
 					AmountCNY:    amount,
+					EffectiveAt:  startsAt,
+					ExpiresAt:    &expiresAt,
 					Note:         "invite " + code,
 				}); err != nil {
 					return nil, err
@@ -173,6 +200,8 @@ func (s *commercialTestStore) RedeemCommercialInvite(uid int64, code string) (*t
 					GrantType:    "invite",
 					Model:        "*",
 					AmountCNY:    plan.MonthlyBudget,
+					EffectiveAt:  startsAt,
+					ExpiresAt:    &expiresAt,
 					Note:         "invite " + code,
 				}); err != nil {
 					return nil, err
@@ -189,11 +218,20 @@ func (s *commercialTestStore) GetCommercialSummary(uid int64) (*types.Commercial
 	summary := &types.CommercialSummary{
 		UID:           uid,
 		Plans:         plans,
-		Grants:        s.grants[uid],
 		Ledger:        s.ledger[uid],
 		TotalsByModel: map[string]float64{},
 	}
-	for _, grant := range summary.Grants {
+	now := time.Now()
+	for _, entitlement := range s.entitlements[uid] {
+		if entitlement.State == "active" && !entitlement.StartsAt.After(now) && (entitlement.ExpiresAt == nil || entitlement.ExpiresAt.After(now)) {
+			summary.Entitlements = append(summary.Entitlements, entitlement)
+		}
+	}
+	for _, grant := range s.grants[uid] {
+		if grant.EffectiveAt.After(now) || (grant.ExpiresAt != nil && !grant.ExpiresAt.After(now)) {
+			continue
+		}
+		summary.Grants = append(summary.Grants, grant)
 		summary.TotalsByModel[grant.Model] += grant.AmountCNY
 		summary.TotalCNY += grant.AmountCNY
 	}
@@ -207,6 +245,7 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 	planReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/plans", strings.NewReader(`{
 		"slug":"teacher-trial",
 		"name":"教师试用包",
+		"internal_quota_tokens":5000000,
 		"model_budgets":{"MiniMax-M3":500},
 		"duration_days":30
 	}`))
@@ -217,6 +256,15 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 	if planRec.Code != http.StatusOK {
 		t.Fatalf("plan status=%d body=%s", planRec.Code, planRec.Body.String())
 	}
+	if len(store.plans) != 1 || store.plans[0].InternalQuotaTokens != 5_000_000 {
+		t.Fatalf("internal plan capacity was not saved: %#v", store.plans)
+	}
+	packageStarts := time.Now().UTC().Add(-time.Hour)
+	packageExpires := packageStarts.AddDate(0, 0, 30)
+	store.entitlements[38] = append(store.entitlements[38], &types.CommercialEntitlement{
+		ID: 99, UID: 38, PlanID: store.plans[0].ID, PlanSlug: store.plans[0].Slug, PlanName: store.plans[0].Name,
+		Source: "invite", SourceRef: "MANUAL-SETUP", State: "active", StartsAt: packageStarts, ExpiresAt: &packageExpires,
+	})
 
 	inviteReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/invites", strings.NewReader(`{"code":"SCHOOL2026","plan_id":1,"max_redemptions":3}`))
 	inviteReq.RemoteAddr = "127.0.0.1:40200"
@@ -227,7 +275,7 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 		t.Fatalf("invite status=%d body=%s", inviteRec.Code, inviteRec.Body.String())
 	}
 
-	grantReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/grants", strings.NewReader(`{"uid":38,"model":"deepseek-v4-flash","amount_cny":100}`))
+	grantReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/grants", strings.NewReader(`{"uid":38,"model":"minimax-m3","amount_cny":100}`))
 	grantReq.RemoteAddr = "127.0.0.1:40200"
 	grantReq.Header.Set("Content-Type", "application/json")
 	grantRec := httptest.NewRecorder()
@@ -249,8 +297,79 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 	if err := json.Unmarshal(summaryRec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode summary: %v", err)
 	}
-	if body.Summary.TotalsByModel["deepseek-v4-flash"] != 100 {
+	if body.Summary.TotalsByModel["MiniMax-M3"] != 100 {
 		t.Fatalf("unexpected summary totals: %+v", body.Summary.TotalsByModel)
+	}
+	if len(body.Summary.Grants) != 1 || body.Summary.Grants[0].GrantType != "bonus" || body.Summary.Grants[0].ExpiresAt == nil || !body.Summary.Grants[0].ExpiresAt.Equal(packageExpires) {
+		t.Fatalf("bonus grant did not inherit package expiry: %+v", body.Summary.Grants)
+	}
+}
+
+func TestResolveCommercialBonusGrantRequiresActivePackageModelAndBoundedExpiry(t *testing.T) {
+	now := time.Date(2026, 8, 12, 6, 0, 0, 0, time.UTC)
+	firstExpiry := now.Add(10 * 24 * time.Hour)
+	latestExpiry := now.Add(30 * 24 * time.Hour)
+	unrelatedExpiry := now.Add(90 * 24 * time.Hour)
+	summary := &types.CommercialSummary{
+		Plans: []*types.CommercialPlan{
+			{ID: 1, ModelBudgets: map[string]float64{"gpt-5.6-terra": 5250, "gpt-5.6-sol": 5250}},
+			{ID: 2, ModelBudgets: map[string]float64{"MiniMax-M3": 500}},
+		},
+		Entitlements: []*types.CommercialEntitlement{
+			{PlanID: 1, State: "active", StartsAt: now.Add(-time.Hour), ExpiresAt: &firstExpiry},
+			{PlanID: 1, State: "active", StartsAt: now.Add(-time.Hour), ExpiresAt: &latestExpiry},
+			{PlanID: 2, State: "active", StartsAt: now.Add(-time.Hour), ExpiresAt: &unrelatedExpiry},
+		},
+	}
+
+	model, expiresAt, err := resolveCommercialBonusGrant(summary, "GPT-5.6-TERRA", "", now)
+	if err != nil || model != "gpt-5.6-terra" || !expiresAt.Equal(latestExpiry) {
+		t.Fatalf("default bonus resolution model=%q expires=%v err=%v", model, expiresAt, err)
+	}
+	model, expiresAt, err = resolveCommercialBonusGrant(summary, "MiniMax-M3", "", now)
+	if err != nil || model != "MiniMax-M3" || !expiresAt.Equal(unrelatedExpiry) {
+		t.Fatalf("model-scoped bonus resolution model=%q expires=%v err=%v", model, expiresAt, err)
+	}
+	customExpiry := now.Add(5 * 24 * time.Hour)
+	_, expiresAt, err = resolveCommercialBonusGrant(summary, "gpt-5.6-sol", customExpiry.Format(time.RFC3339), now)
+	if err != nil || !expiresAt.Equal(customExpiry) {
+		t.Fatalf("custom bonus expiry=%v err=%v", expiresAt, err)
+	}
+	if _, _, err := resolveCommercialBonusGrant(summary, "deepseek-v4-flash", "", now); err == nil || !strings.Contains(err.Error(), "not included") {
+		t.Fatalf("inactive package model should be rejected: %v", err)
+	}
+	if _, _, err := resolveCommercialBonusGrant(summary, "gpt-5.6-terra", now.Add(31*24*time.Hour).Format(time.RFC3339), now); err == nil || !strings.Contains(err.Error(), "cannot exceed") {
+		t.Fatalf("expiry beyond package should be rejected: %v", err)
+	}
+	if _, _, err := resolveCommercialBonusGrant(&types.CommercialSummary{}, "gpt-5.6-terra", "", now); err == nil || !strings.Contains(err.Error(), "active package") {
+		t.Fatalf("missing package should be rejected: %v", err)
+	}
+}
+
+func TestValidateCommercialRelayRequiredModelsIncludesInviteAndBonus(t *testing.T) {
+	summary := &types.CommercialSummary{
+		Grants: []*types.CommercialQuotaGrant{
+			{GrantType: "invite", Model: "gpt-5.6-terra", AmountCNY: 100},
+			{GrantType: "bonus", Model: "gpt-5.6-sol", AmountCNY: 20},
+			{GrantType: "manual", Model: "legacy-model", AmountCNY: 10},
+		},
+	}
+	relayUser := &commercialRelayUsageUser{
+		Configured: true,
+		Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+			{Model: "gpt-5.6-terra", Provider: "gpt56", AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"}},
+		}},
+	}
+
+	err := validateCommercialRelayRequiredModels(summary, relayUser, nil)
+	if err == nil || !strings.Contains(err.Error(), "gpt-5.6-sol") {
+		t.Fatalf("missing bonus model mapping should be reported: %v", err)
+	}
+	relayUser.Limits.ModelLimits = append(relayUser.Limits.ModelLimits,
+		commercialRelayModelLimit{Model: "gpt-5.6-sol", Provider: "gpt56", AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"}},
+	)
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err != nil {
+		t.Fatalf("mapped invite and bonus models should validate: %v", err)
 	}
 }
 
@@ -280,14 +399,25 @@ func TestRelayCommercialRedeemInviteUsesRequestUID(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		OK      bool                    `json:"ok"`
-		Summary types.CommercialSummary `json:"summary"`
+		OK      bool                         `json:"ok"`
+		Summary relayCommercialPublicSummary `json:"summary"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !body.OK || body.Summary.UID != 116 || body.Summary.TotalsByModel["MiniMax-M3"] != 500 {
+	if !body.OK || len(body.Summary.Models) != 1 || body.Summary.Models[0] != "MiniMax-M3" {
 		t.Fatalf("unexpected redemption summary: %+v", body)
+	}
+	if len(body.Summary.Entitlements) != 1 || body.Summary.Entitlements[0].PlanName != "M3 试用" || body.Summary.Entitlements[0].Source != "invite" {
+		t.Fatalf("invite did not return the bound package entitlement: %+v", body.Summary.Entitlements)
+	}
+	if _, err := store.GetCommercialSummary(116); err != nil {
+		t.Fatalf("request uid was not redeemed: %v", err)
+	}
+	for _, sensitive := range []string{"uid", "plans", "grants", "ledger", "totals_by_model", "total_cny", "amount_cny", "budget_cny"} {
+		if strings.Contains(rec.Body.String(), `"`+sensitive+`"`) {
+			t.Fatalf("commercial response leaked %s: %s", sensitive, rec.Body.String())
+		}
 	}
 }
 
@@ -320,8 +450,11 @@ func TestRelayCommercialRejectsDuplicateInviteRedemption(t *testing.T) {
 	secondReq.Header.Set("Content-Type", "application/json")
 	secondRec := httptest.NewRecorder()
 	handler.HandleRedeemInvite(secondRec, secondReq)
-	if secondRec.Code != http.StatusBadRequest {
+	if secondRec.Code != http.StatusBadRequest || !strings.Contains(secondRec.Body.String(), `"error":"invite code could not be redeemed"`) {
 		t.Fatalf("second status=%d body=%s", secondRec.Code, secondRec.Body.String())
+	}
+	if strings.Contains(secondRec.Body.String(), "already redeemed") {
+		t.Fatalf("duplicate redemption exposed internal error: %s", secondRec.Body.String())
 	}
 
 	otherReq := httptest.NewRequest(http.MethodPost, "/api/relay/invite/redeem", strings.NewReader(`{"code":"M3TEST"}`))
@@ -523,6 +656,51 @@ func TestCommercialRelayDryRunBuildsBudgetDiff(t *testing.T) {
 		update := findCommercialRelayUpdate(t, dryRun, provider)
 		if update.MaxLimit != 100 {
 			t.Fatalf("unexpected proposed update for %s: %+v", provider, update)
+		}
+	}
+}
+
+func TestCommercialRelayDryRunAggregatesSharedGPT56BudgetOnce(t *testing.T) {
+	models := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+	summary := &types.CommercialSummary{
+		UID: 38,
+		TotalsByModel: map[string]float64{
+			"gpt-5.6-terra": 87.5,
+			"gpt-5.6-sol":   87.5,
+			"gpt-5.6-luna":  87.5,
+		},
+		TotalCNY: 262.5,
+	}
+	limits := make([]commercialRelayModelLimit, 0, len(models))
+	for _, model := range models {
+		limits = append(limits, commercialRelayModelLimit{
+			Provider:      "newcli-codex-openai",
+			Model:         model,
+			AllowedModels: models,
+			SharedBudget:  true,
+			Budget:        commercialRelayBudget{MaxLimit: 100, CurrentUsage: 12.5, ResetDuration: "1M"},
+		})
+	}
+	relayUser := &commercialRelayUsageUser{
+		UID:        38,
+		Username:   "ck",
+		Configured: true,
+		Limits:     commercialRelayLimits{ModelLimits: limits},
+	}
+
+	dryRun := compareCommercialRelayBudgets(38, summary, relayUser)
+
+	if len(dryRun.ProposedUpdates) != 1 {
+		t.Fatalf("expected one shared provider budget update, got %+v", dryRun.ProposedUpdates)
+	}
+	update := dryRun.ProposedUpdates[0]
+	if update.Provider != "newcli-codex-openai" || update.MaxLimit != 262.5 {
+		t.Fatalf("expected one 262.5 CNY shared budget, got %+v", update)
+	}
+	for _, model := range models {
+		row := findCommercialRelayComparison(t, dryRun, model)
+		if row.CommercialLimit != 262.5 {
+			t.Fatalf("expected %s to reference the shared 262.5 CNY limit, got %+v", model, row)
 		}
 	}
 }
