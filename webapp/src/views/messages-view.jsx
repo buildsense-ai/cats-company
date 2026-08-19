@@ -23,6 +23,7 @@ import {
   conversationShareText,
   downloadConversationShareImage,
   downloadConversationShareImages,
+  openConversationShareImageForManualSave,
   renderConversationShareImage,
 } from '../utils/conversation-share-image';
 
@@ -369,6 +370,7 @@ export default function MessagesView({
   const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
   const [conversationShareDownloading, setConversationShareDownloading] = useState(false);
   const [conversationShareError, setConversationShareError] = useState('');
+  const [conversationShareManualSaveAvailable, setConversationShareManualSaveAvailable] = useState(false);
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const bottomRef = useRef(null);
@@ -2845,6 +2847,7 @@ export default function MessagesView({
     setConversationShareImages([]);
     setConversationSharePreviewPage(0);
     setConversationShareDownloading(false);
+    setConversationShareManualSaveAvailable(false);
   }, []);
 
   const transitionConversationShare = useCallback(({ mode, selectedKeys = [] }) => {
@@ -2893,6 +2896,7 @@ export default function MessagesView({
     }
     setConversationShareGenerating(true);
     setConversationShareError('');
+    setConversationShareManualSaveAvailable(false);
     try {
       const root = typeof document === 'undefined' ? null : document.documentElement;
       const theme = root?.dataset.theme === 'liquid' && root.dataset.liquidVariant === 'green'
@@ -2923,6 +2927,7 @@ export default function MessagesView({
     if (conversationShareDownloading || !conversationSharePreviewImage) return;
     setConversationShareDownloading(true);
     setConversationShareError('');
+    setConversationShareManualSaveAvailable(false);
     try {
       let saved;
       if (all && conversationShareImages.length > 1) {
@@ -2936,10 +2941,12 @@ export default function MessagesView({
         saved = await downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
       }
       if (!saved) {
+        const canOpenCurrentImage = !all || conversationShareImages.length <= 1;
+        setConversationShareManualSaveAvailable(canOpenCurrentImage);
         setConversationShareError(
           all && conversationShareImages.length > 1
             ? '无法一次保存全部图片。请使用“下载当前 PNG”逐张保存，或在系统分享菜单中选择保存。'
-            : '无法启动图片保存。请检查浏览器的下载或弹窗权限后重试。',
+            : '无法启动图片保存。请在新标签页中打开图片后，使用浏览器的保存功能。',
         );
       }
     } catch {
@@ -2953,6 +2960,16 @@ export default function MessagesView({
     conversationSharePreviewImage,
     conversationSharePreviewPage,
   ]);
+
+  const openConversationShareImageManually = useCallback(() => {
+    if (conversationShareDownloading || !conversationSharePreviewImage) return;
+    setConversationShareError('');
+    if (openConversationShareImageForManualSave(conversationSharePreviewImage.dataUrl)) {
+      setConversationShareManualSaveAvailable(false);
+      return;
+    }
+    setConversationShareError('无法在新标签页中打开图片。请检查浏览器的弹窗权限后重试。');
+  }, [conversationShareDownloading, conversationSharePreviewImage]);
 
   useEffect(() => {
     if (!conversationShareMode) return;
@@ -3892,6 +3909,16 @@ export default function MessagesView({
                   {conversationShareDownloading ? '正在打开…' : '下载当前 PNG'}
                 </button>
               )}
+              {conversationShareManualSaveAvailable && (
+                <button
+                  type="button"
+                  className="cc-conversation-share-secondary"
+                  disabled={conversationShareDownloading}
+                  onClick={openConversationShareImageManually}
+                >
+                  在新标签页打开图片
+                </button>
+              )}
               <button
                 type="button"
                 className="cc-conversation-share-primary"
@@ -3901,7 +3928,7 @@ export default function MessagesView({
                 <Download size={16} aria-hidden="true" />
                 {conversationShareDownloading
                   ? '正在打开…'
-                  : (conversationShareImages.length > 1 ? '下载全部 PNG（ZIP）' : '下载 PNG')}
+                  : (conversationShareImages.length > 1 ? '下载全部图片' : '下载 PNG')}
               </button>
             </footer>
           </section>

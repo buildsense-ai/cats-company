@@ -3,6 +3,7 @@ import {
   conversationShareText,
   downloadConversationShareImage,
   downloadConversationShareImages,
+  openConversationShareImageForManualSave,
   renderConversationShareImage,
 } from './conversation-share-image';
 
@@ -97,7 +98,7 @@ describe('conversation share image helpers', () => {
     }
   });
 
-  it('opens a saveable image tab when native file sharing rejects asynchronously', async () => {
+  it('returns control for an explicit manual save when native file sharing rejects asynchronously', async () => {
     vi.useFakeTimers();
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:catsco-share');
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
@@ -111,8 +112,10 @@ describe('conversation share image helpers', () => {
     });
 
     try {
-      await expect(downloadConversationShareImage('data:image/png;base64,aGVsbG8=', 'share.png')).resolves.toBe(true);
+      await expect(downloadConversationShareImage('data:image/png;base64,aGVsbG8=', 'share.png')).resolves.toBe(false);
       expect(share).toHaveBeenCalledTimes(1);
+      expect(open).not.toHaveBeenCalled();
+      expect(openConversationShareImageForManualSave('data:image/png;base64,aGVsbG8=')).toBe(true);
       expect(open).toHaveBeenCalledWith('blob:catsco-share', '_blank');
       vi.advanceTimersByTime(300_000);
       expect(revokeObjectURL).toHaveBeenCalledWith('blob:catsco-share');
@@ -122,6 +125,22 @@ describe('conversation share image helpers', () => {
       createObjectURL.mockRestore();
       revokeObjectURL.mockRestore();
       vi.useRealTimers();
+    }
+  });
+
+  it('reports a blocked manual image tab', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:catsco-share');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    try {
+      expect(openConversationShareImageForManualSave('data:image/png;base64,aGVsbG8=')).toBe(false);
+      expect(open).toHaveBeenCalledWith('blob:catsco-share', '_blank');
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:catsco-share');
+    } finally {
+      open.mockRestore();
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
     }
   });
 

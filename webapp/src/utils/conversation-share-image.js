@@ -4,9 +4,8 @@ const DEFAULT_SCALE = 1.5;
 // canvas limits. Their content remains complete across the resulting pages.
 const MAX_OUTPUT_HEIGHT = 7680;
 const MAX_OUTPUT_PIXELS = 18_000_000;
-const APP_ENTRY_URL = 'https://app.catsco.cc';
-// This fixed QR matrix encodes APP_ENTRY_URL. The four-module quiet zone is part
-// of the matrix so the share-image background provides the surrounding contrast.
+// This fixed QR matrix encodes https://app.catsco.cc. The four-module quiet zone
+// is part of the matrix so the share-image background provides the surrounding contrast.
 const APP_ENTRY_QR_MODULES = [
   '000000000000000000000000000000000',
   '000000000000000000000000000000000',
@@ -791,8 +790,20 @@ function openImageForManualSave(blob) {
     || typeof URL.createObjectURL !== 'function'
   ) return false;
 
-  const objectURL = URL.createObjectURL(blob);
-  const imageWindow = window.open(objectURL, '_blank');
+  let objectURL;
+  try {
+    objectURL = URL.createObjectURL(blob);
+  } catch {
+    return false;
+  }
+
+  let imageWindow;
+  try {
+    imageWindow = window.open(objectURL, '_blank');
+  } catch {
+    URL.revokeObjectURL?.(objectURL);
+    return false;
+  }
   if (!imageWindow) {
     URL.revokeObjectURL?.(objectURL);
     return false;
@@ -807,13 +818,22 @@ function openImageForManualSave(blob) {
   return true;
 }
 
+export function openConversationShareImageForManualSave(dataUrl) {
+  const blob = blobFromDataURL(dataUrl);
+  return blob ? openImageForManualSave(blob) : false;
+}
+
 export async function downloadConversationShareImage(dataUrl, filename = 'catsco-conversation-share.png') {
   const blob = blobFromDataURL(dataUrl);
   if (!blob) return false;
 
   const imageFile = imageFileFromBlob(blob, filename);
   const nativeShare = imageFile ? startNativeImageShare([imageFile]) : null;
-  if (nativeShare && (await nativeShare) === true) return true;
+  if (nativeShare) {
+    // A Web Share rejection can settle after transient user activation expires.
+    // Return control so the caller can offer an explicit manual-save click.
+    return (await nativeShare) === true;
+  }
 
   // iOS and some embedded mobile browsers ignore synthetic download clicks.
   // When native file sharing is unavailable, show the image in a real tab so

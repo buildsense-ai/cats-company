@@ -178,6 +178,7 @@ vi.mock('../utils/conversation-share-image', () => ({
   },
   downloadConversationShareImage: vi.fn(async () => true),
   downloadConversationShareImages: vi.fn(async () => true),
+  openConversationShareImageForManualSave: vi.fn(() => true),
   renderConversationShareImage: vi.fn(async () => ({
     dataUrl: 'data:image/png;base64,catsco-share',
     width: 1080,
@@ -220,7 +221,12 @@ import MessagesView, {
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
 import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
-import { downloadConversationShareImage, downloadConversationShareImages, renderConversationShareImage } from '../utils/conversation-share-image';
+import {
+  downloadConversationShareImage,
+  downloadConversationShareImages,
+  openConversationShareImageForManualSave,
+  renderConversationShareImage,
+} from '../utils/conversation-share-image';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -673,8 +679,8 @@ describe('MessagesView composer draft isolation', () => {
     expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,page-two');
 
     const downloadAllButton = [...preview.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('下载全部 PNG'));
-    expect(downloadAllButton?.textContent).toContain('（ZIP）');
+      .find((button) => button.textContent.includes('下载全部图片'));
+    expect(downloadAllButton?.textContent).not.toContain('ZIP');
     await act(async () => {
       downloadAllButton.click();
       await flushPromises();
@@ -718,7 +724,13 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(preview?.textContent).toContain('无法启动图片保存。请检查浏览器的下载或弹窗权限后重试。');
+    expect(preview?.textContent).toContain('无法启动图片保存。请在新标签页中打开图片后，使用浏览器的保存功能。');
+    const manualSaveButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('在新标签页打开图片'));
+    await act(async () => {
+      manualSaveButton.click();
+    });
+    expect(openConversationShareImageForManualSave).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {
