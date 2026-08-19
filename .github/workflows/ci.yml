@@ -88,6 +88,9 @@ jobs:
         working-directory: webapp
         run: npm ci
 
+      - name: SkillHub phase 1 mandatory regression
+        run: npm run test:skillhub-phase1
+
       - name: Test webapp
         working-directory: webapp
         run: npm test
