@@ -190,7 +190,7 @@ describe('CloudWorkerPanel', () => {
     const onReset = vi.fn();
     const onDelete = vi.fn();
     const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
-    const releases = [{ version: '1.4.9' }, { version: '1.4.8' }];
+    const releases = [{ version: '1.4.10' }, { version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
       workers: [worker()],
       images,
@@ -212,7 +212,7 @@ describe('CloudWorkerPanel', () => {
     });
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '1.4.9',
+      '1.4.10',
     );
 
     // rollback defaults to the newest published application release.
@@ -222,7 +222,7 @@ describe('CloudWorkerPanel', () => {
     expect(onRollback).toHaveBeenCalledTimes(1);
     expect(onRollback).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '1.4.9',
+      '1.4.8',
       { fromPanel: true },
     );
 
@@ -319,9 +319,9 @@ describe('CloudWorkerPanel', () => {
       onRollback,
     });
 
-    const select = container.querySelector('.cc-cloud-version-select');
-    expect(select.value).toBe('1.4.9');
-    expect(Array.from(select.options).map((o) => o.value)).toEqual(['1.4.9', '1.4.8', '1.4.7']);
+    const select = container.querySelector('.cc-cloud-rollback-version-select');
+    expect(select.value).toBe('1.4.8');
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['1.4.8', '1.4.7']);
 
     await act(async () => {
       Simulate.change(select, { target: { value: '1.4.7' } });
@@ -340,15 +340,15 @@ describe('CloudWorkerPanel', () => {
 
   test('update always passes the explicit newest published release', async () => {
     const onUpdate = vi.fn();
-    const releases = [{ version: '1.4.9' }, { version: '1.4.8' }];
+    const releases = [{ version: '1.4.10' }, { version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
       workers: [worker()],
       releases,
       onUpdate,
     });
 
-    const select = container.querySelector('.cc-cloud-version-select');
-    expect(select.value).toBe('1.4.9');
+    const select = container.querySelector('.cc-cloud-update-version-select');
+    expect(select.value).toBe('1.4.10');
     const updateBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
       .find((el) => el.textContent.includes('更新'));
     await act(async () => {
@@ -356,8 +356,42 @@ describe('CloudWorkerPanel', () => {
     });
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '1.4.9',
+      '1.4.10',
     );
+  });
+
+  test('shows only higher releases for update, lower releases for rollback, and every image for reset', async () => {
+    await renderPanel({
+      workers: [worker({ app_version: '1.4.9' })],
+      releases: [
+        { version: '1.5.0' },
+        { version: '1.4.10' },
+        { version: '1.4.9' },
+        { version: '1.4.8' },
+        { version: '1.3.12' },
+      ],
+      images: [{ version: '1.4.9' }, { version: '1.4.8' }],
+    });
+
+    const updates = container.querySelector('.cc-cloud-update-version-select');
+    const rollbacks = container.querySelector('.cc-cloud-rollback-version-select');
+    const images = container.querySelector('.cc-cloud-image-select');
+    expect(Array.from(updates.options).map((option) => option.value)).toEqual(['1.5.0', '1.4.10']);
+    expect(Array.from(rollbacks.options).map((option) => option.value)).toEqual(['1.4.8', '1.3.12']);
+    expect(Array.from(images.options).map((option) => option.value)).toEqual(['1.4.9', '1.4.8']);
+  });
+
+  test('disables update and rollback when the current application version is unknown', async () => {
+    await renderPanel({
+      workers: [worker({ app_version: '' })],
+      releases: [{ version: '1.4.9' }, { version: '1.4.8' }],
+      images: [{ version: '1.4.8' }],
+    });
+
+    expect(container.querySelector('.cc-cloud-update-version-select').disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-rollback-version-select').disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-image-select').disabled).toBe(false);
+    expect(container.textContent).toContain('当前版本未知');
   });
 
   test('rollback is disabled when no application releases are available', async () => {
@@ -369,7 +403,7 @@ describe('CloudWorkerPanel', () => {
     const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
       .find((el) => el.textContent.includes('回滚'));
     expect(rollbackBtn.disabled).toBe(true);
-    const select = container.querySelector('.cc-cloud-version-select');
+    const select = container.querySelector('.cc-cloud-update-version-select');
     expect(select.disabled).toBe(true);
   });
 
@@ -377,7 +411,7 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker()],
       images: [{ version: '1.4.9' }],
-      releases: [{ version: '1.4.9' }],
+      releases: [{ version: '1.4.10' }, { version: '1.4.8' }],
       actions: {
         create: false,
         update: false,
@@ -399,7 +433,8 @@ describe('CloudWorkerPanel', () => {
     expect(rollbackBtn.disabled).toBe(false);
     expect(resetBtn.disabled).toBe(true);
     expect(deleteBtn.disabled).toBe(true);
-    expect(container.querySelector('.cc-cloud-version-select').disabled).toBe(false);
+    expect(container.querySelector('.cc-cloud-update-version-select').disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-rollback-version-select').disabled).toBe(false);
   });
 
   test('disables worker actions while the worker is being acted on', async () => {
