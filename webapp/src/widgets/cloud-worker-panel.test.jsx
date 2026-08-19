@@ -143,9 +143,9 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('@bot-cloud-1');
     expect(container.textContent).toContain('运行中');
-    expect(container.textContent).toContain('应用 1.4.9');
+    expect(container.textContent).toContain('应用版本 1.4.9');
     expect(container.textContent).toContain('基础镜像 1.4.8');
-    expect(container.textContent).toContain('镜像 79f5b7f4');
+    expect(container.textContent).not.toContain('镜像 79f5b7f4');
     expect(container.textContent).toContain('1 个');
   });
 
@@ -273,6 +273,10 @@ describe('CloudWorkerPanel', () => {
     // 验证码确认区明确标注被重置的机器人
     expect(container.querySelector('.cc-cloud-reset-confirm-title').textContent)
       .toContain('重置「云端审查助手」');
+    expect(container.querySelector('.cc-cloud-reset-confirm-title').textContent)
+      .toContain('基础镜像 1.4.8');
+    expect(container.querySelector('.cc-cloud-reset-confirm-warning').textContent)
+      .toContain('二次确认');
 
     const code = container.querySelector('.cc-cloud-reset-confirm-code b').textContent;
     const captchaInput = container.querySelector('.cc-cloud-reset-confirm-input input');
@@ -421,6 +425,8 @@ describe('CloudWorkerPanel', () => {
     const status = container.querySelector('.cc-cloud-operation-status');
     expect(status).toBeTruthy();
     expect(status.textContent).toContain('正在更新应用');
+    expect(status.querySelector('.cc-cloud-operation-progress')).toBeTruthy();
+    expect(status.textContent).toContain('保持页面打开');
     expect(container.textContent).toContain('更新中...');
     const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     actionButtons.forEach((button) => expect(button.disabled).toBe(true));
