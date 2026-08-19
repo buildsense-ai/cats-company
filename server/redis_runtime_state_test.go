@@ -630,6 +630,32 @@ func TestRedisRuntimeClearStaleDeviceRouteDoesNotRemoveReplacement(t *testing.T)
 	}
 }
 
+func TestRedisRuntimeExpiredDeviceRPCPendingRemainsClaimableForTimeout(t *testing.T) {
+	url, closeRedis := newRedisRuntimeTestServer(t)
+	defer closeRedis()
+	state := newRedisRuntimeStateForTest(t, url, "pending-expiry")
+	defer state.Close()
+
+	now := time.Now()
+	pending := deviceRPCPendingRecord{
+		requestID: "rpc-expired-pending",
+		agentUID:  42,
+		ownerUID:  7,
+		deviceID:  "alice-laptop",
+		createdAt: now,
+		expiresAt: now.Add(time.Second),
+	}
+	if ok, reason := state.addDeviceRPCPending(pending, now); !ok {
+		t.Fatalf("add pending: %s", reason)
+	}
+	if expired := state.expireDeviceRPCPending(pending.expiresAt); len(expired) != 1 || expired[0].requestID != pending.requestID {
+		t.Fatalf("expired pending was not claimable: %#v", expired)
+	}
+	if _, ok := state.getDeviceRPCPending(pending.requestID, now); ok {
+		t.Fatal("claimed timeout pending remains readable")
+	}
+}
+
 func TestRedisRuntimeRouteRequiresLiveNodeHeartbeat(t *testing.T) {
 	url, closeRedis := newRedisRuntimeTestServer(t)
 	defer closeRedis()

@@ -13,6 +13,7 @@ import (
 
 const (
 	defaultDeviceRPCTTL          = 60 * time.Second
+	deviceRPCPendingRetention    = 5 * time.Second
 	maxDeviceRPCRequestIDLength  = 128
 	maxDeviceRPCPendingPerAgent  = 64
 	maxDeviceRPCPendingPerDevice = 32
@@ -150,6 +151,28 @@ func (r *deviceRPCRouter) get(requestID string) (deviceRPCPending, bool) {
 	if !ok || !now.Before(pending.expiresAt) {
 		return deviceRPCPending{}, false
 	}
+	return pending, true
+}
+
+func (r *deviceRPCRouter) claim(requestID string) (deviceRPCPending, bool) {
+	if r == nil || requestID == "" {
+		return deviceRPCPending{}, false
+	}
+	now := r.now()
+	if r.shared != nil {
+		record, ok := r.shared.claimDeviceRPCPending(requestID, now)
+		if !ok {
+			return deviceRPCPending{}, false
+		}
+		return pendingFromDeviceRPCRecord(record), true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending, ok := r.pending[requestID]
+	if !ok || !now.Before(pending.expiresAt) {
+		return deviceRPCPending{}, false
+	}
+	delete(r.pending, requestID)
 	return pending, true
 }
 
@@ -385,19 +408,7 @@ func (h *Hub) handleDeviceRPCProgress(client *Client, msg *MsgDeviceRPC) {
 		}
 	}
 
-	requesterRoute := pending.requesterRoute
-	requester := pending.requester
-	if !requesterRoute.validAt(nowForRoute(h)) {
-		if h.isClientRegistered(requester) {
-			requesterRoute = h.clientRoute(requester)
-		} else {
-			requester = h.findAgentRPCClient(pending.agentUID, pending.agentBodyID)
-			if requester != nil {
-				requesterRoute = h.clientRoute(requester)
-			}
-		}
-	}
-	if !requesterRoute.validAt(nowForRoute(h)) {
+	if !h.resolveDeviceRPCRequesterRoute(pending).validAt(nowForRoute(h)) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusGone, "requester offline", map[string]interface{}{"request_id": requestID})
 		return
 	}
@@ -421,7 +432,7 @@ func (h *Hub) handleDeviceRPCProgress(client *Client, msg *MsgDeviceRPC) {
 	forward.Operation = pending.operation
 	forward.ToolName = pending.toolName
 
-	if !h.sendDeviceRPCToRoute(requesterRoute, &forward) {
+	if !h.sendDeviceRPCToRequester(pending, &forward) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusGone, "requester offline", map[string]interface{}{"request_id": requestID})
 		return
 	}
@@ -732,22 +743,13 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "result source does not match target device", map[string]interface{}{"request_id": requestID})
 		return
 	}
-	h.deviceRPC.finish(requestID)
-
-	requesterRoute := pending.requesterRoute
-	requester := pending.requester
-	if !requesterRoute.validAt(nowForRoute(h)) {
-		if h.isClientRegistered(requester) {
-			requesterRoute = h.clientRoute(requester)
-		} else {
-			requester = h.findAgentRPCClient(pending.agentUID, pending.agentBodyID)
-			if requester != nil {
-				requesterRoute = h.clientRoute(requester)
-			}
-		}
-	}
-	if !requesterRoute.validAt(nowForRoute(h)) {
+	if !h.resolveDeviceRPCRequesterRoute(pending).validAt(nowForRoute(h)) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusGone, "requester offline", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	pending, ok = h.deviceRPC.claim(requestID)
+	if !ok {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "request not pending", map[string]interface{}{"request_id": requestID})
 		return
 	}
 
@@ -768,7 +770,7 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 	forward.DeviceBodyID = pending.deviceBodyID
 	forward.DeviceInstallationID = pending.deviceInstallID
 
-	if !h.sendDeviceRPCToRoute(requesterRoute, &forward) {
+	if !h.sendDeviceRPCToRequester(pending, &forward) {
 		h.auditDeviceRPC(pending.ownerUID, "rpc_result_rejected", "gone", "requester offline", &forward, ScopedDeviceGrant{
 			GrantID:     pending.grantID,
 			SessionKey:  pending.sessionKey,
@@ -1072,22 +1074,11 @@ func (h *Hub) notifyDeviceRPCTimeout(pending deviceRPCPending) {
 	if h == nil || pending.requestID == "" {
 		return
 	}
-	requesterRoute := pending.requesterRoute
-	requester := pending.requester
-	if !requesterRoute.validAt(nowForRoute(h)) {
-		if h.isClientRegistered(requester) {
-			requesterRoute = h.clientRoute(requester)
-		} else {
-			requester = h.findAgentRPCClient(pending.agentUID, pending.agentBodyID)
-			if requester != nil {
-				requesterRoute = h.clientRoute(requester)
-			}
-		}
-	}
+	requesterRoute := h.resolveDeviceRPCRequesterRoute(pending)
 	if !requesterRoute.validAt(nowForRoute(h)) {
 		return
 	}
-	h.sendDeviceRPCToRoute(requesterRoute, &MsgDeviceRPC{
+	h.sendDeviceRPCToRequester(pending, &MsgDeviceRPC{
 		Type:                 deviceRPCTypeResult,
 		RequestID:            pending.requestID,
 		GrantID:              pending.grantID,
@@ -1167,6 +1158,52 @@ func nowForRoute(h *Hub) time.Time {
 		return h.deviceRPC.now()
 	}
 	return time.Now()
+}
+
+func (h *Hub) resolveDeviceRPCRequesterRoute(pending deviceRPCPending) runtimeRoute {
+	if h == nil {
+		return runtimeRoute{}
+	}
+	// A live body lease identifies the current Agent connection. Prefer it over
+	// the route captured at request time, which may still have a valid TTL after
+	// the Agent reconnects on another node.
+	if h.bodyLeases != nil {
+		if lease, ok := h.bodyLeases.status(pending.agentUID); ok &&
+			(pending.agentBodyID == "" || lease.bodyID == pending.agentBodyID) {
+			route := runtimeRoute{NodeID: lease.nodeID, ConnectionID: lease.connectionID, ExpiresAt: lease.expiresAt}
+			if h.routeConnected(route) {
+				return route
+			}
+		}
+	}
+	if h.routeConnected(pending.requesterRoute) {
+		return pending.requesterRoute
+	}
+	if h.isClientRegistered(pending.requester) {
+		route := h.clientRoute(pending.requester)
+		if h.routeConnected(route) {
+			return route
+		}
+	}
+	if requester := h.findAgentRPCClient(pending.agentUID, pending.agentBodyID); requester != nil {
+		route := h.clientRoute(requester)
+		if h.routeConnected(route) {
+			return route
+		}
+	}
+	return runtimeRoute{}
+}
+
+func (h *Hub) sendDeviceRPCToRequester(pending deviceRPCPending, msg *MsgDeviceRPC) bool {
+	route := h.resolveDeviceRPCRequesterRoute(pending)
+	if !route.validAt(nowForRoute(h)) {
+		return false
+	}
+	if h.sendDeviceRPCToRoute(route, msg) {
+		return true
+	}
+	retry := h.resolveDeviceRPCRequesterRoute(pending)
+	return retry.validAt(nowForRoute(h)) && !retry.matches(route) && h.sendDeviceRPCToRoute(retry, msg)
 }
 
 func (h *Hub) findAgentRPCClient(agentUID int64, agentBodyID string) *Client {

@@ -102,6 +102,7 @@ type sharedRuntimeState interface {
 
 	addDeviceRPCPending(pending deviceRPCPendingRecord, now time.Time) (bool, string)
 	getDeviceRPCPending(requestID string, now time.Time) (deviceRPCPendingRecord, bool)
+	claimDeviceRPCPending(requestID string, now time.Time) (deviceRPCPendingRecord, bool)
 	refreshDeviceRPCPending(requestID string, now time.Time, expiresAt time.Time) (deviceRPCPendingRecord, bool)
 	finishDeviceRPCPending(requestID string)
 	listDeviceRPCPendingByOwner(ownerUID int64) []deviceRPCPendingRecord
@@ -711,6 +712,20 @@ func (s *sharedMemoryRuntimeState) getDeviceRPCPending(requestID string, now tim
 	if !ok || !now.Before(pending.expiresAt) {
 		return deviceRPCPendingRecord{}, false
 	}
+	return pending, true
+}
+
+func (s *sharedMemoryRuntimeState) claimDeviceRPCPending(requestID string, now time.Time) (deviceRPCPendingRecord, bool) {
+	if s == nil || requestID == "" {
+		return deviceRPCPendingRecord{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, ok := s.deviceRPC[requestID]
+	if !ok || !now.Before(pending.expiresAt) {
+		return deviceRPCPendingRecord{}, false
+	}
+	delete(s.deviceRPC, requestID)
 	return pending, true
 }
 

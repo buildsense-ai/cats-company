@@ -117,6 +117,94 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	}
 }
 
+func TestDeviceRPCResultUsesReconnectedRequesterRoute(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-reconnect",
+		Type:      deviceRPCTypeRequest,
+		RequestID: "rpc-reconnect",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	var forwarded, requestAck ServerMessage
+	decodeQueuedServerMessage(t, target.send, &forwarded)
+	decodeQueuedServerMessage(t, agent.send, &requestAck)
+
+	if removed, _, _, _ := hub.removeClient(agent); !removed {
+		t.Fatal("requester connection was not removed")
+	}
+	reconnected := &Client{
+		hub:         hub,
+		uid:         agent.uid,
+		accountType: agent.accountType,
+		bodyID:      agent.bodyID,
+		send:        make(chan []byte, 4),
+	}
+	hub.addClient(reconnected)
+
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-result-reconnect",
+		Type:      deviceRPCTypeResult,
+		RequestID: "rpc-reconnect",
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var targetAck, result ServerMessage
+	decodeQueuedServerMessage(t, target.send, &targetAck)
+	if targetAck.Ctrl == nil || targetAck.Ctrl.Code != http.StatusOK {
+		t.Fatalf("unexpected result ack: %#v", targetAck.Ctrl)
+	}
+	decodeQueuedServerMessage(t, reconnected.send, &result)
+	if result.DeviceRPC == nil || result.DeviceRPC.Type != deviceRPCTypeResult || result.DeviceRPC.RequestID != "rpc-reconnect" {
+		t.Fatalf("reconnected requester received %#v, want device_rpc result", result.DeviceRPC)
+	}
+	select {
+	case stale := <-agent.send:
+		t.Fatalf("stale requester received result: %s", stale)
+	default:
+	}
+}
+
+func TestDeviceRPCTerminalClaimAndTimeoutAreExclusive(t *testing.T) {
+	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
+	router := newDeviceRPCRouter(time.Minute)
+	router.now = func() time.Time { return now }
+	pending := deviceRPCPending{
+		requestID: "rpc-terminal-result",
+		agentUID:  42,
+		ownerUID:  7,
+		deviceID:  "alice-laptop",
+		createdAt: now,
+		expiresAt: now.Add(time.Minute),
+	}
+	if ok, reason := router.add(pending); !ok {
+		t.Fatalf("add pending: %s", reason)
+	}
+	if _, ok := router.claim(pending.requestID); !ok {
+		t.Fatal("result did not claim live request")
+	}
+	if expired := router.expire(pending.expiresAt); len(expired) != 0 {
+		t.Fatalf("claimed result also expired: %#v", expired)
+	}
+
+	pending.requestID = "rpc-terminal-timeout"
+	pending.expiresAt = now.Add(time.Minute)
+	if ok, reason := router.add(pending); !ok {
+		t.Fatalf("add timeout pending: %s", reason)
+	}
+	if _, ok := router.get(pending.requestID); !ok {
+		t.Fatal("pending request missing before timeout")
+	}
+	if expired := router.expire(pending.expiresAt); len(expired) != 1 || expired[0].requestID != pending.requestID {
+		t.Fatalf("timeout did not claim request: %#v", expired)
+	}
+	if _, ok := router.claim(pending.requestID); ok {
+		t.Fatal("stale result claimed request after timeout")
+	}
+}
+
 func TestUserExternalHistoryRPCRoutesOnlyToOwnedCapableDevice(t *testing.T) {
 	hub := NewHub(nil, nil)
 	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)

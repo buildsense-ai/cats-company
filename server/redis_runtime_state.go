@@ -769,11 +769,13 @@ func (s *RedisRuntimeState) addDeviceRPCPending(pending deviceRPCPendingRecord, 
 				failure = "device_limit"
 				return nil
 			}
-			ttl := ttlUntil(now, pending.expiresAt)
-			if ttl <= 0 {
+			// Keep the record briefly after its logical expiry so the timeout
+			// scanner can atomically claim and notify the requester.
+			if !now.Before(pending.expiresAt) {
 				failure = "invalid"
 				return nil
 			}
+			ttl := ttlUntil(now, pending.expiresAt.Add(deviceRPCPendingRetention))
 			_, err = tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
 				pipe.Set(s.ctx, key, payload, ttl)
 				pipe.SAdd(s.ctx, allKey, pending.requestID)
@@ -811,6 +813,10 @@ func (s *RedisRuntimeState) getDeviceRPCPending(requestID string, now time.Time)
 	return record, true
 }
 
+func (s *RedisRuntimeState) claimDeviceRPCPending(requestID string, now time.Time) (deviceRPCPendingRecord, bool) {
+	return s.claimDeviceRPCPendingWhen(requestID, now, false)
+}
+
 func (s *RedisRuntimeState) refreshDeviceRPCPending(requestID string, now time.Time, expiresAt time.Time) (deviceRPCPendingRecord, bool) {
 	if s == nil || requestID == "" || !now.Before(expiresAt) {
 		return deviceRPCPendingRecord{}, false
@@ -830,7 +836,7 @@ func (s *RedisRuntimeState) refreshDeviceRPCPending(requestID string, now time.T
 			if err != nil {
 				return err
 			}
-			ttl := ttlUntil(now, expiresAt)
+			ttl := ttlUntil(now, expiresAt.Add(deviceRPCPendingRetention))
 			_, err = tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
 				pipe.Set(s.ctx, key, payload, ttl)
 				pipe.Expire(s.ctx, s.deviceRPCPendingAllKey(), defaultDeviceRPCTTL*4)
@@ -1356,32 +1362,49 @@ func (s *RedisRuntimeState) getDeviceRPCPendingRecordWithClient(client redisGett
 }
 
 func (s *RedisRuntimeState) claimExpiredDeviceRPCPending(requestID string, now time.Time) (deviceRPCPendingRecord, bool) {
+	return s.claimDeviceRPCPendingWhen(requestID, now, true)
+}
+
+func (s *RedisRuntimeState) claimDeviceRPCPendingWhen(requestID string, now time.Time, expired bool) (deviceRPCPendingRecord, bool) {
+	if s == nil || requestID == "" {
+		return deviceRPCPendingRecord{}, false
+	}
 	key := s.deviceRPCPendingKey(requestID)
-	var out deviceRPCPendingRecord
-	claimed := false
-	_ = s.client.Watch(s.ctx, func(tx *redis.Tx) error {
-		record, ok := s.getDeviceRPCPendingRecordWithClient(tx, requestID)
-		if !ok {
-			_ = s.client.SRem(s.ctx, s.deviceRPCPendingAllKey(), requestID).Err()
-			return nil
+	for i := 0; i < 8; i++ {
+		var out deviceRPCPendingRecord
+		claimed := false
+		err := s.client.Watch(s.ctx, func(tx *redis.Tx) error {
+			record, ok := s.getDeviceRPCPendingRecordWithClient(tx, requestID)
+			if !ok {
+				_ = s.client.SRem(s.ctx, s.deviceRPCPendingAllKey(), requestID).Err()
+				return nil
+			}
+			isExpired := !now.Before(record.expiresAt)
+			if isExpired != expired {
+				return nil
+			}
+			_, err := tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
+				pipe.Del(s.ctx, key)
+				pipe.SRem(s.ctx, s.deviceRPCPendingAllKey(), requestID)
+				pipe.SRem(s.ctx, s.deviceRPCPendingOwnerKey(record.ownerUID), requestID)
+				pipe.SRem(s.ctx, s.deviceRPCPendingDeviceKey(record.ownerUID, record.deviceID), requestID)
+				return nil
+			})
+			if err == nil {
+				out = record
+				claimed = true
+			}
+			return err
+		}, key)
+		if errors.Is(err, redis.TxFailedErr) {
+			continue
 		}
-		if now.Before(record.expiresAt) {
-			return nil
+		if err != nil {
+			return deviceRPCPendingRecord{}, false
 		}
-		_, err := tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(s.ctx, key)
-			pipe.SRem(s.ctx, s.deviceRPCPendingAllKey(), requestID)
-			pipe.SRem(s.ctx, s.deviceRPCPendingOwnerKey(record.ownerUID), requestID)
-			pipe.SRem(s.ctx, s.deviceRPCPendingDeviceKey(record.ownerUID, record.deviceID), requestID)
-			return nil
-		})
-		if err == nil {
-			out = record
-			claimed = true
-		}
-		return err
-	}, key)
-	return out, claimed
+		return out, claimed
+	}
+	return deviceRPCPendingRecord{}, false
 }
 
 func (s *RedisRuntimeState) removeDeviceRPCPending(record deviceRPCPendingRecord) {
