@@ -8588,7 +8588,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-cloud-operation-status svg { flex: none; color: var(--v3-primary); animation: cc-cloud-operation-spin 1.1s linear infinite; }
 @keyframes cc-cloud-operation-spin { to { transform: rotate(360deg); } }
 .cc-cloud-version-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--v3-text-muted); }
-.cc-cloud-version-select {
+.cc-cloud-version-select,
+.cc-cloud-image-select {
   min-height: 30px;
   padding: 0 8px;
   border: 1px solid var(--v3-border);
@@ -8598,7 +8599,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   font-size: 12px;
   max-width: 140px;
 }
-.cc-cloud-version-select:disabled { opacity: .55; cursor: default; }
+.cc-cloud-version-select:disabled,
+.cc-cloud-image-select:disabled { opacity: .55; cursor: default; }
 .cc-cloud-reset-confirm {
   display: grid;
   gap: 6px;

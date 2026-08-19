@@ -172,6 +172,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "tsv":
 			// 真实 list-worker-images.sh TSV 契约：imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status
 			body = "@echo off\r\necho 79f5b7f4-c06e-4f97-90fa-d69566f23d63\tcatsco-worker-1-4-8-f3f1f3e6\tv1.4.8\tf3f1f3e6\t1786066647\tactive\r\n"
+		case "releases-tsv":
+			body = "@echo off\r\necho 1.4.9\t1787066647\r\necho 1.4.8\t1786066647\r\n"
 		case "status-tsv":
 			// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
 			body = "@echo off\r\necho worker-bot-bot-a\trunning\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\necho worker-bot-bot-b\tcreating\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\n"
@@ -203,6 +205,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 	case "tsv":
 		// 真实 list-worker-images.sh TSV 契约（printf 的 \\t 是字面 tab）
 		body = "#!/bin/sh\nprintf '79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tcatsco-worker-1-4-8-f3f1f3e6\\tv1.4.8\\tf3f1f3e6\\t1786066647\\tactive\\n'\n"
+	case "releases-tsv":
+		body = "#!/bin/sh\nprintf '1.4.9\\t1787066647\\n1.4.8\\t1786066647\\n'\n"
 	case "status-tsv":
 		// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
 		body = "#!/bin/sh\nprintf 'worker-bot-bot-a\\trunning\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\nworker-bot-bot-b\\tcreating\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\n'\n"
@@ -242,6 +246,9 @@ func workerScriptCfg(t *testing.T, quota string, scripts map[string]string) Clou
 	}
 	if p, ok := scripts["images"]; ok {
 		cfg.ImagesScript = p
+	}
+	if p, ok := scripts["releases"]; ok {
+		cfg.ReleasesScript = p
 	}
 	if p, ok := scripts["status"]; ok {
 		cfg.StatusScript = p
@@ -289,6 +296,25 @@ func waitForCloudWorkerSnapshot(t *testing.T, h *CloudWorkerHandler, images bool
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for cloud snapshot")
+}
+
+func waitForCloudWorkerReleaseSnapshot(t *testing.T, h *CloudWorkerHandler) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		h.cacheMu.Lock()
+		loaded := h.releasesLoaded
+		refreshing := h.releasesRefreshing
+		h.cacheMu.Unlock()
+		if loaded {
+			return
+		}
+		if !refreshing {
+			t.Fatalf("cloud release refresh stopped before producing a snapshot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for cloud release snapshot")
 }
 
 func waitForCloudWorkerRefreshIdle(t *testing.T, h *CloudWorkerHandler, images bool) {
@@ -737,6 +763,35 @@ func TestCloudWorkerHandleMetaWithImagesScript(t *testing.T) {
 	}
 }
 
+func TestCloudWorkerHandleMetaSeparatesApplicationReleasesFromImages(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=3", map[string]string{
+		"images":   writeWorkerOpScript(t, "tsv"),
+		"releases": writeWorkerOpScript(t, "releases-tsv"),
+	})
+	if cfg.ImagesScript == "" || cfg.ReleasesScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, _ := newCloudWorkerTestHandlerCfg(cfg)
+	waitForCloudWorkerSnapshot(t, h, true)
+	waitForCloudWorkerReleaseSnapshot(t, h)
+
+	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers/meta", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	images := out["images"].([]interface{})
+	releases := out["releases"].([]interface{})
+	if images[0].(map[string]interface{})["version"] != "v1.4.8" {
+		t.Fatalf("images=%v", images)
+	}
+	if releases[0].(map[string]interface{})["version"] != "1.4.9" {
+		t.Fatalf("releases=%v", releases)
+	}
+}
+
 func TestCloudWorkerHandleMetaReportsConfiguredActions(t *testing.T) {
 	cfg := workerScriptCfg(t, "7=3", map[string]string{
 		"provision": writeWorkerOpScript(t, "ok"),
@@ -773,6 +828,21 @@ func TestParseImageLinesKeepsNewestSix(t *testing.T) {
 	}
 	if images[0].Version != "1.4.8" || images[5].Version != "1.4.3" {
 		t.Fatalf("versions=%v want newest 1.4.8..1.4.3", images)
+	}
+}
+
+func TestParseReleaseLinesKeepsNewestUniquePublishedVersions(t *testing.T) {
+	releases := parseReleaseLines(strings.Join([]string{
+		"1.4.8\t1786066647",
+		"v1.4.9\t1787066647",
+		"1.4.9\t1787066646",
+		"bad/version\t1788066647",
+	}, "\n"))
+	if len(releases) != 2 {
+		t.Fatalf("releases=%v want 2", releases)
+	}
+	if releases[0].Version != "1.4.9" || releases[1].Version != "1.4.8" {
+		t.Fatalf("releases=%v want 1.4.9,1.4.8", releases)
 	}
 }
 
@@ -1083,6 +1153,30 @@ func TestCloudWorkerHandleResetForwardsVersion(t *testing.T) {
 	out := decodeCloudWorkerList(t, rec)
 	if out["status"] != "ok" {
 		t.Fatalf("reset status field=%v", out["status"])
+	}
+}
+
+func TestCloudWorkerHandleUpdateRequiresExplicitApplicationVersion(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update": writeWorkerOpScript(t, "record"),
+	})
+	if cfg.UpdateScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{})
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	if out["code"] != "cloud_worker_update_version_required" {
+		t.Fatalf("code=%v", out["code"])
 	}
 }
 

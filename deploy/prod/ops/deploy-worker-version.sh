@@ -2,8 +2,9 @@
 # deploy-worker-version.sh - install one published CatsCo application release
 # on an existing cloud worker while preserving /srv/catsco-agent.
 # An explicit --version selects a published application artifact from private
-# TOS; it does not require a same-version Tianyi image. Omitting --version keeps
-# the legacy latest-image selection behavior.
+# TOS; it does not require a same-version Tianyi image. Omitting --version
+# selects the newest published application release from the same private TOS
+# catalog, never from the independently managed Tianyi image list.
 set -Eeuo pipefail
 
 NAME=""
@@ -51,7 +52,7 @@ ARTIFACT_REGION="${CATSCO_WORKER_ARTIFACT_REGION:-cn-guangzhou}"
 ARTIFACT_ENDPOINT="${CATSCO_WORKER_ARTIFACT_ENDPOINT:-https://tos-cn-guangzhou.volces.com}"
 ARTIFACT_CACHE_ROOT="${CATSCO_WORKER_ARTIFACT_CACHE_DIR:-$STATE_ROOT/.artifacts}"
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIST_IMAGES_CMD="${CATSCO_WORKER_IMAGES_SCRIPT:-$OPS_DIR/list-worker-images.sh}"
+LIST_RELEASES_CMD="${CATSCO_WORKER_RELEASES_SCRIPT:-$OPS_DIR/list-worker-releases.sh}"
 
 JUMP_IP="${CTYUN_JUMP_IP:-}"
 JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
@@ -60,7 +61,7 @@ JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
 
 [[ -n "$REGION_ID" ]] || { echo "error: CTYUN_WORKER_REGION_ID is required" >&2; exit 2; }
 if [[ -z "$VERSION" ]]; then
-  [[ -x "$LIST_IMAGES_CMD" ]] || { echo "error: image list script is unavailable" >&2; exit 2; }
+  [[ -x "$LIST_RELEASES_CMD" ]] || { echo "error: application release list script is unavailable" >&2; exit 2; }
 fi
 
 ctyun() {
@@ -86,14 +87,13 @@ find_instance() {
 
 COMMIT=""
 if [[ -z "$VERSION" ]]; then
-  image_rows="$($LIST_IMAGES_CMD)"
-  image_row="$(printf '%s\n' "$image_rows" | sort -t $'\t' -k5,5nr | head -n1)"
-  VERSION="$(cut -f3 <<<"$image_row")"
+  release_rows="$($LIST_RELEASES_CMD)"
+  release_row="$(printf '%s\n' "$release_rows" | sort -t $'\t' -k2,2nr | head -n1)"
+  VERSION="$(cut -f1 <<<"$release_row")"
   VERSION="${VERSION#v}"
-  [[ -n "$image_row" ]] || { echo "error: no worker image found for latest version" >&2; exit 1; }
-  COMMIT="$(cut -f4 <<<"$image_row")"
+  [[ -n "$release_row" ]] || { echo "error: no published application release found" >&2; exit 1; }
 fi
-[[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || { echo "error: selected image version is invalid" >&2; exit 1; }
+[[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || { echo "error: selected application version is invalid" >&2; exit 1; }
 
 inst="$(find_instance)"
 [[ -n "$inst" ]] || { echo "error: instance worker-$NAME not found" >&2; exit 1; }

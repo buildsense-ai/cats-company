@@ -370,10 +370,23 @@ test("provision-worker: monthly billing by default with auto-renew", () => {
   assert.match(state.createArgs, /--onDemand false/);
   assert.match(state.createArgs, /--cycleType MONTH/);
   assert.match(state.createArgs, /--cycleCount 1/);
+  assert.match(state.createArgs, /--extIP 0/);
+  assert.ok(!state.createArgs.includes("--bandwidth"), "private-IP provisioning must not request public bandwidth");
   assert.equal((state.renewCalls || []).length, 1, "auto-renew must be configured once");
   assert.equal(state.renewCalls[0].autoRenewStatus, "1");
   assert.equal(state.renewCalls[0].autoRenewCycleType, "MONTH");
   assert.ok((state.instances || [])[0].expiredTime, "monthly instance should carry expiredTime");
+});
+
+test("provision-worker: public IP is an explicit legacy override", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"],
+    { CTYUN_WORKER_EXT_IP: "1" });
+  if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.createArgs, /--extIP 1/);
+  assert.match(state.createArgs, /--bandwidth 10/);
 });
 
 test("provision-worker: ondemand billing mode keeps on-demand and skips auto-renew", () => {

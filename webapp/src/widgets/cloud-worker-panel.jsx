@@ -52,6 +52,7 @@ export default function CloudWorkerPanel({
   quotaError,
   workers = [],
   images = [],
+  releases = [],
   actions = null,
   actioning = null,
   showHostingSwitch = true,
@@ -65,8 +66,8 @@ export default function CloudWorkerPanel({
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  // tenant_name -> selected target version ('' = latest)
-  const [versions, setVersions] = useState({});
+  const [releaseSelections, setReleaseSelections] = useState({});
+  const [imageSelections, setImageSelections] = useState({});
   // Reset captcha flow: tenant being confirmed / its code / typed input / mismatch
   const [resetConfirming, setResetConfirming] = useState(null);
   const [resetCodes, setResetCodes] = useState({});
@@ -86,6 +87,9 @@ export default function CloudWorkerPanel({
   // Available image versions (deduplicated, order from the control plane).
   const imageVersions = [...new Set(
     (images || []).map((img) => img?.version).filter(Boolean),
+  )];
+  const releaseVersions = [...new Set(
+    (releases || []).map((release) => release?.version).filter(Boolean),
   )];
   const activeAction = typeof actioning === 'string'
     ? { name: actioning, action: 'update' }
@@ -128,7 +132,7 @@ export default function CloudWorkerPanel({
       setResetErrors({ [tenantName]: true });
       return;
     }
-    const version = versions[tenantName] || '';
+    const version = imageSelections[tenantName] || imageVersions[0] || '';
     onReset(worker, version, { verified: true });
     cancelReset();
   };
@@ -262,7 +266,8 @@ export default function CloudWorkerPanel({
               const meta = statusMeta(worker.cloud_status);
               const acting = activeAction.name === worker.tenant_name;
               const actionName = acting ? activeAction.action : '';
-              const versionActionsAvailable = ['update', 'rollback', 'reset'].some(actionAvailable);
+              const releaseTarget = releaseSelections[worker.tenant_name] || releaseVersions[0] || '';
+              const imageTarget = imageSelections[worker.tenant_name] || imageVersions[0] || '';
               return (
                 <div
                   key={worker.tenant_name || id}
@@ -303,21 +308,35 @@ export default function CloudWorkerPanel({
 
                   <div className="cc-cloud-worker-actions">
                     <label className="cc-cloud-version-field">
-                      <span>目标版本</span>
+                      <span>应用版本</span>
                       <select
                         className="cc-cloud-version-select"
-                        value={versions[worker.tenant_name] || ''}
-                        disabled={hasActiveAction || imageVersions.length === 0 || !versionActionsAvailable}
-                        onChange={(e) => setVersions((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
-                        title={imageVersions.length === 0 ? '暂无可用版本' : '更新、回滚或重置使用的目标版本'}
+                        value={releaseTarget}
+                        disabled={hasActiveAction || releaseVersions.length === 0 || !['update', 'rollback'].some(actionAvailable)}
+                        onChange={(e) => setReleaseSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
+                        title={releaseVersions.length === 0 ? '暂无可用应用版本' : '更新或回滚使用的应用版本'}
+                      >
+                        {releaseVersions.length === 0 ? (
+                          <option value="">暂无应用版本</option>
+                        ) : (
+                          releaseVersions.map((v) => <option key={v} value={v}>{v}</option>)
+                        )}
+                      </select>
+                    </label>
+
+                    <label className="cc-cloud-version-field">
+                      <span>基础镜像</span>
+                      <select
+                        className="cc-cloud-image-select"
+                        value={imageTarget}
+                        disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
+                        onChange={(e) => setImageSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
+                        title={imageVersions.length === 0 ? '暂无可用基础镜像' : '重置实例使用的基础镜像版本'}
                       >
                         {imageVersions.length === 0 ? (
-                          <option value="">暂无可用版本</option>
+                          <option value="">暂无基础镜像</option>
                         ) : (
-                          <>
-                            <option value="">最新版本</option>
-                            {imageVersions.map((v) => <option key={v} value={v}>{v}</option>)}
-                          </>
+                          imageVersions.map((v) => <option key={v} value={v}>{v}</option>)
                         )}
                       </select>
                     </label>
@@ -325,9 +344,9 @@ export default function CloudWorkerPanel({
                     <button
                       type="button"
                       className="oc-btn oc-btn-primary"
-                      onClick={() => onUpdate(worker, versions[worker.tenant_name] || '')}
-                      disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('update')}
-                      title={!actionAvailable('update') ? '云端更新服务尚未配置' : (imageVersions.length === 0 ? '暂无可用版本，无法更新' : '更新应用到所选版本，保留当前数据')}
+                      onClick={() => onUpdate(worker, releaseTarget)}
+                      disabled={hasActiveAction || releaseVersions.length === 0 || !actionAvailable('update')}
+                      title={!actionAvailable('update') ? '云端更新服务尚未配置' : (releaseVersions.length === 0 ? '暂无可用应用版本，无法更新' : '更新应用到所选版本，保留当前数据')}
                     >
                       {actionName === 'update' ? '更新中...' : <><ArrowUpCircle size={13} /> 更新</>}
                     </button>
@@ -335,9 +354,9 @@ export default function CloudWorkerPanel({
                     <button
                       type="button"
                       className="oc-btn oc-btn-default"
-                      onClick={() => onRollback(worker, versions[worker.tenant_name] || '', { fromPanel: true })}
-                      disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('rollback')}
-                      title={!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (imageVersions.length === 0 ? '暂无可用版本，无法回滚' : '回滚应用到所选版本，保留当前数据')}
+                      onClick={() => onRollback(worker, releaseTarget, { fromPanel: true })}
+                      disabled={hasActiveAction || releaseVersions.length === 0 || !actionAvailable('rollback')}
+                      title={!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (releaseVersions.length === 0 ? '暂无可用应用版本，无法回滚' : '回滚应用到所选版本，保留当前数据')}
                     >
                       {actionName === 'rollback' ? '回滚中...' : <><RotateCcw size={13} /> 回滚</>}
                     </button>
@@ -386,8 +405,8 @@ export default function CloudWorkerPanel({
                         type="button"
                         className="oc-btn oc-btn-default"
                         onClick={() => beginReset(worker.tenant_name)}
-                        disabled={hasActiveAction || !actionAvailable('reset')}
-                        title={!actionAvailable('reset') ? '云端重置服务尚未配置' : '重置：销毁实例并从所选镜像版本重建，所有数据丢失（需验证码）'}
+                        disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
+                        title={!actionAvailable('reset') ? '云端重置服务尚未配置' : (imageVersions.length === 0 ? '暂无可用基础镜像，无法重置' : '重置：销毁实例并从所选镜像版本重建，所有数据丢失（需验证码）')}
                       >
                         {actionName === 'reset' ? '重置中...' : <><RefreshCw size={13} /> 重置</>}
                       </button>

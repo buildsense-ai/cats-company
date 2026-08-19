@@ -30,6 +30,7 @@ describe('CloudWorkerPanel', () => {
         quotaError: false,
         workers: [],
         images: [],
+        releases: [],
         actioning: null,
         onCreate: vi.fn(),
         onUpdate: vi.fn(),
@@ -189,9 +190,11 @@ describe('CloudWorkerPanel', () => {
     const onReset = vi.fn();
     const onDelete = vi.fn();
     const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
+    const releases = [{ version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
       workers: [worker()],
       images,
+      releases,
       onUpdate,
       onRollback,
       onReset,
@@ -209,17 +212,17 @@ describe('CloudWorkerPanel', () => {
     });
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
+      '1.4.9',
     );
 
-    // rollback with no explicit version passes '' (latest) + fromPanel flag
+    // rollback defaults to the newest published application release.
     await act(async () => {
       Simulate.click(rollbackBtn);
     });
     expect(onRollback).toHaveBeenCalledTimes(1);
     expect(onRollback).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
+      '1.4.9',
       { fromPanel: true },
     );
 
@@ -240,7 +243,7 @@ describe('CloudWorkerPanel', () => {
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onReset).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
+      '1.4.8',
       { verified: true },
     );
 
@@ -296,7 +299,7 @@ describe('CloudWorkerPanel', () => {
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onReset).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
+      '1.4.8',
       { verified: true },
     );
     // confirmation panel closes after a successful reset
@@ -305,16 +308,16 @@ describe('CloudWorkerPanel', () => {
 
   test('rollback passes a user-selected version from the dropdown', async () => {
     const onRollback = vi.fn();
-    const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
+    const releases = [{ version: '1.4.9' }, { version: '1.4.8' }, { version: '1.4.7' }];
     await renderPanel({
       workers: [worker()],
-      images,
+      releases,
       onRollback,
     });
 
     const select = container.querySelector('.cc-cloud-version-select');
-    expect(select.value).toBe(''); // defaults to '' (latest), not the first image
-    expect(Array.from(select.options).map((o) => o.value)).toEqual(['', '1.4.8', '1.4.7']);
+    expect(select.value).toBe('1.4.9');
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['1.4.9', '1.4.8', '1.4.7']);
 
     await act(async () => {
       Simulate.change(select, { target: { value: '1.4.7' } });
@@ -331,37 +334,33 @@ describe('CloudWorkerPanel', () => {
     );
   });
 
-  test('latest version passes an empty version even when images are unordered', async () => {
-    // 无序镜像列表：选择「最新版本」必须传 ''，而不是镜像列表第一项
-    const onRollback = vi.fn();
-    const images = [{ version: '1.4.7' }, { version: '1.4.8' }, { version: '1.4.5' }];
+  test('update always passes the explicit newest published release', async () => {
+    const onUpdate = vi.fn();
+    const releases = [{ version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
       workers: [worker()],
-      images,
-      onRollback,
+      releases,
+      onUpdate,
     });
 
     const select = container.querySelector('.cc-cloud-version-select');
-    expect(select.value).toBe('');
+    expect(select.value).toBe('1.4.9');
+    const updateBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
+      .find((el) => el.textContent.includes('更新'));
     await act(async () => {
-      Simulate.change(select, { target: { value: '' } }); // 明确选「最新版本」
+      Simulate.click(updateBtn);
     });
-    const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
-      .find((el) => el.textContent.includes('回滚'));
-    await act(async () => {
-      Simulate.click(rollbackBtn);
-    });
-    expect(onRollback).toHaveBeenCalledWith(
+    expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
-      { fromPanel: true },
+      '1.4.9',
     );
   });
 
-  test('rollback is disabled when no image versions are available', async () => {
+  test('rollback is disabled when no application releases are available', async () => {
     await renderPanel({
       workers: [worker()],
       images: [],
+      releases: [],
     });
     const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
       .find((el) => el.textContent.includes('回滚'));
@@ -374,6 +373,7 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker()],
       images: [{ version: '1.4.9' }],
+      releases: [{ version: '1.4.9' }],
       actions: {
         create: false,
         update: false,
@@ -402,6 +402,7 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker()],
       images: [{ version: '1.4.8' }],
+      releases: [{ version: '1.4.9' }],
       actioning: 'tenant-a',
     });
     const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
@@ -413,6 +414,7 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker(), worker({ tenant_name: 'tenant-b', id: 92, uid: 92 })],
       images: [{ version: '1.4.8' }],
+      releases: [{ version: '1.4.9' }],
       actioning: { name: 'tenant-a', action: 'update' },
     });
 
@@ -422,7 +424,7 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).toContain('更新中...');
     const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     actionButtons.forEach((button) => expect(button.disabled).toBe(true));
-    const selectors = Array.from(container.querySelectorAll('.cc-cloud-version-select'));
+    const selectors = Array.from(container.querySelectorAll('.cc-cloud-version-select, .cc-cloud-image-select'));
     selectors.forEach((select) => expect(select.disabled).toBe(true));
   });
 

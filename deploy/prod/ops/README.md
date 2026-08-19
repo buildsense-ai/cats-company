@@ -7,7 +7,8 @@
 
 | 脚本 | 动作 | 语义 |
 |---|---|---|
-| `list-worker-images.sh` | 列出 bake 通道镜像 | `/api/cloud-workers/meta` 展示 + 回滚选择 |
+| `list-worker-images.sh` | 列出 bake 通道镜像 | 创建 / 重置镜像选择 |
+| `list-worker-releases.sh` | 列出私有 TOS 应用发布 | 更新 / 回滚版本选择 |
 | `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
 | `destroy-worker.sh` | 删实例 + key pair + 本地 state | 删除（幂等） |
 | `reset-worker.sh` | 销毁重建（丢数据） | 重置 / 重装 |
@@ -28,8 +29,10 @@ CATSCO_WORKER_RESET_SCRIPT=/opt/catsco/ops/reset-worker.sh
 CATSCO_WORKER_UPDATE_SCRIPT=/opt/catsco/ops/deploy-worker-version.sh
 CATSCO_WORKER_ROLLBACK_SCRIPT=/opt/catsco/ops/rollback-worker.sh
 CATSCO_WORKER_IMAGES_SCRIPT=/opt/catsco/ops/list-worker-images.sh
+CATSCO_WORKER_RELEASES_SCRIPT=/opt/catsco/ops/list-worker-releases.sh
 CATSCO_WORKER_STATUS_SCRIPT=/opt/catsco/ops/status-worker.sh
 CATSCO_WORKER_CREATE_QUOTA=            # "<uid>=<n>;<uid>=<n>"，留空 = 未开放（0）
+CTYUN_WORKER_EXT_IP=0                  # 默认内网，不申请公网 IP/带宽
 ```
 
 未配置某脚本时，对应动作返回 503（fail-closed）；删除未配 destroy 脚本时

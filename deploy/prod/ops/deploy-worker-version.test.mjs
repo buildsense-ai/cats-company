@@ -143,9 +143,9 @@ function setupSandbox(state = {}) {
   writeCommand(bin, "tos-fetch", FAKE_TOS_FETCH);
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
 
-  const listImages = path.join(sandbox, "list-images.sh");
-  fs.writeFileSync(listImages, `#!/usr/bin/env sh\nprintf '%s\\n' 'img-old\tcatsco-worker-1.4.8\t1.4.8\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t100\tactive' 'img-new\tcatsco-worker-1.4.9\t1.4.9\t${COMMIT}\t200\tactive'\n`);
-  fs.chmodSync(listImages, 0o755);
+  const listReleases = path.join(sandbox, "list-releases.sh");
+  fs.writeFileSync(listReleases, "#!/usr/bin/env sh\nprintf '%s\\n' '1.4.8\t100' '1.4.9\t200'\n");
+  fs.chmodSync(listReleases, 0o755);
 
   const fixtureRoot = path.join(sandbox, "fixture");
   const updaterDir = path.join(fixtureRoot, "app", "scripts");
@@ -171,7 +171,7 @@ function setupSandbox(state = {}) {
       PATH: commandPath,
       CTYUN_WORKER_REGION_ID: "region-test",
       CTYUN_WORKER_STATE_DIR: toMsys(stateDir),
-      CATSCO_WORKER_IMAGES_SCRIPT: toMsys(listImages),
+      CATSCO_WORKER_RELEASES_SCRIPT: toMsys(listReleases),
       CATSCO_WORKER_ARTIFACT_CACHE_DIR: toMsys(cacheDir),
       CATSCO_WORKER_ARTIFACT_BUCKET: "worker-private-test",
       CATSCO_WORKER_ARTIFACT_PREFIX: "update/worker",
@@ -202,7 +202,7 @@ function readState(sb) {
   return JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
 }
 
-test("deploy-worker-version: omitted version selects the newest image in dry-run", () => {
+test("deploy-worker-version: omitted version selects the newest published application release", () => {
   const sb = setupSandbox();
   const result = run(sb, ["--name", "bot-a", "--dry-run"]);
   assert.equal(result.status, 0, result.stderr);
@@ -212,7 +212,7 @@ test("deploy-worker-version: omitted version selects the newest image in dry-run
 
 test("deploy-worker-version: explicit application version does not require a matching image", () => {
   const sb = setupSandbox({ localRelease: false });
-  sb.env.CATSCO_WORKER_IMAGES_SCRIPT = toMsys(path.join(sb.sandbox, "missing-list-images.sh"));
+  sb.env.CATSCO_WORKER_RELEASES_SCRIPT = toMsys(path.join(sb.sandbox, "missing-list-releases.sh"));
 
   const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
