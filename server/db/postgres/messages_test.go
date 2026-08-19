@@ -108,10 +108,10 @@ func TestListTopicFileMessagesReadsMetadata(t *testing.T) {
 	defer db.Close()
 
 	createdAt := time.Date(2026, time.August, 15, 0, 0, 0, 0, time.UTC)
-	rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "metadata"}).
+	rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "client_msg_id", "metadata"}).
 		AddRow(
 			int64(14), "grp_1686", int64(7), "", "file", createdAt,
-			[]byte(`[{"type":"file","payload":{"name":"example.pdf"}}]`), "code", "user", []byte(`{"source_channel":"web"}`),
+			[]byte(`[{"type":"file","payload":{"name":"example.pdf"}}]`), "code", "user", "file-client-14", []byte(`{"source_channel":"web"}`),
 		)
 	mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM messages.*WHERE topic_id =`).
 		WithArgs("grp_1686", 41).
@@ -121,7 +121,7 @@ func TestListTopicFileMessagesReadsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list topic file messages: %v", err)
 	}
-	if len(messages) != 1 || messages[0].Metadata["source_channel"] != "web" {
+	if len(messages) != 1 || messages[0].ClientMsgID != "file-client-14" || messages[0].Metadata["source_channel"] != "web" {
 		t.Fatalf("messages = %#v", messages)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

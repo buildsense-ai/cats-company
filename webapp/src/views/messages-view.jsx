@@ -2696,6 +2696,9 @@ export default function MessagesView({
     const groups = [];
     const workingByExplicitTurn = new Map();
     let currentWorking = null;
+    let workingContinuationKey = '';
+    let lastFlushedWorking = null;
+    let unkeyedBridgeConsumed = false;
     let previousDisplayContext = null;
     let previousVisibleDisplayContext = null;
 
@@ -2707,10 +2710,81 @@ export default function MessagesView({
 
     const flushCurrentWorking = () => {
       if (!currentWorking) return;
-      groups.push(currentWorking);
-      registerWorkingGroup(currentWorking);
+      lastFlushedWorking = currentWorking;
+      groups.push(lastFlushedWorking);
+      registerWorkingGroup(lastFlushedWorking);
       currentWorking = null;
     };
+
+    const workingPlanIDs = (group) => new Set((group?.messages || [])
+      .filter(messageContainsUpdatePlan)
+      .flatMap((workingMessage) => {
+        const metadata = workingMessage?.metadata || {};
+        const blocks = contentBlocksFromMessage(workingMessage);
+        return [
+          metadata.id,
+          metadata.tool_use_id,
+          metadata.toolUseId,
+          metadata.tool_call_id,
+          metadata.toolCallId,
+          ...blocks.flatMap((block) => [
+            block?.id,
+            block?.tool_use_id,
+            block?.toolUseId,
+            block?.metadata?.id,
+            block?.metadata?.tool_use_id,
+            block?.metadata?.toolUseId,
+          ]),
+        ]
+          .map((value) => String(value ?? '').trim())
+          .filter(Boolean);
+      }));
+
+    const isPlanTraceContinuation = (message, planIDs) => {
+      if (messageContainsUpdatePlan(message)) return true;
+      const messageType = message?.type || message?.msg_type || '';
+      if (messageType !== 'tool_result') return false;
+      const metadata = message?.metadata || {};
+      const blocks = contentBlocksFromMessage(message);
+      return [
+        metadata.tool_use_id,
+        metadata.toolUseId,
+        metadata.id,
+        metadata.tool_call_id,
+        metadata.toolCallId,
+        ...blocks.flatMap((block) => [
+          block?.tool_use_id,
+          block?.toolUseId,
+          block?.id,
+          block?.metadata?.tool_use_id,
+          block?.metadata?.toolUseId,
+          block?.metadata?.id,
+        ]),
+      ].some((value) => planIDs.has(String(value ?? '').trim()));
+    };
+
+    const canBridgeUnkeyedAssistantText = (message, assistantAuthored) => (
+      isFinalTextMessage(message)
+      && assistantAuthored
+      && !messageHasDeliveryArtifact(message)
+      && Boolean(lastFlushedWorking?.messages?.length)
+      && !unkeyedBridgeConsumed
+      && explicitExecutionKey(lastFlushedWorking) === workingContinuationKey
+      && Boolean(messageSenderIdentity(message))
+      && Boolean(messageSenderIdentity(lastFlushedWorking.messages[0]))
+      && messageSenderIdentity(message)
+        === messageSenderIdentity(lastFlushedWorking.messages[0])
+      && (() => {
+        const planIDs = workingPlanIDs(lastFlushedWorking);
+        return planIDs.size > 0 && lastFlushedWorking.messages.every((workingMessage) => (
+          messageContainsUpdatePlan(workingMessage)
+          || (
+            (workingMessage?.type || workingMessage?.msg_type) === 'tool_result'
+            && isPlanTraceContinuation(workingMessage, planIDs)
+          )
+        ));
+      })()
+    );
 
     const findWorkingGroup = ({ explicitTurnKey }) => {
       return explicitTurnKey ? workingByExplicitTurn.get(explicitTurnKey) || null : null;
@@ -2754,6 +2828,28 @@ export default function MessagesView({
 
         if (currentWorking && !belongsToCurrentWorking(turn)) {
           flushCurrentWorking();
+          // A different working key starts a new execution segment. Do not
+          // resurrect an older group if this segment later returns to it.
+          workingByExplicitTurn.clear();
+          workingContinuationKey = '';
+        }
+
+        if (
+          !currentWorking
+          && unkeyedBridgeConsumed
+          && !isPlanTraceContinuation(msg, workingPlanIDs(lastFlushedWorking))
+        ) {
+          // The one-row bridge is only for a continuing plan trace. A regular
+          // tool after that narrative starts a fresh working segment.
+          workingByExplicitTurn.clear();
+          workingContinuationKey = '';
+          unkeyedBridgeConsumed = false;
+        }
+
+        if (!currentWorking && turn.explicitTurnKey !== workingContinuationKey) {
+          // A working row after a different or unkeyed Agent row starts a new
+          // segment, even when the previous group is already flushed.
+          workingByExplicitTurn.clear();
         }
 
         if (currentWorking) {
@@ -2773,9 +2869,39 @@ export default function MessagesView({
             };
           }
         }
+        workingContinuationKey = turn.explicitTurnKey;
+        unkeyedBridgeConsumed = false;
         previousDisplayContext = displayContext;
       } else {
         flushCurrentWorking();
+        const sameExplicitTurn = Boolean(
+          turn.explicitTurnKey
+          && turn.explicitTurnKey === workingContinuationKey,
+        );
+        const canBridgeUnkeyedText = Boolean(
+          !turn.explicitTurnKey
+          && workingContinuationKey
+          && canBridgeUnkeyedAssistantText(msg, assistantAuthored),
+        );
+        if (canBridgeUnkeyedText) {
+          // A plan-only trace may have one unkeyed narrative row between two
+          // keyed plan updates. Consume this exception once so a second
+          // unrelated narrative row still forms a hard boundary.
+          unkeyedBridgeConsumed = true;
+        } else if (!sameExplicitTurn) {
+          // Agent-authored narrative may continue the same turn, but a human
+          // row or a different/unkeyed Agent row is a hard visibility boundary
+          // for working-group compaction.
+          workingByExplicitTurn.clear();
+          workingContinuationKey = assistantAuthored ? turn.explicitTurnKey : '';
+          unkeyedBridgeConsumed = false;
+        } else if (unkeyedBridgeConsumed) {
+          // Once the single unkeyed bridge has been consumed, a visible
+          // same-key narrative ends that compactable plan segment.
+          workingByExplicitTurn.clear();
+          workingContinuationKey = '';
+          unkeyedBridgeConsumed = false;
+        }
         const displayMessage = msg;
         const textIsConsecutive = areMessagesConsecutive(previousDisplayContext, displayContext);
         const previousGroup = groups[groups.length - 1];
@@ -5205,38 +5331,6 @@ function findHistoryMatchForPending(pending, historyMessages, usedHistoryIDs) {
     })[0] || null;
 }
 
-function persistedIDsAfterMessage(messages, messageIndex) {
-  const ids = new Set();
-  for (let index = messageIndex + 1; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (message?._pending || message?._streaming) continue;
-    const sequence = historyMessageID(message);
-    if (sequence > 0) ids.add(sequence);
-  }
-  return ids;
-}
-
-function historySequenceBeforePending(historyMessages, currentMessages, pendingIndex, pending) {
-  const messagesAfterPending = persistedIDsAfterMessage(currentMessages, pendingIndex);
-  const pendingAnchor = pendingMessageAnchor(pending);
-  const pendingCreatedAt = Date.parse(pending?.created_at || '');
-  return historyMessages.reduce((latest, message) => {
-    const sequence = historyMessageID(message);
-    const historyCreatedAt = Date.parse(message?.created_at || '');
-    if (
-      sequence <= pendingAnchor
-      || messagesAfterPending.has(sequence)
-      || pendingAnchor > 0
-      || (
-        Number.isFinite(pendingCreatedAt)
-        && Number.isFinite(historyCreatedAt)
-        && historyCreatedAt >= pendingCreatedAt
-      )
-    ) return latest;
-    return Math.max(latest, sequence);
-  }, 0);
-}
-
 function historyContainsFinalForStreamingMessage(streamingMessage, historyMessages) {
   const streamingTurnKey = assistantReplyTurnKey(streamingMessage);
   const streamingSenderKey = messageSenderIdentity(streamingMessage);
@@ -5266,7 +5360,7 @@ function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
     && !historyContainsFinalForStreamingMessage(message, visibleMessages)
   ));
 
-  current.forEach((pending, pendingIndex) => {
+  current.forEach((pending) => {
     if (!pending?._pending) return;
     const historyMatch = findHistoryMatchForPending(pending, visibleMessages, usedHistoryIDs);
     if (historyMatch) {
@@ -5274,13 +5368,10 @@ function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
       return;
     }
 
-    pendingToKeep.push({
-      ...pending,
-      _pending_after_seq: Math.max(
-        pendingMessageAnchor(pending),
-        historySequenceBeforePending(visibleMessages, current, pendingIndex, pending),
-      ),
-    });
+    // Browser and server clocks cannot establish causal ordering. Until a
+    // matching client message ID or acknowledgement supplies the durable
+    // sequence, keep the anchor captured when the user sent the message.
+    pendingToKeep.push(pending);
   });
 
   const pendingByID = new Map(pendingToKeep.map((pending) => [pending.id, pending]));

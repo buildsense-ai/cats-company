@@ -297,7 +297,7 @@ func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit in
 	args = append(args, limit)
 	rows, err := a.db.Query(
 		fmt.Sprintf(
-			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 			 FROM messages
 			 WHERE topic_id = $1
 			   AND (msg_type = 'file' OR content_blocks @> '[{"type":"file"}]'::jsonb)%s
