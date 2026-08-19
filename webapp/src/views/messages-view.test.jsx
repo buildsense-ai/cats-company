@@ -2942,7 +2942,7 @@ describe('MessagesView composer draft isolation', () => {
     );
   });
 
-  it('keeps plan updates from the same Agent turn in one working group across assistant text', async () => {
+  it('keeps an unkeyed Agent narrative as a working-group boundary', async () => {
     mockTutorialAgentPeer();
     api.getMessages.mockResolvedValueOnce({
       messages: [
@@ -3032,11 +3032,15 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     const workingGroups = container.querySelectorAll('.oc-working-group');
-    expect(workingGroups).toHaveLength(1);
-    const workingMessage = workingGroups[0].querySelector('[data-working-only="true"]');
-    expect(workingMessage?.dataset.workingCount).toBe('4');
-    expect(workingMessage?.dataset.workingMessageIds).toBe('91,92,94,95');
+    expect(workingGroups).toHaveLength(2);
+    expect(workingGroups[0].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('91,92');
+    expect(workingGroups[1].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('94,95');
     expect(container.querySelector('.mock-chat-message[data-message-id="93"]')).not.toBeNull();
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['实现并测试这项功能', 'update_plan', '功能和测试已经完成。', 'update_plan']);
   });
 
   it('does not merge the same Agent turn across an intervening human message', async () => {
