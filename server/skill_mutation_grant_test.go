@@ -133,6 +133,13 @@ func TestSkillMutationGrantRejectsExpiredAndOversizedLifetime(t *testing.T) {
 	if _, err := signer.verify(raw); err == nil {
 		t.Fatal("expired grant was accepted")
 	}
+	claims, err := signer.verifyExpiredForRecovery(raw)
+	if err != nil || claims.ClientRequestID != input.Mutation.ClientRequestID {
+		t.Fatalf("expired recovery verification claims=%#v err=%v", claims, err)
+	}
+	if _, err := signer.verifyExpiredForRecovery(raw + "tampered"); err == nil {
+		t.Fatal("tampered expired grant was accepted for recovery")
+	}
 }
 
 func TestSkillMutationGrantRejectsRollbackAndInvalidCandidate(t *testing.T) {

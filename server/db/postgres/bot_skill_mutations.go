@@ -207,6 +207,31 @@ func (a *Adapter) GetBotSkillMutation(botUID, mutationID int64) (*types.BotSkill
 	return mutation, nil
 }
 
+func (a *Adapter) GetBotSkillMutationByRequest(
+	input types.BotSkillMutationCreateInput,
+) (*types.BotSkillMutation, error) {
+	input, fingerprint, err := store.NormalizeBotSkillMutationCreateInput(input)
+	if err != nil {
+		return nil, err
+	}
+	mutation, storedFingerprint, err := scanPostgresBotSkillMutation(a.db.QueryRow(
+		`SELECT `+postgresBotSkillMutationColumns+`
+		 FROM bot_skill_mutations
+		 WHERE actor_user_uid = $1 AND bot_uid = $2 AND client_request_id = $3`,
+		input.ActorUserUID, input.BotUID, input.ClientRequestID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrBotSkillMutationNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get bot skill mutation by request: %w", err)
+	}
+	if storedFingerprint != fingerprint {
+		return nil, store.ErrBotSkillMutationIdempotencyConflict
+	}
+	return mutation, nil
+}
+
 func (a *Adapter) AdvanceBotSkillMutation(
 	botUID, mutationID, expectedLeaseGeneration int64,
 	expected, next types.BotSkillMutationStatus,
@@ -390,6 +415,41 @@ func (a *Adapter) RenewBotSkillMutationLease(
 	}
 	if err != nil {
 		return nil, fmt.Errorf("renew bot skill mutation lease: %w", err)
+	}
+	return mutation, nil
+}
+
+func (a *Adapter) RecoverBotSkillMutationLease(
+	botUID, mutationID, expectedLeaseGeneration int64,
+	expected types.BotSkillMutationStatus,
+	now time.Time,
+	leaseTTL time.Duration,
+) (*types.BotSkillMutation, error) {
+	if expectedLeaseGeneration <= 0 || store.IsTerminalBotSkillMutationStatus(expected) {
+		return nil, store.ErrBotSkillMutationStateConflict
+	}
+	if _, ok := types.ParseBotSkillMutationStatus(string(expected)); !ok {
+		return nil, store.ErrBotSkillMutationStateConflict
+	}
+	leaseExpiresAt, err := store.ValidateBotSkillMutationLease(now, leaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	now = now.UTC()
+	mutation, _, err := scanPostgresBotSkillMutation(a.db.QueryRow(
+		`UPDATE bot_skill_mutations
+		 SET lease_generation = lease_generation + 1, lease_expires_at = $1,
+		     updated_at = CURRENT_TIMESTAMP
+		 WHERE bot_uid = $2 AND id = $3 AND status = $4 AND lease_generation = $5
+		   AND lease_expires_at <= $6
+		 RETURNING `+postgresBotSkillMutationColumns,
+		leaseExpiresAt, botUID, mutationID, string(expected), expectedLeaseGeneration, now,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, a.classifyBotSkillMutationCASFailure(botUID, mutationID, expectedLeaseGeneration, expected, now)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("recover bot skill mutation lease: %w", err)
 	}
 	return mutation, nil
 }
