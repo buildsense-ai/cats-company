@@ -178,28 +178,39 @@ describe('narrow conversation top bar', () => {
     expect(cssDeclaration(titleRule, 'text-overflow')).toBe('ellipsis');
   });
 
-  it('hides secondary controls before a narrow pane can crowd the title', () => {
-    const controlsRule = cssRule(
-      '.v3-local-assistant-bar > :is(.v3-model-select, .v3-shell-actions)',
+  it('keeps model status and actions on the first narrow-pane row', () => {
+    const barRule = cssRule('.v3-local-assistant-bar', narrowContainerCss);
+    const modelRule = cssRule('.v3-model-select', narrowContainerCss);
+    const actionsRule = cssRule('.v3-shell-actions', narrowContainerCss);
+    const metadataRule = cssRuleBody(
       narrowContainerCss,
+      '\\.v3-model-context,\\s*\\.v3-model-quota',
     );
-    expect(cssDeclaration(controlsRule, 'display')).toBe('none');
+
+    expect(cssDeclaration(barRule, 'grid-template-areas').replace(/\s+/g, ' ')).toBe(
+      '"model actions" "title title"',
+    );
+    expect(cssDeclaration(barRule, 'grid-template-columns')).toBe('minmax(0, 1fr) auto');
+    expect(cssDeclaration(barRule, 'grid-template-rows')).toBe('38px minmax(24px, auto)');
+    expect(cssDeclaration(barRule, 'min-height')).toBe('70px');
+    expect(cssDeclaration(modelRule, 'grid-area')).toBe('model');
+    expect(cssDeclaration(actionsRule, 'grid-area')).toBe('actions');
+    expect(cssDeclaration(metadataRule, 'display')).toBe('none');
+    expect(narrowContainerCss).not.toMatch(
+      /\.v3-local-assistant-bar\s*>\s*:is\(\.v3-model-select,\s*\.v3-shell-actions\)[\s\S]*display:\s*none;/,
+    );
   });
 
   it('moves a narrow-pane title onto an auto-growing readable row', () => {
-    const barRule = cssRule('.v3-local-assistant-bar', narrowContainerCss);
-    const titleInputRule = cssRule(
-      '.v3-local-assistant-bar > :is(.v3-shell-title, .v3-shell-title-input)',
+    const titleInputRule = cssRuleBody(
       narrowContainerCss,
+      '\\.v3-shell-title,\\s*\\.v3-shell-title-input',
     );
     const titleRule = cssRuleBody(
       narrowContainerCss,
       '\\.v3-shell-title,\\s*\\.v3-shell-title-button',
     );
 
-    expect(cssDeclaration(barRule, 'grid-template-areas')).toBe('"title"');
-    expect(cssDeclaration(barRule, 'grid-template-columns')).toBe('minmax(0, 1fr)');
-    expect(cssDeclaration(barRule, 'grid-template-rows')).toBe('minmax(24px, auto)');
     expect(cssDeclaration(titleInputRule, 'grid-area')).toBe('title');
     expect(cssDeclaration(titleInputRule, 'width')).toBe('100%');
     expect(cssDeclaration(titleInputRule, 'max-width')).toBe('100%');
@@ -209,7 +220,7 @@ describe('narrow conversation top bar', () => {
     expect(cssDeclaration(titleRule, 'overflow-wrap')).toBe('anywhere');
   });
 
-  it('does not let handset media rules replace the auto-growing container layout', () => {
+  it('keeps handset media rules from replacing the container layout', () => {
     const mobileRule = cssRule('.v3-local-assistant-bar', mobile520Css);
     const smallestRule = cssRule('.v3-local-assistant-bar', mobile360Css);
 
