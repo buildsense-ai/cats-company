@@ -47,6 +47,8 @@ const APP_ENTRY_QR_MODULES = [
 // the footer.
 const APP_ENTRY_QR_MODULE_SIZE = 4;
 const APP_ENTRY_QR_SIZE = APP_ENTRY_QR_MODULES.length * APP_ENTRY_QR_MODULE_SIZE;
+const APP_ENTRY_QR_BACKGROUND = '#fcfdfc';
+const APP_ENTRY_QR_FOREGROUND = '#18201e';
 
 export const CONVERSATION_SHARE_IMAGE_WIDTH = DEFAULT_WIDTH;
 
@@ -271,8 +273,12 @@ function drawLogoFallback(ctx, x, y, size, palette) {
   ctx.restore();
 }
 
-function drawAppEntryQRCode(ctx, x, y, palette) {
-  ctx.fillStyle = palette.text;
+function drawAppEntryQRCode(ctx, x, y) {
+  // Keep the full quiet zone on a light field so scanners see a conventional
+  // dark-on-light QR code regardless of the surrounding share theme.
+  ctx.fillStyle = APP_ENTRY_QR_BACKGROUND;
+  ctx.fillRect(x, y, APP_ENTRY_QR_SIZE, APP_ENTRY_QR_SIZE);
+  ctx.fillStyle = APP_ENTRY_QR_FOREGROUND;
   APP_ENTRY_QR_MODULES.forEach((row, rowIndex) => {
     Array.from(row).forEach((module, columnIndex) => {
       if (module !== '1') return;
@@ -521,7 +527,7 @@ export async function renderConversationShareImage({
     pageCtx.fillText('app.catsco.cc', qrLabelRight, qrLabelCenterY + 20);
     pageCtx.textAlign = 'left';
 
-    drawAppEntryQRCode(pageCtx, qrX, qrY, palette);
+    drawAppEntryQRCode(pageCtx, qrX, qrY);
 
     return {
       dataUrl: pageCanvas.toDataURL('image/png'),
@@ -725,7 +731,7 @@ function downloadFilenamePrefix(value) {
   return prefix || 'catsco-conversation-share';
 }
 
-function isMobileBrowser() {
+export function isMobileConversationShareBrowser() {
   if (typeof navigator === 'undefined') return false;
   if (navigator.userAgentData?.mobile === true) return true;
   const userAgent = String(navigator.userAgent || '');
@@ -735,7 +741,7 @@ function isMobileBrowser() {
 
 function startNativeImageShare(files) {
   if (
-    !isMobileBrowser()
+    !isMobileConversationShareBrowser()
     || typeof navigator.share !== 'function'
     || typeof navigator.canShare !== 'function'
     || files.length === 0
@@ -838,7 +844,7 @@ export async function downloadConversationShareImage(dataUrl, filename = 'catsco
   // iOS and some embedded mobile browsers ignore synthetic download clicks.
   // When native file sharing is unavailable, show the image in a real tab so
   // the user can still save it with the platform's long-press/save controls.
-  if (isMobileBrowser()) return openImageForManualSave(blob);
+  if (isMobileConversationShareBrowser()) return openImageForManualSave(blob);
   return startDirectImageDownload(blob, filename);
 }
 
@@ -847,7 +853,7 @@ export async function downloadConversationShareImages(dataUrls, filenamePrefix =
   if (urls.length === 0) return false;
   if (urls.length === 1) return downloadConversationShareImage(urls[0], `${filenamePrefix}.png`);
 
-  const mobileBrowser = isMobileBrowser();
+  const mobileBrowser = isMobileConversationShareBrowser();
   const originalPrefix = String(filenamePrefix || 'catsco-conversation-share');
   const downloadPrefix = downloadFilenamePrefix(filenamePrefix);
   const safePrefix = safeDownloadPrefix(filenamePrefix);

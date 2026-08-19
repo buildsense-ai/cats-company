@@ -23,6 +23,7 @@ import {
   conversationShareText,
   downloadConversationShareImage,
   downloadConversationShareImages,
+  isMobileConversationShareBrowser,
   openConversationShareImageForManualSave,
   renderConversationShareImage,
 } from '../utils/conversation-share-image';
@@ -3928,7 +3929,9 @@ export default function MessagesView({
                 <Download size={16} aria-hidden="true" />
                 {conversationShareDownloading
                   ? '正在打开…'
-                  : (conversationShareImages.length > 1 ? '下载全部图片' : '下载 PNG')}
+                  : (conversationShareImages.length > 1
+                    ? (isMobileConversationShareBrowser() ? '系统分享全部图片' : '下载全部图片（ZIP）')
+                    : '下载 PNG')}
               </button>
             </footer>
           </section>

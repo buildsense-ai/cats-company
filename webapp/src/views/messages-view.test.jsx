@@ -178,6 +178,7 @@ vi.mock('../utils/conversation-share-image', () => ({
   },
   downloadConversationShareImage: vi.fn(async () => true),
   downloadConversationShareImages: vi.fn(async () => true),
+  isMobileConversationShareBrowser: vi.fn(() => false),
   openConversationShareImageForManualSave: vi.fn(() => true),
   renderConversationShareImage: vi.fn(async () => ({
     dataUrl: 'data:image/png;base64,catsco-share',
@@ -224,6 +225,7 @@ import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeCha
 import {
   downloadConversationShareImage,
   downloadConversationShareImages,
+  isMobileConversationShareBrowser,
   openConversationShareImageForManualSave,
   renderConversationShareImage,
 } from '../utils/conversation-share-image';
@@ -434,6 +436,7 @@ describe('MessagesView composer draft isolation', () => {
       api_upload_url: '/api/mobile-upload/sessions/abc123/files',
     });
     api.getMobileUploadSession.mockResolvedValue({ session_id: 'abc123', files: [] });
+    isMobileConversationShareBrowser.mockReturnValue(false);
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
       wsHandler = handler;
@@ -679,8 +682,8 @@ describe('MessagesView composer draft isolation', () => {
     expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,page-two');
 
     const downloadAllButton = [...preview.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('下载全部图片'));
-    expect(downloadAllButton?.textContent).not.toContain('ZIP');
+      .find((button) => button.textContent.includes('下载全部图片（ZIP）'));
+    expect(downloadAllButton?.textContent).toBe('下载全部图片（ZIP）');
     await act(async () => {
       downloadAllButton.click();
       await flushPromises();
@@ -689,6 +692,44 @@ describe('MessagesView composer draft isolation', () => {
       'data:image/png;base64,page-one',
       'data:image/png;base64,page-two',
     ]);
+  });
+
+  it('labels multi-page mobile sharing as a system share action', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 202,
+        seq_id: 202,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '两张分享图',
+      }],
+    });
+    isMobileConversationShareBrowser.mockReturnValue(true);
+    renderConversationShareImage.mockResolvedValueOnce({
+      dataUrl: 'data:image/png;base64:page-one',
+      pages: [
+        { dataUrl: 'data:image/png;base64:page-one', width: 720, height: 1200, page: 1, total: 2 },
+        { dataUrl: 'data:image/png;base64:page-two', width: 720, height: 1200, page: 2, total: 2 },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    expect([...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('系统分享全部图片'))?.textContent)
+      .toBe('系统分享全部图片');
   });
 
   it('shows a visible recovery message when image saving cannot start', async () => {
