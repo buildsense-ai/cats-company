@@ -10,6 +10,7 @@ import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
@@ -82,12 +83,8 @@ function normalizeCollapsedSections(value) {
 }
 
 function loadCollapsedSections(uid) {
-  if (typeof window === 'undefined' || !window.localStorage) {
-    return { ...DEFAULT_COLLAPSED_SECTIONS };
-  }
-
   try {
-    const raw = window.localStorage.getItem(sidebarCollapsedStorageKey(uid));
+    const raw = readStorageValue(sidebarCollapsedStorageKey(uid));
     return raw ? normalizeCollapsedSections(JSON.parse(raw)) : { ...DEFAULT_COLLAPSED_SECTIONS };
   } catch (error) {
     console.warn('Failed to restore sidebar collapsed state:', error);
@@ -96,20 +93,16 @@ function loadCollapsedSections(uid) {
 }
 
 function saveCollapsedSections(uid, next) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-
   try {
-    window.localStorage.setItem(sidebarCollapsedStorageKey(uid), JSON.stringify(next));
+    writeStorageValue(sidebarCollapsedStorageKey(uid), JSON.stringify(next));
   } catch (error) {
     console.warn('Failed to save sidebar collapsed state:', error);
   }
 }
 
 function loadPinnedGroupIds(uid) {
-  if (typeof window === 'undefined' || !window.localStorage) return new Set();
-
   try {
-    const raw = window.localStorage.getItem(pinnedGroupsStorageKey(uid));
+    const raw = readStorageValue(pinnedGroupsStorageKey(uid));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return new Set();
     return new Set(parsed.map((value) => String(value || '').trim()).filter(Boolean));
@@ -120,20 +113,16 @@ function loadPinnedGroupIds(uid) {
 }
 
 function savePinnedGroupIds(uid, next) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-
   try {
-    window.localStorage.setItem(pinnedGroupsStorageKey(uid), JSON.stringify([...next]));
+    writeStorageValue(pinnedGroupsStorageKey(uid), JSON.stringify([...next]));
   } catch (error) {
     console.warn('Failed to save pinned groups:', error);
   }
 }
 
 function loadPinnedHistoryIds(uid) {
-  if (typeof window === 'undefined' || !window.localStorage) return new Set();
-
   try {
-    const raw = window.localStorage.getItem(pinnedHistoryStorageKey(uid));
+    const raw = readStorageValue(pinnedHistoryStorageKey(uid));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return new Set();
     return new Set(parsed.map((value) => String(value || '').trim()).filter(Boolean));
@@ -144,20 +133,16 @@ function loadPinnedHistoryIds(uid) {
 }
 
 function savePinnedHistoryIds(uid, next) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-
   try {
-    window.localStorage.setItem(pinnedHistoryStorageKey(uid), JSON.stringify([...next]));
+    writeStorageValue(pinnedHistoryStorageKey(uid), JSON.stringify([...next]));
   } catch (error) {
     console.warn('Failed to save pinned history:', error);
   }
 }
 
 function loadHiddenHistoryIds(uid) {
-  if (typeof window === 'undefined' || !window.localStorage) return new Set();
-
   try {
-    const raw = window.localStorage.getItem(hiddenHistoryStorageKey(uid));
+    const raw = readStorageValue(hiddenHistoryStorageKey(uid));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return new Set();
     return new Set(parsed.map((value) => String(value || '').trim()).filter(Boolean));
@@ -168,20 +153,16 @@ function loadHiddenHistoryIds(uid) {
 }
 
 function saveHiddenHistoryIds(uid, next) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-
   try {
-    window.localStorage.setItem(hiddenHistoryStorageKey(uid), JSON.stringify([...next]));
+    writeStorageValue(hiddenHistoryStorageKey(uid), JSON.stringify([...next]));
   } catch (error) {
     console.warn('Failed to save hidden history:', error);
   }
 }
 
 function loadDismissedTaskStatuses(uid) {
-  if (typeof window === 'undefined' || !window.localStorage) return {};
-
   try {
-    const raw = window.localStorage.getItem(taskStatusDismissedStorageKey(uid));
+    const raw = readStorageValue(taskStatusDismissedStorageKey(uid));
     const parsed = raw ? JSON.parse(raw) : {};
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch (error) {
@@ -191,10 +172,8 @@ function loadDismissedTaskStatuses(uid) {
 }
 
 function saveDismissedTaskStatuses(uid, next) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-
   try {
-    window.localStorage.setItem(taskStatusDismissedStorageKey(uid), JSON.stringify(next));
+    writeStorageValue(taskStatusDismissedStorageKey(uid), JSON.stringify(next));
   } catch (error) {
     console.warn('Failed to save dismissed task statuses:', error);
   }
@@ -742,9 +721,8 @@ export default function ChatListView({
   };
 
   const broadcastFriendSync = () => {
-    if (typeof window === 'undefined' || !window.localStorage) return;
     try {
-      window.localStorage.setItem(friendSyncStorageKey(userUidRef.current), JSON.stringify({
+      writeStorageValue(friendSyncStorageKey(userUidRef.current), JSON.stringify({
         at: Date.now(),
         nonce: Math.random().toString(36).slice(2),
       }));

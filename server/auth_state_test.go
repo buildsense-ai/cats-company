@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,12 +58,64 @@ func TestUserTokenExpirationPolicy(t *testing.T) {
 
 type authStateTestStore struct {
 	store.Store
-	users   map[int64]*types.User
-	botKeys map[string]int64
+	users      map[int64]*types.User
+	botKeys    map[string]int64
+	getUserErr error
 }
 
 func (s authStateTestStore) GetUser(id int64) (*types.User, error) {
+	if s.getUserErr != nil {
+		return nil, s.getUserErr
+	}
 	return s.users[id], nil
+}
+
+func TestAuthMiddlewareWithDBReturnsServerErrorWhenUserLookupFails(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("auth-state-lookup-error-test-secret")
+
+	token, err := GenerateToken(1, "alice", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	db := authStateTestStore{getUserErr: errors.New("database unavailable")}
+	handler := AuthMiddlewareWithDB(db)(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+}
+
+func TestHandleMeDistinguishesMissingUserFromLookupFailure(t *testing.T) {
+	requestWithUID := func(db store.Store) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(1)))
+		rec := httptest.NewRecorder()
+		NewUserHandler(db).HandleMe(rec, req)
+		return rec
+	}
+
+	t.Run("missing user", func(t *testing.T) {
+		rec := requestWithUID(authStateTestStore{users: map[int64]*types.User{}})
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+	})
+
+	t.Run("lookup failure", func(t *testing.T) {
+		rec := requestWithUID(authStateTestStore{getUserErr: errors.New("database unavailable")})
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+		}
+	})
 }
 
 func (s authStateTestStore) GetUserByUsername(username string) (*types.User, error) {

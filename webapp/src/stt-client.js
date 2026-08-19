@@ -1,4 +1,5 @@
 import PCM_WORKLET_URL from './stt-pcm-worklet.js?url&no-inline';
+import { getToken } from './auth-session';
 
 const MAX_BUFFERED_AUDIO_BYTES = 160_000;
 const MAX_PRE_ROLL_AUDIO_BYTES = 16_000;
@@ -255,7 +256,7 @@ function sttAPIBaseURL() {
 
 async function createSTTSessionRequest() {
   const headers = { 'Content-Type': 'application/json' };
-  const token = globalThis.localStorage?.getItem('oc_token');
+  const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`${API_BASE}/api/stt/sessions`, { method: 'POST', headers });
   let payload = {};

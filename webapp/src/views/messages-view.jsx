@@ -11,6 +11,7 @@ import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TAS
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import {
   artifactRefFromPreviewFile,
@@ -166,13 +167,11 @@ function clampPreviewWidth(width) {
 }
 
 function loadPreviewWidth() {
-  if (typeof window === 'undefined' || !window.localStorage) return PREVIEW_WIDTH_DEFAULT;
-  return clampPreviewWidth(Number(window.localStorage.getItem(PREVIEW_WIDTH_STORAGE_KEY)) || PREVIEW_WIDTH_DEFAULT);
+  return clampPreviewWidth(Number(readStorageValue(PREVIEW_WIDTH_STORAGE_KEY)) || PREVIEW_WIDTH_DEFAULT);
 }
 
 function savePreviewWidth(width) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(PREVIEW_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  writeStorageValue(PREVIEW_WIDTH_STORAGE_KEY, String(Math.round(width)));
 }
 
 function resolvePhoneUploadLink(uploadUrl) {
@@ -350,7 +349,9 @@ export default function MessagesView({
   const [showTutorialPicker, setShowTutorialPicker] = useState(false);
   const [selectedTutorialTask, setSelectedTutorialTask] = useState(null);
   const [tutorialTasks, setTutorialTasks] = useState(TUTORIAL_TASKS);
-  const [tutorialDismissed, setTutorialDismissed] = useState(() => localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
+  const [tutorialDismissed, setTutorialDismissed] = useState(() => (
+    readStorageValue(tutorialDismissStorageKey(user.uid, topic)) === '1'
+  ));
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
@@ -361,7 +362,7 @@ export default function MessagesView({
   const [questionIndexHasMore, setQuestionIndexHasMore] = useState(false);
   const [questionIndexLimitReached, setQuestionIndexLimitReached] = useState(false);
   const [showThinking, setShowThinking] = useState(() => {
-    const saved = localStorage.getItem('cc_show_thinking');
+    const saved = readStorageValue('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
   const [conversationShareMode, setConversationShareMode] = useState(false);
@@ -658,7 +659,7 @@ export default function MessagesView({
   }, [input, resizeComposerInput]);
 
   useEffect(() => {
-    setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
+    setTutorialDismissed(readStorageValue(tutorialDismissStorageKey(user.uid, topic)) === '1');
   }, [topic, user.uid]);
 
   useEffect(() => {
@@ -3092,7 +3093,7 @@ export default function MessagesView({
   };
 
   const dismissTutorialEmptyState = () => {
-    localStorage.setItem(tutorialDismissStorageKey(user.uid, topic), '1');
+    writeStorageValue(tutorialDismissStorageKey(user.uid, topic), '1');
     setTutorialDismissed(true);
   };
 

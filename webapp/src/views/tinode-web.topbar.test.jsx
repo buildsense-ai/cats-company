@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
+  commitPreviewSession,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
@@ -70,6 +71,27 @@ const relayState = {
 };
 
 describe('preview user identity', () => {
+  it('persists the preview profile before publishing its token', () => {
+    const calls = [];
+    const storedUser = commitPreviewSession({
+      token: 'preview-session',
+      id: 100,
+      username: 'ui-reviewer',
+    }, {
+      writeProfile: (profile) => {
+        calls.push(['profile', profile]);
+        return profile;
+      },
+      setSessionToken: (token) => calls.push(['token', token]),
+    });
+
+    expect(storedUser).toMatchObject({ uid: 100, username: 'ui-reviewer' });
+    expect(calls).toEqual([
+      ['profile', expect.objectContaining({ uid: 100, username: 'ui-reviewer' })],
+      ['token', 'preview-session'],
+    ]);
+  });
+
   it('restores the authenticated backend identity while previewing a theme', () => {
     expect(resolveInitialUser({
       themePreview: 'liquid',

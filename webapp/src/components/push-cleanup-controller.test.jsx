@@ -2,7 +2,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-vi.mock('../api', () => ({
+vi.mock('../auth-session', () => ({
   getToken: vi.fn(() => ''),
 }));
 
