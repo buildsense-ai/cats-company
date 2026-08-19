@@ -904,7 +904,7 @@
       "model actions"
       "title title";
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 38px 24px;
+    grid-template-rows: 38px minmax(24px, auto);
     min-height: 70px;
     gap: 0 6px;
     padding-top: 4px;

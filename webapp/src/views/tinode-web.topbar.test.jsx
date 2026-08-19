@@ -19,6 +19,29 @@ const topbarCss = readFileSync(
   'utf8',
 );
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const cssRuleBody = (source, selectorPattern) => source.match(
+  new RegExp(`(?:^|\\n)\\s*${selectorPattern}\\s*\\{([^}]*)\\}`, 's'),
+)?.[1] || '';
+const cssRule = (selector, source = topbarCss) => cssRuleBody(source, escapeRegExp(selector));
+const cssDeclaration = (rule, property) => rule.match(
+  new RegExp(`(?:^|;)\\s*${escapeRegExp(property)}\\s*:\\s*([^;]+);`),
+)?.[1]?.trim() || '';
+const cssBlock = (source, marker) => {
+  const start = source.search(marker);
+  if (start < 0) return '';
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    if (source[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open + 1, index);
+    }
+  }
+  return '';
+};
+
 const baseConfig = {
   uid: 43,
   runtime_supported: true,
@@ -68,6 +91,10 @@ const relayState = {
     source: 'relay', model: 'minimax-m3', quota_configured: true, percent: 25, remaining_percent: 75, status: 'normal',
   },
 };
+
+const narrowContainerCss = cssBlock(topbarCss, /@container\s*\(max-width:\s*820px\)/);
+const mobile520Css = cssBlock(topbarCss, /@media\s*\(max-width:\s*520px\)/);
+const mobile360Css = cssBlock(topbarCss, /@media\s*\(max-width:\s*360px\)/);
 
 describe('preview user identity', () => {
   it('restores the authenticated backend identity while previewing a theme', () => {
@@ -125,39 +152,64 @@ describe('model reasoning menu placement', () => {
 
 describe('LocalAssistantBar narrow-pane layout', () => {
   it('keeps model status and a long conversation title in bounded header tracks', () => {
-    expect(topbarCss).toMatch(
-      /\.v3-local-assistant-bar\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*min\(42%,\s*480px\)\)\s*minmax\(0,\s*1fr\);/s,
+    const barRule = cssRule('.v3-local-assistant-bar');
+    const modelAnchorRule = cssRule('.v3-model-menu-anchor');
+    const statusRule = cssRule('.v3-local-assistant-status');
+    const titleRule = cssRule('.v3-shell-title');
+
+    expect(cssDeclaration(barRule, 'grid-template-columns')).toBe(
+      'minmax(0, 1fr) minmax(0, min(42%, 480px)) minmax(0, 1fr)',
     );
-    expect(topbarCss).toMatch(
-      /\.v3-chat-column\s*\{[^}]*container-type:\s*inline-size;/s,
-    );
-    expect(topbarCss).toMatch(
-      /\.v3-model-menu-anchor\s*\{[^}]*width:\s*min\(100%,\s*340px\);[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s,
-    );
-    expect(topbarCss).toMatch(
-      /\.v3-local-assistant-status\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden;/s,
-    );
-    expect(topbarCss).toMatch(
-      /\.v3-shell-title\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*text-overflow:\s*ellipsis;/s,
-    );
+    expect(cssDeclaration(cssRule('.v3-chat-column'), 'container-type')).toBe('inline-size');
+    expect(cssDeclaration(modelAnchorRule, 'width')).toBe('min(100%, 340px)');
+    expect(cssDeclaration(modelAnchorRule, 'min-width')).toBe('0');
+    expect(cssDeclaration(modelAnchorRule, 'max-width')).toBe('100%');
+    expect(cssDeclaration(statusRule, 'width')).toBe('100%');
+    expect(cssDeclaration(statusRule, 'min-width')).toBe('0');
+    expect(cssDeclaration(statusRule, 'max-width')).toBe('100%');
+    expect(cssDeclaration(statusRule, 'overflow')).toBe('hidden');
+    expect(cssDeclaration(titleRule, 'min-width')).toBe('0');
+    expect(cssDeclaration(titleRule, 'max-width')).toBe('100%');
+    expect(cssDeclaration(titleRule, 'text-overflow')).toBe('ellipsis');
   });
 
   it('removes secondary model metadata before a narrow pane can crowd the title', () => {
-    expect(topbarCss).toMatch(
-      /@container\s*\(max-width:\s*820px\)\s*\{[\s\S]*?\.v3-model-context,\s*\.v3-model-quota\s*\{[^}]*display:\s*none;/,
+    const metadataRule = cssRuleBody(
+      narrowContainerCss,
+      '\\.v3-model-context,\\s*\\.v3-model-quota',
     );
+    expect(cssDeclaration(metadataRule, 'display')).toBe('none');
   });
 
   it('moves a narrow-pane title onto its own readable row instead of ellipsizing it', () => {
-    expect(topbarCss).toMatch(
-      /@container\s*\(max-width:\s*820px\)\s*\{\s*\.v3-local-assistant-bar\s*\{[^}]*grid-template-areas:\s*"model actions"\s*"title title";[^}]*grid-template-rows:\s*38px\s+minmax\(24px,\s*auto\);/s,
+    const barRule = cssRule('.v3-local-assistant-bar', narrowContainerCss);
+    const titleInputRule = cssRuleBody(
+      narrowContainerCss,
+      '\\.v3-shell-title,\\s*\\.v3-shell-title-input',
     );
-    expect(topbarCss).toMatch(
-      /\.v3-shell-title,\s*\.v3-shell-title-input\s*\{[^}]*grid-area:\s*title;[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s,
+    const titleRule = cssRule('.v3-shell-title', narrowContainerCss);
+
+    expect(cssDeclaration(barRule, 'grid-template-areas').replace(/\s+/g, ' ')).toBe(
+      '"model actions" "title title"',
     );
-    expect(topbarCss).toMatch(
-      /\.v3-shell-title\s*\{[^}]*overflow:\s*visible;[^}]*text-overflow:\s*clip;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s,
-    );
+    expect(cssDeclaration(barRule, 'grid-template-rows')).toBe('38px minmax(24px, auto)');
+    expect(cssDeclaration(titleInputRule, 'grid-area')).toBe('title');
+    expect(cssDeclaration(titleInputRule, 'width')).toBe('100%');
+    expect(cssDeclaration(titleInputRule, 'max-width')).toBe('100%');
+    expect(cssDeclaration(titleRule, 'overflow')).toBe('visible');
+    expect(cssDeclaration(titleRule, 'text-overflow')).toBe('clip');
+    expect(cssDeclaration(titleRule, 'white-space')).toBe('normal');
+    expect(cssDeclaration(titleRule, 'overflow-wrap')).toBe('anywhere');
+  });
+
+  it('keeps the title row auto-growing at the narrowest viewport', () => {
+    const mobileRule = cssRule('.v3-local-assistant-bar', mobile520Css);
+    const smallestRule = cssRule('.v3-local-assistant-bar', mobile360Css);
+
+    expect(mobileRule).not.toBe('');
+    expect(smallestRule).not.toBe('');
+    expect(cssDeclaration(mobileRule, 'grid-template-rows')).toBe('38px minmax(24px, auto)');
+    expect(cssDeclaration(smallestRule, 'grid-template-rows')).not.toBe('38px 24px');
   });
 });
 
