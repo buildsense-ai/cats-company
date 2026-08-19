@@ -3148,6 +3148,80 @@ describe('MessagesView composer draft isolation', () => {
     )).toEqual(['execute_shell', '中间的 Agent 文本', '命令完成']);
   });
 
+  it('does not resurrect an older working group after alternating keyed Agent segments', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 118,
+          seq_id: 118,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { run_id: 'run-a' },
+          created_at: '2026-07-20T10:01:11Z',
+        },
+        {
+          id: 119,
+          seq_id: 119,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A 阶段说明。',
+          metadata: { run_id: 'run-a' },
+          created_at: '2026-07-20T10:01:12Z',
+        },
+        {
+          id: 120,
+          seq_id: 120,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'read_file',
+          metadata: { run_id: 'run-b' },
+          created_at: '2026-07-20T10:01:13Z',
+        },
+        {
+          id: 121,
+          seq_id: 121,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'B 阶段说明。',
+          metadata: { run_id: 'run-b' },
+          created_at: '2026-07-20T10:01:14Z',
+        },
+        {
+          id: 122,
+          seq_id: 122,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: 'A 阶段完成。',
+          metadata: { run_id: 'run-a' },
+          created_at: '2026-07-20T10:01:15Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingGroups = container.querySelectorAll('.oc-working-group');
+    expect(workingGroups).toHaveLength(3);
+    expect(Array.from(workingGroups).map((group) => (
+      group.querySelector('[data-working-only="true"]')?.dataset.workingMessageIds
+    ))).toEqual(['118', '120', '122']);
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['execute_shell', 'A 阶段说明。', 'read_file', 'B 阶段说明。', 'A 阶段完成。']);
+  });
+
   it('does not bridge a plan trace across another Agent narrative row', async () => {
     mockTutorialAgentPeer();
     api.getMessages.mockResolvedValueOnce({

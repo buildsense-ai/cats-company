@@ -2759,6 +2759,16 @@ export default function MessagesView({
           workingByExplicitTurn.clear();
         }
 
+        if (
+          !currentWorking
+          && !hasSameExplicitExecutionKey(previousDisplayContext, turn)
+        ) {
+          // When the previous visible row ended one execution segment, only
+          // the immediately preceding segment may be continued. Discard older
+          // keyed groups before looking up this new working row.
+          workingByExplicitTurn.clear();
+        }
+
         if (currentWorking) {
           currentWorking.messages.push(...leadingNarrativeMessages, msg);
         } else {
