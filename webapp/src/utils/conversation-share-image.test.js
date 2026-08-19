@@ -97,6 +97,34 @@ describe('conversation share image helpers', () => {
     }
   });
 
+  it('opens a saveable image tab when native file sharing rejects asynchronously', async () => {
+    vi.useFakeTimers();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:catsco-share');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const open = vi.spyOn(window, 'open').mockReturnValue({});
+    const share = vi.fn(() => Promise.reject(new DOMException('share blocked', 'NotAllowedError')));
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+      maxTouchPoints: 0,
+      canShare: vi.fn(() => true),
+      share,
+    });
+
+    try {
+      await expect(downloadConversationShareImage('data:image/png;base64,aGVsbG8=', 'share.png')).resolves.toBe(true);
+      expect(share).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledWith('blob:catsco-share', '_blank');
+      vi.advanceTimersByTime(300_000);
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:catsco-share');
+    } finally {
+      vi.unstubAllGlobals();
+      open.mockRestore();
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('opens a saveable image tab when mobile file sharing is unavailable', async () => {
     vi.useFakeTimers();
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:catsco-share');
@@ -145,6 +173,85 @@ describe('conversation share image helpers', () => {
       ]);
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not burst-download mobile pages after native sharing fails', async () => {
+    const share = vi.fn(() => Promise.reject(new DOMException('share blocked', 'NotAllowedError')));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Linux; Android 15)',
+      maxTouchPoints: 0,
+      canShare: vi.fn(() => true),
+      share,
+    });
+
+    try {
+      await expect(downloadConversationShareImages([
+        'data:image/png;base64,b25l',
+        'data:image/png;base64,dHdv',
+      ])).resolves.toBe(false);
+      expect(share).toHaveBeenCalledTimes(1);
+      expect(click).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      click.mockRestore();
+    }
+  });
+
+  it('downloads all generated pages as one ZIP on desktop', async () => {
+    vi.useFakeTimers();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:catsco-share-zip');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',
+      maxTouchPoints: 0,
+    });
+
+    try {
+      const download = downloadConversationShareImages([
+        'data:image/png;base64,b25l',
+        'data:image/png;base64,dHdv',
+      ]);
+      expect(click).toHaveBeenCalledTimes(1);
+      await expect(download).resolves.toBe(true);
+
+      const [zipBlob] = createObjectURL.mock.calls[0];
+      expect(zipBlob).toBeInstanceOf(Blob);
+      expect(zipBlob.type).toBe('application/zip');
+      const zipText = new TextDecoder().decode(new Uint8Array(await zipBlob.arrayBuffer()));
+      expect(zipText).toContain('catsco-conversation-share-01.png');
+      expect(zipText).toContain('catsco-conversation-share-02.png');
+      const downloadLink = click.mock.instances[0];
+      expect(downloadLink.download).toBe('catsco-conversation-share.zip');
+    } finally {
+      vi.unstubAllGlobals();
+      click.mockRestore();
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a custom download prefix in the desktop ZIP filename', async () => {
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:catsco-share-zip');
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
+      maxTouchPoints: 0,
+    });
+
+    try {
+      await expect(downloadConversationShareImages([
+        'data:image/png;base64,b25l',
+        'data:image/png;base64,dHdv',
+      ], '对话分享')).resolves.toBe(true);
+      expect(click.mock.instances[0].download).toBe('对话分享.zip');
+    } finally {
+      vi.unstubAllGlobals();
+      click.mockRestore();
+      createObjectURL.mockRestore();
     }
   });
 

@@ -3901,7 +3901,7 @@ export default function MessagesView({
                 <Download size={16} aria-hidden="true" />
                 {conversationShareDownloading
                   ? '正在打开…'
-                  : (conversationShareImages.length > 1 ? '下载全部 PNG' : '下载 PNG')}
+                  : (conversationShareImages.length > 1 ? '下载全部 PNG（ZIP）' : '下载 PNG')}
               </button>
             </footer>
           </section>

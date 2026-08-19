@@ -674,6 +674,7 @@ describe('MessagesView composer draft isolation', () => {
 
     const downloadAllButton = [...preview.querySelectorAll('button')]
       .find((button) => button.textContent.includes('下载全部 PNG'));
+    expect(downloadAllButton?.textContent).toContain('（ZIP）');
     await act(async () => {
       downloadAllButton.click();
       await flushPromises();

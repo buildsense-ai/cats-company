@@ -540,7 +540,22 @@ export async function renderConversationShareImage({
   };
 }
 
-function blobFromDataURL(dataUrl) {
+function utf8Bytes(value) {
+  if (typeof TextEncoder === 'function') return new TextEncoder().encode(value);
+  const encoded = encodeURIComponent(value);
+  const bytes = [];
+  for (let index = 0; index < encoded.length; index += 1) {
+    if (encoded[index] === '%') {
+      bytes.push(Number.parseInt(encoded.slice(index + 1, index + 3), 16));
+      index += 2;
+    } else {
+      bytes.push(encoded.charCodeAt(index));
+    }
+  }
+  return Uint8Array.from(bytes);
+}
+
+function dataURLBytes(dataUrl) {
   if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null;
   const separatorIndex = dataUrl.indexOf(',');
   if (separatorIndex < 0) return null;
@@ -556,9 +571,23 @@ function blobFromDataURL(dataUrl) {
       for (let index = 0; index < binary.length; index += 1) {
         bytes[index] = binary.charCodeAt(index);
       }
-      return new Blob([bytes], { type: mimeType });
+      return { bytes, mimeType };
     }
-    return new Blob([decodeURIComponent(payload)], { type: mimeType });
+    return { bytes: utf8Bytes(decodeURIComponent(payload)), mimeType };
+  } catch {
+    return null;
+  }
+}
+
+function blobFromDataURL(dataUrl) {
+  const parsed = dataURLBytes(dataUrl);
+  return parsed ? blobFromBytes(parsed.bytes, parsed.mimeType) : null;
+}
+
+function blobFromBytes(bytes, mimeType) {
+  if (!bytes || typeof Blob !== 'function') return null;
+  try {
+    return new Blob([bytes], { type: mimeType });
   } catch {
     return null;
   }
@@ -567,6 +596,134 @@ function blobFromDataURL(dataUrl) {
 function imageFileFromBlob(blob, filename) {
   if (typeof File !== 'function') return null;
   return new File([blob], filename, { type: blob.type || 'image/png' });
+}
+
+const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = (value & 1) ? ((value >>> 1) ^ 0xedb88320) : (value >>> 1);
+  }
+  return value >>> 0;
+});
+
+function crc32(bytes) {
+  let value = 0xffffffff;
+  for (const byte of bytes) {
+    value = (value >>> 8) ^ CRC32_TABLE[(value ^ byte) & 0xff];
+  }
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function zipFilenameBytes(filename) {
+  if (typeof TextEncoder === 'function') return new TextEncoder().encode(filename);
+  return Uint8Array.from(Array.from(filename), (character) => character.charCodeAt(0) & 0xff);
+}
+
+function createZipHeader({ central, nameLength, crc, size, offset = 0 }) {
+  const header = new Uint8Array(central ? 46 : 30);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, central ? 0x02014b50 : 0x04034b50, true);
+  if (central) {
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 20, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, 0, true);
+    view.setUint16(12, 0, true);
+    view.setUint16(14, 0, true);
+    view.setUint32(16, crc, true);
+    view.setUint32(20, size, true);
+    view.setUint32(24, size, true);
+    view.setUint16(28, nameLength, true);
+    view.setUint16(30, 0, true);
+    view.setUint16(32, 0, true);
+    view.setUint16(34, 0, true);
+    view.setUint16(36, 0, true);
+    view.setUint32(38, 0, true);
+    view.setUint32(42, offset, true);
+  } else {
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 0, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, 0, true);
+    view.setUint16(12, 0, true);
+    view.setUint32(14, crc, true);
+    view.setUint32(18, size, true);
+    view.setUint32(22, size, true);
+    view.setUint16(26, nameLength, true);
+    view.setUint16(28, 0, true);
+  }
+  return header;
+}
+
+function createZipBlob(entries) {
+  // PNGs are already compressed; store-only ZIP entries keep this synchronous
+  // so the one download click remains inside the user's gesture.
+  if (
+    typeof Blob !== 'function'
+    || !Array.isArray(entries)
+    || entries.length === 0
+    || entries.length > 0xffff
+  ) return null;
+  try {
+    const localChunks = [];
+    const centralChunks = [];
+    let localOffset = 0;
+    for (const entry of entries) {
+      if (!entry?.bytes) return null;
+      const nameBytes = zipFilenameBytes(entry.archiveName || entry.name);
+      const bytes = entry.bytes;
+      if (nameBytes.length > 0xffff || bytes.length > 0xffffffff || localOffset > 0xffffffff) return null;
+      const checksum = crc32(bytes);
+      const localHeader = createZipHeader({
+        central: false,
+        nameLength: nameBytes.length,
+        crc: checksum,
+        size: bytes.length,
+      });
+      const centralHeader = createZipHeader({
+        central: true,
+        nameLength: nameBytes.length,
+        crc: checksum,
+        size: bytes.length,
+        offset: localOffset,
+      });
+      localChunks.push(localHeader, nameBytes, bytes);
+      centralChunks.push(centralHeader, nameBytes);
+      localOffset += localHeader.length + nameBytes.length + bytes.length;
+      if (localOffset > 0xffffffff) return null;
+    }
+
+    const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    if (centralSize > 0xffffffff) return null;
+    const endOfCentralDirectory = new Uint8Array(22);
+    const endView = new DataView(endOfCentralDirectory.buffer);
+    endView.setUint32(0, 0x06054b50, true);
+    endView.setUint16(8, entries.length, true);
+    endView.setUint16(10, entries.length, true);
+    endView.setUint32(12, centralSize, true);
+    endView.setUint32(16, localOffset, true);
+
+    return new Blob([...localChunks, ...centralChunks, endOfCentralDirectory], {
+      type: 'application/zip',
+    });
+  } catch {
+    return null;
+  }
+}
+
+function safeDownloadPrefix(value) {
+  const prefix = String(value || 'catsco-conversation-share')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '');
+  return prefix || 'catsco-conversation-share';
+}
+
+function downloadFilenamePrefix(value) {
+  const prefix = String(value || 'catsco-conversation-share')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .trim();
+  return prefix || 'catsco-conversation-share';
 }
 
 function isMobileBrowser() {
@@ -595,9 +752,9 @@ function startNativeImageShare(files) {
       .then(() => true)
       // Closing the system sheet is an intentional cancellation, not a failed
       // save action that should surface as an error in the conversation.
-      .catch((error) => error?.name === 'AbortError');
-  } catch {
-    return null;
+      .catch((error) => (error?.name === 'AbortError' ? true : null));
+  } catch (error) {
+    return error?.name === 'AbortError' ? true : null;
   }
 }
 
@@ -656,7 +813,7 @@ export async function downloadConversationShareImage(dataUrl, filename = 'catsco
 
   const imageFile = imageFileFromBlob(blob, filename);
   const nativeShare = imageFile ? startNativeImageShare([imageFile]) : null;
-  if (nativeShare) return nativeShare;
+  if (nativeShare && (await nativeShare) === true) return true;
 
   // iOS and some embedded mobile browsers ignore synthetic download clicks.
   // When native file sharing is unavailable, show the image in a real tab so
@@ -670,19 +827,37 @@ export async function downloadConversationShareImages(dataUrls, filenamePrefix =
   if (urls.length === 0) return false;
   if (urls.length === 1) return downloadConversationShareImage(urls[0], `${filenamePrefix}.png`);
 
-  const files = urls.map((dataUrl, index) => {
-    const blob = blobFromDataURL(dataUrl);
+  const mobileBrowser = isMobileBrowser();
+  const originalPrefix = String(filenamePrefix || 'catsco-conversation-share');
+  const downloadPrefix = downloadFilenamePrefix(filenamePrefix);
+  const safePrefix = safeDownloadPrefix(filenamePrefix);
+  const entries = urls.map((dataUrl, index) => {
+    const parsed = dataURLBytes(dataUrl);
     const suffix = `-${String(index + 1).padStart(2, '0')}`;
-    return blob ? imageFileFromBlob(blob, `${filenamePrefix}${suffix}.png`) : null;
+    return parsed
+      ? {
+        bytes: parsed.bytes,
+        mimeType: parsed.mimeType,
+        name: `${originalPrefix}${suffix}.png`,
+        archiveName: `${safePrefix}${suffix}.png`,
+      }
+      : null;
   });
-  if (files.some((file) => !file)) return false;
+  if (entries.some((entry) => !entry)) return false;
 
-  const nativeShare = startNativeImageShare(files);
-  if (nativeShare) return nativeShare;
+  if (mobileBrowser) {
+    const files = entries.map((entry) => {
+      const blob = blobFromBytes(entry.bytes, entry.mimeType);
+      return blob ? imageFileFromBlob(blob, entry.name) : null;
+    });
+    const nativeShare = files.every(Boolean) ? startNativeImageShare(files) : null;
+    if (nativeShare && (await nativeShare) === true) return true;
+  }
   // Browsers usually block a burst of mobile downloads. The UI retains a
   // one-page action and explains this fallback when a multi-file share isn't
   // supported.
-  if (isMobileBrowser()) return false;
+  if (mobileBrowser) return false;
 
-  return files.every((file) => startDirectImageDownload(file, file.name));
+  const zipBlob = createZipBlob(entries);
+  return zipBlob ? startDirectImageDownload(zipBlob, `${downloadPrefix}.zip`) : false;
 }
