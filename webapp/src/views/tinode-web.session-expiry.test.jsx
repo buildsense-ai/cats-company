@@ -121,7 +121,7 @@ test('recovers a valid session when its cached profile is missing', async () => 
   await vi.waitFor(() => {
     expect(container.querySelector('[data-testid="agent-entry"]')).toBeTruthy();
   });
-  expect(mocks.getMe).toHaveBeenCalled();
+  expect(mocks.getMe).toHaveBeenCalledTimes(1);
   expect(JSON.parse(localStorage.getItem('oc_user'))).toMatchObject({ uid: 1, username: 'cats' });
   expect(mocks.setToken).not.toHaveBeenCalled();
 });
@@ -178,6 +178,20 @@ test('clears a missing-profile session only after the server rejects its token',
   localStorage.removeItem('oc_user');
   const unauthorized = Object.assign(new Error('登录状态已失效'), { status: 401 });
   mocks.getMe.mockRejectedValue(unauthorized);
+
+  await act(async () => {
+    root.render(<TinodeWeb location={{ pathname: '/e/invite-1', search: '', hash: '' }} />);
+  });
+
+  await vi.waitFor(() => {
+    expect(mocks.setToken).toHaveBeenCalledWith(null);
+  });
+});
+
+test('clears a missing-profile session when the account no longer exists', async () => {
+  localStorage.removeItem('oc_user');
+  const missingUser = Object.assign(new Error('用户不存在'), { status: 404 });
+  mocks.getMe.mockRejectedValue(missingUser);
 
   await act(async () => {
     root.render(<TinodeWeb location={{ pathname: '/e/invite-1', search: '', hash: '' }} />);

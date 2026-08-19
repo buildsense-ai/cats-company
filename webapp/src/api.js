@@ -10,6 +10,7 @@ import {
   isTokenExpired,
   request,
   setToken as setSessionToken,
+  statusMessage,
 } from './auth-session';
 
 export {
@@ -210,17 +211,6 @@ async function getLocalSkillsWithFallback() {
     if (error?.status !== 404) throw error;
   }
   return localRequest('GET', '/api/skills-all');
-}
-
-function statusMessage(status) {
-  if (status === 400) return '请求内容有误，请检查后重试';
-  if (status === 401) return '登录状态已失效，请重新登录';
-  if (status === 403) return '当前账号没有执行此操作的权限';
-  if (status === 404) return '请求的功能暂时不可用';
-  if (status === 409) return '当前数据已发生变化，请刷新后重试';
-  if (status === 429) return '操作过于频繁，请稍后再试';
-  if (status >= 500) return '后端服务暂时异常，请稍后重试';
-  return '请求失败，请稍后重试';
 }
 
 const RAW_UPLOAD_QUERY = 'raw=1';

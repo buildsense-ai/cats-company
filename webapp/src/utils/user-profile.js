@@ -1,3 +1,5 @@
+import { getStorage } from './storage-access';
+
 export const USER_PROFILE_STORAGE_KEY = 'oc_user';
 
 export function normalizeUserProfile(raw) {
@@ -17,7 +19,7 @@ export function normalizeUserProfile(raw) {
 
 export function readStoredUserProfile(storage) {
   try {
-    const source = storage ?? globalThis.localStorage;
+    const source = storage ?? getStorage();
     const serialized = source?.getItem(USER_PROFILE_STORAGE_KEY);
     return serialized ? normalizeUserProfile(JSON.parse(serialized)) : null;
   } catch {
@@ -30,7 +32,7 @@ export function writeStoredUserProfile(raw, storage) {
   if (!profile) return null;
 
   try {
-    const source = storage ?? globalThis.localStorage;
+    const source = storage ?? getStorage();
     source?.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(profile));
     return profile;
   } catch {
@@ -40,7 +42,7 @@ export function writeStoredUserProfile(raw, storage) {
 
 export function clearStoredUserProfile(storage) {
   try {
-    const source = storage ?? globalThis.localStorage;
+    const source = storage ?? getStorage();
     source?.removeItem(USER_PROFILE_STORAGE_KEY);
     return true;
   } catch {

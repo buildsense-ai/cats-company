@@ -725,4 +725,3 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(
 @media (prefers-reduced-motion: reduce) {
   .cc-workspace-loading-indicator { animation: none; }
 }
-

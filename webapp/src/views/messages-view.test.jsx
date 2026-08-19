@@ -452,6 +452,23 @@ describe('MessagesView composer draft isolation', () => {
     vi.clearAllMocks();
   });
 
+  it('keeps the message view mountable when browser storage is blocked', async () => {
+    const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage access is blocked', 'SecurityError');
+      },
+    });
+
+    try {
+      await mountTopic(root, 'p2p_1_2');
+      expect(container.querySelector('textarea')).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+    }
+  });
+
   it('loads around a search result, highlights its anchor, and returns to search', async () => {
     const onBackToSearch = vi.fn();
     api.getMessages.mockResolvedValueOnce({

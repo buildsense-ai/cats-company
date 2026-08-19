@@ -69,6 +69,10 @@ import {
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
 import {
+  readStorageValue,
+  writeStorageValue,
+} from '../utils/storage-access';
+import {
   authenticationRedirectPath,
   navigateBrowserPath,
 } from '../utils/auth-routes';
@@ -157,13 +161,11 @@ function SessionRestoreFallback({ error, onRetry }) {
 }
 
 function loadAppSidebarCollapsed() {
-  if (typeof window === 'undefined' || !window.localStorage) return false;
-  return window.localStorage.getItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
+  return readStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
 }
 
 function saveAppSidebarCollapsed(collapsed) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
+  writeStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
 }
 
 function desktopPromptStorageKey(uid) {
@@ -180,6 +182,10 @@ function todayKey() {
 
 function findConnectedLocalAgent(agents) {
   return (agents || []).find((agent) => agent.relation === 'owner' && agent.is_online);
+}
+
+function isInvalidSessionError(error) {
+  return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
 export default function TinodeWeb({ location = window.location } = {}) {
@@ -251,6 +257,7 @@ function TinodeWebApp({ location }) {
   const [showRelayModal, setShowRelayModal] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+  const recoveredProfileRef = useRef(null);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
@@ -280,7 +287,9 @@ function TinodeWebApp({ location }) {
   const [sidebarViewportWidth, setSidebarViewportWidth] = useState(() => window.innerWidth);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [theme, setTheme] = useState(() => DEV_THEME_PREVIEW || normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
+  const [theme, setTheme] = useState(() => (
+    DEV_THEME_PREVIEW || normalizeTheme(readStorageValue(THEME_STORAGE_KEY))
+  ));
   const [liquidThemeAccess, setLiquidThemeAccess] = useState(() => ({
     loading: false,
     unlocked: isLiquidTheme(DEV_THEME_PREVIEW) || isLiquidThemeUnlocked(),
@@ -347,7 +356,7 @@ function TinodeWebApp({ location }) {
 
   useEffect(() => {
     applyDocumentTheme(theme);
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
+    writeStorageValue(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
@@ -589,11 +598,15 @@ function TinodeWebApp({ location }) {
         if (cancelled || !isCurrentAuthSession(requestToken, requestSessionRevision)) return;
         const normalized = normalizeUserProfile(profile);
         if (!normalized) throw new Error('Profile recovery returned no valid user');
+        recoveredProfileRef.current = {
+          token: requestToken,
+          revision: requestSessionRevision,
+        };
         persistUser(normalized);
       })
       .catch((error) => {
         if (cancelled || !isCurrentAuthSession(requestToken, requestSessionRevision)) return;
-        if (error?.status === 401 || error?.status === 403) {
+        if (isInvalidSessionError(error)) {
           clearAuthenticatedSession(requestToken, requestSessionRevision);
           return;
         }
@@ -748,6 +761,13 @@ function TinodeWebApp({ location }) {
     const requestSessionRevision = getAuthRevision();
     if (!requestToken) return undefined;
 
+    const recoveredProfile = recoveredProfileRef.current;
+    if (recoveredProfile?.token === requestToken
+      && recoveredProfile.revision === requestSessionRevision) {
+      recoveredProfileRef.current = null;
+      return undefined;
+    }
+
     let cancelled = false;
     api.getMe()
       .then((profile) => {
@@ -758,7 +778,7 @@ function TinodeWebApp({ location }) {
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
-        if (!cancelled && error?.status === 401
+        if (!cancelled && isInvalidSessionError(error)
           && isCurrentAuthSession(requestToken, requestSessionRevision)) {
           clearAuthenticatedSession(requestToken, requestSessionRevision);
         }
@@ -782,8 +802,8 @@ function TinodeWebApp({ location }) {
       setLocalAgentStatus('disconnected');
       if (allowDailyPrompt) {
         const promptKey = desktopPromptStorageKey(user.uid);
-        if (localStorage.getItem(promptKey) !== todayKey()) {
-          localStorage.setItem(promptKey, todayKey());
+        if (readStorageValue(promptKey) !== todayKey()) {
+          writeStorageValue(promptKey, todayKey());
           setShowDesktopConnectModal(true);
         }
       }

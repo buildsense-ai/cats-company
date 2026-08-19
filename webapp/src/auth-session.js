@@ -1,6 +1,12 @@
+import {
+  readStorageValue,
+  removeStorageValue,
+  writeStorageValue,
+} from './utils/storage-access';
+
 export const API_BASE = import.meta.env.VITE_API_BASE || '';
 
-let token = localStorage.getItem('oc_token');
+let token = readStorageValue('oc_token');
 const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
 const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
 // A registration ID guards server deletes. sessionStorage preserves it across
@@ -34,23 +40,15 @@ const pushRegistrationOwnerForToken = (candidate) => {
 };
 
 const readPushRegistration = () => {
-  try {
-    return {
-      id: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim(),
-      owner: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim(),
-    };
-  } catch {
-    return { id: '', owner: '' };
-  }
+  return {
+    id: String(readStorageValue(PUSH_REGISTRATION_ID_KEY, 'sessionStorage') || '').trim(),
+    owner: String(readStorageValue(PUSH_REGISTRATION_OWNER_KEY, 'sessionStorage') || '').trim(),
+  };
 };
 
 const writePushRegistration = (id, owner) => {
-  try {
-    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_ID_KEY, id);
-    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
-  } catch {
-    // Memory-only registration IDs still prevent stale operations in this page.
-  }
+  writeStorageValue(PUSH_REGISTRATION_ID_KEY, id, 'sessionStorage');
+  writeStorageValue(PUSH_REGISTRATION_OWNER_KEY, owner, 'sessionStorage');
 };
 
 const registrationIDForToken = (candidate) => {
@@ -75,33 +73,25 @@ const registrationIDForToken = (candidate) => {
 const legacyRegistrationIDForToken = (candidate) => {
   const owner = pushRegistrationOwnerForToken(candidate);
   if (!owner) return '';
-  try {
-    const id = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim();
-    const legacyOwner = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim();
-    if (!id || id.length > 64 || (legacyOwner && legacyOwner !== owner)) return '';
-    return id;
-  } catch {
-    return '';
-  }
+  const id = String(readStorageValue(PUSH_REGISTRATION_ID_KEY) || '').trim();
+  const legacyOwner = String(readStorageValue(PUSH_REGISTRATION_OWNER_KEY) || '').trim();
+  if (!id || id.length > 64 || (legacyOwner && legacyOwner !== owner)) return '';
+  return id;
 };
 
 const clearPushRegistration = () => {
   pushRegistrationID = '';
   pushRegistrationOwner = '';
-  try {
-    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_ID_KEY);
-    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_OWNER_KEY);
-  } catch {
-    // The in-memory values are still cleared when storage is unavailable.
-  }
+  removeStorageValue(PUSH_REGISTRATION_ID_KEY, 'sessionStorage');
+  removeStorageValue(PUSH_REGISTRATION_OWNER_KEY, 'sessionStorage');
 };
 
 export function setToken(nextToken) {
   token = nextToken;
   authRevision += 1;
-  if (nextToken) localStorage.setItem('oc_token', nextToken);
+  if (nextToken) writeStorageValue('oc_token', nextToken);
   else {
-    localStorage.removeItem('oc_token');
+    removeStorageValue('oc_token');
     clearPushRegistration();
   }
   window.dispatchEvent(new CustomEvent('cc:auth-changed', {
@@ -153,7 +143,7 @@ export function isTokenExpired(candidate = token) {
   }
 }
 
-function statusMessage(status) {
+export function statusMessage(status) {
   if (status === 400) return '请求内容有误，请检查后重试';
   if (status === 401) return '登录状态已失效，请重新登录';
   if (status === 403) return '当前账号没有执行此操作的权限';

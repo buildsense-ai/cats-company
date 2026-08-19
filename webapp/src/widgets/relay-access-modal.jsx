@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, BadgeCheck, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, LayoutGrid, ReceiptText, RotateCcw, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import {
+  readStorageValue,
+  writeStorageValue,
+} from '../utils/storage-access';
 
 const FALLBACK_CONFIG = {
   base_url: 'https://relay.catsco.cc',
@@ -258,7 +262,7 @@ function commercialClientRequestIDValid(value) {
 
 function loadCommercialPaymentRequestIDs() {
   try {
-    const parsed = JSON.parse(window.sessionStorage.getItem(COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY) || '{}');
+    const parsed = JSON.parse(readStorageValue(COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY, 'sessionStorage') || '{}');
     const freshAfter = Date.now() - (30 * 60 * 1000);
     return new Map(Object.entries(parsed).flatMap(([key, value]) => {
       const id = typeof value === 'string' ? value : value?.id;
@@ -272,11 +276,12 @@ function loadCommercialPaymentRequestIDs() {
 
 function saveCommercialPaymentRequestIDs(requestIDs) {
   try {
-    window.sessionStorage.setItem(
+    writeStorageValue(
       COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY,
       JSON.stringify(Object.fromEntries(
         [...requestIDs].map(([key, id]) => [key, { id, created_at: Date.now() }]),
       )),
+      'sessionStorage',
     );
   } catch {
     // In-memory idempotency still applies when storage is unavailable.

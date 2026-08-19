@@ -84,8 +84,8 @@ describe('AuthView route links', () => {
     const passwordInput = container.querySelector('input[type="password"]');
     const toggle = container.querySelector('button[aria-label="显示密码"]');
     expect(toggle?.getAttribute('aria-pressed')).toBe('false');
-    expect(toggle?.style.width).toBe('32px');
-    expect(toggle?.style.height).toBe('32px');
+    expect(toggle?.style.width).toBe('48px');
+    expect(toggle?.style.height).toBe('48px');
 
     await act(async () => toggle?.click());
 
@@ -122,14 +122,20 @@ describe('AuthView route links', () => {
     expect(container.querySelector('input[aria-label="设置密码（至少6位）"]')?.getAttribute('autocomplete')).toBe('new-password');
   });
 
-  test('preloads the workspace after form submission rather than ordinary input focus', async () => {
-    const onAuthenticationIntent = vi.fn();
+  test('preloads the workspace only after authentication succeeds', async () => {
+    const events = [];
+    const onAuthenticationIntent = vi.fn(() => events.push('preload'));
+    const onLogin = vi.fn(async () => {
+      events.push('login-start');
+      await Promise.resolve();
+      events.push('login-success');
+    });
     await act(async () => {
       root.render(
         <AuthView
           mode="login"
           onAuthenticationIntent={onAuthenticationIntent}
-          onLogin={vi.fn().mockResolvedValue(undefined)}
+          onLogin={onLogin}
           onRegister={vi.fn()}
         />,
       );
@@ -145,7 +151,34 @@ describe('AuthView route links', () => {
         bubbles: true,
         cancelable: true,
       }));
+      await Promise.resolve();
     });
     expect(onAuthenticationIntent).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(['login-start', 'login-success', 'preload']);
+  });
+
+  test('does not preload the workspace when authentication fails', async () => {
+    const onAuthenticationIntent = vi.fn();
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onAuthenticationIntent={onAuthenticationIntent}
+          onLogin={vi.fn().mockRejectedValue(new Error('password mismatch'))}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(onAuthenticationIntent).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('密码错误，请重试');
   });
 });

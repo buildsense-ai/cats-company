@@ -6,6 +6,7 @@ import {
   normalizeSkillHubSkills,
   resolveSkillHubEntry,
 } from '../utils/skillhub-entry';
+import { getStorage } from '../utils/storage-access';
 import SkillHubContent from './skillhub-content';
 import '../css/skillhub-view.css';
 
@@ -198,11 +199,7 @@ function selectedBotStorageKey(userUid) {
 }
 
 function browserStorage() {
-  try {
-    return globalThis.localStorage;
-  } catch {
-    return null;
-  }
+  return getStorage();
 }
 
 export function readRememberedSkillHubBotUID(userUid, storage = browserStorage()) {

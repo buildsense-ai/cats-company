@@ -482,7 +482,11 @@ func (h *UserHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := h.db.GetUser(uid)
-	if err != nil || user == nil {
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load user"})
+		return
+	}
+	if user == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
 		return
 	}

@@ -120,6 +120,23 @@ test('shows the push prompt again when a different account signs in', async () =
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:2')).toBeNull();
 });
 
+test('keeps the PWA controller mountable when browser storage is blocked', () => {
+  const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      throw new DOMException('Storage access is blocked', 'SecurityError');
+    },
+  });
+
+  try {
+    expect(() => renderController('user:blocked-storage')).not.toThrow();
+    expect(container.querySelector('.cc-pwa-status')).toBeTruthy();
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+  }
+});
+
 test('registers an active tab under its push registration id', () => {
   window.Notification.permission = 'granted';
 

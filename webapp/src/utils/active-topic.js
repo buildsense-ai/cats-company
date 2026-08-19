@@ -1,3 +1,5 @@
+import { getStorage } from './storage-access';
+
 function groupIdFromTopicId(topicId) {
   const match = String(topicId || '').match(/^grp_(\d+)$/);
   if (!match) return undefined;
@@ -46,38 +48,46 @@ export function lastTopicStorageKey(uid) {
   return uid ? `v3_last_topic:${uid}` : 'v3_last_topic';
 }
 
-export function readStoredTopic(uid, storage = globalThis.localStorage) {
+export function readStoredTopic(uid, storage = getStorage()) {
   if (!storage) return null;
-  const keys = uid ? [lastTopicStorageKey(uid), 'v3_last_topic'] : ['v3_last_topic'];
-  for (const key of keys) {
-    const raw = storage.getItem(key);
-    if (!raw) continue;
+  try {
+    const keys = uid ? [lastTopicStorageKey(uid), 'v3_last_topic'] : ['v3_last_topic'];
+    for (const key of keys) {
+      const raw = storage.getItem(key);
+      if (!raw) continue;
 
-    try {
-      const topic = normalizeActiveTopic(JSON.parse(raw));
-      if (topic) return topic;
-    } catch {
-      const topic = normalizeActiveTopic(raw);
-      if (topic) return topic;
+      try {
+        const topic = normalizeActiveTopic(JSON.parse(raw));
+        if (topic) return topic;
+      } catch {
+        const topic = normalizeActiveTopic(raw);
+        if (topic) return topic;
+      }
     }
+  } catch {
+    return null;
   }
 
   return null;
 }
 
-export function writeStoredTopic(uid, topic, storage = globalThis.localStorage) {
+export function writeStoredTopic(uid, topic, storage = getStorage()) {
   if (!storage) return;
-  const key = lastTopicStorageKey(uid);
-  const normalized = normalizeActiveTopic(topic);
-  if (!normalized) {
-    storage.removeItem(key);
-    storage.removeItem('v3_last_topic');
-    return;
-  }
+  try {
+    const key = lastTopicStorageKey(uid);
+    const normalized = normalizeActiveTopic(topic);
+    if (!normalized) {
+      storage.removeItem(key);
+      storage.removeItem('v3_last_topic');
+      return;
+    }
 
-  const serialized = JSON.stringify(normalized);
-  storage.setItem(key, serialized);
-  storage.setItem('v3_last_topic', serialized);
+    const serialized = JSON.stringify(normalized);
+    storage.setItem(key, serialized);
+    storage.setItem('v3_last_topic', serialized);
+  } catch {
+    // Stored topics are a convenience and must not interrupt the workspace.
+  }
 }
 
 export function shouldForgetStoredTopic(error) {

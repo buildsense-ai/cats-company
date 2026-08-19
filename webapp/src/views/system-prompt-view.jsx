@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import { getStorage } from '../utils/storage-access';
 import '../css/system-prompt-view.css';
 
 export const MAX_SYSTEM_PROMPT_BYTES = 1024 * 1024;
@@ -33,11 +34,7 @@ function storageKey(userUID) {
 }
 
 function browserStorage() {
-  try {
-    return globalThis.localStorage;
-  } catch {
-    return null;
-  }
+  return getStorage();
 }
 
 export function promptByteLength(value) {

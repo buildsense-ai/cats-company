@@ -15,6 +15,7 @@ import { FeedbackProvider } from './components/feedback-system';
 import { registerPwaServiceWorker } from './pwa-registration';
 import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
+import { readStorageValue } from './utils/storage-access';
 import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
 import './css/auth-critical.css';
 
@@ -31,7 +32,7 @@ const developmentWorkspacePreview = import.meta.env.DEV && (
   || ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
 );
 
-applyDocumentTheme(globalThis.localStorage?.getItem(THEME_STORAGE_KEY));
+applyDocumentTheme(readStorageValue(THEME_STORAGE_KEY));
 
 function readBrowserLocation() {
   return {

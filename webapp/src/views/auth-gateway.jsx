@@ -6,7 +6,7 @@ import AuthFlowBackground from '../components/auth-flow-background';
 import t from '../i18n';
 import { isValidEmailFormat } from '../utils/email-format';
 import { formatSharedAuthError } from '../utils/auth-error';
-import { writeStoredUserProfile } from '../utils/user-profile';
+import { normalizeUserProfile, writeStoredUserProfile } from '../utils/user-profile';
 import {
   authModeForPathname,
   authPathForMode,
@@ -18,14 +18,14 @@ import PasswordResetForm from '../widgets/password-reset-form';
 
 const passwordToggleStyle = {
   position: 'absolute',
-  right: 4,
+  right: -4,
   top: '40%',
   transform: 'translateY(-50%)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  width: 32,
-  height: 32,
+  width: 48,
+  height: 48,
   margin: 0,
   padding: 0,
   border: 0,
@@ -123,13 +123,13 @@ export function AuthView({
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError('');
-    onAuthenticationIntent?.();
     try {
       if (mode === 'login') {
         await onLogin(username, password);
       } else {
         await onRegister(email, password, loginName, code);
       }
+      onAuthenticationIntent?.();
     } catch (err) {
       setError(formatAuthError(err.message));
     }
@@ -287,8 +287,16 @@ export default function AuthGateway({
 
   const handleLogin = async (account, password) => {
     const response = await authApi.login({ account, password });
-    if (!writeStoredUserProfile(response)) {
+    const profile = normalizeUserProfile(response);
+    if (!response?.token || !profile) {
       throw new Error('登录响应缺少有效的用户资料');
+    }
+    // The profile cache is only an optimization. A valid server response must
+    // still establish the in-memory session when browser storage is unavailable.
+    try {
+      writeStoredUserProfile(profile);
+    } catch {
+      // Keep the authenticated session in memory when browser storage is unavailable.
     }
     setToken(response.token);
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });

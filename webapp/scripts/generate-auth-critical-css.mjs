@@ -243,8 +243,7 @@ export function generateAuthCriticalCss({ write = true } = {}) {
     ' */',
     collapseRepeatedRules(sections.join('\n\n')),
     `/* Source: ${relative(WEBAPP_ROOT, ADDITIONS_PATH)} */\n${additions}`,
-    '',
-  ].join('\n\n');
+  ].join('\n\n').trimEnd() + '\n';
 
   if (write && readFileSync(OUTPUT_PATH, 'utf8') !== generated) {
     writeFileSync(OUTPUT_PATH, generated);

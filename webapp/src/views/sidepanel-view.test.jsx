@@ -254,6 +254,23 @@ describe('ChatListView sidebar sections', () => {
     expect(contactsToggle.querySelector('.lucide-user-round')).toBeNull();
   });
 
+  it('keeps the sidebar mountable when browser storage is blocked', async () => {
+    const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage access is blocked', 'SecurityError');
+      },
+    });
+
+    try {
+      await mount();
+      expect(container.querySelector('.cc-top-level-section')).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+    }
+  });
+
   it('recognizes real sticky lanes and the reachable scroll end as auto-collapse boundaries', () => {
     expect(shouldAutoCollapseSidebarSection({
       scrollTop: 260,

@@ -22,16 +22,17 @@ import {
 import { enqueuePushOperation } from '../utils/push-operation';
 import { registerBrowserPush } from '../utils/push-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import './pwa-controller.css';
 
 function readDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
-  return Boolean(storageKey) && localStorage.getItem(storageKey) === 'true';
+  return Boolean(storageKey) && readStorageValue(storageKey) === 'true';
 }
 
 function persistDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
-  if (storageKey) localStorage.setItem(storageKey, 'true');
+  if (storageKey) writeStorageValue(storageKey, 'true');
 }
 
 export default function PwaController({

@@ -1,3 +1,5 @@
+import { getStorage } from './storage-access';
+
 export const THEME_STORAGE_KEY = 'catsco_theme';
 export const LIQUID_THEME_UNLOCK_STORAGE_KEY = 'catsco_liquid_theme_unlocked_v1';
 
@@ -41,7 +43,7 @@ export function applyDocumentTheme(value, target = globalThis.document) {
   return theme;
 }
 
-export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {
+export function isLiquidThemeUnlocked(storage = getStorage()) {
   try {
     if (storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1') return true;
     return isLiquidTheme(storage?.getItem(THEME_STORAGE_KEY));
@@ -50,7 +52,7 @@ export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {
   }
 }
 
-export function saveLiquidThemeUnlock(storage = globalThis.localStorage) {
+export function saveLiquidThemeUnlock(storage = getStorage()) {
   try {
     storage?.setItem(LIQUID_THEME_UNLOCK_STORAGE_KEY, '1');
     return storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1';
