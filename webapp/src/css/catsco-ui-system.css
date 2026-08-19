@@ -8598,6 +8598,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-cloud-operation-progress b { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--v3-primary); animation: cc-cloud-operation-progress 1.4s ease-in-out infinite; }
 @keyframes cc-cloud-operation-progress { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
 .cc-cloud-version-select,
+.cc-cloud-update-version-select,
+.cc-cloud-rollback-version-select,
 .cc-cloud-image-select {
   min-height: 30px;
   padding: 0 8px;
@@ -8609,6 +8611,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   max-width: 140px;
 }
 .cc-cloud-version-select:disabled,
+.cc-cloud-update-version-select:disabled,
+.cc-cloud-rollback-version-select:disabled,
 .cc-cloud-image-select:disabled { opacity: .55; cursor: default; }
 .cc-cloud-reset-confirm {
   display: grid;

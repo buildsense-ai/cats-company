@@ -33,6 +33,21 @@ const statusMeta = (status) => (
   || CLOUD_STATUS_META.unknown
 );
 
+const parseVersion = (value) => {
+  const match = String(value || '').trim().replace(/^v/i, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  return match ? [Number(match[1]), Number(match[2] || 0), Number(match[3] || 0)] : null;
+};
+
+const compareVersions = (left, right) => {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (!a || !b) return null;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
+  }
+  return 0;
+};
+
 const CLOUD_ACTION_LABELS = {
   update: '正在更新应用版本，期间员工会短暂离线，请保持页面打开',
   rollback: '正在回滚应用版本，期间员工会短暂离线，请保持页面打开',
@@ -66,7 +81,8 @@ export default function CloudWorkerPanel({
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  const [releaseSelections, setReleaseSelections] = useState({});
+  const [updateSelections, setUpdateSelections] = useState({});
+  const [rollbackSelections, setRollbackSelections] = useState({});
   const [imageSelections, setImageSelections] = useState({});
   // Reset captcha flow: tenant being confirmed / its code / typed input / mismatch
   const [resetConfirming, setResetConfirming] = useState(null);
@@ -266,9 +282,15 @@ export default function CloudWorkerPanel({
               const meta = statusMeta(worker.cloud_status);
               const acting = activeAction.name === worker.tenant_name;
               const actionName = acting ? activeAction.action : '';
-              const releaseTarget = releaseSelections[worker.tenant_name]
-                || (releaseVersions.includes(worker.app_version) ? worker.app_version : '')
-                || releaseVersions[0] || '';
+              const currentVersion = parseVersion(worker.app_version);
+              const upgradeVersions = currentVersion
+                ? releaseVersions.filter((version) => compareVersions(version, worker.app_version) > 0)
+                : [];
+              const rollbackVersions = currentVersion
+                ? releaseVersions.filter((version) => compareVersions(version, worker.app_version) < 0)
+                : [];
+              const updateTarget = updateSelections[worker.tenant_name] || upgradeVersions[0] || '';
+              const rollbackTarget = rollbackSelections[worker.tenant_name] || rollbackVersions[0] || '';
               const imageTarget = imageSelections[worker.tenant_name]
                 || (imageVersions.includes(worker.cloud_version) ? worker.cloud_version : '')
                 || imageVersions[0] || '';
@@ -306,18 +328,35 @@ export default function CloudWorkerPanel({
                   <div className="cc-cloud-worker-controls">
                     <div className="cc-cloud-version-controls">
                       <label className="cc-cloud-version-field">
-                        <span>应用版本</span>
+                        <span>更新版本</span>
                         <select
-                          className="cc-cloud-version-select"
-                          value={releaseTarget}
-                          disabled={hasActiveAction || releaseVersions.length === 0 || !['update', 'rollback'].some(actionAvailable)}
-                          onChange={(e) => setReleaseSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
-                          title={releaseVersions.length === 0 ? '暂无可用应用版本' : '更新或回滚使用的应用版本'}
+                          className="cc-cloud-version-select cc-cloud-update-version-select"
+                          value={updateTarget}
+                          disabled={hasActiveAction || upgradeVersions.length === 0 || !actionAvailable('update')}
+                          onChange={(e) => setUpdateSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
+                          title={!currentVersion ? '当前应用版本未知，无法判断可更新版本' : (upgradeVersions.length === 0 ? '暂无高于当前版本的应用发布' : '仅显示高于当前应用版本的发布')}
                         >
-                          {releaseVersions.length === 0 ? (
-                            <option value="">暂无应用版本</option>
+                          {upgradeVersions.length === 0 ? (
+                            <option value="">{currentVersion ? '暂无更高版本' : '当前版本未知'}</option>
                           ) : (
-                            releaseVersions.map((v) => <option key={v} value={v}>{v}</option>)
+                            upgradeVersions.map((v) => <option key={v} value={v}>{v}</option>)
+                          )}
+                        </select>
+                      </label>
+
+                      <label className="cc-cloud-version-field">
+                        <span>回滚版本</span>
+                        <select
+                          className="cc-cloud-version-select cc-cloud-rollback-version-select"
+                          value={rollbackTarget}
+                          disabled={hasActiveAction || rollbackVersions.length === 0 || !actionAvailable('rollback')}
+                          onChange={(e) => setRollbackSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
+                          title={!currentVersion ? '当前应用版本未知，无法判断可回滚版本' : (rollbackVersions.length === 0 ? '暂无低于当前版本的应用发布' : '仅显示低于当前应用版本的发布')}
+                        >
+                          {rollbackVersions.length === 0 ? (
+                            <option value="">{currentVersion ? '暂无更低版本' : '当前版本未知'}</option>
+                          ) : (
+                            rollbackVersions.map((v) => <option key={v} value={v}>{v}</option>)
                           )}
                         </select>
                       </label>
@@ -339,15 +378,15 @@ export default function CloudWorkerPanel({
                         </select>
                       </label>
                     </div>
-                    <p className="cc-cloud-version-hint">应用版本只用于更新/回滚并保留数据；基础镜像只用于重置，重置会清空数据。</p>
+                    <p className="cc-cloud-version-hint">更新只显示更高版本；回滚只显示更低版本；基础镜像用于重置并会清空数据。</p>
 
                     <div className="cc-cloud-worker-actions">
                     <button
                       type="button"
                       className="oc-btn oc-btn-primary"
-                      onClick={() => onUpdate(worker, releaseTarget)}
-                      disabled={hasActiveAction || releaseVersions.length === 0 || !actionAvailable('update')}
-                      title={!actionAvailable('update') ? '云端更新服务尚未配置' : (releaseVersions.length === 0 ? '暂无可用应用版本，无法更新' : '更新应用到所选版本，保留当前数据')}
+                      onClick={() => onUpdate(worker, updateTarget)}
+                      disabled={hasActiveAction || !updateTarget || !actionAvailable('update')}
+                      title={!actionAvailable('update') ? '云端更新服务尚未配置' : (!updateTarget ? '暂无高于当前版本的应用发布，无法更新' : '更新到所选应用版本，保留当前数据')}
                     >
                       {actionName === 'update' ? <><RefreshCw size={13} className="cc-spin" /> 更新中...</> : <><ArrowUpCircle size={13} /> 更新</>}
                     </button>
@@ -355,9 +394,9 @@ export default function CloudWorkerPanel({
                     <button
                       type="button"
                       className="oc-btn oc-btn-default"
-                      onClick={() => onRollback(worker, releaseTarget, { fromPanel: true })}
-                      disabled={hasActiveAction || releaseVersions.length === 0 || !actionAvailable('rollback')}
-                      title={!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (releaseVersions.length === 0 ? '暂无可用应用版本，无法回滚' : '回滚应用到所选版本，保留当前数据')}
+                      onClick={() => onRollback(worker, rollbackTarget, { fromPanel: true })}
+                      disabled={hasActiveAction || !rollbackTarget || !actionAvailable('rollback')}
+                      title={!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (!rollbackTarget ? '暂无低于当前版本的应用发布，无法回滚' : '回滚到所选应用版本，保留当前数据')}
                     >
                       {actionName === 'rollback' ? <><RefreshCw size={13} className="cc-spin" /> 回滚中...</> : <><RotateCcw size={13} /> 回滚</>}
                     </button>
