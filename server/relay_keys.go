@@ -61,6 +61,12 @@ type relayKeyProxyRequest struct {
 	Username string `json:"username,omitempty"`
 }
 
+// defaultRelayKeyName is stable per CatsCompany user while remaining unique
+// in Bifrost, where virtual-key names are globally unique.
+func defaultRelayKeyName(uid int64) string {
+	return fmt.Sprintf("CatsCo API Key %d", uid)
+}
+
 type relayKeyResponse struct {
 	Configured bool          `json:"configured"`
 	Key        *relayKeyInfo `json:"key,omitempty"`
@@ -172,7 +178,7 @@ func (h *RelayKeyHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSpace(req.Name)
 		if name == "" {
-			name = "CatsCo API Key"
+			name = defaultRelayKeyName(uid)
 		}
 		h.forward(w, r, http.MethodPost, uid, "", relayKeyProxyRequest{
 			Name:     name,

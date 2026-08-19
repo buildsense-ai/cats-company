@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -973,16 +974,116 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	if quotaError != "" {
 		t.Fatalf("quota error=%q", quotaError)
 	}
+	if len(catalog) != 5 {
+		t.Fatalf("catalog length=%d, want 5 granted models: %#v", len(catalog), catalog)
+	}
 	for _, item := range catalog {
 		if item.ID == "gpt-5.6-luna" {
-			if item.Quota != nil {
-				t.Fatalf("ungranted Luna received shared quota: %#v", item.Quota)
-			}
-			continue
+			t.Fatal("ungranted Luna must not be exposed in the model catalog")
 		}
-		if item.Quota == nil || item.Quota.Source != "relay_shared" || item.Quota.Percent != 10 || item.Quota.RemainingPercent != 90 {
+		if !item.Available || item.Quota == nil || item.Quota.Source != "relay_shared" || item.Quota.Percent != 10 || item.Quota.RemainingPercent != 90 {
 			t.Fatalf("model %s did not receive the shared quota: %#v", item.ID, item.Quota)
 		}
+	}
+}
+
+func TestOwnerModelCatalogOnlyReturnsModelsIncludedInFreePlan(t *testing.T) {
+	summary := &types.CommercialSummary{TotalsByModel: map[string]float64{
+		"MiniMax-M2.7":      1000,
+		"MiniMax-M3":        500,
+		"deepseek-v4-flash": 100,
+	}}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: summary}, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsage(context.Background(), 7, false)
+	if quotaError != "" {
+		t.Fatalf("quota error=%q", quotaError)
+	}
+	want := []string{"minimax-m2.7", "minimax-m3", "deepseek-v4-flash"}
+	if len(catalog) != len(want) {
+		t.Fatalf("catalog=%#v, want %v", catalog, want)
+	}
+	for index, item := range catalog {
+		if item.ID != want[index] || !item.Available || item.UnavailableReason != "" {
+			t.Fatalf("catalog item %d=%#v, want available %s", index, item, want[index])
+		}
+	}
+}
+
+func TestOwnerModelCatalogKeepsCurrentRevokedModelVisibleButDisabled(t *testing.T) {
+	summary := &types.CommercialSummary{TotalsByModel: map[string]float64{
+		"MiniMax-M2.7":      1000,
+		"MiniMax-M3":        500,
+		"deepseek-v4-flash": 100,
+	}}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: summary}, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsageForCurrent(
+		context.Background(), 7, false, "gpt-5.6-terra",
+	)
+	if quotaError != "" {
+		t.Fatalf("quota error=%q", quotaError)
+	}
+	for _, item := range catalog {
+		if item.ID != "gpt-5.6-terra" {
+			continue
+		}
+		if item.Available || !strings.Contains(item.UnavailableReason, "当前套餐已不包含") {
+			t.Fatalf("revoked current model=%#v", item)
+		}
+		return
+	}
+	t.Fatal("current revoked model was hidden")
+}
+
+func TestOwnerCannotSelectModelOutsideCommercialPlan(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{
+			43: {RuntimeProtocol: botModelRuntimeProtocol},
+		},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: &types.CommercialSummary{
+		TotalsByModel: map[string]float64{"MiniMax-M3": 500},
+	}}, true, nil)
+	req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
+		`{"model_id":"gpt-5.6-terra","reasoning_effort":"medium"}`,
+	))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleOwnerConfig(rec, req)
+
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"model_not_in_plan"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if db.models[43].Revision != 0 {
+		t.Fatalf("forbidden selection changed config: %#v", db.models[43])
+	}
+}
+
+func TestOwnerModelSelectionFailsClosedWhenCommercialQuotaCannotLoad(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{
+			43: {RuntimeProtocol: botModelRuntimeProtocol},
+		},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{err: errors.New("database unavailable")}, true, nil)
+	req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
+		`{"model_id":"minimax-m3"}`,
+	))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleOwnerConfig(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"code":"model_entitlement_unavailable"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

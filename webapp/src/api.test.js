@@ -737,6 +737,39 @@ describe('message history request controls', () => {
   });
 });
 
+describe('cloud worker operation request controls', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    localStorage.clear();
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  test('bounds a long-running update without timing out before the server limit', async () => {
+    global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+
+    const request = apiModule.api.updateCloudWorker('bot-a', { version: '1.4.9' });
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(629_999);
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejection;
+  });
+});
+
 describe('agent file requests', () => {
   let apiModule;
 

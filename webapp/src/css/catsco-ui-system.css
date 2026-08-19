@@ -630,7 +630,6 @@ html[data-theme="liquid"] .catsco-brand-mark {
   height: 9px;
   border-radius: 999px;
   background: currentColor;
-  box-shadow: 0 0 0 2px var(--cc-bg);
 }
 
 .cc-compact-task-status.running {
@@ -656,25 +655,6 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .cc-compact-task-status.cancelled,
 .cc-compact-task-status.stale {
   color: var(--cc-warning-text);
-}
-
-.cc-compact-task-status.failed::after,
-.cc-compact-task-status.cancelled::after,
-.cc-compact-task-status.stale::after {
-  position: absolute;
-  inset: -2px;
-  border: 1px solid currentColor;
-  border-radius: inherit;
-  content: "";
-  pointer-events: none;
-}
-
-.cc-compact-task-status.cancelled::after {
-  border-style: dashed;
-}
-
-.cc-compact-task-status.stale::after {
-  border-style: dotted;
 }
 
 .cc-compact-task-status.cc-compact-history-status {
@@ -1915,6 +1895,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .v3-chat-section:hover > .cc-section-add,
 .v3-chat-section:focus-within > .cc-section-add,
+.v3-chat-section[data-expanded="true"] > .cc-section-add,
 .cc-section-add:focus-visible {
   opacity: 1;
   visibility: visible;
@@ -2342,30 +2323,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .cc-task-status-dot {
   display: block;
-  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 999px;
   background: currentColor;
-}
-
-.cc-task-status-dot--failed::after,
-.cc-task-status-dot--cancelled::after,
-.cc-task-status-dot--stale::after {
-  position: absolute;
-  inset: -3px;
-  border: 1px solid currentColor;
-  border-radius: inherit;
-  content: "";
-  pointer-events: none;
-}
-
-.cc-task-status-dot--cancelled::after {
-  border-style: dashed;
-}
-
-.cc-task-status-dot--stale::after {
-  border-style: dotted;
 }
 
 .cc-task-row-status.failed {
@@ -8619,12 +8580,27 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-cloud-worker-status.warn { background: color-mix(in srgb, #f59e0b 14%, transparent); color: #b45309; }
 .cc-cloud-worker-status.danger { background: color-mix(in srgb, #e5484d 12%, transparent); color: #dc2626; }
 .cc-cloud-worker-status.muted { background: color-mix(in srgb, #6b7280 14%, transparent); color: #9ca3af; }
-.cc-cloud-worker-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--v3-text-muted); }
+.cc-cloud-worker-meta { display: grid; gap: 3px; font-size: 12px; color: var(--v3-text-muted); }
 .cc-cloud-worker-meta b { color: var(--v3-text-name); font-weight: 600; }
+.cc-cloud-worker-controls { display: grid; gap: 8px; }
+.cc-cloud-version-controls { display: grid; gap: 6px; }
+.cc-cloud-version-field { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; }
+.cc-cloud-version-field > span { color: var(--v3-text-muted); font-size: 12px; }
+.cc-cloud-version-hint { margin: 0; color: var(--v3-text-muted); font-size: 11px; line-height: 1.45; }
 .cc-cloud-worker-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cc-cloud-worker-actions .oc-btn { min-height: 30px; padding: 0 10px; font-size: 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px; }
-.cc-cloud-version-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--v3-text-muted); }
-.cc-cloud-version-select {
+.cc-cloud-operation-status { display: flex; align-items: flex-start; gap: 7px; min-height: 42px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--v3-primary) 24%, var(--v3-border)); border-radius: 6px; background: color-mix(in srgb, var(--v3-primary) 7%, transparent); color: var(--v3-text-body); font-size: 12px; }
+.cc-cloud-operation-status > svg { flex: none; margin-top: 1px; color: var(--v3-primary); }
+.cc-cloud-operation-status-copy { display: grid; gap: 3px; min-width: 0; width: 100%; }
+.cc-cloud-operation-status-copy strong { color: var(--v3-text-name); font-weight: 600; }
+.cc-cloud-operation-status-copy span { color: var(--v3-text-muted); }
+.cc-cloud-operation-progress { display: block; position: relative; height: 3px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--v3-primary) 18%, transparent); }
+.cc-cloud-operation-progress b { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--v3-primary); animation: cc-cloud-operation-progress 1.4s ease-in-out infinite; }
+@keyframes cc-cloud-operation-progress { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
+.cc-cloud-version-select,
+.cc-cloud-update-version-select,
+.cc-cloud-rollback-version-select,
+.cc-cloud-image-select {
   min-height: 30px;
   padding: 0 8px;
   border: 1px solid var(--v3-border);
@@ -8634,7 +8610,10 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   font-size: 12px;
   max-width: 140px;
 }
-.cc-cloud-version-select:disabled { opacity: .55; cursor: default; }
+.cc-cloud-version-select:disabled,
+.cc-cloud-update-version-select:disabled,
+.cc-cloud-rollback-version-select:disabled,
+.cc-cloud-image-select:disabled { opacity: .55; cursor: default; }
 .cc-cloud-reset-confirm {
   display: grid;
   gap: 6px;
@@ -8646,6 +8625,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 }
 .cc-cloud-reset-confirm-title { margin: 0; display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--v3-text-name); }
 .cc-cloud-reset-confirm-title svg { color: #e5484d; }
+.cc-cloud-reset-confirm-warning { margin: 0; color: #dc2626; font-size: 12px; line-height: 1.45; }
 .cc-cloud-reset-confirm-code { margin: 0; font-size: 12px; color: var(--v3-text-muted); }
 .cc-cloud-reset-confirm-code b { color: #e5484d; font-size: 14px; letter-spacing: 2px; }
 .cc-cloud-reset-confirm-input { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -8952,7 +8932,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 }
 
 .cc-agent-skill-option.is-selected {
-  box-shadow: inset 3px 0 0 var(--cc-accent);
+  box-shadow: none;
 }
 
 .cc-agent-skill-option-icon {
@@ -8994,9 +8974,9 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 }
 
 .cc-agent-skill-option.is-selected .cc-agent-skill-option-check {
-  border-color: var(--cc-accent);
-  background: var(--cc-accent);
-  color: #fff;
+  border-color: color-mix(in srgb, var(--cc-text) 36%, var(--cc-border-strong));
+  background: var(--cc-text);
+  color: var(--cc-panel-raised);
 }
 
 .cc-agent-skill-picker-state {
@@ -10697,8 +10677,14 @@ html[data-theme="liquid"] :is(
 
 .v3-message.artifacts-first .v3-message-content {
   display: flex;
+  width: 100%;
   flex-direction: column;
   align-items: flex-start;
+}
+
+.v3-message.is-peer.artifacts-first .v3-msg-body {
+  width: calc(100% - 46px);
+  flex: 0 1 auto;
 }
 
 .v3-message.artifacts-first .v3-message-deliverables {
@@ -10710,12 +10696,29 @@ html[data-theme="liquid"] :is(
 .v3-message.artifacts-first .v3-message-followup-text {
   display: grid;
   width: 100%;
-  margin-top: 14px;
-  gap: 12px;
+  margin-top: 8px;
+  gap: 4px;
 }
 
 .v3-message.artifacts-first .v3-message-followup-section {
   min-width: 0;
+}
+
+.v3-message.artifacts-first .v3-message-followup-section > span {
+  display: block;
+}
+
+.v3-message.artifacts-first .v3-message-followup-section .oc-plain-text-paragraphs {
+  gap: 2px;
+}
+
+.v3-message.artifacts-first .v3-message-followup-section .oc-markdown p {
+  margin-block: 2px;
+}
+
+.v3-message.is-peer.artifacts-first .v3-message-footer {
+  width: 100%;
+  margin-top: 2px;
 }
 
 .oc-working-group + .v3-message.artifacts-first .v3-attachment-card.v3-artifact-card {
@@ -10750,6 +10753,23 @@ html[data-theme="liquid"] .v3-message.is-self.has-file-only .v3-message-bubble {
   background: var(--cc-panel);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
   color: var(--cc-text);
+}
+
+.v3-message.artifacts-first .v3-attachment-card.v3-artifact-card {
+  width: min(480px, 100%);
+  max-width: min(480px, 100%);
+  margin-top: 0;
+}
+
+.v3-message.artifacts-first .v3-attachment-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.v3-message.artifacts-first .v3-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .v3-message .v3-message-artifact-list {

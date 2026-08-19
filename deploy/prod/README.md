@@ -11,6 +11,23 @@ root as `/srv/catscompany-prod` so the existing GitHub Actions deployment
 workflow can continue to upload compose, env, and release files to the expected
 location.
 
+## Shared revision cache
+
+Test and production deployments use `/srv/catscompany-build-cache` for source
+archives and extracted source trees. A source archive is named by the tested
+commit SHA and verified with SHA-256 before an atomic rename. Production reuses
+the archive and exact-tag Docker images produced by test; if the shared archive
+is missing, production uploads the tested revision as a compatibility fallback.
+The workflows create this root with owner-only permissions. On a fresh server,
+the SSH deployment user needs non-interactive passwordless `sudo` when `/srv`
+is not directly writable.
+
+The first test deployment of a new commit still transfers one source archive
+from GitHub Actions to the server. Retries and the following production deploy
+do not transfer it again. A future domestic object-storage transport can write
+the same verified archive into this cache without changing the remote build
+contract.
+
 The production deploy reconciles the image proxy timeouts in the TLS
 `app.catsco.cc` `/v1/` location and the streaming STT WebSocket route at
 `/api/stt/realtime`. It does not replace the host site file, so unrelated
@@ -131,6 +148,42 @@ legacy path is represented internally as a one-provider pool.
 `CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES` limits only the JSON request containing
 base64 references; its 24 MiB default remains below the bundled Nginx 32 MiB
 body limit.
+
+## Image upscale gateway
+
+The upscale route is independent from image generation and its provider race.
+It accepts one authenticated multipart request at `POST /v1/images/upscale`,
+submits one asynchronous Topaz Gigapixel job, and returns its task id. Query
+the same job at `GET /v1/images/upscale/tasks/<process_id>`; the gateway
+queries Topaz and returns `202` while it is pending, then returns the completed
+JPEG when the result is ready. The gateway never retries the paid submission
+and does not switch providers.
+
+Keep the provider key in the persistent secret mount:
+
+```bash
+printf '%s' '<topaz-api-key>' > /srv/catscompany-prod/secrets/image-upscale-api-key
+chmod 600 /srv/catscompany-prod/secrets/image-upscale-api-key
+```
+
+Then configure the mounted path in `prod.env`:
+
+```env
+CATSCO_IMAGE_UPSCALE_API_KEY_FILE=/run/catsco-secrets/image-upscale-api-key
+CATSCO_IMAGE_UPSCALE_MODEL=Standard V2
+CATSCO_IMAGE_UPSCALE_TIMEOUT_SECONDS=45
+CATSCO_IMAGE_UPSCALE_MAX_TARGET_EDGE=7680
+CATSCO_IMAGE_UPSCALE_MAX_REQUEST_BYTES=67108864
+CATSCO_IMAGE_UPSCALE_MAX_SOURCE_BYTES=30000000
+CATSCO_IMAGE_UPSCALE_MAX_RESPONSE_BYTES=134217728
+```
+
+The default upstream URL is
+`https://api.topazlabs.com/image/v1/enhance/async`; override
+`CATSCO_IMAGE_UPSCALE_URL` only for a compatible Topaz-shaped endpoint. The
+source limit remains 30 MB, and the output limit is 128 MiB for large 8K JPEGs.
+The provider key is never returned to the client or sent to the presigned
+download URL.
 
 ## Distributed artifact nodes
 

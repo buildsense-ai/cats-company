@@ -147,6 +147,24 @@ describe('CustomSelect', () => {
     expect(listbox.querySelector('.test-select-option')).not.toBeNull();
   });
 
+  it('exposes full string labels while keeping option text in a truncation wrapper', async () => {
+    const trigger = await mount();
+    expect(trigger.title).toBe('Alpha');
+    trigger.getBoundingClientRect = () => rect({
+      bottom: 82,
+      left: 32,
+      top: 40,
+      width: 120,
+    });
+
+    await act(async () => Simulate.click(trigger));
+
+    const gamma = [...document.body.querySelectorAll('.v3-custom-model-select-option')]
+      .find((option) => option.textContent.includes('Gamma'));
+    expect(gamma.title).toBe('Gamma');
+    expect(gamma.querySelector('.v3-custom-model-select-option-label')?.textContent).toBe('Gamma');
+  });
+
   it('supports disabled-option skipping, edge keys, selection, and focus restoration', async () => {
     const onValueChange = vi.fn();
     const trigger = await mount({ onValueChange });

@@ -46,8 +46,97 @@ func TestPostgresCommercialPaymentContract(t *testing.T) {
 		t.Fatalf("create commercial test owner: %v", err)
 	}
 	testCommercialPaymentContract(t, db, ownerID)
+	testCommercialAdjustmentContract(t, db)
 	testCommercialOfficialPlanUpgradeUsers(t, db)
 	testCommercialRelayBaselineContract(t, db)
+}
+
+func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
+	t.Helper()
+	uid, err := db.CreateUser(&types.User{
+		Username: "commercial-adjustment", Email: "commercial-adjustment@example.test", DisplayName: "Adjustment User",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-adjustment-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create adjustment user: %v", err)
+	}
+	currentPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: "adjustment-current", Name: "Adjustment Current", ModelBudgets: map[string]float64{"gpt-5.6-terra": 100}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create adjustment current plan: %v", err)
+	}
+	targetPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: "adjustment-target", Name: "Adjustment Target", ModelBudgets: map[string]float64{"gpt-5.6-terra": 200}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create adjustment target plan: %v", err)
+	}
+	startsAt := time.Now().UTC().Add(-time.Hour)
+	expiresAt := startsAt.Add(30 * 24 * time.Hour)
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'order', 'adjustment-seed', 'active', $3, $4)`, uid, currentPlanID, startsAt, expiresAt); err != nil {
+		t.Fatalf("seed adjustment entitlement: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, plan_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, source_ref)
+		VALUES ($1, $2, 'order', 'gpt-5.6-terra', 100, '1M', $3, $4, 'adjustment-seed'),
+		       ($1, NULL, 'manual', 'gpt-5.6-terra', 7, '1M', $3, $4, 'adjustment-manual')`, uid, currentPlanID, startsAt, expiresAt); err != nil {
+		t.Fatalf("seed adjustment grants: %v", err)
+	}
+
+	expected := 107.0
+	credit, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "increase", AmountCNY: 25, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-credit", Note: "contract credit", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !credit.Applied || credit.NextTotalCNY != 132 {
+		t.Fatalf("credit adjustment failed: result=%#v err=%v", credit, err)
+	}
+	repeated, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "increase", AmountCNY: 25, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-credit", Note: "contract credit", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || repeated.Applied || repeated.NextTotalCNY != 132 {
+		t.Fatalf("credit idempotency failed: result=%#v err=%v", repeated, err)
+	}
+
+	expected = 132
+	debit, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "decrease", AmountCNY: 5, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-debit", Note: "contract debit", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !debit.Applied || debit.NextTotalCNY != 127 {
+		t.Fatalf("debit adjustment failed: result=%#v err=%v", debit, err)
+	}
+	summary, err := db.GetCommercialSummary(uid)
+	if err != nil || summary.TotalCNY != 127 {
+		t.Fatalf("debit was not reflected in shared total: summary=%#v err=%v", summary, err)
+	}
+
+	expected = 127
+	changed, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "change_plan", PlanID: targetPlanID, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-plan", Note: "contract plan change", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !changed.Applied || changed.NextTotalCNY != 227 || changed.CycleStartedAt == nil {
+		t.Fatalf("plan adjustment failed: result=%#v err=%v", changed, err)
+	}
+	summary, err = db.GetCommercialSummary(uid)
+	if err != nil || summary.TotalCNY != 227 {
+		t.Fatalf("plan change did not preserve manual adjustments: summary=%#v err=%v", summary, err)
+	}
+
+	resetAt := time.Now().UTC()
+	applied, recordedAt, err := db.RecordCommercialCycleReset(uid, "adjustment-reset", "contract reset", resetAt)
+	if err != nil || !applied || recordedAt.IsZero() {
+		t.Fatalf("record cycle reset failed: applied=%v at=%v err=%v", applied, recordedAt, err)
+	}
+	applied, repeatedAt, err := db.RecordCommercialCycleReset(uid, "adjustment-reset", "changed retry note", resetAt.Add(time.Minute))
+	if err != nil || applied || !repeatedAt.Equal(recordedAt) {
+		t.Fatalf("cycle reset idempotency failed: applied=%v first=%v repeat=%v err=%v", applied, recordedAt, repeatedAt, err)
+	}
 }
 
 func TestPostgresCommercialRelayBaselineContract(t *testing.T) {

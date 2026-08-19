@@ -50,7 +50,11 @@ done
 
 INSTANCE_NAME="worker-${NAME}"
 KEYPAIR_NAME="worker-key-${NAME}"
-STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
+  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+fi
 
 # --- 工具 ---
 ctyun() {

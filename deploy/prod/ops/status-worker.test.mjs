@@ -28,6 +28,12 @@ function bashPath() {
 
 const BASH = bashPath();
 
+function toMsys(value) {
+  const match = /^([A-Za-z]):(.*)$/.exec(value);
+  if (!match) return value.replace(/\\/g, "/");
+  return `/${match[1].toLowerCase()}${match[2].replace(/\\/g, "/")}`;
+}
+
 const FAKE_CTYUN = `
 import fs from "node:fs";
 const args = process.argv.slice(2);
@@ -60,24 +66,31 @@ img-old-2	catsco-worker-1-4-7-abcd1234	1.4.7	abcd1234	1785066647	active
 EOF
 `;
 
-const FAKE_TIMEOUT = `
-import { spawnSync } from "node:child_process";
-const args = process.argv.slice(2);
-let i = 0;
-while (i < args.length) {
-  const a = args[i];
-  if (a.startsWith("--")) {
-    process.stderr.write("fake busybox timeout rejects GNU option: " + a + "\\n");
-    process.exit(2);
-  }
-  if (a === "-s" || a === "-k") { i += 2; continue; }
-  if (a.startsWith("-s") || a.startsWith("-k")) { i += 1; continue; }
-  break;
+const FAKE_REMOTE_COMMANDS = `#!/usr/bin/env bash
+timeout() {
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --*) echo "fake busybox timeout rejects GNU option: $1" >&2; exit 2 ;;
+    -s|-k) shift 2 ;;
+    -s*|-k*) shift ;;
+    *) break ;;
+  esac
+done
+[[ $# -ge 2 ]] || exit 2
+shift
+"$@"
 }
-if (i >= args.length || i + 1 >= args.length) process.exit(2);
-const cmd = args[i + 1];
-const r = spawnSync(cmd, args.slice(i + 2), { stdio: "inherit" });
-process.exit(r.status ?? 1);
+
+ssh() {
+  local arg ip version=""
+  for arg in "$@"; do
+    [[ "$arg" == root@* ]] || continue
+    ip="\${arg#root@}"
+    version="$(printf '%s' "\${FAKE_APP_VERSIONS:-{}}" | jq -r --arg ip "$ip" '.[$ip] // empty')"
+    break
+  done
+  [[ -z "$version" ]] || printf '{"version":"%s"}' "$version"
+}
 `;
 
 function writeCommand(bin, name, body) {
@@ -93,15 +106,30 @@ function writeShell(bin, name, body) {
   fs.chmodSync(p, 0o755);
 }
 
-function runScript(t, { env = {}, fakeState = {}, ctyunBody = FAKE_CTYUN } = {}) {
+function runScript(t, { env = {}, fakeState = {}, appVersions = {}, remoteVersions = {}, ctyunBody = FAKE_CTYUN } = {}) {
   const tmp = fs.mkdtempSync(path.join(fs.realpathSync(path.join(__dirname, "..")), "status-test-"));
   if (t) t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const bin = path.join(tmp, "bin");
   fs.mkdirSync(bin, { recursive: true });
   writeCommand(bin, "ctyun-cli", ctyunBody);
   writeShell(bin, "list-worker-images.sh", FAKE_IMAGES);
-  writeCommand(bin, "timeout", FAKE_TIMEOUT);
+  const bashEnv = path.join(tmp, "fake-remote-commands.sh");
+  fs.writeFileSync(bashEnv, FAKE_REMOTE_COMMANDS);
   fs.writeFileSync(path.join(tmp, "state.json"), JSON.stringify(fakeState));
+  const stateRoot = path.join(tmp, "worker-state");
+  fs.mkdirSync(stateRoot);
+  for (const [tenant, version] of Object.entries(appVersions)) {
+    const tenantDir = path.join(stateRoot, tenant);
+    fs.mkdirSync(tenantDir);
+    fs.writeFileSync(path.join(tenantDir, "app_version"), `${version}\n`);
+  }
+  for (const instance of fakeState.instances || []) {
+    const ip = instance.fixedIPList?.[0] || "";
+    if (!remoteVersions[ip] || !instance.instanceName?.startsWith("worker-")) continue;
+    const tenantDir = path.join(stateRoot, instance.instanceName.slice("worker-".length));
+    fs.mkdirSync(tenantDir, { recursive: true });
+    fs.writeFileSync(path.join(tenantDir, "id_rsa"), "fake-key\n");
+  }
   const gitBin = process.platform === "win32"
     ? path.dirname(BASH)
     : "";
@@ -115,6 +143,9 @@ function runScript(t, { env = {}, fakeState = {}, ctyunBody = FAKE_CTYUN } = {})
       CTYUN_WORKER_REGION_ID: "200000002530",
       CTYUN_WORKER_PROJECT_ID: "0",
       CTYUN_IMAGE_PROJECT_ID: "0",
+      CTYUN_WORKER_STATE_ROOT: toMsys(stateRoot),
+      FAKE_APP_VERSIONS: JSON.stringify(remoteVersions),
+      BASH_ENV: toMsys(bashEnv),
       ...env,
     },
     encoding: "utf8",
@@ -122,10 +153,11 @@ function runScript(t, { env = {}, fakeState = {}, ctyunBody = FAKE_CTYUN } = {})
   return r;
 }
 
-const inst = (name, status, imageID) => ({
+const inst = (name, status, imageID, ip = "") => ({
   instanceName: name,
   instanceStatus: status,
   image: { imageID },
+  fixedIPList: ip ? [ip] : [],
 });
 
 test("status-worker: emits TSV with version joined from bake images", (t) => {
@@ -137,12 +169,22 @@ test("status-worker: emits TSV with version joined from bake images", (t) => {
         inst("somebody-else", "running", "img-running-1"), // filtered out
       ],
     },
+    appVersions: { aaa: "1.4.9", bbb: "1.4.8" },
   });
   assert.equal(r.status, 0, r.stderr);
   const lines = r.stdout.trim().split("\n").filter(Boolean);
   assert.equal(lines.length, 2);
-  assert.equal(lines[0], "worker-aaa\trunning\timg-running-1\t1.4.8");
-  assert.equal(lines[1], "worker-bbb\tcreating\timg-old-2\t1.4.7");
+  assert.equal(lines[0], "worker-aaa\trunning\timg-running-1\t1.4.8\t1.4.9");
+  assert.equal(lines[1], "worker-bbb\tcreating\timg-old-2\t1.4.7\t1.4.8");
+});
+
+test("status-worker: discovers and caches an old worker's active application version", (t) => {
+  const r = runScript(t, {
+    fakeState: { instances: [inst("worker-legacy", "running", "img-running-1", "10.0.0.7")] },
+    remoteVersions: { "10.0.0.7": "1.4.7" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), "worker-legacy\trunning\timg-running-1\t1.4.8\t1.4.7", r.stderr);
 });
 
 test("status-worker: no workers yields empty output and exit 0", (t) => {
@@ -184,5 +226,5 @@ test("status-worker: instance without imageID omits trailing empty columns", (t)
   const line = r.stdout.trim();
   assert.equal(line.split("\t")[0], "worker-noid");
   assert.equal(line.split("\t")[1], "running");
-  assert.ok(line.split("\t").length <= 4);
+  assert.ok(line.split("\t").length <= 5);
 });

@@ -1039,6 +1039,25 @@ func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter,
 		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
+		if h.users == nil {
+			writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user lookup unavailable"})
+			return
+		}
+		users, err := h.users.SearchUsers(query, 20)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to search users"})
+			return
+		}
+		matches := make([]accountUserResponse, 0, len(users))
+		for _, user := range users {
+			if user != nil {
+				matches = append(matches, accountUserPayload(user))
+			}
+		}
+		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"users": matches})
+		return
+	}
 	uid, err := strconvParsePositiveInt64(r.URL.Query().Get("uid"))
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
