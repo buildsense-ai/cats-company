@@ -302,6 +302,7 @@ export default function MessagesView({
   onAgentModelChange,
   onActiveAgentChange,
   cloudArtifactsRequest,
+  onCloudArtifactsRequestConsumed,
   messageLocationRequest,
   onBackToSearch,
 }) {
@@ -821,7 +822,13 @@ export default function MessagesView({
     setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
     setCloudArtifactsListOpen(true);
     setCloudArtifactsReturnOpen(false);
-  }, [clearActiveArtifactFocus, cloudArtifactsRequest, topic]);
+    onCloudArtifactsRequestConsumed?.(cloudArtifactsRequest.requestId);
+  }, [
+    clearActiveArtifactFocus,
+    cloudArtifactsRequest,
+    onCloudArtifactsRequestConsumed,
+    topic,
+  ]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {

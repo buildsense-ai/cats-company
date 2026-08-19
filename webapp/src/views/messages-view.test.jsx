@@ -3188,6 +3188,69 @@ describe('MessagesView composer draft isolation', () => {
     expect(preview?.getAttribute('data-url')).toBe(artifact.url);
   });
 
+  it('consumes a cloud artifacts request after opening it once', async () => {
+    const onRequestConsumed = vi.fn();
+    let switchTopic;
+    function TopicHarness() {
+      const [currentTopic, setCurrentTopic] = React.useState('p2p_1_440');
+      const [request, setRequest] = React.useState({
+        agentUid: 440,
+        requestId: 1,
+        topicId: 'p2p_1_440',
+      });
+      switchTopic = setCurrentTopic;
+      const consumeRequest = React.useCallback((requestId) => {
+        onRequestConsumed(requestId);
+        setRequest((current) => (
+          current?.requestId === requestId ? null : current
+        ));
+      }, []);
+
+      return (
+        <MessagesView
+          topic={currentTopic}
+          topicName={currentTopic}
+          user={user}
+          isGroup={false}
+          groupId={null}
+          topicAvatarUrl=""
+          onTopicUpdated={vi.fn()}
+          cloudArtifactsRequest={request}
+          onCloudArtifactsRequestConsumed={consumeRequest}
+        />
+      );
+    }
+
+    await act(async () => {
+      root.render(<TopicHarness />);
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(onRequestConsumed).toHaveBeenCalledTimes(1);
+    expect(onRequestConsumed).toHaveBeenCalledWith(1);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="关闭云文件"]'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+
+    await act(async () => {
+      switchTopic('p2p_1_2');
+      await flushPromises();
+    });
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+
+    await act(async () => {
+      switchTopic('p2p_1_440');
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+    expect(onRequestConsumed).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes the visible exact Artifact once when its published version increases', async () => {
     vi.useFakeTimers();
     const versionTwo = {

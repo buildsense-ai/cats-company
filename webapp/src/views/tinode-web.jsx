@@ -266,6 +266,12 @@ function TinodeWebApp({ location }) {
   const [standaloneCloudArtifactsRequest, setStandaloneCloudArtifactsRequest] = useState(null);
   const [standaloneCloudArtifactsTab, setStandaloneCloudArtifactsTab] = useState('active');
   const cloudArtifactsRequestSequenceRef = useRef(0);
+  const consumeCloudArtifactsRequest = useCallback((requestId) => {
+    if (!requestId) return;
+    setCloudArtifactsRequest((current) => (
+      current?.requestId === requestId ? null : current
+    ));
+  }, []);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -1231,6 +1237,7 @@ function TinodeWebApp({ location }) {
                 onResolveAgentTopic={resolveAgentTopic}
                 onActivateTopic={activateResolvedTopic}
                 cloudArtifactsRequest={cloudArtifactsRequest}
+                onCloudArtifactsRequestConsumed={consumeCloudArtifactsRequest}
                 messageLocationRequest={messageLocationRequest}
                 onBackToSearch={() => setSearchOpen(true)}
               />
