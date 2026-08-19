@@ -403,6 +403,7 @@ export default function AgentStoreModal({
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
+  const [cloudReleases, setCloudReleases] = useState([]); // published application releases for update/rollback
   const [cloudActions, setCloudActions] = useState(null); // configured cloud operation capabilities
   const [cloudActioning, setCloudActioning] = useState(null); // { name, action }
   const [editingBot, setEditingBot] = useState(null);
@@ -611,9 +612,9 @@ export default function AgentStoreModal({
     loadBots();
   }, [initialAgentId]);
 
-  // Available worker image versions (used by the cloud panel for version
-  // selection on rollback/reset). A cold backend snapshot gets one short
-  // follow-up poll; normal settled responses do not keep polling.
+  // Application releases and base images are independent catalogs. A cold
+  // backend snapshot gets one short follow-up poll; settled responses do not
+  // keep polling.
   useEffect(() => {
     let cancelled = false;
     let retryTimer = null;
@@ -622,8 +623,9 @@ export default function AgentStoreModal({
         const meta = await api.getCloudWorkerMeta?.();
         if (cancelled) return;
         setCloudImages(meta?.images || []);
+        setCloudReleases(meta?.releases || []);
         setCloudActions(meta?.actions || null);
-        if (meta?.images_refreshing) {
+        if (meta?.images_refreshing || meta?.releases_refreshing) {
           retryTimer = window.setTimeout(loadMeta, 2_000);
         }
       } catch {
@@ -1181,17 +1183,20 @@ export default function AgentStoreModal({
   const handleCloudUpdate = async (bot, version = '') => {
     const name = bot.tenant_name;
     if (!name) return;
-    const target = version || '最新版本';
+    if (!version) {
+      setError('暂无可用的应用发布版本，请稍后刷新后重试');
+      return;
+    }
     const confirmed = await feedback.confirm({
       title: `更新“${bot.display_name}”？`,
-      message: `将应用更新到 ${target}，会保留会话、文件和本地配置。更新期间员工会短暂重启。`,
+      message: `将应用更新到 ${version}，会保留会话、文件和本地配置。更新期间员工会短暂重启。`,
       confirmLabel: '确认更新',
       tone: 'default',
     });
     if (!confirmed) return;
     try {
       setCloudActioning({ name, action: 'update' });
-      await api.updateCloudWorker(name, version ? { version } : {});
+      await api.updateCloudWorker(name, { version });
       await loadBots({ silent: true });
       feedback.notify({ tone: 'success', message: '应用更新完成' });
     } catch (e) {
@@ -1202,31 +1207,21 @@ export default function AgentStoreModal({
     }
   };
 
-  // Cloud-managed rollback. The cloud panel passes an explicit version (or '' =
-  // latest) with fromPanel:true; the hub card keeps the legacy prompt-based
-  // version picker when no version is given.
+  // Cloud-managed rollback. The cloud panel passes an explicit application
+  // release; the legacy caller can still fetch and choose one on demand.
   const handleCloudRollback = async (bot, version = '', opts = {}) => {
     const name = bot.tenant_name;
     if (!name) return;
-    const confirmed = await feedback.confirm({
-      title: `回滚“${bot.display_name}”？`,
-      message: version
-        ? `回滚会把云端虚拟员工切换到镜像版本 ${version}，但会保留当前数据。`
-        : '回滚会把云端虚拟员工回滚到最新镜像版本，但会保留当前数据。',
-      confirmLabel: '确认回滚',
-      tone: 'default',
-    });
-    if (!confirmed) return;
     try {
       if (!version && !opts.fromPanel) {
-        // hub 卡片旧逻辑：从控制面 meta 拉可用镜像版本供选择
+        // Legacy caller: fetch published application releases for selection.
         let meta = null;
         try { meta = await api.getCloudWorkerMeta(); } catch { meta = null; }
-        const versions = (meta?.images || []).map((img) => img?.version).filter(Boolean);
+        const versions = (meta?.releases || []).map((release) => release?.version).filter(Boolean);
         if (versions.length > 1) {
           const picked = window.prompt(
-            `可用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本（留空=最新）：`,
-            '',
+            `可用应用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本：`,
+            versions[0],
           );
           if (picked === null) return; // 用户取消
           version = picked.trim();
@@ -1234,8 +1229,19 @@ export default function AgentStoreModal({
           version = versions[0];
         }
       }
+      if (!version) {
+        setError('暂无可用的应用发布版本，请稍后刷新后重试');
+        return;
+      }
+      const confirmed = await feedback.confirm({
+        title: `回滚“${bot.display_name}”？`,
+        message: `回滚会把云端虚拟员工切换到应用版本 ${version}，但会保留当前数据。`,
+        confirmLabel: '确认回滚',
+        tone: 'default',
+      });
+      if (!confirmed) return;
       setCloudActioning({ name, action: 'rollback' });
-      await api.rollbackCloudWorker(name, version ? { version } : {});
+      await api.rollbackCloudWorker(name, { version });
       feedback.notify({ tone: 'success', message: '回滚已触发，稍后刷新查看状态' });
     } catch (e) {
       setError(cloudWorkerActionMessage(e, '回滚'));
@@ -1373,6 +1379,7 @@ export default function AgentStoreModal({
                   quotaError={cloudQuotaError}
                   workers={cloudWorkers}
                   images={cloudImages}
+                  releases={cloudReleases}
                   actions={cloudActions}
                   actioning={cloudActioning}
                   showHostingSwitch={false}
@@ -1530,6 +1537,7 @@ export default function AgentStoreModal({
                 quotaError={cloudQuotaError}
                 workers={cloudWorkers}
                 images={cloudImages}
+                releases={cloudReleases}
                 actions={cloudActions}
                 actioning={cloudActioning}
                 onCreate={handleCloudCreate}

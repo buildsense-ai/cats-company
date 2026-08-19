@@ -52,6 +52,7 @@ type CloudWorkerHandler struct {
 	rollbackScript  string
 	destroyScript   string
 	imagesScript    string
+	releasesScript  string
 	statusScript    string
 
 	scriptTimeout time.Duration
@@ -80,17 +81,28 @@ type CloudWorkerHandler struct {
 	imagesLoaded        bool
 	imagesRefreshing    bool
 	imageRefreshPending bool
+
+	releaseSnapshot       []cloudReleaseSummary
+	releaseUpdatedAt      time.Time
+	releaseLastAttempt    time.Time
+	releasesLoaded        bool
+	releasesRefreshing    bool
+	releaseRefreshPending bool
 }
 
 const (
-	cloudWorkerStatusSnapshotTTL  = 10 * time.Second
-	cloudWorkerStatusRetryDelay   = 15 * time.Second
-	cloudWorkerStatusMaxTrustAge  = 2 * time.Minute
-	cloudWorkerImageSnapshotTTL   = time.Minute
-	cloudWorkerImageRetryDelay    = 15 * time.Second
-	cloudWorkerImageMaxTrustAge   = 10 * time.Minute
-	cloudWorkerStatusProbeTimeout = 20 * time.Second
-	cloudWorkerImageProbeTimeout  = 30 * time.Second
+	cloudWorkerStatusSnapshotTTL   = 10 * time.Second
+	cloudWorkerStatusRetryDelay    = 15 * time.Second
+	cloudWorkerStatusMaxTrustAge   = 2 * time.Minute
+	cloudWorkerImageSnapshotTTL    = time.Minute
+	cloudWorkerImageRetryDelay     = 15 * time.Second
+	cloudWorkerImageMaxTrustAge    = 10 * time.Minute
+	cloudWorkerReleaseSnapshotTTL  = time.Minute
+	cloudWorkerReleaseRetryDelay   = 15 * time.Second
+	cloudWorkerReleaseMaxTrustAge  = 10 * time.Minute
+	cloudWorkerStatusProbeTimeout  = 20 * time.Second
+	cloudWorkerImageProbeTimeout   = 30 * time.Second
+	cloudWorkerReleaseProbeTimeout = 30 * time.Second
 )
 
 // workerUsernameRe constrains cloud worker usernames so the derived tenant
@@ -106,6 +118,7 @@ type CloudWorkerConfig struct {
 	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
 	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
 	ImagesScript    string // CATSCO_WORKER_IMAGES_SCRIPT
+	ReleasesScript  string // CATSCO_WORKER_RELEASES_SCRIPT
 	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
 }
 
@@ -119,6 +132,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		RollbackScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
 		DestroyScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
 		ImagesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
+		ReleasesScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
 		StatusScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
 	}
 }
@@ -135,6 +149,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		rollbackScript:  cfg.RollbackScript,
 		destroyScript:   cfg.DestroyScript,
 		imagesScript:    cfg.ImagesScript,
+		releasesScript:  cfg.ReleasesScript,
 		statusScript:    cfg.StatusScript,
 		scriptTimeout:   10 * time.Minute,
 	}
@@ -144,6 +159,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 	// Tianyi API latency or availability.
 	handler.requestCloudStatusRefresh(true)
 	handler.requestCloudImageRefresh(true)
+	handler.requestCloudReleaseRefresh(true)
 	return handler
 }
 
@@ -464,7 +480,68 @@ func (h *CloudWorkerHandler) refreshCloudImageSnapshot() {
 	}
 }
 
-// HandleMeta handles GET /api/cloud-workers/meta — quota + available images.
+func (h *CloudWorkerHandler) cloudReleaseSnapshot() ([]cloudReleaseSummary, bool, bool, time.Time) {
+	h.requestCloudReleaseRefresh(false)
+
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	releases := append([]cloudReleaseSummary(nil), h.releaseSnapshot...)
+	trusted := h.releasesLoaded && time.Since(h.releaseUpdatedAt) <= cloudWorkerReleaseMaxTrustAge
+	return releases, trusted, h.releasesRefreshing, h.releaseUpdatedAt
+}
+
+func (h *CloudWorkerHandler) requestCloudReleaseRefresh(force bool) {
+	if h.releasesScript == "" {
+		return
+	}
+
+	now := time.Now()
+	h.cacheMu.Lock()
+	due := !h.releasesLoaded || now.Sub(h.releaseUpdatedAt) >= cloudWorkerReleaseSnapshotTTL
+	retryAllowed := h.releaseLastAttempt.IsZero() || now.Sub(h.releaseLastAttempt) >= cloudWorkerReleaseRetryDelay
+	if (!due && !force) || (!retryAllowed && !force) {
+		h.cacheMu.Unlock()
+		return
+	}
+	if h.releasesRefreshing {
+		if force {
+			h.releaseRefreshPending = true
+		}
+		h.cacheMu.Unlock()
+		return
+	}
+	h.releasesRefreshing = true
+	h.releaseLastAttempt = now
+	h.cacheMu.Unlock()
+
+	go h.refreshCloudReleaseSnapshot()
+}
+
+func (h *CloudWorkerHandler) refreshCloudReleaseSnapshot() {
+	out, err := h.runScriptTimeout(cloudWorkerReleaseProbeTimeout, h.releasesScript)
+
+	h.cacheMu.Lock()
+	if err == nil {
+		h.releaseSnapshot = parseReleaseLines(out)
+		h.releaseUpdatedAt = time.Now()
+		h.releasesLoaded = true
+	}
+	pending := h.releaseRefreshPending
+	h.releaseRefreshPending = false
+	h.releasesRefreshing = false
+	h.cacheMu.Unlock()
+
+	if err != nil {
+		log.Printf("[cloud-worker] release snapshot refresh failed: %v", err)
+	}
+	if pending {
+		h.requestCloudReleaseRefresh(true)
+	}
+}
+
+// HandleMeta handles GET /api/cloud-workers/meta — quota, application releases
+// and base images. Application update/rollback targets must not be inferred
+// from the independently managed image catalog.
 func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -507,6 +584,14 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 		if imagesLoaded {
 			meta["images"] = images
 			meta["images_cached_at"] = imagesUpdatedAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	if h.releasesScript != "" {
+		releases, releasesLoaded, releasesRefreshing, releasesUpdatedAt := h.cloudReleaseSnapshot()
+		meta["releases_refreshing"] = releasesRefreshing
+		if releasesLoaded {
+			meta["releases"] = releases
+			meta["releases_cached_at"] = releasesUpdatedAt.UTC().Format(time.RFC3339Nano)
 		}
 	}
 	writeJSON(w, http.StatusOK, meta)
@@ -683,13 +768,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // HandleRollback handles POST /api/cloud-workers/{name}/rollback — swap Part A
 // artifacts to the chosen version while KEEPING worker data.
 func (h *CloudWorkerHandler) HandleRollback(w http.ResponseWriter, r *http.Request) {
-	h.handleWorkerAction(w, r, h.rollbackScript, "rollback", true, false)
+	h.handleWorkerAction(w, r, h.rollbackScript, "rollback", true, false, false)
 }
 
 // HandleUpdate handles POST /api/cloud-workers/{name}/update — install the
 // selected Part A release while KEEPING worker data.
 func (h *CloudWorkerHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
-	h.handleWorkerAction(w, r, h.updateScript, "update", true, false)
+	h.handleWorkerAction(w, r, h.updateScript, "update", true, true, false)
 }
 
 // HandleReset handles POST /api/cloud-workers/{name}/reset — DESTROY the worker
@@ -697,15 +782,17 @@ func (h *CloudWorkerHandler) HandleUpdate(w http.ResponseWriter, r *http.Request
 // An optional "version" selector is forwarded to reset-worker.sh which maps it
 // to the matching image id (falling back to the latest image when omitted).
 func (h *CloudWorkerHandler) HandleReset(w http.ResponseWriter, r *http.Request) {
-	h.handleWorkerAction(w, r, h.resetScript, "reset", true, true)
+	h.handleWorkerAction(w, r, h.resetScript, "reset", true, false, true)
 }
 
 // handleWorkerAction guards a per-worker destructive action with ownership
 // checks and delegates to the configured script. acceptVersion controls
-// whether an optional "version" selector is forwarded to the script.
+// whether a "version" selector is forwarded to the script; requireVersion
+// makes it mandatory for actions such as update, where omission previously
+// fell back to the unrelated latest-image catalog.
 // refreshIdentity is used only by reset so a recreated instance receives the
 // current bot credentials instead of trusting a legacy on-disk snapshot.
-func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.Request, script, action string, acceptVersion, refreshIdentity bool) {
+func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.Request, script, action string, acceptVersion, requireVersion, refreshIdentity bool) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
@@ -749,14 +836,21 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Optional version selector forwarded to update/rollback/reset. The UI
-	// always offers the latest six image-backed versions, while omission keeps
-	// the existing "latest" compatibility behavior.
+	// Version selectors are sourced from different catalogs in the UI:
+	// application releases for update/rollback, base images for reset.
 	var body struct {
 		Version string `json:"version,omitempty"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body) // malformed body is ignored
+	}
+	body.Version = strings.TrimSpace(body.Version)
+	if requireVersion && body.Version == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "cloud worker " + action + " requires an explicit application version",
+			"code":  "cloud_worker_" + action + "_version_required",
+		})
+		return
 	}
 	// B4-1 脚本契约：--name <tenant> [--version <v>]（脚本按名字区分动作，无 -Action）
 	args := []string{"--name", name}
@@ -1020,4 +1114,59 @@ func parseImageLines(out string) []cloudImageSummary {
 		images = images[:6]
 	}
 	return images
+}
+
+// cloudReleaseSummary is one published application release from the private
+// TOS catalog. It is intentionally separate from cloudImageSummary: a release
+// can be installed on an older base image without a same-version image.
+type cloudReleaseSummary struct {
+	Version     string `json:"version"`
+	PublishedAt string `json:"published_at,omitempty"`
+}
+
+var cloudReleaseVersionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
+
+// parseReleaseLines parses `version<TAB>publishedUnixTime` rows emitted by
+// list-worker-releases.sh, newest first. Duplicate and malformed versions are
+// ignored so provider metadata cannot create ambiguous UI choices.
+func parseReleaseLines(out string) []cloudReleaseSummary {
+	type releaseWithTime struct {
+		release cloudReleaseSummary
+		unix    int64
+	}
+	parsed := []releaseWithTime{}
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		version := strings.TrimPrefix(strings.TrimSpace(fields[0]), "v")
+		if !cloudReleaseVersionRe.MatchString(version) {
+			continue
+		}
+		if _, exists := seen[version]; exists {
+			continue
+		}
+		seen[version] = struct{}{}
+		var publishedUnix int64
+		if len(fields) > 1 {
+			publishedUnix, _ = strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
+		}
+		release := cloudReleaseSummary{Version: version}
+		if publishedUnix > 0 {
+			release.PublishedAt = time.Unix(publishedUnix, 0).UTC().Format(time.RFC3339)
+		}
+		parsed = append(parsed, releaseWithTime{release: release, unix: publishedUnix})
+	}
+	sort.SliceStable(parsed, func(i, j int) bool { return parsed[i].unix > parsed[j].unix })
+	if len(parsed) > 6 {
+		parsed = parsed[:6]
+	}
+	releases := make([]cloudReleaseSummary, len(parsed))
+	for i := range parsed {
+		releases[i] = parsed[i].release
+	}
+	return releases
 }

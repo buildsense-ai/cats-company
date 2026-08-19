@@ -59,8 +59,13 @@ FLAVOR_ID="${CTYUN_WORKER_FLAVOR_ID:-}"
 VPC_ID="${CTYUN_WORKER_VPC_ID:-}"
 SUBNET_ID="${CTYUN_WORKER_SUBNET_ID:-}"
 SECURITY_GROUP_ID="${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
-# 内网模式：0 = 不绑定公网 IP（NAT 跳板架构，默认 1 兼容旧行为）
-EXT_IP="${CTYUN_WORKER_EXT_IP:-1}"
+# 默认使用内网 IP（NAT/跳板架构），不消耗公网 IP 配额。只有显式设为
+# 1 时才申请公网 IP 与带宽。
+EXT_IP="${CTYUN_WORKER_EXT_IP:-0}"
+if [[ "$EXT_IP" != "0" && "$EXT_IP" != "1" ]]; then
+  echo "error: CTYUN_WORKER_EXT_IP must be 0 or 1" >&2
+  exit 2
+fi
 # 计费模式（平台按月售卖，默认 month）：month = 包月 + 到期时间，ondemand = 按量
 # CTYUN_WORKER_CYCLE_COUNT：包月时长（月），默认 1
 # CTYUN_WORKER_AUTO_RENEW：1 = 创建后开自动续费（默认），0 = 不开
