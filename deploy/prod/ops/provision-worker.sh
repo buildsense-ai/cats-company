@@ -430,5 +430,15 @@ ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/cat
 # 输出重定向：is-active 的 stdout（"active"）会污染下方 JSON 约定，仅保留退出码
 ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1
 
+APP_VERSION="$(ssh_run "root@$INSTANCE_IP" \
+  "cat /opt/catsco/current/worker-release.json 2>/dev/null" 2>/dev/null \
+  | jq -r '.version // empty' 2>/dev/null || true)"
+if [[ "$APP_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
+  printf '%s\n' "$APP_VERSION" > "$STATE_DIR/app_version.tmp"
+  mv -f "$STATE_DIR/app_version.tmp" "$STATE_DIR/app_version"
+else
+  echo "warning: provisioned application version could not be persisted" >&2
+fi
+
 echo "{\"status\":\"provisioned\",\"instance_id\":\"$CREATED_INSTANCE_ID\",\"instance_name\":\"$INSTANCE_NAME\",\"ip\":\"$INSTANCE_IP\",\"image_id\":\"$IMAGE_ID\"}"
 trap - EXIT

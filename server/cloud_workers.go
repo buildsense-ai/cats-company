@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/openchat/openchat/server/store"
-	"github.com/openchat/openchat/server/store/types"
 )
 
 // CloudWorkerHandler exposes the cloud-managed virtual employee control plane.
@@ -211,11 +210,9 @@ type cloudWorkerSummary struct {
 	CloudStatus  string `json:"cloud_status,omitempty"`
 	CloudVersion string `json:"cloud_version,omitempty"`
 	CloudImageID string `json:"cloud_image_id,omitempty"`
-	AppVersion   string `json:"app_version,omitempty"`
-}
-
-type cloudWorkerDefinitionReader interface {
-	GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error)
+	// AppVersion is always present: an empty value means the runtime version
+	// has not been observed and must not fall back to the bot definition.
+	AppVersion string `json:"app_version"`
 }
 
 // cloudWorkersOfOwner returns the cloud-managed workers owned by uid
@@ -243,11 +240,6 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		}
 		if s, ok := b["display_name"].(string); ok {
 			w.DisplayName = s
-		}
-		if definitions, ok := h.db.(cloudWorkerDefinitionReader); ok && w.UID > 0 {
-			if definition, definitionErr := definitions.GetBotDefinition(w.UID); definitionErr == nil && definition != nil && definition.DefaultPrompt != nil {
-				w.AppVersion = strings.TrimSpace(definition.DefaultPrompt.XiaoBaVersion)
-			}
 		}
 		workers = append(workers, w)
 	}
@@ -305,6 +297,7 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			}
 			workers[i].CloudImageID = info.ImageID
 			workers[i].CloudVersion = info.Version
+			workers[i].AppVersion = info.AppVersion
 		}
 	}
 
@@ -327,14 +320,17 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 
 // cloudInstanceInfo is one worker instance's cloud-side fact set.
 type cloudInstanceInfo struct {
-	Status  string
-	ImageID string
-	Version string
+	Status     string
+	ImageID    string
+	Version    string
+	AppVersion string
 }
 
 // parseCloudWorkerStatusTSV parses status-worker.sh output lines of the form
-// "instanceName<TAB>instanceStatus<TAB>imageID<TAB>version" keyed by tenant
-// name (instanceName minus the "worker-" prefix). Malformed lines are ignored.
+// "instanceName<TAB>instanceStatus<TAB>imageID<TAB>imageVersion<TAB>appVersion"
+// keyed by tenant name (instanceName minus the "worker-" prefix). The fifth
+// column is optional so rolling deployments can consume the old four-column
+// status script output. Malformed lines are ignored.
 func parseCloudWorkerStatusTSV(out string) map[string]cloudInstanceInfo {
 	infos := map[string]cloudInstanceInfo{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -350,6 +346,9 @@ func parseCloudWorkerStatusTSV(out string) map[string]cloudInstanceInfo {
 		if len(parts) >= 4 {
 			info.ImageID = strings.TrimSpace(parts[2])
 			info.Version = strings.TrimSpace(parts[3])
+		}
+		if len(parts) >= 5 {
+			info.AppVersion = strings.TrimSpace(parts[4])
 		}
 		infos[strings.TrimPrefix(name, "worker-")] = info
 	}

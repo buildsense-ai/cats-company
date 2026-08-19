@@ -218,6 +218,7 @@ test("deploy-worker-version: explicit application version does not require a mat
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /"status":"updated"/);
   assert.equal(readState(sb).manifestDownloads, 1);
+  assert.equal(fs.readFileSync(path.join(sb.stateDir, "app_version"), "utf8"), "1.4.9\n");
 });
 
 test("deploy-worker-version: reuses an existing worker-local release", () => {
