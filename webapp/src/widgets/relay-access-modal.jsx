@@ -542,6 +542,7 @@ export default function RelayAccessModal({ onClose }) {
   const [paymentPollError, setPaymentPollError] = useState('');
   const [trialLoading, setTrialLoading] = useState(false);
   const [currentUsage, setCurrentUsage] = useState(undefined);
+  const [usageRevision, setUsageRevision] = useState(0);
   const [inviteCode, setInviteCode] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [error, setError] = useState('');
@@ -799,7 +800,7 @@ export default function RelayAccessModal({ onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [relayKey?.prefix, JSON.stringify(commercial?.summary?.entitlements || [])]);
+  }, [relayKey?.prefix, usageRevision, JSON.stringify(commercial?.summary?.entitlements || [])]);
 
   const redeemInvite = async () => {
     const code = inviteCode.trim();
@@ -815,6 +816,7 @@ export default function RelayAccessModal({ onClose }) {
       );
       const data = await api.redeemRelayInvite(code);
       setCommercial({ ...(commercial || {}), enabled: true, summary: data.summary, note: data.note || commercial?.note });
+      setUsageRevision((current) => current + 1);
       setInviteCode('');
       setCopied('invite');
       const inviteEntitlements = (data?.summary?.entitlements || []).filter((item) => item?.source === 'invite');
@@ -851,6 +853,9 @@ export default function RelayAccessModal({ onClose }) {
       const orders = Array.isArray(ordersResult.value?.orders) ? ordersResult.value.orders : [];
       setCommercialOrders(orders);
       reconcileCommercialPaymentRequestIDs(paymentRequestIDs.current, orders);
+    }
+    if (commercialResult.status === 'fulfilled') {
+      setUsageRevision((current) => current + 1);
     }
     const failed = [commercialResult, catalogResult, ordersResult].find((result) => result.status === 'rejected');
     if (failed) throw failed.reason;

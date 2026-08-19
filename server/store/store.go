@@ -19,6 +19,15 @@ var ErrGroupInviteRequestNotPending = errors.New("group invite request is not pe
 var ErrConversationTaskRunTerminal = errors.New("cannot resume a terminal task run; publish a new run_id")
 var ErrConversationTaskRunSuperseded = errors.New("cannot complete a superseded task run while a newer run is active")
 var ErrConversationTaskStatusStale = errors.New("cannot apply an older task status update")
+var ErrBotSkillMutationBusy = errors.New("another bot skill mutation is active")
+var ErrBotSkillMutationRecoveryRequired = errors.New("an expired bot skill mutation requires recovery")
+var ErrBotSkillMutationIdempotencyConflict = errors.New("client request id was reused with different mutation facts")
+var ErrBotSkillMutationNotFound = errors.New("bot skill mutation not found")
+var ErrBotSkillMutationStateConflict = errors.New("bot skill mutation status changed")
+var ErrBotSkillMutationLeaseExpired = errors.New("bot skill mutation lease expired")
+var ErrBotSkillMutationVersionFactsConflict = errors.New("skill version facts do not match the candidate content")
+var ErrBotSkillMutationAtomicCommitRequired = errors.New("bot definition commit requires the atomic mutation commit path")
+var ErrBotSkillMutationDefinitionStale = errors.New("bot definition no longer matches the mutation base")
 
 const maxConversationTaskStatusFutureClockSkew = 5 * time.Minute
 
@@ -281,6 +290,26 @@ type BotArtifactPolicyStore interface {
 	UpdateBotArtifactUploadPolicy(botUID int64, enabled bool) error
 }
 
+// BotSkillMutationPolicyStore persists the opt-in policy for the dedicated
+// Skill mutation control plane. It does not authorize general Bot edits.
+type BotSkillMutationPolicyStore interface {
+	GetBotSkillMutationMode(botUID int64) (types.BotSkillMutationMode, error)
+	UpdateBotSkillMutationMode(botUID int64, mode types.BotSkillMutationMode) error
+}
+
+// BotSkillMutationStore persists the versioned mutation state machine. The
+// implementation serializes Begin per Bot, enforces idempotency, and advances
+// status with compare-and-set semantics. Advancing to definition_committed is
+// deliberately rejected until the dedicated method can update BotDefinition
+// and the mutation fact in one database transaction.
+type BotSkillMutationStore interface {
+	BeginBotSkillMutation(input types.BotSkillMutationCreateInput, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, bool, error)
+	GetBotSkillMutation(botUID, mutationID int64) (*types.BotSkillMutation, error)
+	AdvanceBotSkillMutation(botUID, mutationID, expectedLeaseGeneration int64, expected, next types.BotSkillMutationStatus, patch types.BotSkillMutationTransition, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
+	CommitBotSkillMutationDefinition(botUID, mutationID, expectedLeaseGeneration int64, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, *types.BotDefinitionRecord, error)
+	RenewBotSkillMutationLease(botUID, mutationID, expectedLeaseGeneration int64, expected types.BotSkillMutationStatus, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
+}
+
 // BotModelConfigStore is optional so existing narrow Store test doubles do not
 // need cloud-model methods. Production database adapters implement it.
 type BotModelConfigStore interface {
@@ -382,6 +411,13 @@ type ChannelNativeGroupStore interface {
 // channel-owned sessions without requiring lightweight Store mocks to support it.
 type ChannelManagedGroupStore interface {
 	IsChannelManagedGroup(groupID int64) (bool, error)
+}
+
+// ImageUpscaleTaskStore persists the owner of an asynchronous image upscale
+// task so polling remains authorized across restarts and server instances.
+type ImageUpscaleTaskStore interface {
+	UpsertImageUpscaleTaskOwner(ctx context.Context, processID string, ownerUID int64, expiresAt time.Time) error
+	GetImageUpscaleTaskOwner(ctx context.Context, processID string, now time.Time) (ownerUID int64, found bool, err error)
 }
 
 // Store is the complete persistence boundary required by the current server.

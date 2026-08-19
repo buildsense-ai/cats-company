@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,47 @@ type commercialRelaySyncTestStore struct {
 	reconcileUIDs []int64
 	replacedCh    chan struct{}
 	replacedUIDCh chan int64
+}
+
+type commercialRelayBaselineTestStore struct {
+	*commercialRelaySyncTestStore
+	profile  string
+	budgets  map[string]float64
+	startsAt time.Time
+	created  int
+}
+
+func (s *commercialRelayBaselineTestStore) EnsureCommercialRelayBaseline(_ int64, profile string, budgets map[string]float64, startsAt time.Time) (bool, error) {
+	s.profile = profile
+	s.budgets = budgets
+	s.startsAt = startsAt
+	s.created++
+	var grants []*types.CommercialQuotaGrant
+	var entitlements []*types.CommercialEntitlement
+	totals := map[string]float64{}
+	total := 0.0
+	if s.summary != nil {
+		grants = append(grants, s.summary.Grants...)
+		entitlements = append(entitlements, s.summary.Entitlements...)
+		total = s.summary.TotalCNY
+		for model, amount := range s.summary.TotalsByModel {
+			totals[model] = amount
+		}
+	}
+	for model, amount := range budgets {
+		grants = append(grants, &types.CommercialQuotaGrant{GrantType: profile, Model: model, AmountCNY: amount})
+		totals[model] += amount
+		total += amount
+	}
+	entitlements = append(entitlements, &types.CommercialEntitlement{Source: profile, State: "active", StartsAt: startsAt})
+	s.summary = &types.CommercialSummary{
+		UID:           38,
+		TotalCNY:      total,
+		TotalsByModel: totals,
+		Grants:        grants,
+		Entitlements:  entitlements,
+	}
+	return true, nil
 }
 
 func (s *commercialRelaySyncTestStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
@@ -739,6 +781,7 @@ func TestCommercialRelayRequiredPaymentModelRejectsMappingDrift(t *testing.T) {
 			{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100},
 			{GrantType: "manual", Model: "retired-model", AmountCNY: 50},
 		},
+		Entitlements: []*types.CommercialEntitlement{{Source: "legacy", State: "active"}},
 	}
 	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{}}}
 	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err == nil || !strings.Contains(err.Error(), "gpt-5.6-terra") {
@@ -747,7 +790,10 @@ func TestCommercialRelayRequiredPaymentModelRejectsMappingDrift(t *testing.T) {
 	relayUser.Limits.ModelLimits = []commercialRelayModelLimit{{
 		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
 	}}
-	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err != nil {
+	managed := []*types.CommercialManagedRelayBudget{{
+		UID: 38, Model: "retired-model", Provider: "retired", AllowedModels: []string{"retired-model"}, MaxLimit: 50,
+	}}
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, managed); err != nil {
 		t.Fatalf("historical manual model should not block paid model sync: %v", err)
 	}
 }
@@ -904,8 +950,11 @@ func TestCommercialRelaySyncWritesScopeAndNarrowedBudgetTogether(t *testing.T) {
 		},
 	}}
 	var posted struct {
-		Budgets []commercialRelayProviderBudgetUpdate `json:"provider_config_budgets"`
-		Scopes  []commercialRelayModelScope           `json:"model_scopes"`
+		Budgets               []commercialRelayProviderBudgetUpdate `json:"provider_config_budgets"`
+		Scopes                []commercialRelayModelScope           `json:"model_scopes"`
+		MonthlyBudget         float64                               `json:"monthly_budget"`
+		MonthlyBudgetDuration string                                `json:"monthly_budget_duration"`
+		UsageWindowStart      *string                               `json:"usage_window_start"`
 	}
 	applied := false
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -923,8 +972,15 @@ func TestCommercialRelaySyncWritesScopeAndNarrowedBudgetTogether(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(commercialRelayUsageUser{
 				Configured: true,
 				Key:        &commercialRelayKeySummary{State: "active"},
+				UsageWindowStart: func() string {
+					if applied && posted.UsageWindowStart != nil {
+						return *posted.UsageWindowStart
+					}
+					return ""
+				}(),
 				Limits: commercialRelayLimits{
-					ModelLimits: active, AvailableModelLimits: available, ModelScopes: scopes,
+					MonthlyBudget: commercialRelayBudget{MaxLimit: posted.MonthlyBudget, ResetDuration: posted.MonthlyBudgetDuration},
+					ModelLimits:   active, AvailableModelLimits: available, ModelScopes: scopes,
 				},
 			})
 		case http.MethodPost:
@@ -973,6 +1029,342 @@ func TestCommercialRelayManagedPlanSumsSharedProviderBudget(t *testing.T) {
 	}
 	if len(next) != 2 || next[0].MaxLimit != 30 || next[1].MaxLimit != 30 {
 		t.Fatalf("shared ownership records should retain the summed limit: %#v", next)
+	}
+}
+
+func TestCommercialRelaySharedPlanUsesFullPoolForEveryAllowedProvider(t *testing.T) {
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+		{Provider: "minimax-m27", Model: "MiniMax-M2.7", AllowedModels: []string{"MiniMax-M2.7"}, Budget: commercialRelayBudget{MaxLimit: 1000}},
+		{Provider: "minimax-m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500}},
+		{Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"}, Budget: commercialRelayBudget{MaxLimit: 100}},
+		{Provider: "gpt", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"}, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 31500}},
+		{Provider: "gpt", Model: "gpt-5.6-sol", AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"}, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 31500}},
+	}}}
+	summary := &types.CommercialSummary{TotalCNY: 33600, TotalsByModel: map[string]float64{
+		"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-v4-flash": 100,
+		"gpt-5.6-terra": 15750, "gpt-5.6-sol": 15750, "glm-5.1": 500,
+	}}
+
+	updates, managed := commercialRelaySharedManagedPlan(38, summary, relayUser, nil)
+
+	if len(updates) != 4 {
+		t.Fatalf("updates=%#v", updates)
+	}
+	for _, update := range updates {
+		if update.MaxLimit != 33600 {
+			t.Fatalf("provider %s received %v, want full shared pool", update.Provider, update.MaxLimit)
+		}
+	}
+	if len(managed) != 5 {
+		t.Fatalf("managed associations=%d, want 5: %#v", len(managed), managed)
+	}
+}
+
+func TestCommercialRelayBaselineClassifiesFreeAndLegacyProfiles(t *testing.T) {
+	freeUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+		{Provider: "m27-a", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 1000}},
+		{Provider: "m27-b", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 1000}},
+		{Provider: "m3", Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 500}},
+		{Provider: "deepseek", Model: "deepseek-v4-flash", Budget: commercialRelayBudget{MaxLimit: 100}},
+	}}}
+	profile, budgets := commercialRelayBaseline(freeUser)
+	if profile != commercialRelayBaselineProfileFree || len(budgets) != 3 || budgets["MiniMax-M2.7"] != 1000 {
+		t.Fatalf("default profile was not recognized: profile=%s budgets=%#v", profile, budgets)
+	}
+
+	freeUser.Limits.ModelLimits = append(freeUser.Limits.ModelLimits, commercialRelayModelLimit{
+		Provider: "gpt", Model: "gpt-5.6-terra", Budget: commercialRelayBudget{MaxLimit: 5000},
+	})
+	profile, budgets = commercialRelayBaseline(freeUser)
+	if profile != commercialRelayBaselineProfileLegacy || budgets["gpt-5.6-terra"] != 5000 {
+		t.Fatalf("custom profile was not preserved: profile=%s budgets=%#v", profile, budgets)
+	}
+}
+
+func TestCommercialRelayBaselineCoexistsWithPaidAndManualQuota(t *testing.T) {
+	paid := &types.CommercialSummary{
+		Entitlements: []*types.CommercialEntitlement{{Source: "order", State: "active"}},
+		Grants:       []*types.CommercialQuotaGrant{{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100}},
+	}
+	profile, budgets, err := commercialRelayBaselineForSummary(paid, nil)
+	if err != nil || profile != commercialRelayBaselineProfileFree || len(budgets) != len(commercialRelayFreeBudgets) {
+		t.Fatalf("paid account did not receive a free baseline: profile=%q budgets=%#v err=%v", profile, budgets, err)
+	}
+
+	paid.Grants = append(paid.Grants, &types.CommercialQuotaGrant{GrantType: "manual", Model: "MiniMax-M3", AmountCNY: 500})
+	profile, budgets, err = commercialRelayBaselineForSummary(paid, nil)
+	if err != nil || profile != commercialRelayBaselineProfileLegacy || len(budgets) != 0 {
+		t.Fatalf("manual quota was not preserved as a legacy baseline: profile=%q budgets=%#v err=%v", profile, budgets, err)
+	}
+
+	paid.Entitlements = append(paid.Entitlements, &types.CommercialEntitlement{Source: "legacy", State: "active"})
+	if !commercialRelayHasBaselineEntitlement(paid) {
+		t.Fatal("active legacy baseline was not recognized")
+	}
+}
+
+func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.T) {
+	reset := "2026-08-01 08:30:00.123456789+00:00"
+	baseStore := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{}}}
+	store := &commercialRelayBaselineTestStore{commercialRelaySyncTestStore: baseStore}
+	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "m27", Model: "MiniMax-M2.7", AllowedModels: []string{"MiniMax-M2.7"}, Budget: commercialRelayBudget{MaxLimit: 1000, ResetDuration: "1M", LastReset: reset}},
+			{Provider: "m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500, ResetDuration: "1M", LastReset: reset}},
+			{Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"}, Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M", LastReset: reset}},
+		},
+	}}
+	state.Limits.AvailableModelLimits = append([]commercialRelayModelLimit(nil), state.Limits.ModelLimits...)
+	var posted map[string]interface{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(state)
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Fatal(err)
+			}
+			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: posted["monthly_budget"].(float64), ResetDuration: "1M"}
+			state.UsageWindowStart = posted["usage_window_start"].(string)
+			for index := range state.Limits.ModelLimits {
+				state.Limits.ModelLimits[index].Budget.MaxLimit = 1600
+			}
+			var scopes []commercialRelayModelScope
+			raw, _ := json.Marshal(posted["model_scopes"])
+			_ = json.Unmarshal(raw, &scopes)
+			state.Limits.ModelScopes = scopes
+			_ = json.NewEncoder(w).Encode(state)
+		}
+	}))
+	defer relay.Close()
+
+	syncer := NewCommercialRelaySyncer(store, &RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()}, CommercialRelaySyncerOptions{EnforceUIDs: map[int64]bool{38: true}})
+	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
+		t.Fatal(err)
+	}
+	if store.created != 1 || store.profile != commercialRelayBaselineProfileFree || len(store.budgets) != 3 {
+		t.Fatalf("baseline was not created exactly once: %#v", store)
+	}
+	if got := store.startsAt.Format(time.RFC3339Nano); got != "2026-08-01T08:30:00.123456789Z" {
+		t.Fatalf("reset anchor changed: %s", got)
+	}
+	if posted["monthly_budget"] != float64(1600) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
+		t.Fatalf("shared policy mismatch: %#v", posted)
+	}
+	if len(state.Limits.ModelScopes) != 3 {
+		t.Fatalf("free models were not scoped: %#v", state.Limits.ModelScopes)
+	}
+}
+
+func TestCommercialRelayBootstrapPagesEveryConfiguredKey(t *testing.T) {
+	const total = 106
+	requests := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit != 10 {
+			t.Fatalf("bootstrap requested an unsafe page size: %d", limit)
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		users := make([]commercialRelayUsageUser, 0, end-offset)
+		for uid := offset + 1; uid <= end; uid++ {
+			users = append(users, commercialRelayUsageUser{
+				UID:             int64(uid),
+				Configured:      true,
+				GovernanceError: strings.Repeat("x", 30*1024),
+			})
+		}
+		_ = json.NewEncoder(w).Encode(commercialRelayUsageResponse{Users: users, TotalCount: total})
+	}))
+	defer relay.Close()
+	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{TotalsByModel: map[string]float64{}}}
+	syncer := NewCommercialRelaySyncer(store, &RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()}, CommercialRelaySyncerOptions{EnforceEnabled: true})
+
+	syncer.bootstrapConfiguredRelayUsers(context.Background())
+
+	if len(syncer.queue) != total || len(syncer.pendingUIDs) != total {
+		t.Fatalf("bootstrap missed relay keys: queued=%d pending=%d", len(syncer.queue), len(syncer.pendingUIDs))
+	}
+	if requests != 11 {
+		t.Fatalf("bootstrap request count=%d, want 11", requests)
+	}
+}
+
+func TestCommercialRelaySharedPolicyUsesEarliestActiveEntitlement(t *testing.T) {
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	latest := time.Date(2026, 8, 14, 7, 32, 8, 0, time.UTC)
+	summary := &types.CommercialSummary{
+		TotalCNY: 33600,
+		Entitlements: []*types.CommercialEntitlement{
+			{State: "active", StartsAt: older},
+			{State: "active", StartsAt: latest},
+			{State: "expired", StartsAt: latest.Add(time.Hour)},
+		},
+	}
+	if got := commercialRelaySharedLimit(summary); got != 33600 {
+		t.Fatalf("shared limit=%v", got)
+	}
+	if got := commercialRelayUsageWindowStart(summary); got != "2026-08-01T00:00:00Z" {
+		t.Fatalf("usage window=%q", got)
+	}
+	user := &commercialRelayUsageUser{Configured: true, UsageWindowStart: "2026-08-01T00:00:00Z", Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 33600, ResetDuration: "1M"},
+	}}
+	if err := verifyCommercialRelaySharedPolicy(33600, commercialRelayUsageWindowStart(summary), user); err != nil {
+		t.Fatal(err)
+	}
+	cleared := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: commercialRelayBlockedLimit, ResetDuration: "1M"},
+	}}
+	if err := verifyCommercialRelaySharedPolicy(commercialRelayBlockedLimit, "", cleared); err != nil {
+		t.Fatalf("cleared commercial window should verify: %v", err)
+	}
+	cleared.UsageWindowStart = "2026-08-14T07:32:08Z"
+	if err := verifyCommercialRelaySharedPolicy(commercialRelayBlockedLimit, "", cleared); err == nil {
+		t.Fatal("stale commercial window was accepted after entitlement removal")
+	}
+}
+
+func TestCommercialRelayPaidPackageCycleOverridesFreeBaseline(t *testing.T) {
+	freeStart := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	paidStart := time.Date(2026, 8, 14, 7, 32, 8, 0, time.UTC)
+	summary := &types.CommercialSummary{Entitlements: []*types.CommercialEntitlement{
+		{Source: "free", State: "active", StartsAt: freeStart},
+		{Source: "order", State: "active", StartsAt: paidStart},
+	}}
+	if got := commercialRelayUsageWindowStart(summary); got != "2026-08-14T07:32:08Z" {
+		t.Fatalf("paid package did not own the quota cycle: %q", got)
+	}
+	summary.Entitlements[1].State = "revoked"
+	if got := commercialRelayUsageWindowStart(summary); got != "2026-08-01T00:00:00Z" {
+		t.Fatalf("free baseline did not resume after refund: %q", got)
+	}
+	paidUser := &commercialRelayUsageUser{UsageWindowStart: "2026-08-14T07:32:08Z"}
+	if got := commercialRelayUsageWindowStartForSync(summary, paidUser); got != "2026-08-14T07:32:08Z" {
+		t.Fatalf("refund moved the quota window backwards: %q", got)
+	}
+	if got := commercialRelayUsageWindowStartForSync(&types.CommercialSummary{}, paidUser); got != "" {
+		t.Fatalf("an account without an active entitlement retained a quota window: %q", got)
+	}
+}
+
+func TestCommercialRelaySyncWritesAndVerifiesSharedPoolPolicy(t *testing.T) {
+	start := time.Date(2026, 8, 14, 7, 32, 8, 0, time.UTC)
+	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{
+		UID: 38, TotalCNY: 30,
+		TotalsByModel: map[string]float64{"MiniMax-M3": 10, "gpt-5.6-terra": 20},
+		Entitlements:  []*types.CommercialEntitlement{{State: "active", StartsAt: start}},
+	}}
+	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M"},
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 10, ResetDuration: "1M"}},
+			{Provider: "gpt", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"}, Budget: commercialRelayBudget{MaxLimit: 20, ResetDuration: "1M"}},
+		},
+	}}
+	var posted map[string]interface{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(state)
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			state.Limits.MonthlyBudget.MaxLimit = posted["monthly_budget"].(float64)
+			state.Limits.MonthlyBudget.ResetDuration = posted["monthly_budget_duration"].(string)
+			state.UsageWindowStart = posted["usage_window_start"].(string)
+			rawUpdates, _ := json.Marshal(posted["provider_config_budgets"])
+			var updates []commercialRelayProviderBudgetUpdate
+			_ = json.Unmarshal(rawUpdates, &updates)
+			for i := range state.Limits.ModelLimits {
+				for _, update := range updates {
+					if commercialManagedBudgetKey(update.Provider, update.AllowedModels) == commercialManagedBudgetKey(state.Limits.ModelLimits[i].Provider, state.Limits.ModelLimits[i].AllowedModels) {
+						state.Limits.ModelLimits[i].Budget.MaxLimit = update.MaxLimit
+						state.Limits.ModelLimits[i].Budget.ResetDuration = update.ResetDuration
+					}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(state)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer relay.Close()
+	syncer := NewCommercialRelaySyncer(store, &RelayAdminClient{baseURL: relay.URL, token: "test-token", client: relay.Client()}, CommercialRelaySyncerOptions{
+		EnforceUIDs: map[int64]bool{38: true},
+	})
+
+	updates, err := syncer.SyncUID(context.Background(), 38)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 2 || posted["monthly_budget"] != float64(30) || posted["monthly_budget_duration"] != "1M" || posted["usage_window_start"] != "2026-08-14T07:32:08Z" {
+		t.Fatalf("unexpected shared policy payload: updates=%#v payload=%#v", updates, posted)
+	}
+	for _, limit := range state.Limits.ModelLimits {
+		if limit.Budget.MaxLimit != 30 {
+			t.Fatalf("provider %s did not receive the full shared pool: %#v", limit.Provider, limit.Budget)
+		}
+	}
+	if len(store.replaced) != 2 {
+		t.Fatalf("managed relay associations were not persisted: %#v", store.replaced)
+	}
+}
+
+func TestCommercialRelaySyncClearsExpiredPackageWindow(t *testing.T) {
+	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{
+		UID: 38, TotalsByModel: map[string]float64{},
+	}}
+	state := commercialRelayUsageUser{
+		Configured:       true,
+		UsageWindowStart: "2026-08-14T07:32:08Z",
+		Key:              &commercialRelayKeySummary{State: "active"},
+		Limits: commercialRelayLimits{MonthlyBudget: commercialRelayBudget{
+			MaxLimit: 30, ResetDuration: "1M",
+		}},
+	}
+	var posted map[string]interface{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(state)
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			state.Limits.MonthlyBudget.MaxLimit = posted["monthly_budget"].(float64)
+			state.Limits.MonthlyBudget.ResetDuration = posted["monthly_budget_duration"].(string)
+			state.UsageWindowStart = ""
+			_ = json.NewEncoder(w).Encode(state)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer relay.Close()
+	syncer := NewCommercialRelaySyncer(store, &RelayAdminClient{baseURL: relay.URL, token: "test-token", client: relay.Client()}, CommercialRelaySyncerOptions{
+		EnforceUIDs: map[int64]bool{38: true},
+	})
+
+	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
+		t.Fatal(err)
+	}
+	window, found := posted["usage_window_start"]
+	if !found || window != nil {
+		t.Fatalf("expired package must explicitly clear the usage window: %#v", posted)
+	}
+	if posted["monthly_budget"] != commercialRelayBlockedLimit {
+		t.Fatalf("expired package must block the shared pool: %#v", posted)
 	}
 }
 

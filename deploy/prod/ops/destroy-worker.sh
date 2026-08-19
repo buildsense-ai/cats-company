@@ -50,7 +50,11 @@ done
 
 INSTANCE_NAME="worker-${NAME}"
 KEYPAIR_NAME="worker-key-${NAME}"
-STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
+  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+fi
 
 # --- 工具 ---
 ctyun() {
@@ -96,11 +100,19 @@ if [[ -n "$inst" ]]; then
     echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"instance_id\":\"$instance_id\"}"
     exit 0
   fi
-  # 实测（2026-08-07）：DeleteEcsInstance 需 clientToken 且不接受 --projectID
-  if [[ -n "$instance_id" ]] && ! ctyun ecs DeleteEcsInstance \
-      --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1; then
-    echo "error: instance delete failed (instance_id=$instance_id)" >&2
-    exit 1
+  # 按计费方式删除（实测 2026-08-13）：包月实例（expiredTime 非空）走
+  # UnsubscribeEcsInstance 退订；按量实例走 DeleteEcsInstance。
+  # 两个 API 都需 clientToken 且不接受 --projectID。
+  if [[ -n "$instance_id" ]]; then
+    if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst")" ]]; then
+      ctyun ecs UnsubscribeEcsInstance \
+        --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+        || { echo "error: instance unsubscribe failed (instance_id=$instance_id)" >&2; exit 1; }
+    else
+      ctyun ecs DeleteEcsInstance \
+        --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+        || { echo "error: instance delete failed (instance_id=$instance_id)" >&2; exit 1; }
+    fi
   fi
 fi
 if [[ $DRY_RUN -eq 1 ]]; then

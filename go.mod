@@ -12,6 +12,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/smartwalle/alipay/v3 v3.2.31
+	github.com/volcengine/ve-tos-golang-sdk/v2 v2.9.8
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	google.golang.org/grpc v1.82.1

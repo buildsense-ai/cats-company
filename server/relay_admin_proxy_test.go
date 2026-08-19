@@ -53,6 +53,7 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/local/commercial-ops",
 		"/local/commercial-ops/api/overview",
 		"/local/commercial-ops/api/relay-sync?uid=38",
+		"/local/commercial-ops/api/adjustments",
 		"/local/users/38/key/state",
 		"/local/users/38/key/limits",
 		"/local/users/38/key/usage-reset",

@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2 } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -570,6 +570,39 @@ function messageContentText(content, fallback = '') {
   }
 }
 
+const ARTIFACT_DELIVERY_ANNOUNCEMENTS = new Set([
+  '已发出',
+  '已发出。',
+  '已发送',
+  '已发送。',
+  '已生成',
+  '已生成。',
+  '已交付',
+  '已交付。',
+]);
+
+function removeRedundantArtifactAnnouncement(text, artifactBlocks) {
+  const artifactNames = (artifactBlocks || [])
+    .map((block) => String(block?.payload?.name || '').trim())
+    .filter(Boolean);
+  if (artifactNames.length === 0 || typeof text !== 'string') return text;
+
+  return text
+    .split('\n')
+    .filter((line) => {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) return true;
+      return !artifactNames.some((name) => {
+        if (!trimmedLine.startsWith(name)) return false;
+        const announcement = trimmedLine.slice(name.length).trim();
+        return ARTIFACT_DELIVERY_ANNOUNCEMENTS.has(announcement);
+      });
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function contentBlocksFromMessage(msg) {
   const storedBlocks = Array.isArray(msg?.content_blocks) ? msg.content_blocks : [];
   if (storedBlocks.length > 0) {
@@ -923,9 +956,13 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
+  const moreActionsTriggerRef = useRef(null);
+  const moreActionsMenuRef = useRef(null);
+  const moreActionsMenuId = `message-more-actions-${useId().replace(/:/g, '')}`;
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
   const storedBlocks = useMemo(() => Array.isArray(message.content_blocks) ? message.content_blocks : [], [message.content_blocks]);
@@ -949,12 +986,22 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
         && block.presentation_role !== 'process',
     )
   ), [storedBlocks]);
+  const displayTextBlocks = useMemo(() => (
+    storedTextBlocks
+      .map((block) => ({
+        ...block,
+        text: artifactsFirst
+          ? removeRedundantArtifactAnnouncement(block.text, richBlocks)
+          : block.text,
+      }))
+      .filter((block) => block.text?.trim())
+  ), [artifactsFirst, richBlocks, storedTextBlocks]);
   const renderedTextContent = useMemo(() => {
     if (storedBlocks.length === 0) return content;
-    return storedTextBlocks
+    return displayTextBlocks
       .map((block) => block.text)
       .join('\n\n');
-  }, [storedBlocks, storedTextBlocks, content]);
+  }, [storedBlocks, displayTextBlocks, content]);
   const hasText = useMemo(() => (
     typeof renderedTextContent === 'string'
       ? renderedTextContent.trim().length > 0
@@ -996,8 +1043,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   ), [content, renderedTextContent, richBlocks, parsed]);
   const hasArtifactFirstSummary = artifactsFirst && richBlocks.length > 0 && hasText;
   const artifactFollowupSections = useMemo(() => {
-    if (!hasArtifactFirstSummary || storedTextBlocks.length === 0) return null;
-    return storedTextBlocks.map((block, index) => {
+    if (!hasArtifactFirstSummary || displayTextBlocks.length === 0) return null;
+    return displayTextBlocks.map((block, index) => {
       const role = block.presentation_role || 'body';
       return (
         <div
@@ -1008,6 +1055,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           <TextContent
             content={block.text}
             isGroup={isGroup}
+            mentionDisplayNames={mentionDisplayNames}
             knownArtifacts={knownArtifacts}
             onPreviewFile={onPreviewFile}
             activePreviewFile={activePreviewFile}
@@ -1020,8 +1068,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     hasArtifactFirstSummary,
     isGroup,
     knownArtifacts,
+    mentionDisplayNames,
     onPreviewFile,
-    storedTextBlocks,
+    displayTextBlocks,
   ]);
   const renderedMessageText = hasText && (parsed ? (
     <RichContent
@@ -1033,6 +1082,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     <TextContent
       content={renderedTextContent}
       isGroup={isGroup}
+      mentionDisplayNames={mentionDisplayNames}
       knownArtifacts={knownArtifacts}
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
@@ -1070,6 +1120,45 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       setRegenerateState('failed');
     }
   };
+
+  const handleMoreActionsToggle = (event) => {
+    event.stopPropagation();
+    setMoreActionsOpen((current) => !current);
+  };
+
+  const handleCreateConversationShareClick = (event) => {
+    event.stopPropagation();
+    setMoreActionsOpen(false);
+    onCreateConversationShare?.();
+  };
+
+  useEffect(() => {
+    if (!moreActionsOpen) return undefined;
+
+    const closeOnOutsidePointer = (event) => {
+      const target = event.target;
+      if (
+        target instanceof Node
+        && (moreActionsMenuRef.current?.contains(target) || moreActionsTriggerRef.current?.contains(target))
+      ) {
+        return;
+      }
+      setMoreActionsOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setMoreActionsOpen(false);
+      moreActionsTriggerRef.current?.focus({ preventScroll: true });
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [moreActionsOpen]);
 
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
@@ -1163,7 +1252,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
         {!workingOnly && <div className="v3-message-footer">
           <div
-            className="v3-message-actions"
+            className={`v3-message-actions${moreActionsOpen ? ' open' : ''}`}
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -1210,6 +1299,42 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <Pencil size={14} />
               </button>
             )}
+            {onCreateConversationShare && (
+              <div className="v3-message-more-actions">
+                <button
+                  ref={moreActionsTriggerRef}
+                  className="v3-action-btn"
+                  onClick={handleMoreActionsToggle}
+                  aria-label="更多操作"
+                  aria-haspopup="menu"
+                  aria-expanded={moreActionsOpen}
+                  aria-controls={moreActionsOpen ? moreActionsMenuId : undefined}
+                  title="更多操作"
+                  type="button"
+                >
+                  <MoreHorizontal size={18} />
+                </button>
+                {moreActionsOpen && (
+                  <div
+                    ref={moreActionsMenuRef}
+                    id={moreActionsMenuId}
+                    className="v3-message-action-menu"
+                    role="menu"
+                    aria-label="消息更多操作"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleCreateConversationShareClick}
+                    >
+                      <ImageDown size={15} aria-hidden="true" />
+                      <span>制作分享图</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>
         </div>}
@@ -1229,10 +1354,12 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.senderName === nextProps.senderName &&
     prevProps.senderAvatarUrl === nextProps.senderAvatarUrl &&
     prevProps.senderIsBot === nextProps.senderIsBot &&
+    prevProps.mentionDisplayNames === nextProps.mentionDisplayNames &&
     prevProps.replyMessage === nextProps.replyMessage &&
     prevProps.questionAnchorKey === nextProps.questionAnchorKey &&
     prevProps.onEdit === nextProps.onEdit &&
     prevProps.onRegenerate === nextProps.onRegenerate &&
+    prevProps.onCreateConversationShare === nextProps.onCreateConversationShare &&
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
@@ -1242,7 +1369,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
 
 export default ChatMessage;
 
-function TextContent({ content, isGroup, knownArtifacts = [], onPreviewFile, activePreviewFile }) {
+function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifacts = [], onPreviewFile, activePreviewFile }) {
   const text = useMemo(() => messageContentText(content), [content]);
   const matchedArtifacts = useMemo(() => findKnownArtifactsInText(text, knownArtifacts), [knownArtifacts, text]);
   const plainText = useMemo(() => removeKnownArtifactURLs(text, matchedArtifacts), [matchedArtifacts, text]);
@@ -1291,17 +1418,38 @@ function TextContent({ content, isGroup, knownArtifacts = [], onPreviewFile, act
   }
 
   if (isGroup) {
-    const parts = removeKnownArtifactURLs(text, matchedArtifacts).split(/(@usr\d+)/g);
+    const renderGroupText = (value, keyPrefix = 'group-text') => (
+      value.split(/(@usr\d+)/g).map((part, i) => {
+        const uidMatch = part.match(/^@usr(\d+)$/);
+        if (!uidMatch) return <span key={`${keyPrefix}-${i}`}>{part}</span>;
+        const displayName = mentionDisplayNames[uidMatch[1]];
+        return (
+          <span key={`${keyPrefix}-${i}`} className="oc-mention" data-mention-uid={uidMatch[1]}>
+            @{displayName || `usr${uidMatch[1]}`}
+          </span>
+        );
+      })
+    );
+
+    if (plainTextParagraphs.length > 1) {
+      return (
+        <>
+          <div className="oc-plain-text-paragraphs">
+            {plainTextParagraphs.map((paragraph, index) => (
+              <p className="oc-plain-text-paragraph" key={index}>
+                {renderGroupText(paragraph, `group-paragraph-${index}`)}
+              </p>
+            ))}
+          </div>
+          <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+        </>
+      );
+    }
+
     return (
       <>
         <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-          {parts.map((part, i) =>
-            part.match(/^@usr\d+$/) ? (
-              <span key={i} className="oc-mention">{part}</span>
-            ) : (
-              <span key={i}>{part}</span>
-            )
-          )}
+          {renderGroupText(plainText)}
         </span>
         <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
       </>

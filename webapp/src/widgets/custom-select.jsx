@@ -231,6 +231,9 @@ export default function CustomSelect({
   }, [open, updateFloatingPosition]);
 
   const selectedOption = options[selectedIndex];
+  const selectedLabelTitle = typeof selectedOption?.label === 'string'
+    ? selectedOption.label
+    : undefined;
   const optionList = open && createPortal(
     <div
       ref={listRef}
@@ -261,13 +264,14 @@ export default function CustomSelect({
           aria-selected={option.value === String(value)}
           aria-disabled={option.disabled || undefined}
           disabled={option.disabled}
+          title={typeof option.label === 'string' ? option.label : undefined}
           tabIndex={-1}
           onMouseEnter={() => {
             if (!option.disabled) setActiveIndex(index);
           }}
           onClick={() => chooseOption(index)}
         >
-          {option.label}
+          <span className="v3-custom-model-select-option-label">{option.label}</span>
           {option.value === String(value) && <Check size={14} aria-hidden="true" />}
         </button>
       ))}
@@ -290,6 +294,7 @@ export default function CustomSelect({
         aria-controls={open ? listboxID : undefined}
         data-value={String(value)}
         disabled={disabled}
+        title={selectedLabelTitle}
         onClick={() => open ? closeList() : openList()}
         onKeyDown={handleTriggerKeyDown}
       >

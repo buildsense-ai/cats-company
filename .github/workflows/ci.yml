@@ -112,17 +112,17 @@ jobs:
       - name: Validate prod compose
         run: docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config
 
-      # Guard the P2 state-dir trap: an overridden CTYUN_WORKER_STATE_DIR must
-      # move the container-side volume target with it, otherwise worker state
-      # (id_rsa/known_hosts/inject.env) silently escapes the persistent volume.
-      - name: Validate prod compose with overridden worker state dir
+      # Guard the state-root trap: an overridden CTYUN_WORKER_STATE_ROOT must
+      # move the container-side volume target with it, otherwise tenant-isolated
+      # worker state silently escapes the persistent volume.
+      - name: Validate prod compose with overridden worker state root
         run: |
-          CTYUN_WORKER_STATE_DIR=/var/lib/catsco-worker-custom \
+          CTYUN_WORKER_STATE_ROOT=/var/lib/catsco-worker-custom \
             docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config \
             | grep -q 'target: /var/lib/catsco-worker-custom'
-          CTYUN_WORKER_STATE_DIR=/var/lib/catsco-worker-custom \
+          CTYUN_WORKER_STATE_ROOT=/var/lib/catsco-worker-custom \
             docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config \
-            | grep -q 'CTYUN_WORKER_STATE_DIR: /var/lib/catsco-worker-custom'
+            | grep -q 'CTYUN_WORKER_STATE_ROOT: /var/lib/catsco-worker-custom'
 
       - name: Test Dreamina worker
         working-directory: services/dreamina-worker
@@ -135,6 +135,12 @@ jobs:
 
       - name: Validate deploy env updates
         run: |
+          bash -n deploy/shared/ensure-build-cache.sh
+          bash deploy/tests/ensure-build-cache.sh
+          bash -n deploy/shared/cache-source-bundle.sh
+          bash deploy/tests/cache-source-bundle.sh
+          bash -n deploy/remote-build-source.sh
+          bash deploy/tests/remote-build-source-cache.sh
           bash -n deploy/prod/remote-deploy.sh
           bash -n deploy/test/remote-deploy.sh
           python3 deploy/prod/sync-artifact-node-env_test.py

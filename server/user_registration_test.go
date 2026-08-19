@@ -167,7 +167,9 @@ func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
 		username string
 	}
 	calls := make(chan provisionCall, 1)
+	ready := make(chan int64, 1)
 	handler := NewUserHandler(db)
+	handler.SetRelayRegistrationReadyHook(func(uid int64) { ready <- uid })
 	handler.relayRegistrationDelays = []time.Duration{0}
 	handler.relayRegistrationCreate = func(_ context.Context, uid int64, username string) error {
 		calls <- provisionCall{uid: uid, username: username}
@@ -191,6 +193,14 @@ func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("relay key provisioning was not scheduled")
+	}
+	select {
+	case uid := <-ready:
+		if uid != 1 {
+			t.Fatalf("relay ready uid=%d, want 1", uid)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("commercial relay initialization was not scheduled")
 	}
 }
 
@@ -357,6 +367,7 @@ func TestRelayRegistrationCreateSkipsWhenKeyAlreadyProvisioned(t *testing.T) {
 
 func TestRelayRegistrationCreateCreatesWhenKeyNotFound(t *testing.T) {
 	var posts int
+	var posted relayKeyProxyRequest
 	admin := relayAdminTestClient(func(req *http.Request) (*http.Response, error) {
 		if req.Method == http.MethodGet {
 			return &http.Response{
@@ -366,6 +377,9 @@ func TestRelayRegistrationCreateCreatesWhenKeyNotFound(t *testing.T) {
 			}, nil
 		}
 		posts++
+		if err := json.NewDecoder(req.Body).Decode(&posted); err != nil {
+			return nil, err
+		}
 		return &http.Response{
 			StatusCode: http.StatusCreated,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -379,6 +393,9 @@ func TestRelayRegistrationCreateCreatesWhenKeyNotFound(t *testing.T) {
 	}
 	if posts != 1 {
 		t.Fatalf("POST issued = %d, want 1", posts)
+	}
+	if posted.Name != "CatsCo API Key 7" || posted.Username != "u" {
+		t.Fatalf("unexpected relay key create body: %+v", posted)
 	}
 }
 

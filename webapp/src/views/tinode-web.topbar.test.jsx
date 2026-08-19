@@ -92,7 +92,10 @@ const relayState = {
   },
 };
 
-const narrowContainerCss = cssBlock(topbarCss, /@container\s*\(max-width:\s*820px\)/);
+const narrowContainerCss = cssBlock(
+  topbarCss,
+  /@container\s+catsco-chat-column\s*\(max-width:\s*820px\)/,
+);
 const mobile520Css = cssBlock(topbarCss, /@media\s*\(max-width:\s*520px\)/);
 const mobile360Css = cssBlock(topbarCss, /@media\s*\(max-width:\s*360px\)/);
 
@@ -150,7 +153,7 @@ describe('model reasoning menu placement', () => {
   });
 });
 
-describe('LocalAssistantBar narrow-pane layout', () => {
+describe('narrow conversation top bar', () => {
   it('keeps model status and a long conversation title in bounded header tracks', () => {
     const barRule = cssRule('.v3-local-assistant-bar');
     const modelAnchorRule = cssRule('.v3-model-menu-anchor');
@@ -160,7 +163,9 @@ describe('LocalAssistantBar narrow-pane layout', () => {
     expect(cssDeclaration(barRule, 'grid-template-columns')).toBe(
       'minmax(0, 1fr) minmax(0, min(42%, 480px)) minmax(0, 1fr)',
     );
-    expect(cssDeclaration(cssRule('.v3-chat-column'), 'container-type')).toBe('inline-size');
+    const chatColumnRule = cssRule('.v3-chat-column');
+    expect(cssDeclaration(chatColumnRule, 'container-name')).toBe('catsco-chat-column');
+    expect(cssDeclaration(chatColumnRule, 'container-type')).toBe('inline-size');
     expect(cssDeclaration(modelAnchorRule, 'width')).toBe('min(100%, 340px)');
     expect(cssDeclaration(modelAnchorRule, 'min-width')).toBe('0');
     expect(cssDeclaration(modelAnchorRule, 'max-width')).toBe('100%');
@@ -173,26 +178,28 @@ describe('LocalAssistantBar narrow-pane layout', () => {
     expect(cssDeclaration(titleRule, 'text-overflow')).toBe('ellipsis');
   });
 
-  it('removes secondary model metadata before a narrow pane can crowd the title', () => {
-    const metadataRule = cssRuleBody(
+  it('hides secondary controls before a narrow pane can crowd the title', () => {
+    const controlsRule = cssRule(
+      '.v3-local-assistant-bar > :is(.v3-model-select, .v3-shell-actions)',
       narrowContainerCss,
-      '\\.v3-model-context,\\s*\\.v3-model-quota',
     );
-    expect(cssDeclaration(metadataRule, 'display')).toBe('none');
+    expect(cssDeclaration(controlsRule, 'display')).toBe('none');
   });
 
-  it('moves a narrow-pane title onto its own readable row instead of ellipsizing it', () => {
+  it('moves a narrow-pane title onto an auto-growing readable row', () => {
     const barRule = cssRule('.v3-local-assistant-bar', narrowContainerCss);
-    const titleInputRule = cssRuleBody(
+    const titleInputRule = cssRule(
+      '.v3-local-assistant-bar > :is(.v3-shell-title, .v3-shell-title-input)',
       narrowContainerCss,
-      '\\.v3-shell-title,\\s*\\.v3-shell-title-input',
     );
-    const titleRule = cssRule('.v3-shell-title', narrowContainerCss);
+    const titleRule = cssRuleBody(
+      narrowContainerCss,
+      '\\.v3-shell-title,\\s*\\.v3-shell-title-button',
+    );
 
-    expect(cssDeclaration(barRule, 'grid-template-areas').replace(/\s+/g, ' ')).toBe(
-      '"model actions" "title title"',
-    );
-    expect(cssDeclaration(barRule, 'grid-template-rows')).toBe('38px minmax(24px, auto)');
+    expect(cssDeclaration(barRule, 'grid-template-areas')).toBe('"title"');
+    expect(cssDeclaration(barRule, 'grid-template-columns')).toBe('minmax(0, 1fr)');
+    expect(cssDeclaration(barRule, 'grid-template-rows')).toBe('minmax(24px, auto)');
     expect(cssDeclaration(titleInputRule, 'grid-area')).toBe('title');
     expect(cssDeclaration(titleInputRule, 'width')).toBe('100%');
     expect(cssDeclaration(titleInputRule, 'max-width')).toBe('100%');
@@ -202,16 +209,19 @@ describe('LocalAssistantBar narrow-pane layout', () => {
     expect(cssDeclaration(titleRule, 'overflow-wrap')).toBe('anywhere');
   });
 
-  it('keeps the title row auto-growing at the narrowest viewport', () => {
+  it('does not let handset media rules replace the auto-growing container layout', () => {
     const mobileRule = cssRule('.v3-local-assistant-bar', mobile520Css);
     const smallestRule = cssRule('.v3-local-assistant-bar', mobile360Css);
 
-    expect(mobileRule).not.toBe('');
-    expect(smallestRule).not.toBe('');
-    expect(cssDeclaration(mobileRule, 'grid-template-rows')).toBe('38px minmax(24px, auto)');
-    expect(cssDeclaration(smallestRule, 'grid-template-rows')).not.toBe('38px 24px');
+    expect(cssDeclaration(mobileRule, 'grid-template-areas')).toBe('');
+    expect(cssDeclaration(mobileRule, 'grid-template-columns')).toBe('');
+    expect(cssDeclaration(mobileRule, 'grid-template-rows')).toBe('');
+    expect(cssDeclaration(smallestRule, 'grid-template-areas')).toBe('');
+    expect(cssDeclaration(smallestRule, 'grid-template-columns')).toBe('');
+    expect(cssDeclaration(smallestRule, 'grid-template-rows')).toBe('');
   });
 });
+
 
 describe('resolveDisplayedActiveAgent', () => {
   it('exposes an owned draft agent to the model selector before the task is created', () => {
@@ -363,6 +373,11 @@ describe('LocalAssistantBar model selector', () => {
     expect(unavailableButton.disabled).toBe(true);
   });
 
+  it('keeps conversation-share image generation out of the top bar', async () => {
+    await renderBar({ onCreateConversationShare: vi.fn() });
+    expect(container.querySelector('button[aria-label="制作对话分享图"]')).toBeNull();
+  });
+
   it('keeps the current model and quota together in the header', async () => {
     await renderBar();
     const status = container.querySelector('.v3-local-assistant-status');
@@ -370,17 +385,17 @@ describe('LocalAssistantBar model selector', () => {
     expect(status?.getAttribute('aria-label')).toContain('minimax-m3');
   });
 
-  it('shows the catalog context size in the header for the applied cloud model', async () => {
+  it('keeps catalog context details out of the compact header', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('minimax-m3');
-    expect(status?.textContent).toContain('上下文 1M');
+    expect(status?.textContent).not.toContain('上下文');
     expect(status?.textContent).toContain('剩余 75%');
-    expect(status?.getAttribute('aria-label')).toContain('上下文 1M');
+    expect(status?.title).toContain('上下文 1M');
   });
 
-  it('shows the server-managed context size in the header for a custom model', async () => {
+  it('shows custom model strength without putting context size in the header', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
       ...baseConfig,
       desired: { kind: 'custom', model_id: 'custom', revision: 7 },
@@ -398,9 +413,10 @@ describe('LocalAssistantBar model selector', () => {
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('private-model');
-    expect(status?.textContent).toContain('上下文 128K');
+    expect(status?.textContent).toContain('强度 high');
+    expect(status?.textContent).not.toContain('上下文');
     expect(status?.textContent).toContain('自备模型');
-    expect(status?.getAttribute('aria-label')).toContain('上下文 128K');
+    expect(status?.title).toContain('上下文 128K');
   });
 
   it('shows the applied cloud model instead of a stale local quota snapshot', async () => {
@@ -460,7 +476,8 @@ describe('LocalAssistantBar model selector', () => {
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: false });
     expect(container.querySelector('.v3-model-status-button')).toBeNull();
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('暂时无法切换');
+    expect(container.querySelector('.v3-model-apply-state')).toBeNull();
+    expect(container.querySelector('.v3-local-assistant-status')?.getAttribute('aria-label')).toContain('暂时无法切换');
     expect(container.querySelector('.v3-local-assistant-status')?.title).toContain('请更新桌面端');
   });
 
@@ -496,6 +513,35 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.textContent).not.toContain('¥');
     expect(container.textContent).not.toContain('CNY');
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
+  });
+
+  it('keeps a revoked current model visible but prevents selecting it again', async () => {
+    const revokedConfig = {
+      ...baseConfig,
+      desired: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 3 },
+      applied: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 3 },
+      models: [
+        baseConfig.models[1],
+        {
+          ...baseConfig.models[3],
+          available: false,
+          unavailable_reason: '当前套餐已不包含该模型，切换后不可再选',
+        },
+      ],
+    };
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(revokedConfig);
+    const update = vi.spyOn(api, 'updateBotModelConfig');
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const terra = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('GPT-5.6 Terra'));
+    expect(terra).toBeTruthy();
+    expect(terra.disabled).toBe(true);
+    expect(terra.classList.contains('unavailable')).toBe(true);
+    expect(terra.textContent).toContain('当前套餐已不包含该模型');
+    await act(async () => terra.click());
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('selects official reasoning strength with an explicit catalog payload', async () => {
@@ -667,11 +713,12 @@ describe('LocalAssistantBar model selector', () => {
     const trigger = container.querySelector('.v3-model-status-button');
     expect(trigger.disabled).toBe(true);
     expect(trigger.getAttribute('aria-busy')).toBe('true');
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('切换中');
+    expect(container.querySelector('.v3-model-apply-state')).toBeNull();
+    expect(trigger.getAttribute('aria-label')).toContain('切换中');
 
     await act(async () => vi.advanceTimersByTimeAsync(45000));
     expect(trigger.disabled).toBe(false);
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('待应用');
+    expect(trigger.getAttribute('aria-label')).toContain('待应用');
   });
 
   it('keeps return-to-local locked until the bot acknowledges the handoff', async () => {
@@ -687,12 +734,17 @@ describe('LocalAssistantBar model selector', () => {
     const trigger = container.querySelector('.v3-model-status-button');
     expect(trigger.disabled).toBe(true);
     expect(trigger.getAttribute('aria-busy')).toBe('true');
-    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('切换中');
+    expect(container.querySelector('.v3-model-apply-state')).toBeNull();
+    expect(trigger.getAttribute('aria-label')).toContain('切换中');
   });
 
   it('classifies request and runtime apply failures for users', () => {
     expect(describeModelConfigRequestError({ code: 'NETWORK_ERROR' })).toContain('网络连接中断');
     expect(describeModelConfigRequestError({ status: 429 })).toContain('操作过于频繁');
+    expect(describeModelConfigRequestError({ status: 403, data: { code: 'model_not_in_plan' } }))
+      .toContain('当前套餐未包含');
+    expect(describeModelConfigRequestError({ status: 503, data: { code: 'model_entitlement_unavailable' } }))
+      .toContain('套餐额度暂时无法确认');
     expect(describeModelConfigRequestError({ status: 503, message: 'custom model encryption unavailable' }))
       .toContain('安全密钥存储');
     expect(describeModelApplyError('401 Unauthorized: invalid api key')).toContain('鉴权失败');

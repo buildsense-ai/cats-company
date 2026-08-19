@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,13 +12,16 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 const (
-	defaultSkillHubBaseURL           = "https://skillhub.catsco.fun:19990"
-	defaultSkillHubTimeout           = 15 * time.Second
-	defaultSkillHubMaxResponse int64 = 2 << 20
-	skillHubSkillsPrefix             = "/api/skills"
+	defaultSkillHubBaseURL            = "https://skillhub.catsco.fun:19990"
+	defaultSkillHubTimeout            = 15 * time.Second
+	defaultSkillHubMaxResponse  int64 = 2 << 20
+	skillHubSkillsPrefix              = "/api/skills"
+	skillHubPrivateMetadataPath       = "/api/bot/private-skill-metadata"
 )
 
 // SkillHubProxyHandler exposes the public SkillHub catalogue through CatsCo.
@@ -32,6 +37,20 @@ type SkillHubProxyOptions struct {
 	Timeout         time.Duration
 	MaxResponseSize int64
 	Client          *http.Client
+}
+
+type privateSkillMetadataRequest struct {
+	References []privateSkillMetadataReference `json:"references"`
+}
+
+type privateSkillMetadataReference struct {
+	SkillID     string `json:"skillId"`
+	Version     string `json:"version"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+type privateSkillMetadataResponse struct {
+	Skills []privateSkillMetadataReference `json:"skills"`
 }
 
 func NewSkillHubProxyHandler(baseURL string, options SkillHubProxyOptions) *SkillHubProxyHandler {
@@ -154,6 +173,96 @@ func (h *SkillHubProxyHandler) HandleSkill(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	h.proxyJSON(w, r, skillHubSkillsPrefix+"/"+encodeSkillPath(parts), nil)
+}
+
+// ResolvePrivateSkillMetadata asks SkillHub for display-only metadata using
+// the target Bot's own API key. Package contents and the API key never leave
+// the server-side request.
+func (h *SkillHubProxyHandler) ResolvePrivateSkillMetadata(
+	ctx context.Context,
+	botID string,
+	apiKey string,
+	references []types.BotSkillRef,
+) (map[string]string, error) {
+	if h == nil || h.configError != nil || h.baseURL == nil {
+		return nil, errors.New("SkillHub is not configured")
+	}
+	botID = strings.TrimSpace(botID)
+	apiKey = strings.TrimSpace(apiKey)
+	if botID == "" || apiKey == "" {
+		return nil, errors.New("Bot SkillHub credentials are unavailable")
+	}
+	if len(references) == 0 {
+		return map[string]string{}, nil
+	}
+	if len(references) > maxBotSkillRefs {
+		return nil, errors.New("too many private Skill metadata references")
+	}
+	requested := make(map[string]struct{}, len(references))
+	clean := make([]privateSkillMetadataReference, 0, len(references))
+	for _, reference := range references {
+		skillID := strings.TrimSpace(reference.SkillID)
+		version := strings.TrimSpace(reference.Version)
+		if !isPrivateBotSkillReference(skillID) || !validBotSkillID(skillID) || !validBotSkillRefPart(version, maxBotSkillVersionBytes) {
+			return nil, errors.New("invalid private Skill metadata reference")
+		}
+		key := botSkillMetadataKey(skillID, version)
+		if _, exists := requested[key]; exists {
+			continue
+		}
+		requested[key] = struct{}{}
+		clean = append(clean, privateSkillMetadataReference{SkillID: skillID, Version: version})
+	}
+	body, err := json.Marshal(privateSkillMetadataRequest{References: clean})
+	if err != nil {
+		return nil, err
+	}
+	target := *h.baseURL
+	target.Path = strings.TrimRight(target.Path, "/") + skillHubPrivateMetadataPath
+	target.RawQuery = ""
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "ApiKey "+apiKey)
+	request.Header.Set("X-CatsCo-Bot-Id", botID)
+	request.Header.Set("User-Agent", "cats-company-skillhub-private-metadata/1.0")
+	response, err := h.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	responseBody, err := readLimited(response.Body, h.maxResponseSize)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("SkillHub private metadata request failed: %d", response.StatusCode)
+	}
+	var decoded privateSkillMetadataResponse
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return nil, errors.New("SkillHub returned invalid private metadata")
+	}
+	metadata := make(map[string]string, len(decoded.Skills))
+	for _, skill := range decoded.Skills {
+		key := botSkillMetadataKey(strings.TrimSpace(skill.SkillID), strings.TrimSpace(skill.Version))
+		name := strings.TrimSpace(skill.DisplayName)
+		if _, ok := requested[key]; !ok || !validBotSkillDisplayName(name) {
+			continue
+		}
+		metadata[key] = name
+	}
+	return metadata, nil
+}
+
+func isPrivateBotSkillReference(skillID string) bool {
+	return strings.HasPrefix(skillID, "priv_") || strings.HasPrefix(skillID, "private/")
+}
+
+func botSkillMetadataKey(skillID string, version string) string {
+	return skillID + "\x00" + version
 }
 
 func (h *SkillHubProxyHandler) proxyJSON(w http.ResponseWriter, r *http.Request, path string, query url.Values) {

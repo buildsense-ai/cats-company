@@ -221,15 +221,17 @@ func TestCommercialAlipayCallbackRetriesAcrossServiceRestart(t *testing.T) {
 }
 
 type commercialDeployRelayServer struct {
-	server       *httptest.Server
-	failures     atomic.Int32
-	requestCount atomic.Int32
-	mu           sync.Mutex
-	applied      bool
-	scopes       []commercialRelayModelScope
-	blockFirst   atomic.Bool
-	firstStarted chan struct{}
-	firstRelease chan struct{}
+	server           *httptest.Server
+	failures         atomic.Int32
+	requestCount     atomic.Int32
+	mu               sync.Mutex
+	applied          bool
+	scopes           []commercialRelayModelScope
+	monthlyBudget    commercialRelayBudget
+	usageWindowStart string
+	blockFirst       atomic.Bool
+	firstStarted     chan struct{}
+	firstRelease     chan struct{}
 }
 
 func newCommercialDeployRelayServer(t *testing.T, failures int32) *commercialDeployRelayServer {
@@ -271,6 +273,8 @@ func (s *commercialDeployRelayServer) handle(w http.ResponseWriter, r *http.Requ
 		s.mu.Lock()
 		applied := s.applied
 		scopes := append([]commercialRelayModelScope(nil), s.scopes...)
+		monthlyBudget := s.monthlyBudget
+		usageWindowStart := s.usageWindowStart
 		s.mu.Unlock()
 		active := available
 		if applied {
@@ -280,15 +284,20 @@ func (s *commercialDeployRelayServer) handle(w http.ResponseWriter, r *http.Requ
 			}}
 		}
 		_ = json.NewEncoder(w).Encode(commercialRelayUsageUser{
-			Configured: true,
-			Key:        &commercialRelayKeySummary{State: "active"},
+			Configured:       true,
+			Key:              &commercialRelayKeySummary{State: "active"},
+			UsageWindowStart: usageWindowStart,
 			Limits: commercialRelayLimits{
-				ModelLimits: active, AvailableModelLimits: available, ModelScopes: scopes,
+				MonthlyBudget: monthlyBudget,
+				ModelLimits:   active, AvailableModelLimits: available, ModelScopes: scopes,
 			},
 		})
 	case http.MethodPost:
 		var payload struct {
-			Scopes []commercialRelayModelScope `json:"model_scopes"`
+			Scopes                []commercialRelayModelScope `json:"model_scopes"`
+			MonthlyBudget         float64                     `json:"monthly_budget"`
+			MonthlyBudgetDuration string                      `json:"monthly_budget_duration"`
+			UsageWindowStart      *string                     `json:"usage_window_start"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -297,6 +306,12 @@ func (s *commercialDeployRelayServer) handle(w http.ResponseWriter, r *http.Requ
 		s.mu.Lock()
 		s.applied = true
 		s.scopes = append([]commercialRelayModelScope(nil), payload.Scopes...)
+		s.monthlyBudget = commercialRelayBudget{MaxLimit: payload.MonthlyBudget, ResetDuration: payload.MonthlyBudgetDuration}
+		if payload.UsageWindowStart == nil {
+			s.usageWindowStart = ""
+		} else {
+			s.usageWindowStart = *payload.UsageWindowStart
+		}
 		s.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	default:

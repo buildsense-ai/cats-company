@@ -630,7 +630,6 @@ html[data-theme="liquid"] .catsco-brand-mark {
   height: 9px;
   border-radius: 999px;
   background: currentColor;
-  box-shadow: 0 0 0 2px var(--cc-bg);
 }
 
 .cc-compact-task-status.running {
@@ -656,25 +655,6 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .cc-compact-task-status.cancelled,
 .cc-compact-task-status.stale {
   color: var(--cc-warning-text);
-}
-
-.cc-compact-task-status.failed::after,
-.cc-compact-task-status.cancelled::after,
-.cc-compact-task-status.stale::after {
-  position: absolute;
-  inset: -2px;
-  border: 1px solid currentColor;
-  border-radius: inherit;
-  content: "";
-  pointer-events: none;
-}
-
-.cc-compact-task-status.cancelled::after {
-  border-style: dashed;
-}
-
-.cc-compact-task-status.stale::after {
-  border-style: dotted;
 }
 
 .cc-compact-task-status.cc-compact-history-status {
@@ -1915,6 +1895,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .v3-chat-section:hover > .cc-section-add,
 .v3-chat-section:focus-within > .cc-section-add,
+.v3-chat-section[data-expanded="true"] > .cc-section-add,
 .cc-section-add:focus-visible {
   opacity: 1;
   visibility: visible;
@@ -2342,30 +2323,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .cc-task-status-dot {
   display: block;
-  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 999px;
   background: currentColor;
-}
-
-.cc-task-status-dot--failed::after,
-.cc-task-status-dot--cancelled::after,
-.cc-task-status-dot--stale::after {
-  position: absolute;
-  inset: -3px;
-  border: 1px solid currentColor;
-  border-radius: inherit;
-  content: "";
-  pointer-events: none;
-}
-
-.cc-task-status-dot--cancelled::after {
-  border-style: dashed;
-}
-
-.cc-task-status-dot--stale::after {
-  border-style: dotted;
 }
 
 .cc-task-row-status.failed {
@@ -3535,6 +3496,18 @@ html[data-theme="liquid"] .catsco-brand-mark {
   right: auto;
   bottom: calc(100% + 6px);
   left: 0;
+}
+
+.v3-message-footer .v3-message-more-actions {
+  position: relative;
+  display: flex;
+}
+
+.v3-message-footer .v3-message-more-actions .v3-message-action-menu {
+  top: calc(100% + 6px);
+  right: 0;
+  bottom: auto;
+  left: auto;
 }
 
 @keyframes cc-message-regenerate-spin {
@@ -8611,8 +8584,12 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-cloud-worker-meta b { color: var(--v3-text-name); font-weight: 600; }
 .cc-cloud-worker-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cc-cloud-worker-actions .oc-btn { min-height: 30px; padding: 0 10px; font-size: 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px; }
+.cc-cloud-operation-status { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--v3-primary) 24%, var(--v3-border)); border-radius: 6px; background: color-mix(in srgb, var(--v3-primary) 7%, transparent); color: var(--v3-text-body); font-size: 12px; }
+.cc-cloud-operation-status svg { flex: none; color: var(--v3-primary); animation: cc-cloud-operation-spin 1.1s linear infinite; }
+@keyframes cc-cloud-operation-spin { to { transform: rotate(360deg); } }
 .cc-cloud-version-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--v3-text-muted); }
-.cc-cloud-version-select {
+.cc-cloud-version-select,
+.cc-cloud-image-select {
   min-height: 30px;
   padding: 0 8px;
   border: 1px solid var(--v3-border);
@@ -8622,7 +8599,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   font-size: 12px;
   max-width: 140px;
 }
-.cc-cloud-version-select:disabled { opacity: .55; cursor: default; }
+.cc-cloud-version-select:disabled,
+.cc-cloud-image-select:disabled { opacity: .55; cursor: default; }
 .cc-cloud-reset-confirm {
   display: grid;
   gap: 6px;
@@ -8940,7 +8918,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 }
 
 .cc-agent-skill-option.is-selected {
-  box-shadow: inset 3px 0 0 var(--cc-accent);
+  box-shadow: none;
 }
 
 .cc-agent-skill-option-icon {
@@ -8982,9 +8960,9 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 }
 
 .cc-agent-skill-option.is-selected .cc-agent-skill-option-check {
-  border-color: var(--cc-accent);
-  background: var(--cc-accent);
-  color: #fff;
+  border-color: color-mix(in srgb, var(--cc-text) 36%, var(--cc-border-strong));
+  background: var(--cc-text);
+  color: var(--cc-panel-raised);
 }
 
 .cc-agent-skill-picker-state {
@@ -10685,8 +10663,14 @@ html[data-theme="liquid"] :is(
 
 .v3-message.artifacts-first .v3-message-content {
   display: flex;
+  width: 100%;
   flex-direction: column;
   align-items: flex-start;
+}
+
+.v3-message.is-peer.artifacts-first .v3-msg-body {
+  width: calc(100% - 46px);
+  flex: 0 1 auto;
 }
 
 .v3-message.artifacts-first .v3-message-deliverables {
@@ -10698,12 +10682,29 @@ html[data-theme="liquid"] :is(
 .v3-message.artifacts-first .v3-message-followup-text {
   display: grid;
   width: 100%;
-  margin-top: 14px;
-  gap: 12px;
+  margin-top: 8px;
+  gap: 4px;
 }
 
 .v3-message.artifacts-first .v3-message-followup-section {
   min-width: 0;
+}
+
+.v3-message.artifacts-first .v3-message-followup-section > span {
+  display: block;
+}
+
+.v3-message.artifacts-first .v3-message-followup-section .oc-plain-text-paragraphs {
+  gap: 2px;
+}
+
+.v3-message.artifacts-first .v3-message-followup-section .oc-markdown p {
+  margin-block: 2px;
+}
+
+.v3-message.is-peer.artifacts-first .v3-message-footer {
+  width: 100%;
+  margin-top: 2px;
 }
 
 .oc-working-group + .v3-message.artifacts-first .v3-attachment-card.v3-artifact-card {
@@ -10738,6 +10739,23 @@ html[data-theme="liquid"] .v3-message.is-self.has-file-only .v3-message-bubble {
   background: var(--cc-panel);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
   color: var(--cc-text);
+}
+
+.v3-message.artifacts-first .v3-attachment-card.v3-artifact-card {
+  width: min(480px, 100%);
+  max-width: min(480px, 100%);
+  margin-top: 0;
+}
+
+.v3-message.artifacts-first .v3-attachment-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.v3-message.artifacts-first .v3-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .v3-message .v3-message-artifact-list {

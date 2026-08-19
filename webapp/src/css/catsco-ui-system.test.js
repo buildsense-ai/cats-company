@@ -788,27 +788,21 @@ describe('CatsCo shell styling', () => {
     );
   });
 
-  it('uses filled terminal-state dots that remain distinguishable without color alone', () => {
+  it('uses clean filled terminal-state dots without decorative outer rings', () => {
     const dotRule = ruleFor('.cc-task-status-dot');
 
     expect(dotRule).toContain('width: 8px;');
     expect(dotRule).toContain('height: 8px;');
     expect(dotRule).toContain('border-radius: 999px;');
     expect(dotRule).toContain('background: currentColor;');
-    expect(dotRule).toContain('position: relative;');
+    expect(dotRule).not.toContain('position: relative;');
     expect(ruleFor('.cc-task-row-status.completed')).toContain('color: var(--cc-success-text);');
     expect(ruleFor('.cc-task-row-status.failed')).toContain('color: var(--cc-danger);');
     expect(ruleFor('.cc-task-row-status.cancelled,\n.cc-task-row-status.stale'))
       .toContain('color: var(--cc-warning-text);');
-    expect(css).toContain(`.cc-task-status-dot--failed::after,
-.cc-task-status-dot--cancelled::after,
-.cc-task-status-dot--stale::after {`);
-    expect(css).toContain(`.cc-task-status-dot--cancelled::after {
-  border-style: dashed;
-}`);
-    expect(css).toContain(`.cc-task-status-dot--stale::after {
-  border-style: dotted;
-}`);
+    expect(css).not.toContain('.cc-task-status-dot--failed::after');
+    expect(css).not.toContain('.cc-task-status-dot--cancelled::after');
+    expect(css).not.toContain('.cc-task-status-dot--stale::after');
     expect(css).not.toContain('.cc-task-status-icon');
   });
 
@@ -979,16 +973,18 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
-  it('reveals top-level section actions without adding a row hover surface', () => {
+  it('reveals top-level section actions on hover, expansion, or visible keyboard focus', () => {
     const actionRevealRule = ruleFor(
       `.v3-chat-section:hover > .cc-section-add,
 .v3-chat-section:focus-within > .cc-section-add,
+.v3-chat-section[data-expanded="true"] > .cc-section-add,
 .cc-section-add:focus-visible`,
     );
     const nestedHoverRule = ruleFor('.v3-chat-section:not(.cc-top-level-section):hover');
 
     expect(actionRevealRule).toContain('opacity: 1;');
     expect(actionRevealRule).toContain('visibility: visible;');
+    expect(css).toContain('.v3-chat-section:focus-within > .cc-section-add');
     expect(nestedHoverRule).toContain('background: var(--cc-hover);');
     expect(css).not.toContain('.v3-chat-section:hover {\n  background: var(--cc-hover);');
   });
@@ -1086,6 +1082,42 @@ describe('CatsCo shell styling', () => {
   it('keeps the selected project-task checkmark visible against its accent fill', () => {
     expect(ruleFor('.cc-project-task-selection-indicator svg')).toContain('color: currentColor;');
     expect(ruleFor('.cc-project-task-option.is-selected .cc-project-task-selection-indicator svg')).toContain('color: #fff;');
+  });
+
+  it('keeps conversation-share selection controls quiet and system-aligned', () => {
+    const primaryRule = ruleIn(openchatCss, '.cc-conversation-share-primary');
+    const primaryHoverRule = ruleIn(openchatCss, '.cc-conversation-share-primary:hover:not(:disabled)');
+    const toggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle');
+    const hoverToggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle:hover');
+    const indicatorRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle-indicator');
+    const selectedIndicatorRule = ruleIn(
+      openchatCss,
+      '.cc-conversation-share-message-toggle.is-selected .cc-conversation-share-message-toggle-indicator',
+    );
+    const selectedCardRule = ruleIn(openchatCss, '.cc-message-anchor.is-conversation-share-selected');
+
+    expect(toggleRule).toContain('width: 32px;');
+    expect(toggleRule).toContain('height: 32px;');
+    expect(toggleRule).toContain('border: 0;');
+    expect(toggleRule).toContain('background: transparent;');
+    expect(toggleRule).toContain('box-shadow: none;');
+    expect(hoverToggleRule).toContain('background: transparent;');
+    expect(openchatCss).toMatch(
+      /\.cc-conversation-share-message-toggle:hover \.cc-conversation-share-message-toggle-indicator\s*\{[^}]*border-color: var\(--cc-text-secondary\);/s,
+    );
+    expect(indicatorRule).toContain('width: 20px;');
+    expect(indicatorRule).toContain('height: 20px;');
+    expect(indicatorRule).toContain('border-radius: 6px;');
+    expect(selectedCardRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 10%, transparent);');
+    expect(openchatCss).toContain('--cc-conversation-share-accent: #3ab292;');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-hover: color-mix(in srgb, var(--cc-conversation-share-accent) 24%, var(--cc-panel));');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-border: color-mix(in srgb, var(--cc-conversation-share-accent) 64%, var(--cc-border-strong));');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-text: color-mix(in srgb, var(--cc-conversation-share-accent) 72%, var(--cc-text));');
+    expect(primaryRule).toContain('color: var(--cc-conversation-share-accent-text);');
+    expect(primaryRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 18%, var(--cc-panel));');
+    expect(primaryHoverRule).toContain('background: var(--cc-conversation-share-accent-hover);');
+    expect(selectedIndicatorRule).toContain('border-color: var(--cc-conversation-share-accent-border);');
+    expect(selectedIndicatorRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 18%, var(--cc-panel));');
   });
 
   it('keeps project selection controls inside their scroll rail', () => {
@@ -1264,7 +1296,7 @@ describe('CatsCo shell styling', () => {
     expect(dotRule).toContain('right: 3px;');
     expect(dotRule).toContain('bottom: 3px;');
     expect(dotRule).toContain('width: 9px;');
-    expect(dotRule).toContain('box-shadow: 0 0 0 2px var(--cc-bg);');
+    expect(dotRule).not.toContain('box-shadow:');
     expect(runningRule).toContain('inset: 0;');
     expect(runningRule).toContain('justify-content: center;');
     expect(spinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
@@ -1273,15 +1305,9 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: var(--cc-danger);');
     expect(ruleFor('.cc-compact-task-status.cancelled,\n.cc-compact-task-status.stale'))
       .toContain('color: var(--cc-warning-text);');
-    expect(css).toContain(`.cc-compact-task-status.failed::after,
-.cc-compact-task-status.cancelled::after,
-.cc-compact-task-status.stale::after {`);
-    expect(css).toContain(`.cc-compact-task-status.cancelled::after {
-  border-style: dashed;
-}`);
-    expect(css).toContain(`.cc-compact-task-status.stale::after {
-  border-style: dotted;
-}`);
+    expect(css).not.toContain('.cc-compact-task-status.failed::after');
+    expect(css).not.toContain('.cc-compact-task-status.cancelled::after');
+    expect(css).not.toContain('.cc-compact-task-status.stale::after');
     expect(css).toContain('.cc-task-row-status.running svg,\n  .cc-compact-task-status.running svg');
   });
 
@@ -1405,12 +1431,17 @@ describe('CatsCo shell styling', () => {
 
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
     const noticeRule = ruleFor('.v3-composer-notices .v3-live-input-status');
+    const messageOverflowMenuRule = ruleFor('.v3-message-footer .v3-message-more-actions .v3-message-action-menu');
 
     expect(ruleFor('.v3-timeline')).toContain('padding: 18px 20px 140px;');
     expect(ruleFor('.v3-timeline-inner')).toContain('max-width: 760px;');
     expect(ruleFor('.v3-message.is-peer .v3-avatar-col')).toContain('margin-right: 10px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-bubble')).toContain('padding: 8px 0 14px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-footer')).toContain('padding: 0;');
+    expect(messageOverflowMenuRule).toContain('top: calc(100% + 6px);');
+    expect(messageOverflowMenuRule).toContain('right: 0;');
+    expect(messageOverflowMenuRule).toContain('bottom: auto;');
+    expect(messageOverflowMenuRule).toContain('left: auto;');
     expect(ruleFor('.v3-peer-typing')).toContain('width: min(760px, 100%);');
     expect(ruleFor('.v3-peer-typing')).toContain('margin: 4px auto;');
     expect(ruleFor('.v3-peer-typing')).toContain('padding: 8px 0 14px;');
@@ -1509,18 +1540,38 @@ describe('CatsCo shell styling', () => {
 
   it('separates delivered files from the completion summary without splitting the reply', () => {
     const contentRule = ruleFor('.v3-message.artifacts-first .v3-message-content');
+    const peerBodyRule = ruleFor('.v3-message.is-peer.artifacts-first .v3-msg-body');
     const deliverablesRule = ruleFor('.v3-message.artifacts-first .v3-message-deliverables');
     const summaryRule = ruleFor('.v3-message.artifacts-first .v3-message-followup-text');
+    const artifactCardRule = ruleFor('.v3-message.artifacts-first .v3-attachment-card.v3-artifact-card');
+    const footerRule = ruleFor('.v3-message.is-peer.artifacts-first .v3-message-footer');
     const adjacentCardRule = ruleFor(
       '.oc-working-group + .v3-message.artifacts-first .v3-attachment-card.v3-artifact-card',
     );
 
     expect(contentRule).toContain('display: flex;');
+    expect(contentRule).toContain('width: 100%;');
     expect(contentRule).toContain('flex-direction: column;');
+    expect(peerBodyRule).toContain('width: calc(100% - 46px);');
+    expect(peerBodyRule).toContain('flex: 0 1 auto;');
     expect(deliverablesRule).toContain('width: 100%;');
     expect(deliverablesRule).toContain('gap: 8px;');
     expect(summaryRule).toContain('width: 100%;');
-    expect(summaryRule).toContain('margin-top: 14px;');
+    expect(summaryRule).toContain('margin-top: 8px;');
+    expect(summaryRule).toContain('gap: 4px;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section > span'))
+      .toContain('display: block;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section .oc-plain-text-paragraphs'))
+      .toContain('gap: 2px;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section .oc-markdown p'))
+      .toContain('margin-block: 2px;');
+    expect(artifactCardRule).toContain('width: min(480px, 100%);');
+    expect(artifactCardRule).toContain('max-width: min(480px, 100%);');
+    expect(ruleFor('.v3-message.artifacts-first .v3-attachment-info')).toContain('overflow: hidden;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-attachment-name'))
+      .toContain('text-overflow: ellipsis;');
+    expect(footerRule).toContain('width: 100%;');
+    expect(footerRule).toContain('margin-top: 2px;');
     expect(adjacentCardRule).toContain('margin-bottom: 0;');
   });
 

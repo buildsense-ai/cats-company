@@ -10,6 +10,7 @@ import SkillHubView, {
   normalizeOwnedBots,
   normalizeAccessibleBots,
   buildCurrentAgentSkills,
+  resolveLocalSkillForAgentSkill,
   normalizeViewerSkills,
   normalizeSkillHubDevices,
   resolveAutomaticSkillHubDeviceID,
@@ -81,7 +82,12 @@ describe('SkillHubView', () => {
     api.getAgentSkills.mockResolvedValue({
       botId: '43',
       skills_visibility: 'owner',
-      skills: [{ source: 'skillhub', skillId: 'private/review', version: 'v2' }],
+      skills: [{
+        source: 'skillhub',
+        skillId: 'private/review',
+        version: 'v2',
+        displayName: 'cloud-html-artifact',
+      }],
     });
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
@@ -135,6 +141,9 @@ describe('SkillHubView', () => {
     expect(normalizeViewerSkills({ skills: [{ skillId: 'private/review', version: 'v2' }] })[0]).toMatchObject({
       skillId: 'private/review', version: 'v2',
     });
+    const merged = buildCurrentAgentSkills([], [{ name: 'draft', localSkillId: 'draft-id' }]);
+    expect(resolveLocalSkillForAgentSkill(merged[0], [{ name: 'draft', localSkillId: 'draft-id' }]))
+      .toMatchObject({ localSkillId: 'draft-id' });
   });
 
   afterEach(async () => {
@@ -320,6 +329,26 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localWorkspace.get',
       botUID: '42',
     })).toThrow(/不兼容/);
+    expect(() => assertSkillHubDeviceResult({
+      schema: 'xiaoba.skillhub.local_delete.v1',
+      bot_uid: '42',
+      local_skill_id: 'local-other',
+      deleted: true,
+    }, {
+      toolName: 'skillhub.localSkill.delete',
+      botUID: '42',
+      localSkillID: 'local-selected',
+    })).toThrow(/未确认删除当前选中的 Skill/);
+    expect(() => assertSkillHubDeviceResult({
+      schema: 'xiaoba.skillhub.local_delete.v1',
+      bot_uid: '42',
+      local_skill_id: 'local-selected',
+      deleted: false,
+    }, {
+      toolName: 'skillhub.localSkill.delete',
+      botUID: '42',
+      localSkillID: 'local-selected',
+    })).toThrow(/未确认删除当前选中的 Skill/);
   });
 
   it('remembers the selected Bot per CatsCo user and ignores stale selections', () => {
@@ -859,6 +888,85 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('已从 Agent“Owner Bot”移除 tools/review');
   });
 
+  it('deletes a local-only ability from the exact desktop XiaoBa workspace', async () => {
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'alice-device',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localSkill.delete',
+        'skillhub.localBot.switch',
+      ],
+    }] });
+    let deleted = false;
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get') return {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        skills_path: 'C:\\xiaoba\\skills',
+        skills: deleted ? [] : [{
+          local_skill_id: 'local-draft-id',
+          name: 'local-draft',
+          description: 'Local draft ability',
+          relative_path: 'local-draft',
+          source: 'user',
+          can_share: true,
+        }],
+      };
+      if (toolName === 'skillhub.localSkill.delete') {
+        expect(payload).toMatchObject({ bot_uid: '42', local_skill_id: 'local-draft-id' });
+        deleted = true;
+        return {
+          schema: 'xiaoba.skillhub.local_delete.v1',
+          bot_uid: '42',
+          local_skill_id: 'local-draft-id',
+          deleted: true,
+        };
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="更多操作 local-draft"]'));
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+    const menu = document.body.querySelector('[role="menu"][aria-label="local-draft 操作"]');
+    expect(menu.textContent).toContain('删除本地能力');
+    await act(async () => {
+      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')]
+        .find(button => button.textContent.includes('删除本地能力')));
+      await Promise.resolve();
+    });
+    const confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation.textContent).toContain('永久删除当前 XiaoBa 工作区中的本地 Skill 文件');
+    await act(async () => {
+      Simulate.click([...confirmation.querySelectorAll('button')]
+        .find(button => button.textContent === '删除本地能力'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localSkill.delete',
+      payload: { bot_uid: '42', local_skill_id: 'local-draft-id' },
+    }));
+    expect(container.textContent).toContain('已删除 local-draft 的本地 Skill');
+    expect(container.textContent).not.toContain('Local draft ability');
+  });
+
   it('uses a matching local name when removing a private ability', async () => {
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
@@ -881,18 +989,19 @@ describe('SkillHubView', () => {
           'skillhub.localWorkspace.get',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
+          'skillhub.localSkill.delete',
           'skillhub.localBot.switch',
         ],
       }],
     });
-    requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
-      if (toolName !== 'skillhub.localWorkspace.get') throw new Error(`unexpected tool ${toolName}`);
-      return {
+    let deleted = false;
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get') return {
         schema: 'xiaoba.skillhub.local_workspace.v1',
         bot_uid: '42',
         active_bot_uid: '42',
         skills_path: 'C:\\xiaoba\\skills',
-        skills: [{
+        skills: deleted ? [] : [{
           local_skill_id: 'local-1',
           name: 'local-demo',
           description: 'Local demo',
@@ -907,6 +1016,17 @@ describe('SkillHubView', () => {
           } },
         }],
       };
+      if (toolName === 'skillhub.localSkill.delete') {
+        expect(payload).toMatchObject({ bot_uid: '42', local_skill_id: 'local-1' });
+        deleted = true;
+        return {
+          schema: 'xiaoba.skillhub.local_delete.v1',
+          bot_uid: '42',
+          local_skill_id: 'local-1',
+          deleted: true,
+        };
+      }
+      throw new Error(`unexpected tool ${toolName}`);
     });
     api.updateBotDefinitionSkills.mockResolvedValueOnce({ botId: '42', revision: 4, skills: [] });
 
@@ -930,17 +1050,22 @@ describe('SkillHubView', () => {
     });
 
     const confirmation = document.body.querySelector('[role="alertdialog"]');
-    expect(confirmation.textContent).toContain('从“Owner Bot”移除“local-demo”');
+    expect(confirmation.textContent).toContain('删除“local-demo”的本地能力');
+    expect(confirmation.textContent).toContain('并永久删除当前 XiaoBa 工作区中的本地 Skill 文件');
     expect(confirmation.textContent).not.toContain('priv_local1');
     await act(async () => {
       Simulate.click([...confirmation.querySelectorAll('button')]
-        .find((button) => button.textContent === '从 Agent 移除'));
+        .find((button) => button.textContent === '删除本地能力'));
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, []);
-    expect(container.textContent).toContain('已从 Agent“Owner Bot”移除 local-demo');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localSkill.delete',
+      payload: { bot_uid: '42', local_skill_id: 'local-1' },
+    }));
+    expect(container.textContent).toContain('已删除 local-demo 的本地 Skill，并从 Agent“Owner Bot”移除');
     expect(container.textContent).not.toContain('priv_local1');
   });
 
@@ -964,6 +1089,7 @@ describe('SkillHubView', () => {
       toJSON: () => ({}),
     });
     expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger?.title).toBe('Owner Bot');
     await act(async () => {
       Simulate.click(trigger);
     });
@@ -973,6 +1099,7 @@ describe('SkillHubView', () => {
     expect(listbox.style.left).toBe('100px');
     expect(listbox.style.width).toBe('176px');
     expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('Owner Bot');
+    expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.title).toBe('Owner Bot');
 
     await act(async () => {
       Simulate.keyDown(trigger, { key: 'Escape' });
@@ -1026,7 +1153,8 @@ describe('SkillHubView', () => {
     expect(api.getAgentSkills).toHaveBeenCalledWith('43');
     expect(api.getBotDefinitionSkills).toHaveBeenCalledWith('42');
     expect(api.getDevices).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('私有能力');
+    expect(container.textContent).toContain('cloud-html-artifact');
+    expect(container.textContent).not.toContain('私有能力');
     expect(container.textContent).toContain('v2');
     expect(container.textContent).toContain('只读查看');
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();

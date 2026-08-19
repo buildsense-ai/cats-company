@@ -21,8 +21,15 @@ import (
 type UserHandler struct {
 	db                       store.Store
 	relayRegistrationCreate  func(context.Context, int64, string) error
+	relayRegistrationReady   func(int64)
 	relayRegistrationDelays  []time.Duration
 	relayRegistrationTimeout time.Duration
+}
+
+func (h *UserHandler) SetRelayRegistrationReadyHook(hook func(int64)) {
+	if h != nil {
+		h.relayRegistrationReady = hook
+	}
 }
 
 // NewUserHandler creates a new UserHandler.
@@ -59,7 +66,7 @@ func (h *UserHandler) SetRelayRegistrationProvisioning(admin *RelayAdminClient) 
 		}
 		var out relayKeyResponse
 		return admin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key", uid), relayKeyProxyRequest{
-			Name:     "CatsCo API Key",
+			Name:     defaultRelayKeyName(uid),
 			Username: username,
 		}, &out)
 	}
@@ -366,6 +373,9 @@ func (h *UserHandler) provisionRegisteredUserRelayKey(uid int64, username string
 			lastErr = create(ctx, uid, username)
 			cancel()
 			if lastErr == nil {
+				if h.relayRegistrationReady != nil {
+					h.relayRegistrationReady(uid)
+				}
 				log.Printf("relay registration key provisioned: uid=%d username=%s", uid, username)
 				return
 			}
