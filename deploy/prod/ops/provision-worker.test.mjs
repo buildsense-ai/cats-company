@@ -34,7 +34,10 @@ const val = f => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : ""; 
 const json = o => process.stdout.write(JSON.stringify(o));
 if (op === "ecs ListEcsInstances") {
   const name = val("--instanceName");
-  json({ statusCode: "800", returnObj: { results: (state.instances || []).filter(i => !name || i.instanceName === name) } });
+  state.listCalls = (state.listCalls || 0) + 1;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  const instances = state.hideInstancesOnList ? [] : (state.instances || []);
+  json({ statusCode: "800", returnObj: { results: instances.filter(i => !name || i.instanceName === name) } });
 } else if (op === "ecs GetEcsKeypairDetails") {
   const name = val("--keyPairName");
   json({ statusCode: "800", returnObj: { results: (state.keypairs || []).filter(k => k.keyPairName === name) } });
@@ -50,9 +53,25 @@ if (op === "ecs ListEcsInstances") {
   const name = val("--instanceName");
   const id = "i-" + name;
   state.instances = state.instances || [];
-  state.instances.push({ instanceName: name, instanceID: id, state: "running", floatingIP: "10.0.0." + (state.instances.length + 1) });
+  state.createArgs = args.join(" ");
+  // 包月模式（--onDemand false）实例带 expiredTime；按量不带
+  const inst = { instanceName: name, instanceID: id, state: "running", floatingIP: "10.0.0." + (state.instances.length + 1) };
+  if (val("--onDemand") === "false") inst.expiredTime = "2030-01-01T00:00:00Z";
+  state.instances.push(inst);
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: { masterResourceID: id } });
+} else if (op === "ecs UpdateEcsAutoRenewConfig") {
+  if (state.failAutoRenew) { json({ statusCode: "900", errorCode: "E.RENEW", message: "boom" }); process.exit(0); }
+  state.renewCalls = state.renewCalls || [];
+  state.renewCalls.push({ instanceIDList: val("--instanceIDList"), autoRenewStatus: val("--autoRenewStatus"), autoRenewCycleType: val("--autoRenewCycleType"), autoRenewCycleCount: val("--autoRenewCycleCount") });
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({ statusCode: "800", returnObj: {} });
+} else if (op === "ecs UnsubscribeEcsInstance") {
+  state.unsubscribedInstances = state.unsubscribedInstances || [];
+  state.unsubscribedInstances.push(val("--instanceID"));
+  state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DeleteEcsInstance") {
   state.deletedInstances = state.deletedInstances || [];
   state.deletedInstances.push(val("--instanceID"));
@@ -60,8 +79,10 @@ if (op === "ecs ListEcsInstances") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DeleteEcsKeypair") {
+  if (state.failDeleteKeypair) { json({ statusCode: "900", errorCode: "E.DELKP", message: "boom" }); process.exit(0); }
   state.deletedKeypairs = state.deletedKeypairs || [];
   state.deletedKeypairs.push(val("--keyPairName"));
+  state.keypairs = (state.keypairs || []).filter(k => k.keyPairName !== val("--keyPairName"));
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else {
@@ -88,6 +109,11 @@ if (cmd.includes("cloud-init status")) {
   // .env 注入：同步读整个 stdin（here-string 以 EOF 结束）
   const env = fs.readFileSync(0, "utf8");
   state.injectedEnv = env;
+  if (state.failSshAfterCloudInit) {
+    if (state.hideInstancesAfterSshFailure) state.hideInstancesOnList = true;
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    process.exit(1);
+  }
   fs.writeFileSync(statePath, JSON.stringify(state));
 } else if (cmd.includes("cat > /srv/catsco-agent/.xiaoba/catsco.json")) {
   // localConfig（bootstrap 身份）写入
@@ -98,6 +124,8 @@ if (cmd.includes("cloud-init status")) {
   state.serviceEnabled = true;
   fs.writeFileSync(statePath, JSON.stringify(state));
   process.stdout.write("active\\n");
+} else if (cmd.includes("worker-release.json")) {
+  process.stdout.write(JSON.stringify({ version: "1.4.8" }));
 }
 fs.writeFileSync(statePath, JSON.stringify(state));
 process.exit(0);
@@ -152,6 +180,7 @@ function setupSandbox(state) {
   writeCommand(bin, "ctyun-cli", FAKE_CTYUN);
   writeCommand(bin, "ssh", FAKE_SSH);
   writeCommand(bin, "scp", "process.exit(0);");
+  writeCommand(bin, "sleep", "process.exit(0);");
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
   const statePath = path.join(sandbox, "state.json");
   fs.writeFileSync(statePath, JSON.stringify(state || {}));
@@ -258,6 +287,7 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.match(state.injectedEnv, /CATSCO_BODY_ID=body-1/);
   assert.match(state.injectedEnv, /CATSCO_INSTALLATION_ID=inst-1/);
   assert.equal(state.serviceEnabled, true, "service should be enabled");
+  assert.equal(fs.readFileSync(path.join(sb.sandbox, "state", "app_version"), "utf8"), "1.4.8\n");
 
   // localConfig（bootstrap 身份）：worker catsco 命令依赖它（bodyId + 绑定确认）
   assert.ok(state.localConfig, "localConfig should be written");
@@ -275,6 +305,55 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.ok((state.keypairs || []).some(k => k.keyPairName === "worker-key-bot-a"), "key pair created");
 });
 
+test("provision-worker: state root isolates credentials by tenant", () => {
+  const sb = setupSandbox({});
+  const stateRoot = path.join(sb.sandbox, "tenant-state");
+  const result = run(
+    sb,
+    ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"],
+    { CTYUN_WORKER_STATE_ROOT: toMsys(stateRoot), CTYUN_WORKER_STATE_DIR: "" },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "id_rsa")));
+  assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "inject.env")));
+  assert.equal(fs.existsSync(path.join(stateRoot, "inject.env")), false, "identity snapshot must never be shared at the root");
+});
+
+test("provision-worker: replaces an orphaned legacy keypair before creating an instance", () => {
+  const sb = setupSandbox({
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }],
+  });
+  const stateRoot = path.join(sb.sandbox, "legacy-tenant-state");
+  const r = run(
+    sb,
+    ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"],
+    { CTYUN_WORKER_STATE_ROOT: toMsys(stateRoot), CTYUN_WORKER_STATE_DIR: "" },
+  );
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /replacing orphaned key pair worker-key-bot-a/);
+
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+  assert.equal(state.keypairs.length, 1, "the orphan pair must be replaced, not duplicated");
+  assert.equal(state.keypairs[0].keyPairName, "worker-key-bot-a");
+  assert.match(state.createArgs, /--keyPairID kp-worker-key-bot-a/);
+  assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "id_rsa")));
+});
+
+test("provision-worker: fails closed when an orphaned keypair cannot be replaced", () => {
+  const sb = setupSandbox({
+    failDeleteKeypair: true,
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }],
+  });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /Tianyi Cloud API failed: E\.DELKP/);
+
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.instances || []).length, 0, "no billable instance may be created without a recoverable key");
+  assert.deepEqual(state.keypairs, [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }]);
+});
+
 test("provision-worker: create failure fails closed and cleans up", () => {
   const sb = setupSandbox({ failCreate: true });
   const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k", "--image-id", "img-1"]);
@@ -283,4 +362,102 @@ test("provision-worker: create failure fails closed and cleans up", () => {
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   // 失败清理：key pair 删除被调用（实例未创建成功）
   assert.ok((state.deletedKeypairs || []).includes("worker-key-bot-a"), "key pair should be cleaned up");
+});
+
+test("provision-worker: monthly billing by default with auto-renew", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.createArgs, /--onDemand false/);
+  assert.match(state.createArgs, /--cycleType MONTH/);
+  assert.match(state.createArgs, /--cycleCount 1/);
+  assert.match(state.createArgs, /--extIP 0/);
+  assert.ok(!state.createArgs.includes("--bandwidth"), "private-IP provisioning must not request public bandwidth");
+  assert.equal((state.renewCalls || []).length, 1, "auto-renew must be configured once");
+  assert.equal(state.renewCalls[0].autoRenewStatus, "1");
+  assert.equal(state.renewCalls[0].autoRenewCycleType, "MONTH");
+  assert.ok((state.instances || [])[0].expiredTime, "monthly instance should carry expiredTime");
+});
+
+test("provision-worker: public IP is an explicit legacy override", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"],
+    { CTYUN_WORKER_EXT_IP: "1" });
+  if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.createArgs, /--extIP 1/);
+  assert.match(state.createArgs, /--bandwidth 10/);
+});
+
+test("provision-worker: ondemand billing mode keeps on-demand and skips auto-renew", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"],
+    { CTYUN_WORKER_BILLING_MODE: "ondemand" });
+  if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.createArgs, /--onDemand true/);
+  assert.ok(!(state.createArgs || "").includes("--cycleType"), "ondemand must not pass cycleType");
+  assert.equal((state.renewCalls || []).length, 0, "no auto-renew for on-demand instances");
+  assert.ok(!(state.instances || [])[0].expiredTime, "on-demand instance has no expiredTime");
+});
+
+test("provision-worker: AUTO_RENEW=0 disables auto-renew for monthly billing", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"],
+    { CTYUN_WORKER_AUTO_RENEW: "0" });
+  if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.createArgs, /--onDemand false/);
+  assert.equal((state.renewCalls || []).length, 0, "auto-renew must be skipped");
+});
+
+test("provision-worker: auto-renew failure warns but does not fail provisioning", () => {
+  const sb = setupSandbox({ failAutoRenew: true });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  if (r.status !== 0) assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /warning: auto-renew configuration failed/);
+  assert.match(r.stdout, /"status":"provisioned"/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.ok(state.injectedEnv, "provisioning must complete despite auto-renew failure");
+});
+
+test("provision-worker: post-create failure unsubscribes monthly instance in cleanup", () => {
+  const sb = setupSandbox({ failSshAfterCloudInit: true });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /provision failed/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.ok((state.unsubscribedInstances || []).includes("i-worker-bot-a"), "monthly instance must be unsubscribed, not deleted");
+  assert.ok(!(state.deletedInstances || []).includes("i-worker-bot-a"), "monthly instance must not go through DeleteEcsInstance");
+});
+
+test("provision-worker: cleanup unsubscribes monthly instance when the instance list becomes stale", () => {
+  const sb = setupSandbox({ failSshAfterCloudInit: true, hideInstancesAfterSshFailure: true });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /provision failed/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.ok(state.listCalls >= 5, "cleanup should retry the eventually consistent instance list");
+  assert.deepEqual(state.unsubscribedInstances, ["i-worker-bot-a"], "known monthly instance ID must still be unsubscribed");
+  assert.equal((state.deletedInstances || []).length, 0, "monthly fallback must never use DeleteEcsInstance");
+});
+
+test("provision-worker: cleanup deletes on-demand instance when the instance list becomes stale", () => {
+  const sb = setupSandbox({ failSshAfterCloudInit: true, hideInstancesAfterSshFailure: true });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"],
+    { CTYUN_WORKER_BILLING_MODE: "ondemand" });
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /provision failed/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.deletedInstances, ["i-worker-bot-a"], "known on-demand instance ID must still be deleted");
+  assert.equal((state.unsubscribedInstances || []).length, 0, "on-demand fallback must not use UnsubscribeEcsInstance");
 });

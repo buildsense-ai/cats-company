@@ -207,7 +207,7 @@ X-CatsCo-File-Size: 12345
 创建 Bot
 
 **PATCH /api/bots?uid={uid}**
-更新 Agent 基本信息与协作设置。`artifact_upload_enabled` 用于控制普通成员能否直接发布共享成果；默认开启，关闭后所有者仍可上传和管理。
+更新 Agent 基本信息与协作设置。`artifact_upload_enabled` 用于控制普通成员能否直接发布共享成果；默认开启，关闭后所有者仍可上传和管理。`skill_mutation_mode` 可设为 `owner_only`（默认）或 `shared_live`，仅作为专用 Skill 变更控制面的准入策略，不授予普通 Bot 设置编辑权限；专用变更通道上线前该策略不会单独开放修改能力。
 
 **PATCH /api/bots/visibility**
 设置 Bot 可见性

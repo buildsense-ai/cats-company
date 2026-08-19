@@ -110,6 +110,16 @@ const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 
+export function toWritableBotSkillRefs(skills) {
+  if (!Array.isArray(skills)) return skills;
+  return skills.map((skill) => ({
+    source: skill?.source,
+    skillId: skill?.skillId,
+    version: skill?.version,
+    contentHash: skill?.contentHash,
+  }));
+}
+
 function currentPageVisibility() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
     ? 'hidden'
@@ -756,20 +766,30 @@ export const api = {
   getCloudWorkers: () => request('GET', '/api/cloud-workers'),
   getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
   createCloudWorker: ({ username, display_name, role, description }) =>
-    request('POST', '/api/cloud-workers', { username, display_name, role, description }),
+    request('POST', '/api/cloud-workers', { username, display_name, role, description }, { timeoutMs: 630_000 }),
+  updateCloudWorker: (name, payload = {}) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/update`, payload, { timeoutMs: 630_000 }),
   rollbackCloudWorker: (name, payload = {}) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload),
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload, { timeoutMs: 630_000 }),
   resetCloudWorker: (name, payload = {}) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload),
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload, { timeoutMs: 630_000 }),
   deleteCloudWorker: (name) =>
-    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}),
-  updateBot: (uid, { display_name, avatar_url, role, description, artifact_upload_enabled }) =>
+    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}, { timeoutMs: 630_000 }),
+  updateBot: (uid, {
+    display_name,
+    avatar_url,
+    role,
+    description,
+    artifact_upload_enabled,
+    skill_mutation_mode,
+  }) =>
     request('PATCH', `/api/bots?uid=${uid}`, {
       display_name,
       avatar_url,
       role,
       description,
       artifact_upload_enabled,
+      skill_mutation_mode,
     }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
@@ -804,7 +824,7 @@ export const api = {
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
-    { revision, skills },
+    { revision, skills: toWritableBotSkillRefs(skills) },
   ),
   switchLocalBot: (botUid) => localRequest('POST', '/api/cats/switch-bot', { botUid }),
   getLocalCatsStatus: () => localRequest('GET', '/api/cats/status'),

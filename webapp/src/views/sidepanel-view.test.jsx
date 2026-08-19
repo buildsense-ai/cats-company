@@ -247,6 +247,9 @@ describe('ChatListView sidebar sections', () => {
     expect(sectionLabels).not.toContain('Agent 助手');
     Array.from(container.querySelectorAll('.cc-top-level-section')).forEach((section) => {
       expect(section.classList.contains('cc-sidebar-section-row')).toBe(true);
+      expect(section.dataset.expanded).toBe(
+        section.querySelector('.cc-section-toggle').getAttribute('aria-expanded'),
+      );
     });
 
     const [tasksToggle, contactsToggle] = container.querySelectorAll('.cc-top-level-section > .cc-section-toggle');

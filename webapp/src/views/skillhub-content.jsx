@@ -339,7 +339,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
         {!isReadOnly && !skill.localOnly && <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
           {copying ? '复制中…' : '复制'}
         </button>}
-        {!isReadOnly && !skill.localOnly && <button
+        {!isReadOnly && <button
           ref={triggerRef}
           type='button'
           className='subtle cc-skillhub-more-action'
@@ -394,7 +394,13 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
               onRemoveSkill(skill.skillId);
             }}
           >
-            <PackageMinus size={15} aria-hidden='true' /> {removing ? '移除中…' : '从 Agent 移除'}
+            <PackageMinus size={15} aria-hidden='true' /> {removing
+              ? (skill.local ? '删除中…' : '移除中…')
+              : skill.localOnly
+                ? '删除本地能力'
+                : skill.local
+                  ? '从 Agent 移除并删除本地'
+                  : '从 Agent 移除'}
           </button>
         </div>,
         document.body,
@@ -554,10 +560,10 @@ function CustomSkills(props) {
       </div>
       <CustomToolbar {...props} localSkillsPath={localSkillsPath} />
       {!loadingDevices && devices?.length === 0 && (
-        <div className='cc-skillhub-alert error' role='alert'>没有检测到支持 SkillHub 的在线 XiaoBa，请启动或更新本地 XiaoBa。</div>
+        <div className='cc-skillhub-alert error' role='alert'>没有检测到支持 SkillHub 的本地桌面 XiaoBa，请启动或更新本机 XiaoBa 并确认 CatsCo 账号一致。</div>
       )}
       {!loadingDevices && devices?.length > 1 && !selectedDeviceID && (
-        <div className='cc-skillhub-empty'>请选择要操作的本地 XiaoBa，避免修改到其他电脑。</div>
+        <div className='cc-skillhub-alert error' role='alert'>检测到多台本地桌面 XiaoBa 同时在线。为避免修改错工作区，请关闭其他 XiaoBa 后刷新。</div>
       )}
       {localNotice && <div className='cc-skillhub-alert success' role='status'>{localNotice}</div>}
       {localSkillsError ? <div className='cc-skillhub-alert error' role='alert'>{localSkillsError}</div> : loadingLocalSkills ? (
@@ -569,40 +575,13 @@ function CustomSkills(props) {
   );
 }
 
-function CustomToolbar({ devices = [], loadingDevices, loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, onSelectDevice, saving, selectedBotUID, selectedDeviceID, sharingSkill }) {
+function CustomToolbar({ loadingDevices, loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, saving, selectedBotUID, sharingSkill }) {
   return (
     <div className='cc-skillhub-custom-toolbar'>
-      <div className='cc-skillhub-device-picker'>
-        <span>本地 XiaoBa</span>
-        <select
-          className='cc-skillhub-native-select'
-          value={selectedDeviceID || ''}
-          disabled={loadingDevices || devices.length === 0 || Boolean(sharingSkill)}
-          tabIndex={-1}
-          aria-hidden='true'
-          onChange={(event) => onSelectDevice?.(event.target.value)}
-        >
-          {devices.length === 0 && <option value=''>暂无支持 SkillHub 的在线设备</option>}
-          {devices.length > 1 && <option value=''>请选择要操作的设备</option>}
-          {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.displayName || device.deviceId}</option>)}
-        </select>
-        <CustomSelect
-          ariaLabel='本地 XiaoBa'
-          className='cc-skillhub-device-select'
-          density='comfortable'
-          value={selectedDeviceID || ''}
-          disabled={loadingDevices || devices.length === 0 || Boolean(sharingSkill)}
-          onValueChange={(deviceID) => onSelectDevice?.(deviceID)}
-        >
-          {devices.length === 0 && <option value=''>暂无支持 SkillHub 的在线设备</option>}
-          {devices.length > 1 && <option value=''>请选择要操作的设备</option>}
-          {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.displayName || device.deviceId}</option>)}
-        </CustomSelect>
-      </div>
       <div className='cc-skillhub-local-path'><FolderOpen size={15} aria-hidden='true' /><code>{localSkillsPath || '尚未读取本地 Skills 目录'}</code></div>
       <div className='cc-skillhub-local-actions'>
         <button type='button' onClick={onCopyLocalPath} disabled={!localSkillsPath}><Clipboard size={14} aria-hidden='true' /> 复制路径</button>
-        <button type='button' onClick={onRefreshLocal} disabled={!selectedBotUID || loadingLocalSkills || saving || Boolean(sharingSkill)}>
+        <button type='button' onClick={onRefreshLocal} disabled={!selectedBotUID || loadingDevices || loadingLocalSkills || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingLocalSkills ? 'is-spinning' : ''} size={14} aria-hidden='true' /> {loadingLocalSkills ? '刷新中…' : '刷新'}
         </button>
       </div>

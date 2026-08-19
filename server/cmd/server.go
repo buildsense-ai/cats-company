@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/openchat/openchat/server/db/mysql"
 	"github.com/openchat/openchat/server/db/postgres"
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func envString(name string) string {
@@ -204,6 +206,34 @@ func limitHTTPMethod(method string, middleware func(http.HandlerFunc) http.Handl
 	}
 }
 
+func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
+	if staticDir == "" {
+		return
+	}
+
+	fs := http.FileServer(http.Dir(staticDir))
+	serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+	}
+	for _, path := range []string{
+		"/e/",
+		"/mobile-upload/",
+		"/login",
+		"/login/",
+		"/register",
+		"/register/",
+		"/reset-password",
+		"/reset-password/",
+	} {
+		mux.HandleFunc(path, serveSPAIndex)
+	}
+	mux.Handle("/", fs)
+}
+
 func useRedisRuntime(cfg RuntimeConfig) bool {
 	store := strings.ToLower(strings.TrimSpace(cfg.Store))
 	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
@@ -315,6 +345,18 @@ func main() {
 		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
+	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+		apiKey, err := db.GetBotAPIKey(botUID)
+		if err != nil {
+			return nil, err
+		}
+		return skillHubProxyHandler.ResolvePrivateSkillMetadata(
+			ctx,
+			strconv.FormatInt(botUID, 10),
+			apiKey,
+			skills,
+		)
+	})
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
 	botModelConfigHandler.SetRollout(botModelCloudPublicEnabled, botModelCloudTestUIDs)
@@ -345,6 +387,8 @@ func main() {
 	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
+	imageUpscaleTaskStore, _ := db.(store.ImageUpscaleTaskStore)
+	imageUpscaleHandler := server.NewImageUpscaleProxyHandlerFromEnv(imageUpscaleTaskStore)
 	sttHandler := server.NewSTTHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
@@ -378,6 +422,8 @@ func main() {
 	if len(relayCommercialEnforceUIDs) > 0 {
 		log.Printf("relay commercial enforce sync allowlist is enabled for %d uid(s)", len(relayCommercialEnforceUIDs))
 	}
+	relayKeyHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	botModelConfigHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	accountAdminHandler.SetCommercialRelayAdmin(relayAdminClient, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	var commercialRelaySyncer *server.CommercialRelaySyncer
 	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())
@@ -389,6 +435,12 @@ func main() {
 		})
 		commercialRelaySyncer.Start(commercialServiceCtx)
 		accountAdminHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		relayKeyHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+		userHandler.SetRelayRegistrationReadyHook(func(uid int64) {
+			if commercialRelaySyncer.EnforcedFor(uid) {
+				commercialRelaySyncer.Enqueue(uid)
+			}
+		})
 	}
 	relayCommercialHandler := server.NewRelayCommercialHandlerWithOptions(commercialStore, server.RelayCommercialOptions{
 		PublicEnabled:  relayCommercialPublicEnabled,
@@ -563,6 +615,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
 	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
+	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
 	mux.HandleFunc("/api/account/commercial-ops/order-refunds", commercialOpsHandler.HandleOrderRefund)
@@ -579,6 +632,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/plans", accountAdminHandler.HandleCommercialPlans)
 	mux.HandleFunc("/local/account-admin/commercial/invites", accountAdminHandler.HandleCommercialInvites)
 	mux.HandleFunc("/local/account-admin/commercial/grants", accountAdminHandler.HandleCommercialGrant)
+	mux.HandleFunc("/local/account-admin/commercial/adjustments", accountAdminHandler.HandleCommercialAdjustment)
 	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
 	mux.HandleFunc("/local/account-admin/commercial/relay-sync", accountAdminHandler.HandleCommercialRelaySync)
@@ -721,6 +775,7 @@ func main() {
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
+	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))
 	mux.HandleFunc("/api/bots/skills-visibility", ownerAuthWithDB(botHandler.HandleSetBotSkillsVisibility))
 	mux.HandleFunc("/api/bots/avatar", ownerAuthWithDB(botHandler.HandleUpdateBotAvatar))
@@ -770,6 +825,8 @@ func main() {
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
 	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/images/upscale/tasks/", chainHTTP(imageUpscaleHandler.HandleUpscaleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
+	mux.HandleFunc("/v1/images/upscale", chainHTTP(imageUpscaleHandler.HandleUpscale, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/tasks/", chainHTTP(imageGenerationHandler.HandleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
@@ -783,6 +840,9 @@ func main() {
 		if err := imageGenerationHandler.EditConfigError(); err != nil {
 			log.Printf("Reference-image proxy is unavailable until configured: %v", err)
 		}
+	}
+	if err := imageUpscaleHandler.ConfigError(); err != nil {
+		log.Printf("Image upscale proxy is unavailable until configured: %v", err)
 	}
 	if err := sttHandler.ConfigError(); err != nil {
 		log.Printf("Streaming STT is unavailable: %v", err)
@@ -800,19 +860,7 @@ func main() {
 	})
 
 	// Static files
-	if cfg.Static.Dir != "" {
-		fs := http.FileServer(http.Dir(cfg.Static.Dir))
-		serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-				return
-			}
-			http.ServeFile(w, r, filepath.Join(cfg.Static.Dir, "index.html"))
-		}
-		mux.HandleFunc("/e/", serveSPAIndex)
-		mux.HandleFunc("/mobile-upload/", serveSPAIndex)
-		mux.Handle("/", fs)
-	}
+	registerStaticRoutes(mux, cfg.Static.Dir)
 
 	// Start HTTP server
 	// Note: no ReadTimeout/WriteTimeout here — WebSocket connections are long-lived.

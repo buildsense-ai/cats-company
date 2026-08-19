@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -338,6 +339,62 @@ func TestViewerRuntimeSkillsUsesVisibilityAndDistinguishesUnreported(t *testing.
 	handler.HandleViewerRuntimeSkills(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("friend status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+}
+
+func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData(t *testing.T) {
+	handler, db := newBotSkillDefinitionTestHandler()
+	db.records[43].Definition.Skills = []types.BotSkillRef{{
+		Source: "skillhub", SkillID: "priv_owned", Version: "v_1", ContentHash: testSkillHash,
+	}}
+	handler.SetSkillMetadataResolver(func(_ context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+		if botUID != 43 || len(skills) != 1 || skills[0].SkillID != "priv_owned" {
+			t.Fatalf("unexpected metadata scope bot=%d skills=%+v", botUID, skills)
+		}
+		return map[string]string{botSkillMetadataKey("priv_owned", "v_1"): "cloud-html-artifact"}, nil
+	})
+
+	owner := httptest.NewRequest(http.MethodGet, "/api/bots/definition/skills?uid=43", nil)
+	owner = owner.WithContext(context.WithValue(owner.Context(), uidKey, int64(7)))
+	ownerRec := httptest.NewRecorder()
+	handler.HandleOwnerSkills(ownerRec, owner)
+	if ownerRec.Code != http.StatusOK || !strings.Contains(ownerRec.Body.String(), `"displayName":"cloud-html-artifact"`) {
+		t.Fatalf("owner status=%d body=%s", ownerRec.Code, ownerRec.Body.String())
+	}
+
+	db.friends[[2]int64{8, 43}] = true
+	viewer := httptest.NewRequest(http.MethodGet, "/api/agents/skills?uid=43", nil)
+	viewer = viewer.WithContext(context.WithValue(viewer.Context(), uidKey, int64(8)))
+	viewerRec := httptest.NewRecorder()
+	handler.HandleViewerSkills(viewerRec, viewer)
+	if viewerRec.Code != http.StatusOK || !strings.Contains(viewerRec.Body.String(), `"displayName":"cloud-html-artifact"`) {
+		t.Fatalf("viewer status=%d body=%s", viewerRec.Code, viewerRec.Body.String())
+	}
+	if strings.Contains(viewerRec.Body.String(), "contentHash") || strings.Contains(viewerRec.Body.String(), testSkillHash) {
+		t.Fatalf("viewer response leaked package identity: %s", viewerRec.Body.String())
+	}
+
+	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]string, error) {
+		return nil, errors.New("temporary upstream outage")
+	})
+	fallbackRec := httptest.NewRecorder()
+	handler.HandleOwnerSkills(fallbackRec, owner)
+	if fallbackRec.Code != http.StatusOK || strings.Contains(fallbackRec.Body.String(), "displayName") {
+		t.Fatalf("metadata outage should degrade gracefully: status=%d body=%s", fallbackRec.Code, fallbackRec.Body.String())
+	}
+
+	runtimeMetadataCalls := 0
+	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]string, error) {
+		runtimeMetadataCalls++
+		return nil, nil
+	})
+	runtime := httptest.NewRequest(http.MethodGet, "/api/bot/definition/skills", nil)
+	runtime = runtime.WithContext(context.WithValue(runtime.Context(), uidKey, int64(43)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeSkills(runtimeRec, runtime)
+	if runtimeRec.Code != http.StatusOK || runtimeMetadataCalls != 0 {
+		t.Fatalf("runtime sync must not depend on display metadata: status=%d calls=%d", runtimeRec.Code, runtimeMetadataCalls)
 	}
 }
 

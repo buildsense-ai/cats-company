@@ -15,14 +15,23 @@ const SKILLHUB_DEVICE_TOOLS = {
   workspace: 'skillhub.localWorkspace.get',
   share: 'skillhub.localSkill.share',
   finalize: 'skillhub.localSkill.finalize',
+  delete: 'skillhub.localSkill.delete',
   switchBot: 'skillhub.localBot.switch',
 };
 
-const SKILLHUB_DEVICE_CAPABILITIES = Object.values(SKILLHUB_DEVICE_TOOLS);
+// Keep existing desktop XiaoBa versions usable for read/share/finalize while
+// treating local deletion as an explicitly negotiated, newer capability.
+const SKILLHUB_DEVICE_CAPABILITIES = [
+  SKILLHUB_DEVICE_TOOLS.workspace,
+  SKILLHUB_DEVICE_TOOLS.share,
+  SKILLHUB_DEVICE_TOOLS.finalize,
+  SKILLHUB_DEVICE_TOOLS.switchBot,
+];
 const SKILLHUB_DEVICE_SCHEMAS = {
   [SKILLHUB_DEVICE_TOOLS.workspace]: 'xiaoba.skillhub.local_workspace.v1',
   [SKILLHUB_DEVICE_TOOLS.share]: 'xiaoba.skillhub.local_share.v1',
   [SKILLHUB_DEVICE_TOOLS.finalize]: 'xiaoba.skillhub.local_finalize.v1',
+  [SKILLHUB_DEVICE_TOOLS.delete]: 'xiaoba.skillhub.local_delete.v1',
   [SKILLHUB_DEVICE_TOOLS.switchBot]: 'xiaoba.skillhub.bot_switch.v1',
 };
 
@@ -88,12 +97,18 @@ function skillHubWorkspaceTimeoutError() {
 export function normalizeSkillHubDevices(response) {
   const devices = Array.isArray(response) ? response : (response?.devices || []);
   return devices.filter((device) => (
-    device?.active === true
+    device?.runtimeRole === 'desktop'
+    && device?.active === true
     && device?.routeConnected === true
     && device?.routable === true
     && Array.isArray(device?.capabilities)
     && SKILLHUB_DEVICE_CAPABILITIES.every((capability) => device.capabilities.includes(capability))
   ));
+}
+
+export function resolveAutomaticSkillHubDeviceID(devices) {
+  if (!Array.isArray(devices) || devices.length !== 1) return '';
+  return String(devices[0]?.deviceId || '');
 }
 
 export function normalizeOwnedBots(response, userUid) {
@@ -166,6 +181,15 @@ export function buildCurrentAgentSkills(formalSkills = [], localSkills = []) {
     });
   }
   return result;
+}
+
+export function resolveLocalSkillForAgentSkill(skill, localSkills = []) {
+  if (skill?.localDetails?.localSkillId) return skill.localDetails;
+  if (!skill?.localOnly) return null;
+  const localSkillId = String(skill?.skillId || '').replace(/^local:/, '').trim();
+  if (!localSkillId) return null;
+  return (Array.isArray(localSkills) ? localSkills : [])
+    .find(candidate => String(candidate?.localSkillId || '').trim() === localSkillId) || null;
 }
 
 function selectedBotStorageKey(userUid) {
@@ -502,7 +526,12 @@ export function resolveSharedSkillHubMetadata(shared, publishedVersion) {
   };
 }
 
-export function assertSkillHubDeviceResult(result, { toolName, botUID, reference } = {}) {
+export function assertSkillHubDeviceResult(result, {
+  toolName,
+  botUID,
+  reference,
+  localSkillID,
+} = {}) {
   const expectedSchema = SKILLHUB_DEVICE_SCHEMAS[toolName];
   if (!expectedSchema || result?.schema !== expectedSchema) {
     const error = new Error('本地 XiaoBa 返回了不兼容的 SkillHub 协议，请更新 XiaoBa 后重试。');
@@ -529,6 +558,14 @@ export function assertSkillHubDeviceResult(result, { toolName, botUID, reference
   )) {
     const error = new Error('本地 XiaoBa 完成了其他 Skill 版本的对齐，已停止显示成功状态。');
     error.code = 'skillhub_device_finalize_mismatch';
+    throw error;
+  }
+  if (toolName === SKILLHUB_DEVICE_TOOLS.delete && (
+    String(result?.local_skill_id || '') !== String(localSkillID || '')
+    || result?.deleted !== true
+  )) {
+    const error = new Error('本地 XiaoBa 未确认删除当前选中的 Skill，已停止显示成功状态。');
+    error.code = 'skillhub_device_delete_mismatch';
     throw error;
   }
   return result;
@@ -686,18 +723,21 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     value: String(botUID(bot)),
     label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
   })), [bots]);
-  const loadDevices = useCallback(async () => {
+  const loadDevices = useCallback(async (options = {}) => {
     setLoadingDevices(true);
     try {
       const capable = normalizeSkillHubDevices(await api.getDevices());
+      const next = resolveAutomaticSkillHubDeviceID(capable);
       setDevices(capable);
-      setSelectedDeviceID((current) => {
-        const next = current && capable.some((device) => String(device.deviceId || '') === current)
-          ? current
-          : (capable.length === 1 ? String(capable[0].deviceId || '') : '');
-        selectedDeviceIDRef.current = next;
-        return next;
-      });
+      if (
+        options.allowBotSwitchOnChange === true
+        && next
+        && next !== selectedDeviceIDRef.current
+      ) {
+        requestedBotSwitchRef.current = selectedBotUIDRef.current;
+      }
+      selectedDeviceIDRef.current = next;
+      setSelectedDeviceID(next);
       return capable;
     } catch (error) {
       setDevices([]);
@@ -1014,6 +1054,22 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     }
   }, [selectedDeviceID, user?.uid]);
 
+  const refreshLocalWorkspace = useCallback(async () => {
+    const previousDeviceID = selectedDeviceIDRef.current;
+    const capable = await loadDevices({ allowBotSwitchOnChange: true });
+    const deviceID = resolveAutomaticSkillHubDeviceID(capable);
+    if (!deviceID) return;
+    // A newly discovered desktop changes selectedDeviceID and the normal
+    // effect below will load it once. Only refresh directly when the route did
+    // not change, avoiding duplicate RPCs on offline -> online recovery.
+    if (deviceID !== previousDeviceID) return;
+    await loadLocalWorkspace(
+      selectedBotUIDRef.current,
+      deviceID,
+      { allowBotSwitch: true },
+    );
+  }, [loadDevices, loadLocalWorkspace]);
+
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Agent 列表'));
     searchCatalogue('').catch(() => {});
@@ -1160,22 +1216,70 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const removeSkill = async (skillID) => {
     if (!skillID || selectedAgentIsFriend || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
+    const requestedDeviceID = selectedDeviceIDRef.current;
     const agentName = botLabel(selectedAgent);
-    const skillName = addedSkillPresentationByID.get(skillID)?.label || skillID;
+    const displayedSkill = displaySkills.find(skill => skill.skillId === skillID);
+    const localSkill = resolveLocalSkillForAgentSkill(displayedSkill, localSkills);
+    const removesDefinition = Boolean(displayedSkill?.formal);
+    const removesLocal = Boolean(localSkill?.localSkillId);
+    const selectedDevice = devices.find(device => String(device?.deviceId || '') === requestedDeviceID);
+    const supportsLocalDelete = selectedDevice?.capabilities?.includes(SKILLHUB_DEVICE_TOOLS.delete) === true;
+    const skillName = addedSkillPresentationByID.get(skillID)?.label || localSkill?.name || skillID;
+    if (removesLocal && (!requestedDeviceID || !supportsLocalDelete)) {
+      setDefinitionError('当前本地 XiaoBa 尚不支持安全删除本地能力，请更新到最新 main 并重启后再试。');
+      return;
+    }
     const confirmed = await feedback.confirm({
-      title: `从“${agentName}”移除“${skillName}”？`,
-      message: '该 Agent 将无法继续调用此能力。技能本身不会从 SkillHub 删除。',
-      confirmLabel: '从 Agent 移除',
+      title: removesLocal
+        ? `删除“${skillName}”的本地能力？`
+        : `从“${agentName}”移除“${skillName}”？`,
+      message: removesLocal
+        ? removesDefinition
+          ? `将从 Agent“${agentName}”移除此能力，并永久删除当前 XiaoBa 工作区中的本地 Skill 文件。SkillHub 中的团队版本不会被删除。`
+          : '将永久删除当前 XiaoBa 工作区中的本地 Skill 文件；此操作不会删除 SkillHub 中的团队版本。'
+        : '该 Agent 将无法继续调用此能力。技能本身不会从 SkillHub 删除。',
+      confirmLabel: removesLocal ? '删除本地能力' : '从 Agent 移除',
       tone: 'danger',
     });
     if (!confirmed || requestedBotUID !== selectedBotUIDRef.current) return;
     setSkillAction({ type: 'remove', skillId: skillID });
     setActionNotice('');
+    setDefinitionError('');
+    let definitionRemoved = false;
     try {
-      const saved = await saveSkills(definition.skills.filter((skill) => skill.skillId !== skillID));
-      if (saved?.ok && requestedBotUID === selectedBotUIDRef.current) {
-        setActionNotice(`已从 Agent“${agentName}”移除 ${skillName}，不会影响其他 Agent。`);
+      if (removesDefinition) {
+        const saved = await saveSkills(definition.skills.filter((skill) => skill.skillId !== skillID));
+        if (!saved?.ok) return;
+        definitionRemoved = true;
       }
+      if (removesLocal) {
+        assertSkillHubDeviceResult(await requestSkillHubDeviceTool({
+          deviceId: requestedDeviceID,
+          ownerUserId: user?.uid,
+          toolName: SKILLHUB_DEVICE_TOOLS.delete,
+          payload: {
+            bot_uid: requestedBotUID,
+            local_skill_id: localSkill.localSkillId,
+          },
+          timeoutMs: 30_000,
+        }), {
+          toolName: SKILLHUB_DEVICE_TOOLS.delete,
+          botUID: requestedBotUID,
+          localSkillID: localSkill.localSkillId,
+        });
+        await loadLocalWorkspace(requestedBotUID, requestedDeviceID);
+      }
+      if (requestedBotUID === selectedBotUIDRef.current) {
+        setActionNotice(removesLocal
+          ? `已删除 ${skillName} 的本地 Skill${definitionRemoved ? `，并从 Agent“${agentName}”移除` : ''}。`
+          : `已从 Agent“${agentName}”移除 ${skillName}，不会影响其他 Agent。`);
+      }
+    } catch (error) {
+      if (requestedBotUID !== selectedBotUIDRef.current) return;
+      setDefinitionError(definitionRemoved
+        ? `已从 Agent“${agentName}”移除 ${skillName}，但本地 Skill 删除失败：${error?.message || '请刷新后重试删除本地能力。'}`
+        : error?.message || '删除本地能力失败，未更改 Agent 当前配置。');
+      if (removesLocal) await loadLocalWorkspace(requestedBotUID, requestedDeviceID);
     } finally {
       if (requestedBotUID === selectedBotUIDRef.current) setSkillAction(null);
     }
@@ -1468,11 +1572,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     onQueryChange={setQuery}
     onRefreshDefinition={() => loadDefinition()}
     onRefreshRuntimeSkills={() => loadRuntimeSkills()}
-    onRefreshLocal={() => loadLocalWorkspace(
-      selectedBotUIDRef.current,
-      selectedDeviceIDRef.current,
-      { allowBotSwitch: true },
-    )}
+    onRefreshLocal={refreshLocalWorkspace}
     onRemoveSkill={removeSkill}
     onSearch={searchCatalogue}
     onSelectAgent={(nextBotUID) => {
@@ -1481,12 +1581,6 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;
       setSelectedBotUID(nextBotUID);
-    }}
-    onSelectDevice={(deviceID) => {
-      selectedDeviceIDRef.current = deviceID;
-      localRequestRef.current += 1;
-      if (!deviceID) setLocalSkillsError('');
-      setSelectedDeviceID(deviceID);
     }}
     onShareLocalSkill={shareLocalSkill}
     query={query}

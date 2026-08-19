@@ -39,14 +39,17 @@ type botModelOwnershipStore interface {
 }
 
 type BotModelConfigHandler struct {
-	owners            botModelOwnershipStore
-	models            store.BotModelConfigStore
-	relayAdmin        *RelayAdminClient
-	secretCodec       *botModelSecretCodec
-	secretCodecError  error
-	rolloutConfigured bool
-	publicEnabled     bool
-	testUIDs          map[int64]bool
+	owners                   botModelOwnershipStore
+	models                   store.BotModelConfigStore
+	relayAdmin               *RelayAdminClient
+	secretCodec              *botModelSecretCodec
+	secretCodecError         error
+	rolloutConfigured        bool
+	publicEnabled            bool
+	testUIDs                 map[int64]bool
+	commercialStore          commercialQuotaSummaryStore
+	commercialEnforceEnabled bool
+	commercialEnforceUIDs    map[int64]bool
 }
 
 type botModelCatalogItem struct {
@@ -58,6 +61,8 @@ type botModelCatalogItem struct {
 	ContextWindowTokens    int64              `json:"context_window_tokens"`
 	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
 	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
+	Available              bool               `json:"available"`
+	UnavailableReason      string             `json:"unavailable_reason,omitempty"`
 	Quota                  *relayUsageSummary `json:"quota,omitempty"`
 }
 
@@ -138,6 +143,19 @@ func (h *BotModelConfigHandler) SetRelayUsageClient(admin *RelayAdminClient) {
 	if h != nil {
 		h.relayAdmin = admin
 	}
+}
+
+func (h *BotModelConfigHandler) SetCommercialQuotaSource(store commercialQuotaSummaryStore, enforceEnabled bool, enforceUIDs map[int64]bool) {
+	if h == nil {
+		return
+	}
+	h.commercialStore = store
+	h.commercialEnforceEnabled = enforceEnabled
+	h.commercialEnforceUIDs = copyCommercialUIDSet(enforceUIDs)
+}
+
+func (h *BotModelConfigHandler) commercialQuotaEnforced(uid int64) bool {
+	return h != nil && h.commercialStore != nil && uid > 0 && (h.commercialEnforceEnabled || h.commercialEnforceUIDs[uid])
 }
 
 // SetRollout supports either a public launch or an owner allowlist.
@@ -249,6 +267,21 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 			model, reasoning, ok := normalizeBotModelSelection(req.ModelID, req.ReasoningEffort)
 			if !ok {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported model or reasoning effort"})
+				return
+			}
+			allowed, quotaErr := h.catalogModelAllowed(ownerUID, model.ID)
+			if quotaErr != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"error": "commercial quota is unavailable",
+					"code":  "model_entitlement_unavailable",
+				})
+				return
+			}
+			if !allowed {
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "model is not included in the current plan",
+					"code":  "model_not_in_plan",
+				})
 				return
 			}
 			selectionApplied := configured && config.Kind == botModelKindCatalog &&
@@ -617,13 +650,17 @@ func (h *BotModelConfigHandler) ownerConfigResponse(
 	if !botModelRuntimeSupported(config) {
 		response["runtime_unavailable_reason"] = botModelRuntimeUnavailableReason
 	}
-	catalog, quotaError := h.catalogWithUsage(ctx, ownerUID, includeUsage)
+	currentCatalogModelID := ""
+	normalized := botModelConfigWithDefaults(config)
+	if botModelConfigIsConfigured(config) && normalized.Kind == botModelKindCatalog {
+		currentCatalogModelID = normalized.ModelID
+	}
+	catalog, quotaError := h.catalogWithUsageForCurrent(ctx, ownerUID, includeUsage, currentCatalogModelID)
 	response["models"] = catalog
 	response["custom_supported"] = h.secretCodec != nil
 	if quotaError != "" {
 		response["quota_error"] = quotaError
 	}
-	normalized := botModelConfigWithDefaults(config)
 	if normalized.CustomCiphertext != "" {
 		custom, err := h.decryptCustomModel(botUID, normalized.CustomCiphertext)
 		if err != nil {
@@ -663,8 +700,34 @@ func (h *BotModelConfigHandler) runtimeConfigResponse(botUID int64, config *type
 }
 
 func (h *BotModelConfigHandler) catalogWithUsage(ctx context.Context, ownerUID int64, includeUsage bool) ([]botModelCatalogItem, string) {
+	return h.catalogWithUsageForCurrent(ctx, ownerUID, includeUsage, "")
+}
+
+func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
+	ctx context.Context,
+	ownerUID int64,
+	includeUsage bool,
+	currentModelID string,
+) ([]botModelCatalogItem, string) {
 	catalog := make([]botModelCatalogItem, len(botModelCatalog))
 	copy(catalog, botModelCatalog)
+	for i := range catalog {
+		catalog[i].Available = true
+		catalog[i].UnavailableReason = ""
+		catalog[i].Quota = nil
+	}
+
+	var commercialSummary *types.CommercialSummary
+	if h.commercialQuotaEnforced(ownerUID) {
+		var summaryErr error
+		commercialSummary, summaryErr = h.commercialStore.GetCommercialSummary(ownerUID)
+		if summaryErr != nil {
+			return catalogWithUnavailableCurrent(catalog, currentModelID, "套餐额度暂时无法确认"), "套餐共享额度暂时无法同步"
+		}
+		if commercialSummaryHasQuota(commercialSummary) {
+			catalog = catalogForCommercialSummary(catalog, commercialSummary, currentModelID)
+		}
+	}
 	if !includeUsage {
 		return catalog, ""
 	}
@@ -675,11 +738,83 @@ func (h *BotModelConfigHandler) catalogWithUsage(ctx context.Context, ownerUID i
 	if err != nil {
 		return catalog, "额度暂时无法同步"
 	}
+	if h.commercialQuotaEnforced(ownerUID) {
+		if !commercialSummaryHasQuota(commercialSummary) {
+			for i := range catalog {
+				usage := buildRelayUsageResponse(user, catalog[i].ID)
+				catalog[i].Quota = usage.Summary
+			}
+			return catalog, "套餐共享额度迁移中，暂按原额度显示"
+		}
+		if user == nil || user.Limits.MonthlyBudget.MaxLimit <= 0 {
+			return catalog, "套餐共享额度同步中"
+		}
+		for i := range catalog {
+			if catalog[i].Available {
+				catalog[i].Quota = buildRelaySharedUsageResponse(user, catalog[i].ID).Summary
+			}
+		}
+		return catalog, ""
+	}
 	for i := range catalog {
 		usage := buildRelayUsageResponse(user, catalog[i].ID)
 		catalog[i].Quota = usage.Summary
 	}
 	return catalog, ""
+}
+
+func (h *BotModelConfigHandler) catalogModelAllowed(ownerUID int64, modelID string) (bool, error) {
+	if !h.commercialQuotaEnforced(ownerUID) {
+		return true, nil
+	}
+	summary, err := h.commercialStore.GetCommercialSummary(ownerUID)
+	if err != nil {
+		return false, err
+	}
+	if !commercialSummaryHasQuota(summary) {
+		return true, nil
+	}
+	return commercialQuotaModelAllowed(summary, modelID), nil
+}
+
+func catalogForCommercialSummary(
+	catalog []botModelCatalogItem,
+	summary *types.CommercialSummary,
+	currentModelID string,
+) []botModelCatalogItem {
+	current := normalizeRelayModelName(currentModelID)
+	filtered := make([]botModelCatalogItem, 0, len(catalog))
+	for _, item := range catalog {
+		if commercialQuotaModelAllowed(summary, item.ID) {
+			filtered = append(filtered, item)
+			continue
+		}
+		if current != "" && normalizeRelayModelName(item.ID) == current {
+			item.Available = false
+			item.UnavailableReason = "当前套餐已不包含该模型，切换后不可再选"
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func catalogWithUnavailableCurrent(
+	catalog []botModelCatalogItem,
+	currentModelID, reason string,
+) []botModelCatalogItem {
+	current := normalizeRelayModelName(currentModelID)
+	if current == "" {
+		return nil
+	}
+	for _, item := range catalog {
+		if normalizeRelayModelName(item.ID) != current {
+			continue
+		}
+		item.Available = false
+		item.UnavailableReason = reason
+		return []botModelCatalogItem{item}
+	}
+	return nil
 }
 
 func (h *BotModelConfigHandler) prepareCustomModelUpdate(
