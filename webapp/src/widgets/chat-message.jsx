@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -38,6 +38,12 @@ const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-orig
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
 const trustedArtifactPreviewPayloads = new WeakSet();
+
+function imageGalleryItemId(message, blockIndex, payload) {
+  const src = payload?.url || payload?.thumbnail || '';
+  if (!src) return '';
+  return `${message?.id || message?.seq_id || 'message'}:${blockIndex}:${src}`;
+}
 
 function remoteArtifactPreviewKey(file, descriptor) {
   if (!descriptor?.isRemoteArtifact || !file?.artifact_id || !descriptor.url) return '';
@@ -956,7 +962,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
@@ -977,7 +983,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   }, [effectiveWorkingMessages, storedBlocks]);
   const workingPlanComplete = isPlanComplete(latestWorkingPlan(workingBlocks));
   const richBlocks = useMemo(() => (
-    storedBlocks.filter((block) => ['image', 'file', 'audio', 'voice'].includes(block.type))
+    storedBlocks
+      .map((block, index) => ({ ...block, __imageBlockIndex: index }))
+      .filter((block) => ['image', 'file', 'audio', 'voice'].includes(block.type))
   ), [storedBlocks]);
   const storedTextBlocks = useMemo(() => (
     storedBlocks.filter(
@@ -1059,6 +1067,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             knownArtifacts={knownArtifacts}
             onPreviewFile={onPreviewFile}
             activePreviewFile={activePreviewFile}
+            imageGallery={imageGallery}
+            onOpenImage={onOpenImage}
           />
         </div>
       );
@@ -1077,6 +1087,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       content={parsed}
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
+      imageGallery={imageGallery}
+      onOpenImage={onOpenImage}
+      imageId={imageGalleryItemId(message, 0, parsed?.payload)}
     />
   ) : (
     <TextContent
@@ -1216,6 +1229,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                         content={block}
                         onPreviewFile={onPreviewFile}
                         activePreviewFile={activePreviewFile}
+                        imageGallery={imageGallery}
+                        onOpenImage={onOpenImage}
+                        imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                       />
                     ))}
                   </div>
@@ -1232,6 +1248,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       content={block}
                       onPreviewFile={onPreviewFile}
                       activePreviewFile={activePreviewFile}
+                      imageGallery={imageGallery}
+                      onOpenImage={onOpenImage}
+                      imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                     />
                   ))}
                   {renderedMessageText}
@@ -1241,6 +1260,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       content={block}
                       onPreviewFile={onPreviewFile}
                       activePreviewFile={activePreviewFile}
+                      imageGallery={imageGallery}
+                      onOpenImage={onOpenImage}
+                      imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                     />
                   ))}
                   {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
@@ -1364,7 +1386,9 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
     prevProps.activePreviewFile === nextProps.activePreviewFile &&
-    prevProps.knownArtifacts === nextProps.knownArtifacts;
+    prevProps.knownArtifacts === nextProps.knownArtifacts &&
+    prevProps.imageGallery === nextProps.imageGallery &&
+    prevProps.onOpenImage === nextProps.onOpenImage;
 });
 
 export default ChatMessage;
@@ -1635,10 +1659,17 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   );
 }
 
-function RichContent({ content, onPreviewFile, activePreviewFile }) {
+function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery = null, onOpenImage, imageId = '' }) {
   switch (content.type) {
     case 'image':
-      return <ImageContent payload={content.payload} />;
+      return (
+        <ImageContent
+          payload={content.payload}
+          imageGallery={imageGallery}
+          onOpenImage={onOpenImage}
+          imageId={imageId}
+        />
+      );
     case 'file':
     case 'audio':
     case 'voice':
@@ -1652,7 +1683,7 @@ function RichContent({ content, onPreviewFile, activePreviewFile }) {
   }
 }
 
-function ImageContent({ payload }) {
+function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' }) {
   const [expanded, setExpanded] = useState(false);
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
@@ -1696,6 +1727,48 @@ function ImageContent({ payload }) {
 
   if (!payload) return null;
 
+  const galleryMode = Array.isArray(imageGallery) && imageGallery.length > 0 && typeof onOpenImage === 'function';
+  const openPreview = () => {
+    if (galleryMode) {
+      const matchingItem = imageGallery.find((item) => (
+        item?.id === imageId
+        || item?.payload?.url === payload?.url
+        || item?.payload?.thumbnail === payload?.thumbnail
+      ));
+      onOpenImage(matchingItem?.id || imageId || '', triggerRef.current, payload);
+      return;
+    }
+    setExpanded(true);
+  };
+
+  if (galleryMode) {
+    return (
+      <div className="oc-rich-image">
+        <button
+          aria-label={`预览图片 ${payload.name || ''}`.trim()}
+          className="oc-rich-image-trigger"
+          onClick={openPreview}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            openPreview();
+          }}
+          ref={triggerRef}
+          type="button"
+        >
+          <img
+            src={resolveMediaURL(src)}
+            alt={payload.name || 'image'}
+            className="oc-rich-image-thumb"
+            draggable={canDragChatAttachment({ type: 'image', payload })}
+            onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'image', payload })}
+            onDragEnd={clearChatAttachmentDrag}
+          />
+        </button>
+      </div>
+    );
+  }
+
   const preview = expanded ? createPortal(
     <div
       aria-label={`图片预览 ${payload.name || ''}`.trim()}
@@ -1728,11 +1801,11 @@ function ImageContent({ payload }) {
       <button
         aria-label={`预览图片 ${payload.name || ''}`.trim()}
         className="oc-rich-image-trigger"
-        onClick={() => setExpanded(true)}
+        onClick={openPreview}
         onKeyDown={(event) => {
           if (event.key !== 'Enter' && event.key !== ' ') return;
           event.preventDefault();
-          setExpanded(true);
+          openPreview();
         }}
         ref={triggerRef}
         type="button"

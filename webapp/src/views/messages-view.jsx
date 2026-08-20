@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
-import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
+import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
@@ -10,6 +10,7 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
@@ -181,9 +182,26 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
-function isStructuredMentionSelectionIntact(text, target, start, end) {
-  const token = target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${target}`;
-  if (start < 0 || end > text.length || text.slice(start, end) !== token) return false;
+function imageGalleryItemId(message, blockIndex, payload) {
+  const src = payload?.url || payload?.thumbnail || '';
+  if (!src) return '';
+  return `${message?.id || message?.seq_id || 'message'}:${blockIndex}:${src}`;
+}
+
+function structuredMentionToken(selection) {
+  const target = typeof selection?.target === 'string' ? selection.target : '';
+  if (target === STRUCTURED_MENTION_ALL) return '@所有人';
+  const label = typeof selection?.label === 'string' && selection.label.trim()
+    ? selection.label.trim()
+    : target;
+  return `@${label}`;
+}
+
+function isStructuredMentionSelectionIntact(text, selection) {
+  const start = Number.isInteger(selection?.start) ? selection.start : -1;
+  const end = Number.isInteger(selection?.end) ? selection.end : -1;
+  const token = structuredMentionToken(selection);
+  if (start < 0 || end <= start || end > text.length || text.slice(start, end) !== token) return false;
   const trailingCharacter = text.slice(end, end + 1);
   return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
 }
@@ -213,6 +231,9 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
   const nextChangedText = next.slice(prefixLength, nextSuffixStart);
   return selections.flatMap((selection) => {
     const target = typeof selection?.target === 'string' ? selection.target : '';
+    const label = typeof selection?.label === 'string' && selection.label.trim()
+      ? selection.label.trim()
+      : target;
     let start = Number.isInteger(selection?.start) ? selection.start : -1;
     let end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
@@ -233,8 +254,13 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
       return [];
     }
 
-    if (!isStructuredMentionSelectionIntact(next, target, start, end)) return [];
-    return [{ target, start, end }];
+    const nextSelection = {
+      target,
+      ...(selection?.label ? { label: target === STRUCTURED_MENTION_ALL ? '所有人' : label } : {}),
+      start,
+      end,
+    };
+    return isStructuredMentionSelectionIntact(next, nextSelection) ? [nextSelection] : [];
   });
 }
 
@@ -247,8 +273,27 @@ export function collectStructuredMentionTargets(text, selections = []) {
     const end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
     if (start < 0 || end <= start) return [];
-    return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
+    return isStructuredMentionSelectionIntact(value, selection) ? [target] : [];
   }))];
+}
+
+export function canonicalizeStructuredMentionText(text, selections = []) {
+  const value = typeof text === 'string' ? text : '';
+  if (!Array.isArray(selections) || selections.length === 0) return value;
+
+  return selections
+    .filter((selection) => {
+      const target = typeof selection?.target === 'string' ? selection.target : '';
+      return (target === STRUCTURED_MENTION_ALL || /^usr\d+$/u.test(target))
+        && isStructuredMentionSelectionIntact(value, selection);
+    })
+    .sort((left, right) => right.start - left.start)
+    .reduce((result, selection) => {
+      const canonicalToken = selection.target === STRUCTURED_MENTION_ALL
+        ? '@所有人'
+        : `@${selection.target}`;
+      return `${result.slice(0, selection.start)}${canonicalToken}${result.slice(selection.end)}`;
+    }, value);
 }
 
 function historyMessageID(message) {
@@ -280,6 +325,37 @@ function artifactURLsInMessage(message) {
     .sort();
 }
 
+function artifactNotificationURL(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    parsed.hash = '';
+    parsed.search = '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '/') || '/';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function artifactPublishURLsInMessage(message) {
+  const textBlocks = Array.isArray(message?.content_blocks)
+    ? message.content_blocks.filter((block) => block?.type === 'text').map((block) => block.text || '')
+    : [];
+  const text = [typeof message?.content === 'string' ? message.content : '', ...textBlocks].join('\n');
+  if (!/(发布|共享到云端|上传到云端)/u.test(text)) return [];
+  return artifactURLsInMessage(message);
+}
+
+function artifactPublishCandidates(messages) {
+  return (messages || []).flatMap((message, index) => {
+    const messageKey = String(message?.id || message?.seq_id || message?.created_at || index);
+    return artifactPublishURLsInMessage(message).map((url) => ({
+      key: `${messageKey}|${artifactNotificationURL(url)}`,
+      url: artifactNotificationURL(url),
+    })).filter((candidate) => candidate.url);
+  });
+}
+
 function cacheHistoryPage(cache, key, entry) {
   cache.delete(key);
   cache.set(key, entry);
@@ -307,6 +383,7 @@ export default function MessagesView({
   messageLocationRequest,
   onBackToSearch,
 }) {
+  const feedback = useFeedback();
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [pendingAttachments, setPendingAttachments] = useState([]);
@@ -322,6 +399,7 @@ export default function MessagesView({
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [previewImageId, setPreviewImageId] = useState('');
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
   const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
@@ -375,8 +453,32 @@ export default function MessagesView({
   const [conversationShareError, setConversationShareError] = useState('');
   const [conversationShareManualSaveAvailable, setConversationShareManualSaveAvailable] = useState(false);
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
+  const imageGallery = useMemo(() => {
+    const result = [];
+    (messages || []).forEach((message, messageIndex) => {
+      const blocks = contentBlocksFromMessage(message);
+      blocks.forEach((block, blockIndex) => {
+        if (block?.type !== 'image' || !block?.payload) return;
+        const payload = block.payload;
+        const src = payload.url || payload.thumbnail;
+        if (!src) return;
+        const id = imageGalleryItemId(message, blockIndex, payload) || `${message.id || message.seq_id || `message-${messageIndex}`}:${blockIndex}:${src}`;
+        result.push({ id, payload });
+      });
+      if (blocks.length === 0) {
+        const structured = parseStructuredMessageContent(message?.content);
+        if (structured?.type === 'image' && structured.payload) {
+          const payload = structured.payload;
+          const src = payload.url || payload.thumbnail;
+          if (src) result.push({ id: imageGalleryItemId(message, 0, payload), payload });
+        }
+      }
+    });
+    return result;
+  }, [messages]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const bottomRef = useRef(null);
+  const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
   const peerTypingTimer = useRef(null);
@@ -403,11 +505,18 @@ export default function MessagesView({
   const historyLoadingRef = useRef(false);
   const historyAbortControllerRef = useRef(null);
   const olderHistoryAbortControllerRef = useRef(null);
+  const galleryHistoryLoadingRef = useRef(false);
   const autoHistoryPageCountRef = useRef(0);
   const groupMembersRequestRef = useRef(0);
   const peerProfileRequestRef = useRef(0);
   const artifactRegistryRequestRef = useRef(0);
   const activeArtifactAgentUIDRef = useRef(0);
+  const artifactShareNotificationRef = useRef({
+    topic: '',
+    initialized: false,
+    observed: new Set(),
+    pending: new Map(),
+  });
   const historyCacheRef = useRef(new Map());
   const groupProfileCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
@@ -1006,15 +1115,8 @@ export default function MessagesView({
           if (prev.some((m) => m.id === serverMsg.id)) return prev;
           // If this is our own message echoed back, replace the optimistic entry
           if (sameUID(fromUid, user.uid)) {
-            const serverContentKey = getComparableContent(serverMsg.content);
-            const pendingIdx = prev.findIndex((m) => (
-              m._pending && getComparableContent(m.content) === serverContentKey
-            ));
-            if (pendingIdx !== -1) {
-              const next = [...prev];
-              next[pendingIdx] = serverMsg;
-              return next;
-            }
+            const mergedEcho = mergeOwnServerEcho(prev, serverMsg, user.uid);
+            if (mergedEcho) return mergedEcho;
           }
           return mergeMessages(prev, [serverMsg]);
         });
@@ -1349,6 +1451,22 @@ export default function MessagesView({
     }
   }, [topic, user.uid]);
 
+  const loadAllHistoryForImageGallery = useCallback(async () => {
+    if (galleryHistoryLoadingRef.current || !hasMoreHistoryRef.current) return;
+    galleryHistoryLoadingRef.current = true;
+    try {
+      let pageCount = 0;
+      while (hasMoreHistoryRef.current && pageCount < 100) {
+        const beforeID = historyBeforeIDRef.current;
+        await loadOlderHistory({ automatic: false });
+        pageCount += 1;
+        if (historyBeforeIDRef.current === beforeID) break;
+      }
+    } finally {
+      galleryHistoryLoadingRef.current = false;
+    }
+  }, [loadOlderHistory]);
+
   useEffect(() => {
     const el = timelineRef.current;
     if (!el || refreshingHistory || !hasMoreHistory || loadingOlder || historyError
@@ -1554,6 +1672,9 @@ export default function MessagesView({
     const text = initialText;
     const originalReplyTo = replyTo;
     const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const protocolText = isGroup
+      ? canonicalizeStructuredMentionText(originalInput, originalStructuredMentions).trim()
+      : text;
     const mentions = isGroup
       ? collectStructuredMentionTargets(input, originalStructuredMentions)
       : [];
@@ -1574,15 +1695,15 @@ export default function MessagesView({
       }
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
-      const contentBlocks = buildAtomicContentBlocks(text, attachmentsToSend);
+      const contentBlocks = buildAtomicContentBlocks(protocolText, attachmentsToSend);
       const displayContent = text || summarizeAttachments(attachmentsToSend);
       const payload = attachmentsToSend.length > 0
         ? {
             type: 'text',
-            content: displayContent,
+            content: protocolText || summarizeAttachments(attachmentsToSend),
             content_blocks: contentBlocks,
           }
-        : text;
+        : protocolText;
       const artifactContext = switchesTopic
         ? { artifactRef: null, pageContext: null }
         : await captureArtifactMessageContext();
@@ -1618,6 +1739,7 @@ export default function MessagesView({
           reply_to: currentReplyTo ? currentReplyTo.id : 0,
           created_at: new Date().toISOString(),
           _pending: true,
+          _canonical_content: protocolText,
         }]));
       }
 
@@ -1848,7 +1970,10 @@ export default function MessagesView({
     const range = mentionRangeRef.current;
     if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
     const target = member.mention_target || `usr${member.user_id}`;
-    const mention = target === STRUCTURED_MENTION_ALL ? '@所有人 ' : `@${target} `;
+    const label = target === STRUCTURED_MENTION_ALL
+      ? '所有人'
+      : (member.display_name || member.username || target);
+    const mention = `@${label} `;
     const newText = input.slice(0, range.start) + mention + input.slice(range.end);
     const reconciledSelections = reconcileStructuredMentionSelections(
       input,
@@ -1857,7 +1982,7 @@ export default function MessagesView({
     );
     updateStructuredMentionDraft(topic, [
       ...reconciledSelections,
-      { target, start: range.start, end: range.start + mention.length - 1 },
+      { target, label, start: range.start, end: range.start + mention.length - 1 },
     ]);
     setInput(newText);
     updateComposerDraft(topic, newText);
@@ -2317,6 +2442,52 @@ export default function MessagesView({
   const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
     ? artifactRegistryState.artifacts
     : [];
+
+  useEffect(() => {
+    if (!historyLoaded || activeArtifactAgentUID <= 0) return;
+
+    let state = artifactShareNotificationRef.current;
+    if (state.topic !== topic) {
+      state = {
+        topic,
+        initialized: false,
+        observed: new Set(),
+        pending: new Map(),
+      };
+      artifactShareNotificationRef.current = state;
+    }
+
+    const candidates = artifactPublishCandidates(messages);
+    if (!state.initialized) {
+      state.observed = new Set(candidates.map((candidate) => candidate.key));
+      state.initialized = true;
+      return;
+    }
+
+    candidates.forEach((candidate) => {
+      if (state.observed.has(candidate.key)) return;
+      state.observed.add(candidate.key);
+      state.pending.set(candidate.key, {
+        url: candidate.url,
+        registryRevision: artifactRegistryRevision,
+      });
+    });
+    while (state.pending.size > 32) {
+      state.pending.delete(state.pending.keys().next().value);
+    }
+
+    const confirmedURLs = new Set(
+      knownArtifacts.map((artifact) => artifactNotificationURL(artifact?.url)).filter(Boolean),
+    );
+    let shared = false;
+    state.pending.forEach((pending, key) => {
+      if (artifactRegistryRevision <= pending.registryRevision || !confirmedURLs.has(pending.url)) return;
+      state.pending.delete(key);
+      shared = true;
+    });
+    if (shared) feedback.notify({ tone: 'success', message: '已共享内容到云端' });
+  }, [activeArtifactAgentUID, artifactRegistryRevision, feedback, historyLoaded, knownArtifacts, messages, topic]);
+
   const activePreviewArtifactRef = artifactRefFromPreviewFile(previewFile, activeArtifactAgentUID);
   const activePreviewArtifactId = activePreviewArtifactRef?.id || '';
   const activePreviewArtifactVersion = Number(activePreviewArtifactRef?.displayed_version || 0);
@@ -2832,7 +3003,7 @@ export default function MessagesView({
 
     flushCurrentWorking();
 
-    return reorderAssistantTurnGroups(groups);
+    return reconcileRenderedGroupConsecutiveness(reorderAssistantTurnGroups(groups));
   }, [
     availableAgentByUID,
     inferredAgentUIDs,
@@ -3322,6 +3493,27 @@ export default function MessagesView({
     }
   };
 
+  const openImagePreview = useCallback((imageId, trigger, payload = null) => {
+    const resolvedItem = imageGallery.find((item) => item.id === imageId)
+      || imageGallery.find((item) => (
+        payload?.url && item?.payload?.url === payload.url
+      ))
+      || imageGallery.find((item) => (
+        payload?.thumbnail && item?.payload?.thumbnail === payload.thumbnail
+      ));
+    if (!resolvedItem) return;
+    previewImageTriggerRef.current = trigger || null;
+    setPreviewImageId(resolvedItem.id);
+    void loadAllHistoryForImageGallery();
+  }, [imageGallery, loadAllHistoryForImageGallery]);
+
+  const closeImagePreview = useCallback(() => {
+    setPreviewImageId('');
+  }, []);
+
+  const previewImageIndex = imageGallery.findIndex((item) => item.id === previewImageId);
+  const previewImage = previewImageIndex >= 0 ? imageGallery[previewImageIndex] : null;
+
   return (
     <>
       <div
@@ -3447,12 +3639,12 @@ export default function MessagesView({
             if (!showThinking) return null;
             return (
               <div
-                key={group.messages[0].id || i}
+                key={`working:${group.messages[0].id || 'group'}:${i}`}
                 className={`oc-working-group cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && group.messages.some((message) => historyMessageID(message) === highlightedMessageId) ? ' cc-message-search-hit' : ''}`}
               >
-                {group.messages.map((message) => (
+                {group.messages.map((message, messageIndex) => (
                   <span
-                    key={`search-anchor-${historyMessageID(message)}`}
+                    key={`search-anchor-${historyMessageID(message)}-${messageIndex}`}
                     className="cc-message-search-anchor"
                     data-search-message-id={historyMessageID(message) || undefined}
                     aria-hidden="true"
@@ -3474,6 +3666,8 @@ export default function MessagesView({
                   onPreviewFile={openFilePreview}
                   activePreviewFile={previewFile}
                   knownArtifacts={knownArtifacts}
+                  imageGallery={imageGallery}
+                  onOpenImage={openImagePreview}
                 />
               </div>
             );
@@ -3483,7 +3677,7 @@ export default function MessagesView({
           const selected = selectable && conversationShareSelectedKeys.includes(candidate.key);
           return (
             <div
-              key={group.message.id || i}
+              key={`message:${group.message.id || 'group'}:${i}`}
               className={`cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && historyMessageID(group.message) === highlightedMessageId ? ' cc-message-search-hit' : ''}${selectable ? ' is-conversation-share-selectable' : ''}${selected ? ' is-conversation-share-selected' : ''}`}
               data-search-message-id={historyMessageID(group.message) || undefined}
             >
@@ -3534,6 +3728,8 @@ export default function MessagesView({
                 onPreviewFile={openFilePreview}
                 activePreviewFile={previewFile}
                 knownArtifacts={knownArtifacts}
+                imageGallery={imageGallery}
+                onOpenImage={openImagePreview}
               />
             </div>
           );
@@ -3838,6 +4034,20 @@ export default function MessagesView({
           </div>
         )}
       </div>
+      {previewImage && typeof document !== 'undefined' && (
+        <ImageGalleryPreview
+          item={previewImage}
+          index={previewImageIndex}
+          items={imageGallery}
+          onClose={closeImagePreview}
+          onChange={(nextIndex) => {
+            const next = imageGallery[nextIndex];
+            if (!next) return;
+            setPreviewImageId(next.id);
+          }}
+          triggerRef={previewImageTriggerRef}
+        />
+      )}
       {showTutorialPicker && (
         <TutorialTaskPicker
           tasks={tutorialTasks}
@@ -4410,6 +4620,37 @@ function messageSenderIdentity(message) {
   const rawSender = message?.from_uid ?? message?.from ?? '';
   const parsedSender = parseUid(rawSender);
   return parsedSender ? String(parsedSender) : String(rawSender).trim();
+}
+
+function renderedGroupBoundaryMessage(group, edge = 'first') {
+  const sourceMessages = group?.type === 'working'
+    ? (group.messages || [])
+    : (group?.sourceMessages || (group?.message ? [group.message] : []));
+  return edge === 'last'
+    ? sourceMessages[sourceMessages.length - 1]
+    : sourceMessages[0];
+}
+
+function renderedGroupSenderIdentity(group, edge = 'first') {
+  const messageIdentity = messageSenderIdentity(renderedGroupBoundaryMessage(group, edge));
+  const senderRole = group?.sender?.isBot ? 'agent' : 'member';
+  return `${messageIdentity}:${senderRole}`;
+}
+
+export function reconcileRenderedGroupConsecutiveness(groups = []) {
+  return groups.map((group, index) => {
+    if (index === 0 || !group?.isConsecutive) return group;
+
+    const previousGroup = groups[index - 1];
+    const previousSender = renderedGroupSenderIdentity(previousGroup, 'last');
+    const currentSender = renderedGroupSenderIdentity(group, 'first');
+    if (previousSender === currentSender) return group;
+
+    return {
+      ...group,
+      isConsecutive: false,
+    };
+  });
 }
 
 function messageTurnIdentity(message, index) {
@@ -5001,6 +5242,127 @@ function mergeMessages(primary, secondary) {
     const bSeq = b.seq_id || b.id;
     return aSeq - bSeq;
   });
+}
+
+export function mergeOwnServerEcho(messages, serverMessage, ownUID) {
+  if (!sameUID(serverMessage?.from_uid, ownUID)) return null;
+  const serverContentKey = getComparableContent(serverMessage?.content);
+  const pendingIdx = messages.findIndex((message) => (
+    message._pending && (
+      getComparableContent(message.content) === serverContentKey
+      || getComparableContent(message._canonical_content) === serverContentKey
+    )
+  ));
+  if (pendingIdx === -1) return null;
+
+  const next = [...messages];
+  next[pendingIdx] = serverMessage;
+  return next;
+}
+
+export function ImageGalleryPreview({ item, index, items, onClose, onChange, triggerRef }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(null);
+  const stateRef = useRef({ item, index, items, onClose, onChange, triggerRef });
+  stateRef.current = { item, index, items, onClose, onChange, triggerRef };
+  const hasPrevious = index > 0;
+  const hasNext = index < items.length - 1;
+
+  useEffect(() => {
+    closeRef.current?.focus({ preventScroll: true });
+    const handleKeyDown = (event) => {
+      const state = stateRef.current;
+      const currentHasPrevious = state.index > 0;
+      const currentHasNext = state.index < state.items.length - 1;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        state.onClose();
+        return;
+      }
+      if (event.key === 'ArrowLeft' && currentHasPrevious) {
+        event.preventDefault();
+        state.onChange(state.index - 1);
+        return;
+      }
+      if (event.key === 'ArrowRight' && currentHasNext) {
+        event.preventDefault();
+        state.onChange(state.index + 1);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(dialogRef.current?.querySelectorAll(
+        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) || []);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const focusIsOutsideDialog = !dialogRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === first || focusIsOutsideDialog)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || focusIsOutsideDialog)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      const previousTrigger = stateRef.current.triggerRef?.current;
+      if (previousTrigger?.isConnected) previousTrigger.focus({ preventScroll: true });
+    };
+  }, []);
+
+  return createPortal(
+    <div
+      className="oc-modal-overlay oc-rich-image-preview oc-rich-image-gallery-preview"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`图片预览 ${item.payload?.name || ''}`.trim()}
+      ref={dialogRef}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <button
+        type="button"
+        className="oc-rich-image-gallery-nav is-previous"
+        aria-label="上一张图片"
+        disabled={!hasPrevious}
+        onClick={() => onChange(index - 1)}
+      >
+        <ChevronLeft size={56} strokeWidth={1.5} aria-hidden="true" />
+      </button>
+      <button
+        ref={closeRef}
+        type="button"
+        aria-label="关闭图片预览"
+        className="oc-rich-media-preview-close oc-rich-image-preview-close"
+        onClick={onClose}
+      >
+        <X size={28} aria-hidden="true" />
+      </button>
+      <img
+        src={resolveMediaURL(item.payload?.url || item.payload?.thumbnail)}
+        alt={item.payload?.name ? `${item.payload.name} preview` : 'image preview'}
+        className="oc-rich-image-preview-media"
+        onClick={(event) => event.stopPropagation()}
+      />
+      <button
+        type="button"
+        className="oc-rich-image-gallery-nav is-next"
+        aria-label="下一张图片"
+        disabled={!hasNext}
+        onClick={() => onChange(index + 1)}
+      >
+        <ChevronRight size={56} strokeWidth={1.5} aria-hidden="true" />
+      </button>
+    </div>,
+    document.body,
+  );
 }
 
 function getComparableContent(content) {

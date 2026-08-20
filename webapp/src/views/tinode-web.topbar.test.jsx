@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
+  cloudArtifactNotificationToast,
   commitPreviewSession,
   describeModelApplyError,
   describeModelConfigRequestError,
@@ -118,6 +119,21 @@ describe('preview user identity', () => {
       uid: 'theme-preview',
       username: 'preview',
     });
+  });
+});
+
+describe('cloud artifact owner notifications', () => {
+  it('maps the realtime event to the generic notification without artifact details', () => {
+    expect(cloudArtifactNotificationToast({
+      notification: {
+        type: 'cloud_artifact_shared',
+        message: '内部成果标题不应展示',
+      },
+    })).toEqual({
+      tone: 'info',
+      message: '有新文件在云端共享',
+    });
+    expect(cloudArtifactNotificationToast({ data: { type: 'file' } })).toBeNull();
   });
 });
 

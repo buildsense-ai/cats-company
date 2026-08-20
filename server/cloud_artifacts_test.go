@@ -17,6 +17,14 @@ import (
 
 const testArtifactUploadFileName = "20260814_0123456789abcdef0123456789abcdef.html"
 
+type recordingCloudArtifactNotifier struct {
+	ownerUIDs []int64
+}
+
+func (n *recordingCloudArtifactNotifier) NotifyCloudArtifactShared(ownerUID int64) {
+	n.ownerUIDs = append(n.ownerUIDs, ownerUID)
+}
+
 func artifactUploadSourceForTest(t *testing.T) (*UploadHandler, string) {
 	t.Helper()
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
@@ -465,6 +473,8 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 		upstream.Client(),
 	)
 	handler.SetUploadSourceValidator(uploadHandler)
+	notifier := &recordingCloudArtifactNotifier{}
+	handler.SetNotifier(notifier)
 	friendStore := managedArtifactAgentStore(8, 440, true)
 	friendStore.friendPairs[agentPairKey(7, 440)] = true
 	handler.SetStore(friendStore)
@@ -485,6 +495,101 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 		!strings.Contains(rec.Body.String(), `"can_delete":true`) ||
 		strings.Contains(rec.Body.String(), "pending") {
 		t.Fatalf("publish response = %s", rec.Body.String())
+	}
+	if len(notifier.ownerUIDs) != 1 || notifier.ownerUIDs[0] != 8 {
+		t.Fatalf("notified owners = %#v, want [8]", notifier.ownerUIDs)
+	}
+}
+
+func TestCloudArtifactHandlerDoesNotNotifyPublishingOwner(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	uploadHandler, sourceURL := artifactUploadSourceForTest(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(cloudArtifactOperation{
+			OK: true,
+			Artifact: cloudArtifact{
+				ID: "owner-result", Title: "Owner result", Kind: "html",
+				URL: "https://example.test/by-agent/440/owner-result/latest/", Status: "active",
+				CreatedAt: "2026-08-12T07:00:00Z", UpdatedAt: "2026-08-12T07:00:00Z",
+				AgentUID: "440", UploaderUID: "8", CanDelete: true,
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(8, 440, true))
+	handler.SetUploadSourceValidator(uploadHandler)
+	notifier := &recordingCloudArtifactNotifier{}
+	handler.SetNotifier(notifier)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/agents/440/artifacts",
+		strings.NewReader(`{"title":"Owner result","kind":"html","url":"`+sourceURL+`"}`),
+	).WithContext(context.WithValue(context.Background(), uidKey, int64(8)))
+
+	handler.HandleAgentArtifacts(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(notifier.ownerUIDs) != 0 {
+		t.Fatalf("notified owners = %#v, want none", notifier.ownerUIDs)
+	}
+}
+
+type artifactOwnerLookupFailureStore struct {
+	*agentTestStore
+}
+
+func (s *artifactOwnerLookupFailureStore) GetBotOwner(int64) (int64, error) {
+	return 0, errors.New("owner lookup unavailable")
+}
+
+func TestCloudArtifactHandlerOwnerNotificationFailureDoesNotFailPublish(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	uploadHandler, sourceURL := artifactUploadSourceForTest(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(cloudArtifactOperation{
+			OK: true,
+			Artifact: cloudArtifact{
+				ID: "member-result", Title: "Member result", Kind: "html",
+				URL: "https://example.test/by-agent/440/member-result/latest/", Status: "active",
+				CreatedAt: "2026-08-12T07:00:00Z", UpdatedAt: "2026-08-12T07:00:00Z",
+				AgentUID: "440", UploaderUID: "7", CanDelete: true,
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	baseStore := managedArtifactAgentStore(8, 440, true)
+	baseStore.friendPairs[agentPairKey(7, 440)] = true
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	handler.SetStore(&artifactOwnerLookupFailureStore{agentTestStore: baseStore})
+	handler.SetUploadSourceValidator(uploadHandler)
+	handler.SetNotifier(&recordingCloudArtifactNotifier{})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/agents/440/artifacts",
+		strings.NewReader(`{"title":"Member result","kind":"html","url":"`+sourceURL+`"}`),
+	).WithContext(context.WithValue(context.Background(), uidKey, int64(7)))
+
+	handler.HandleAgentArtifacts(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

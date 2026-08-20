@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +45,34 @@ func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
 
 	if hub.IsOnline(42) {
 		t.Fatal("expected uid 42 to be offline after removing all connections")
+	}
+}
+
+func TestNotifyCloudArtifactSharedSendsPrivacyMinimizedRealtimeEvent(t *testing.T) {
+	hub := NewHub(nil, nil)
+	owner := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(owner)
+
+	hub.NotifyCloudArtifactShared(42)
+
+	select {
+	case raw := <-owner.send:
+		var message ServerMessage
+		if err := json.Unmarshal(raw, &message); err != nil {
+			t.Fatalf("unmarshal notification: %v", err)
+		}
+		if message.Notification == nil ||
+			message.Notification.Type != "cloud_artifact_shared" ||
+			message.Notification.Message != "有新文件在云端共享" {
+			t.Fatalf("notification = %#v", message.Notification)
+		}
+		if strings.Contains(string(raw), "artifact_id") ||
+			strings.Contains(string(raw), "title") ||
+			strings.Contains(string(raw), "url") {
+			t.Fatalf("notification leaked artifact details: %s", raw)
+		}
+	default:
+		t.Fatal("owner did not receive cloud artifact notification")
 	}
 }
 
