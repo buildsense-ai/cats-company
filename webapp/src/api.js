@@ -397,6 +397,19 @@ export const api = {
     return request('POST', '/api/messages/send', payload);
   },
 
+  createArtifactContextSnapshot: (snapshot, options = {}) => request(
+    'POST',
+    '/api/artifact-context/snapshots',
+    snapshot,
+    options,
+  ),
+  invalidateArtifactContextSnapshot: (contextRef, options = {}) => request(
+    'DELETE',
+    '/api/artifact-context/snapshots',
+    { context_ref: contextRef },
+    options,
+  ),
+
   // REST fallback for message history
   getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
     request(

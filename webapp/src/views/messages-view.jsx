@@ -15,10 +15,11 @@ import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import {
+  artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
   requestArtifactPageContext,
-  withArtifactRef,
+  withArtifactContextRef,
 } from '../artifact-context';
 import {
   conversationShareMessageKey,
@@ -62,6 +63,7 @@ const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const ARTIFACT_REGISTRY_POLL_MS = 5000;
+const ARTIFACT_SNAPSHOT_TIMEOUT_MS = 2200;
 const DELIVERY_ARTIFACT_TYPES = new Set(['file', 'image', 'audio', 'voice']);
 
 function artifactRefreshFileKey(file) {
@@ -499,6 +501,7 @@ export default function MessagesView({
   const runtimePlanClearTimer = useRef(null);
   const activeArtifactFrameRef = useRef(null);
   const activeArtifactFocusRef = useRef(null);
+  const activeArtifactSnapshotRef = useRef(null);
   const historyOffsetRef = useRef(0);
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
@@ -654,12 +657,24 @@ export default function MessagesView({
     }
   }, [sidePanelOpen, updatePreviewWidth]);
 
-  const clearActiveArtifactFocus = useCallback(() => {
-    activeArtifactFocusRef.current = null;
-    activeArtifactFrameRef.current = null;
+  const invalidateArtifactSnapshot = useCallback((snapshot = activeArtifactSnapshotRef.current) => {
+    const contextRef = String(snapshot?.contextRef || '');
+    if (!contextRef) return;
+    if (activeArtifactSnapshotRef.current?.contextRef === contextRef) {
+      activeArtifactSnapshotRef.current = null;
+    }
+    api.invalidateArtifactContextSnapshot(contextRef, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS })
+      .catch(() => {});
   }, []);
 
+  const clearActiveArtifactFocus = useCallback(() => {
+    invalidateArtifactSnapshot();
+    activeArtifactFocusRef.current = null;
+    activeArtifactFrameRef.current = null;
+  }, [invalidateArtifactSnapshot]);
+
   const setPreviewFileWithFocus = useCallback((file) => {
+    invalidateArtifactSnapshot();
     activeArtifactFocusRef.current = artifactMessageFocusFromPreviewFile(
       file,
       artifactTopicRef.current,
@@ -667,7 +682,7 @@ export default function MessagesView({
     );
     activeArtifactFrameRef.current = null;
     setPreviewFile(file);
-  }, []);
+  }, [invalidateArtifactSnapshot]);
 
   const handleRemoteArtifactFrameChange = useCallback((binding) => {
     activeArtifactFrameRef.current = artifactBindingMatchesFocus(
@@ -707,7 +722,7 @@ export default function MessagesView({
   const captureArtifactMessageContext = useCallback(async () => {
     const focus = activeArtifactFocusRef.current;
     const topicGeneration = artifactTopicGenerationRef.current;
-    const empty = { artifactRef: null, pageContext: null };
+    const empty = { contextRef: '' };
     if (!focus
       || focus.topic !== topic
       || focus.topicGeneration !== topicGeneration
@@ -716,21 +731,49 @@ export default function MessagesView({
       || focus.agentUid !== activeArtifactAgentUIDRef.current) return empty;
 
     const binding = activeArtifactFrameRef.current;
-    if (!artifactBindingMatchesFocus(binding, focus)) {
-      return activeArtifactFocusRef.current === focus
-        ? { artifactRef: focus.artifactRef, pageContext: null }
-        : empty;
+    const hasMatchingBinding = artifactBindingMatchesFocus(binding, focus);
+    let pageContext = null;
+    if (hasMatchingBinding) {
+      pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
     }
 
-    const pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
     if (activeArtifactFocusRef.current !== focus
-      || activeArtifactFrameRef.current !== binding
+      || (hasMatchingBinding && activeArtifactFrameRef.current !== binding)
       || artifactTopicRef.current !== topic
       || artifactTopicGenerationRef.current !== topicGeneration
       || activeTopicRef.current !== topic
       || activeArtifactAgentUIDRef.current !== focus.agentUid) return empty;
-    return { artifactRef: focus.artifactRef, pageContext };
-  }, [topic]);
+
+    let response;
+    try {
+      response = await api.createArtifactContextSnapshot({
+        topic_id: topic,
+        artifact_ref: focus.artifactRef,
+        ...(pageContext ? { page_context: pageContext } : {}),
+      }, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS });
+    } catch {
+      return empty;
+    }
+    const contextRef = artifactContextRefFromSnapshot(response);
+    if (!contextRef) return empty;
+    const snapshot = {
+      contextRef,
+      topic,
+      topicGeneration,
+      agentUid: focus.agentUid,
+      artifactId: focus.artifactId,
+    };
+    if (activeArtifactFocusRef.current !== focus
+      || artifactTopicRef.current !== topic
+      || artifactTopicGenerationRef.current !== topicGeneration
+      || activeTopicRef.current !== topic
+      || activeArtifactAgentUIDRef.current !== focus.agentUid) {
+      invalidateArtifactSnapshot(snapshot);
+      return empty;
+    }
+    activeArtifactSnapshotRef.current = snapshot;
+    return { contextRef };
+  }, [invalidateArtifactSnapshot, topic]);
 
   const previewAgentFile = useCallback((file) => {
     setPendingArtifactRefresh(null);
@@ -820,6 +863,7 @@ export default function MessagesView({
   }, []);
 
   useEffect(() => () => {
+    invalidateArtifactSnapshot();
     questionIndexRequestRef.current += 1;
     questionIndexAbortControllerRef.current?.abort();
     questionJumpAbortControllerRef.current?.abort();
@@ -829,7 +873,7 @@ export default function MessagesView({
     if (liveWorkingTimer.current) {
       clearTimeout(liveWorkingTimer.current);
     }
-  }, []);
+  }, [invalidateArtifactSnapshot]);
 
   // Load message history and group members when topic changes
   useEffect(() => {
@@ -841,6 +885,7 @@ export default function MessagesView({
     questionJumpAbortControllerRef.current?.abort();
     groupMembersRequestRef.current += 1;
     peerProfileRequestRef.current += 1;
+    invalidateArtifactSnapshot();
     activeTopicRef.current = topic;
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
@@ -924,7 +969,7 @@ export default function MessagesView({
       questionIndexAbortControllerRef.current?.abort();
       questionJumpAbortControllerRef.current?.abort();
     };
-  }, [groupId, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
+  }, [groupId, invalidateArtifactSnapshot, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
 
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
@@ -1705,13 +1750,9 @@ export default function MessagesView({
           }
         : protocolText;
       const artifactContext = switchesTopic
-        ? { artifactRef: null, pageContext: null }
+        ? { contextRef: '' }
         : await captureArtifactMessageContext();
-      const sendPayload = withArtifactRef(
-        payload,
-        artifactContext.artifactRef,
-        artifactContext.pageContext,
-      );
+      const sendPayload = withArtifactContextRef(payload, artifactContext.contextRef);
 
       updateComposerDraft(topic, '');
       updateStructuredMentionDraft(topic, []);
@@ -1842,11 +1883,7 @@ export default function MessagesView({
 
     try {
       const artifactContext = await captureArtifactMessageContext();
-      const sendPayload = withArtifactRef(
-        taskText,
-        artifactContext.artifactRef,
-        artifactContext.pageContext,
-      );
+      const sendPayload = withArtifactContextRef(taskText, artifactContext.contextRef);
       const result = await api.sendMessage(topic, sendPayload, undefined);
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
