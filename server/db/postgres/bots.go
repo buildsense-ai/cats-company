@@ -125,7 +125,7 @@ func (a *Adapter) GetBotDebugMessages(uid int64, limit int) ([]*types.Message, e
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
 		 FROM messages WHERE from_uid = $1
 		 ORDER BY id DESC LIMIT $2`,
 		uid, limit,

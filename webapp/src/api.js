@@ -366,7 +366,7 @@ export const api = {
     request('GET', `/api/users/search?q=${encodeURIComponent(q)}&mode=${encodeURIComponent(mode)}`),
 
   // Send message via REST
-  sendMessage: (topicId, content, replyTo, mentions = [], clientMsgID = '') => {
+  sendMessage: (topicId, content, replyTo, mentions = []) => {
     const payload = { topic_id: topicId };
 
     if (typeof content === 'string') {
@@ -394,12 +394,6 @@ export const api = {
 
     if (replyTo) payload.reply_to = replyTo;
     if (Array.isArray(mentions) && mentions.length > 0) payload.mentions = mentions;
-    const normalizedClientMsgID = String(
-      clientMsgID
-      || (content && typeof content === 'object' && content.client_msg_id)
-      || '',
-    ).trim();
-    if (normalizedClientMsgID) payload.client_msg_id = normalizedClientMsgID;
     return request('POST', '/api/messages/send', payload);
   },
 
@@ -1022,19 +1016,17 @@ export async function setWSPushSubscriptionEndpoint(endpoint = '') {
 }
 
 // Send a chat message via WebSocket, with REST fallback
-export async function wsSendMessage(topicId, content, replyTo, mentions = [], clientMsgID = '') {
-  const normalizedClientMsgID = String(clientMsgID || '').trim();
+export async function wsSendMessage(topicId, content, replyTo, mentions = []) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     const id = nextMsgId();
     const pub = { id, topic: topicId, content };
     if (replyTo) pub.reply_to = replyTo;
     if (Array.isArray(mentions) && mentions.length > 0) pub.mentions = mentions;
-    if (normalizedClientMsgID) pub.client_msg_id = normalizedClientMsgID;
     sendWS({ pub });
     return id;
   }
   // Fallback to REST if WebSocket is not connected
-  await api.sendMessage(topicId, content, replyTo, mentions, normalizedClientMsgID);
+  await api.sendMessage(topicId, content, replyTo, mentions);
   return null;
 }
 

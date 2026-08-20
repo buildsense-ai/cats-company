@@ -8,30 +8,20 @@ class MessageContext {
     topic;
     from;
     seq;
-    clientMsgID;
-    type;
-    msgType;
     content;
     contentBlocks;
     content_blocks;
     metadata;
-    mode;
-    role;
     replyTo;
     constructor(bot, data) {
         this.bot = bot;
         this.topic = data.topic;
         this.from = data.from ?? '';
         this.seq = data.seq;
-        this.clientMsgID = data.client_msg_id;
-        this.type = data.type;
-        this.msgType = data.msg_type;
         this.content = data.content;
         this.contentBlocks = Array.isArray(data.content_blocks) ? data.content_blocks : [];
         this.content_blocks = this.contentBlocks.length > 0 ? this.contentBlocks : undefined;
         this.metadata = data.metadata;
-        this.mode = data.mode;
-        this.role = data.role;
         this.replyTo = data.reply_to;
     }
     /** Extract plain text from content (returns stringified JSON for rich content). */
