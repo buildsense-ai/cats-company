@@ -10,15 +10,10 @@ export declare class MessageContext {
     readonly topic: string;
     readonly from: string;
     readonly seq: number;
-    readonly clientMsgID: string | undefined;
-    readonly type: string | undefined;
-    readonly msgType: string | undefined;
     readonly content: unknown;
     readonly contentBlocks: unknown[];
     readonly content_blocks: unknown[] | undefined;
     readonly metadata: Record<string, unknown> | undefined;
-    readonly mode: string | undefined;
-    readonly role: string | undefined;
     readonly replyTo: number | undefined;
     constructor(bot: CatsBot, data: MsgServerData);
     /** Extract plain text from content (returns stringified JSON for rich content). */

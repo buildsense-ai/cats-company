@@ -49,9 +49,7 @@ const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
-const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
-const CONSECUTIVE_HUMAN_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
-const IDENTITY_TEXT_FIELDS = ['display_name', 'username', 'avatar_url', 'name'];
+const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -315,34 +313,6 @@ function oldestHistoryMessageID(messages) {
 
 function historyCacheKey(userID, topic) {
   return `${userID || 'anonymous'}:${topic}`;
-}
-
-function hasIdentityText(value) {
-  return value != null && String(value).trim() !== '';
-}
-
-function mergeIdentityRecord(fallback, preferred) {
-  const fallbackRecord = fallback && typeof fallback === 'object' ? fallback : null;
-  const preferredRecord = preferred && typeof preferred === 'object' ? preferred : null;
-  if (!fallbackRecord && !preferredRecord) return null;
-
-  const merged = { ...(fallbackRecord || {}), ...(preferredRecord || {}) };
-  IDENTITY_TEXT_FIELDS.forEach((field) => {
-    if (!hasIdentityText(preferredRecord?.[field]) && hasIdentityText(fallbackRecord?.[field])) {
-      merged[field] = fallbackRecord[field];
-    }
-  });
-  return merged;
-}
-
-function messageActorIdentity(message) {
-  const actor = message?.metadata?.catsco_identity?.actor;
-  if (!actor || typeof actor !== 'object' || Array.isArray(actor)) return null;
-
-  const messageUID = parseUid(message?.from_uid || message?.from);
-  const actorUID = parseUid(actor.user_id || actor.uid || actor.id);
-  if (messageUID > 0 && actorUID !== messageUID) return null;
-  return actor;
 }
 
 function artifactURLsInMessage(message) {
@@ -1082,7 +1052,7 @@ export default function MessagesView({
       const agents = agentsRes.agents || [];
       const friendPeer = friends.find((friend) => sameUID(friend.id, peerId));
       const agentPeer = agents.find((agent) => sameUID(agent.uid || agent.id, peerId));
-      const peer = agentPeer ? mergeIdentityRecord(friendPeer, agentPeer) : friendPeer;
+      const peer = agentPeer ? { ...friendPeer, ...agentPeer } : friendPeer;
       if (requestID !== peerProfileRequestRef.current || activeTopicRef.current !== requestTopic) return;
       if (peer) setPeerProfile(peer);
     } catch (e) {
@@ -1120,8 +1090,10 @@ export default function MessagesView({
       // New message from server
       if (msg.data && msg.data.topic === topic) {
         if (isStreamCancel(msg.data)) {
-          // A cancel packet identifies the control request, not the Agent's
-          // transient response stream, so it cannot safely reconcile a row.
+          const streamId = getStreamId(msg.data);
+          if (streamId) {
+            setMessages((prev) => prev.filter((message) => message._stream_id !== streamId));
+          }
           clearRuntimePlan();
           clearLiveWorking();
           clearTimeout(peerTypingTimer.current);
@@ -1148,10 +1120,8 @@ export default function MessagesView({
               streamId,
               topic,
               fromUid,
-              from: msg.data.from,
               content: delta,
               metadata: msg.data.metadata || null,
-              role: msg.data.role || 'assistant',
             }));
           }
           return;
@@ -1170,7 +1140,6 @@ export default function MessagesView({
           role: msg.data.role,
           type: msg.data.type,
           metadata: msg.data.metadata || null,
-          client_msg_id: msg.data.client_msg_id || '',
           msg_type: msg.data.msg_type || msg.data.type || 'text',
           reply_to: msg.data.reply_to || 0,
           created_at: new Date().toISOString(),
@@ -1178,53 +1147,23 @@ export default function MessagesView({
         if (isWorkingMessage(serverMsg)) markLiveWorking(serverMsg);
 
         setMessages((prev) => {
-          const streamIdx = findStreamingMessageForFinal(prev, serverMsg);
-          if (streamIdx !== -1) {
-            const next = [...prev];
-            next[streamIdx] = serverMsg;
-            return mergeMessages([], next);
-          }
-          const current = removeStaleStreamingMessagesForFinal(prev, serverMsg);
-          // An HTTP ACK may assign the durable sequence before its matching
-          // WebSocket echo arrives. Merge that echo so its server-canonical
-          // identity and normalized payload are not lost.
-          const existingIdx = current.findIndex((message) => message.id === serverMsg.id);
-          if (existingIdx !== -1) {
-            const existing = current[existingIdx];
-            const metadata = existing.metadata || serverMsg.metadata
-              ? { ...(existing.metadata || {}), ...(serverMsg.metadata || {}) }
-              : null;
-            const next = [...current];
-            next[existingIdx] = {
-              ...existing,
-              ...serverMsg,
-              client_msg_id: messageClientMsgID(serverMsg) || messageClientMsgID(existing),
-              metadata,
-            };
-            return mergeMessages([], next);
-          }
-          // If this is our own message echoed back, replace the optimistic entry
-          if (sameUID(fromUid, user.uid)) {
-            const pendingIdx = current.findIndex((m) => (
-              m._pending && pendingMatchesHistoryMessage(m, serverMsg, new Set())
-            ));
-            if (pendingIdx !== -1) {
-              const next = [...current];
-              next[pendingIdx] = serverMsg;
-              // An Agent reply can arrive before our own server echo. Re-sort
-              // after replacing the provisional message so the user message
-              // remains between the previous and new Agent turns.
+          const streamId = getStreamId(serverMsg);
+          if (streamId) {
+            const streamIdx = prev.findIndex((m) => m._stream_id === streamId);
+            if (streamIdx !== -1) {
+              const next = [...prev];
+              next[streamIdx] = serverMsg;
               return mergeMessages([], next);
             }
           }
-          // Keep the display/canonical-content fallback for legacy echoes that
-          // predate client_msg_id propagation. The ID/anchor match above stays
-          // authoritative when the server provides enough correlation data.
+          // Deduplicate by seq ID
+          if (prev.some((m) => m.id === serverMsg.id)) return prev;
+          // If this is our own message echoed back, replace the optimistic entry
           if (sameUID(fromUid, user.uid)) {
-            const mergedEcho = mergeOwnServerEcho(current, serverMsg, user.uid);
-            if (mergedEcho) return mergeMessages([], mergedEcho);
+            const mergedEcho = mergeOwnServerEcho(prev, serverMsg, user.uid);
+            if (mergedEcho) return mergedEcho;
           }
-          return mergeMessages(current, [serverMsg]);
+          return mergeMessages(prev, [serverMsg]);
         });
         if (sameUID(fromUid, user.uid) && isFinalTextMessage(serverMsg)) {
           clearRuntimePlan();
@@ -1403,8 +1342,15 @@ export default function MessagesView({
         ? res.has_more
         : rawMessages.length === PAGE_SIZE;
       const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
+      const newestHistoryID = rawMessages.reduce(
+        (latestID, message) => Math.max(latestID, historyMessageID(message)),
+        0,
+      );
       setMessages((current) => {
-        return mergeHistoryWithCurrentMessages(visibleMessages, current);
+        const newerMessages = rawMessages.length === 0
+          ? current.filter((message) => message._pending)
+          : current.filter((message) => message._pending || historyMessageID(message) > newestHistoryID);
+        return mergeMessages(visibleMessages, newerMessages);
       });
       historyOffsetRef.current = rawMessages.length;
       historyBeforeIDRef.current = nextBeforeID;
@@ -1739,10 +1685,9 @@ export default function MessagesView({
         ...next[idx],
         id: result.seq_id || result.id,
         seq_id: result.seq_id || result.id,
-        client_msg_id: result.client_msg_id || next[idx].client_msg_id || '',
         _pending: false,
       };
-      return mergeMessages([], next);
+      return next.sort((a, b) => (a.seq_id || a.id) - (b.seq_id || b.id));
     });
   }, []);
 
@@ -1779,7 +1724,6 @@ export default function MessagesView({
       ? collectStructuredMentionTargets(input, originalStructuredMentions)
       : [];
     const tempId = Date.now();
-    const clientMsgID = createClientMessageID();
 
     try {
       if (!isGroup && selectedAgent && selectedAgent.topic_id !== topic && onResolveAgentTopic) {
@@ -1825,23 +1769,24 @@ export default function MessagesView({
       if (!switchesTopic && activeTopicRef.current === topic) {
         optimisticMessageAdded = true;
         setMessages((prev) => mergeMessages(prev, [{
-          ...createOptimisticUserMessage({
-            id: tempId,
-            topicId: sendTopic,
-            userUID: user.uid,
-            content: displayContent,
-            contentBlocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
-            replyToID: currentReplyTo ? currentReplyTo.id : 0,
-            pendingAfterSeq: latestPersistedMessageSequence(prev),
-            clientMsgID,
-          }),
+          id: tempId,
+          seq_id: tempId,
+          topic_id: sendTopic,
+          from_uid: user.uid,
+          content: displayContent,
+          content_blocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
+          type: 'text',
+          msg_type: 'text',
+          reply_to: currentReplyTo ? currentReplyTo.id : 0,
+          created_at: new Date().toISOString(),
+          _pending: true,
           _canonical_content: protocolText,
         }]));
       }
 
       const result = mentions.length > 0
-        ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions, clientMsgID)
-        : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, undefined, clientMsgID);
+        ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
+        : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
@@ -1923,21 +1868,23 @@ export default function MessagesView({
     setAwaitingAgentReply(true);
     clearRuntimePlan();
     const tempId = Date.now();
-    const clientMsgID = createClientMessageID();
     stickToBottomRef.current = true;
-    setMessages((current) => mergeMessages(current, [createOptimisticUserMessage({
+    setMessages((current) => mergeMessages(current, [{
       id: tempId,
-      topicId: topic,
-      userUID: user.uid,
+      seq_id: tempId,
+      topic_id: topic,
+      from_uid: user.uid,
       content: taskText,
-      pendingAfterSeq: latestPersistedMessageSequence(current),
-      clientMsgID,
-    })]));
+      type: 'text',
+      msg_type: 'text',
+      created_at: new Date().toISOString(),
+      _pending: true,
+    }]));
 
     try {
       const artifactContext = await captureArtifactMessageContext();
       const sendPayload = withArtifactContextRef(taskText, artifactContext.contextRef);
-      const result = await api.sendMessage(topic, sendPayload, undefined, undefined, clientMsgID);
+      const result = await api.sendMessage(topic, sendPayload, undefined);
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
       removeOptimisticMessage(tempId);
@@ -2454,7 +2401,7 @@ export default function MessagesView({
     return left === parseUid(user.uid) ? right : left;
   }, [isGroup, topic, user.uid]);
   const rosterPeer = availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID));
-  const resolvedPeerProfile = mergeIdentityRecord(peerProfile, rosterPeer);
+  const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
   const peerIsBot = Boolean(rosterPeer)
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
@@ -2518,9 +2465,8 @@ export default function MessagesView({
         : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
     )
     : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
-  const displayName = isGroup
-    ? (groupInfo?.name || topicName || topic)
-    : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
+  const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
+  const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
@@ -2870,47 +2816,19 @@ export default function MessagesView({
     return map;
   }, [messages]);
 
-  // Keep the identity used by existing self-authored rows reactive without
-  // recomputing their display groups for unrelated parent-prop changes.
-  const currentUserIdentity = useMemo(() => ({
-    account_type: user.account_type,
-    avatar_url: user.avatar_url,
-    bot: user.bot,
-    display_name: user.display_name,
-    is_bot: user.is_bot,
-    name: user.name,
-    username: user.username,
-  }), [
-    user.account_type,
-    user.avatar_url,
-    user.bot,
-    user.display_name,
-    user.is_bot,
-    user.name,
-    user.username,
-  ]);
-
   const getSender = (msg) => {
     if (sameUID(msg.from_uid, user.uid)) {
-      // The active account profile is authoritative for the current user. A
-      // persisted message identity only fills fields that have not loaded yet.
-      const senderProfile = mergeIdentityRecord(messageActorIdentity(msg), currentUserIdentity);
       return {
-        name: senderProfile?.display_name || senderProfile?.username,
-        avatarUrl: senderProfile?.avatar_url,
-        isBot: senderProfile?.account_type === 'bot'
-          || senderProfile?.bot === true
-          || senderProfile?.is_bot === true,
+        name: user.display_name || user.username,
+        avatarUrl: user.avatar_url,
+        isBot: user.account_type === 'bot',
       };
     }
     if (isGroup) {
       const senderUID = parseUid(msg.from_uid);
       const member = memberMap.get(senderUID);
       const rosterAgent = availableAgentByUID.get(senderUID);
-      const senderProfile = mergeIdentityRecord(
-        mergeIdentityRecord(rosterAgent, member),
-        messageActorIdentity(msg),
-      );
+      const senderProfile = member || rosterAgent;
       return {
         name: senderProfile?.display_name
           || senderProfile?.username
@@ -2921,24 +2839,15 @@ export default function MessagesView({
           member?.is_bot
           || member?.account_type === 'bot'
           || rosterAgent
-          || senderProfile?.bot === true
-          || senderProfile?.is_bot === true
-          || senderProfile?.account_type === 'bot'
           || inferredAgentUIDs.has(senderUID)
           || isAssistantAuthoredMessage(msg),
         ),
       };
     }
-    const senderProfile = mergeIdentityRecord(resolvedPeerProfile, messageActorIdentity(msg));
     return {
-      name: senderProfile?.display_name || senderProfile?.username || topicName || topic,
-      avatarUrl: senderProfile?.avatar_url || topicAvatarUrl,
-      isBot: Boolean(
-        peerIsBot
-        || senderProfile?.bot === true
-        || senderProfile?.is_bot === true
-        || senderProfile?.account_type === 'bot',
-      ),
+      name: resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic,
+      avatarUrl: displayAvatarUrl,
+      isBot: peerIsBot,
     };
   };
 
@@ -2946,13 +2855,20 @@ export default function MessagesView({
   const groupedMessages = useMemo(() => {
     const groups = [];
     const workingByExplicitTurn = new Map();
+    const workingByFallbackTurn = new Map();
     let currentWorking = null;
-    let previousDisplayContext = null;
-    let previousVisibleDisplayContext = null;
+    let latestHumanPromptKey = '';
+    let prevSenderUid = null;
+    let prevTime = 0;
+    let prevVisibleSenderUid = null;
+    let prevVisibleTime = 0;
 
     const registerWorkingGroup = (group) => {
       if (group.explicitTurnKey) {
         workingByExplicitTurn.set(group.explicitTurnKey, group);
+      }
+      if (group.fallbackTurnKey) {
+        workingByFallbackTurn.set(group.fallbackTurnKey, group);
       }
     };
 
@@ -2963,22 +2879,45 @@ export default function MessagesView({
       currentWorking = null;
     };
 
-    const findWorkingGroup = ({ explicitTurnKey }) => {
-      return explicitTurnKey ? workingByExplicitTurn.get(explicitTurnKey) || null : null;
+    const findWorkingGroup = ({ explicitTurnKey, fallbackTurnKey }) => {
+      if (explicitTurnKey) {
+        const explicitMatch = workingByExplicitTurn.get(explicitTurnKey);
+        if (explicitMatch) return explicitMatch;
+        const fallbackMatch = fallbackTurnKey
+          ? workingByFallbackTurn.get(fallbackTurnKey)
+          : null;
+        return fallbackMatch && !fallbackMatch.explicitTurnKey ? fallbackMatch : null;
+      }
+      return fallbackTurnKey ? workingByFallbackTurn.get(fallbackTurnKey) : null;
     };
 
-    const belongsToCurrentWorking = ({ explicitTurnKey }) => {
+    const belongsToCurrentWorking = ({ explicitTurnKey, fallbackTurnKey }) => {
       if (!currentWorking) return false;
-      return hasSameExplicitExecutionKey(currentWorking, { explicitTurnKey });
+      if (
+        currentWorking.explicitTurnKey
+        && explicitTurnKey
+        && currentWorking.explicitTurnKey !== explicitTurnKey
+      ) {
+        return false;
+      }
+      if (currentWorking.fallbackTurnKey && fallbackTurnKey) {
+        return currentWorking.fallbackTurnKey === fallbackTurnKey;
+      }
+      return true;
     };
 
-    messages.forEach((msg) => {
+    messages.forEach((msg, index) => {
+      const msgTime = new Date(msg.created_at || Date.now()).getTime();
+      const senderUid = parseUid(msg.from_uid) || String(msg.from_uid || '');
+      const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
       const sender = getSender(msg);
       const assistantAuthored = isAssistantAuthoredMessage(msg, sender.isBot);
 
-      const displayContext = messageDisplayContext(msg, sender.isBot);
-      const { turn } = displayContext;
-      const isConsecutive = areMessagesConsecutive(previousDisplayContext, displayContext);
+      if (isFinalTextMessage(msg) && !assistantAuthored) {
+        latestHumanPromptKey = messageTurnIdentity(msg, index);
+      }
+
+      const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
 
       if (isWorkingMessage(msg)) {
         let leadingNarrativeMessages = [];
@@ -2987,15 +2926,22 @@ export default function MessagesView({
           const previousGroup = groups[groups.length - 1];
           const previousMessage = previousGroup?.message;
           const sameSender = messageSenderIdentity(previousMessage) === messageSenderIdentity(msg);
-          const canAdoptLeadingNarrative = hasSameExplicitExecutionKey(
-            previousGroup,
-            { explicitTurnKey: turn.explicitTurnKey },
+          const explicitTurnConflict = Boolean(
+            previousGroup?.explicitTurnKey
+            && turn.explicitTurnKey
+            && previousGroup.explicitTurnKey !== turn.explicitTurnKey
+          );
+          const fallbackTurnConflict = Boolean(
+            previousGroup?.fallbackTurnKey
+            && turn.fallbackTurnKey
+            && previousGroup.fallbackTurnKey !== turn.fallbackTurnKey
           );
           if (
             previousGroup?.type === 'text'
             && previousGroup.assistantAuthored
             && sameSender
-            && canAdoptLeadingNarrative
+            && !explicitTurnConflict
+            && !fallbackTurnConflict
             && !displayGroupHasDeliveryArtifact(previousGroup)
           ) {
             const sourceMessages = previousGroup.sourceMessages || [previousGroup.message];
@@ -3007,27 +2953,26 @@ export default function MessagesView({
 
         if (currentWorking && !belongsToCurrentWorking(turn)) {
           flushCurrentWorking();
-          // A different working key starts a new execution segment. Do not
-          // resurrect an older group if this segment later returns to it.
-          workingByExplicitTurn.clear();
-        }
-
-        if (
-          !currentWorking
-          && !hasSameExplicitExecutionKey(previousDisplayContext, turn)
-        ) {
-          // When the previous visible row ended one execution segment, only
-          // the immediately preceding segment may be continued. Discard older
-          // keyed groups before looking up this new working row.
-          workingByExplicitTurn.clear();
         }
 
         if (currentWorking) {
           currentWorking.messages.push(...leadingNarrativeMessages, msg);
+          if (!currentWorking.explicitTurnKey && turn.explicitTurnKey) {
+            currentWorking.explicitTurnKey = turn.explicitTurnKey;
+          }
+          if (!currentWorking.fallbackTurnKey && turn.fallbackTurnKey) {
+            currentWorking.fallbackTurnKey = turn.fallbackTurnKey;
+          }
         } else {
           const existingWorking = findWorkingGroup(turn);
           if (existingWorking) {
             existingWorking.messages.push(...leadingNarrativeMessages, msg);
+            if (!existingWorking.explicitTurnKey && turn.explicitTurnKey) {
+              existingWorking.explicitTurnKey = turn.explicitTurnKey;
+            }
+            if (!existingWorking.fallbackTurnKey && turn.fallbackTurnKey) {
+              existingWorking.fallbackTurnKey = turn.fallbackTurnKey;
+            }
             registerWorkingGroup(existingWorking);
           } else {
             currentWorking = {
@@ -3036,20 +2981,17 @@ export default function MessagesView({
               sender,
               isConsecutive: leadingNarrativeIsConsecutive ?? isConsecutive,
               explicitTurnKey: turn.explicitTurnKey,
+              fallbackTurnKey: turn.fallbackTurnKey,
             };
           }
         }
-        previousDisplayContext = displayContext;
+        prevSenderUid = senderUid;
+        prevTime = msgTime;
       } else {
         flushCurrentWorking();
-        if (!hasSameExplicitExecutionKey(previousDisplayContext, displayContext)) {
-          // A visible row without the same proven execution key is a hard
-          // boundary. Keeping its predecessor's group would compact
-          // non-adjacent rows and hide this row's sender identity.
-          workingByExplicitTurn.clear();
-        }
         const displayMessage = msg;
-        const textIsConsecutive = areMessagesConsecutive(previousDisplayContext, displayContext);
+        // Recalculate isConsecutive in case a working block just processed
+        const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
         const previousGroup = groups[groups.length - 1];
         const previousSourceMessages = previousGroup?.type === 'text'
           ? (previousGroup.sourceMessages || [previousGroup.message])
@@ -3062,17 +3004,19 @@ export default function MessagesView({
             ...previousGroup,
             message: mergeAssistantDisplayMessages(sourceMessages),
             sourceMessages,
-            sender,
             explicitTurnKey: previousGroup.explicitTurnKey || turn.explicitTurnKey,
+            fallbackTurnKey: previousGroup.fallbackTurnKey || turn.fallbackTurnKey,
           };
-          previousDisplayContext = displayContext;
-          previousVisibleDisplayContext = displayContext;
+          prevSenderUid = senderUid;
+          prevTime = msgTime;
+          prevVisibleSenderUid = senderUid;
+          prevVisibleTime = msgTime;
           return;
         }
 
-        const textIsConsecutiveWithoutWorking = areMessagesConsecutive(
-          previousVisibleDisplayContext,
-          displayContext,
+        const textIsConsecutiveWithoutWorking = (
+          prevVisibleSenderUid === senderUid
+          && (msgTime - prevVisibleTime < 5 * 60 * 1000)
         );
 
         groups.push({
@@ -3085,9 +3029,12 @@ export default function MessagesView({
           isConsecutiveWithoutWorking: textIsConsecutiveWithoutWorking,
           assistantAuthored,
           explicitTurnKey: turn.explicitTurnKey,
+          fallbackTurnKey: turn.fallbackTurnKey,
         });
-        previousDisplayContext = displayContext;
-        previousVisibleDisplayContext = displayContext;
+        prevSenderUid = senderUid;
+        prevTime = msgTime;
+        prevVisibleSenderUid = senderUid;
+        prevVisibleTime = msgTime;
       }
     });
 
@@ -3096,7 +3043,6 @@ export default function MessagesView({
     return reconcileRenderedGroupConsecutiveness(reorderAssistantTurnGroups(groups));
   }, [
     availableAgentByUID,
-    currentUserIdentity,
     inferredAgentUIDs,
     isGroup,
     memberMap,
@@ -3104,6 +3050,7 @@ export default function MessagesView({
     messages,
     peerIsBot,
     resolvedPeerProfile,
+    displayAvatarUrl,
     topic,
     topicAvatarUrl,
     topicName,
@@ -3347,6 +3294,7 @@ export default function MessagesView({
     user.account_type,
     user.uid,
   ]);
+
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
     setSelectedTutorialTask(task);
@@ -3823,9 +3771,7 @@ export default function MessagesView({
             </div>
           );
         })}
-          {runtimePlan && !hasPersistedRuntimePlan && (
-            <RuntimePlanCard plan={runtimePlan} />
-          )}
+          {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}
           {peerTyping && (
             <div className="v3-peer-typing" role="status">
               <span className="v3-peer-typing-label">{t('typing')}</span>
@@ -4498,7 +4444,6 @@ function normalizeIncomingMessage(message) {
   const normalized = { ...message };
   normalized.content_blocks = contentBlocksFromMessage(message);
   normalized.metadata = message?.metadata || null;
-  normalized.client_msg_id = messageClientMsgID(message);
   normalized.msg_type = message?.msg_type || 'text';
 
   const runtimePlan = normalizeRuntimePlan(message?.content);
@@ -4697,37 +4642,21 @@ function isAssistantAuthoredMessage(message, senderIsBot = false) {
 
 function assistantReplyTurnKey(message) {
   const metadata = message?.metadata || {};
-  // These identifiers describe the Agent execution that produced the row.
-  // `stream_id` is intentionally excluded: it is a transport/lifecycle
-  // identifier used to reconcile transient deltas, and a runtime may reuse it
-  // for a later round. Reusing it for visual grouping would hide the later
-  // row's avatar and name.
-  const candidates = [
-    ['run', metadata.run_id],
-    ['run', metadata.runId],
-    ['turn', metadata.turn_id],
-    ['turn', metadata.turnId],
-    ['response', metadata.response_id],
-    ['response', metadata.responseId],
-  ];
-  for (const [kind, candidate] of candidates) {
-    if (typeof candidate !== 'string') continue;
-    const value = candidate.trim();
-    if (value) return `${kind}:${value}`;
-  }
-  return '';
+  const value = metadata.turn_id
+    ?? metadata.turnId
+    ?? metadata.response_id
+    ?? metadata.responseId
+    ?? metadata.run_id
+    ?? metadata.runId
+    ?? metadata.stream_id
+    ?? message?._stream_id;
+  return value == null ? '' : String(value).trim();
 }
 
 function messageSenderIdentity(message) {
   const rawSender = message?.from_uid ?? message?.from ?? '';
   const parsedSender = parseUid(rawSender);
   return parsedSender ? String(parsedSender) : String(rawSender).trim();
-}
-
-function assistantExecutionKey(message) {
-  const senderKey = messageSenderIdentity(message);
-  const turnKey = assistantReplyTurnKey(message);
-  return senderKey && turnKey ? `${senderKey}:turn:${turnKey}` : '';
 }
 
 function renderedGroupBoundaryMessage(group, edge = 'first') {
@@ -4771,55 +4700,17 @@ function messageTurnIdentity(message, index) {
   return String(value);
 }
 
-function explicitExecutionKey(value) {
-  if (typeof value === 'string') return value.trim();
-  return typeof value?.explicitTurnKey === 'string' ? value.explicitTurnKey.trim() : '';
-}
-
-function hasSameExplicitExecutionKey(previous, current) {
-  const previousKey = explicitExecutionKey(previous);
-  const currentKey = explicitExecutionKey(current);
-  return Boolean(previousKey && currentKey && previousKey === currentKey);
-}
-
-function assistantWorkTurn(message, senderIsBot) {
+function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
   if (!isWorkingMessage(message) && !isAssistantAuthoredMessage(message, senderIsBot)) {
-    return { explicitTurnKey: '' };
+    return { explicitTurnKey: '', fallbackTurnKey: '' };
   }
 
+  const senderKey = messageSenderIdentity(message) || 'agent';
+  const explicitTurn = assistantReplyTurnKey(message);
   return {
-    explicitTurnKey: assistantExecutionKey(message),
+    explicitTurnKey: explicitTurn ? `${senderKey}:turn:${explicitTurn}` : '',
+    fallbackTurnKey: latestHumanPromptKey ? `${senderKey}:prompt:${latestHumanPromptKey}` : '',
   };
-}
-
-function messageDisplayContext(message, senderIsBot) {
-  const senderKey = messageSenderIdentity(message);
-  const turn = assistantWorkTurn(message, senderIsBot);
-  return {
-    senderKey,
-    turn,
-    explicitTurnKey: turn.explicitTurnKey,
-    isAssistant: isWorkingMessage(message) || isAssistantAuthoredMessage(message, senderIsBot),
-    sentAt: new Date(message?.created_at || Date.now()).getTime(),
-  };
-}
-
-function areMessagesConsecutive(previousContext, currentContext) {
-  if (!previousContext || !currentContext) return false;
-  if (previousContext.senderKey !== currentContext.senderKey) return false;
-
-  if (!previousContext.isAssistant && !currentContext.isAssistant) {
-    return currentContext.sentAt - previousContext.sentAt < CONSECUTIVE_HUMAN_MESSAGE_WINDOW_MS;
-  }
-
-  // Identity is a navigation affordance, not expendable decoration. Only
-  // compact entries when both rows can be tied to the same Agent execution.
-  // A missing correlation key must fail open and show the sender again.
-  return Boolean(
-    previousContext.isAssistant
-    && currentContext.isAssistant
-    && hasSameExplicitExecutionKey(previousContext, currentContext),
-  );
 }
 
 function assistantProcessMessage(message) {
@@ -4954,11 +4845,6 @@ function assistantOutputText(message) {
 function mergeAssistantOutputGroups(groups) {
   if (groups.length === 0) return null;
 
-  const executionKey = explicitExecutionKey(groups[0]);
-  if (!executionKey || groups.some((group) => !hasSameExplicitExecutionKey(executionKey, group))) {
-    return null;
-  }
-
   const sourceMessages = groups.flatMap((group) => (
     group.sourceMessages || (group.message ? [group.message] : [])
   ));
@@ -4994,7 +4880,6 @@ function mergeAssistantOutputGroups(groups) {
     ...textBlocks,
   ];
   const lastGroup = groups[groups.length - 1];
-  const firstGroup = groups[0];
 
   return {
     ...lastGroup,
@@ -5004,11 +4889,10 @@ function mergeAssistantOutputGroups(groups) {
       content_blocks: contentBlocks,
     },
     sourceMessages,
-    sender: lastGroup.sender || firstGroup.sender,
+    sender: groups[0].sender || lastGroup.sender,
     replyMessage: lastGroup.replyMessage || null,
-    explicitTurnKey: executionKey,
-    isConsecutive: Boolean(firstGroup.isConsecutive),
-    isConsecutiveWithoutWorking: Boolean(firstGroup.isConsecutiveWithoutWorking),
+    explicitTurnKey: lastGroup.explicitTurnKey || groups.find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
+    fallbackTurnKey: lastGroup.fallbackTurnKey || groups.find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
     artifactsFirst: artifactBlocks.length > 0,
   };
 }
@@ -5041,11 +4925,6 @@ function reorderAssistantTurnBundle(groups) {
     return groups;
   }
 
-  const executionKey = explicitExecutionKey(groups[0]);
-  if (!executionKey || groups.some((group) => !hasSameExplicitExecutionKey(executionKey, group))) {
-    return groups;
-  }
-
   const firstIsConsecutive = Boolean(groups[0]?.isConsecutive);
   const sourceWorkingGroups = groups.filter((group) => group.type === 'working');
   const processGroupIndexes = new Set();
@@ -5070,8 +4949,8 @@ function reorderAssistantTurnBundle(groups) {
       ...sourceWorkingGroups[0],
       messages: executionMessages,
       workingComplete: Boolean(mergedOutput),
-      sender: sourceWorkingGroups[sourceWorkingGroups.length - 1]?.sender || sourceWorkingGroups[0]?.sender,
-      explicitTurnKey: executionKey,
+      explicitTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
+      fallbackTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
     }]
     : [];
   const ordered = [...workingGroups, ...(mergedOutput ? [mergedOutput] : [])];
@@ -5080,12 +4959,7 @@ function reorderAssistantTurnBundle(groups) {
   return ordered.map((group, index) => {
     const next = {
       ...group,
-      // The working trace inherits its place relative to the preceding row.
-      // The final reply already carries an independently computed display
-      // context. Do not turn it into a grouped row merely because it was
-      // reordered after the trace: without a proven turn ID, that would hide
-      // the Agent avatar and name on a standalone reply.
-      isConsecutive: index === 0 ? firstIsConsecutive : Boolean(group.isConsecutive),
+      isConsecutive: index === 0 ? firstIsConsecutive : true,
     };
     if (group.type !== 'working') {
       if (!firstOutputFound) {
@@ -5107,16 +4981,18 @@ function reorderAssistantSegment(groups) {
     const senderKey = messageSenderIdentity(
       group?.messages?.[0] || group?.message,
     ) || String(group?.sender?.name || '');
-    const explicitTurnKey = explicitExecutionKey(group);
+    const turnKey = group?.fallbackTurnKey || group?.explicitTurnKey || '';
     let bundle = entries[entries.length - 1];
-    const canJoinBundle = Boolean(
-      bundle
-      && bundle.senderKey === senderKey
-      && hasSameExplicitExecutionKey(bundle, group),
+    const conflictsWithCurrentTurn = Boolean(
+      bundle?.turnKey
+      && turnKey
+      && bundle.turnKey !== turnKey
     );
-    if (!canJoinBundle) {
-      bundle = { type: 'bundle', senderKey, explicitTurnKey, groups: [] };
+    if (!bundle || bundle.senderKey !== senderKey || conflictsWithCurrentTurn) {
+      bundle = { type: 'bundle', senderKey, turnKey, groups: [] };
       entries.push(bundle);
+    } else if (!bundle.turnKey && turnKey) {
+      bundle.turnKey = turnKey;
     }
     bundle.groups.push(group);
   }
@@ -5146,6 +5022,11 @@ function reorderAssistantTurnGroups(groups) {
   return ordered;
 }
 
+function messageCreatedAtMs(message) {
+  const timestamp = new Date(message?.created_at || '').getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
 function hasRichMessageBlocks(message) {
   return Array.isArray(message?.content_blocks) && message.content_blocks.length > 0;
 }
@@ -5161,10 +5042,17 @@ function shouldMergeAssistantReply(previous, current, previousSender, currentSen
   if (previous._streaming || current._streaming) return false;
   if (hasRichMessageBlocks(previous) || hasRichMessageBlocks(current)) return false;
 
-  return hasSameExplicitExecutionKey(
-    { explicitTurnKey: assistantExecutionKey(previous) },
-    { explicitTurnKey: assistantExecutionKey(current) },
-  );
+  const previousTurnKey = assistantReplyTurnKey(previous);
+  const currentTurnKey = assistantReplyTurnKey(current);
+  if (previousTurnKey || currentTurnKey) {
+    return Boolean(previousTurnKey && currentTurnKey && previousTurnKey === currentTurnKey);
+  }
+
+  const previousTime = messageCreatedAtMs(previous);
+  const currentTime = messageCreatedAtMs(current);
+  if (previousTime == null || currentTime == null) return false;
+  const gap = currentTime - previousTime;
+  return gap >= 0 && gap <= ASSISTANT_REPLY_MERGE_WINDOW_MS;
 }
 
 function mergeAssistantDisplayMessages(sourceMessages) {
@@ -5231,99 +5119,6 @@ function getStreamId(message) {
   return typeof id === 'string' && id.trim() ? id.trim() : '';
 }
 
-function streamSenderKey({ fromUid, from }) {
-  const parsedUID = parseUid(fromUid);
-  if (parsedUID > 0) return String(parsedUID);
-  const parsedFrom = parseUid(from);
-  if (parsedFrom > 0) return String(parsedFrom);
-  return String(from ?? fromUid ?? '').trim();
-}
-
-function streamMessageParts({ streamId, topic, fromUid, from }) {
-  const normalizedStreamID = typeof streamId === 'string' ? streamId.trim() : '';
-  const senderKey = streamSenderKey({ fromUid, from });
-  return normalizedStreamID && topic && senderKey
-    ? [topic, senderKey, normalizedStreamID]
-    : null;
-}
-
-function streamMessageBaseKey(message) {
-  const parts = streamMessageParts(message);
-  return parts ? JSON.stringify(parts) : '';
-}
-
-function streamMessageKey({ executionKey = '', ...message }) {
-  const parts = streamMessageParts(message);
-  const normalizedExecutionKey = typeof executionKey === 'string' ? executionKey.trim() : '';
-  return parts ? JSON.stringify([...parts, normalizedExecutionKey]) : '';
-}
-
-function streamPlaceholderKey(message) {
-  if (!message?._streaming) return '';
-  return message?._stream_key || streamMessageKey({
-    streamId: getStreamId(message),
-    topic: message?.topic_id,
-    fromUid: message?.from_uid,
-    from: message?.from,
-    executionKey: assistantReplyTurnKey(message),
-  });
-}
-
-function streamPlaceholderBaseKey(message) {
-  if (!message?._streaming) return '';
-  return streamMessageBaseKey({
-    streamId: getStreamId(message),
-    topic: message?.topic_id,
-    fromUid: message?.from_uid,
-    from: message?.from,
-  });
-}
-
-function findStreamingMessageForFinal(messages, finalMessage) {
-  const finalStreamID = getStreamId(finalMessage);
-  const finalTurnKey = assistantReplyTurnKey(finalMessage);
-  const finalSenderKey = messageSenderIdentity(finalMessage);
-  if (!finalSenderKey || (!finalStreamID && !finalTurnKey)) return -1;
-
-  const candidates = messages
-    .map((message, index) => ({ message, index }))
-    .filter(({ message }) => (
-      message?._streaming && messageSenderIdentity(message) === finalSenderKey
-    ));
-  if (finalTurnKey) {
-    const sameTurn = candidates.filter(({ message }) => (
-      assistantReplyTurnKey(message) === finalTurnKey
-    ));
-    if (sameTurn.length === 1) return sameTurn[0].index;
-
-    const uncorrelated = candidates.filter(({ message }) => (
-      !assistantReplyTurnKey(message)
-      && (!finalStreamID || getStreamId(message) === finalStreamID)
-    ));
-    return uncorrelated.length === 1 ? uncorrelated[0].index : -1;
-  }
-
-  const sameStream = candidates.filter(({ message }) => getStreamId(message) === finalStreamID);
-  return sameStream.length === 1 ? sameStream[0].index : -1;
-}
-
-function isUncorrelatedFinalReply(message) {
-  return isFinalTextMessage(message)
-    && !getStreamId(message)
-    && !assistantReplyTurnKey(message);
-}
-
-function removeStaleStreamingMessagesForFinal(messages, finalMessage) {
-  if (!isUncorrelatedFinalReply(finalMessage)) return messages;
-  const finalSenderKey = messageSenderIdentity(finalMessage);
-  if (!finalSenderKey) return messages;
-  const candidates = messages.filter((message) => (
-    message?._streaming && messageSenderIdentity(message) === finalSenderKey
-  ));
-  if (candidates.length !== 1) return messages;
-  return messages.filter((message) => message !== candidates[0]);
-}
-
 function isTimelineNearBottom(el) {
   if (!el) return true;
   return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
@@ -5336,37 +5131,11 @@ function streamDeltaText(content) {
   return String(content);
 }
 
-function upsertStreamingMessage(messages, {
-  streamId,
-  topic,
-  fromUid,
-  from,
-  content,
-  metadata,
-  role,
-}) {
-  const executionKey = assistantReplyTurnKey({ metadata });
-  const streamKey = streamMessageKey({ streamId, topic, fromUid, from, executionKey });
-  if (!streamKey) return messages;
-  const streamBaseKey = streamMessageBaseKey({ streamId, topic, fromUid, from });
-  let existingIdx = messages.findIndex((message) => streamPlaceholderKey(message) === streamKey);
-  if (existingIdx === -1) {
-    const compatible = messages
-      .map((message, index) => ({ message, index }))
-      .filter(({ message }) => streamPlaceholderBaseKey(message) === streamBaseKey)
-      .filter(({ message }) => {
-        const existingExecutionKey = assistantReplyTurnKey(message);
-        return !executionKey || !existingExecutionKey;
-      });
-    if (compatible.length === 1) existingIdx = compatible[0].index;
-  }
+function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, metadata }) {
+  const existingIdx = messages.findIndex((message) => message._stream_id === streamId);
   if (existingIdx !== -1) {
     const next = [...messages];
     const existing = next[existingIdx];
-    const existingExecutionKey = assistantReplyTurnKey(existing);
-    const nextStreamKey = existingExecutionKey && !executionKey
-      ? streamPlaceholderKey(existing)
-      : streamKey;
     next[existingIdx] = {
       ...existing,
       content: `${streamDeltaText(existing.content)}${content}`,
@@ -5375,10 +5144,8 @@ function upsertStreamingMessage(messages, {
         ...(metadata || {}),
         stream_id: streamId,
       },
-      role: role || existing.role || 'assistant',
       _streaming: true,
       _stream_id: streamId,
-      _stream_key: nextStreamKey,
     };
     return next;
   }
@@ -5387,15 +5154,13 @@ function upsertStreamingMessage(messages, {
   return [
     ...messages,
     normalizeIncomingMessage({
-      id: `stream:${streamId}:${streamSenderKey({ fromUid, from })}:${executionKey || 'uncorrelated'}`,
+      id: `stream:${streamId}`,
       seq_id: now,
       topic_id: topic,
       from_uid: fromUid,
-      from,
       content,
       type: 'text',
       msg_type: 'text',
-      role: role || 'assistant',
       metadata: {
         ...(metadata || {}),
         stream_id: streamId,
@@ -5403,7 +5168,6 @@ function upsertStreamingMessage(messages, {
       created_at: new Date(now).toISOString(),
       _streaming: true,
       _stream_id: streamId,
-      _stream_key: streamKey,
     }),
   ];
 }
@@ -5509,213 +5273,12 @@ function mergeMessages(primary, secondary) {
   [...primary, ...secondary].forEach((message) => {
     byId.set(message.id, message);
   });
-  return Array.from(byId.values()).sort(compareMessageSequence);
-}
-
-function createOptimisticUserMessage({
-  id,
-  topicId,
-  userUID,
-  content,
-  contentBlocks,
-  replyToID = 0,
-  pendingAfterSeq = 0,
-  clientMsgID = '',
-}) {
-  const message = {
-    id,
-    seq_id: id,
-    topic_id: topicId,
-    from_uid: userUID,
-    content,
-    type: 'text',
-    msg_type: 'text',
-    reply_to: replyToID,
-    created_at: new Date().toISOString(),
-    client_msg_id: clientMsgID,
-    _pending: true,
-    _pending_after_seq: pendingAfterSeq,
-  };
-  if (Array.isArray(contentBlocks) && contentBlocks.length > 0) {
-    message.content_blocks = contentBlocks;
-  }
-  return message;
-}
-
-function createClientMessageID() {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `web-${globalThis.crypto.randomUUID()}`;
-  }
-  return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function messageClientMsgID(message) {
-  const candidates = [
-    message?.client_msg_id,
-    message?.clientMsgID,
-    message?.clientMsgId,
-    message?.metadata?.client_msg_id,
-    message?.metadata?.clientMsgID,
-    message?.metadata?.clientMessageId,
-    message?.metadata?.client_message_id,
-  ];
-  for (const candidate of candidates) {
-    const value = candidate == null ? '' : String(candidate).trim();
-    if (value) return value;
-  }
-  return '';
-}
-
-function comparableContentBlocks(message) {
-  const blocks = contentBlocksFromMessage(message);
-  return blocks.length > 0 ? getComparableContent(blocks) : '';
-}
-
-function pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs) {
-  const historyID = historyMessageID(historyMessage);
-  const pendingAnchor = pendingMessageAnchor(pending);
-  const pendingCreatedAt = Date.parse(pending?.created_at || '');
-  const historyCreatedAt = Date.parse(historyMessage?.created_at || '');
-  const pendingClientMsgID = messageClientMsgID(pending);
-  const historyClientMsgID = messageClientMsgID(historyMessage);
-  const hasStableClientMatch = Boolean(
-    pendingClientMsgID
-    && historyClientMsgID
-    && pendingClientMsgID === historyClientMsgID,
-  );
-  if (
-    historyID <= 0
-    || historyID <= pendingAnchor
-    || usedHistoryIDs.has(historyID)
-    || historyMessage?._pending
-    || historyMessage?._streaming
-    || !sameUID(pending?.from_uid, historyMessage?.from_uid)
-    || (historyClientMsgID && pendingClientMsgID && historyClientMsgID !== pendingClientMsgID)
-    || (!hasStableClientMatch && getComparableContent(pending?.content) !== getComparableContent(historyMessage?.content))
-    || (!hasStableClientMatch && comparableContentBlocks(pending) !== comparableContentBlocks(historyMessage))
-    || (
-      !hasStableClientMatch
-      && Number.isFinite(pendingCreatedAt)
-      && Number.isFinite(historyCreatedAt)
-      && Math.abs(historyCreatedAt - pendingCreatedAt) > PENDING_HISTORY_MATCH_CLOCK_SKEW_MS
-    )
-  ) {
-    return false;
-  }
-
-  const pendingReplyTo = Number(pending?.reply_to || 0);
-  const historyReplyTo = Number(historyMessage?.reply_to || 0);
-  return pendingReplyTo <= 0 || historyReplyTo <= 0 || pendingReplyTo === historyReplyTo;
-}
-
-function findHistoryMatchForPending(pending, historyMessages, usedHistoryIDs) {
-  return historyMessages
-    .filter((historyMessage) => pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs))
-    .sort((left, right) => {
-      const pendingClientMsgID = messageClientMsgID(pending);
-      const leftExact = Number(Boolean(
-        pendingClientMsgID && messageClientMsgID(left) === pendingClientMsgID,
-      ));
-      const rightExact = Number(Boolean(
-        pendingClientMsgID && messageClientMsgID(right) === pendingClientMsgID,
-      ));
-      return rightExact - leftExact || historyMessageID(left) - historyMessageID(right);
-    })[0] || null;
-}
-
-function historyContainsFinalForStreamingMessage(streamingMessage, historyMessages) {
-  const streamingTurnKey = assistantReplyTurnKey(streamingMessage);
-  const streamingSenderKey = messageSenderIdentity(streamingMessage);
-  // A history snapshot has no causal ordering relative to an active stream.
-  // Transport stream IDs can be reused, so only a shared execution key proves
-  // that a persisted reply supersedes this placeholder.
-  if (!streamingTurnKey || !streamingSenderKey) return false;
-  return (historyMessages || []).some((historyMessage) => (
-    isFinalTextMessage(historyMessage)
-    && messageSenderIdentity(historyMessage) === streamingSenderKey
-    && assistantReplyTurnKey(historyMessage) === streamingTurnKey
-  ));
-}
-
-function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
-  const visibleMessages = Array.isArray(historyMessages) ? historyMessages : [];
-  const current = Array.isArray(currentMessages) ? currentMessages : [];
-  const historyIDs = new Set(
-    visibleMessages
-      .map((message) => historyMessageID(message))
-      .filter((sequence) => sequence > 0),
-  );
-  const usedHistoryIDs = new Set();
-  const pendingToKeep = [];
-  const streamingToKeep = current.filter((message) => (
-    message?._streaming
-    && !historyContainsFinalForStreamingMessage(message, visibleMessages)
-  ));
-
-  current.forEach((pending) => {
-    if (!pending?._pending) return;
-    const historyMatch = findHistoryMatchForPending(pending, visibleMessages, usedHistoryIDs);
-    if (historyMatch) {
-      usedHistoryIDs.add(historyMessageID(historyMatch));
-      return;
-    }
-
-    // Browser and server clocks cannot establish causal ordering. Until a
-    // matching client message ID or acknowledgement supplies the durable
-    // sequence, keep the anchor captured when the user sent the message.
-    pendingToKeep.push(pending);
+  // Sort by seq_id (now unified for all messages)
+  return Array.from(byId.values()).sort((a, b) => {
+    const aSeq = a.seq_id || a.id;
+    const bSeq = b.seq_id || b.id;
+    return aSeq - bSeq;
   });
-
-  const pendingByID = new Map(pendingToKeep.map((pending) => [pending.id, pending]));
-  const newerMessages = current.flatMap((message) => {
-    if (message?._pending) {
-      const pending = pendingByID.get(message.id);
-      return pending ? [pending] : [];
-    }
-    if (message?._streaming) {
-      return streamingToKeep.includes(message) ? [message] : [];
-    }
-    const sequence = historyMessageID(message);
-    return sequence <= 0 || !historyIDs.has(sequence) ? [message] : [];
-  });
-  return mergeMessages(visibleMessages, newerMessages);
-}
-
-function latestPersistedMessageSequence(messages) {
-  return (messages || []).reduce((latest, message) => {
-    // Streaming rows use Date.now() only as a local display placeholder. They
-    // do not have a durable server sequence yet, so anchoring an optimistic
-    // user message after one would make every real reply look older.
-    if (message?._pending || message?._streaming) return latest;
-    return Math.max(latest, historyMessageID(message));
-  }, 0);
-}
-
-function pendingMessageAnchor(message) {
-  const anchor = Number(message?._pending_after_seq);
-  return Number.isFinite(anchor) && anchor >= 0 ? anchor : 0;
-}
-
-function compareMessageSequence(left, right) {
-  const leftPending = Boolean(left?._pending);
-  const rightPending = Boolean(right?._pending);
-  const leftSequence = historyMessageID(left);
-  const rightSequence = historyMessageID(right);
-
-  if (leftPending && !rightPending && rightSequence > 0) {
-    return rightSequence <= pendingMessageAnchor(left) ? 1 : -1;
-  }
-  if (rightPending && !leftPending && leftSequence > 0) {
-    return leftSequence <= pendingMessageAnchor(right) ? -1 : 1;
-  }
-  if (leftPending && rightPending) {
-    const anchorDifference = pendingMessageAnchor(left) - pendingMessageAnchor(right);
-    if (anchorDifference !== 0) return anchorDifference;
-  }
-  if (leftSequence > 0 && rightSequence > 0) {
-    return leftSequence - rightSequence;
-  }
-  return 0;
 }
 
 export function mergeOwnServerEcho(messages, serverMessage, ownUID) {

@@ -336,21 +336,13 @@ export class CatsBot {
 
       const onData = (ctx: MessageContext) => {
         if (ctx.topic === topic) {
-          const message: MsgServerData = {
+          messages.push({
             topic: ctx.topic,
             from: ctx.from,
             seq: ctx.seq,
             content: ctx.content,
             reply_to: ctx.replyTo,
-          };
-          if (ctx.clientMsgID) message.client_msg_id = ctx.clientMsgID;
-          if (ctx.metadata) message.metadata = ctx.metadata;
-          if (ctx.type) message.type = ctx.type;
-          if (ctx.msgType) message.msg_type = ctx.msgType;
-          if (ctx.mode) message.mode = ctx.mode;
-          if (ctx.role) message.role = ctx.role;
-          if (ctx.contentBlocks.length > 0) message.content_blocks = ctx.contentBlocks;
-          messages.push(message);
+          });
         }
       };
 

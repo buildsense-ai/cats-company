@@ -235,7 +235,6 @@ type MsgServerData struct {
 	Topic         string                 `json:"topic"`
 	From          string                 `json:"from,omitempty"`
 	SeqID         int                    `json:"seq"`
-	ClientMsgID   string                 `json:"client_msg_id,omitempty"`
 	Content       interface{}            `json:"content"`
 	Type          string                 `json:"type,omitempty"`
 	MsgType       string                 `json:"msg_type,omitempty"`
