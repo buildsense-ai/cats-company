@@ -20,10 +20,15 @@ export class MessageContext {
   public readonly topic: string;
   public readonly from: string;
   public readonly seq: number;
+  public readonly clientMsgID: string | undefined;
+  public readonly type: string | undefined;
+  public readonly msgType: string | undefined;
   public readonly content: unknown;
   public readonly contentBlocks: unknown[];
   public readonly content_blocks: unknown[] | undefined;
   public readonly metadata: Record<string, unknown> | undefined;
+  public readonly mode: string | undefined;
+  public readonly role: string | undefined;
   public readonly replyTo: number | undefined;
 
   constructor(bot: CatsBot, data: MsgServerData) {
@@ -31,10 +36,15 @@ export class MessageContext {
     this.topic = data.topic;
     this.from = data.from ?? '';
     this.seq = data.seq;
+    this.clientMsgID = data.client_msg_id;
+    this.type = data.type;
+    this.msgType = data.msg_type;
     this.content = data.content;
     this.contentBlocks = Array.isArray(data.content_blocks) ? data.content_blocks : [];
     this.content_blocks = this.contentBlocks.length > 0 ? this.contentBlocks : undefined;
     this.metadata = data.metadata;
+    this.mode = data.mode;
+    this.role = data.role;
     this.replyTo = data.reply_to;
   }
 

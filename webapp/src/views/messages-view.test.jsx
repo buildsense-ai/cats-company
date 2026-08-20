@@ -37,6 +37,7 @@ vi.mock('../widgets/chat-message', () => ({
         data-sender-name={props.senderName || ''}
         data-sender-avatar={props.senderAvatarUrl || ''}
         data-sender-is-bot={String(Boolean(props.senderIsBot))}
+        data-message-role={props.message?.role || ''}
       >
         {props.onReply && (
           <button
@@ -165,8 +166,15 @@ vi.mock('../widgets/chat-message', () => ({
 }));
 
 vi.mock('../widgets/avatar', () => ({
-  default: function MockAvatar() {
-    return null;
+  default: function MockAvatar({ name, src, isBot }) {
+    return (
+      <div
+        className="mock-avatar"
+        data-name={name || ''}
+        data-src={src || ''}
+        data-is-bot={String(Boolean(isBot))}
+      />
+    );
   },
 }));
 
@@ -532,6 +540,7 @@ describe('MessagesView composer draft isolation', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
+    sessionStorage.clear();
     api.getMessages.mockResolvedValue({ messages: [] });
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getAgents.mockResolvedValue({ agents: [] });
@@ -1049,7 +1058,1195 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.consecutive).toBe('false');
   });
 
-  it('keeps sender metadata when the first Agent narrative is folded into a tool trace', async () => {
+  it('keeps a new Agent reply after its optimistic user message when the reply arrives first', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 100,
+        seq_id: 100,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        role: 'assistant',
+        type: 'text',
+        content: '上一轮已经完成。',
+        created_at: '2026-08-11T10:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '开始下一轮任务。');
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '开始下一轮任务。', undefined, undefined, expect.any(String));
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 102,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '下一轮的回复。',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['上一轮已经完成。', '开始下一轮任务。', '下一轮的回复。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '开始下一轮任务。',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['100', '101', '102']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('keeps the Agent identity on a new execution turn when working events arrive before the user echo', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 100,
+        seq_id: 100,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        role: 'assistant',
+        type: 'text',
+        content: '上一轮已经完成。',
+        created_at: new Date(Date.now() - 1_000).toISOString(),
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '开始新的执行轮次。');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 102,
+          from: 'usr2',
+          type: 'tool_use',
+          msg_type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-102' },
+        },
+      });
+      await flushPromises();
+    });
+
+    const workingMessage = container.querySelector('[data-working-only="true"]');
+    expect(workingMessage?.dataset.senderName).toBe('Tutorial Agent');
+    expect(workingMessage?.dataset.senderAvatar).toBe('');
+    expect(workingMessage?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '开始新的执行轮次。',
+        },
+      });
+      await flushPromises();
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-working-only="true"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('does not anchor a follow-up after a local streaming placeholder', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 100,
+        seq_id: 100,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        role: 'assistant',
+        type: 'text',
+        content: '上一轮已经完成。',
+        created_at: new Date(Date.now() - 1_000).toISOString(),
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          content: '正在继续处理…',
+          metadata: { stream_id: 'agent-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '开始下一轮任务。');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 102,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '下一轮的回复。',
+          metadata: { stream_id: 'agent-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['上一轮已经完成。', '开始下一轮任务。', '下一轮的回复。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['100', '101', '102']);
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '开始下一轮任务。',
+        },
+      });
+      await flushPromises();
+    });
+    expect(container.querySelectorAll('.mock-chat-message[data-message-id="101"]')).toHaveLength(1);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+  });
+
+  it('keeps a live streamed reply that predates a history retry without a matching final message', async () => {
+    const refreshResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages
+      .mockRejectedValueOnce(new Error('temporary history failure'))
+      .mockReturnValueOnce(refreshResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '仍在生成的文本',
+          metadata: { stream_id: 'live-before-retry-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      container.querySelector('button.v3-history-retry').click();
+      await flushPromises();
+    });
+
+    await act(async () => {
+      refreshResult.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          msg_type: 'text',
+          content: '已有历史消息',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['已有历史消息', '仍在生成的文本']);
+  });
+
+  it('does not reuse a stale streamed reply after the next history refresh', async () => {
+    const refreshResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages
+      .mockRejectedValueOnce(new Error('temporary history failure'))
+      .mockReturnValueOnce(refreshResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(container.querySelector('.v3-history-state')?.textContent).toContain('加载失败');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '旧的临时文本',
+          metadata: { stream_id: 'reused-stream-1', run_id: 'stale-run-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      const retryButton = container.querySelector('button.v3-history-retry');
+      expect(retryButton).not.toBeNull();
+      retryButton.click();
+      await flushPromises();
+    });
+
+    await act(async () => {
+      refreshResult.resolve({
+        messages: [{
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '持久化的最终回复',
+          metadata: { stream_id: 'reused-stream-1', run_id: 'stale-run-1' },
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['持久化的最终回复']);
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '下一轮的新文本',
+          metadata: { stream_id: 'reused-stream-1', run_id: 'next-run-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['持久化的最终回复', '下一轮的新文本']);
+  });
+
+  it('keeps a live stream when history only shares a reusable transport stream id', async () => {
+    const refreshResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages
+      .mockRejectedValueOnce(new Error('temporary history failure'))
+      .mockReturnValueOnce(refreshResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '当前仍在输出的文本',
+          metadata: { stream_id: 'reused-history-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      container.querySelector('button.v3-history-retry').click();
+      await flushPromises();
+    });
+
+    await act(async () => {
+      refreshResult.resolve({
+        messages: [{
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '旧轮次的持久化回复',
+          metadata: { stream_id: 'reused-history-stream-1' },
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['旧轮次的持久化回复', '当前仍在输出的文本']);
+  });
+
+  it('replaces a streamed reply when its final message has no correlation fields', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '即将被替换的临时文本',
+          metadata: { stream_id: 'uncorrelated-stream-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq_id: 101,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '没有关联字段的最终回复',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['没有关联字段的最终回复']);
+  });
+
+  it('keeps execution turns separate when an Agent reuses a stream id', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一轮的临时文本',
+          metadata: { stream_id: 'reused-stream-1', run_id: 'run-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二轮的临时文本',
+          metadata: { stream_id: 'reused-stream-1', run_id: 'run-2' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['第一轮的临时文本', '第二轮的临时文本']);
+  });
+
+  it('keeps appending a stream when later deltas omit its execution key', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一段',
+          metadata: { stream_id: 'sparse-stream-1', run_id: 'run-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二段',
+          metadata: { stream_id: 'sparse-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['第一段第二段']);
+  });
+
+  it('does not discard concurrent streamed replies for an uncorrelated final message', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一条并行临时回复',
+          metadata: { stream_id: 'concurrent-stream-1', run_id: 'run-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二条并行临时回复',
+          metadata: { stream_id: 'concurrent-stream-2', run_id: 'run-2' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq_id: 101,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '无法关联的最终回复',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual([
+      '无法关联的最终回复',
+      '第一条并行临时回复',
+      '第二条并行临时回复',
+    ]);
+  });
+
+  it('keeps a streamed reply that arrives while history is loading', async () => {
+    const historyResult = deferred();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '历史请求期间的新文本',
+          metadata: { stream_id: 'in-flight-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: '已有历史消息',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['已有历史消息', '历史请求期间的新文本']);
+  });
+
+  it('keeps stream placeholders separate when two senders reuse the same stream id', async () => {
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: 'Agent room' },
+      members: [
+        { user_id: 1, display_name: 'Me' },
+        { user_id: 2, display_name: 'Agent one', is_bot: true },
+        { user_id: 3, display_name: 'Agent two', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'grp_9',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一个 Agent 的文本',
+          metadata: { stream_id: 'shared-stream-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'grp_9',
+          from: 'usr3',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二个 Agent 的文本',
+          metadata: { stream_id: 'shared-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['第一个 Agent 的文本', '第二个 Agent 的文本']);
+  });
+
+  it('reconciles a pending send when the initial history already contains it', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '历史加载期间发送的任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 100,
+            seq_id: 100,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '上一轮已经完成。',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+          {
+            id: 101,
+            seq_id: 101,
+            topic_id: 'p2p_1_2',
+            from_uid: 1,
+            type: 'text',
+            content: '历史加载期间发送的任务',
+            created_at: new Date(Date.now() + 1000).toISOString(),
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '新一轮的回复。',
+            created_at: new Date(Date.now() + 60 * 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['100', '101', '102']);
+    expect(container.querySelectorAll('[data-message-content="历史加载期间发送的任务"]')).toHaveLength(1);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('does not consume an older repeated prompt as the pending send', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '重复任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 90,
+            seq_id: 90,
+            topic_id: 'p2p_1_2',
+            from_uid: 1,
+            type: 'text',
+            content: '重复任务',
+            created_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          },
+          {
+            id: 100,
+            seq_id: 100,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '上一轮已经完成。',
+            created_at: new Date(Date.now() - 9 * 60 * 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('[data-message-content="重复任务"]')).toHaveLength(2);
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('uses client message id when history contains an older repeated prompt', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '重复任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    const clientMsgID = api.sendMessage.mock.calls[0][4];
+    expect(clientMsgID).toEqual(expect.any(String));
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 90,
+            seq_id: 90,
+            topic_id: 'p2p_1_2',
+            from_uid: 1,
+            type: 'text',
+            content: '重复任务',
+            created_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          },
+          {
+            id: 101,
+            seq_id: 101,
+            topic_id: 'p2p_1_2',
+            from_uid: 1,
+            type: 'text',
+            content: '重复任务',
+            client_msg_id: clientMsgID,
+            created_at: new Date(Date.now() + 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['90', '101']);
+    expect(container.querySelectorAll('[data-message-content="重复任务"]')).toHaveLength(2);
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101, client_msg_id: clientMsgID });
+      await flushPromises();
+    });
+  });
+
+  it('reconciles an own echo that carries the legacy metadata client message id', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 100,
+        seq_id: 100,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        role: 'assistant',
+        type: 'text',
+        content: '上一轮已经完成。',
+        created_at: '2026-08-11T10:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '发送前的展示文本');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    const clientMsgID = api.sendMessage.mock.calls[0][4];
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '服务端规范化后的展示文本',
+          metadata: { client_message_id: clientMsgID },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['100', '101']);
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101, client_msg_id: clientMsgID });
+      await flushPromises();
+    });
+  });
+
+  it('keeps an optimistic user row before newer history when the server clock is behind', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '本地待确认的请求。');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [{
+          id: 102,
+          seq_id: 102,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '服务端历史中的回复。',
+          created_at: new Date(Date.now() - 60_000).toISOString(),
+        }],
+      });
+      await flushPromises();
+    });
+
+    try {
+      expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+        (message) => message.dataset.messageContent,
+      )).toEqual(['本地待确认的请求。', '服务端历史中的回复。']);
+    } finally {
+      await act(async () => {
+        sendResult.resolve({ seq_id: 101 });
+        await flushPromises();
+      });
+    }
+  });
+
+  it('keeps an unresolved send at its captured anchor until acknowledgement', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '历史之后的任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '上一轮已经完成。',
+          created_at: new Date(Date.now() - 60 * 1000).toISOString(),
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['历史之后的任务', '上一轮已经完成。']);
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 102,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '新一轮的回复。',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['历史之后的任务', '上一轮已经完成。', '新一轮的回复。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('keeps a live Agent reply after an unresolved user send during history merge', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '等待历史返回的任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 102,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '新一轮的回复。',
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 100,
+            seq_id: 100,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '上一轮已经完成。',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '新一轮的回复。',
+            created_at: new Date(Date.now() + 60 * 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['等待历史返回的任务', '上一轮已经完成。', '新一轮的回复。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('keeps a history-only Agent reply after an unresolved user send', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '历史里已经出现新回复的任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 100,
+            seq_id: 100,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '上一轮已经完成。',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '新一轮的回复。',
+            created_at: new Date(Date.now() + 60 * 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['历史里已经出现新回复的任务', '上一轮已经完成。', '新一轮的回复。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('keeps a fast history-only Agent reply after an unresolved user send', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '快速回复任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 100,
+            seq_id: 100,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '上一轮已经完成。',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '快速回复结果。',
+            created_at: new Date(Date.now() + 2 * 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['快速回复任务', '上一轮已经完成。', '快速回复结果。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+
+  });
+
+  it('keeps sender metadata when an unkeyed Agent narrative remains separate from a tool trace', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [
         {
@@ -1097,8 +2294,13 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
+    const narrative = container.querySelector('.mock-chat-message[data-message-id="742"]');
+    expect(narrative?.dataset.senderName).toBe('市场洞察助理');
+    expect(narrative?.dataset.senderAvatar).toBe('/uploads/market-agent.png');
+    expect(narrative?.dataset.consecutive).toBe('false');
+
     const workingMessage = container.querySelector('[data-working-only="true"]');
-    expect(workingMessage?.dataset.workingMessageIds).toBe('742,743');
+    expect(workingMessage?.dataset.workingMessageIds).toBe('743');
     expect(workingMessage?.dataset.senderName).toBe('市场洞察助理');
     expect(workingMessage?.dataset.senderAvatar).toBe('/uploads/market-agent.png');
     expect(workingMessage?.dataset.consecutive).toBe('false');
@@ -1184,6 +2386,94 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.senderAvatar).toBe('/uploads/current-agent.png');
   });
 
+  it('uses the Agent roster identity when the group member display fields are empty', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 81,
+        seq_id: 81,
+        topic_id: 'grp_9',
+        from_uid: 2,
+        type: 'text',
+        content: 'Roster fallback group reply',
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: 'Roster fallback group' },
+      members: [{ user_id: 1, display_name: 'Me' }, {
+        user_id: 2,
+        display_name: '',
+        avatar_url: '',
+        is_bot: true,
+      }],
+    });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 2,
+        display_name: 'Roster Group Agent',
+        avatar_url: '/uploads/roster-group-agent.png',
+        is_bot: true,
+      }],
+    });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      topicName: '',
+      topicAvatarUrl: '',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="81"]');
+    expect(message?.dataset.senderName).toBe('Roster Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/roster-group-agent.png');
+  });
+
+  it('uses canonical message identity when group member lookups are unavailable', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 82,
+        seq_id: 82,
+        topic_id: 'grp_9',
+        from_uid: 2,
+        type: 'text',
+        content: 'Canonical group identity reply',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr2',
+              display_name: 'Canonical Group Agent',
+              avatar_url: '/uploads/canonical-group-agent.png',
+              account_type: 'bot',
+              is_bot: true,
+            },
+          },
+        },
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: 'Canonical identity group' },
+      members: [{ user_id: 1, display_name: 'Me' }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      topicName: '',
+      topicAvatarUrl: '',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="82"]');
+    expect(message?.dataset.senderName).toBe('Canonical Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-group-agent.png');
+    expect(message?.dataset.senderIsBot).toBe('true');
+  });
+
   it('uses the live Agent roster when the peer profile request has no result', async () => {
     const rosterAgent = {
       uid: 2,
@@ -1212,8 +2502,267 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.senderAvatar).toBe('/uploads/roster-agent.png');
   });
 
+  it('uses canonical message identity after a cold peer refresh', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 83,
+        seq_id: 83,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'Canonical peer identity reply',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr2',
+              display_name: 'Canonical Peer Agent',
+              avatar_url: '/uploads/canonical-peer-agent.png',
+              account_type: 'bot',
+              is_bot: true,
+            },
+          },
+        },
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="83"]');
+    expect(message?.dataset.senderName).toBe('Canonical Peer Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-peer-agent.png');
+    expect(message?.dataset.senderIsBot).toBe('true');
+  });
+
+  it('renders a cold streaming reply with canonical identity and assistant role', async () => {
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '正在处理…',
+          metadata: {
+            stream_id: 'cold-stream-1',
+            catsco_identity: {
+              actor: {
+                user_id: 'usr2',
+                display_name: 'Canonical Stream Agent',
+                avatar_url: '/uploads/canonical-stream-agent.png',
+                account_type: 'bot',
+                is_bot: true,
+              },
+            },
+          },
+        },
+      });
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id^="stream:cold-stream-1"]');
+    expect(message?.dataset.senderName).toBe('Canonical Stream Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-stream-agent.png');
+    expect(message?.dataset.senderIsBot).toBe('true');
+    expect(message?.dataset.messageRole).toBe('assistant');
+  });
+
+  it('uses canonical message identity for an incomplete current-user profile', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 84,
+        seq_id: 84,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: 'Canonical self identity reply',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr1',
+              display_name: 'Canonical Me',
+              avatar_url: '/uploads/canonical-me.png',
+              account_type: 'human',
+              is_bot: false,
+            },
+          },
+        },
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', {
+      user: { ...user, display_name: '', avatar_url: '' },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="84"]');
+    expect(message?.dataset.senderName).toBe('Canonical Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-me.png');
+    expect(message?.dataset.senderIsBot).toBe('false');
+  });
+
+  it('merges canonical self identity from a WebSocket echo after the HTTP ACK', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2', {
+      user: { ...user, display_name: '', avatar_url: '' },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    const sendButton = container.querySelector('button[aria-label="发送"]');
+    await act(async () => {
+      typeDraft(textarea, '等待身份回声的消息');
+      await flushPromises(30);
+    });
+    expect(textarea.value).toBe('等待身份回声的消息');
+    expect(sendButton.disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(sendButton);
+      await flushPromises(30);
+    });
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises(30);
+    });
+
+    expect(container.querySelector('.mock-chat-message[data-message-id="101"]')?.dataset.senderAvatar)
+      .toBe('');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '等待身份回声的消息',
+          metadata: {
+            catsco_identity: {
+              actor: {
+                user_id: 'usr1',
+                display_name: 'Canonical Me',
+                avatar_url: '/uploads/canonical-me-echo.png',
+                account_type: 'human',
+              },
+            },
+          },
+        },
+      });
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="101"]');
+    expect(message?.dataset.senderName).toBe('Canonical Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-me-echo.png');
+  });
+
+  it('refreshes an existing self-authored row when the current-user profile changes', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 86,
+        seq_id: 86,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: 'A message sent before the profile refresh.',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr1',
+              display_name: 'Old Me',
+              avatar_url: '/uploads/old-me.png',
+              account_type: 'human',
+            },
+          },
+        },
+      }],
+    });
+    const incompleteUser = { ...user, display_name: '', avatar_url: '' };
+
+    await mountTopic(root, 'p2p_1_2', { user: incompleteUser });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    let message = container.querySelector('.mock-chat-message[data-message-id="86"]');
+    expect(message?.dataset.senderName).toBe('Old Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/old-me.png');
+
+    await mountTopic(root, 'p2p_1_2', {
+      user: {
+        ...incompleteUser,
+        display_name: 'Refreshed Me',
+        avatar_url: '/uploads/refreshed-me.png',
+      },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    message = container.querySelector('.mock-chat-message[data-message-id="86"]');
+    expect(message?.dataset.senderName).toBe('Refreshed Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/refreshed-me.png');
+  });
+
+  it('keeps peer identity when the live Agent roster has empty display fields', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 79,
+        seq_id: 79,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'Partial roster reply',
+      }],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [{
+        id: 2,
+        display_name: 'Complete Agent Profile',
+        avatar_url: '/uploads/complete-agent.png',
+        is_bot: true,
+      }],
+    });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 2,
+        display_name: '',
+        avatar_url: '',
+        is_bot: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="79"]');
+    expect(message?.dataset.senderName).toBe('Complete Agent Profile');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/complete-agent.png');
+  });
+
   it('does not restore a failed old-topic draft after the user has switched topics', async () => {
     let rejectSend;
+    api.sendMessage.mockReset();
     api.sendMessage.mockImplementationOnce(() => new Promise((resolve, reject) => {
       rejectSend = reject;
     }));
@@ -1230,6 +2779,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
+    expect(rejectSend).toEqual(expect.any(Function));
 
     await mountTopic(root, 'p2p_1_3');
 
@@ -1287,7 +2837,7 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '普通好友消息', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '普通好友消息', undefined, undefined, expect.any(String));
     expect(onOpenDesktopConnect).not.toHaveBeenCalled();
   });
 
@@ -1627,6 +3177,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'A provider supplies the service.',
+          metadata: { run_id: 'assistant-chunks-1' },
           created_at: '2026-07-20T09:24:00Z',
         },
         {
@@ -1637,6 +3188,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'The agent coordinates the work.',
+          metadata: { run_id: 'assistant-chunks-1' },
           created_at: '2026-07-20T09:24:12Z',
         },
         {
@@ -1647,6 +3199,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'The provider performs it.',
+          metadata: { run_id: 'assistant-chunks-1' },
           created_at: '2026-07-20T09:24:24Z',
         },
       ],
@@ -1686,6 +3239,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '第一段。\n\n第二段。',
+          metadata: { run_id: 'assistant-paragraphs-1' },
           created_at: '2026-07-20T09:25:10Z',
         },
         {
@@ -1695,6 +3249,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '- 保留列表一\n- 保留列表二',
+          metadata: { run_id: 'assistant-paragraphs-1' },
           created_at: '2026-07-20T09:25:20Z',
         },
         {
@@ -1704,6 +3259,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '列表后的说明。',
+          metadata: { run_id: 'assistant-paragraphs-1' },
           created_at: '2026-07-20T09:25:30Z',
         },
       ],
@@ -1720,7 +3276,7 @@ describe('MessagesView composer draft isolation', () => {
     );
   });
 
-  it('keeps plan updates from the same Agent turn in one working group across assistant text', async () => {
+  it('keeps an unkeyed Agent narrative as a working-group boundary', async () => {
     mockTutorialAgentPeer();
     api.getMessages.mockResolvedValueOnce({
       messages: [
@@ -1781,7 +3337,7 @@ describe('MessagesView composer draft isolation', () => {
           content: 'update_plan',
           metadata: {
             id: 'plan-2',
-            turn_id: 'retry-2',
+            turn_id: 'retry-1',
             input: {
               steps: [
                 { status: 'completed', step: '实现功能' },
@@ -1798,7 +3354,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_result',
           content: '计划已更新：2/2 已完成',
-          metadata: { tool_use_id: 'plan-2', turn_id: 'retry-2' },
+          metadata: { tool_use_id: 'plan-2', turn_id: 'retry-1' },
           created_at: '2026-07-20T10:00:05Z',
         },
       ],
@@ -1810,11 +3366,487 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     const workingGroups = container.querySelectorAll('.oc-working-group');
-    expect(workingGroups).toHaveLength(1);
-    const workingMessage = workingGroups[0].querySelector('[data-working-only="true"]');
-    expect(workingMessage?.dataset.workingCount).toBe('4');
-    expect(workingMessage?.dataset.workingMessageIds).toBe('91,92,94,95');
+    expect(workingGroups).toHaveLength(2);
+    expect(workingGroups[0].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('91,92');
+    expect(workingGroups[1].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('94,95');
     expect(container.querySelector('.mock-chat-message[data-message-id="93"]')).not.toBeNull();
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['实现并测试这项功能', 'update_plan', '功能和测试已经完成。', 'update_plan']);
+  });
+
+  it('does not merge the same Agent turn across an intervening human message', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 91,
+          seq_id: 91,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { run_id: 'run-with-human-gap' },
+          created_at: '2026-07-20T10:00:01Z',
+        },
+        {
+          id: 92,
+          seq_id: 92,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: '插入的用户消息',
+          created_at: '2026-07-20T10:00:02Z',
+        },
+        {
+          id: 93,
+          seq_id: 93,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '命令完成',
+          metadata: { run_id: 'run-with-human-gap' },
+          created_at: '2026-07-20T10:00:03Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingGroups = container.querySelectorAll('.oc-working-group');
+    expect(workingGroups).toHaveLength(2);
+    expect(workingGroups[0].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('91');
+    expect(workingGroups[1].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('93');
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['execute_shell', '插入的用户消息', '命令完成']);
+  });
+
+  it('does not resurrect a working group across an unkeyed Agent reply', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 94,
+          seq_id: 94,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { run_id: 'run-with-agent-gap' },
+          created_at: '2026-07-20T10:01:01Z',
+        },
+        {
+          id: 95,
+          seq_id: 95,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '中间的 Agent 文本',
+          created_at: '2026-07-20T10:01:02Z',
+        },
+        {
+          id: 96,
+          seq_id: 96,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '命令完成',
+          metadata: { run_id: 'run-with-agent-gap' },
+          created_at: '2026-07-20T10:01:03Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingGroups = container.querySelectorAll('.oc-working-group');
+    expect(workingGroups).toHaveLength(2);
+    expect(workingGroups[0].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('94');
+    expect(workingGroups[1].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('96');
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['execute_shell', '中间的 Agent 文本', '命令完成']);
+  });
+
+  it('does not resurrect an older working group after alternating keyed Agent segments', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 118,
+          seq_id: 118,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { run_id: 'run-a' },
+          created_at: '2026-07-20T10:01:11Z',
+        },
+        {
+          id: 119,
+          seq_id: 119,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A 阶段说明。',
+          metadata: { run_id: 'run-a' },
+          created_at: '2026-07-20T10:01:12Z',
+        },
+        {
+          id: 120,
+          seq_id: 120,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'read_file',
+          metadata: { run_id: 'run-b' },
+          created_at: '2026-07-20T10:01:13Z',
+        },
+        {
+          id: 121,
+          seq_id: 121,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'B 阶段说明。',
+          metadata: { run_id: 'run-b' },
+          created_at: '2026-07-20T10:01:14Z',
+        },
+        {
+          id: 122,
+          seq_id: 122,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: 'A 阶段完成。',
+          metadata: { run_id: 'run-a' },
+          created_at: '2026-07-20T10:01:15Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingGroups = container.querySelectorAll('.oc-working-group');
+    expect(workingGroups).toHaveLength(3);
+    expect(Array.from(workingGroups).map((group) => (
+      group.querySelector('[data-working-only="true"]')?.dataset.workingMessageIds
+    ))).toEqual(['118', '120', '122']);
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['execute_shell', 'A 阶段说明。', 'read_file', 'B 阶段说明。', 'A 阶段完成。']);
+  });
+
+  it('does not bridge a plan trace across another Agent narrative row', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 97,
+          seq_id: 97,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'update_plan',
+          metadata: { id: 'plan-gap', turn_id: 'plan-gap-turn' },
+          created_at: '2026-07-20T10:02:01Z',
+        },
+        {
+          id: 98,
+          seq_id: 98,
+          topic_id: 'p2p_1_2',
+          from_uid: 3,
+          role: 'assistant',
+          type: 'text',
+          content: '另一个 Agent 的说明',
+          created_at: '2026-07-20T10:02:02Z',
+        },
+        {
+          id: 99,
+          seq_id: 99,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '计划已更新',
+          metadata: { tool_use_id: 'plan-gap', turn_id: 'plan-gap-turn' },
+          created_at: '2026-07-20T10:02:03Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.oc-working-group')).toHaveLength(2);
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['update_plan', '另一个 Agent 的说明', '计划已更新']);
+  });
+
+  it('starts a new working segment when a bridged plan is followed by another tool', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'update_plan',
+          metadata: { id: 'plan-bridge', run_id: 'plan-bridge-turn' },
+          created_at: '2026-07-20T10:03:01Z',
+        },
+        {
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '计划已更新',
+          metadata: { tool_use_id: 'plan-bridge', run_id: 'plan-bridge-turn' },
+          created_at: '2026-07-20T10:03:02Z',
+        },
+        {
+          id: 102,
+          seq_id: 102,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '先说明一下接下来的执行。',
+          created_at: '2026-07-20T10:03:03Z',
+        },
+        {
+          id: 103,
+          seq_id: 103,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'shell-after-plan', run_id: 'plan-bridge-turn' },
+          created_at: '2026-07-20T10:03:04Z',
+        },
+        {
+          id: 104,
+          seq_id: 104,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '命令完成',
+          metadata: { tool_use_id: 'shell-after-plan', run_id: 'plan-bridge-turn' },
+          created_at: '2026-07-20T10:03:05Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingGroups = container.querySelectorAll('.oc-working-group');
+    expect(workingGroups).toHaveLength(2);
+    expect(workingGroups[0].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('100,101');
+    expect(workingGroups[1].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('103,104');
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['update_plan', '先说明一下接下来的执行。', 'execute_shell']);
+  });
+
+  it('does not reuse a plan group after a bridge and a keyed narrative gap', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 105,
+          seq_id: 105,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'update_plan',
+          metadata: { id: 'plan-replay', run_id: 'plan-replay-turn' },
+          created_at: '2026-07-20T10:04:01Z',
+        },
+        {
+          id: 106,
+          seq_id: 106,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '计划已更新',
+          metadata: { tool_use_id: 'plan-replay', run_id: 'plan-replay-turn' },
+          created_at: '2026-07-20T10:04:02Z',
+        },
+        {
+          id: 107,
+          seq_id: 107,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '第一次无 key 说明。',
+          created_at: '2026-07-20T10:04:03Z',
+        },
+        {
+          id: 108,
+          seq_id: 108,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '同一执行中的带 key 说明。',
+          metadata: { run_id: 'plan-replay-turn' },
+          created_at: '2026-07-20T10:04:04Z',
+        },
+        {
+          id: 109,
+          seq_id: 109,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '第二次无 key 说明。',
+          created_at: '2026-07-20T10:04:05Z',
+        },
+        {
+          id: 110,
+          seq_id: 110,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'update_plan',
+          metadata: { id: 'plan-replay-next', run_id: 'plan-replay-turn' },
+          created_at: '2026-07-20T10:04:06Z',
+        },
+        {
+          id: 111,
+          seq_id: 111,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '计划已更新',
+          metadata: { tool_use_id: 'plan-replay-next', run_id: 'plan-replay-turn' },
+          created_at: '2026-07-20T10:04:07Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingGroups = container.querySelectorAll('.oc-working-group');
+    expect(workingGroups).toHaveLength(2);
+    expect(workingGroups[0].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('105,106');
+    expect(workingGroups[1].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('110,111');
+  });
+
+  it('treats a keyed narrative after the bridge as a new plan boundary', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 112,
+          seq_id: 112,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'update_plan',
+          metadata: { id: 'plan-boundary', run_id: 'plan-boundary-turn' },
+          created_at: '2026-07-20T10:05:01Z',
+        },
+        {
+          id: 113,
+          seq_id: 113,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '计划已更新',
+          metadata: { tool_use_id: 'plan-boundary', run_id: 'plan-boundary-turn' },
+          created_at: '2026-07-20T10:05:02Z',
+        },
+        {
+          id: 114,
+          seq_id: 114,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '桥接说明。',
+          created_at: '2026-07-20T10:05:03Z',
+        },
+        {
+          id: 115,
+          seq_id: 115,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '带 key 的可见结果。',
+          metadata: { run_id: 'plan-boundary-turn' },
+          created_at: '2026-07-20T10:05:04Z',
+        },
+        {
+          id: 116,
+          seq_id: 116,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'update_plan',
+          metadata: { id: 'plan-boundary-next', run_id: 'plan-boundary-turn' },
+          created_at: '2026-07-20T10:05:05Z',
+        },
+        {
+          id: 117,
+          seq_id: 117,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: '计划已更新',
+          metadata: { tool_use_id: 'plan-boundary-next', run_id: 'plan-boundary-turn' },
+          created_at: '2026-07-20T10:05:06Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingGroups = container.querySelectorAll('.oc-working-group');
+    expect(workingGroups).toHaveLength(2);
+    expect(workingGroups[0].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('112,113');
+    expect(workingGroups[1].querySelector('[data-working-only="true"]')?.dataset.workingMessageIds)
+      .toBe('116,117');
   });
 
   it('orders one Agent turn as working trace, delivery files, then the final result', async () => {
@@ -1837,6 +3869,7 @@ describe('MessagesView composer draft isolation', () => {
           content: 'update_plan',
           metadata: {
             id: 'plan-1',
+            run_id: 'run-order-1',
             input: {
               steps: [
                 { status: 'in_progress', step: '实现游戏' },
@@ -1852,7 +3885,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_result',
           content: '计划已更新：0/2 已完成',
-          metadata: { tool_use_id: 'plan-1' },
+          metadata: { tool_use_id: 'plan-1', run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:02Z',
         },
         {
@@ -1862,6 +3895,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'AI文本:检查和压缩包验收都通过。',
+          metadata: { run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:03Z',
         },
         {
@@ -1879,6 +3913,7 @@ describe('MessagesView composer draft isolation', () => {
               mime_type: 'application/zip',
             },
           }),
+          metadata: { run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:04Z',
         },
         {
@@ -1888,6 +3923,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '更新版现在发送，旧存档仍可继续使用。',
+          metadata: { run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:05Z',
         },
         {
@@ -1898,6 +3934,7 @@ describe('MessagesView composer draft isolation', () => {
           content: 'update_plan',
           metadata: {
             id: 'plan-2',
+            run_id: 'run-order-1',
             input: {
               steps: [
                 { status: 'completed', step: '实现游戏' },
@@ -1913,7 +3950,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_result',
           content: '计划已更新：2/2 已完成',
-          metadata: { tool_use_id: 'plan-2' },
+          metadata: { tool_use_id: 'plan-2', run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:07Z',
         },
       ],
@@ -1942,6 +3979,331 @@ describe('MessagesView composer draft isolation', () => {
       '更新版现在发送，旧存档仍可继续使用。',
     );
 
+  });
+
+  it('keeps identity on a final reply replayed with uncorrelated working history', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 108,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-108' },
+        },
+        {
+          id: 109,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: 'done',
+          metadata: { tool_use_id: 'tool-108' },
+        },
+        {
+          id: 110,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The independent reply is ready.',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-working-only="true"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="110"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('does not compact adjacent Agent history rows without a correlation key, even within seconds', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 111,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'First replayed reply.',
+          created_at: '2026-07-20T09:24:00Z',
+        },
+        {
+          id: 112,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'Second replayed reply.',
+          created_at: '2026-07-20T09:24:12Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+    expect(container.querySelector('[data-message-id="111"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="112"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('keeps adjacent human messages compact within the existing time window', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 120,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: '第一条普通消息。',
+          created_at: '2026-07-20T09:24:00Z',
+        },
+        {
+          id: 121,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: '第二条普通消息。',
+          created_at: '2026-07-20T09:24:12Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-message-id="120"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="121"]')?.dataset.consecutive)
+      .toBe('true');
+  });
+
+  it('keeps Agent rows identity-bearing when execution metadata is not a string key', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 122,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '第一条无效 execution key 的回复。',
+          metadata: { run_id: { value: 'first' } },
+        },
+        {
+          id: 123,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '第二条无效 execution key 的回复。',
+          metadata: { run_id: { value: 'second' } },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+    expect(container.querySelector('[data-message-id="122"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="123"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('does not hide Agent identity when a transport stream id is reused', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 113,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'First response on the stream.',
+          metadata: { stream_id: 'reused-stream-1' },
+        },
+        {
+          id: 114,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'Later response reusing the stream id.',
+          metadata: { stream_id: 'reused-stream-1' },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+    expect(container.querySelector('[data-message-id="113"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="114"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('keeps uncorrelated Agent work and replayed replies as separate identity-bearing rows', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 117,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-117' },
+          created_at: '2026-07-20T09:30:00Z',
+        },
+        {
+          id: 118,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A replayed result from a separate execution.',
+          created_at: '2026-07-20T09:32:00Z',
+          metadata: {
+            catsco_identity: {
+              actor: {
+                user_id: 'usr2',
+                display_name: 'Earlier Agent Identity',
+                avatar_url: '/uploads/earlier-agent.png',
+                account_type: 'bot',
+              },
+            },
+          },
+        },
+        {
+          id: 119,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The new execution reply must keep its own identity.',
+          created_at: '2026-07-20T09:34:00Z',
+          metadata: {
+            catsco_identity: {
+              actor: {
+                user_id: 'usr2',
+                display_name: 'Current Agent Identity',
+                avatar_url: '/uploads/current-agent.png',
+                account_type: 'bot',
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['117', '118', '119']);
+    expect(container.querySelector('[data-message-id="118"]')?.dataset.senderName)
+      .toBe('Earlier Agent Identity');
+    expect(container.querySelector('[data-message-id="119"]')?.dataset.senderName)
+      .toBe('Current Agent Identity');
+    expect(container.querySelector('[data-message-id="119"]')?.dataset.senderAvatar)
+      .toBe('/uploads/current-agent.png');
+    expect(container.querySelector('[data-message-id="119"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('keeps a new execution identifiable when a publisher reuses a turn label', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 113,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The first execution finished.',
+          metadata: { turn_id: 'shared-turn', run_id: 'run-1' },
+        },
+        {
+          id: 114,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The new execution started.',
+          metadata: { turn_id: 'shared-turn', run_id: 'run-2' },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-message-id="114"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('does not conflate identifiers from different execution scopes', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 115,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A response-level correlation key.',
+          metadata: { turn_id: 'shared-key' },
+        },
+        {
+          id: 116,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A later execution with the same literal label.',
+          metadata: { run_id: 'shared-key' },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-message-id="116"]')?.dataset.consecutive)
+      .toBe('false');
   });
 
   it('marks a tool trace complete when the same turn has a final reply without a plan', async () => {
@@ -2026,7 +4388,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_use',
           content: 'execute_shell',
-          metadata: { id: 'tool-131' },
+          metadata: { id: 'tool-131', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:01Z',
         },
         {
@@ -2035,7 +4397,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_result',
           content: 'search complete',
-          metadata: { tool_use_id: 'tool-131' },
+          metadata: { tool_use_id: 'tool-131', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:02Z',
         },
         {
@@ -2044,6 +4406,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'text',
           content: '已确认当前最近日期的赛事。',
+          metadata: { run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:03Z',
         },
         {
@@ -2052,7 +4415,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_use',
           content: 'read_file',
-          metadata: { id: 'tool-134' },
+          metadata: { id: 'tool-134', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:04Z',
         },
         {
@@ -2061,7 +4424,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_result',
           content: 'file ready',
-          metadata: { tool_use_id: 'tool-134' },
+          metadata: { tool_use_id: 'tool-134', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:05Z',
         },
         {
@@ -2078,6 +4441,7 @@ describe('MessagesView composer draft isolation', () => {
               mime_type: 'application/pdf',
             },
           },
+          metadata: { run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:06Z',
         },
         {
@@ -2086,6 +4450,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'text',
           content: '图文简报已发。',
+          metadata: { run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:07Z',
         },
       ],
@@ -2128,7 +4493,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_use',
           content: 'write_file',
-          metadata: { id: 'write-121' },
+          metadata: { id: 'write-121', run_id: 'run-delivery-1' },
           created_at: '2026-07-20T11:02:01Z',
         },
         {
@@ -2138,6 +4503,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '文件已经生成。',
+          metadata: { run_id: 'run-delivery-1' },
           created_at: '2026-07-20T11:02:02Z',
         },
         {
@@ -2155,6 +4521,7 @@ describe('MessagesView composer draft isolation', () => {
               mime_type: 'application/zip',
             },
           },
+          metadata: { run_id: 'run-delivery-1' },
           created_at: '2026-07-20T11:02:03Z',
         },
       ],
@@ -2655,7 +5022,92 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '检查这段代码', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '检查这段代码', undefined, undefined, expect.any(String));
+  });
+
+  it('keeps a regenerated Agent reply separated when it arrives before the ACK', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          msg_type: 'text',
+          content: '检查这段代码',
+          created_at: '2026-08-11T10:00:00Z',
+        },
+        {
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          msg_type: 'text',
+          content: '这是第一次检查结果',
+          created_at: '2026-08-11T10:01:00Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-regenerate-message[data-message-id="101"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 103,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '这是重新生成的结果',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['检查这段代码', '这是第一次检查结果', '检查这段代码', '这是重新生成的结果']);
+    expect(container.querySelector('[data-message-id="103"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 102 });
+      await flushPromises();
+    });
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['100', '101', '102', '103']);
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 102,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '检查这段代码',
+        },
+      });
+      await flushPromises();
+    });
+    expect(container.querySelectorAll('.mock-chat-message[data-message-id="102"]')).toHaveLength(1);
+    expect(container.querySelector('[data-message-id="103"]')?.dataset.consecutive).toBe('false');
   });
 
   it('keeps the visible Artifact focus when regenerating a bot reply', async () => {
@@ -2746,7 +5198,7 @@ describe('MessagesView composer draft isolation', () => {
       metadata: {
         artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
-    }, undefined);
+    }, undefined, undefined, expect.any(String));
   });
 
   it('does not expose regenerate for bot replies in a standard group', async () => {
@@ -2838,7 +5290,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '再补充一个条件', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '再补充一个条件', undefined, undefined, expect.any(String));
     expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
   });
 
@@ -3148,6 +5600,7 @@ describe('MessagesView composer draft isolation', () => {
       '@所有人 一起处理',
       undefined,
       ['all'],
+      expect.any(String),
     );
   });
 
@@ -3163,7 +5616,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, undefined, expect.any(String));
   });
 
   it('filters bot names and inserts the display-name mention with Enter', async () => {
@@ -3204,7 +5657,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, ['usr43'], expect.any(String));
   });
 
   it('does not send structured mentions after typing against the picker token boundary', async () => {
@@ -3239,7 +5692,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@Wanyux 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@Wanyux 请处理', undefined, undefined, expect.any(String));
   });
 
   it('restores picker provenance and original text after a send failure', async () => {
@@ -3277,7 +5730,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43'], expect.any(String));
     expect(textarea.value).toBe('  @Wanyu 请处理  ');
 
     await act(async () => {
@@ -3285,7 +5738,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenNthCalledWith(2, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(api.sendMessage).toHaveBeenNthCalledWith(2, 'grp_80', '@usr43 请处理', undefined, ['usr43'], expect.any(String));
   });
 
   it('drops structured mention provenance after the picker token is removed', async () => {
@@ -3323,7 +5776,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@Wanyu 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@Wanyu 请处理', undefined, undefined, expect.any(String));
   });
 
   it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
@@ -3887,7 +6340,7 @@ describe('MessagesView composer draft isolation', () => {
       metadata: {
         artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
-    }, undefined);
+    }, undefined, undefined, expect.any(String));
     expect(container.textContent).not.toContain('lesson-game');
     expect(container.textContent).not.toContain('当前 Artifact');
   });
@@ -3940,7 +6393,13 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.createArtifactContextSnapshot).toHaveBeenCalledTimes(1);
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '正常发送', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      'p2p_1_440',
+      '正常发送',
+      undefined,
+      undefined,
+      expect.any(String),
+    );
   });
 
   it('invalidates a snapshot that finishes after the preview has closed', async () => {
@@ -4007,7 +6466,13 @@ describe('MessagesView composer draft isolation', () => {
       `acr_${'z'.repeat(43)}`,
       { timeoutMs: 2200 },
     );
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '不要绑定旧页面', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      'p2p_1_440',
+      '不要绑定旧页面',
+      undefined,
+      undefined,
+      expect.any(String),
+    );
   });
 
   it('stores the latest bounded iframe observation outside the chat message', async () => {
@@ -4116,7 +6581,7 @@ describe('MessagesView composer draft isolation', () => {
       metadata: {
         artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
-    }, undefined);
+    }, undefined, undefined, expect.any(String));
   });
 
   it('drops a stale Artifact reference when the preview closes during page capture', async () => {
@@ -4205,7 +6670,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '分析这些', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '分析这些', undefined, undefined, expect.any(String));
   });
 
   it('does not rebind an in-flight message when the user switches to another Artifact', async () => {
@@ -4312,7 +6777,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '把这里改一下', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '把这里改一下', undefined, undefined, expect.any(String));
   });
 
   it('drops an in-flight Artifact snapshot when another topic uses the same Agent', async () => {
@@ -4431,7 +6896,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined, undefined, expect.any(String));
   });
 
   it('finds a conversation file from history and opens it in the existing file preview', async () => {
