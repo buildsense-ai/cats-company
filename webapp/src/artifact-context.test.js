@@ -1,16 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ARTIFACT_CONTEXT_REF_CONTRACT,
   ARTIFACT_CONTEXT_RESPONSE_TYPE,
   ARTIFACT_PAGE_CONTEXT_CONTRACT,
   ARTIFACT_REF_CONTRACT,
+  artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
   normalizeArtifactPageContext,
   requestArtifactPageContext,
-  withArtifactRef,
+  withArtifactContextRef,
 } from './artifact-context';
 
-describe('artifact context message metadata', () => {
+describe('artifact context snapshot handoff', () => {
   it('builds a narrow reference from a visible cloud artifact preview', () => {
     expect(artifactRefFromPreviewFile({
       artifact_id: 'lesson-game',
@@ -79,26 +81,52 @@ describe('artifact context message metadata', () => {
     expect(artifactURLForVersion('https://example.test/latest/', 0)).toBe('');
   });
 
-  it('adds the reference without changing visible message content', () => {
-    expect(withArtifactRef('把标题改短一点', {
-      contract_version: ARTIFACT_REF_CONTRACT,
-      id: 'lesson-game',
-      currently_visible: true,
-    })).toEqual({
+  it('accepts only an opaque context_ref response with the exact contract', () => {
+    const contextRef = `acr_${'x'.repeat(43)}`;
+    expect(artifactContextRefFromSnapshot({
+      contract_version: ARTIFACT_CONTEXT_REF_CONTRACT,
+      context_ref: contextRef,
+    })).toBe(contextRef);
+    expect(artifactContextRefFromSnapshot({
+      contract_version: 'catsco.artifact-context-ref.v0',
+      context_ref: contextRef,
+    })).toBe('');
+    expect(artifactContextRefFromSnapshot({
+      contract_version: ARTIFACT_CONTEXT_REF_CONTRACT,
+      context_ref: 'lesson-game',
+    })).toBe('');
+  });
+
+  it('adds only the opaque reference without changing visible message content', () => {
+    const contextRef = `acr_${'x'.repeat(43)}`;
+    expect(withArtifactContextRef('把标题改短一点', contextRef)).toEqual({
       type: 'text',
       content: '把标题改短一点',
       metadata: {
-        artifact_ref: {
-          contract_version: ARTIFACT_REF_CONTRACT,
-          id: 'lesson-game',
-          currently_visible: true,
-        },
+        artifact_context_ref: contextRef,
       },
     });
   });
 
-  it('adds a bounded page observation beside the Artifact reference', () => {
-    const pageContext = {
+  it('preserves unrelated payload metadata and rejects malformed refs', () => {
+    const contextRef = `acr_${'y'.repeat(43)}`;
+    expect(withArtifactContextRef({
+      type: 'text',
+      content: '分析这些',
+      metadata: { trace: 'kept' },
+    }, contextRef)).toEqual({
+      type: 'text',
+      content: '分析这些',
+      metadata: {
+        trace: 'kept',
+        artifact_context_ref: contextRef,
+      },
+    });
+    expect(withArtifactContextRef('分析这些', 'lesson-game')).toBe('分析这些');
+  });
+
+  it('keeps page observations in the snapshot contract rather than message metadata', () => {
+    const pageContext = normalizeArtifactPageContext({
       contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
       observed_at: '2026-08-07T12:00:00.000Z',
       selected_text: '企业客户',
@@ -113,31 +141,16 @@ describe('artifact context message metadata', () => {
         ignored: () => 'not serializable',
       },
       local_storage: { token: 'forged' },
-    };
-    expect(withArtifactRef('分析这些', {
-      contract_version: ARTIFACT_REF_CONTRACT,
-      id: 'lesson-game',
-      currently_visible: true,
-    }, pageContext)).toEqual({
-      type: 'text',
-      content: '分析这些',
-      metadata: {
-        artifact_ref: {
-          contract_version: ARTIFACT_REF_CONTRACT,
-          id: 'lesson-game',
-          currently_visible: true,
-        },
-        artifact_page_context: {
-          contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
-          observed_at: '2026-08-07T12:00:00.000Z',
-          selected_text: '企业客户',
-          controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
-          semantic_context: {
-            filters: { region: 'east' },
-            selection: ['c12', 'c18'],
-            view: 'customer-comparison',
-          },
-        },
+    });
+    expect(pageContext).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00.000Z',
+      selected_text: '企业客户',
+      controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
+      semantic_context: {
+        filters: { region: 'east' },
+        selection: ['c12', 'c18'],
+        view: 'customer-comparison',
       },
     });
   });

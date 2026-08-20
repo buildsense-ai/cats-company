@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -314,7 +313,7 @@ func TestSaveNormalizedMessagePersistsMetadataThroughOptionalStore(t *testing.T)
 	}
 }
 
-func TestSaveNormalizedMessageRejectsArtifactMetadataWithoutPersistenceCapability(t *testing.T) {
+func TestSaveNormalizedMessageScrubsArtifactMetadataBeforeLegacyFallback(t *testing.T) {
 	messageStore := &idempotentMessageStore{id: 73}
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID:     "p2p_1_2",
@@ -328,11 +327,15 @@ func TestSaveNormalizedMessageRejectsArtifactMetadataWithoutPersistenceCapabilit
 		t.Fatalf("normalize request: %v", err)
 	}
 
-	if _, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload); err == nil || !strings.Contains(err.Error(), "metadata persistence") {
-		t.Fatalf("save error = %v, want metadata persistence failure", err)
+	result, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload)
+	if err != nil {
+		t.Fatalf("save error = %v", err)
 	}
-	if messageStore.calls != 0 {
-		t.Fatalf("legacy store should not receive a lossy fallback save: calls=%d", messageStore.calls)
+	if result.ID != 73 || result.Duplicate || messageStore.calls != 1 {
+		t.Fatalf("fallback result=%#v calls=%d", result, messageStore.calls)
+	}
+	if payload.Metadata != nil {
+		t.Fatalf("Artifact metadata reached persistence boundary: %#v", payload.Metadata)
 	}
 }
 
@@ -834,9 +837,23 @@ func TestHandleGetMessagesUsesStableBeforeCursor(t *testing.T) {
 type identityMessageStore struct {
 	store.Store
 	users              map[int64]*types.User
+	owners             map[int64]int64
+	friendPairs        map[string]bool
 	groupMembers       []*types.GroupMember
 	history            []*types.Message
 	getUsersByIDsCalls int
+}
+
+func (s *identityMessageStore) GetBotOwner(botUID int64) (int64, error) {
+	ownerUID, ok := s.owners[botUID]
+	if !ok {
+		return 0, errors.New("bot owner not found")
+	}
+	return ownerUID, nil
+}
+
+func (s *identityMessageStore) AreFriends(uid1, uid2 int64) (bool, error) {
+	return s.friendPairs[agentPairKey(uid1, uid2)], nil
 }
 
 func (s *identityMessageStore) GetUser(id int64) (*types.User, error) {

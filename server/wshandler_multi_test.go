@@ -310,8 +310,12 @@ func TestP2PStreamCancelFansOutToPeerWithoutEchoingToSenderConnection(t *testing
 	hub.addClient(bot)
 
 	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_cancel", "", map[string]interface{}{
-		"stream_id": "cancel-1",
-		"control":   "interrupt",
+		"stream_id":                    "cancel-1",
+		"control":                      "interrupt",
+		artifactContextRefMetadataKey:  "acr_private",
+		artifactContextMetadataKey:     map[string]interface{}{"secret": true},
+		artifactRefMetadataKey:         map[string]interface{}{"id": "private"},
+		artifactPageContextMetadataKey: map[string]interface{}{"selected_text": "private"},
 	}, sender)
 
 	if drainOne(sender.send) {
@@ -329,6 +333,39 @@ func TestP2PStreamCancelFansOutToPeerWithoutEchoingToSenderConnection(t *testing
 		}
 		if received.Data.Metadata["stream_event"] != "cancel" || received.Data.Metadata["control"] != "interrupt" {
 			t.Fatalf("%s cancel metadata = %#v", name, received.Data.Metadata)
+		}
+		for _, key := range []string{artifactContextRefMetadataKey, artifactContextMetadataKey, artifactRefMetadataKey, artifactPageContextMetadataKey} {
+			if _, exists := received.Data.Metadata[key]; exists {
+				t.Fatalf("%s stream cancel leaked %q: %#v", name, key, received.Data.Metadata)
+			}
+		}
+	}
+}
+
+func TestP2PStreamDeltaStripsArtifactContextMetadata(t *testing.T) {
+	hub := NewHub(nil, nil)
+	sender := &Client{uid: 7, send: make(chan []byte, 1)}
+	bot := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(sender)
+	hub.addClient(bot)
+
+	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_delta", "working", map[string]interface{}{
+		"stream_id":                    "delta-1",
+		"trace":                        "kept",
+		artifactContextRefMetadataKey:  "acr_private",
+		artifactContextMetadataKey:     map[string]interface{}{"secret": true},
+		artifactRefMetadataKey:         map[string]interface{}{"id": "private"},
+		artifactPageContextMetadataKey: map[string]interface{}{"selected_text": "private"},
+	}, sender)
+
+	var received ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &received)
+	if received.Data == nil || received.Data.Type != "stream_delta" || received.Data.Metadata["trace"] != "kept" {
+		t.Fatalf("stream delta = %#v", received.Data)
+	}
+	for _, key := range []string{artifactContextRefMetadataKey, artifactContextMetadataKey, artifactRefMetadataKey, artifactPageContextMetadataKey} {
+		if _, exists := received.Data.Metadata[key]; exists {
+			t.Fatalf("stream delta leaked %q: %#v", key, received.Data.Metadata)
 		}
 	}
 }
