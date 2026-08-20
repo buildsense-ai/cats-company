@@ -402,18 +402,6 @@ function TinodeWebApp({ location }) {
   }, [appSidebarCollapsed, appSidebarWidth]);
 
   useEffect(() => {
-    const greenLiquid = theme === 'liquid-green';
-    document.documentElement.dataset.theme = greenLiquid ? 'liquid' : theme;
-    if (greenLiquid) {
-      document.documentElement.dataset.liquidVariant = 'green';
-    } else {
-      delete document.documentElement.dataset.liquidVariant;
-    }
-    syncThemeColor(theme);
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [appSidebarCollapsed, appSidebarWidth]);
-
-  useEffect(() => {
     applyDocumentTheme(theme);
     writeStorageValue(THEME_STORAGE_KEY, theme);
   }, [theme]);
