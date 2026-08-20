@@ -247,11 +247,45 @@ describe('ChatListView sidebar sections', () => {
     expect(sectionLabels).not.toContain('Agent 助手');
     Array.from(container.querySelectorAll('.cc-top-level-section')).forEach((section) => {
       expect(section.classList.contains('cc-sidebar-section-row')).toBe(true);
+      expect(section.dataset.expanded).toBe(
+        section.querySelector('.cc-section-toggle').getAttribute('aria-expanded'),
+      );
     });
 
     const [tasksToggle, contactsToggle] = container.querySelectorAll('.cc-top-level-section > .cc-section-toggle');
     expect(tasksToggle.querySelector('.lucide-message-square')).toBeNull();
     expect(contactsToggle.querySelector('.lucide-user-round')).toBeNull();
+  });
+
+  it('does not leave pointer-clicked section toggles focused', async () => {
+    await mount();
+
+    const tasksToggle = container.querySelector('.cc-conversation-section > .cc-section-toggle');
+    const mouseDown = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      pointerType: 'mouse',
+    });
+    tasksToggle.dispatchEvent(mouseDown);
+
+    expect(mouseDown.defaultPrevented).toBe(true);
+  });
+
+  it('keeps the sidebar mountable when browser storage is blocked', async () => {
+    const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage access is blocked', 'SecurityError');
+      },
+    });
+
+    try {
+      await mount();
+      expect(container.querySelector('.cc-top-level-section')).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+    }
   });
 
   it('recognizes real sticky lanes and the reachable scroll end as auto-collapse boundaries', () => {

@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
+import { api, resolveMediaURL, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
-import { isValidEmailFormat } from '../utils/email-format';
 import t from '../i18n';
 import RelayAdminPanel from './relay-admin-panel';
 import ChatListView from './sidepanel-view';
@@ -28,11 +27,10 @@ import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
-import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
+import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
-import AuthFlowBackground from '../components/auth-flow-background';
-import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import { useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -57,25 +55,30 @@ import {
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
 import {
+  clearStoredUserProfile,
+  normalizeUserProfile,
+  readStoredUserProfile,
+  writeStoredUserProfile,
+} from '../utils/user-profile';
+import {
   THEME_STORAGE_KEY,
-  applyThemeAttributes,
   isLiquidTheme,
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
+  applyDocumentTheme,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
 import {
-  authModeForPathname,
-  authPathForMode,
+  readStorageValue,
+  writeStorageValue,
+} from '../utils/storage-access';
+import {
   authenticationRedirectPath,
   navigateBrowserPath,
-  postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
-import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
-import '../css/openchat-theme.css';
-import '../css/catsco-ui-system.css';
-import '../css/catsco-liquid-green.css';
+import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import './workspace-styles';
 
 const TABS = {
   CHATS: 'chats'
@@ -101,19 +104,6 @@ const DEV_PREVIEW_USER = {
   account_type: 'human',
 };
 
-function normalizeUserProfile(raw) {
-  if (!raw) return null;
-  const username = raw.username || '';
-  return {
-    uid: raw.uid || raw.id,
-    username,
-    email: raw.email || '',
-    display_name: raw.display_name || username,
-    avatar_url: raw.avatar_url || '',
-    account_type: raw.account_type || 'human',
-  };
-}
-
 export function resolveInitialUser({
   themePreview = '',
   previewEnabled = false,
@@ -127,32 +117,64 @@ export function resolveInitialUser({
   return null;
 }
 
+export function cloudArtifactNotificationToast(message) {
+  if (message?.notification?.type !== 'cloud_artifact_shared') return null;
+  return {
+    tone: 'info',
+    message: '有新文件在云端共享',
+  };
+}
+
+export function commitPreviewSession(session, {
+  writeProfile = writeStoredUserProfile,
+  setSessionToken = setToken,
+} = {}) {
+  const previewUser = normalizeUserProfile(session) || {
+    ...DEV_PREVIEW_USER,
+    uid: DEV_PREVIEW_UID,
+  };
+  const storedPreviewUser = writeProfile(previewUser);
+  if (!storedPreviewUser) return null;
+  setSessionToken(session.token);
+  return storedPreviewUser;
+}
+
 function getInitialUser() {
   const token = getToken();
-  let savedUser = null;
-  try {
-    const saved = token ? localStorage.getItem('oc_user') : '';
-    savedUser = saved ? JSON.parse(saved) : null;
-  } catch (error) {
-    console.warn('Failed to restore saved user from localStorage:', error);
-    localStorage.removeItem('oc_user');
-  }
   return resolveInitialUser({
     themePreview: DEV_THEME_PREVIEW,
     previewEnabled: DEV_PREVIEW_ENABLED,
     token,
-    savedUser,
+    savedUser: token ? readStoredUserProfile() : null,
   });
 }
 
+function SessionRestoreFallback({ error, onRetry }) {
+  if (error) {
+    return (
+      <main className="cc-workspace-loading cc-workspace-loading-error">
+        <p role="alert">恢复登录状态失败，请检查网络后重试。</p>
+        <button type="button" className="oc-auth-btn cc-workspace-loading-retry" onClick={onRetry}>
+          重试
+        </button>
+      </main>
+    );
+  }
+
+  return (
+    <main className="cc-workspace-loading" aria-busy="true">
+      <span className="cc-workspace-loading-indicator" aria-hidden="true" />
+      <span role="status">正在恢复登录状态…</span>
+    </main>
+  );
+}
+
 function loadAppSidebarCollapsed() {
-  if (typeof window === 'undefined' || !window.localStorage) return false;
-  return window.localStorage.getItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
+  return readStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
 }
 
 function saveAppSidebarCollapsed(collapsed) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
+  writeStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
 }
 
 function desktopPromptStorageKey(uid) {
@@ -169,6 +191,10 @@ function todayKey() {
 
 function findConnectedLocalAgent(agents) {
   return (agents || []).find((agent) => agent.relation === 'owner' && agent.is_online);
+}
+
+function isInvalidSessionError(error) {
+  return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
 export default function TinodeWeb({ location = window.location } = {}) {
@@ -195,6 +221,8 @@ function TinodeWebApp({ location }) {
   const channelDeviceLink = pathname === '/channel-device-link';
   const channelAccountLink = pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
+  const [sessionRestoreError, setSessionRestoreError] = useState('');
+  const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
   const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
@@ -202,6 +230,7 @@ function TinodeWebApp({ location }) {
     user?.uid ? readStoredTopic(user.uid) : null
   ));
   const [taskDraft, setTaskDraft] = useState(null);
+  const [emptyTaskSelectedAgent, setEmptyTaskSelectedAgent] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [messageLocationRequest, setMessageLocationRequest] = useState(null);
   const messageLocationSequenceRef = useRef(0);
@@ -226,7 +255,6 @@ function TinodeWebApp({ location }) {
       return normalized;
     });
   }, [user?.uid]);
-  const authMode = authModeForPathname(pathname);
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
   const [showProfileEditor, setShowProfileEditor] = useState(false);
@@ -239,18 +267,18 @@ function TinodeWebApp({ location }) {
   const [showRelayModal, setShowRelayModal] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+  const recoveredProfileRef = useRef(null);
 
   useEffect(() => {
+    // A token without its cached profile is being recovered below. Keep
+    // the original deep link stable until the server accepts or rejects it.
+    if (!user && getToken()) return;
     const redirectPath = authenticationRedirectPath({
       authenticated: Boolean(user),
       location: { pathname, search, hash },
     });
     if (redirectPath) navigateBrowserPath(redirectPath, { replace: true });
   }, [hash, pathname, search, user]);
-
-  const navigateToAuthMode = useCallback((mode) => {
-    navigateBrowserPath(authPathForMode(mode, postAuthenticationPathFromSearch(search)));
-  }, [search]);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,7 +289,15 @@ function TinodeWebApp({ location }) {
     return () => { cancelled = true; };
   }, [user?.uid]);
   const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
+  const [standaloneCloudArtifactsRequest, setStandaloneCloudArtifactsRequest] = useState(null);
+  const [standaloneCloudArtifactsTab, setStandaloneCloudArtifactsTab] = useState('active');
   const cloudArtifactsRequestSequenceRef = useRef(0);
+  const consumeCloudArtifactsRequest = useCallback((requestId) => {
+    if (!requestId) return;
+    setCloudArtifactsRequest((current) => (
+      current?.requestId === requestId ? null : current
+    ));
+  }, []);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -269,7 +305,9 @@ function TinodeWebApp({ location }) {
   const [sidebarViewportWidth, setSidebarViewportWidth] = useState(() => window.innerWidth);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [theme, setTheme] = useState(() => DEV_THEME_PREVIEW || normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
+  const [theme, setTheme] = useState(() => (
+    DEV_THEME_PREVIEW || normalizeTheme(readStorageValue(THEME_STORAGE_KEY))
+  ));
   const [liquidThemeAccess, setLiquidThemeAccess] = useState(() => ({
     loading: false,
     unlocked: isLiquidTheme(DEV_THEME_PREVIEW) || isLiquidThemeUnlocked(),
@@ -278,7 +316,8 @@ function TinodeWebApp({ location }) {
   const [activeAgentModel, setActiveAgentModel] = useState(null);
   const [activeAgentState, setActiveAgentState] = useState(null);
   const activeTopicId = activeTopic?.topicId || '';
-  const draftAgentUID = Number(taskDraft?.agent?.uid || taskDraft?.agent?.id || 0);
+  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent;
+  const draftAgentUID = Number(draftAgent?.uid || draftAgent?.id || 0);
   const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
   const modelContext = activeTopic || (modelContextId ? { topicId: modelContextId, isGroup: false } : null);
   const modelContextIdRef = useRef(modelContextId);
@@ -299,26 +338,47 @@ function TinodeWebApp({ location }) {
       return { topicId, agent };
     });
   }, [activeTopicId]);
-  const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
+  const displayedActiveAgent = resolveDisplayedActiveAgent(
+    activeTopicId,
+    activeAgentState,
+    taskDraft,
+    emptyTaskSelectedAgent,
+  );
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
-  const handleOpenCloudArtifacts = useCallback(() => {
-    const agentUid = Number(displayedActiveAgent?.uid || 0);
-    if (!activeTopicId) return;
-    cloudArtifactsRequestSequenceRef.current += 1;
-    setCloudArtifactsRequest({
-      agentUid,
-      requestId: cloudArtifactsRequestSequenceRef.current,
-    });
-  }, [activeTopicId, displayedActiveAgent?.uid]);
-  const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
+  const openCloudArtifactsForAgent = useCallback((agentUid) => {
     const normalizedAgentUid = Number(agentUid || 0);
-    if (!activeTopicId || normalizedAgentUid <= 0) return;
-    setActiveView('chats');
+    if (normalizedAgentUid <= 0 && !activeTopicId) return;
     cloudArtifactsRequestSequenceRef.current += 1;
-    setCloudArtifactsRequest({
+    const request = {
       agentUid: normalizedAgentUid,
       requestId: cloudArtifactsRequestSequenceRef.current,
-    });
+      topicId: activeTopicId,
+      initialTab: activeTopicId ? 'files' : 'active',
+    };
+    if (activeTopicId) {
+      setStandaloneCloudArtifactsRequest(null);
+      setCloudArtifactsRequest(request);
+      return;
+    }
+    setCloudArtifactsRequest(null);
+    setStandaloneCloudArtifactsTab('active');
+    setStandaloneCloudArtifactsRequest(request);
+  }, [activeTopicId]);
+
+  const handleOpenCloudArtifacts = useCallback(() => {
+    openCloudArtifactsForAgent(displayedActiveAgent?.uid || displayedActiveAgent?.id);
+  }, [displayedActiveAgent?.id, displayedActiveAgent?.uid, openCloudArtifactsForAgent]);
+
+  const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
+    setActiveView('chats');
+    setMobileSidebarOpen(false);
+    openCloudArtifactsForAgent(agentUid);
+  }, [openCloudArtifactsForAgent]);
+
+  useEffect(() => {
+    if (!activeTopicId) return;
+    setStandaloneCloudArtifactsRequest(null);
+    setEmptyTaskSelectedAgent(null);
   }, [activeTopicId]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
@@ -335,8 +395,15 @@ function TinodeWebApp({ location }) {
   }, []);
 
   useEffect(() => {
-    applyThemeAttributes(theme);
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
+    document.documentElement.style.setProperty(
+      '--cc-toast-sidebar-width',
+      `${appSidebarCollapsed ? 64 : appSidebarWidth}px`,
+    );
+  }, [appSidebarCollapsed, appSidebarWidth]);
+
+  useEffect(() => {
+    applyDocumentTheme(theme);
+    writeStorageValue(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
@@ -459,8 +526,13 @@ function TinodeWebApp({ location }) {
 
 
   const persistUser = useCallback((nextUser) => {
-    localStorage.setItem('oc_user', JSON.stringify(nextUser));
-    setUser(nextUser);
+    const profile = normalizeUserProfile(nextUser);
+    if (!profile) return;
+
+    // Storage is only a cache. A valid server profile must still unblock this
+    // in-memory session when localStorage is full or unavailable.
+    writeStoredUserProfile(profile);
+    setUser(profile);
   }, []);
 
   useEffect(() => {
@@ -474,14 +546,15 @@ function TinodeWebApp({ location }) {
           password: DEV_PREVIEW_PASSWORD,
         });
         if (cancelled) return;
-        setToken(session.token);
+        const previewUser = commitPreviewSession(session);
+        if (!previewUser) {
+          throw new Error('Failed to persist the local preview user profile');
+        }
+        setUser(previewUser);
         const previewSessionRevision = getAuthRevision();
         const profile = normalizeUserProfile(await api.getMe().catch(() => null));
         if (cancelled || !isCurrentAuthSession(session.token, previewSessionRevision)) return;
-        persistUser(profile || {
-          ...DEV_PREVIEW_USER,
-          uid: DEV_PREVIEW_UID,
-        });
+        if (profile) persistUser(profile);
       } catch (error) {
         console.warn('Failed to activate local preview account:', error);
       }
@@ -550,13 +623,52 @@ function TinodeWebApp({ location }) {
     });
     disconnectWS();
     setToken(null);
-    localStorage.removeItem('oc_user');
+    clearStoredUserProfile();
     setUser(null);
     setOnlineUsers({});
     setTaskDraft(null);
+    setEmptyTaskSelectedAgent(null);
+    setCloudArtifactsRequest(null);
+    setStandaloneCloudArtifactsRequest(null);
+    setStandaloneCloudArtifactsTab('active');
     setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
+
+  useEffect(() => {
+    if (user?.uid) return undefined;
+
+    const requestToken = getToken();
+    const requestSessionRevision = getAuthRevision();
+    if (!requestToken) return undefined;
+
+    let cancelled = false;
+    setSessionRestoreError('');
+    api.getMe()
+      .then((profile) => {
+        if (cancelled || !isCurrentAuthSession(requestToken, requestSessionRevision)) return;
+        const normalized = normalizeUserProfile(profile);
+        if (!normalized) throw new Error('Profile recovery returned no valid user');
+        recoveredProfileRef.current = {
+          token: requestToken,
+          revision: requestSessionRevision,
+        };
+        persistUser(normalized);
+      })
+      .catch((error) => {
+        if (cancelled || !isCurrentAuthSession(requestToken, requestSessionRevision)) return;
+        if (isInvalidSessionError(error)) {
+          clearAuthenticatedSession(requestToken, requestSessionRevision);
+          return;
+        }
+        console.warn('Failed to recover the current user profile:', error);
+        setSessionRestoreError(error?.message || 'Profile recovery failed');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clearAuthenticatedSession, persistUser, sessionRestoreAttempt, user?.uid]);
 
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
@@ -574,6 +686,12 @@ function TinodeWebApp({ location }) {
     }
     if (msg._type === 'ws_close') {
       setWsStatus('reconnecting');
+      return;
+    }
+
+    const notificationToast = cloudArtifactNotificationToast(msg);
+    if (notificationToast) {
+      feedback.notify(notificationToast);
       return;
     }
 
@@ -663,6 +781,7 @@ function TinodeWebApp({ location }) {
 
   useEffect(() => {
     setTaskDraft(null);
+    setEmptyTaskSelectedAgent(null);
     if (!user?.uid) {
       _setActiveTopic(null);
       return;
@@ -700,6 +819,13 @@ function TinodeWebApp({ location }) {
     const requestSessionRevision = getAuthRevision();
     if (!requestToken) return undefined;
 
+    const recoveredProfile = recoveredProfileRef.current;
+    if (recoveredProfile?.token === requestToken
+      && recoveredProfile.revision === requestSessionRevision) {
+      recoveredProfileRef.current = null;
+      return undefined;
+    }
+
     let cancelled = false;
     api.getMe()
       .then((profile) => {
@@ -710,7 +836,7 @@ function TinodeWebApp({ location }) {
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
-        if (!cancelled && error?.status === 401
+        if (!cancelled && isInvalidSessionError(error)
           && isCurrentAuthSession(requestToken, requestSessionRevision)) {
           clearAuthenticatedSession(requestToken, requestSessionRevision);
         }
@@ -734,8 +860,8 @@ function TinodeWebApp({ location }) {
       setLocalAgentStatus('disconnected');
       if (allowDailyPrompt) {
         const promptKey = desktopPromptStorageKey(user.uid);
-        if (localStorage.getItem(promptKey) !== todayKey()) {
-          localStorage.setItem(promptKey, todayKey());
+        if (readStorageValue(promptKey) !== todayKey()) {
+          writeStorageValue(promptKey, todayKey());
           setShowDesktopConnectModal(true);
         }
       }
@@ -793,30 +919,6 @@ function TinodeWebApp({ location }) {
       cancelled = true;
     };
   }, [search, user?.uid]);
-
-  const handleLogin = async (account, password) => {
-    const res = await api.login({ account, password });
-    setToken(res.token);
-    persistUser(normalizeUserProfile(res));
-    navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
-  };
-
-  const handleRegister = async (email, password, loginName, code) => {
-    const username = loginName.trim();
-    if (!username) {
-      throw new Error('请输入登录名称');
-    }
-    if (username.length < 3) {
-      throw new Error('登录名称至少 3 个字符');
-    }
-    await api.register({
-      email,
-      username,
-      password,
-      code,
-    });
-    await handleLogin(email, password);
-  };
 
   const handleLogout = () => {
     clearAuthenticatedSession();
@@ -904,6 +1006,7 @@ function TinodeWebApp({ location }) {
   const activateResolvedTopic = useCallback((nextTopic) => {
     if (!nextTopic?.topicId) return;
     setTaskDraft(null);
+    setEmptyTaskSelectedAgent(null);
     setActiveTopic(nextTopic);
   }, [setActiveTopic]);
 
@@ -912,6 +1015,8 @@ function TinodeWebApp({ location }) {
     if (!agentUid) return;
     const projectId = Number(options?.projectId || 0);
     taskDraftSequenceRef.current += 1;
+    setStandaloneCloudArtifactsRequest(null);
+    setEmptyTaskSelectedAgent(agent);
     setActiveTopic(null);
     setActiveView('chats');
     setTaskDraft({
@@ -989,15 +1094,15 @@ function TinodeWebApp({ location }) {
   }
 
   if (!user) {
-    return (
-      <AuthView
-        mode={authMode}
-        nextPath={postAuthenticationPathFromSearch(search)}
-        onNavigate={navigateToAuthMode}
-        onLogin={handleLogin}
-        onRegister={handleRegister}
-      />
-    );
+    if (getToken()) {
+      return (
+        <SessionRestoreFallback
+          error={sessionRestoreError}
+          onRetry={() => setSessionRestoreAttempt((attempt) => attempt + 1)}
+        />
+      );
+    }
+    return null;
   }
 
   if (entrySceneKey) {
@@ -1076,6 +1181,7 @@ function TinodeWebApp({ location }) {
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
               setTaskDraft(null);
+              setEmptyTaskSelectedAgent(null);
               setMessageLocationRequest(null);
               setActiveView('chats');
               setActiveTopic(topic);
@@ -1088,7 +1194,7 @@ function TinodeWebApp({ location }) {
               setActiveView('skillhub');
               setMobileSidebarOpen(false);
             }}
-            onOpenCloudArtifacts={activeTopicId ? handleOpenManagedAgentArtifacts : undefined}
+            onOpenCloudArtifacts={handleOpenManagedAgentArtifacts}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
@@ -1189,19 +1295,38 @@ function TinodeWebApp({ location }) {
                 onResolveAgentTopic={resolveAgentTopic}
                 onActivateTopic={activateResolvedTopic}
                 cloudArtifactsRequest={cloudArtifactsRequest}
+                onCloudArtifactsRequestConsumed={consumeCloudArtifactsRequest}
                 messageLocationRequest={messageLocationRequest}
                 onBackToSearch={() => setSearchOpen(true)}
               />
             ) : (
               <>
                 {localAssistantBar}
-                <NoActiveTask
-                  key={taskDraft?.key || 'new-task'}
-                  user={user}
-                  initialAgent={taskDraft?.agent}
-                  onResolveAgentTopic={createDraftAgentTaskTopic}
-                  onActivateTopic={activateResolvedTopic}
-                />
+                <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
+                  <NoActiveTask
+                    key={taskDraft?.key || 'new-task'}
+                    user={user}
+                    initialAgent={taskDraft?.agent}
+                    onSelectedAgentChange={setEmptyTaskSelectedAgent}
+                    onResolveAgentTopic={createDraftAgentTaskTopic}
+                    onActivateTopic={activateResolvedTopic}
+                  />
+                  {standaloneCloudArtifactsRequest && (
+                    <div className="v3-file-preview-shell">
+                      <CloudArtifactsPanel
+                        key={standaloneCloudArtifactsRequest.requestId}
+                        agentUid={standaloneCloudArtifactsRequest.agentUid}
+                        topicId={standaloneCloudArtifactsRequest.topicId}
+                        initialTab={standaloneCloudArtifactsRequest.initialTab}
+                        tab={standaloneCloudArtifactsTab}
+                        onTabChange={setStandaloneCloudArtifactsTab}
+                        onClose={() => setStandaloneCloudArtifactsRequest(null)}
+                        onPreviewArtifact={openExternalArtifact}
+                        onPreviewFile={openExternalArtifact}
+                      />
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -1298,8 +1423,8 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           className="v3-action-btn v3-cloud-action"
           onClick={onOpenCloudArtifacts}
           disabled={!onOpenCloudArtifacts}
-          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入聊天'}
-          title={onOpenCloudArtifacts ? '云文件' : '请先进入聊天'}
+          aria-label={onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}
+          title={onOpenCloudArtifacts ? '产物' : '选择 Agent 后可查看产物'}
         >
           <Cloud size={17} aria-hidden="true" />
         </button>
@@ -1314,15 +1439,16 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
 export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
 
 function canOpenCloudArtifacts(activeTopic, activeAgent) {
-  return Boolean(activeTopic?.topicId);
+  const agentUID = Number(activeAgent?.uid || activeAgent?.id || 0);
+  return Boolean(activeTopic?.topicId) || agentUID > 0;
 }
 
-function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
+function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft, emptyTaskSelectedAgent) {
   if (activeTopicId) {
     return activeAgentState?.topicId === activeTopicId ? activeAgentState.agent : null;
   }
 
-  const draftAgent = taskDraft?.agent;
+  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent;
   const uid = Number(draftAgent?.uid || draftAgent?.id || 0);
   if (uid <= 0) return null;
 
@@ -1337,7 +1463,7 @@ function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft)
   };
 }
 
-function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic }) {
+function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -1347,6 +1473,7 @@ function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic
         </div>
         <EmptyTaskComposer
           initialAgent={initialAgent}
+          onSelectedAgentChange={onSelectedAgentChange}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}
         />
@@ -1459,214 +1586,6 @@ function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
   );
 }
 
-function formatAuthError(message) {
-  const text = String(message || '').toLowerCase();
-  if (text.includes('user not found')) return '账号不存在，请检查用户名或邮箱';
-  if (text.includes('password mismatch')) return '密码错误，请重试';
-  if (text.includes('username taken')) return '登录名称已被占用，请换一个';
-  if (text.includes('email already')) return '该邮箱已经注册，请直接登录';
-  if (text.includes('verification code expired')) return '验证码已过期，请重新获取';
-  if (text.includes('does not match')) return '验证码不正确，请使用最新邮件中的验证码';
-  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期，请重新获取并使用最新验证码';
-  if (text.includes('username min 3')) return '登录名称至少 3 个字符';
-  if (text.includes('password min 6')) return '密码至少 6 位';
-  if (text.includes('invalid email format')) return '邮箱格式无效，请检查域名拼写（如 qq.com）';
-  if (text.includes('failed to send verification code')) return '发送验证码失败，请稍后再试';
-  return message || '操作失败，请稍后再试';
-}
-
-export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister }) {
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [loginName, setLoginName] = useState('');
-  const [code, setCode] = useState('');
-  const [error, setError] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-  const [sentHint, setSentHint] = useState('');
-
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [countdown]);
-
-  const handleSendCode = async () => {
-    if (!email || !isValidEmailFormat(email)) {
-      setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
-      return;
-    }
-    try {
-      await api.sendVerificationCode(email);
-      setCodeSent(true);
-      setCountdown(60);
-      setError('');
-      setSentHint('验证码已发送，请使用最新邮件中的验证码（旧验证码将失效）');
-    } catch (err) {
-      setSentHint('');
-      setError(err.message || '发送验证码失败，请稍后再试');
-    }
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    try {
-      if (mode === 'login') {
-        await onLogin(username, password);
-      } else {
-        await onRegister(email, password, loginName, code);
-      }
-    } catch (err) {
-      setError(formatAuthError(err.message));
-    }
-  };
-
-  const authShell = (content) => (
-    <div className="oc-auth">
-      <AuthFlowBackground />
-      {content}
-    </div>
-  );
-
-  const authPath = (nextMode) => authPathForMode(nextMode, nextPath);
-  const handleAuthLink = (event, nextMode) => {
-    if (event.defaultPrevented || event.button !== 0
-      || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey
-      || typeof onNavigate !== 'function') return;
-    event.preventDefault();
-    onNavigate?.(nextMode);
-  };
-
-  if (mode === 'reset') {
-    return authShell(
-      <div className="oc-auth-card">
-        <div className="oc-auth-logo">CatsCo</div>
-        <div className="oc-settings-secondary" style={{ marginBottom: 14 }}>
-          输入注册邮箱，验证后设置新密码。
-        </div>
-        <PasswordResetForm />
-        <div className="oc-auth-link">
-          <span>
-            想起密码了？
-            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>返回登录</a>
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  return authShell(
-    <form className="oc-auth-card" onSubmit={handleSubmit}>
-      <div className="oc-auth-logo">CatsCo</div>
-      {error && <InlineFeedback tone="error" className="oc-auth-feedback">{error}</InlineFeedback>}
-
-      {mode === 'login' ? (
-        <>
-          <input
-            className="oc-auth-input"
-            placeholder={t('username')}
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <div style={{ position: 'relative' }}>
-            <input
-              className="oc-auth-input"
-              type={showPassword ? 'text' : 'password'}
-              placeholder={t('password')}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ paddingRight: 48 }}
-            />
-            <span
-              onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </span>
-          </div>
-        </>
-      ) : (
-        <>
-          <input
-            className="oc-auth-input"
-            type="email"
-            placeholder="邮箱地址"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <div className="oc-auth-code-row">
-            <input
-              className="oc-auth-input"
-              placeholder="邮箱验证码"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-            />
-            <button
-              type="button"
-              className="oc-auth-btn"
-              onClick={handleSendCode}
-              disabled={countdown > 0}
-            >
-              {countdown > 0 ? `${countdown}秒` : '发送验证码'}
-            </button>
-          </div>
-          {sentHint && (
-            <div className="oc-auth-hint" style={{ color: '#2e8b57', fontSize: 12, marginTop: 6 }}>{sentHint}</div>
-          )}
-          <input
-            className="oc-auth-input"
-            placeholder="登录名称（可用于登录）"
-            value={loginName}
-            onChange={(e) => setLoginName(e.target.value)}
-          />
-          <div style={{ position: 'relative' }}>
-            <input
-              className="oc-auth-input"
-              type={showPassword ? 'text' : 'password'}
-              placeholder="设置密码（至少6位）"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ paddingRight: 48 }}
-            />
-            <span
-              onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </span>
-          </div>
-        </>
-      )}
-
-      <button className="oc-auth-btn" type="submit">
-        {mode === 'login' ? t('login') : t('register')}
-      </button>
-      <div className="oc-auth-link">
-        {mode === 'login' ? (
-          <>
-            <span>
-              还没有账号？
-              <a href={authPath('register')} onClick={(event) => handleAuthLink(event, 'register')}>立即注册</a>
-            </span>
-            <span style={{ marginLeft: 12 }}>
-              <a href={authPath('reset')} onClick={(event) => handleAuthLink(event, 'reset')}>忘记密码？</a>
-            </span>
-          </>
-        ) : (
-          <span>
-            已有账号？
-            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>立即登录</a>
-          </span>
-        )}
-      </div>
-    </form>
-  );
-}
-
 function parseUid(uidStr) {
   if (!uidStr) return 0;
   if (uidStr.startsWith('usr')) {
@@ -1681,6 +1600,12 @@ function taskDraftTitle(taskDraft) {
   const projectName = String(taskDraft?.projectName || '').trim();
   if (agentName && projectName) return `新任务 · ${agentName} · ${projectName}`;
   return agentName ? `新任务 · ${agentName}` : '新任务';
+}
+
+function openExternalArtifact(resource) {
+  const url = resolveMediaURL(String(resource?.url || '').trim());
+  if (!url) return;
+  window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 function buildAgentTaskName(agent, draft = {}) {

@@ -50,6 +50,7 @@ type normalizedMessagePayload struct {
 	ClientMsgID         string
 	ContentBlocks       []types.ContentBlock
 	Metadata            map[string]interface{}
+	ArtifactContextRef  *artifactContextDeliveryRef
 	Mode                string
 	Role                string
 	Mentions            []string
@@ -82,7 +83,7 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, code, map[string]string{"error": text})
 			return
 		}
-		payload.Metadata = h.hub.canonicalizeArtifactMessageMetadata(r.Context(), uid, req.TopicID, payload.Metadata)
+		payload.Metadata, payload.ArtifactContextRef = h.hub.extractArtifactContextDelivery(uid, req.TopicID, payload.Metadata)
 	} else {
 		payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
 	}
@@ -148,7 +149,7 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		resp["client_msg_id"] = payload.ClientMsgID
 		resp["duplicate"] = result.Duplicate
 	}
-	if responseMetadata := artifactMetadataForRecipient(payload.Metadata, uid); responseMetadata != nil {
+	if responseMetadata := metadataWithoutArtifactContext(payload.Metadata); responseMetadata != nil {
 		resp["metadata"] = responseMetadata
 	}
 	if len(payload.ContentBlocks) > 0 {
@@ -184,18 +185,30 @@ func (h *MessageHandler) fanoutMessage(uid int64, topicID string, replyTo int, p
 	h.hub.fanoutNormalizedMessage(uid, topicID, replyTo, payload, msgID, nil)
 }
 
+func metadataWithClientMsgID(metadata map[string]interface{}, clientMsgID string) map[string]interface{} {
+	if clientMsgID == "" {
+		return metadata
+	}
+	next := make(map[string]interface{}, len(metadata)+1)
+	for key, value := range metadata {
+		next[key] = value
+	}
+	next["client_msg_id"] = clientMsgID
+	return next
+}
+
 func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, replyTo int, payload *normalizedMessagePayload) (*savedMessageResult, error) {
+	// Artifact context is a short-lived delivery capability, never durable
+	// message metadata. Scrub again at the persistence boundary so alternate
+	// ingestion paths and legacy clients cannot reintroduce it.
+	payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
 	if metadataStore, ok := db.(store.MessageMetadataStore); ok {
-		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, payload.Metadata)
+		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, metadataWithClientMsgID(payload.Metadata, payload.ClientMsgID))
 		if err != nil {
 			return nil, err
 		}
 		return &savedMessageResult{ID: id, Duplicate: duplicate}, nil
 	}
-	if _, hasArtifactContext := payload.Metadata[artifactContextMetadataKey]; hasArtifactContext {
-		return nil, errors.New("message store does not support metadata persistence")
-	}
-
 	if payload.ClientMsgID != "" {
 		id, duplicate, err := db.SaveMessageIdempotent(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID)
 		if err != nil {
@@ -320,19 +333,22 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	sourceMetadata := payload.Metadata
 	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
-	publicMetadata := withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)
-	if recipientUID > 0 {
-		publicMetadata = artifactMetadataForRecipient(publicMetadata, recipientUID)
-	}
+	publicMetadata := metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata))
 	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
 	if !nativeChannelGroup {
 		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID))
 	}
+	metadata = withArtifactContextDeliveryRef(
+		metadata,
+		h.validatedArtifactContextDeliveryRef(uid, topicID, payload.ArtifactContextRef, recipientUID),
+		recipientUID,
+	)
 	return &ServerMessage{
 		Data: &MsgServerData{
 			Topic:         topicID,
 			From:          formatUID(uid),
 			SeqID:         int(msgID),
+			ClientMsgID:   payload.ClientMsgID,
 			Content:       payload.DisplayContent,
 			Type:          payload.DisplayType,
 			MsgType:       payload.StoredType,
@@ -343,7 +359,18 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 			ReplyTo:       replyTo,
 		},
 		suppressPushNotification: suppressPushNotification,
+		artifactContextRef:       payload.ArtifactContextRef,
 	}
+}
+
+func storedMessageClientMsgID(message *types.Message) string {
+	if message == nil {
+		return ""
+	}
+	return firstNonEmpty(
+		strings.TrimSpace(message.ClientMsgID),
+		firstMetadataString(message.Metadata, "client_msg_id", "clientMessageId", "client_message_id"),
+	)
 }
 
 func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.Message, identityUsers ...map[int64]*types.User) *MsgServerData {
@@ -355,11 +382,13 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		users = identityUsers[0]
 	}
 	displayContent := decodeStoredContent(message.Content)
-	storedMetadata := artifactMetadataForRecipient(message.Metadata, recipientUID)
+	storedMetadata := metadataWithoutArtifactContext(message.Metadata)
+	clientMsgID := storedMessageClientMsgID(message)
 	return &MsgServerData{
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),
 		SeqID:         int(message.ID),
+		ClientMsgID:   clientMsgID,
 		Content:       displayContent,
 		Type:          inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
 		MsgType:       message.MsgType,
@@ -392,6 +421,9 @@ func (h *Hub) historyAPIMessageForRecipient(recipientUID int64, message *types.M
 	}
 	if len(data.ContentBlocks) > 0 {
 		out["content_blocks"] = data.ContentBlocks
+	}
+	if data.ClientMsgID != "" {
+		out["client_msg_id"] = data.ClientMsgID
 	}
 	if data.Mode != "" {
 		out["mode"] = data.Mode
@@ -610,6 +642,9 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			if actor.Username != "" {
 				actorMap["username"] = actor.Username
 			}
+			if actor.AvatarURL != "" {
+				actorMap["avatar_url"] = actor.AvatarURL
+			}
 		}
 	} else if h != nil && h.db != nil {
 		if actor, err := h.db.GetUser(actorUID); err == nil && actor != nil {
@@ -625,6 +660,9 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			}
 			if actor.Username != "" {
 				actorMap["username"] = actor.Username
+			}
+			if actor.AvatarURL != "" {
+				actorMap["avatar_url"] = actor.AvatarURL
 			}
 		}
 	}
@@ -935,7 +973,7 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		}
 	} else {
 		for _, message := range rawMsgs {
-			msgs = append(msgs, map[string]interface{}{
+			formatted := map[string]interface{}{
 				"id":         message.ID,
 				"seq_id":     message.ID,
 				"topic_id":   message.TopicID,
@@ -944,7 +982,11 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 				"type":       inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
 				"msg_type":   message.MsgType,
 				"created_at": message.CreatedAt,
-			})
+			}
+			if clientMsgID := storedMessageClientMsgID(message); clientMsgID != "" {
+				formatted["client_msg_id"] = clientMsgID
+			}
+			msgs = append(msgs, formatted)
 		}
 	}
 

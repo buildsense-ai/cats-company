@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, Link2, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
-import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
+import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
@@ -11,20 +11,25 @@ import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TAS
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
 import ConversationShareReview from '../widgets/conversation-share-review';
+import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import '../css/conversation-share.css';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import {
+  artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
   requestArtifactPageContext,
-  withArtifactRef,
+  withArtifactContextRef,
 } from '../artifact-context';
 import {
   conversationShareMessageKey,
   conversationShareText,
   downloadConversationShareImage,
   downloadConversationShareImages,
+  isMobileConversationShareBrowser,
+  openConversationShareImageForManualSave,
   renderConversationShareImage,
 } from '../utils/conversation-share-image';
 
@@ -46,7 +51,9 @@ const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
-const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
+const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const CONSECUTIVE_HUMAN_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
+const IDENTITY_TEXT_FIELDS = ['display_name', 'username', 'avatar_url', 'name'];
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -60,6 +67,7 @@ const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const ARTIFACT_REGISTRY_POLL_MS = 5000;
+const ARTIFACT_SNAPSHOT_TIMEOUT_MS = 2200;
 const DELIVERY_ARTIFACT_TYPES = new Set(['file', 'image', 'audio', 'voice']);
 
 function artifactRefreshFileKey(file) {
@@ -194,13 +202,11 @@ function clampPreviewWidth(width) {
 }
 
 function loadPreviewWidth() {
-  if (typeof window === 'undefined' || !window.localStorage) return PREVIEW_WIDTH_DEFAULT;
-  return clampPreviewWidth(Number(window.localStorage.getItem(PREVIEW_WIDTH_STORAGE_KEY)) || PREVIEW_WIDTH_DEFAULT);
+  return clampPreviewWidth(Number(readStorageValue(PREVIEW_WIDTH_STORAGE_KEY)) || PREVIEW_WIDTH_DEFAULT);
 }
 
 function savePreviewWidth(width) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(PREVIEW_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  writeStorageValue(PREVIEW_WIDTH_STORAGE_KEY, String(Math.round(width)));
 }
 
 function resolvePhoneUploadLink(uploadUrl) {
@@ -210,9 +216,26 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
-function isStructuredMentionSelectionIntact(text, target, start, end) {
-  const token = target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${target}`;
-  if (start < 0 || end > text.length || text.slice(start, end) !== token) return false;
+function imageGalleryItemId(message, blockIndex, payload) {
+  const src = payload?.url || payload?.thumbnail || '';
+  if (!src) return '';
+  return `${message?.id || message?.seq_id || 'message'}:${blockIndex}:${src}`;
+}
+
+function structuredMentionToken(selection) {
+  const target = typeof selection?.target === 'string' ? selection.target : '';
+  if (target === STRUCTURED_MENTION_ALL) return '@所有人';
+  const label = typeof selection?.label === 'string' && selection.label.trim()
+    ? selection.label.trim()
+    : target;
+  return `@${label}`;
+}
+
+function isStructuredMentionSelectionIntact(text, selection) {
+  const start = Number.isInteger(selection?.start) ? selection.start : -1;
+  const end = Number.isInteger(selection?.end) ? selection.end : -1;
+  const token = structuredMentionToken(selection);
+  if (start < 0 || end <= start || end > text.length || text.slice(start, end) !== token) return false;
   const trailingCharacter = text.slice(end, end + 1);
   return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
 }
@@ -242,6 +265,9 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
   const nextChangedText = next.slice(prefixLength, nextSuffixStart);
   return selections.flatMap((selection) => {
     const target = typeof selection?.target === 'string' ? selection.target : '';
+    const label = typeof selection?.label === 'string' && selection.label.trim()
+      ? selection.label.trim()
+      : target;
     let start = Number.isInteger(selection?.start) ? selection.start : -1;
     let end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
@@ -262,8 +288,13 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
       return [];
     }
 
-    if (!isStructuredMentionSelectionIntact(next, target, start, end)) return [];
-    return [{ target, start, end }];
+    const nextSelection = {
+      target,
+      ...(selection?.label ? { label: target === STRUCTURED_MENTION_ALL ? '所有人' : label } : {}),
+      start,
+      end,
+    };
+    return isStructuredMentionSelectionIntact(next, nextSelection) ? [nextSelection] : [];
   });
 }
 
@@ -276,8 +307,27 @@ export function collectStructuredMentionTargets(text, selections = []) {
     const end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
     if (start < 0 || end <= start) return [];
-    return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
+    return isStructuredMentionSelectionIntact(value, selection) ? [target] : [];
   }))];
+}
+
+export function canonicalizeStructuredMentionText(text, selections = []) {
+  const value = typeof text === 'string' ? text : '';
+  if (!Array.isArray(selections) || selections.length === 0) return value;
+
+  return selections
+    .filter((selection) => {
+      const target = typeof selection?.target === 'string' ? selection.target : '';
+      return (target === STRUCTURED_MENTION_ALL || /^usr\d+$/u.test(target))
+        && isStructuredMentionSelectionIntact(value, selection);
+    })
+    .sort((left, right) => right.start - left.start)
+    .reduce((result, selection) => {
+      const canonicalToken = selection.target === STRUCTURED_MENTION_ALL
+        ? '@所有人'
+        : `@${selection.target}`;
+      return `${result.slice(0, selection.start)}${canonicalToken}${result.slice(selection.end)}`;
+    }, value);
 }
 
 function historyMessageID(message) {
@@ -297,6 +347,34 @@ function historyCacheKey(userID, topic) {
   return `${userID || 'anonymous'}:${topic}`;
 }
 
+function hasIdentityText(value) {
+  return value != null && String(value).trim() !== '';
+}
+
+function mergeIdentityRecord(fallback, preferred) {
+  const fallbackRecord = fallback && typeof fallback === 'object' ? fallback : null;
+  const preferredRecord = preferred && typeof preferred === 'object' ? preferred : null;
+  if (!fallbackRecord && !preferredRecord) return null;
+
+  const merged = { ...(fallbackRecord || {}), ...(preferredRecord || {}) };
+  IDENTITY_TEXT_FIELDS.forEach((field) => {
+    if (!hasIdentityText(preferredRecord?.[field]) && hasIdentityText(fallbackRecord?.[field])) {
+      merged[field] = fallbackRecord[field];
+    }
+  });
+  return merged;
+}
+
+function messageActorIdentity(message) {
+  const actor = message?.metadata?.catsco_identity?.actor;
+  if (!actor || typeof actor !== 'object' || Array.isArray(actor)) return null;
+
+  const messageUID = parseUid(message?.from_uid || message?.from);
+  const actorUID = parseUid(actor.user_id || actor.uid || actor.id);
+  if (messageUID > 0 && actorUID !== messageUID) return null;
+  return actor;
+}
+
 function artifactURLsInMessage(message) {
   if (message?._streaming) return [];
   const textBlocks = Array.isArray(message?.content_blocks)
@@ -307,6 +385,37 @@ function artifactURLsInMessage(message) {
     .map((url) => url.replace(/[)\]}>.,;:!?，。；：！？]+$/g, ''))
     .filter(Boolean)
     .sort();
+}
+
+function artifactNotificationURL(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    parsed.hash = '';
+    parsed.search = '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '/') || '/';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function artifactPublishURLsInMessage(message) {
+  const textBlocks = Array.isArray(message?.content_blocks)
+    ? message.content_blocks.filter((block) => block?.type === 'text').map((block) => block.text || '')
+    : [];
+  const text = [typeof message?.content === 'string' ? message.content : '', ...textBlocks].join('\n');
+  if (!/(发布|共享到云端|上传到云端)/u.test(text)) return [];
+  return artifactURLsInMessage(message);
+}
+
+function artifactPublishCandidates(messages) {
+  return (messages || []).flatMap((message, index) => {
+    const messageKey = String(message?.id || message?.seq_id || message?.created_at || index);
+    return artifactPublishURLsInMessage(message).map((url) => ({
+      key: `${messageKey}|${artifactNotificationURL(url)}`,
+      url: artifactNotificationURL(url),
+    })).filter((candidate) => candidate.url);
+  });
 }
 
 function cacheHistoryPage(cache, key, entry) {
@@ -332,9 +441,11 @@ export default function MessagesView({
   onAgentModelChange,
   onActiveAgentChange,
   cloudArtifactsRequest,
+  onCloudArtifactsRequestConsumed,
   messageLocationRequest,
   onBackToSearch,
 }) {
+  const feedback = useFeedback();
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [pendingAttachments, setPendingAttachments] = useState([]);
@@ -350,6 +461,7 @@ export default function MessagesView({
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [previewImageId, setPreviewImageId] = useState('');
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
   const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
@@ -377,7 +489,9 @@ export default function MessagesView({
   const [showTutorialPicker, setShowTutorialPicker] = useState(false);
   const [selectedTutorialTask, setSelectedTutorialTask] = useState(null);
   const [tutorialTasks, setTutorialTasks] = useState(TUTORIAL_TASKS);
-  const [tutorialDismissed, setTutorialDismissed] = useState(() => localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
+  const [tutorialDismissed, setTutorialDismissed] = useState(() => (
+    readStorageValue(tutorialDismissStorageKey(user.uid, topic)) === '1'
+  ));
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
@@ -388,7 +502,7 @@ export default function MessagesView({
   const [questionIndexHasMore, setQuestionIndexHasMore] = useState(false);
   const [questionIndexLimitReached, setQuestionIndexLimitReached] = useState(false);
   const [showThinking, setShowThinking] = useState(() => {
-    const saved = localStorage.getItem('cc_show_thinking');
+    const saved = readStorageValue('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
   const [conversationShareMode, setConversationShareMode] = useState(false);
@@ -397,12 +511,38 @@ export default function MessagesView({
   const [conversationShareImages, setConversationShareImages] = useState([]);
   const [conversationSharePreviewPage, setConversationSharePreviewPage] = useState(0);
   const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
+  const [conversationShareDownloading, setConversationShareDownloading] = useState(false);
   const [conversationShareError, setConversationShareError] = useState('');
   const [conversationLinkShareReviewOpen, setConversationLinkShareReviewOpen] = useState(false);
   const [conversationLinkShareReviewMode, setConversationLinkShareReviewMode] = useState('create');
+  const [conversationShareManualSaveAvailable, setConversationShareManualSaveAvailable] = useState(false);
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
+  const imageGallery = useMemo(() => {
+    const result = [];
+    (messages || []).forEach((message, messageIndex) => {
+      const blocks = contentBlocksFromMessage(message);
+      blocks.forEach((block, blockIndex) => {
+        if (block?.type !== 'image' || !block?.payload) return;
+        const payload = block.payload;
+        const src = payload.url || payload.thumbnail;
+        if (!src) return;
+        const id = imageGalleryItemId(message, blockIndex, payload) || `${message.id || message.seq_id || `message-${messageIndex}`}:${blockIndex}:${src}`;
+        result.push({ id, payload });
+      });
+      if (blocks.length === 0) {
+        const structured = parseStructuredMessageContent(message?.content);
+        if (structured?.type === 'image' && structured.payload) {
+          const payload = structured.payload;
+          const src = payload.url || payload.thumbnail;
+          if (src) result.push({ id: imageGalleryItemId(message, 0, payload), payload });
+        }
+      }
+    });
+    return result;
+  }, [messages]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const bottomRef = useRef(null);
+  const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
   const peerTypingTimer = useRef(null);
@@ -423,17 +563,25 @@ export default function MessagesView({
   const runtimePlanClearTimer = useRef(null);
   const activeArtifactFrameRef = useRef(null);
   const activeArtifactFocusRef = useRef(null);
+  const activeArtifactSnapshotRef = useRef(null);
   const historyOffsetRef = useRef(0);
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
   const historyLoadingRef = useRef(false);
   const historyAbortControllerRef = useRef(null);
   const olderHistoryAbortControllerRef = useRef(null);
+  const galleryHistoryLoadingRef = useRef(false);
   const autoHistoryPageCountRef = useRef(0);
   const groupMembersRequestRef = useRef(0);
   const peerProfileRequestRef = useRef(0);
   const artifactRegistryRequestRef = useRef(0);
   const activeArtifactAgentUIDRef = useRef(0);
+  const artifactShareNotificationRef = useRef({
+    topic: '',
+    initialized: false,
+    observed: new Set(),
+    pending: new Map(),
+  });
   const historyCacheRef = useRef(new Map());
   const groupProfileCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
@@ -571,12 +719,24 @@ export default function MessagesView({
     }
   }, [sidePanelOpen, updatePreviewWidth]);
 
-  const clearActiveArtifactFocus = useCallback(() => {
-    activeArtifactFocusRef.current = null;
-    activeArtifactFrameRef.current = null;
+  const invalidateArtifactSnapshot = useCallback((snapshot = activeArtifactSnapshotRef.current) => {
+    const contextRef = String(snapshot?.contextRef || '');
+    if (!contextRef) return;
+    if (activeArtifactSnapshotRef.current?.contextRef === contextRef) {
+      activeArtifactSnapshotRef.current = null;
+    }
+    api.invalidateArtifactContextSnapshot(contextRef, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS })
+      .catch(() => {});
   }, []);
 
+  const clearActiveArtifactFocus = useCallback(() => {
+    invalidateArtifactSnapshot();
+    activeArtifactFocusRef.current = null;
+    activeArtifactFrameRef.current = null;
+  }, [invalidateArtifactSnapshot]);
+
   const setPreviewFileWithFocus = useCallback((file) => {
+    invalidateArtifactSnapshot();
     activeArtifactFocusRef.current = artifactMessageFocusFromPreviewFile(
       file,
       artifactTopicRef.current,
@@ -584,7 +744,7 @@ export default function MessagesView({
     );
     activeArtifactFrameRef.current = null;
     setPreviewFile(file);
-  }, []);
+  }, [invalidateArtifactSnapshot]);
 
   const handleRemoteArtifactFrameChange = useCallback((binding) => {
     activeArtifactFrameRef.current = artifactBindingMatchesFocus(
@@ -624,7 +784,7 @@ export default function MessagesView({
   const captureArtifactMessageContext = useCallback(async () => {
     const focus = activeArtifactFocusRef.current;
     const topicGeneration = artifactTopicGenerationRef.current;
-    const empty = { artifactRef: null, pageContext: null };
+    const empty = { contextRef: '' };
     if (!focus
       || focus.topic !== topic
       || focus.topicGeneration !== topicGeneration
@@ -633,21 +793,49 @@ export default function MessagesView({
       || focus.agentUid !== activeArtifactAgentUIDRef.current) return empty;
 
     const binding = activeArtifactFrameRef.current;
-    if (!artifactBindingMatchesFocus(binding, focus)) {
-      return activeArtifactFocusRef.current === focus
-        ? { artifactRef: focus.artifactRef, pageContext: null }
-        : empty;
+    const hasMatchingBinding = artifactBindingMatchesFocus(binding, focus);
+    let pageContext = null;
+    if (hasMatchingBinding) {
+      pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
     }
 
-    const pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
     if (activeArtifactFocusRef.current !== focus
-      || activeArtifactFrameRef.current !== binding
+      || (hasMatchingBinding && activeArtifactFrameRef.current !== binding)
       || artifactTopicRef.current !== topic
       || artifactTopicGenerationRef.current !== topicGeneration
       || activeTopicRef.current !== topic
       || activeArtifactAgentUIDRef.current !== focus.agentUid) return empty;
-    return { artifactRef: focus.artifactRef, pageContext };
-  }, [topic]);
+
+    let response;
+    try {
+      response = await api.createArtifactContextSnapshot({
+        topic_id: topic,
+        artifact_ref: focus.artifactRef,
+        ...(pageContext ? { page_context: pageContext } : {}),
+      }, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS });
+    } catch {
+      return empty;
+    }
+    const contextRef = artifactContextRefFromSnapshot(response);
+    if (!contextRef) return empty;
+    const snapshot = {
+      contextRef,
+      topic,
+      topicGeneration,
+      agentUid: focus.agentUid,
+      artifactId: focus.artifactId,
+    };
+    if (activeArtifactFocusRef.current !== focus
+      || artifactTopicRef.current !== topic
+      || artifactTopicGenerationRef.current !== topicGeneration
+      || activeTopicRef.current !== topic
+      || activeArtifactAgentUIDRef.current !== focus.agentUid) {
+      invalidateArtifactSnapshot(snapshot);
+      return empty;
+    }
+    activeArtifactSnapshotRef.current = snapshot;
+    return { contextRef };
+  }, [invalidateArtifactSnapshot, topic]);
 
   const previewAgentFile = useCallback((file) => {
     setPendingArtifactRefresh(null);
@@ -685,7 +873,7 @@ export default function MessagesView({
   }, [input, resizeComposerInput]);
 
   useEffect(() => {
-    setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
+    setTutorialDismissed(readStorageValue(tutorialDismissStorageKey(user.uid, topic)) === '1');
   }, [topic, user.uid]);
 
   useEffect(() => {
@@ -737,6 +925,7 @@ export default function MessagesView({
   }, []);
 
   useEffect(() => () => {
+    invalidateArtifactSnapshot();
     questionIndexRequestRef.current += 1;
     questionIndexAbortControllerRef.current?.abort();
     questionJumpAbortControllerRef.current?.abort();
@@ -746,7 +935,7 @@ export default function MessagesView({
     if (liveWorkingTimer.current) {
       clearTimeout(liveWorkingTimer.current);
     }
-  }, []);
+  }, [invalidateArtifactSnapshot]);
 
   // Load message history and group members when topic changes
   useEffect(() => {
@@ -758,6 +947,7 @@ export default function MessagesView({
     questionJumpAbortControllerRef.current?.abort();
     groupMembersRequestRef.current += 1;
     peerProfileRequestRef.current += 1;
+    invalidateArtifactSnapshot();
     activeTopicRef.current = topic;
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
@@ -841,18 +1031,25 @@ export default function MessagesView({
       questionIndexAbortControllerRef.current?.abort();
       questionJumpAbortControllerRef.current?.abort();
     };
-  }, [groupId, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
+  }, [groupId, invalidateArtifactSnapshot, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
 
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
     if (!cloudArtifactsRequest?.requestId) return;
+    if (cloudArtifactsRequest.topicId && cloudArtifactsRequest.topicId !== topic) return;
     clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
-    setCloudArtifactsTab('files');
+    setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
     setCloudArtifactsListOpen(true);
     setCloudArtifactsReturnOpen(false);
-  }, [clearActiveArtifactFocus, cloudArtifactsRequest]);
+    onCloudArtifactsRequestConsumed?.(cloudArtifactsRequest.requestId);
+  }, [
+    clearActiveArtifactFocus,
+    cloudArtifactsRequest,
+    onCloudArtifactsRequestConsumed,
+    topic,
+  ]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -917,7 +1114,7 @@ export default function MessagesView({
       const agents = agentsRes.agents || [];
       const friendPeer = friends.find((friend) => sameUID(friend.id, peerId));
       const agentPeer = agents.find((agent) => sameUID(agent.uid || agent.id, peerId));
-      const peer = agentPeer ? { ...friendPeer, ...agentPeer } : friendPeer;
+      const peer = agentPeer ? mergeIdentityRecord(friendPeer, agentPeer) : friendPeer;
       if (requestID !== peerProfileRequestRef.current || activeTopicRef.current !== requestTopic) return;
       if (peer) setPeerProfile(peer);
     } catch (e) {
@@ -955,10 +1152,8 @@ export default function MessagesView({
       // New message from server
       if (msg.data && msg.data.topic === topic) {
         if (isStreamCancel(msg.data)) {
-          const streamId = getStreamId(msg.data);
-          if (streamId) {
-            setMessages((prev) => prev.filter((message) => message._stream_id !== streamId));
-          }
+          // A cancel packet identifies the control request, not the Agent's
+          // transient response stream, so it cannot safely reconcile a row.
           clearRuntimePlan();
           clearLiveWorking();
           clearTimeout(peerTypingTimer.current);
@@ -985,8 +1180,10 @@ export default function MessagesView({
               streamId,
               topic,
               fromUid,
+              from: msg.data.from,
               content: delta,
               metadata: msg.data.metadata || null,
+              role: msg.data.role || 'assistant',
             }));
           }
           return;
@@ -1005,6 +1202,7 @@ export default function MessagesView({
           role: msg.data.role,
           type: msg.data.type,
           metadata: msg.data.metadata || null,
+          client_msg_id: msg.data.client_msg_id || '',
           msg_type: msg.data.msg_type || msg.data.type || 'text',
           reply_to: msg.data.reply_to || 0,
           created_at: new Date().toISOString(),
@@ -1012,30 +1210,53 @@ export default function MessagesView({
         if (isWorkingMessage(serverMsg)) markLiveWorking(serverMsg);
 
         setMessages((prev) => {
-          const streamId = getStreamId(serverMsg);
-          if (streamId) {
-            const streamIdx = prev.findIndex((m) => m._stream_id === streamId);
-            if (streamIdx !== -1) {
-              const next = [...prev];
-              next[streamIdx] = serverMsg;
+          const streamIdx = findStreamingMessageForFinal(prev, serverMsg);
+          if (streamIdx !== -1) {
+            const next = [...prev];
+            next[streamIdx] = serverMsg;
+            return mergeMessages([], next);
+          }
+          const current = removeStaleStreamingMessagesForFinal(prev, serverMsg);
+          // An HTTP ACK may assign the durable sequence before its matching
+          // WebSocket echo arrives. Merge that echo so its server-canonical
+          // identity and normalized payload are not lost.
+          const existingIdx = current.findIndex((message) => message.id === serverMsg.id);
+          if (existingIdx !== -1) {
+            const existing = current[existingIdx];
+            const metadata = existing.metadata || serverMsg.metadata
+              ? { ...(existing.metadata || {}), ...(serverMsg.metadata || {}) }
+              : null;
+            const next = [...current];
+            next[existingIdx] = {
+              ...existing,
+              ...serverMsg,
+              client_msg_id: messageClientMsgID(serverMsg) || messageClientMsgID(existing),
+              metadata,
+            };
+            return mergeMessages([], next);
+          }
+          // If this is our own message echoed back, replace the optimistic entry
+          if (sameUID(fromUid, user.uid)) {
+            const pendingIdx = current.findIndex((m) => (
+              m._pending && pendingMatchesHistoryMessage(m, serverMsg, new Set())
+            ));
+            if (pendingIdx !== -1) {
+              const next = [...current];
+              next[pendingIdx] = serverMsg;
+              // An Agent reply can arrive before our own server echo. Re-sort
+              // after replacing the provisional message so the user message
+              // remains between the previous and new Agent turns.
               return mergeMessages([], next);
             }
           }
-          // Deduplicate by seq ID
-          if (prev.some((m) => m.id === serverMsg.id)) return prev;
-          // If this is our own message echoed back, replace the optimistic entry
+          // Keep the display/canonical-content fallback for legacy echoes that
+          // predate client_msg_id propagation. The ID/anchor match above stays
+          // authoritative when the server provides enough correlation data.
           if (sameUID(fromUid, user.uid)) {
-            const serverContentKey = getComparableContent(serverMsg.content);
-            const pendingIdx = prev.findIndex((m) => (
-              m._pending && getComparableContent(m.content) === serverContentKey
-            ));
-            if (pendingIdx !== -1) {
-              const next = [...prev];
-              next[pendingIdx] = serverMsg;
-              return next;
-            }
+            const mergedEcho = mergeOwnServerEcho(current, serverMsg, user.uid);
+            if (mergedEcho) return mergeMessages([], mergedEcho);
           }
-          return mergeMessages(prev, [serverMsg]);
+          return mergeMessages(current, [serverMsg]);
         });
         if (sameUID(fromUid, user.uid) && isFinalTextMessage(serverMsg)) {
           clearRuntimePlan();
@@ -1214,15 +1435,8 @@ export default function MessagesView({
         ? res.has_more
         : rawMessages.length === PAGE_SIZE;
       const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
-      const newestHistoryID = rawMessages.reduce(
-        (latestID, message) => Math.max(latestID, historyMessageID(message)),
-        0,
-      );
       setMessages((current) => {
-        const newerMessages = rawMessages.length === 0
-          ? current.filter((message) => message._pending)
-          : current.filter((message) => message._pending || historyMessageID(message) > newestHistoryID);
-        return mergeMessages(visibleMessages, newerMessages);
+        return mergeHistoryWithCurrentMessages(visibleMessages, current);
       });
       historyOffsetRef.current = rawMessages.length;
       historyBeforeIDRef.current = nextBeforeID;
@@ -1367,6 +1581,22 @@ export default function MessagesView({
       }
     }
   }, [topic, user.uid]);
+
+  const loadAllHistoryForImageGallery = useCallback(async () => {
+    if (galleryHistoryLoadingRef.current || !hasMoreHistoryRef.current) return;
+    galleryHistoryLoadingRef.current = true;
+    try {
+      let pageCount = 0;
+      while (hasMoreHistoryRef.current && pageCount < 100) {
+        const beforeID = historyBeforeIDRef.current;
+        await loadOlderHistory({ automatic: false });
+        pageCount += 1;
+        if (historyBeforeIDRef.current === beforeID) break;
+      }
+    } finally {
+      galleryHistoryLoadingRef.current = false;
+    }
+  }, [loadOlderHistory]);
 
   useEffect(() => {
     const el = timelineRef.current;
@@ -1541,9 +1771,10 @@ export default function MessagesView({
         ...next[idx],
         id: result.seq_id || result.id,
         seq_id: result.seq_id || result.id,
+        client_msg_id: result.client_msg_id || next[idx].client_msg_id || '',
         _pending: false,
       };
-      return next.sort((a, b) => (a.seq_id || a.id) - (b.seq_id || b.id));
+      return mergeMessages([], next);
     });
   }, []);
 
@@ -1573,10 +1804,14 @@ export default function MessagesView({
     const text = initialText;
     const originalReplyTo = replyTo;
     const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const protocolText = isGroup
+      ? canonicalizeStructuredMentionText(originalInput, originalStructuredMentions).trim()
+      : text;
     const mentions = isGroup
       ? collectStructuredMentionTargets(input, originalStructuredMentions)
       : [];
     const tempId = Date.now();
+    const clientMsgID = createClientMessageID();
 
     try {
       if (!isGroup && selectedAgent && selectedAgent.topic_id !== topic && onResolveAgentTopic) {
@@ -1593,23 +1828,19 @@ export default function MessagesView({
       }
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
-      const contentBlocks = buildAtomicContentBlocks(text, attachmentsToSend);
+      const contentBlocks = buildAtomicContentBlocks(protocolText, attachmentsToSend);
       const displayContent = text || summarizeAttachments(attachmentsToSend);
       const payload = attachmentsToSend.length > 0
         ? {
             type: 'text',
-            content: displayContent,
+            content: protocolText || summarizeAttachments(attachmentsToSend),
             content_blocks: contentBlocks,
           }
-        : text;
+        : protocolText;
       const artifactContext = switchesTopic
-        ? { artifactRef: null, pageContext: null }
+        ? { contextRef: '' }
         : await captureArtifactMessageContext();
-      const sendPayload = withArtifactRef(
-        payload,
-        artifactContext.artifactRef,
-        artifactContext.pageContext,
-      );
+      const sendPayload = withArtifactContextRef(payload, artifactContext.contextRef);
 
       updateComposerDraft(topic, '');
       updateStructuredMentionDraft(topic, []);
@@ -1626,23 +1857,23 @@ export default function MessagesView({
       if (!switchesTopic && activeTopicRef.current === topic) {
         optimisticMessageAdded = true;
         setMessages((prev) => mergeMessages(prev, [{
-          id: tempId,
-          seq_id: tempId,
-          topic_id: sendTopic,
-          from_uid: user.uid,
-          content: displayContent,
-          content_blocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
-          type: 'text',
-          msg_type: 'text',
-          reply_to: currentReplyTo ? currentReplyTo.id : 0,
-          created_at: new Date().toISOString(),
-          _pending: true,
+          ...createOptimisticUserMessage({
+            id: tempId,
+            topicId: sendTopic,
+            userUID: user.uid,
+            content: displayContent,
+            contentBlocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
+            replyToID: currentReplyTo ? currentReplyTo.id : 0,
+            pendingAfterSeq: latestPersistedMessageSequence(prev),
+            clientMsgID,
+          }),
+          _canonical_content: protocolText,
         }]));
       }
 
       const result = mentions.length > 0
-        ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
-        : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
+        ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions, clientMsgID)
+        : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, undefined, clientMsgID);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
@@ -1724,27 +1955,21 @@ export default function MessagesView({
     setAwaitingAgentReply(true);
     clearRuntimePlan();
     const tempId = Date.now();
+    const clientMsgID = createClientMessageID();
     stickToBottomRef.current = true;
-    setMessages((current) => mergeMessages(current, [{
+    setMessages((current) => mergeMessages(current, [createOptimisticUserMessage({
       id: tempId,
-      seq_id: tempId,
-      topic_id: topic,
-      from_uid: user.uid,
+      topicId: topic,
+      userUID: user.uid,
       content: taskText,
-      type: 'text',
-      msg_type: 'text',
-      created_at: new Date().toISOString(),
-      _pending: true,
-    }]));
+      pendingAfterSeq: latestPersistedMessageSequence(current),
+      clientMsgID,
+    })]));
 
     try {
       const artifactContext = await captureArtifactMessageContext();
-      const sendPayload = withArtifactRef(
-        taskText,
-        artifactContext.artifactRef,
-        artifactContext.pageContext,
-      );
-      const result = await api.sendMessage(topic, sendPayload, undefined);
+      const sendPayload = withArtifactContextRef(taskText, artifactContext.contextRef);
+      const result = await api.sendMessage(topic, sendPayload, undefined, undefined, clientMsgID);
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
       removeOptimisticMessage(tempId);
@@ -1867,7 +2092,10 @@ export default function MessagesView({
     const range = mentionRangeRef.current;
     if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
     const target = member.mention_target || `usr${member.user_id}`;
-    const mention = target === STRUCTURED_MENTION_ALL ? '@所有人 ' : `@${target} `;
+    const label = target === STRUCTURED_MENTION_ALL
+      ? '所有人'
+      : (member.display_name || member.username || target);
+    const mention = `@${label} `;
     const newText = input.slice(0, range.start) + mention + input.slice(range.end);
     const reconciledSelections = reconcileStructuredMentionSelections(
       input,
@@ -1876,7 +2104,7 @@ export default function MessagesView({
     );
     updateStructuredMentionDraft(topic, [
       ...reconciledSelections,
-      { target, start: range.start, end: range.start + mention.length - 1 },
+      { target, label, start: range.start, end: range.start + mention.length - 1 },
     ]);
     setInput(newText);
     updateComposerDraft(topic, newText);
@@ -2211,6 +2439,22 @@ export default function MessagesView({
     if (sameUID(m.user_id, user.uid)) return false;
     return m.is_bot === true || m.account_type === 'bot';
   });
+  const mentionDisplayNames = useMemo(() => {
+    if (!isGroup) return {};
+    return members.reduce((names, member) => {
+      const uid = parseUid(member?.user_id);
+      if (!uid) return names;
+      const agent = availableAgents.find((candidate) => sameUID(candidate?.uid || candidate?.id, uid));
+      const displayName = member?.display_name
+        || agent?.display_name
+        || agent?.name
+        || member?.username;
+      if (displayName && displayName !== `usr${uid}`) {
+        names[String(uid)] = displayName;
+      }
+      return names;
+    }, {});
+  }, [availableAgents, isGroup, members]);
   const normalizedMentionFilter = mentionFilter.toLowerCase();
   const mentionAllAliases = ['所有人', '所有机器人', '全部机器人', 'all'];
   const mentionAllMatches = groupBots.length > 0 && (
@@ -2242,7 +2486,7 @@ export default function MessagesView({
     return left === parseUid(user.uid) ? right : left;
   }, [isGroup, topic, user.uid]);
   const rosterPeer = availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID));
-  const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
+  const resolvedPeerProfile = mergeIdentityRecord(peerProfile, rosterPeer);
   const peerIsBot = Boolean(rosterPeer)
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
@@ -2306,8 +2550,9 @@ export default function MessagesView({
         : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
     )
     : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
-  const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
-  const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
+  const displayName = isGroup
+    ? (groupInfo?.name || topicName || topic)
+    : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
@@ -2320,6 +2565,52 @@ export default function MessagesView({
   const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
     ? artifactRegistryState.artifacts
     : [];
+
+  useEffect(() => {
+    if (!historyLoaded || activeArtifactAgentUID <= 0) return;
+
+    let state = artifactShareNotificationRef.current;
+    if (state.topic !== topic) {
+      state = {
+        topic,
+        initialized: false,
+        observed: new Set(),
+        pending: new Map(),
+      };
+      artifactShareNotificationRef.current = state;
+    }
+
+    const candidates = artifactPublishCandidates(messages);
+    if (!state.initialized) {
+      state.observed = new Set(candidates.map((candidate) => candidate.key));
+      state.initialized = true;
+      return;
+    }
+
+    candidates.forEach((candidate) => {
+      if (state.observed.has(candidate.key)) return;
+      state.observed.add(candidate.key);
+      state.pending.set(candidate.key, {
+        url: candidate.url,
+        registryRevision: artifactRegistryRevision,
+      });
+    });
+    while (state.pending.size > 32) {
+      state.pending.delete(state.pending.keys().next().value);
+    }
+
+    const confirmedURLs = new Set(
+      knownArtifacts.map((artifact) => artifactNotificationURL(artifact?.url)).filter(Boolean),
+    );
+    let shared = false;
+    state.pending.forEach((pending, key) => {
+      if (artifactRegistryRevision <= pending.registryRevision || !confirmedURLs.has(pending.url)) return;
+      state.pending.delete(key);
+      shared = true;
+    });
+    if (shared) feedback.notify({ tone: 'success', message: '已共享内容到云端' });
+  }, [activeArtifactAgentUID, artifactRegistryRevision, feedback, historyLoaded, knownArtifacts, messages, topic]);
+
   const activePreviewArtifactRef = artifactRefFromPreviewFile(previewFile, activeArtifactAgentUID);
   const activePreviewArtifactId = activePreviewArtifactRef?.id || '';
   const activePreviewArtifactVersion = Number(activePreviewArtifactRef?.displayed_version || 0);
@@ -2611,19 +2902,47 @@ export default function MessagesView({
     return map;
   }, [messages]);
 
+  // Keep the identity used by existing self-authored rows reactive without
+  // recomputing their display groups for unrelated parent-prop changes.
+  const currentUserIdentity = useMemo(() => ({
+    account_type: user.account_type,
+    avatar_url: user.avatar_url,
+    bot: user.bot,
+    display_name: user.display_name,
+    is_bot: user.is_bot,
+    name: user.name,
+    username: user.username,
+  }), [
+    user.account_type,
+    user.avatar_url,
+    user.bot,
+    user.display_name,
+    user.is_bot,
+    user.name,
+    user.username,
+  ]);
+
   const getSender = (msg) => {
     if (sameUID(msg.from_uid, user.uid)) {
+      // The active account profile is authoritative for the current user. A
+      // persisted message identity only fills fields that have not loaded yet.
+      const senderProfile = mergeIdentityRecord(messageActorIdentity(msg), currentUserIdentity);
       return {
-        name: user.display_name || user.username,
-        avatarUrl: user.avatar_url,
-        isBot: user.account_type === 'bot',
+        name: senderProfile?.display_name || senderProfile?.username,
+        avatarUrl: senderProfile?.avatar_url,
+        isBot: senderProfile?.account_type === 'bot'
+          || senderProfile?.bot === true
+          || senderProfile?.is_bot === true,
       };
     }
     if (isGroup) {
       const senderUID = parseUid(msg.from_uid);
       const member = memberMap.get(senderUID);
       const rosterAgent = availableAgentByUID.get(senderUID);
-      const senderProfile = member || rosterAgent;
+      const senderProfile = mergeIdentityRecord(
+        mergeIdentityRecord(rosterAgent, member),
+        messageActorIdentity(msg),
+      );
       return {
         name: senderProfile?.display_name
           || senderProfile?.username
@@ -2634,15 +2953,24 @@ export default function MessagesView({
           member?.is_bot
           || member?.account_type === 'bot'
           || rosterAgent
+          || senderProfile?.bot === true
+          || senderProfile?.is_bot === true
+          || senderProfile?.account_type === 'bot'
           || inferredAgentUIDs.has(senderUID)
           || isAssistantAuthoredMessage(msg),
         ),
       };
     }
+    const senderProfile = mergeIdentityRecord(resolvedPeerProfile, messageActorIdentity(msg));
     return {
-      name: resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic,
-      avatarUrl: displayAvatarUrl,
-      isBot: peerIsBot,
+      name: senderProfile?.display_name || senderProfile?.username || topicName || topic,
+      avatarUrl: senderProfile?.avatar_url || topicAvatarUrl,
+      isBot: Boolean(
+        peerIsBot
+        || senderProfile?.bot === true
+        || senderProfile?.is_bot === true
+        || senderProfile?.account_type === 'bot',
+      ),
     };
   };
 
@@ -2650,20 +2978,13 @@ export default function MessagesView({
   const groupedMessages = useMemo(() => {
     const groups = [];
     const workingByExplicitTurn = new Map();
-    const workingByFallbackTurn = new Map();
     let currentWorking = null;
-    let latestHumanPromptKey = '';
-    let prevSenderUid = null;
-    let prevTime = 0;
-    let prevVisibleSenderUid = null;
-    let prevVisibleTime = 0;
+    let previousDisplayContext = null;
+    let previousVisibleDisplayContext = null;
 
     const registerWorkingGroup = (group) => {
       if (group.explicitTurnKey) {
         workingByExplicitTurn.set(group.explicitTurnKey, group);
-      }
-      if (group.fallbackTurnKey) {
-        workingByFallbackTurn.set(group.fallbackTurnKey, group);
       }
     };
 
@@ -2674,117 +2995,93 @@ export default function MessagesView({
       currentWorking = null;
     };
 
-    const findWorkingGroup = ({ explicitTurnKey, fallbackTurnKey }) => {
-      if (explicitTurnKey) {
-        const explicitMatch = workingByExplicitTurn.get(explicitTurnKey);
-        if (explicitMatch) return explicitMatch;
-        const fallbackMatch = fallbackTurnKey
-          ? workingByFallbackTurn.get(fallbackTurnKey)
-          : null;
-        return fallbackMatch && !fallbackMatch.explicitTurnKey ? fallbackMatch : null;
-      }
-      return fallbackTurnKey ? workingByFallbackTurn.get(fallbackTurnKey) : null;
+    const findWorkingGroup = ({ explicitTurnKey }) => {
+      return explicitTurnKey ? workingByExplicitTurn.get(explicitTurnKey) || null : null;
     };
 
-    const belongsToCurrentWorking = ({ explicitTurnKey, fallbackTurnKey }) => {
+    const belongsToCurrentWorking = ({ explicitTurnKey }) => {
       if (!currentWorking) return false;
-      if (
-        currentWorking.explicitTurnKey
-        && explicitTurnKey
-        && currentWorking.explicitTurnKey !== explicitTurnKey
-      ) {
-        return false;
-      }
-      if (currentWorking.fallbackTurnKey && fallbackTurnKey) {
-        return currentWorking.fallbackTurnKey === fallbackTurnKey;
-      }
-      return true;
+      return hasSameExplicitExecutionKey(currentWorking, { explicitTurnKey });
     };
 
-    messages.forEach((msg, index) => {
-      const msgTime = new Date(msg.created_at || Date.now()).getTime();
-      const senderUid = parseUid(msg.from_uid) || String(msg.from_uid || '');
-      const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+    messages.forEach((msg) => {
       const sender = getSender(msg);
       const assistantAuthored = isAssistantAuthoredMessage(msg, sender.isBot);
 
-      if (isFinalTextMessage(msg) && !assistantAuthored) {
-        latestHumanPromptKey = messageTurnIdentity(msg, index);
-      }
-
-      const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
+      const displayContext = messageDisplayContext(msg, sender.isBot);
+      const { turn } = displayContext;
+      const isConsecutive = areMessagesConsecutive(previousDisplayContext, displayContext);
 
       if (isWorkingMessage(msg)) {
         let leadingNarrativeMessages = [];
+        let leadingNarrativeIsConsecutive = null;
         if (messageHasActionTool(msg)) {
           const previousGroup = groups[groups.length - 1];
           const previousMessage = previousGroup?.message;
           const sameSender = messageSenderIdentity(previousMessage) === messageSenderIdentity(msg);
-          const explicitTurnConflict = Boolean(
-            previousGroup?.explicitTurnKey
-            && turn.explicitTurnKey
-            && previousGroup.explicitTurnKey !== turn.explicitTurnKey
-          );
-          const fallbackTurnConflict = Boolean(
-            previousGroup?.fallbackTurnKey
-            && turn.fallbackTurnKey
-            && previousGroup.fallbackTurnKey !== turn.fallbackTurnKey
+          const canAdoptLeadingNarrative = hasSameExplicitExecutionKey(
+            previousGroup,
+            { explicitTurnKey: turn.explicitTurnKey },
           );
           if (
             previousGroup?.type === 'text'
             && previousGroup.assistantAuthored
             && sameSender
-            && !explicitTurnConflict
-            && !fallbackTurnConflict
+            && canAdoptLeadingNarrative
             && !displayGroupHasDeliveryArtifact(previousGroup)
           ) {
             const sourceMessages = previousGroup.sourceMessages || [previousGroup.message];
             leadingNarrativeMessages = sourceMessages.map(assistantProcessMessage);
+            leadingNarrativeIsConsecutive = previousGroup.isConsecutive;
             groups.pop();
           }
         }
 
         if (currentWorking && !belongsToCurrentWorking(turn)) {
           flushCurrentWorking();
+          // A different working key starts a new execution segment. Do not
+          // resurrect an older group if this segment later returns to it.
+          workingByExplicitTurn.clear();
+        }
+
+        if (
+          !currentWorking
+          && !hasSameExplicitExecutionKey(previousDisplayContext, turn)
+        ) {
+          // When the previous visible row ended one execution segment, only
+          // the immediately preceding segment may be continued. Discard older
+          // keyed groups before looking up this new working row.
+          workingByExplicitTurn.clear();
         }
 
         if (currentWorking) {
           currentWorking.messages.push(...leadingNarrativeMessages, msg);
-          if (!currentWorking.explicitTurnKey && turn.explicitTurnKey) {
-            currentWorking.explicitTurnKey = turn.explicitTurnKey;
-          }
-          if (!currentWorking.fallbackTurnKey && turn.fallbackTurnKey) {
-            currentWorking.fallbackTurnKey = turn.fallbackTurnKey;
-          }
         } else {
           const existingWorking = findWorkingGroup(turn);
           if (existingWorking) {
             existingWorking.messages.push(...leadingNarrativeMessages, msg);
-            if (!existingWorking.explicitTurnKey && turn.explicitTurnKey) {
-              existingWorking.explicitTurnKey = turn.explicitTurnKey;
-            }
-            if (!existingWorking.fallbackTurnKey && turn.fallbackTurnKey) {
-              existingWorking.fallbackTurnKey = turn.fallbackTurnKey;
-            }
             registerWorkingGroup(existingWorking);
           } else {
             currentWorking = {
               type: 'working',
               messages: [...leadingNarrativeMessages, msg],
               sender,
-              isConsecutive,
+              isConsecutive: leadingNarrativeIsConsecutive ?? isConsecutive,
               explicitTurnKey: turn.explicitTurnKey,
-              fallbackTurnKey: turn.fallbackTurnKey,
             };
           }
         }
-        prevSenderUid = senderUid;
-        prevTime = msgTime;
+        previousDisplayContext = displayContext;
       } else {
         flushCurrentWorking();
+        if (!hasSameExplicitExecutionKey(previousDisplayContext, displayContext)) {
+          // A visible row without the same proven execution key is a hard
+          // boundary. Keeping its predecessor's group would compact
+          // non-adjacent rows and hide this row's sender identity.
+          workingByExplicitTurn.clear();
+        }
         const displayMessage = msg;
-        // Recalculate isConsecutive in case a working block just processed
-        const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+        const textIsConsecutive = areMessagesConsecutive(previousDisplayContext, displayContext);
         const previousGroup = groups[groups.length - 1];
         const previousSourceMessages = previousGroup?.type === 'text'
           ? (previousGroup.sourceMessages || [previousGroup.message])
@@ -2797,19 +3094,17 @@ export default function MessagesView({
             ...previousGroup,
             message: mergeAssistantDisplayMessages(sourceMessages),
             sourceMessages,
+            sender,
             explicitTurnKey: previousGroup.explicitTurnKey || turn.explicitTurnKey,
-            fallbackTurnKey: previousGroup.fallbackTurnKey || turn.fallbackTurnKey,
           };
-          prevSenderUid = senderUid;
-          prevTime = msgTime;
-          prevVisibleSenderUid = senderUid;
-          prevVisibleTime = msgTime;
+          previousDisplayContext = displayContext;
+          previousVisibleDisplayContext = displayContext;
           return;
         }
 
-        const textIsConsecutiveWithoutWorking = (
-          prevVisibleSenderUid === senderUid
-          && (msgTime - prevVisibleTime < 5 * 60 * 1000)
+        const textIsConsecutiveWithoutWorking = areMessagesConsecutive(
+          previousVisibleDisplayContext,
+          displayContext,
         );
 
         groups.push({
@@ -2822,20 +3117,18 @@ export default function MessagesView({
           isConsecutiveWithoutWorking: textIsConsecutiveWithoutWorking,
           assistantAuthored,
           explicitTurnKey: turn.explicitTurnKey,
-          fallbackTurnKey: turn.fallbackTurnKey,
         });
-        prevSenderUid = senderUid;
-        prevTime = msgTime;
-        prevVisibleSenderUid = senderUid;
-        prevVisibleTime = msgTime;
+        previousDisplayContext = displayContext;
+        previousVisibleDisplayContext = displayContext;
       }
     });
 
     flushCurrentWorking();
 
-    return reorderAssistantTurnGroups(groups);
+    return reconcileRenderedGroupConsecutiveness(reorderAssistantTurnGroups(groups));
   }, [
     availableAgentByUID,
+    currentUserIdentity,
     inferredAgentUIDs,
     isGroup,
     memberMap,
@@ -2843,7 +3136,6 @@ export default function MessagesView({
     messages,
     peerIsBot,
     resolvedPeerProfile,
-    displayAvatarUrl,
     topic,
     topicAvatarUrl,
     topicName,
@@ -2886,6 +3178,8 @@ export default function MessagesView({
     setConversationSharePreviewOpen(false);
     setConversationShareImages([]);
     setConversationSharePreviewPage(0);
+    setConversationShareDownloading(false);
+    setConversationShareManualSaveAvailable(false);
   }, []);
 
   const transitionConversationShare = useCallback(({ mode, selectedKeys = [] }) => {
@@ -2947,6 +3241,7 @@ export default function MessagesView({
     }
     setConversationShareGenerating(true);
     setConversationShareError('');
+    setConversationShareManualSaveAvailable(false);
     try {
       const root = typeof document === 'undefined' ? null : document.documentElement;
       const theme = root?.dataset.theme === 'liquid' && root.dataset.liquidVariant === 'green'
@@ -2974,6 +3269,54 @@ export default function MessagesView({
       setConversationShareGenerating(false);
     }
   }, [displayName, selectedConversationShareItems, topic, topicName]);
+
+  const saveConversationShareImages = useCallback(async ({ all = false } = {}) => {
+    if (conversationShareDownloading || !conversationSharePreviewImage) return;
+    setConversationShareDownloading(true);
+    setConversationShareError('');
+    setConversationShareManualSaveAvailable(false);
+    try {
+      let saved;
+      if (all && conversationShareImages.length > 1) {
+        saved = await downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
+      } else if (conversationShareImages.length > 1) {
+        saved = await downloadConversationShareImage(
+          conversationSharePreviewImage.dataUrl,
+          `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
+        );
+      } else {
+        saved = await downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
+      }
+      if (!saved) {
+        const canOpenCurrentImage = !all || conversationShareImages.length <= 1;
+        setConversationShareManualSaveAvailable(canOpenCurrentImage);
+        setConversationShareError(
+          all && conversationShareImages.length > 1
+            ? '无法一次保存全部图片。请使用“下载当前 PNG”逐张保存，或在系统分享菜单中选择保存。'
+            : '无法启动图片保存。请在新标签页中打开图片后，使用浏览器的保存功能。',
+        );
+      }
+    } catch {
+      setConversationShareError('无法启动图片保存。请检查浏览器的下载或弹窗权限后重试。');
+    } finally {
+      setConversationShareDownloading(false);
+    }
+  }, [
+    conversationShareDownloading,
+    conversationShareImages,
+    conversationSharePreviewImage,
+    conversationSharePreviewPage,
+  ]);
+
+  const openConversationShareImageManually = useCallback(() => {
+    if (conversationShareDownloading || !conversationSharePreviewImage) return;
+    setConversationShareError('');
+    if (openConversationShareImageForManualSave(conversationSharePreviewImage.dataUrl)) {
+      setConversationShareManualSaveAvailable(false);
+      return;
+    }
+    setConversationShareError('无法在新标签页中打开图片。请检查浏览器的弹窗权限后重试。');
+  }, [conversationShareDownloading, conversationSharePreviewImage]);
 
   useEffect(() => {
     if (!conversationShareMode) return;
@@ -3062,14 +3405,13 @@ export default function MessagesView({
     user.account_type,
     user.uid,
   ]);
-
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
     setSelectedTutorialTask(task);
   };
 
   const dismissTutorialEmptyState = () => {
-    localStorage.setItem(tutorialDismissStorageKey(user.uid, topic), '1');
+    writeStorageValue(tutorialDismissStorageKey(user.uid, topic), '1');
     setTutorialDismissed(true);
   };
 
@@ -3298,6 +3640,27 @@ export default function MessagesView({
     }
   };
 
+  const openImagePreview = useCallback((imageId, trigger, payload = null) => {
+    const resolvedItem = imageGallery.find((item) => item.id === imageId)
+      || imageGallery.find((item) => (
+        payload?.url && item?.payload?.url === payload.url
+      ))
+      || imageGallery.find((item) => (
+        payload?.thumbnail && item?.payload?.thumbnail === payload.thumbnail
+      ));
+    if (!resolvedItem) return;
+    previewImageTriggerRef.current = trigger || null;
+    setPreviewImageId(resolvedItem.id);
+    void loadAllHistoryForImageGallery();
+  }, [imageGallery, loadAllHistoryForImageGallery]);
+
+  const closeImagePreview = useCallback(() => {
+    setPreviewImageId('');
+  }, []);
+
+  const previewImageIndex = imageGallery.findIndex((item) => item.id === previewImageId);
+  const previewImage = previewImageIndex >= 0 ? imageGallery[previewImageIndex] : null;
+
   return (
     <>
       <div
@@ -3471,12 +3834,12 @@ export default function MessagesView({
             if (!showThinking) return null;
             return (
               <div
-                key={group.messages[0].id || i}
+                key={`working:${group.messages[0].id || 'group'}:${i}`}
                 className={`oc-working-group cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && group.messages.some((message) => historyMessageID(message) === highlightedMessageId) ? ' cc-message-search-hit' : ''}`}
               >
-                {group.messages.map((message) => (
+                {group.messages.map((message, messageIndex) => (
                   <span
-                    key={`search-anchor-${historyMessageID(message)}`}
+                    key={`search-anchor-${historyMessageID(message)}-${messageIndex}`}
                     className="cc-message-search-anchor"
                     data-search-message-id={historyMessageID(message) || undefined}
                     aria-hidden="true"
@@ -3490,6 +3853,7 @@ export default function MessagesView({
                   senderName={group.sender.name}
                   senderAvatarUrl={group.sender.avatarUrl}
                   senderIsBot={group.sender.isBot}
+                  mentionDisplayNames={mentionDisplayNames}
                   workingOnly
                   workingComplete={group.workingComplete}
                   showThinking={showThinking}
@@ -3497,6 +3861,8 @@ export default function MessagesView({
                   onPreviewFile={openFilePreview}
                   activePreviewFile={previewFile}
                   knownArtifacts={knownArtifacts}
+                  imageGallery={imageGallery}
+                  onOpenImage={openImagePreview}
                 />
               </div>
             );
@@ -3506,7 +3872,7 @@ export default function MessagesView({
           const selected = selectable && conversationShareSelectedKeys.includes(candidate.key);
           return (
             <div
-              key={group.message.id || i}
+              key={`message:${group.message.id || 'group'}:${i}`}
               className={`cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && historyMessageID(group.message) === highlightedMessageId ? ' cc-message-search-hit' : ''}${selectable ? ' is-conversation-share-selectable' : ''}${selected ? ' is-conversation-share-selected' : ''}`}
               data-search-message-id={historyMessageID(group.message) || undefined}
             >
@@ -3534,6 +3900,7 @@ export default function MessagesView({
                 senderName={group.sender.name}
                 senderAvatarUrl={group.sender.avatarUrl}
                 senderIsBot={group.sender.isBot}
+                mentionDisplayNames={mentionDisplayNames}
                 replyMessage={group.replyMessage}
                 questionAnchorKey={sameUID(group.message.from_uid, user.uid)
                   ? questionNavigationKey(group.message, i)
@@ -3556,11 +3923,15 @@ export default function MessagesView({
                 onPreviewFile={openFilePreview}
                 activePreviewFile={previewFile}
                 knownArtifacts={knownArtifacts}
+                imageGallery={imageGallery}
+                onOpenImage={openImagePreview}
               />
             </div>
           );
         })}
-          {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}
+          {runtimePlan && !hasPersistedRuntimePlan && (
+            <RuntimePlanCard plan={runtimePlan} />
+          )}
           {peerTyping && (
             <div className="v3-peer-typing" role="status">
               <span className="v3-peer-typing-label">{t('typing')}</span>
@@ -3860,6 +4231,20 @@ export default function MessagesView({
           </div>
         )}
       </div>
+      {previewImage && typeof document !== 'undefined' && (
+        <ImageGalleryPreview
+          item={previewImage}
+          index={previewImageIndex}
+          items={imageGallery}
+          onClose={closeImagePreview}
+          onChange={(nextIndex) => {
+            const next = imageGallery[nextIndex];
+            if (!next) return;
+            setPreviewImageId(next.id);
+          }}
+          triggerRef={previewImageTriggerRef}
+        />
+      )}
       {showTutorialPicker && (
         <TutorialTaskPicker
           tasks={tutorialTasks}
@@ -3945,6 +4330,12 @@ export default function MessagesView({
                 })}
               />
             </div>
+            {conversationShareDownloading && (
+              <p className="cc-conversation-share-preview-status" role="status">正在打开图片保存…</p>
+            )}
+            {conversationShareError && (
+              <p className="cc-conversation-share-preview-status is-error" role="alert">{conversationShareError}</p>
+            )}
             <footer className="cc-conversation-share-preview-actions">
               <button type="button" className="cc-conversation-share-secondary" onClick={() => setConversationSharePreviewOpen(false)}>
                 {t('conversation_share_back')}
@@ -3953,27 +4344,34 @@ export default function MessagesView({
                 <button
                   type="button"
                   className="cc-conversation-share-secondary"
-                  onClick={() => downloadConversationShareImage(
-                    conversationSharePreviewImage.dataUrl,
-                    `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
-                  )}
+                  disabled={conversationShareDownloading}
+                  onClick={() => void saveConversationShareImages()}
                 >
-                  {t('conversation_share_download_current')}
+                  {conversationShareDownloading ? '正在打开…' : t('conversation_share_download_current')}
+                </button>
+              )}
+              {conversationShareManualSaveAvailable && (
+                <button
+                  type="button"
+                  className="cc-conversation-share-secondary"
+                  disabled={conversationShareDownloading}
+                  onClick={openConversationShareImageManually}
+                >
+                  在新标签页打开图片
                 </button>
               )}
               <button
                 type="button"
                 className="cc-conversation-share-primary"
-                onClick={() => {
-                  if (conversationShareImages.length > 1) {
-                    downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
-                  } else {
-                    downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
-                  }
-                }}
+                disabled={conversationShareDownloading}
+                onClick={() => void saveConversationShareImages({ all: conversationShareImages.length > 1 })}
               >
                 <Download size={16} aria-hidden="true" />
-                {conversationShareImages.length > 1 ? t('conversation_share_download_all') : t('conversation_share_download')}
+                {conversationShareDownloading
+                  ? '正在打开…'
+                  : (conversationShareImages.length > 1
+                    ? (isMobileConversationShareBrowser() ? '系统分享全部图片' : '下载全部图片（ZIP）')
+                    : t('conversation_share_download'))}
               </button>
             </footer>
           </section>
@@ -4210,6 +4608,7 @@ function normalizeIncomingMessage(message) {
   const normalized = { ...message };
   normalized.content_blocks = contentBlocksFromMessage(message);
   normalized.metadata = message?.metadata || null;
+  normalized.client_msg_id = messageClientMsgID(message);
   normalized.msg_type = message?.msg_type || 'text';
 
   const runtimePlan = normalizeRuntimePlan(message?.content);
@@ -4408,21 +4807,68 @@ function isAssistantAuthoredMessage(message, senderIsBot = false) {
 
 function assistantReplyTurnKey(message) {
   const metadata = message?.metadata || {};
-  const value = metadata.turn_id
-    ?? metadata.turnId
-    ?? metadata.response_id
-    ?? metadata.responseId
-    ?? metadata.run_id
-    ?? metadata.runId
-    ?? metadata.stream_id
-    ?? message?._stream_id;
-  return value == null ? '' : String(value).trim();
+  // These identifiers describe the Agent execution that produced the row.
+  // `stream_id` is intentionally excluded: it is a transport/lifecycle
+  // identifier used to reconcile transient deltas, and a runtime may reuse it
+  // for a later round. Reusing it for visual grouping would hide the later
+  // row's avatar and name.
+  const candidates = [
+    ['run', metadata.run_id],
+    ['run', metadata.runId],
+    ['turn', metadata.turn_id],
+    ['turn', metadata.turnId],
+    ['response', metadata.response_id],
+    ['response', metadata.responseId],
+  ];
+  for (const [kind, candidate] of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const value = candidate.trim();
+    if (value) return `${kind}:${value}`;
+  }
+  return '';
 }
 
 function messageSenderIdentity(message) {
   const rawSender = message?.from_uid ?? message?.from ?? '';
   const parsedSender = parseUid(rawSender);
   return parsedSender ? String(parsedSender) : String(rawSender).trim();
+}
+
+function assistantExecutionKey(message) {
+  const senderKey = messageSenderIdentity(message);
+  const turnKey = assistantReplyTurnKey(message);
+  return senderKey && turnKey ? `${senderKey}:turn:${turnKey}` : '';
+}
+
+function renderedGroupBoundaryMessage(group, edge = 'first') {
+  const sourceMessages = group?.type === 'working'
+    ? (group.messages || [])
+    : (group?.sourceMessages || (group?.message ? [group.message] : []));
+  return edge === 'last'
+    ? sourceMessages[sourceMessages.length - 1]
+    : sourceMessages[0];
+}
+
+function renderedGroupSenderIdentity(group, edge = 'first') {
+  const messageIdentity = messageSenderIdentity(renderedGroupBoundaryMessage(group, edge));
+  const senderRole = group?.sender?.isBot ? 'agent' : 'member';
+  return `${messageIdentity}:${senderRole}`;
+}
+
+export function reconcileRenderedGroupConsecutiveness(groups = []) {
+  return groups.map((group, index) => {
+    if (index === 0 || !group?.isConsecutive) return group;
+
+    const previousGroup = groups[index - 1];
+    const previousSender = renderedGroupSenderIdentity(previousGroup, 'last');
+    const currentSender = renderedGroupSenderIdentity(group, 'first');
+    if (previousSender === currentSender) return group;
+
+    return {
+      ...group,
+      isConsecutive: false,
+    };
+  });
 }
 
 function messageTurnIdentity(message, index) {
@@ -4435,17 +4881,55 @@ function messageTurnIdentity(message, index) {
   return String(value);
 }
 
-function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
+function explicitExecutionKey(value) {
+  if (typeof value === 'string') return value.trim();
+  return typeof value?.explicitTurnKey === 'string' ? value.explicitTurnKey.trim() : '';
+}
+
+function hasSameExplicitExecutionKey(previous, current) {
+  const previousKey = explicitExecutionKey(previous);
+  const currentKey = explicitExecutionKey(current);
+  return Boolean(previousKey && currentKey && previousKey === currentKey);
+}
+
+function assistantWorkTurn(message, senderIsBot) {
   if (!isWorkingMessage(message) && !isAssistantAuthoredMessage(message, senderIsBot)) {
-    return { explicitTurnKey: '', fallbackTurnKey: '' };
+    return { explicitTurnKey: '' };
   }
 
-  const senderKey = messageSenderIdentity(message) || 'agent';
-  const explicitTurn = assistantReplyTurnKey(message);
   return {
-    explicitTurnKey: explicitTurn ? `${senderKey}:turn:${explicitTurn}` : '',
-    fallbackTurnKey: latestHumanPromptKey ? `${senderKey}:prompt:${latestHumanPromptKey}` : '',
+    explicitTurnKey: assistantExecutionKey(message),
   };
+}
+
+function messageDisplayContext(message, senderIsBot) {
+  const senderKey = messageSenderIdentity(message);
+  const turn = assistantWorkTurn(message, senderIsBot);
+  return {
+    senderKey,
+    turn,
+    explicitTurnKey: turn.explicitTurnKey,
+    isAssistant: isWorkingMessage(message) || isAssistantAuthoredMessage(message, senderIsBot),
+    sentAt: new Date(message?.created_at || Date.now()).getTime(),
+  };
+}
+
+function areMessagesConsecutive(previousContext, currentContext) {
+  if (!previousContext || !currentContext) return false;
+  if (previousContext.senderKey !== currentContext.senderKey) return false;
+
+  if (!previousContext.isAssistant && !currentContext.isAssistant) {
+    return currentContext.sentAt - previousContext.sentAt < CONSECUTIVE_HUMAN_MESSAGE_WINDOW_MS;
+  }
+
+  // Identity is a navigation affordance, not expendable decoration. Only
+  // compact entries when both rows can be tied to the same Agent execution.
+  // A missing correlation key must fail open and show the sender again.
+  return Boolean(
+    previousContext.isAssistant
+    && currentContext.isAssistant
+    && hasSameExplicitExecutionKey(previousContext, currentContext),
+  );
 }
 
 function assistantProcessMessage(message) {
@@ -4580,6 +5064,11 @@ function assistantOutputText(message) {
 function mergeAssistantOutputGroups(groups) {
   if (groups.length === 0) return null;
 
+  const executionKey = explicitExecutionKey(groups[0]);
+  if (!executionKey || groups.some((group) => !hasSameExplicitExecutionKey(executionKey, group))) {
+    return null;
+  }
+
   const sourceMessages = groups.flatMap((group) => (
     group.sourceMessages || (group.message ? [group.message] : [])
   ));
@@ -4615,6 +5104,7 @@ function mergeAssistantOutputGroups(groups) {
     ...textBlocks,
   ];
   const lastGroup = groups[groups.length - 1];
+  const firstGroup = groups[0];
 
   return {
     ...lastGroup,
@@ -4624,10 +5114,11 @@ function mergeAssistantOutputGroups(groups) {
       content_blocks: contentBlocks,
     },
     sourceMessages,
-    sender: groups[0].sender || lastGroup.sender,
+    sender: lastGroup.sender || firstGroup.sender,
     replyMessage: lastGroup.replyMessage || null,
-    explicitTurnKey: lastGroup.explicitTurnKey || groups.find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
-    fallbackTurnKey: lastGroup.fallbackTurnKey || groups.find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+    explicitTurnKey: executionKey,
+    isConsecutive: Boolean(firstGroup.isConsecutive),
+    isConsecutiveWithoutWorking: Boolean(firstGroup.isConsecutiveWithoutWorking),
     artifactsFirst: artifactBlocks.length > 0,
   };
 }
@@ -4660,6 +5151,11 @@ function reorderAssistantTurnBundle(groups) {
     return groups;
   }
 
+  const executionKey = explicitExecutionKey(groups[0]);
+  if (!executionKey || groups.some((group) => !hasSameExplicitExecutionKey(executionKey, group))) {
+    return groups;
+  }
+
   const firstIsConsecutive = Boolean(groups[0]?.isConsecutive);
   const sourceWorkingGroups = groups.filter((group) => group.type === 'working');
   const processGroupIndexes = new Set();
@@ -4684,8 +5180,8 @@ function reorderAssistantTurnBundle(groups) {
       ...sourceWorkingGroups[0],
       messages: executionMessages,
       workingComplete: Boolean(mergedOutput),
-      explicitTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
-      fallbackTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+      sender: sourceWorkingGroups[sourceWorkingGroups.length - 1]?.sender || sourceWorkingGroups[0]?.sender,
+      explicitTurnKey: executionKey,
     }]
     : [];
   const ordered = [...workingGroups, ...(mergedOutput ? [mergedOutput] : [])];
@@ -4694,7 +5190,12 @@ function reorderAssistantTurnBundle(groups) {
   return ordered.map((group, index) => {
     const next = {
       ...group,
-      isConsecutive: index === 0 ? firstIsConsecutive : true,
+      // The working trace inherits its place relative to the preceding row.
+      // The final reply already carries an independently computed display
+      // context. Do not turn it into a grouped row merely because it was
+      // reordered after the trace: without a proven turn ID, that would hide
+      // the Agent avatar and name on a standalone reply.
+      isConsecutive: index === 0 ? firstIsConsecutive : Boolean(group.isConsecutive),
     };
     if (group.type !== 'working') {
       if (!firstOutputFound) {
@@ -4716,18 +5217,16 @@ function reorderAssistantSegment(groups) {
     const senderKey = messageSenderIdentity(
       group?.messages?.[0] || group?.message,
     ) || String(group?.sender?.name || '');
-    const turnKey = group?.fallbackTurnKey || group?.explicitTurnKey || '';
+    const explicitTurnKey = explicitExecutionKey(group);
     let bundle = entries[entries.length - 1];
-    const conflictsWithCurrentTurn = Boolean(
-      bundle?.turnKey
-      && turnKey
-      && bundle.turnKey !== turnKey
+    const canJoinBundle = Boolean(
+      bundle
+      && bundle.senderKey === senderKey
+      && hasSameExplicitExecutionKey(bundle, group),
     );
-    if (!bundle || bundle.senderKey !== senderKey || conflictsWithCurrentTurn) {
-      bundle = { type: 'bundle', senderKey, turnKey, groups: [] };
+    if (!canJoinBundle) {
+      bundle = { type: 'bundle', senderKey, explicitTurnKey, groups: [] };
       entries.push(bundle);
-    } else if (!bundle.turnKey && turnKey) {
-      bundle.turnKey = turnKey;
     }
     bundle.groups.push(group);
   }
@@ -4757,11 +5256,6 @@ function reorderAssistantTurnGroups(groups) {
   return ordered;
 }
 
-function messageCreatedAtMs(message) {
-  const timestamp = new Date(message?.created_at || '').getTime();
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
 function hasRichMessageBlocks(message) {
   return Array.isArray(message?.content_blocks) && message.content_blocks.length > 0;
 }
@@ -4777,17 +5271,10 @@ function shouldMergeAssistantReply(previous, current, previousSender, currentSen
   if (previous._streaming || current._streaming) return false;
   if (hasRichMessageBlocks(previous) || hasRichMessageBlocks(current)) return false;
 
-  const previousTurnKey = assistantReplyTurnKey(previous);
-  const currentTurnKey = assistantReplyTurnKey(current);
-  if (previousTurnKey || currentTurnKey) {
-    return Boolean(previousTurnKey && currentTurnKey && previousTurnKey === currentTurnKey);
-  }
-
-  const previousTime = messageCreatedAtMs(previous);
-  const currentTime = messageCreatedAtMs(current);
-  if (previousTime == null || currentTime == null) return false;
-  const gap = currentTime - previousTime;
-  return gap >= 0 && gap <= ASSISTANT_REPLY_MERGE_WINDOW_MS;
+  return hasSameExplicitExecutionKey(
+    { explicitTurnKey: assistantExecutionKey(previous) },
+    { explicitTurnKey: assistantExecutionKey(current) },
+  );
 }
 
 function mergeAssistantDisplayMessages(sourceMessages) {
@@ -4854,6 +5341,99 @@ function getStreamId(message) {
   return typeof id === 'string' && id.trim() ? id.trim() : '';
 }
 
+function streamSenderKey({ fromUid, from }) {
+  const parsedUID = parseUid(fromUid);
+  if (parsedUID > 0) return String(parsedUID);
+  const parsedFrom = parseUid(from);
+  if (parsedFrom > 0) return String(parsedFrom);
+  return String(from ?? fromUid ?? '').trim();
+}
+
+function streamMessageParts({ streamId, topic, fromUid, from }) {
+  const normalizedStreamID = typeof streamId === 'string' ? streamId.trim() : '';
+  const senderKey = streamSenderKey({ fromUid, from });
+  return normalizedStreamID && topic && senderKey
+    ? [topic, senderKey, normalizedStreamID]
+    : null;
+}
+
+function streamMessageBaseKey(message) {
+  const parts = streamMessageParts(message);
+  return parts ? JSON.stringify(parts) : '';
+}
+
+function streamMessageKey({ executionKey = '', ...message }) {
+  const parts = streamMessageParts(message);
+  const normalizedExecutionKey = typeof executionKey === 'string' ? executionKey.trim() : '';
+  return parts ? JSON.stringify([...parts, normalizedExecutionKey]) : '';
+}
+
+function streamPlaceholderKey(message) {
+  if (!message?._streaming) return '';
+  return message?._stream_key || streamMessageKey({
+    streamId: getStreamId(message),
+    topic: message?.topic_id,
+    fromUid: message?.from_uid,
+    from: message?.from,
+    executionKey: assistantReplyTurnKey(message),
+  });
+}
+
+function streamPlaceholderBaseKey(message) {
+  if (!message?._streaming) return '';
+  return streamMessageBaseKey({
+    streamId: getStreamId(message),
+    topic: message?.topic_id,
+    fromUid: message?.from_uid,
+    from: message?.from,
+  });
+}
+
+function findStreamingMessageForFinal(messages, finalMessage) {
+  const finalStreamID = getStreamId(finalMessage);
+  const finalTurnKey = assistantReplyTurnKey(finalMessage);
+  const finalSenderKey = messageSenderIdentity(finalMessage);
+  if (!finalSenderKey || (!finalStreamID && !finalTurnKey)) return -1;
+
+  const candidates = messages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => (
+      message?._streaming && messageSenderIdentity(message) === finalSenderKey
+    ));
+  if (finalTurnKey) {
+    const sameTurn = candidates.filter(({ message }) => (
+      assistantReplyTurnKey(message) === finalTurnKey
+    ));
+    if (sameTurn.length === 1) return sameTurn[0].index;
+
+    const uncorrelated = candidates.filter(({ message }) => (
+      !assistantReplyTurnKey(message)
+      && (!finalStreamID || getStreamId(message) === finalStreamID)
+    ));
+    return uncorrelated.length === 1 ? uncorrelated[0].index : -1;
+  }
+
+  const sameStream = candidates.filter(({ message }) => getStreamId(message) === finalStreamID);
+  return sameStream.length === 1 ? sameStream[0].index : -1;
+}
+
+function isUncorrelatedFinalReply(message) {
+  return isFinalTextMessage(message)
+    && !getStreamId(message)
+    && !assistantReplyTurnKey(message);
+}
+
+function removeStaleStreamingMessagesForFinal(messages, finalMessage) {
+  if (!isUncorrelatedFinalReply(finalMessage)) return messages;
+  const finalSenderKey = messageSenderIdentity(finalMessage);
+  if (!finalSenderKey) return messages;
+  const candidates = messages.filter((message) => (
+    message?._streaming && messageSenderIdentity(message) === finalSenderKey
+  ));
+  if (candidates.length !== 1) return messages;
+  return messages.filter((message) => message !== candidates[0]);
+}
+
 function isTimelineNearBottom(el) {
   if (!el) return true;
   return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
@@ -4866,11 +5446,37 @@ function streamDeltaText(content) {
   return String(content);
 }
 
-function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, metadata }) {
-  const existingIdx = messages.findIndex((message) => message._stream_id === streamId);
+function upsertStreamingMessage(messages, {
+  streamId,
+  topic,
+  fromUid,
+  from,
+  content,
+  metadata,
+  role,
+}) {
+  const executionKey = assistantReplyTurnKey({ metadata });
+  const streamKey = streamMessageKey({ streamId, topic, fromUid, from, executionKey });
+  if (!streamKey) return messages;
+  const streamBaseKey = streamMessageBaseKey({ streamId, topic, fromUid, from });
+  let existingIdx = messages.findIndex((message) => streamPlaceholderKey(message) === streamKey);
+  if (existingIdx === -1) {
+    const compatible = messages
+      .map((message, index) => ({ message, index }))
+      .filter(({ message }) => streamPlaceholderBaseKey(message) === streamBaseKey)
+      .filter(({ message }) => {
+        const existingExecutionKey = assistantReplyTurnKey(message);
+        return !executionKey || !existingExecutionKey;
+      });
+    if (compatible.length === 1) existingIdx = compatible[0].index;
+  }
   if (existingIdx !== -1) {
     const next = [...messages];
     const existing = next[existingIdx];
+    const existingExecutionKey = assistantReplyTurnKey(existing);
+    const nextStreamKey = existingExecutionKey && !executionKey
+      ? streamPlaceholderKey(existing)
+      : streamKey;
     next[existingIdx] = {
       ...existing,
       content: `${streamDeltaText(existing.content)}${content}`,
@@ -4879,8 +5485,10 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
         ...(metadata || {}),
         stream_id: streamId,
       },
+      role: role || existing.role || 'assistant',
       _streaming: true,
       _stream_id: streamId,
+      _stream_key: nextStreamKey,
     };
     return next;
   }
@@ -4889,13 +5497,15 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
   return [
     ...messages,
     normalizeIncomingMessage({
-      id: `stream:${streamId}`,
+      id: `stream:${streamId}:${streamSenderKey({ fromUid, from })}:${executionKey || 'uncorrelated'}`,
       seq_id: now,
       topic_id: topic,
       from_uid: fromUid,
+      from,
       content,
       type: 'text',
       msg_type: 'text',
+      role: role || 'assistant',
       metadata: {
         ...(metadata || {}),
         stream_id: streamId,
@@ -4903,6 +5513,7 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
       created_at: new Date(now).toISOString(),
       _streaming: true,
       _stream_id: streamId,
+      _stream_key: streamKey,
     }),
   ];
 }
@@ -5011,12 +5622,334 @@ function mergeMessages(primary, secondary) {
   [...primary, ...secondary].forEach((message) => {
     byId.set(message.id, message);
   });
-  // Sort by seq_id (now unified for all messages)
-  return Array.from(byId.values()).sort((a, b) => {
-    const aSeq = a.seq_id || a.id;
-    const bSeq = b.seq_id || b.id;
-    return aSeq - bSeq;
+  return Array.from(byId.values()).sort(compareMessageSequence);
+}
+
+function createOptimisticUserMessage({
+  id,
+  topicId,
+  userUID,
+  content,
+  contentBlocks,
+  replyToID = 0,
+  pendingAfterSeq = 0,
+  clientMsgID = '',
+}) {
+  const message = {
+    id,
+    seq_id: id,
+    topic_id: topicId,
+    from_uid: userUID,
+    content,
+    type: 'text',
+    msg_type: 'text',
+    reply_to: replyToID,
+    created_at: new Date().toISOString(),
+    client_msg_id: clientMsgID,
+    _pending: true,
+    _pending_after_seq: pendingAfterSeq,
+  };
+  if (Array.isArray(contentBlocks) && contentBlocks.length > 0) {
+    message.content_blocks = contentBlocks;
+  }
+  return message;
+}
+
+function createClientMessageID() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `web-${globalThis.crypto.randomUUID()}`;
+  }
+  return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function messageClientMsgID(message) {
+  const candidates = [
+    message?.client_msg_id,
+    message?.clientMsgID,
+    message?.clientMsgId,
+    message?.metadata?.client_msg_id,
+    message?.metadata?.clientMsgID,
+    message?.metadata?.clientMessageId,
+    message?.metadata?.client_message_id,
+  ];
+  for (const candidate of candidates) {
+    const value = candidate == null ? '' : String(candidate).trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function comparableContentBlocks(message) {
+  const blocks = contentBlocksFromMessage(message);
+  return blocks.length > 0 ? getComparableContent(blocks) : '';
+}
+
+function pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs) {
+  const historyID = historyMessageID(historyMessage);
+  const pendingAnchor = pendingMessageAnchor(pending);
+  const pendingCreatedAt = Date.parse(pending?.created_at || '');
+  const historyCreatedAt = Date.parse(historyMessage?.created_at || '');
+  const pendingClientMsgID = messageClientMsgID(pending);
+  const historyClientMsgID = messageClientMsgID(historyMessage);
+  const hasStableClientMatch = Boolean(
+    pendingClientMsgID
+    && historyClientMsgID
+    && pendingClientMsgID === historyClientMsgID,
+  );
+  if (
+    historyID <= 0
+    || historyID <= pendingAnchor
+    || usedHistoryIDs.has(historyID)
+    || historyMessage?._pending
+    || historyMessage?._streaming
+    || !sameUID(pending?.from_uid, historyMessage?.from_uid)
+    || (historyClientMsgID && pendingClientMsgID && historyClientMsgID !== pendingClientMsgID)
+    || (!hasStableClientMatch && getComparableContent(pending?.content) !== getComparableContent(historyMessage?.content))
+    || (!hasStableClientMatch && comparableContentBlocks(pending) !== comparableContentBlocks(historyMessage))
+    || (
+      !hasStableClientMatch
+      && Number.isFinite(pendingCreatedAt)
+      && Number.isFinite(historyCreatedAt)
+      && Math.abs(historyCreatedAt - pendingCreatedAt) > PENDING_HISTORY_MATCH_CLOCK_SKEW_MS
+    )
+  ) {
+    return false;
+  }
+
+  const pendingReplyTo = Number(pending?.reply_to || 0);
+  const historyReplyTo = Number(historyMessage?.reply_to || 0);
+  return pendingReplyTo <= 0 || historyReplyTo <= 0 || pendingReplyTo === historyReplyTo;
+}
+
+function findHistoryMatchForPending(pending, historyMessages, usedHistoryIDs) {
+  return historyMessages
+    .filter((historyMessage) => pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs))
+    .sort((left, right) => {
+      const pendingClientMsgID = messageClientMsgID(pending);
+      const leftExact = Number(Boolean(
+        pendingClientMsgID && messageClientMsgID(left) === pendingClientMsgID,
+      ));
+      const rightExact = Number(Boolean(
+        pendingClientMsgID && messageClientMsgID(right) === pendingClientMsgID,
+      ));
+      return rightExact - leftExact || historyMessageID(left) - historyMessageID(right);
+    })[0] || null;
+}
+
+function historyContainsFinalForStreamingMessage(streamingMessage, historyMessages) {
+  const streamingTurnKey = assistantReplyTurnKey(streamingMessage);
+  const streamingSenderKey = messageSenderIdentity(streamingMessage);
+  // A history snapshot has no causal ordering relative to an active stream.
+  // Transport stream IDs can be reused, so only a shared execution key proves
+  // that a persisted reply supersedes this placeholder.
+  if (!streamingTurnKey || !streamingSenderKey) return false;
+  return (historyMessages || []).some((historyMessage) => (
+    isFinalTextMessage(historyMessage)
+    && messageSenderIdentity(historyMessage) === streamingSenderKey
+    && assistantReplyTurnKey(historyMessage) === streamingTurnKey
+  ));
+}
+
+function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
+  const visibleMessages = Array.isArray(historyMessages) ? historyMessages : [];
+  const current = Array.isArray(currentMessages) ? currentMessages : [];
+  const historyIDs = new Set(
+    visibleMessages
+      .map((message) => historyMessageID(message))
+      .filter((sequence) => sequence > 0),
+  );
+  const usedHistoryIDs = new Set();
+  const pendingToKeep = [];
+  const streamingToKeep = current.filter((message) => (
+    message?._streaming
+    && !historyContainsFinalForStreamingMessage(message, visibleMessages)
+  ));
+
+  current.forEach((pending) => {
+    if (!pending?._pending) return;
+    const historyMatch = findHistoryMatchForPending(pending, visibleMessages, usedHistoryIDs);
+    if (historyMatch) {
+      usedHistoryIDs.add(historyMessageID(historyMatch));
+      return;
+    }
+
+    // Browser and server clocks cannot establish causal ordering. Until a
+    // matching client message ID or acknowledgement supplies the durable
+    // sequence, keep the anchor captured when the user sent the message.
+    pendingToKeep.push(pending);
   });
+
+  const pendingByID = new Map(pendingToKeep.map((pending) => [pending.id, pending]));
+  const newerMessages = current.flatMap((message) => {
+    if (message?._pending) {
+      const pending = pendingByID.get(message.id);
+      return pending ? [pending] : [];
+    }
+    if (message?._streaming) {
+      return streamingToKeep.includes(message) ? [message] : [];
+    }
+    const sequence = historyMessageID(message);
+    return sequence <= 0 || !historyIDs.has(sequence) ? [message] : [];
+  });
+  return mergeMessages(visibleMessages, newerMessages);
+}
+
+function latestPersistedMessageSequence(messages) {
+  return (messages || []).reduce((latest, message) => {
+    // Streaming rows use Date.now() only as a local display placeholder. They
+    // do not have a durable server sequence yet, so anchoring an optimistic
+    // user message after one would make every real reply look older.
+    if (message?._pending || message?._streaming) return latest;
+    return Math.max(latest, historyMessageID(message));
+  }, 0);
+}
+
+function pendingMessageAnchor(message) {
+  const anchor = Number(message?._pending_after_seq);
+  return Number.isFinite(anchor) && anchor >= 0 ? anchor : 0;
+}
+
+function compareMessageSequence(left, right) {
+  const leftPending = Boolean(left?._pending);
+  const rightPending = Boolean(right?._pending);
+  const leftSequence = historyMessageID(left);
+  const rightSequence = historyMessageID(right);
+
+  if (leftPending && !rightPending && rightSequence > 0) {
+    return rightSequence <= pendingMessageAnchor(left) ? 1 : -1;
+  }
+  if (rightPending && !leftPending && leftSequence > 0) {
+    return leftSequence <= pendingMessageAnchor(right) ? -1 : 1;
+  }
+  if (leftPending && rightPending) {
+    const anchorDifference = pendingMessageAnchor(left) - pendingMessageAnchor(right);
+    if (anchorDifference !== 0) return anchorDifference;
+  }
+  if (leftSequence > 0 && rightSequence > 0) {
+    return leftSequence - rightSequence;
+  }
+  return 0;
+}
+
+export function mergeOwnServerEcho(messages, serverMessage, ownUID) {
+  if (!sameUID(serverMessage?.from_uid, ownUID)) return null;
+  const serverContentKey = getComparableContent(serverMessage?.content);
+  const pendingIdx = messages.findIndex((message) => (
+    message._pending && (
+      getComparableContent(message.content) === serverContentKey
+      || getComparableContent(message._canonical_content) === serverContentKey
+    )
+  ));
+  if (pendingIdx === -1) return null;
+
+  const next = [...messages];
+  next[pendingIdx] = serverMessage;
+  return next;
+}
+
+export function ImageGalleryPreview({ item, index, items, onClose, onChange, triggerRef }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(null);
+  const stateRef = useRef({ item, index, items, onClose, onChange, triggerRef });
+  stateRef.current = { item, index, items, onClose, onChange, triggerRef };
+  const hasPrevious = index > 0;
+  const hasNext = index < items.length - 1;
+
+  useEffect(() => {
+    closeRef.current?.focus({ preventScroll: true });
+    const handleKeyDown = (event) => {
+      const state = stateRef.current;
+      const currentHasPrevious = state.index > 0;
+      const currentHasNext = state.index < state.items.length - 1;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        state.onClose();
+        return;
+      }
+      if (event.key === 'ArrowLeft' && currentHasPrevious) {
+        event.preventDefault();
+        state.onChange(state.index - 1);
+        return;
+      }
+      if (event.key === 'ArrowRight' && currentHasNext) {
+        event.preventDefault();
+        state.onChange(state.index + 1);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(dialogRef.current?.querySelectorAll(
+        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) || []);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const focusIsOutsideDialog = !dialogRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === first || focusIsOutsideDialog)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || focusIsOutsideDialog)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      const previousTrigger = stateRef.current.triggerRef?.current;
+      if (previousTrigger?.isConnected) previousTrigger.focus({ preventScroll: true });
+    };
+  }, []);
+
+  return createPortal(
+    <div
+      className="oc-modal-overlay oc-rich-image-preview oc-rich-image-gallery-preview"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`图片预览 ${item.payload?.name || ''}`.trim()}
+      ref={dialogRef}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <button
+        type="button"
+        className="oc-rich-image-gallery-nav is-previous"
+        aria-label="上一张图片"
+        disabled={!hasPrevious}
+        onClick={() => onChange(index - 1)}
+      >
+        <ChevronLeft size={56} strokeWidth={1.5} aria-hidden="true" />
+      </button>
+      <button
+        ref={closeRef}
+        type="button"
+        aria-label="关闭图片预览"
+        className="oc-rich-media-preview-close oc-rich-image-preview-close"
+        onClick={onClose}
+      >
+        <X size={28} aria-hidden="true" />
+      </button>
+      <img
+        src={resolveMediaURL(item.payload?.url || item.payload?.thumbnail)}
+        alt={item.payload?.name ? `${item.payload.name} preview` : 'image preview'}
+        className="oc-rich-image-preview-media"
+        onClick={(event) => event.stopPropagation()}
+      />
+      <button
+        type="button"
+        className="oc-rich-image-gallery-nav is-next"
+        aria-label="下一张图片"
+        disabled={!hasNext}
+        onClick={() => onChange(index + 1)}
+      >
+        <ChevronRight size={56} strokeWidth={1.5} aria-hidden="true" />
+      </button>
+    </div>,
+    document.body,
+  );
 }
 
 function getComparableContent(content) {

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # deploy-worker-version.sh - install one published CatsCo application release
 # on an existing cloud worker while preserving /srv/catsco-agent.
+# An explicit --version selects a published application artifact from private
+# TOS; it does not require a same-version Tianyi image. Omitting --version
+# selects the newest published application release from the same private TOS
+# catalog, never from the independently managed Tianyi image list.
 set -Eeuo pipefail
 
 NAME=""
@@ -40,6 +44,14 @@ else
   STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/$NAME}"
   STATE_ROOT="$(dirname "$STATE_DIR")"
 fi
+
+record_app_version() {
+  local version="$1"
+  [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || return 1
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$version" > "$STATE_DIR/app_version.tmp"
+  mv -f "$STATE_DIR/app_version.tmp" "$STATE_DIR/app_version"
+}
 ARTIFACT_BUCKET="${CATSCO_WORKER_ARTIFACT_BUCKET:-catsco-worker-release}"
 ARTIFACT_PREFIX="${CATSCO_WORKER_ARTIFACT_PREFIX:-update/worker}"
 ARTIFACT_PREFIX="${ARTIFACT_PREFIX#/}"
@@ -48,7 +60,7 @@ ARTIFACT_REGION="${CATSCO_WORKER_ARTIFACT_REGION:-cn-guangzhou}"
 ARTIFACT_ENDPOINT="${CATSCO_WORKER_ARTIFACT_ENDPOINT:-https://tos-cn-guangzhou.volces.com}"
 ARTIFACT_CACHE_ROOT="${CATSCO_WORKER_ARTIFACT_CACHE_DIR:-$STATE_ROOT/.artifacts}"
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIST_IMAGES_CMD="${CATSCO_WORKER_IMAGES_SCRIPT:-$OPS_DIR/list-worker-images.sh}"
+LIST_RELEASES_CMD="${CATSCO_WORKER_RELEASES_SCRIPT:-$OPS_DIR/list-worker-releases.sh}"
 
 JUMP_IP="${CTYUN_JUMP_IP:-}"
 JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
@@ -56,7 +68,9 @@ JUMP_USER="${CTYUN_JUMP_USER:-root}"
 JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
 
 [[ -n "$REGION_ID" ]] || { echo "error: CTYUN_WORKER_REGION_ID is required" >&2; exit 2; }
-[[ -x "$LIST_IMAGES_CMD" ]] || { echo "error: image list script is unavailable" >&2; exit 2; }
+if [[ -z "$VERSION" ]]; then
+  [[ -x "$LIST_RELEASES_CMD" ]] || { echo "error: application release list script is unavailable" >&2; exit 2; }
+fi
 
 ctyun() {
   local raw status
@@ -79,24 +93,15 @@ find_instance() {
   jq -r --arg n "worker-$NAME" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" || true
 }
 
-image_rows="$($LIST_IMAGES_CMD)"
+COMMIT=""
 if [[ -z "$VERSION" ]]; then
-  image_row="$(printf '%s\n' "$image_rows" | sort -t $'\t' -k5,5nr | head -n1)"
-  VERSION="$(cut -f3 <<<"$image_row")"
+  release_rows="$($LIST_RELEASES_CMD)"
+  release_row="$(printf '%s\n' "$release_rows" | sort -t $'\t' -k2,2nr | head -n1)"
+  VERSION="$(cut -f1 <<<"$release_row")"
   VERSION="${VERSION#v}"
-else
-  image_row="$(awk -F '\t' -v wanted="$VERSION" '
-    {
-      candidate=$3
-      sub(/^v/, "", candidate)
-      if (candidate == wanted) { print; exit }
-    }
-  ' <<<"$image_rows")"
+  [[ -n "$release_row" ]] || { echo "error: no published application release found" >&2; exit 1; }
 fi
-[[ -n "$image_row" ]] || { echo "error: no worker image found for version $VERSION" >&2; exit 1; }
-[[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || { echo "error: selected image version is invalid" >&2; exit 1; }
-COMMIT="$(cut -f4 <<<"$image_row")"
-[[ "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "error: image commit is invalid for version $VERSION" >&2; exit 1; }
+[[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || { echo "error: selected application version is invalid" >&2; exit 1; }
 
 inst="$(find_instance)"
 [[ -n "$inst" ]] || { echo "error: instance worker-$NAME not found" >&2; exit 1; }
@@ -122,26 +127,6 @@ ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")
 if [[ -n "$JUMP_IP" ]]; then
   ssh_opts+=(-o "ProxyCommand=ssh -i ${JUMP_KEY} -p ${JUMP_PORT} -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${STATE_DIR}/jump_known_hosts -W %h:%p ${JUMP_USER}@${JUMP_IP}")
-fi
-
-# Lazy reuse: image builds and previous installs leave immutable releases on
-# the worker. Re-selecting one switches the symlink locally without downloading
-# or unpacking the artifact again.
-RELEASE_ID="${VERSION}-${COMMIT:0:8}"
-RELEASE_ROOT="/opt/catsco/releases/$RELEASE_ID"
-if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
-  "current=\$(readlink -f /opt/catsco/current 2>/dev/null || true); test \"\$current\" = '$RELEASE_ROOT' && systemctl is-active --quiet catsco-agent.service"; then
-  jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
-    '{status:"already-current",instance_name:$name,version:$version,commit:$commit}'
-  exit 0
-fi
-if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
-  "test -f '$RELEASE_ROOT/worker-release.json' && jq -e '.version == \"$VERSION\" and .commit == \"$COMMIT\"' '$RELEASE_ROOT/worker-release.json' >/dev/null"; then
-  timeout -s TERM -k 20 90s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
-    "old=\$(readlink -f /opt/catsco/current 2>/dev/null || true); mkdir -p /var/lib/catsco; if test \"\$old\" != '$RELEASE_ROOT'; then printf '%s\\n' \"\$old\" > /var/lib/catsco/previous-release; fi; ln -sfn '$RELEASE_ROOT' /opt/catsco/current; systemctl restart catsco-agent.service; sleep 5; systemctl is-active catsco-agent.service" >/dev/null
-  jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
-    '{status:"reused-local-release",instance_name:$name,version:$version,commit:$commit}'
-  exit 0
 fi
 
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/catsco-worker-version.XXXXXX")"
@@ -174,12 +159,42 @@ MANIFEST_VERSION="$(jq -r '.version // ""' "$MANIFEST")"
 MANIFEST_COMMIT="$(jq -r '.commit // ""' "$MANIFEST")"
 EXPECTED_SHA="$(jq -r '.sha256 // ""' "$MANIFEST")"
 ARTIFACT_FILE="$(jq -r '.artifactFile // ""' "$MANIFEST")"
-[[ "$MANIFEST_VERSION" == "$VERSION" && "$MANIFEST_COMMIT" == "$COMMIT" ]] || {
-  echo "error: published artifact identity does not match image metadata" >&2
+[[ "$MANIFEST_VERSION" == "$VERSION" ]] || {
+  echo "error: published artifact version does not match requested version" >&2
+  exit 1
+}
+if [[ -z "$COMMIT" ]]; then
+  COMMIT="$MANIFEST_COMMIT"
+fi
+[[ "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "error: published artifact commit is invalid" >&2; exit 1; }
+[[ "$MANIFEST_COMMIT" == "$COMMIT" ]] || {
+  echo "error: published artifact identity does not match the selected commit" >&2
   exit 1
 }
 [[ "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "error: published artifact sha256 is invalid" >&2; exit 1; }
 [[ "$ARTIFACT_FILE" =~ ^[0-9A-Za-z._+-]+\.tar\.gz$ ]] || { echo "error: published artifact file is invalid" >&2; exit 1; }
+
+# Lazy reuse: image builds and previous installs leave immutable releases on
+# the worker. Re-selecting one switches the symlink locally without downloading
+# or unpacking the artifact again.
+RELEASE_ID="${VERSION}-${COMMIT:0:8}"
+RELEASE_ROOT="/opt/catsco/releases/$RELEASE_ID"
+if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
+  "current=\$(readlink -f /opt/catsco/current 2>/dev/null || true); test \"\$current\" = '$RELEASE_ROOT' && systemctl is-active --quiet catsco-agent.service"; then
+  record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
+  jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
+    '{status:"already-current",instance_name:$name,version:$version,commit:$commit}'
+  exit 0
+fi
+if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
+  "test -f '$RELEASE_ROOT/worker-release.json' && jq -e '.version == \"$VERSION\" and .commit == \"$COMMIT\"' '$RELEASE_ROOT/worker-release.json' >/dev/null"; then
+  timeout -s TERM -k 20 90s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
+    "old=\$(readlink -f /opt/catsco/current 2>/dev/null || true); mkdir -p /var/lib/catsco; if test \"\$old\" != '$RELEASE_ROOT'; then printf '%s\\n' \"\$old\" > /var/lib/catsco/previous-release; fi; ln -sfn '$RELEASE_ROOT' /opt/catsco/current; systemctl restart catsco-agent.service; sleep 5; systemctl is-active catsco-agent.service" >/dev/null
+  record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
+  jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
+    '{status:"reused-local-release",instance_name:$name,version:$version,commit:$commit}'
+  exit 0
+fi
 
 ARTIFACT_CACHE_DIR="$ARTIFACT_CACHE_ROOT/$VERSION"
 ARTIFACT="$ARTIFACT_CACHE_DIR/$ARTIFACT_FILE"
@@ -201,5 +216,6 @@ timeout -s TERM -k 15 60s scp "${ssh_opts[@]}" "$UPDATER" "root@$INSTANCE_IP:${R
 timeout -s TERM -k 30 300s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "bash '${REMOTE_PREFIX}.sh' --artifact '${REMOTE_PREFIX}.tar.gz' --sha256 '$EXPECTED_SHA' --version '$VERSION' --commit '$COMMIT'"
 
+record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
 jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
   '{status:"updated",instance_name:$name,version:$version,commit:$commit}'

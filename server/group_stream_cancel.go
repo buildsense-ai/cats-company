@@ -233,25 +233,12 @@ func (h *Hub) fanoutGroupStreamCancel(
 		return
 	}
 	streamMetadata := make(map[string]interface{}, len(metadata)+3)
-	for key, value := range metadata {
+	for key, value := range metadataWithoutArtifactContext(metadata) {
 		streamMetadata[key] = value
 	}
 	streamMetadata["stream_id"] = streamID
 	streamMetadata["stream_event"] = "cancel"
 	streamMetadata["target_bot_uid"] = targetBotUID
-	message := &ServerMessage{
-		Data: &MsgServerData{
-			Topic:    topicID,
-			From:     formatUID(requesterUID),
-			SeqID:    0,
-			Content:  "",
-			Type:     "stream_cancel",
-			MsgType:  "text",
-			Metadata: streamMetadata,
-			Mode:     "stream",
-			Role:     "assistant",
-		},
-	}
 	for _, member := range members {
 		if member == nil || member.UserID == requesterUID {
 			continue
@@ -260,6 +247,6 @@ func (h *Hub) fanoutGroupStreamCancel(
 		if isBot && member.UserID != targetBotUID {
 			continue
 		}
-		h.SendToUser(member.UserID, message)
+		h.SendToUser(member.UserID, h.streamMessageForRecipient(requesterUID, member.UserID, topicID, "stream_cancel", "", streamMetadata))
 	}
 }

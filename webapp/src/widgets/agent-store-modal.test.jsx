@@ -1021,6 +1021,7 @@ describe('AgentStoreModal', () => {
         is_owner: true,
         is_online: true,
         visibility: 'public',
+        app_version: '1.4.9',
       }],
     });
     api.getCloudWorkers.mockResolvedValue({
@@ -1030,6 +1031,7 @@ describe('AgentStoreModal', () => {
         status: 'unknown',
         version: '1.4.8',
         image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+        app_version: '',
       }],
     });
 
@@ -1067,6 +1069,8 @@ describe('AgentStoreModal', () => {
       .some((button) => button.textContent.includes('创建云托管员工'))).toBe(true);
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('在线');
+    expect(container.textContent).toContain('应用版本 暂未读取');
+    expect(container.textContent).not.toContain('应用版本 1.4.9');
     expect(container.textContent).not.toContain('状态同步中');
     // Self-hosted form is gone while managed is active.
     expect(container.textContent).not.toContain('创建我的专属助手');
@@ -1080,6 +1084,54 @@ describe('AgentStoreModal', () => {
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('创建我的专属助手'))).toBe(true);
     expect(container.textContent).not.toContain('创建云托管员工');
+  });
+
+  test('renders the assistant roster without waiting for cloud reconciliation', async () => {
+    let resolveCloudWorkers;
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 92,
+        uid: 92,
+        tenant_name: 'tenant-a',
+        username: 'bot-cloud-1',
+        display_name: '云端审查助手',
+        relation: 'owner',
+        is_owner: true,
+        is_online: true,
+        visibility: 'public',
+      }],
+    });
+    api.getCloudWorkers.mockImplementation(() => new Promise((resolve) => {
+      resolveCloudWorkers = resolve;
+    }));
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('云端审查助手');
+    expect(container.textContent).not.toContain('加载中...');
+    expect(container.textContent).not.toContain('版本 1.4.8');
+
+    await act(async () => {
+      resolveCloudWorkers({
+        quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+        workers: [{
+          tenant_name: 'tenant-a',
+          cloud_status: 'running',
+          cloud_version: '1.4.8',
+        }],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('版本 1.4.8');
   });
 
   test('creates a cloud worker from the managed panel', async () => {

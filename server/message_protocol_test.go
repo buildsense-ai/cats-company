@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -309,9 +308,12 @@ func TestSaveNormalizedMessagePersistsMetadataThroughOptionalStore(t *testing.T)
 	if got := firstMetadataString(messageStore.metadata, "source_channel"); got != "feishu" {
 		t.Fatalf("persisted source_channel = %q, want feishu", got)
 	}
+	if got := firstMetadataString(messageStore.metadata, "client_msg_id"); got != "catsco-metadata-1" {
+		t.Fatalf("persisted client_msg_id = %q, want catsco-metadata-1", got)
+	}
 }
 
-func TestSaveNormalizedMessageRejectsArtifactMetadataWithoutPersistenceCapability(t *testing.T) {
+func TestSaveNormalizedMessageScrubsArtifactMetadataBeforeLegacyFallback(t *testing.T) {
 	messageStore := &idempotentMessageStore{id: 73}
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID:     "p2p_1_2",
@@ -325,11 +327,15 @@ func TestSaveNormalizedMessageRejectsArtifactMetadataWithoutPersistenceCapabilit
 		t.Fatalf("normalize request: %v", err)
 	}
 
-	if _, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload); err == nil || !strings.Contains(err.Error(), "metadata persistence") {
-		t.Fatalf("save error = %v, want metadata persistence failure", err)
+	result, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload)
+	if err != nil {
+		t.Fatalf("save error = %v", err)
 	}
-	if messageStore.calls != 0 {
-		t.Fatalf("legacy store should not receive a lossy fallback save: calls=%d", messageStore.calls)
+	if result.ID != 73 || result.Duplicate || messageStore.calls != 1 {
+		t.Fatalf("fallback result=%#v calls=%d", result, messageStore.calls)
+	}
+	if payload.Metadata != nil {
+		t.Fatalf("Artifact metadata reached persistence boundary: %#v", payload.Metadata)
 	}
 }
 
@@ -371,7 +377,7 @@ func TestExtractPeerUIDRequiresSenderInTopic(t *testing.T) {
 func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
-			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice.png"},
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 	}
@@ -386,8 +392,9 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	hub.addClient(botClient)
 
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
-		TopicID: "p2p_7_42",
-		Content: json.RawMessage(`"hello"`),
+		TopicID:     "p2p_7_42",
+		ClientMsgID: "live-client-15",
+		Content:     json.RawMessage(`"hello"`),
 		Metadata: map[string]interface{}{
 			"keep":            "yes",
 			"catsco_identity": map[string]interface{}{"spoofed": true},
@@ -401,6 +408,9 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 
 	var msg ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &msg)
+	if msg.Data.ClientMsgID != "live-client-15" {
+		t.Fatalf("live client_msg_id=%q, want live-client-15", msg.Data.ClientMsgID)
+	}
 	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
 	actor := nestedMap(t, identity, "actor")
 	agent := nestedMap(t, identity, "agent")
@@ -410,7 +420,7 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	if msg.Data.Metadata["keep"] != "yes" {
 		t.Fatalf("expected original metadata to be preserved: %#v", msg.Data.Metadata)
 	}
-	if actor["user_id"] != "usr7" || actor["display_name"] != "Alice" {
+	if actor["user_id"] != "usr7" || actor["display_name"] != "Alice" || actor["avatar_url"] != "/uploads/alice.png" {
 		t.Fatalf("unexpected actor identity: %#v", actor)
 	}
 	if actor["account_type"] != string(types.AccountHuman) || actor["is_bot"] != false {
@@ -475,15 +485,16 @@ func TestGroupFanoutAddsRecipientBotIdentity(t *testing.T) {
 func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
-			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice-history.png"},
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 		history: []*types.Message{{
-			ID:      31,
-			TopicID: "p2p_7_42",
-			FromUID: 7,
-			Content: "missed message",
-			MsgType: "text",
+			ID:       31,
+			TopicID:  "p2p_7_42",
+			FromUID:  7,
+			Content:  "missed message",
+			MsgType:  "text",
+			Metadata: map[string]interface{}{"client_msg_id": "history-client-31"},
 		}},
 	}
 	hub := NewHub(store, nil)
@@ -506,14 +517,21 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 	var msg ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &msg)
 	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
+	actor := nestedMap(t, identity, "actor")
 	agent := nestedMap(t, identity, "agent")
 	topic := nestedMap(t, identity, "topic")
 
+	if actor["avatar_url"] != "/uploads/alice-history.png" {
+		t.Fatalf("unexpected history actor identity: %#v", actor)
+	}
 	if agent["agent_id"] != "usr42" || agent["body_id"] != "body-mac" {
 		t.Fatalf("unexpected history recipient agent identity: %#v", agent)
 	}
 	if topic["topic_id"] != "p2p_7_42" || topic["type"] != "p2p" || topic["channel_seq"] != float64(31) {
 		t.Fatalf("unexpected history topic identity: %#v", topic)
+	}
+	if msg.Data.ClientMsgID != "history-client-31" {
+		t.Fatalf("history client_msg_id=%q, want history-client-31", msg.Data.ClientMsgID)
 	}
 
 	var ctrl ServerMessage
@@ -523,18 +541,77 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 	}
 }
 
-func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
+func TestHistoryUsesStoredClientMessageIDWhenLegacyMetadataIsAbsent(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
 			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 		history: []*types.Message{{
-			ID:      31,
-			TopicID: "p2p_7_42",
-			FromUID: 7,
-			Content: "missed message",
-			MsgType: "text",
+			ID:          32,
+			TopicID:     "p2p_7_42",
+			FromUID:     7,
+			ClientMsgID: "stored-client-32",
+			Content:     "persisted without metadata",
+			MsgType:     "text",
+		}},
+	}
+	hub := NewHub(store, nil)
+	botClient := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 2)}
+	hub.addClient(botClient)
+
+	hub.handleGet(botClient, &MsgClientGet{ID: "history-client-id", Topic: "p2p_7_42", What: "history"})
+
+	var message ServerMessage
+	decodeQueuedServerMessage(t, botClient.send, &message)
+	if message.Data == nil || message.Data.ClientMsgID != "stored-client-32" {
+		t.Fatalf("history client_msg_id = %#v, want stored-client-32", message.Data)
+	}
+}
+
+func TestRESTHistoryUsesStoredClientMessageIDWithoutHub(t *testing.T) {
+	store := &identityMessageStore{history: []*types.Message{{
+		ID:          33,
+		TopicID:     "p2p_7_42",
+		FromUID:     7,
+		ClientMsgID: "stored-client-33",
+		Content:     "REST fallback",
+		MsgType:     "text",
+	}}}
+	handler := NewMessageHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if len(body.Messages) != 1 || body.Messages[0]["client_msg_id"] != "stored-client-33" {
+		t.Fatalf("history messages = %#v, want stored client id", body.Messages)
+	}
+}
+
+func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice-history.png"},
+			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+		history: []*types.Message{{
+			ID:       31,
+			TopicID:  "p2p_7_42",
+			FromUID:  7,
+			Content:  "missed message",
+			MsgType:  "text",
+			Metadata: map[string]interface{}{"client_msg_id": "rest-client-31"},
 		}},
 	}
 	hub := NewHub(store, nil)
@@ -556,6 +633,9 @@ func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	if len(body.Messages) != 1 {
 		t.Fatalf("messages len=%d, want 1", len(body.Messages))
 	}
+	if body.Messages[0]["client_msg_id"] != "rest-client-31" {
+		t.Fatalf("client_msg_id=%#v, want rest-client-31", body.Messages[0]["client_msg_id"])
+	}
 	metadata, ok := body.Messages[0]["metadata"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("metadata = %#v, want object", body.Messages[0]["metadata"])
@@ -563,6 +643,10 @@ func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	identity, ok := metadata["catsco_identity"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("catsco_identity = %#v, want object", metadata["catsco_identity"])
+	}
+	actor, ok := identity["actor"].(map[string]interface{})
+	if !ok || actor["avatar_url"] != "/uploads/alice-history.png" {
+		t.Fatalf("unexpected replay actor identity: %#v", identity["actor"])
 	}
 	permissions, ok := identity["permissions"].(map[string]interface{})
 	if !ok || permissions["replay"] != true || permissions["device_access"] != "non_executable_history" {
@@ -753,9 +837,23 @@ func TestHandleGetMessagesUsesStableBeforeCursor(t *testing.T) {
 type identityMessageStore struct {
 	store.Store
 	users              map[int64]*types.User
+	owners             map[int64]int64
+	friendPairs        map[string]bool
 	groupMembers       []*types.GroupMember
 	history            []*types.Message
 	getUsersByIDsCalls int
+}
+
+func (s *identityMessageStore) GetBotOwner(botUID int64) (int64, error) {
+	ownerUID, ok := s.owners[botUID]
+	if !ok {
+		return 0, errors.New("bot owner not found")
+	}
+	return ownerUID, nil
+}
+
+func (s *identityMessageStore) AreFriends(uid1, uid2 int64) (bool, error) {
+	return s.friendPairs[agentPairKey(uid1, uid2)], nil
 }
 
 func (s *identityMessageStore) GetUser(id int64) (*types.User, error) {

@@ -35,33 +35,34 @@ const (
 
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
-	mu                      sync.RWMutex
-	clients                 map[int64]map[*Client]struct{}
-	clientsByConn           map[string]*Client
-	register                chan *Client
-	unregister              chan *Client
-	presence                chan presenceEvent
-	db                      store.Store
-	rateLimiter             *RateLimiter
-	botStats                *BotStats
-	botConvo                botConvoTracker
-	nodeID                  string
-	sharedRuntime           sharedRuntimeState
-	bodyLeases              *botBodyLeaseManager
-	userDevices             *userDeviceRegistry
-	deviceAudit             *deviceAuditLog
-	deviceRevokes           *deviceConnectorRevocationList
-	deviceClients           map[int64]map[string]*Client
-	deviceRPC               *deviceRPCRouter
-	thinToolRPC             *thinToolRPCRouter
-	botRuntimeCredentials   *botRuntimeCredentialSigner
-	skillMutationGrants     *skillMutationGrantSigner
-	channelOut              *ChannelOutboundDispatcher
-	groupTurns              *groupAgentTurnTracker
-	artifactContextResolver ArtifactContextResolver
-	push                    *PushNotificationService
-	agentPush               *agentPushTurnCoordinator
-	taskGrace               time.Duration
+	mu                       sync.RWMutex
+	clients                  map[int64]map[*Client]struct{}
+	clientsByConn            map[string]*Client
+	register                 chan *Client
+	unregister               chan *Client
+	presence                 chan presenceEvent
+	db                       store.Store
+	rateLimiter              *RateLimiter
+	botStats                 *BotStats
+	botConvo                 botConvoTracker
+	nodeID                   string
+	sharedRuntime            sharedRuntimeState
+	bodyLeases               *botBodyLeaseManager
+	userDevices              *userDeviceRegistry
+	deviceAudit              *deviceAuditLog
+	deviceRevokes            *deviceConnectorRevocationList
+	deviceClients            map[int64]map[string]*Client
+	deviceRPC                *deviceRPCRouter
+	thinToolRPC              *thinToolRPCRouter
+	botRuntimeCredentials    *botRuntimeCredentialSigner
+	skillMutationGrants      *skillMutationGrantSigner
+	channelOut               *ChannelOutboundDispatcher
+	groupTurns               *groupAgentTurnTracker
+	artifactContextResolver  ArtifactContextResolver
+	artifactContextSnapshots *artifactContextSnapshotStore
+	push                     *PushNotificationService
+	agentPush                *agentPushTurnCoordinator
+	taskGrace                time.Duration
 	// taskReaperInterval is how often the disconnected-task recovery reaper
 	// scans durable rows. It complements the per-disconnect time.AfterFunc so
 	// a crashed/restarted process or transient DB error cannot permanently
@@ -137,10 +138,15 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		botRuntimeCredentials: runtimeCredentialSigner,
 		skillMutationGrants:   grantSigner,
 		groupTurns:            newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
-		agentPush:             newAgentPushTurnCoordinator(),
-		taskGrace:             90 * time.Second,
-		taskReaperInterval:    30 * time.Second,
-		botConnectionEpochs:   make(map[int64]uint64),
+		artifactContextSnapshots: newArtifactContextSnapshotStore(
+			artifactContextSnapshotTTLDefault,
+			artifactContextTombstoneTTLDefault,
+			artifactContextSnapshotMaxEntries,
+		),
+		agentPush:           newAgentPushTurnCoordinator(),
+		taskGrace:           90 * time.Second,
+		taskReaperInterval:  30 * time.Second,
+		botConnectionEpochs: make(map[int64]uint64),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -160,6 +166,29 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
 	if h != nil {
 		h.push = service
+	}
+}
+
+// NotifyCloudArtifactShared sends the generic owner notification over every
+// connected messaging session and queues the same privacy-minimized message
+// for offline Web Push subscribers.
+func (h *Hub) NotifyCloudArtifactShared(ownerUID int64) {
+	if h == nil || ownerUID <= 0 {
+		return
+	}
+	h.SendToUser(ownerUID, &ServerMessage{Notification: &MsgServerNotification{
+		Type:    "cloud_artifact_shared",
+		Message: "有新文件在云端共享",
+	}})
+	if !h.IsOnline(ownerUID) && h.push != nil && h.push.Enabled() {
+		if !h.push.EnqueueToUser(ownerUID, PushNotification{
+			Title: "CatsCo",
+			Body:  "有新文件在云端共享",
+			URL:   "/",
+			Tag:   "catsco-cloud-artifact-shared",
+		}) {
+			log.Printf("cloud artifact: owner push notification was not queued for uid=%d", ownerUID)
+		}
 	}
 }
 
@@ -1388,7 +1417,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		})
 		return
 	}
-	payload.Metadata = h.canonicalizeArtifactMessageMetadata(context.Background(), uid, topic, payload.Metadata)
+	payload.Metadata, payload.ArtifactContextRef = h.extractArtifactContextDelivery(uid, topic, payload.Metadata)
 
 	// Route based on topic type
 	if isGroupTopic(topic) {
@@ -1573,16 +1602,57 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 	if streamType == "" {
 		streamType = "stream_delta"
 	}
-	streamMetadata := map[string]interface{}{}
-	for key, value := range metadata {
-		streamMetadata[key] = value
+	if isGroupTopic(topicID) {
+		groupID := extractGroupID(topicID)
+		if groupID == 0 || h.db == nil {
+			return
+		}
+		members, err := h.db.GetGroupMembers(groupID)
+		if err != nil {
+			log.Printf("fanoutStreamEvent: failed to get members for group %d: %v", groupID, err)
+			return
+		}
+		channelManaged := h.isChannelManagedGroup(groupID)
+		for _, member := range members {
+			if member == nil || member.UserID == uid {
+				continue
+			}
+			if channelManaged {
+				isBot, err := h.db.IsUserBot(member.UserID)
+				if err != nil || !isBot {
+					continue
+				}
+			}
+			h.SendToUser(member.UserID, h.streamMessageForRecipient(uid, member.UserID, topicID, streamType, content, metadata))
+		}
+		return
 	}
-	streamMetadata["stream_event"] = strings.TrimPrefix(streamType, "stream_")
 
-	dataMsg := &ServerMessage{
+	peerUID := extractPeerUID(topicID, uid)
+	if peerUID == 0 {
+		return
+	}
+	h.SendToUserExcept(uid, h.streamMessageForRecipient(uid, uid, topicID, streamType, content, metadata), exclude)
+	h.SendToUser(peerUID, h.streamMessageForRecipient(uid, peerUID, topicID, streamType, content, metadata))
+}
+
+// streamMessageForRecipient keeps transient stream events on the same
+// recipient-specific identity path as persisted messages. A stream event is
+// not persisted and therefore has no durable sequence, but it still needs a
+// canonical actor snapshot when profile/roster data is cold on the client.
+func (h *Hub) streamMessageForRecipient(actorUID, recipientUID int64, topicID, streamType, content string, metadata map[string]interface{}) *ServerMessage {
+	streamMetadata := withCatscoIdentityMetadata(
+		metadataWithoutArtifactContext(metadata),
+		h.buildCatscoIdentityMetadata(actorUID, recipientUID, topicID, 0, normalizeContentText(content), catscoIdentityMetadataOptions{
+			OmitDeviceAccess: true,
+			SourceMetadata:   metadata,
+		}),
+	)
+	streamMetadata["stream_event"] = strings.TrimPrefix(streamType, "stream_")
+	return &ServerMessage{
 		Data: &MsgServerData{
 			Topic:    topicID,
-			From:     formatUID(uid),
+			From:     formatUID(actorUID),
 			SeqID:    0,
 			Content:  content,
 			Type:     streamType,
@@ -1592,22 +1662,6 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 			Role:     "assistant",
 		},
 	}
-
-	if isGroupTopic(topicID) {
-		groupID := extractGroupID(topicID)
-		if groupID == 0 {
-			return
-		}
-		h.broadcastToGroup(groupID, dataMsg, uid)
-		return
-	}
-
-	peerUID := extractPeerUID(topicID, uid)
-	if peerUID == 0 {
-		return
-	}
-	h.SendToUserExcept(uid, dataMsg, exclude)
-	h.SendToUser(peerUID, dataMsg)
 }
 
 // handleGroupPub handles publishing a message to a group topic.
@@ -1744,6 +1798,7 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 		Info:                     msg.Info,
 		Friend:                   msg.Friend,
 		suppressPushNotification: msg.suppressPushNotification,
+		artifactContextRef:       msg.artifactContextRef,
 	}
 }
 
@@ -2264,7 +2319,11 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
 			)
 			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic))
-			metadata = artifactMetadataForRecipient(metadata, m.UserID)
+			metadata = withArtifactContextDeliveryRef(
+				metadataWithoutArtifactContext(metadata),
+				h.validatedArtifactContextDeliveryRef(senderUID, msg.Data.Topic, msg.artifactContextRef, m.UserID),
+				m.UserID,
+			)
 			out = cloneDataMessageWithMetadata(
 				msg,
 				metadata,

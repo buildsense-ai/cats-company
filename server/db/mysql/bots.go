@@ -124,7 +124,7 @@ func (a *Adapter) GetBotDebugMessages(uid int64, limit int) ([]*types.Message, e
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 		 FROM messages WHERE from_uid = ?
 		 ORDER BY id DESC LIMIT ?`,
 		uid, limit,
@@ -134,15 +134,7 @@ func (a *Adapter) GetBotDebugMessages(uid int64, limit int) ([]*types.Message, e
 	}
 	defer rows.Close()
 
-	var msgs []*types.Message
-	for rows.Next() {
-		m := &types.Message{}
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan debug message: %w", err)
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs, rows.Err()
+	return scanMessages(rows, "scan debug message")
 }
 
 // GetBotByAPIKey looks up a bot's user ID by its API key.

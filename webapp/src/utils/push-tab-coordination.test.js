@@ -225,7 +225,7 @@ describe('push tab coordination', () => {
     const first = createPushTabCoordinator(null, null);
     const second = createPushTabCoordinator(null, null);
     const reconcile = vi.fn();
-    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    const setItem = vi.spyOn(window.localStorage, 'setItem');
     second.setActive(true, 'registration-active');
     second.onReconcile(reconcile);
 

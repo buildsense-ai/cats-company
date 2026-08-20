@@ -82,22 +82,51 @@ func TestMessageHistoryReadsMetadataAndLegacyNull(t *testing.T) {
 			}
 			defer db.Close()
 			createdAt := time.Date(2026, time.August, 7, 0, 0, 0, 0, time.UTC)
-			rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "metadata"}).
-				AddRow(int64(1), "topic", int64(7), "hello", "text", createdAt, nil, "normal", "user", []byte(`{"source_channel":"feishu"}`)).
-				AddRow(int64(2), "topic", int64(7), "legacy", "text", createdAt, nil, nil, nil, nil)
+			rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "client_msg_id", "metadata"}).
+				AddRow(int64(1), "topic", int64(7), "hello", "text", createdAt, nil, "normal", "user", "history-client-1", []byte(`{"source_channel":"feishu"}`)).
+				AddRow(int64(2), "topic", int64(7), "legacy", "text", createdAt, nil, nil, nil, nil, nil)
 			mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM`).WithArgs(test.args...).WillReturnRows(rows)
 			adapter := &Adapter{db: db}
 			messages, err := test.call(adapter)
 			if err != nil {
 				t.Fatalf("history read: %v", err)
 			}
-			if len(messages) != 2 || messages[0].Metadata["source_channel"] != "feishu" || messages[1].Metadata != nil {
+			if len(messages) != 2 || messages[0].Metadata["source_channel"] != "feishu" || messages[0].ClientMsgID != "history-client-1" || messages[1].Metadata != nil {
 				t.Fatalf("history metadata = %#v", messages)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatalf("sql expectations: %v", err)
 			}
 		})
+	}
+}
+
+func TestListTopicFileMessagesReadsMetadata(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	createdAt := time.Date(2026, time.August, 15, 0, 0, 0, 0, time.UTC)
+	rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "client_msg_id", "metadata"}).
+		AddRow(
+			int64(14), "grp_1686", int64(7), "", "file", createdAt,
+			[]byte(`[{"type":"file","payload":{"name":"example.pdf"}}]`), "code", "user", "file-client-14", []byte(`{"source_channel":"web"}`),
+		)
+	mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM messages.*WHERE topic_id =`).
+		WithArgs("grp_1686", 41).
+		WillReturnRows(rows)
+
+	messages, err := (&Adapter{db: db}).ListTopicFileMessages("grp_1686", 0, 41)
+	if err != nil {
+		t.Fatalf("list topic file messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ClientMsgID != "file-client-14" || messages[0].Metadata["source_channel"] != "web" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
 	}
 }
 

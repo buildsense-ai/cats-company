@@ -1,109 +1,32 @@
-const API_BASE = import.meta.env.VITE_API_BASE || '';
+import {
+  API_BASE,
+  authApi,
+  getAuthRevision,
+  getPushCleanupRegistrationIDs,
+  getPushPromptOwner,
+  getPushRegistrationID,
+  getToken,
+  isCurrentAuthSession,
+  isTokenExpired,
+  request,
+  setToken as setSessionToken,
+  statusMessage,
+} from './auth-session';
+
+export {
+  getAuthRevision,
+  getPushCleanupRegistrationIDs,
+  getPushPromptOwner,
+  getPushRegistrationID,
+  getToken,
+  isCurrentAuthSession,
+  isTokenExpired,
+} from './auth-session';
+
 const LOCAL_XIAOBA_BASE = import.meta.env.VITE_XIAOBA_LOCAL_API || '/local-xiaoba';
 const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
-function readStoredToken() {
-  try {
-    return globalThis.localStorage?.getItem('oc_token') || '';
-  } catch {
-    // Capability-only share routes must still render when storage is blocked.
-    return '';
-  }
-}
-
-let token = readStoredToken();
-const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
-const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
-// A registration ID guards server deletes. sessionStorage preserves it across
-// reloads and cross-origin returns in this browsing context. A copied storage
-// area is safe because cleanup first coordinates with active peer tabs.
-let pushRegistrationID = '';
-let pushRegistrationOwner = '';
-const newPushRegistrationID = () => {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
-};
-const decodeTokenPayload = (candidate) => {
-  try {
-    const encodedPayload = candidate?.split('.')[1];
-    if (!encodedPayload) return null;
-    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    return JSON.parse(atob(padded));
-  } catch {
-    return null;
-  }
-};
-const pushRegistrationOwnerForToken = (candidate) => {
-  const userID = decodeTokenPayload(candidate)?.userId;
-  return userID === undefined || userID === null ? null : `user:${userID}`;
-};
-
-const readPushRegistration = () => {
-  try {
-    return {
-      id: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim(),
-      owner: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim(),
-    };
-  } catch {
-    return { id: '', owner: '' };
-  }
-};
-
-const writePushRegistration = (id, owner) => {
-  try {
-    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_ID_KEY, id);
-    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
-  } catch {
-    // Memory-only registration IDs still prevent stale operations in this page.
-  }
-};
-
-const registrationIDForToken = (candidate) => {
-  const owner = pushRegistrationOwnerForToken(candidate);
-  if (!owner) return newPushRegistrationID();
-  if (pushRegistrationID && pushRegistrationOwner === owner) {
-    return pushRegistrationID;
-  }
-  const saved = readPushRegistration();
-  if (saved.owner === owner && saved.id && saved.id.length <= 64) {
-    pushRegistrationID = saved.id;
-    pushRegistrationOwner = owner;
-    return pushRegistrationID;
-  }
-  const registrationID = newPushRegistrationID();
-  pushRegistrationID = registrationID;
-  pushRegistrationOwner = owner;
-  writePushRegistration(registrationID, owner);
-  return registrationID;
-};
-
-const legacyRegistrationIDForToken = (candidate) => {
-  const owner = pushRegistrationOwnerForToken(candidate);
-  if (!owner) return '';
-  try {
-    const id = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim();
-    const legacyOwner = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim();
-    if (!id || id.length > 64 || (legacyOwner && legacyOwner !== owner)) return '';
-    return id;
-  } catch {
-    return '';
-  }
-};
-
-const clearPushRegistration = () => {
-  pushRegistrationID = '';
-  pushRegistrationOwner = '';
-  try {
-    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_ID_KEY);
-    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_OWNER_KEY);
-  } catch {
-    // The in-memory values are still cleared when storage is unavailable.
-  }
-};
-let authRevision = 0;
 let wsConn = null;
 let wsReconnectTimer = null;
 let wsConnectTimer = null;
@@ -183,55 +106,12 @@ export function requestMissedMessages(topicId) {
   }
 }
 
-export function setToken(t) {
-  token = t;
-  authRevision += 1;
-  try {
-    if (t) globalThis.localStorage?.setItem('oc_token', t);
-    else globalThis.localStorage?.removeItem('oc_token');
-  } catch {
-    // Keep the in-memory auth state usable when browser storage is unavailable.
-  }
-  if (!t) {
-    clearPushRegistration();
+export function setToken(nextToken) {
+  if (!nextToken) {
     wsPushSubscriptionID = '';
     wsActiveTopic = '';
   }
-  window.dispatchEvent(new CustomEvent('cc:auth-changed', {
-    detail: {
-      loggedIn: Boolean(t),
-      revision: authRevision,
-    },
-  }));
-}
-
-export function getToken() {
-  return token;
-}
-
-export function getAuthRevision() {
-  return authRevision;
-}
-
-export function isCurrentAuthSession(candidate, revision) {
-  return Boolean(candidate)
-    && Number.isInteger(revision)
-    && token === candidate
-    && authRevision === revision;
-}
-
-export function getPushRegistrationID() {
-  return token ? registrationIDForToken(token) : '';
-}
-
-export function getPushCleanupRegistrationIDs() {
-  const current = getPushRegistrationID();
-  const legacy = legacyRegistrationIDForToken(token);
-  return [...new Set([current, legacy].filter(Boolean))];
-}
-
-export function getPushPromptOwner() {
-  return pushRegistrationOwnerForToken(token) || '';
+  setSessionToken(nextToken);
 }
 
 export function getWebSocketURL() {
@@ -255,87 +135,6 @@ export function resolveMediaURL(url) {
 
 export function isWSConnected() {
   return wsConnected;
-}
-
-export function isTokenExpired(candidate = token) {
-  if (!candidate) return false;
-  const payload = decodeTokenPayload(candidate);
-  if (!payload) return false;
-  try {
-    const expiresAt = Number(payload.exp);
-    return Number.isFinite(expiresAt) && Date.now() >= expiresAt * 1000;
-  } catch {
-    return false;
-  }
-}
-
-async function request(method, path, body, options = {}) {
-  const { signal, timeoutMs = 0 } = options;
-  const headers = { 'Content-Type': 'application/json' };
-  const authToken = options.authToken === undefined ? token : options.authToken;
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-
-  const controller = new AbortController();
-  let timedOut = false;
-  let timeoutID = null;
-  const abortFromCaller = () => controller.abort(signal?.reason);
-
-  if (signal?.aborted) {
-    abortFromCaller();
-  } else if (signal) {
-    signal.addEventListener('abort', abortFromCaller, { once: true });
-  }
-  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-    timeoutID = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
-  }
-
-  let res;
-  try {
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-
-    let data = {};
-    try {
-      data = await res.json();
-    } catch {
-      data = {};
-    }
-    if (!res.ok) {
-      const error = new Error(data.error || statusMessage(res.status));
-      error.status = res.status;
-      error.data = data;
-      throw error;
-    }
-    return data;
-  } catch (cause) {
-    if (timedOut) {
-      const error = new Error('请求超时，请稍后重试');
-      error.code = 'REQUEST_TIMEOUT';
-      error.cause = cause;
-      throw error;
-    }
-    if (signal?.aborted || cause?.name === 'AbortError') {
-      const error = new Error('请求已取消');
-      error.code = 'REQUEST_ABORTED';
-      error.cause = cause;
-      throw error;
-    }
-    if (cause?.status) throw cause;
-    const error = new Error('网络连接失败，请检查后端服务是否运行');
-    error.code = 'NETWORK_ERROR';
-    error.cause = cause;
-    throw error;
-  } finally {
-    if (timeoutID) clearTimeout(timeoutID);
-    signal?.removeEventListener('abort', abortFromCaller);
-  }
 }
 
 // Capability links are intentionally detached from the owner session. Keeping
@@ -483,17 +282,6 @@ async function getLocalSkillsWithFallback() {
   return localRequest('GET', '/api/skills-all');
 }
 
-function statusMessage(status) {
-  if (status === 400) return '请求内容有误，请检查后重试';
-  if (status === 401) return '登录状态已失效，请重新登录';
-  if (status === 403) return '当前账号没有执行此操作的权限';
-  if (status === 404) return '请求的功能暂时不可用';
-  if (status === 409) return '当前数据已发生变化，请刷新后重试';
-  if (status === 429) return '操作过于频繁，请稍后再试';
-  if (status >= 500) return '后端服务暂时异常，请稍后重试';
-  return '请求失败，请稍后重试';
-}
-
 const RAW_UPLOAD_QUERY = 'raw=1';
 const RAW_UPLOAD_FILE_NAME_HEADER = 'X-CatsCo-File-Name';
 const RAW_UPLOAD_FILE_SIZE_HEADER = 'X-CatsCo-File-Size';
@@ -593,11 +381,7 @@ async function uploadRawFile(path, file, { authToken = '' } = {}) {
 }
 
 export const api = {
-  sendVerificationCode: (email) => request('POST', '/api/auth/send-code', { email }),
-  sendPasswordResetCode: (email) => request('POST', '/api/auth/reset-password/send-code', { email }),
-  resetPassword: (data) => request('POST', '/api/auth/reset-password', data),
-  register: (data) => request('POST', '/api/auth/register', data),
-  login: (data) => request('POST', '/api/auth/login', data),
+  ...authApi,
   getMe: () => request('GET', '/api/me'),
   createSTTSession: () => request('POST', '/api/stt/sessions'),
   getRelayAdminAccess: () => request('GET', '/api/admin/relay/access'),
@@ -609,7 +393,7 @@ export const api = {
   sendPushTest: (registrationID) => (
     request('POST', '/api/push/test', { registration_id: registrationID })
   ),
-  unsubscribePush: (endpoint, authToken = token, registrationID = getPushRegistrationID()) => {
+  unsubscribePush: (endpoint, authToken = getToken(), registrationID = getPushRegistrationID()) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
     return request('DELETE', '/api/push/subscriptions', { endpoint, registration_id: registrationID }, {
@@ -651,7 +435,7 @@ export const api = {
     request('GET', `/api/users/search?q=${encodeURIComponent(q)}&mode=${encodeURIComponent(mode)}`),
 
   // Send message via REST
-  sendMessage: (topicId, content, replyTo, mentions = []) => {
+  sendMessage: (topicId, content, replyTo, mentions = [], clientMsgID = '') => {
     const payload = { topic_id: topicId };
 
     if (typeof content === 'string') {
@@ -679,8 +463,27 @@ export const api = {
 
     if (replyTo) payload.reply_to = replyTo;
     if (Array.isArray(mentions) && mentions.length > 0) payload.mentions = mentions;
+    const normalizedClientMsgID = String(
+      clientMsgID
+      || (content && typeof content === 'object' && content.client_msg_id)
+      || '',
+    ).trim();
+    if (normalizedClientMsgID) payload.client_msg_id = normalizedClientMsgID;
     return request('POST', '/api/messages/send', payload);
   },
+
+  createArtifactContextSnapshot: (snapshot, options = {}) => request(
+    'POST',
+    '/api/artifact-context/snapshots',
+    snapshot,
+    options,
+  ),
+  invalidateArtifactContextSnapshot: (contextRef, options = {}) => request(
+    'DELETE',
+    '/api/artifact-context/snapshots',
+    { context_ref: contextRef },
+    options,
+  ),
 
   // REST fallback for message history
   getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
@@ -969,7 +772,7 @@ export const api = {
     return data;
   },
   uploadFile: async (file, type = 'file') => {
-    return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: token });
+    return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: getToken() });
   },
   createMobileUploadSession: async (topic) => request('POST', '/api/mobile-upload/sessions', { topic }),
   getMobileUploadSession: async (sessionId) => request('GET', `/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}`),
@@ -1029,7 +832,8 @@ function reconnectDelay(attempt) {
 }
 
 export function connectWS(onMessage, { force = false } = {}) {
-  if (!token) return false;
+  const sessionToken = getToken();
+  if (!sessionToken) return false;
   if (isTokenExpired()) {
     onMessage({ _type: 'ws_auth_expired' });
     return false;
@@ -1062,7 +866,7 @@ export function connectWS(onMessage, { force = false } = {}) {
     staleConn.close();
   }
   wsConnected = false;
-  const url = `${WS_URL}?token=${token}`;
+  const url = `${WS_URL}?token=${sessionToken}`;
   const conn = new WebSocket(url);
   wsConn = conn;
   const isCurrent = () => wsConn === conn && wsGeneration === generation;
@@ -1138,7 +942,7 @@ export function connectWS(onMessage, { force = false } = {}) {
       msgHandlers.forEach((handler) => handler(authExpiredMessage));
       return;
     }
-    if (token) {
+    if (getToken()) {
       wsReconnectTimer = setTimeout(() => {
         if (wsGeneration === generation) {
           connectWS(onMessage);
@@ -1309,17 +1113,19 @@ export async function setWSPushSubscriptionEndpoint(endpoint = '') {
 }
 
 // Send a chat message via WebSocket, with REST fallback
-export async function wsSendMessage(topicId, content, replyTo, mentions = []) {
+export async function wsSendMessage(topicId, content, replyTo, mentions = [], clientMsgID = '') {
+  const normalizedClientMsgID = String(clientMsgID || '').trim();
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     const id = nextMsgId();
     const pub = { id, topic: topicId, content };
     if (replyTo) pub.reply_to = replyTo;
     if (Array.isArray(mentions) && mentions.length > 0) pub.mentions = mentions;
+    if (normalizedClientMsgID) pub.client_msg_id = normalizedClientMsgID;
     sendWS({ pub });
     return id;
   }
   // Fallback to REST if WebSocket is not connected
-  await api.sendMessage(topicId, content, replyTo, mentions);
+  await api.sendMessage(topicId, content, replyTo, mentions, normalizedClientMsgID);
   return null;
 }
 

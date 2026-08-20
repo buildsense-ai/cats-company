@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, Link2, MoreHorizontal } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, Link2, MoreHorizontal } from 'lucide-react';
 import t from '../i18n';
 import { copyTextToClipboard } from '../utils/clipboard';
 import Avatar from './avatar';
@@ -44,6 +44,12 @@ const MAX_SHARED_MEDIA_PREVIEW_BYTES = 32 << 20;
 // the existing video preview instead of silently becoming download-only.
 const MAX_SHARED_VIDEO_PREVIEW_BYTES = MAX_ATTACHMENT_SIZE;
 const trustedArtifactPreviewPayloads = new WeakSet();
+
+function imageGalleryItemId(message, blockIndex, payload) {
+  const src = payload?.url || payload?.thumbnail || '';
+  if (!src) return '';
+  return `${message?.id || message?.seq_id || 'message'}:${blockIndex}:${src}`;
+}
 
 function remoteArtifactPreviewKey(file, descriptor) {
   if (!descriptor?.isRemoteArtifact || !file?.artifact_id || !descriptor.url) return '';
@@ -559,6 +565,39 @@ function messageContentText(content, fallback = '') {
   }
 }
 
+const ARTIFACT_DELIVERY_ANNOUNCEMENTS = new Set([
+  '已发出',
+  '已发出。',
+  '已发送',
+  '已发送。',
+  '已生成',
+  '已生成。',
+  '已交付',
+  '已交付。',
+]);
+
+function removeRedundantArtifactAnnouncement(text, artifactBlocks) {
+  const artifactNames = (artifactBlocks || [])
+    .map((block) => String(block?.payload?.name || '').trim())
+    .filter(Boolean);
+  if (artifactNames.length === 0 || typeof text !== 'string') return text;
+
+  return text
+    .split('\n')
+    .filter((line) => {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) return true;
+      return !artifactNames.some((name) => {
+        if (!trimmedLine.startsWith(name)) return false;
+        const announcement = trimmedLine.slice(name.length).trim();
+        return ARTIFACT_DELIVERY_ANNOUNCEMENTS.has(announcement);
+      });
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function contentBlocksFromMessage(msg) {
   const storedBlocks = Array.isArray(msg?.content_blocks) ? msg.content_blocks : [];
   if (storedBlocks.length > 0) {
@@ -912,7 +951,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
@@ -933,7 +972,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   }, [effectiveWorkingMessages, storedBlocks]);
   const workingPlanComplete = isPlanComplete(latestWorkingPlan(workingBlocks));
   const richBlocks = useMemo(() => (
-    storedBlocks.filter((block) => ['image', 'file', 'audio', 'voice', 'video'].includes(block.type))
+    storedBlocks
+      .map((block, index) => ({ ...block, __imageBlockIndex: index }))
+      .filter((block) => ['image', 'file', 'audio', 'voice', 'video'].includes(block.type))
   ), [storedBlocks]);
   const storedTextBlocks = useMemo(() => (
     storedBlocks.filter(
@@ -942,12 +983,22 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
         && block.presentation_role !== 'process',
     )
   ), [storedBlocks]);
+  const displayTextBlocks = useMemo(() => (
+    storedTextBlocks
+      .map((block) => ({
+        ...block,
+        text: artifactsFirst
+          ? removeRedundantArtifactAnnouncement(block.text, richBlocks)
+          : block.text,
+      }))
+      .filter((block) => block.text?.trim())
+  ), [artifactsFirst, richBlocks, storedTextBlocks]);
   const renderedTextContent = useMemo(() => {
     if (storedBlocks.length === 0) return content;
-    return storedTextBlocks
+    return displayTextBlocks
       .map((block) => block.text)
       .join('\n\n');
-  }, [storedBlocks, storedTextBlocks, content]);
+  }, [storedBlocks, displayTextBlocks, content]);
   const hasText = useMemo(() => (
     typeof renderedTextContent === 'string'
       ? renderedTextContent.trim().length > 0
@@ -989,8 +1040,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   ), [content, renderedTextContent, richBlocks, parsed]);
   const hasArtifactFirstSummary = artifactsFirst && richBlocks.length > 0 && hasText;
   const artifactFollowupSections = useMemo(() => {
-    if (!hasArtifactFirstSummary || storedTextBlocks.length === 0) return null;
-    return storedTextBlocks.map((block, index) => {
+    if (!hasArtifactFirstSummary || displayTextBlocks.length === 0) return null;
+    return displayTextBlocks.map((block, index) => {
       const role = block.presentation_role || 'body';
       return (
         <div
@@ -1001,9 +1052,12 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           <TextContent
             content={block.text}
             isGroup={isGroup}
+            mentionDisplayNames={mentionDisplayNames}
             knownArtifacts={knownArtifacts}
             onPreviewFile={onPreviewFile}
             activePreviewFile={activePreviewFile}
+            imageGallery={imageGallery}
+            onOpenImage={onOpenImage}
           />
         </div>
       );
@@ -1013,19 +1067,24 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     hasArtifactFirstSummary,
     isGroup,
     knownArtifacts,
+    mentionDisplayNames,
     onPreviewFile,
-    storedTextBlocks,
+    displayTextBlocks,
   ]);
   const renderedMessageText = hasText && (parsed ? (
     <RichContent
       content={parsed}
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
+      imageGallery={imageGallery}
+      onOpenImage={onOpenImage}
+      imageId={imageGalleryItemId(message, 0, parsed?.payload)}
     />
   ) : (
     <TextContent
       content={renderedTextContent}
       isGroup={isGroup}
+      mentionDisplayNames={mentionDisplayNames}
       knownArtifacts={knownArtifacts}
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
@@ -1159,6 +1218,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                         content={block}
                         onPreviewFile={onPreviewFile}
                         activePreviewFile={activePreviewFile}
+                        imageGallery={imageGallery}
+                        onOpenImage={onOpenImage}
+                        imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                       />
                     ))}
                   </div>
@@ -1175,6 +1237,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       content={block}
                       onPreviewFile={onPreviewFile}
                       activePreviewFile={activePreviewFile}
+                      imageGallery={imageGallery}
+                      onOpenImage={onOpenImage}
+                      imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                     />
                   ))}
                   {renderedMessageText}
@@ -1184,6 +1249,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       content={block}
                       onPreviewFile={onPreviewFile}
                       activePreviewFile={activePreviewFile}
+                      imageGallery={imageGallery}
+                      onOpenImage={onOpenImage}
+                      imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                     />
                   ))}
                   {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
@@ -1297,6 +1365,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.senderName === nextProps.senderName &&
     prevProps.senderAvatarUrl === nextProps.senderAvatarUrl &&
     prevProps.senderIsBot === nextProps.senderIsBot &&
+    prevProps.mentionDisplayNames === nextProps.mentionDisplayNames &&
     prevProps.replyMessage === nextProps.replyMessage &&
     prevProps.questionAnchorKey === nextProps.questionAnchorKey &&
     prevProps.onEdit === nextProps.onEdit &&
@@ -1306,12 +1375,14 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
     prevProps.activePreviewFile === nextProps.activePreviewFile &&
-    prevProps.knownArtifacts === nextProps.knownArtifacts;
+    prevProps.knownArtifacts === nextProps.knownArtifacts &&
+    prevProps.imageGallery === nextProps.imageGallery &&
+    prevProps.onOpenImage === nextProps.onOpenImage;
 });
 
 export default ChatMessage;
 
-function TextContent({ content, isGroup, knownArtifacts = [], onPreviewFile, activePreviewFile }) {
+function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifacts = [], onPreviewFile, activePreviewFile }) {
   const text = useMemo(() => messageContentText(content), [content]);
   const matchedArtifacts = useMemo(() => findKnownArtifactsInText(text, knownArtifacts), [knownArtifacts, text]);
   const plainText = useMemo(() => removeKnownArtifactURLs(text, matchedArtifacts), [matchedArtifacts, text]);
@@ -1360,17 +1431,38 @@ function TextContent({ content, isGroup, knownArtifacts = [], onPreviewFile, act
   }
 
   if (isGroup) {
-    const parts = removeKnownArtifactURLs(text, matchedArtifacts).split(/(@usr\d+)/g);
+    const renderGroupText = (value, keyPrefix = 'group-text') => (
+      value.split(/(@usr\d+)/g).map((part, i) => {
+        const uidMatch = part.match(/^@usr(\d+)$/);
+        if (!uidMatch) return <span key={`${keyPrefix}-${i}`}>{part}</span>;
+        const displayName = mentionDisplayNames[uidMatch[1]];
+        return (
+          <span key={`${keyPrefix}-${i}`} className="oc-mention" data-mention-uid={uidMatch[1]}>
+            @{displayName || `usr${uidMatch[1]}`}
+          </span>
+        );
+      })
+    );
+
+    if (plainTextParagraphs.length > 1) {
+      return (
+        <>
+          <div className="oc-plain-text-paragraphs">
+            {plainTextParagraphs.map((paragraph, index) => (
+              <p className="oc-plain-text-paragraph" key={index}>
+                {renderGroupText(paragraph, `group-paragraph-${index}`)}
+              </p>
+            ))}
+          </div>
+          <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+        </>
+      );
+    }
+
     return (
       <>
         <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-          {parts.map((part, i) =>
-            part.match(/^@usr\d+$/) ? (
-              <span key={i} className="oc-mention">{part}</span>
-            ) : (
-              <span key={i}>{part}</span>
-            )
-          )}
+          {renderGroupText(plainText)}
         </span>
         <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
       </>
@@ -1556,10 +1648,17 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   );
 }
 
-function RichContent({ content, onPreviewFile, activePreviewFile }) {
+function RichContent({ content, onPreviewFile, activePreviewFile, imageGallery = null, onOpenImage, imageId = '' }) {
   switch (content.type) {
     case 'image':
-      return <ImageContent payload={content.payload} />;
+      return (
+        <ImageContent
+          payload={content.payload}
+          imageGallery={imageGallery}
+          onOpenImage={onOpenImage}
+          imageId={imageId}
+        />
+      );
     case 'video':
       return <VideoContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
     case 'file':
@@ -1575,7 +1674,7 @@ function RichContent({ content, onPreviewFile, activePreviewFile }) {
   }
 }
 
-function ImageContent({ payload }) {
+function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' }) {
   const [expanded, setExpanded] = useState(false);
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
@@ -1623,6 +1722,48 @@ function ImageContent({ payload }) {
   if (!payload) return null;
   if (sharedAsset && !src) return <FileContent payload={payload} inlineMedia={false} />;
 
+  const galleryMode = Array.isArray(imageGallery) && imageGallery.length > 0 && typeof onOpenImage === 'function';
+  const openPreview = () => {
+    if (galleryMode) {
+      const matchingItem = imageGallery.find((item) => (
+        item?.id === imageId
+        || item?.payload?.url === payload?.url
+        || item?.payload?.thumbnail === payload?.thumbnail
+      ));
+      onOpenImage(matchingItem?.id || imageId || '', triggerRef.current, payload);
+      return;
+    }
+    setExpanded(true);
+  };
+
+  if (galleryMode) {
+    return (
+      <div className="oc-rich-image">
+        <button
+          aria-label={`预览图片 ${payload.name || ''}`.trim()}
+          className="oc-rich-image-trigger"
+          onClick={openPreview}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            openPreview();
+          }}
+          ref={triggerRef}
+          type="button"
+        >
+          <img
+            src={resolveMediaURL(src)}
+            alt={payload.name || 'image'}
+            className="oc-rich-image-thumb"
+            draggable={canDragChatAttachment({ type: 'image', payload })}
+            onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'image', payload })}
+            onDragEnd={clearChatAttachmentDrag}
+          />
+        </button>
+      </div>
+    );
+  }
+
   const preview = expanded ? createPortal(
     <div
       aria-label={`图片预览 ${payload.name || ''}`.trim()}
@@ -1655,11 +1796,11 @@ function ImageContent({ payload }) {
       <button
         aria-label={`预览图片 ${payload.name || ''}`.trim()}
         className="oc-rich-image-trigger"
-        onClick={() => setExpanded(true)}
+        onClick={openPreview}
         onKeyDown={(event) => {
           if (event.key !== 'Enter' && event.key !== ' ') return;
           event.preventDefault();
-          setExpanded(true);
+          openPreview();
         }}
         ref={triggerRef}
         type="button"

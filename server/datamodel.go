@@ -35,6 +35,7 @@ type ServerMessage struct {
 	Meta               *MsgServerMeta                `json:"meta,omitempty"`
 	Info               *MsgServerInfo                `json:"info,omitempty"`
 	Friend             *MsgServerFriend              `json:"friend,omitempty"`
+	Notification       *MsgServerNotification        `json:"notification,omitempty"`
 	DeviceRPC          *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
 	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
 	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
@@ -42,6 +43,9 @@ type ServerMessage struct {
 	// suppressPushNotification is server-only provenance. It must never be
 	// serialized to a web client or be set from client-provided metadata.
 	suppressPushNotification bool
+	// artifactContextRef is an in-memory, recipient-scoped delivery capability.
+	// It is never serialized directly and never persisted with a message.
+	artifactContextRef *artifactContextDeliveryRef
 }
 
 // --- Client messages ---
@@ -231,6 +235,7 @@ type MsgServerData struct {
 	Topic         string                 `json:"topic"`
 	From          string                 `json:"from,omitempty"`
 	SeqID         int                    `json:"seq"`
+	ClientMsgID   string                 `json:"client_msg_id,omitempty"`
 	Content       interface{}            `json:"content"`
 	Type          string                 `json:"type,omitempty"`
 	MsgType       string                 `json:"msg_type,omitempty"`
@@ -269,4 +274,12 @@ type MsgServerFriend struct {
 	From   int64  `json:"from"`
 	To     int64  `json:"to"`
 	Msg    string `json:"msg,omitempty"`
+}
+
+// MsgServerNotification carries a privacy-minimized, non-chat notification.
+// Keep this envelope free of artifact metadata; clients only need the event
+// type and the already-approved user-visible message.
+type MsgServerNotification struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }

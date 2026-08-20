@@ -23,6 +23,7 @@ export interface MsgClientSub {
 export interface MsgClientPub {
     id?: string;
     topic: string;
+    client_msg_id?: string;
     content: unknown;
     metadata?: Record<string, unknown>;
     msg_type?: string;
@@ -162,6 +163,7 @@ export interface MsgServerData {
     topic: string;
     from?: string;
     seq: number;
+    client_msg_id?: string;
     content: unknown;
     type?: string;
     msg_type?: string;

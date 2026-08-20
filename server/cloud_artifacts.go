@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -46,6 +47,7 @@ type CloudArtifactHandler struct {
 	publishOrigin     artifactURLOrigin
 	publishOriginErr  error
 	uploadSource      ArtifactUploadSourceValidator
+	notifier          CloudArtifactNotifier
 	configErr         error
 	managementErr     error
 	nodeRegistry      *artifactNodeRegistry
@@ -58,6 +60,12 @@ type CloudArtifactHandler struct {
 	artifactContextCacheTTL                time.Duration
 	artifactContextExactMutationGeneration map[artifactContextCacheKey]uint64
 	artifactContextIDMutationGeneration    map[string]uint64
+}
+
+// CloudArtifactNotifier delivers a post-publish notification without making
+// notification delivery part of the artifact publish success path.
+type CloudArtifactNotifier interface {
+	NotifyCloudArtifactShared(ownerUID int64)
 }
 
 // ArtifactUploadSourceValidator verifies that a published source belongs to
@@ -142,6 +150,13 @@ func (h *CloudArtifactHandler) SetStore(db store.Store) {
 func (h *CloudArtifactHandler) SetUploadSourceValidator(validator ArtifactUploadSourceValidator) {
 	if h != nil {
 		h.uploadSource = validator
+	}
+}
+
+// SetNotifier enables owner notifications after a validated publish.
+func (h *CloudArtifactHandler) SetNotifier(notifier CloudArtifactNotifier) {
+	if h != nil {
+		h.notifier = notifier
 	}
 }
 
@@ -804,6 +819,14 @@ func (h *CloudArtifactHandler) handlePublish(
 	artifacts := []cloudArtifact{operation.Artifact}
 	h.enrichArtifactCreators(artifacts, agentUID, false)
 	operation.Artifact = artifacts[0]
+	if h.notifier != nil && h.db != nil {
+		if ownerUID, ownerErr := h.db.GetBotOwner(agentUID); ownerErr != nil {
+			// The artifact is already active; notification lookup is best effort.
+			log.Printf("cloud artifact: owner lookup failed for agent=%d: %v", agentUID, ownerErr)
+		} else if ownerUID > 0 && ownerUID != viewerUID {
+			h.notifier.NotifyCloudArtifactShared(ownerUID)
+		}
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, operation)
 }

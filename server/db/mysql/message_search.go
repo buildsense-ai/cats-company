@@ -2,7 +2,6 @@ package mysql
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
 	"github.com/openchat/openchat/server/store"
@@ -203,14 +202,14 @@ func (a *Adapter) GetMessagesAround(topicID string, messageID int64, limit int) 
 	beforeLimit := (limit + 1) / 2
 	afterLimit := limit - beforeLimit
 	rows, err := a.db.Query(`
-SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role FROM (
+SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata FROM (
   SELECT * FROM (
-    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
     FROM messages WHERE topic_id = ? AND id <= ? ORDER BY id DESC LIMIT ?
   ) before_messages
   UNION ALL
   SELECT * FROM (
-    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
     FROM messages WHERE topic_id = ? AND id > ? ORDER BY id ASC LIMIT ?
   ) after_messages
 ) around_messages ORDER BY id ASC`, topicID, messageID, beforeLimit, topicID, messageID, afterLimit)
@@ -218,29 +217,5 @@ SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mo
 		return nil, fmt.Errorf("get messages around: %w", err)
 	}
 	defer rows.Close()
-	return scanMySQLMessages(rows, "scan message around")
-}
-
-func scanMySQLMessages(rows *sql.Rows, context string) ([]*types.Message, error) {
-	messages := make([]*types.Message, 0)
-	for rows.Next() {
-		message := &types.Message{}
-		var blocksJSON []byte
-		var mode, role *string
-		if err := rows.Scan(&message.ID, &message.TopicID, &message.FromUID, &message.Content, &message.MsgType,
-			&message.CreatedAt, &blocksJSON, &mode, &role); err != nil {
-			return nil, fmt.Errorf("%s: %w", context, err)
-		}
-		if len(blocksJSON) > 0 {
-			_ = json.Unmarshal(blocksJSON, &message.ContentBlocks)
-		}
-		if mode != nil {
-			message.Mode = *mode
-		}
-		if role != nil {
-			message.Role = *role
-		}
-		messages = append(messages, message)
-	}
-	return messages, rows.Err()
+	return scanMessages(rows, "scan message around")
 }

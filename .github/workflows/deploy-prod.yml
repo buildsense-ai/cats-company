@@ -20,10 +20,13 @@ jobs:
     environment: prod
     env:
       PROD_STACK_ROOT: /srv/catscompany-prod
+      DEPLOY_CACHE_ROOT: /srv/catscompany-build-cache
       IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
       CATSCO_ARTIFACT_INDEX_URL: https://logs.catsco.fun:9000/artifacts/artifacts-index.json
       CATSCO_ARTIFACT_MANAGEMENT_URL: https://logs.catsco.fun:9000/internal/artifacts
       CATSCO_ARTIFACT_NODES_JSON: ${{ vars.CATSCO_ARTIFACT_NODES_JSON }}
+      CTYUN_WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
+      CTYUN_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID }}
 
     steps:
       - name: Checkout tested revision
@@ -46,12 +49,14 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/bin ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/data/dreamina-home ${PROD_STACK_ROOT}/data/dreamina-worker ${PROD_STACK_ROOT}/data/catsco-worker ${PROD_STACK_ROOT}/logs ${PROD_STACK_ROOT}/releases /usr/local/bin"
+          ssh ${SSH_OPTS} "${REMOTE}" "bash -s -- '${DEPLOY_CACHE_ROOT}'" < deploy/shared/ensure-build-cache.sh
+          ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/bin ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/data/dreamina-home ${PROD_STACK_ROOT}/data/dreamina-worker ${PROD_STACK_ROOT}/data/catsco-worker ${PROD_STACK_ROOT}/logs ${PROD_STACK_ROOT}/releases ${DEPLOY_CACHE_ROOT}/releases ${DEPLOY_CACHE_ROOT}/source /usr/local/bin"
 
           tmpdir="$(mktemp -d)"
           mkdir -p "${tmpdir}/compose" "${tmpdir}/env"
           cp deploy/prod/bootstrap-server.sh "${tmpdir}/compose/"
           cp deploy/remote-build-source.sh "${tmpdir}/compose/"
+          cp deploy/shared/cache-source-bundle.sh "${tmpdir}/compose/"
           cp deploy/prod/remote-deploy.sh "${tmpdir}/compose/"
           cp deploy/prod/remote-rollback.sh "${tmpdir}/compose/"
           cp deploy/prod/remote-status.sh "${tmpdir}/compose/"
@@ -60,6 +65,7 @@ jobs:
           cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"
           cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
+          cp deploy/prod/sync-worker-project-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
@@ -67,10 +73,20 @@ jobs:
           cp deploy/prod/env.prod.example "${tmpdir}/env/"
           tar -C "${tmpdir}" -czf prod-stack-files.tar.gz .
           rm -rf "${tmpdir}"
-          git archive --format=tar.gz --output "cats-company-source-${IMAGE_TAG}.tar.gz" HEAD
+          source_bundle="cats-company-source-${IMAGE_TAG}.tar.gz"
+          remote_source="${DEPLOY_CACHE_ROOT}/releases/${source_bundle}"
+          remote_temp="${remote_source}.upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           ssh ${SSH_OPTS} "${REMOTE}" "tar -xzf - -C ${PROD_STACK_ROOT}" < prod-stack-files.tar.gz
-          ssh ${SSH_OPTS} "${REMOTE}" "cat > ${PROD_STACK_ROOT}/releases/cats-company-source-${IMAGE_TAG}.tar.gz" < "cats-company-source-${IMAGE_TAG}.tar.gz"
+          cache_script="${PROD_STACK_ROOT}/compose/cache-source-bundle.sh"
+          if ssh ${SSH_OPTS} "${REMOTE}" "bash '${cache_script}' verify '${DEPLOY_CACHE_ROOT}' '${IMAGE_TAG}'"; then
+            echo "Reusing source bundle validated by test: ${remote_source}"
+          else
+            echo "Shared source cache is missing; uploading the tested revision as a fallback."
+            git archive --format=tar.gz --output "${source_bundle}" HEAD
+            ssh ${SSH_OPTS} "${REMOTE}" "rm -f '${remote_temp}' && cat > '${remote_temp}'" < "${source_bundle}"
+            ssh ${SSH_OPTS} "${REMOTE}" "tar -tzf '${remote_temp}' >/dev/null && mv '${remote_temp}' '${remote_source}' && bash '${cache_script}' seal '${DEPLOY_CACHE_ROOT}' '${IMAGE_TAG}'"
+          fi
 
       - name: Deploy prod stack
         timeout-minutes: 25
@@ -100,7 +116,10 @@ jobs:
           printf '%s\0' "$VOLCENGINE_STT_API_KEY" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "python3 ${PROD_STACK_ROOT}/compose/sync-stt-env.py ${PROD_STACK_ROOT}/env/prod.env"
-          ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} CATSCO_ARTIFACT_NODES_JSON_B64=${CATSCO_ARTIFACT_NODES_JSON_B64} CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64=${CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64} CATSCO_ARTIFACT_DNS_SECRET_KEY_B64=${CATSCO_ARTIFACT_DNS_SECRET_KEY_B64} bash -s" <<'EOF'
+          printf '%s\0%s\0' "$CTYUN_WORKER_PROJECT_ID" "$CTYUN_IMAGE_PROJECT_ID" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "python3 ${PROD_STACK_ROOT}/compose/sync-worker-project-env.py ${PROD_STACK_ROOT}/env/prod.env"
+          ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} DEPLOY_CACHE_ROOT=${DEPLOY_CACHE_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} CATSCO_ARTIFACT_NODES_JSON_B64=${CATSCO_ARTIFACT_NODES_JSON_B64} CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64=${CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64} CATSCO_ARTIFACT_DNS_SECRET_KEY_B64=${CATSCO_ARTIFACT_DNS_SECRET_KEY_B64} bash -s" <<'EOF'
           set -euo pipefail
 
           root="${PROD_STACK_ROOT}"
@@ -123,6 +142,8 @@ jobs:
             export CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
           fi
           chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh"
+          export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
+          export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"

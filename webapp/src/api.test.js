@@ -265,6 +265,20 @@ describe('WebSocket connection recovery', () => {
     });
   });
 
+  test('includes the client message id in WebSocket sends', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    await api.wsSendMessage('p2p_1_2', 'hello', undefined, [], 'web-ws-1');
+
+    expect(JSON.parse(socket.send.mock.calls.at(-1)[0]).pub).toMatchObject({
+      topic: 'p2p_1_2',
+      content: 'hello',
+      client_msg_id: 'web-ws-1',
+    });
+  });
+
   test('retries quickly with capped backoff after a dropped socket', () => {
     const onMessage = vi.fn();
     api.connectWS(onMessage);
@@ -372,6 +386,40 @@ describe('WebSocket connection recovery', () => {
       method: 'DELETE',
       headers: expect.objectContaining({ Authorization: 'Bearer captured-token' }),
     }));
+  });
+
+  test('includes the client message id in REST sends', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ seq_id: 101, client_msg_id: 'web-send-1' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.api.sendMessage('p2p_1_2', 'hello', undefined, [], 'web-send-1');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      topic_id: 'p2p_1_2',
+      type: 'text',
+      content: 'hello',
+      client_msg_id: 'web-send-1',
+    });
+  });
+
+  test('preserves the client message id through the WebSocket REST fallback', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ seq_id: 101, client_msg_id: 'web-fallback-1' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.wsSendMessage('p2p_1_2', 'hello', undefined, [], 'web-fallback-1');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      topic_id: 'p2p_1_2',
+      type: 'text',
+      content: 'hello',
+      client_msg_id: 'web-fallback-1',
+    });
   });
 
   test('strips response-only Skill metadata before updating BotDefinition', async () => {

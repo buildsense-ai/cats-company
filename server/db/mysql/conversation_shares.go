@@ -27,7 +27,7 @@ func (a *Adapter) GetMessagesByIDs(topicID string, ids []int64) ([]*types.Messag
 	}
 	rows, err := a.db.Query(
 		fmt.Sprintf(
-			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 			 FROM messages WHERE topic_id = ? AND id IN (%s)
 			 ORDER BY created_at ASC, id ASC`,
 			placeholders,
@@ -38,7 +38,7 @@ func (a *Adapter) GetMessagesByIDs(topicID string, ids []int64) ([]*types.Messag
 		return nil, fmt.Errorf("get messages by ids: %w", err)
 	}
 	defer rows.Close()
-	return scanMySQLMessages(rows, "scan selected message")
+	return scanMessages(rows, "scan selected message")
 }
 
 func (a *Adapter) CreateConversationShare(share *store.ConversationShare, items []*store.ConversationShareItem, assets []*store.ConversationShareAsset) error {

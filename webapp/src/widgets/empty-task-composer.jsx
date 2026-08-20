@@ -19,6 +19,7 @@ export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
   placeholder = '输入指令，我帮您完成',
   initialAgent,
+  onSelectedAgentChange,
   onResolveAgentTopic,
   onActivateTopic,
   voiceInputAvailable,
@@ -140,6 +141,11 @@ export default function EmptyTaskComposer({
     () => agents.find((agent) => agentKey(agent) === String(selectedAgentId || '')) || null,
     [agents, selectedAgentId],
   );
+
+  useEffect(() => {
+    onSelectedAgentChange?.(selectedAgent);
+  }, [onSelectedAgentChange, selectedAgent]);
+
   const selectedAgentName = selectedAgent
     ? (selectedAgent.display_name || selectedAgent.username || 'Agent')
     : (agentsLoading ? '正在加载 Agent' : '选择 Agent');

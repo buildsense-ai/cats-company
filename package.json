@@ -1,7 +1,8 @@
 {
   "scripts": {
     "dev:onboarding-mock": "node scripts/local-onboarding-mock-server.mjs",
-    "dev:chat-showcase": "node scripts/local-chat-showcase.mjs"
+    "dev:chat-showcase": "node scripts/local-chat-showcase.mjs",
+    "test:skillhub-phase1": "node scripts/test-skillhub-phase1.mjs"
   },
   "dependencies": {
     "puppeteer": "^25.6.0"

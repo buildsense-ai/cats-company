@@ -639,6 +639,16 @@ XiaoBa-CLI 等 Agent runtime 在多人群中接收、处理或转发取消事件
 { "info": { "topic": "p2p_1_10", "from": "1", "what": "read", "seq": 42 } }
 ```
 
+#### 应用通知 (notification)
+
+成员成功共享 Agent 云成果后，所有者在线客户端会收到隐私最小化事件：
+
+```json
+{ "notification": { "type": "cloud_artifact_shared", "message": "有新文件在云端共享" } }
+```
+
+事件不携带成果标题、文件 URL、任务名或上传者信息。
+
 ### 3.5 富媒体消息格式
 
 `content` 字段除了纯文本字符串外，还支持以下结构化类型：

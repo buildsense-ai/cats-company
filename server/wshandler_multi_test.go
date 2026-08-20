@@ -2,9 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
@@ -44,6 +47,34 @@ func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
 
 	if hub.IsOnline(42) {
 		t.Fatal("expected uid 42 to be offline after removing all connections")
+	}
+}
+
+func TestNotifyCloudArtifactSharedSendsPrivacyMinimizedRealtimeEvent(t *testing.T) {
+	hub := NewHub(nil, nil)
+	owner := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(owner)
+
+	hub.NotifyCloudArtifactShared(42)
+
+	select {
+	case raw := <-owner.send:
+		var message ServerMessage
+		if err := json.Unmarshal(raw, &message); err != nil {
+			t.Fatalf("unmarshal notification: %v", err)
+		}
+		if message.Notification == nil ||
+			message.Notification.Type != "cloud_artifact_shared" ||
+			message.Notification.Message != "有新文件在云端共享" {
+			t.Fatalf("notification = %#v", message.Notification)
+		}
+		if strings.Contains(string(raw), "artifact_id") ||
+			strings.Contains(string(raw), "title") ||
+			strings.Contains(string(raw), "url") {
+			t.Fatalf("notification leaked artifact details: %s", raw)
+		}
+	default:
+		t.Fatal("owner did not receive cloud artifact notification")
 	}
 }
 
@@ -279,8 +310,12 @@ func TestP2PStreamCancelFansOutToPeerWithoutEchoingToSenderConnection(t *testing
 	hub.addClient(bot)
 
 	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_cancel", "", map[string]interface{}{
-		"stream_id": "cancel-1",
-		"control":   "interrupt",
+		"stream_id":                    "cancel-1",
+		"control":                      "interrupt",
+		artifactContextRefMetadataKey:  "acr_private",
+		artifactContextMetadataKey:     map[string]interface{}{"secret": true},
+		artifactRefMetadataKey:         map[string]interface{}{"id": "private"},
+		artifactPageContextMetadataKey: map[string]interface{}{"selected_text": "private"},
 	}, sender)
 
 	if drainOne(sender.send) {
@@ -299,6 +334,125 @@ func TestP2PStreamCancelFansOutToPeerWithoutEchoingToSenderConnection(t *testing
 		if received.Data.Metadata["stream_event"] != "cancel" || received.Data.Metadata["control"] != "interrupt" {
 			t.Fatalf("%s cancel metadata = %#v", name, received.Data.Metadata)
 		}
+		for _, key := range []string{artifactContextRefMetadataKey, artifactContextMetadataKey, artifactRefMetadataKey, artifactPageContextMetadataKey} {
+			if _, exists := received.Data.Metadata[key]; exists {
+				t.Fatalf("%s stream cancel leaked %q: %#v", name, key, received.Data.Metadata)
+			}
+		}
+	}
+}
+
+func TestP2PStreamDeltaStripsArtifactContextMetadata(t *testing.T) {
+	hub := NewHub(nil, nil)
+	sender := &Client{uid: 7, send: make(chan []byte, 1)}
+	bot := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(sender)
+	hub.addClient(bot)
+
+	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_delta", "working", map[string]interface{}{
+		"stream_id":                    "delta-1",
+		"trace":                        "kept",
+		artifactContextRefMetadataKey:  "acr_private",
+		artifactContextMetadataKey:     map[string]interface{}{"secret": true},
+		artifactRefMetadataKey:         map[string]interface{}{"id": "private"},
+		artifactPageContextMetadataKey: map[string]interface{}{"selected_text": "private"},
+	}, sender)
+
+	var received ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &received)
+	if received.Data == nil || received.Data.Type != "stream_delta" || received.Data.Metadata["trace"] != "kept" {
+		t.Fatalf("stream delta = %#v", received.Data)
+	}
+	for _, key := range []string{artifactContextRefMetadataKey, artifactContextMetadataKey, artifactRefMetadataKey, artifactPageContextMetadataKey} {
+		if _, exists := received.Data.Metadata[key]; exists {
+			t.Fatalf("stream delta leaked %q: %#v", key, received.Data.Metadata)
+		}
+	}
+}
+
+func TestP2PStreamFanoutAddsRecipientSpecificCanonicalIdentity(t *testing.T) {
+	db := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice-stream.png"},
+			42: {ID: 42, Username: "stream_agent", DisplayName: "Stream Agent", AccountType: types.AccountBot},
+		},
+	}
+	hub := NewHub(db, nil)
+	sender := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	senderSibling := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	peer := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(sender)
+	hub.addClient(senderSibling)
+	hub.addClient(peer)
+
+	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_delta", "partial", map[string]interface{}{
+		"stream_id": "stream-identity-1",
+	}, sender)
+
+	var siblingMessage, peerMessage ServerMessage
+	decodeQueuedServerMessage(t, senderSibling.send, &siblingMessage)
+	decodeQueuedServerMessage(t, peer.send, &peerMessage)
+
+	siblingIdentity := metadataMapFromServerMessage(t, &siblingMessage, "catsco_identity")
+	if actor := nestedMap(t, siblingIdentity, "actor"); actor["avatar_url"] != "/uploads/alice-stream.png" {
+		t.Fatalf("sender sibling actor identity = %#v, want canonical avatar", actor)
+	}
+	if agent := nestedMap(t, siblingIdentity, "agent"); agent["agent_id"] != "usr7" {
+		t.Fatalf("sender sibling recipient identity = %#v, want usr7", agent)
+	}
+
+	peerIdentity := metadataMapFromServerMessage(t, &peerMessage, "catsco_identity")
+	if actor := nestedMap(t, peerIdentity, "actor"); actor["display_name"] != "Alice" {
+		t.Fatalf("peer actor identity = %#v, want Alice", actor)
+	}
+	if agent := nestedMap(t, peerIdentity, "agent"); agent["agent_id"] != "usr42" {
+		t.Fatalf("peer recipient identity = %#v, want usr42", agent)
+	}
+}
+
+func TestP2PStreamFanoutDoesNotIssueDeviceAccessMetadata(t *testing.T) {
+	db := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice-stream.png"},
+			42: {ID: 42, Username: "stream_agent", DisplayName: "Stream Agent", AccountType: types.AccountBot},
+		},
+	}
+	hub := NewHub(db, nil)
+	hub.userDevices.now = func() time.Time { return time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC) }
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "alice-laptop",
+		DisplayName:  "Alice Laptop",
+		OS:           "windows",
+		BodyID:       "body-device",
+		Capabilities: []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatalf("register device: %v", err)
+	}
+
+	sender := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	deviceClient := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	peer := &Client{uid: 42, accountType: types.AccountBot, bodyID: "body-agent", send: make(chan []byte, 1)}
+	hub.addClient(sender)
+	hub.addClient(deviceClient)
+	hub.addClient(peer)
+	hub.bindDeviceClient(7, device, deviceClient)
+
+	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_delta", "partial", map[string]interface{}{
+		"stream_id": "stream-device-access-1",
+	}, sender)
+
+	var peerMessage ServerMessage
+	decodeQueuedServerMessage(t, peer.send, &peerMessage)
+	identity := metadataMapFromServerMessage(t, &peerMessage, "catsco_identity")
+	if actor := nestedMap(t, identity, "actor"); actor["avatar_url"] != "/uploads/alice-stream.png" {
+		t.Fatalf("stream actor identity = %#v, want canonical avatar", actor)
+	}
+	if _, ok := identity["device_grants"]; ok {
+		t.Fatalf("transient stream event must not issue device grants: %#v", identity["device_grants"])
+	}
+	if _, ok := identity["device_selection"]; ok {
+		t.Fatalf("transient stream event must not issue device selection: %#v", identity["device_selection"])
 	}
 }
 

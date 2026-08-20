@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, resolveMediaURL } from '../api';
+import { useFeedback } from '../components/feedback-system';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
 import CustomSelect from './custom-select';
@@ -98,14 +99,21 @@ function fileMeta(file) {
 export default function CloudArtifactsPanel({
   agentUid,
   topicId,
+  initialTab = 'files',
   tab: controlledTab,
   onTabChange,
   onClose,
   onPreviewArtifact,
   onPreviewFile,
 }) {
-  const [localTab, setLocalTab] = useState('files');
-  const tab = controlledTab ?? localTab;
+  const feedback = useFeedback();
+  const normalizedInitialTab = ['active', 'deleted', 'files'].includes(initialTab)
+    ? initialTab
+    : 'files';
+  const safeInitialTab = !topicId && normalizedInitialTab === 'files' ? 'active' : normalizedInitialTab;
+  const [localTab, setLocalTab] = useState(safeInitialTab);
+  const requestedTab = controlledTab ?? localTab;
+  const tab = !topicId && requestedTab === 'files' ? 'active' : requestedTab;
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
   const [viewerRelation, setViewerRelation] = useState('');
@@ -122,6 +130,7 @@ export default function CloudArtifactsPanel({
   const publishInputRef = useRef(null);
 
   const selectTab = (nextTab) => {
+    if (nextTab === 'files' && !topicId) return;
     if (controlledTab == null) setLocalTab(nextTab);
     onTabChange?.(nextTab);
   };
@@ -134,6 +143,14 @@ export default function CloudArtifactsPanel({
     setError('');
     try {
       if (tab === 'files') {
+        if (!topicId) {
+          if (!isCurrentRequest()) return;
+          setFiles([]);
+          setFileCursor(0);
+          setFileHasMore(false);
+          setError('进入会话后才能查看历史文件');
+          return;
+        }
         const result = await api.getTopicFiles(topicId, { beforeId, limit: 40 });
         if (!isCurrentRequest()) return;
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
@@ -169,7 +186,7 @@ export default function CloudArtifactsPanel({
   }, [loadContent]);
 
   useEffect(() => {
-    setArtifactScope('current');
+    setArtifactScope(topicId ? 'current' : 'all');
   }, [agentUid, topicId]);
 
   useEffect(() => {
@@ -237,6 +254,7 @@ export default function CloudArtifactsPanel({
       }
       setArtifactScope('current');
       notifyArtifactsChanged(agentUid);
+      feedback.notify({ tone: 'success', message: '已共享内容到云端' });
     } catch (err) {
       setError(err.message || '成果发布失败，请稍后重试');
     } finally {
@@ -259,10 +277,10 @@ export default function CloudArtifactsPanel({
     }
   };
 
-  const canFilterArtifactsByTask = artifacts.length === 0 || artifacts.some(
+  const canFilterArtifactsByTask = Boolean(topicId) && (artifacts.length === 0 || artifacts.some(
     (artifact) => String(artifact?.source_topic_id || '').trim(),
-  );
-  const effectiveArtifactScope = canFilterArtifactsByTask ? artifactScope : 'all';
+  ));
+  const effectiveArtifactScope = topicId && canFilterArtifactsByTask ? artifactScope : 'all';
   const scopedArtifacts = tab === 'active' && effectiveArtifactScope === 'current'
     ? artifacts.filter((artifact) => {
         const sourceTopicID = String(artifact?.source_topic_id || '').trim();
@@ -315,6 +333,8 @@ export default function CloudArtifactsPanel({
               role="tab"
               aria-selected={tab === 'files'}
               className={tab === 'files' ? 'active' : ''}
+              disabled={!topicId}
+              title={topicId ? '当前会话文件' : '进入会话后查看文件'}
               onClick={() => selectTab('files')}
             >
               文件
@@ -327,7 +347,7 @@ export default function CloudArtifactsPanel({
                 className={artifactTabSelected ? 'active' : ''}
                 onClick={() => selectTab('active')}
               >
-                成果
+                共享
               </button>
             )}
           </div>
