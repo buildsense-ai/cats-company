@@ -76,6 +76,29 @@ func TestNotifyCloudArtifactSharedSendsPrivacyMinimizedRealtimeEvent(t *testing.
 	}
 }
 
+func TestNotifyCloudArtifactSharedReachesAnotherRuntimeNode(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	publisher := NewHubWithRuntime(nil, nil, shared, "publisher")
+	recipient := NewHubWithRuntime(nil, nil, shared, "recipient")
+	owner := &Client{uid: 42, send: make(chan []byte, 1)}
+	recipient.addClient(owner)
+
+	publisher.NotifyCloudArtifactShared(42)
+
+	select {
+	case raw := <-owner.send:
+		var message ServerMessage
+		if err := json.Unmarshal(raw, &message); err != nil {
+			t.Fatalf("unmarshal notification: %v", err)
+		}
+		if message.Notification == nil || message.Notification.Type != "cloud_artifact_shared" {
+			t.Fatalf("notification = %#v", message.Notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner on another runtime node did not receive cloud artifact notification")
+	}
+}
+
 func TestHubTracksMessagingAttentionWithoutBroadcastingInternalNotes(t *testing.T) {
 	hub := NewHub(nil, nil)
 	client := &Client{uid: 42, send: make(chan []byte, 1)}

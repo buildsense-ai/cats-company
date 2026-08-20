@@ -181,6 +181,19 @@ func (s *RedisRuntimeState) clearRuntimeRoute(route runtimeRoute) {
 	s.clearMatchingRuntimeRoute(s.routeKey(route), route)
 }
 
+func (s *RedisRuntimeState) broadcastUserMessage(uid int64, msg *ServerMessage) bool {
+	if s == nil || s.client == nil || uid <= 0 || msg == nil {
+		return false
+	}
+	payload, err := json.Marshal(redisUserMessageEnvelope{UID: uid, Msg: msg})
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	return s.client.Publish(ctx, s.userMessageChannel(), payload).Err() == nil
+}
+
 func (s *RedisRuntimeState) clearMatchingRuntimeRoute(key string, route runtimeRoute) {
 	if s == nil || s.client == nil || key == "" || route.NodeID == "" || route.ConnectionID == "" {
 		return
@@ -1150,7 +1163,7 @@ func (s *RedisRuntimeState) runRuntimeNodeHeartbeat(nodeID string) {
 }
 
 func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
-	pubsub := s.client.Subscribe(s.ctx, s.nodeInboxChannel(nodeID))
+	pubsub := s.client.Subscribe(s.ctx, s.nodeInboxChannel(nodeID), s.userMessageChannel())
 	defer pubsub.Close()
 	ch := pubsub.Channel()
 	for {
@@ -1162,6 +1175,15 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 				return
 			}
 			var envelope redisRuntimeEnvelope
+			if item.Channel == s.userMessageChannel() {
+				var userMessage redisUserMessageEnvelope
+				if err := json.Unmarshal([]byte(item.Payload), &userMessage); err == nil && userMessage.UID > 0 && userMessage.Msg != nil {
+					if hub := s.localHub(nodeID); hub != nil {
+						hub.SendToUser(userMessage.UID, userMessage.Msg)
+					}
+				}
+				continue
+			}
 			if err := json.Unmarshal([]byte(item.Payload), &envelope); err != nil {
 				continue
 			}
@@ -1370,6 +1392,10 @@ func (s *RedisRuntimeState) nodeInboxChannel(nodeID string) string {
 	return s.key("inbox", keyPart(nodeID))
 }
 
+func (s *RedisRuntimeState) userMessageChannel() string {
+	return s.key("user_message")
+}
+
 func (s *RedisRuntimeState) routeKey(route runtimeRoute) string {
 	return s.key("route", keyPart(route.NodeID), keyPart(route.ConnectionID))
 }
@@ -1518,6 +1544,11 @@ type redisDeviceRPCEnvelope struct {
 type redisThinToolRPCEnvelope struct {
 	Route redisRuntimeRoute `json:"route"`
 	Msg   *MsgThinToolRPC   `json:"thin_tool_rpc"`
+}
+
+type redisUserMessageEnvelope struct {
+	UID int64          `json:"uid"`
+	Msg *ServerMessage `json:"msg"`
 }
 
 type redisMessagingAttentionProbe struct {
