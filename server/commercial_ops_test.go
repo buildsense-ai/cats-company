@@ -100,7 +100,7 @@ func TestCommercialOpsWriteIsAuditedWithoutRequestBody(t *testing.T) {
 		"currency":"CNY",
 		"sale_state":"test",
 		"internal_quota_tokens":200000000,
-		"model_budgets":{"gpt-5.6-terra":10500},
+		"model_budgets":{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"gpt-5.6-terra":1750,"gpt-5.6-sol":1750,"gpt-5.6-luna":1750},
 		"duration_days":30,
 		"state":0
 	}`))

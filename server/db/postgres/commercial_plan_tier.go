@@ -3,6 +3,7 @@ package postgres
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -10,7 +11,41 @@ import (
 const (
 	commercialPersonalPlanSlug = "catsco-personal"
 	commercialProPlanSlug      = "catsco-pro"
+	commercialFreePlanSlug     = "catsco-free"
+	commercialLegacyPlanSlug   = "catsco-legacy-custom"
 )
+
+var commercialOfficialPaidModels = []string{
+	"MiniMax-M2.7",
+	"MiniMax-M3",
+	"deepseek-v4-flash",
+	"gpt-5.6-terra",
+	"gpt-5.6-sol",
+	"gpt-5.6-luna",
+}
+
+func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
+	expectedTotal := 0.0
+	switch strings.TrimSpace(slug) {
+	case commercialPersonalPlanSlug:
+		expectedTotal = 10500
+	case commercialProPlanSlug:
+		expectedTotal = 31500
+	default:
+		return nil
+	}
+	total := 0.0
+	for _, model := range commercialOfficialPaidModels {
+		if budgets[model] <= 0 {
+			return fmt.Errorf("official paid plan must include model %s", model)
+		}
+		total += budgets[model]
+	}
+	if math.Abs(total-expectedTotal) > 0.000001 {
+		return fmt.Errorf("official paid plan model budgets must total %.0f", expectedTotal)
+	}
+	return nil
+}
 
 func commercialOfficialPlanTier(slug string) int {
 	switch strings.TrimSpace(slug) {
@@ -146,12 +181,72 @@ func activateCommercialOfficialPlan(tx *sql.Tx, uid int64, targetSlug string, no
 	case activeTier > targetTier:
 		return fmt.Errorf("commercial plan is below active plan")
 	}
+	if err := revokeCommercialFreeBaseline(tx, uid, targetSlug, now); err != nil {
+		return err
+	}
 	if activeTier > 0 {
 		for _, slug := range commercialOfficialPlanSlugsBelow(targetTier) {
 			if err := revokeCommercialPlanTier(tx, uid, slug, targetSlug, now); err != nil {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func revokeCommercialFreeBaseline(tx *sql.Tx, uid int64, targetSlug string, now time.Time) error {
+	rows, err := tx.Query(`
+		SELECT g.id, g.model, g.amount_cny
+		FROM commercial_quota_grants g
+		JOIN commercial_plans p ON p.id = g.plan_id
+		WHERE g.uid = $1 AND p.slug = $2 AND g.grant_type = 'free'
+		  AND g.revoked_at IS NULL
+		FOR UPDATE OF g`, uid, commercialFreePlanSlug)
+	if err != nil {
+		return fmt.Errorf("lock free commercial quota grants: %w", err)
+	}
+	type quotaGrant struct {
+		id     int64
+		model  string
+		amount float64
+	}
+	var grants []quotaGrant
+	for rows.Next() {
+		var grant quotaGrant
+		if err := rows.Scan(&grant.id, &grant.model, &grant.amount); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan free commercial quota grant: %w", err)
+		}
+		grants = append(grants, grant)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read free commercial quota grants: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close free commercial quota grants: %w", err)
+	}
+	for _, grant := range grants {
+		if _, err := tx.Exec(`
+			INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
+			VALUES ($1, $2, $3, 'revoke', 'upgrade', $4, $5)`, uid, grant.model, -grant.amount, grant.id, "upgrade to "+targetSlug); err != nil {
+			return fmt.Errorf("record free commercial quota reversal: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE commercial_quota_grants g
+		SET revoked_at = $3, expires_at = LEAST(COALESCE(g.expires_at, $3), $3)
+		FROM commercial_plans p
+		WHERE g.plan_id = p.id AND g.uid = $1 AND p.slug = $2
+		  AND g.grant_type = 'free' AND g.revoked_at IS NULL`, uid, commercialFreePlanSlug, now); err != nil {
+		return fmt.Errorf("revoke free commercial quota grants: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE commercial_entitlements e
+		SET state = 'revoked'
+		FROM commercial_plans p
+		WHERE e.plan_id = p.id AND e.uid = $1 AND e.state = 'active' AND p.slug = $2`, uid, commercialFreePlanSlug); err != nil {
+		return fmt.Errorf("revoke free commercial entitlement: %w", err)
 	}
 	return nil
 }

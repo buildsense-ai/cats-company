@@ -426,7 +426,7 @@ describe('RelayAccessModal commercial rollout', () => {
           description: '适合将 XiaoBa 作为日常个人助手。',
           price_fen: 39900,
           duration_days: 30,
-          model_budgets: { 'gpt-5.6-terra': 5250, 'gpt-5.6-sol': 5250 },
+          model_budgets: { 'MiniMax-M2.7': 1750, 'MiniMax-M3': 1750, 'deepseek-v4-flash': 1750, 'gpt-5.6-terra': 1750, 'gpt-5.6-sol': 1750, 'gpt-5.6-luna': 1750 },
         },
         {
           id: 22,
@@ -435,7 +435,7 @@ describe('RelayAccessModal commercial rollout', () => {
           description: '适合高频、多任务并行或复杂工作。',
           price_fen: 79900,
           duration_days: 30,
-          model_budgets: { 'gpt-5.6-terra': 15750, 'gpt-5.6-sol': 15750 },
+          model_budgets: { 'MiniMax-M2.7': 5250, 'MiniMax-M3': 5250, 'deepseek-v4-flash': 5250, 'gpt-5.6-terra': 5250, 'gpt-5.6-sol': 5250, 'gpt-5.6-luna': 5250 },
         },
       ],
     });
