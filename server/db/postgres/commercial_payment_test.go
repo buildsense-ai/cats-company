@@ -517,14 +517,14 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	t.Helper()
 	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"gpt-5.6-terra": 100}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750, "gpt-5.6-terra": 1750, "gpt-5.6-sol": 1750, "gpt-5.6-luna": 1750}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create personal plan: %v", err)
 	}
 	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"gpt-5.6-terra": 300}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 5250, "MiniMax-M3": 5250, "deepseek-v4-flash": 5250, "gpt-5.6-terra": 5250, "gpt-5.6-sol": 5250, "gpt-5.6-luna": 5250}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)
@@ -548,7 +548,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 
 	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERPRO", "tier_pro_request", "tier-pro-event")
 	summary, err := db.GetCommercialSummary(paidUID)
-	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 325 {
+	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 5275 {
 		t.Fatalf("paid upgrade did not replace personal quota: summary=%#v err=%v", summary, err)
 	}
 	var bonusRevokedAt sql.NullTime
@@ -562,7 +562,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'upgrade' AND entry_type = 'revoke'`, paidUID).Scan(&upgradeLedger); err != nil {
 		t.Fatalf("count upgrade ledger entries: %v", err)
 	}
-	if revokedPersonalGrants != 1 || upgradeLedger != 1 {
+	if revokedPersonalGrants != 6 || upgradeLedger != 6 {
 		t.Fatalf("paid upgrade audit mismatch: revoked=%d ledger=%d", revokedPersonalGrants, upgradeLedger)
 	}
 	var personalState string
@@ -616,7 +616,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("redeem personal invite: %v", err)
 	}
 	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
-	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 300 {
+	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 5250 {
 		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
 	}
 }
