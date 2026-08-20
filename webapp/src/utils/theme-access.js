@@ -1,3 +1,5 @@
+import { getStorage } from './storage-access';
+
 export const THEME_STORAGE_KEY = 'catsco_theme';
 export const LIQUID_THEME_UNLOCK_STORAGE_KEY = 'catsco_liquid_theme_unlocked_v1';
 
@@ -29,7 +31,19 @@ export function syncThemeColor(value, target = globalThis.document) {
     ?.setAttribute('content', themeColor(value));
 }
 
-export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {
+export function applyDocumentTheme(value, target = globalThis.document) {
+  const theme = normalizeTheme(value);
+  const root = target?.documentElement;
+  if (root) {
+    root.dataset.theme = theme === 'liquid-green' ? 'liquid' : theme;
+    if (theme === 'liquid-green') root.dataset.liquidVariant = 'green';
+    else delete root.dataset.liquidVariant;
+  }
+  syncThemeColor(theme, target);
+  return theme;
+}
+
+export function isLiquidThemeUnlocked(storage = getStorage()) {
   try {
     if (storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1') return true;
     return isLiquidTheme(storage?.getItem(THEME_STORAGE_KEY));
@@ -38,7 +52,7 @@ export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {
   }
 }
 
-export function saveLiquidThemeUnlock(storage = globalThis.localStorage) {
+export function saveLiquidThemeUnlock(storage = getStorage()) {
   try {
     storage?.setItem(LIQUID_THEME_UNLOCK_STORAGE_KEY, '1');
     return storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1';

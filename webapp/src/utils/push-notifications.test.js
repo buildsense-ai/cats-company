@@ -44,6 +44,23 @@ describe('push notification helpers', () => {
     expect(readPushEnabled('user:2')).toBe(true);
   });
 
+  test('falls back to the default preference when browser storage is blocked', () => {
+    const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage access is blocked', 'SecurityError');
+      },
+    });
+
+    try {
+      expect(readPushEnabled('user:blocked-storage')).toBe(true);
+      expect(() => writePushEnabled('user:blocked-storage', false)).not.toThrow();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+    }
+  });
+
   test('converts a URL-safe VAPID key to bytes', () => {
     const result = urlBase64ToUint8Array('AQID-_8');
     expect(Array.from(result)).toEqual([1, 2, 3, 251, 255]);

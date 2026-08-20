@@ -1,21 +1,38 @@
-import React, { useEffect, useLayoutEffect, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/noto-sans-sc/wght.css';
-import '@fontsource-variable/jetbrains-mono/wght.css';
-import TinodeWeb from './views/tinode-web';
-import PwaController from './components/pwa-controller';
+import AuthGateway from './views/auth-gateway';
 import PushCleanupController from './components/push-cleanup-controller';
-import { getAuthRevision, getPushPromptOwner, getToken } from './api';
+import {
+  getAuthRevision,
+  getPushPromptOwner,
+  getToken,
+  isTokenExpired,
+  setToken,
+} from './auth-session';
 import { FeedbackProvider } from './components/feedback-system';
-import { syncThemeColor, THEME_STORAGE_KEY } from './utils/theme-access';
+import { registerPwaServiceWorker } from './pwa-registration';
+import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
-import './css/catsco-topbar.css';
-import './css/catsco-secondary-headers.css';
-import './css/catsco-settings-controls.css';
-import './css/search-overlay.css';
+import { readStorageValue } from './utils/storage-access';
+import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
+import './css/auth-critical.css';
 
-syncThemeColor(localStorage.getItem(THEME_STORAGE_KEY));
+const importWorkspace = () => import('./views/tinode-web');
+const TinodeWeb = lazy(importWorkspace);
+const PwaController = lazy(() => import('./components/pwa-controller'));
+const preloadWorkspace = () => { void importWorkspace().catch(() => undefined); };
+const WORKSPACE_CHUNK_ERROR_PATTERN = /(?:chunkloaderror|loading chunk|failed to fetch dynamically imported module|importing a module script failed|dynamically imported module|unable to preload css)/i;
+const requestedThemePreview = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get('theme_preview')
+  : '';
+const developmentWorkspacePreview = import.meta.env.DEV && (
+  import.meta.env.VITE_DEV_BYPASS_AUTH === 'true'
+  || ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
+);
+
+applyDocumentTheme(readStorageValue(THEME_STORAGE_KEY));
 
 function readBrowserLocation() {
   return {
@@ -25,23 +42,111 @@ function readBrowserLocation() {
   };
 }
 
-export function App() {
-  const [browserLocation, setBrowserLocation] = useState(readBrowserLocation);
-  const [auth, setAuth] = useState(() => ({
-    loggedIn: Boolean(getToken()),
+function hasUsableSessionToken(token = getToken()) {
+  return Boolean(token) && !isTokenExpired(token);
+}
+
+function readInitialAuthState() {
+  const token = getToken();
+  return {
+    loggedIn: hasUsableSessionToken(token),
     pushPromptOwner: getPushPromptOwner(),
     revision: getAuthRevision(),
-  }));
+  };
+}
+
+function WorkspaceLoadingFallback() {
+  return (
+    <main className="cc-workspace-loading" aria-busy="true">
+      <span className="cc-workspace-loading-indicator" aria-hidden="true" />
+      <span role="status">正在加载工作台…</span>
+    </main>
+  );
+}
+
+export function isWorkspaceChunkLoadError(error) {
+  return WORKSPACE_CHUNK_ERROR_PATTERN.test(String(error?.message || error || ''));
+}
+
+export function WorkspaceLoadFailure({ onRetry = () => window.location.reload() }) {
+  return (
+    <main className="cc-workspace-loading cc-workspace-loading-error">
+      <p role="alert">工作台加载失败，请检查网络后重试。</p>
+      <button type="button" className="oc-auth-btn cc-workspace-loading-retry" onClick={onRetry}>
+        重新加载
+      </button>
+    </main>
+  );
+}
+
+export class RecoverableChunkErrorBoundary extends React.Component {
+  state = { error: null };
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error) {
+    if (isWorkspaceChunkLoadError(error)) this.props.onRecoverableError?.(error);
+  }
+
+  render() {
+    const { error } = this.state;
+    if (error) {
+      if (!isWorkspaceChunkLoadError(error)) throw error;
+      return this.props.fallback;
+    }
+    return this.props.children;
+  }
+}
+
+export function WorkspaceLoadErrorBoundary({
+  children,
+  preservePreviousScreen = false,
+  onRecoverableError,
+}) {
+  return (
+    <RecoverableChunkErrorBoundary
+      fallback={preservePreviousScreen ? null : <WorkspaceLoadFailure />}
+      onRecoverableError={onRecoverableError}
+    >
+      {children}
+    </RecoverableChunkErrorBoundary>
+  );
+}
+
+export function PwaLoadErrorBoundary({ children }) {
+  return <RecoverableChunkErrorBoundary fallback={null}>{children}</RecoverableChunkErrorBoundary>;
+}
+
+function WorkspaceEntry({ location, onReady }) {
+  useLayoutEffect(() => {
+    onReady();
+  }, [onReady]);
+
+  return <TinodeWeb location={location} />;
+}
+
+export function App() {
+  const [browserLocation, setBrowserLocation] = useState(readBrowserLocation);
+  const [auth, setAuth] = useState(readInitialAuthState);
+  const [preserveAuthShell, setPreserveAuthShell] = useState(false);
 
   useEffect(() => {
-    const handleAuthChanged = (event) => setAuth({
-      loggedIn: Boolean(event.detail?.loggedIn),
-      pushPromptOwner: getPushPromptOwner(),
-      revision: event.detail?.revision ?? getAuthRevision(),
-    });
+    const handleAuthChanged = (event) => {
+      const loggedIn = Boolean(event.detail?.loggedIn) && hasUsableSessionToken();
+      const nextAuth = {
+        loggedIn,
+        pushPromptOwner: getPushPromptOwner(),
+        revision: event.detail?.revision ?? getAuthRevision(),
+      };
+      if (loggedIn && !auth.loggedIn) setPreserveAuthShell(true);
+      if (!loggedIn) setPreserveAuthShell(false);
+      setAuth(nextAuth);
+    };
     window.addEventListener('cc:auth-changed', handleAuthChanged);
     return () => window.removeEventListener('cc:auth-changed', handleAuthChanged);
-  }, []);
+  }, [auth.loggedIn]);
 
   useLayoutEffect(() => {
     const handleHistoryChange = () => setBrowserLocation(readBrowserLocation());
@@ -49,18 +154,57 @@ export function App() {
     return () => window.removeEventListener('popstate', handleHistoryChange);
   }, []);
 
-  const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);
+  useLayoutEffect(() => {
+    const token = getToken();
+    if (auth.loggedIn || (token && !isTokenExpired(token))) return;
+    if (token) setToken(null);
+    if (readStoredUserProfile()) clearStoredUserProfile();
+  }, [auth.loggedIn, auth.revision]);
+
+  const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
+    || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
+  const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
+  // Keep service-worker startup off the anonymous auth shell while preserving
+  // PWA support for authenticated and standalone application entry points.
+  const shouldRegisterPwa = shouldLoadWorkspace
+    && shouldMountPwaForPathname(browserLocation.pathname);
+  useEffect(() => {
+    if (shouldRegisterPwa) registerPwaServiceWorker();
+  }, [shouldRegisterPwa]);
+
+  const mountPwa = auth.loggedIn && shouldRegisterPwa;
+  const showAuthGateway = !shouldLoadWorkspace || preserveAuthShell;
+  const handleWorkspaceReady = useCallback(() => {
+    setPreserveAuthShell(false);
+  }, []);
+  const handleWorkspaceLoadError = useCallback(() => {
+    setPreserveAuthShell(false);
+  }, []);
 
   return (
     <FeedbackProvider>
-      <TinodeWeb location={browserLocation} />
+      {showAuthGateway && <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
+      {shouldLoadWorkspace && (
+        <WorkspaceLoadErrorBoundary
+          preservePreviousScreen={preserveAuthShell}
+          onRecoverableError={handleWorkspaceLoadError}
+        >
+          <Suspense fallback={showAuthGateway ? null : <WorkspaceLoadingFallback />}>
+            <WorkspaceEntry location={browserLocation} onReady={handleWorkspaceReady} />
+          </Suspense>
+        </WorkspaceLoadErrorBoundary>
+      )}
       {!auth.loggedIn && <PushCleanupController />}
       {mountPwa && (
-        <PwaController
-          loggedIn={auth.loggedIn}
-          pushPromptOwner={auth.pushPromptOwner}
-          sessionRevision={auth.revision}
-        />
+        <PwaLoadErrorBoundary>
+          <Suspense fallback={null}>
+            <PwaController
+              loggedIn={auth.loggedIn}
+              pushPromptOwner={auth.pushPromptOwner}
+              sessionRevision={auth.revision}
+            />
+          </Suspense>
+        </PwaLoadErrorBoundary>
       )}
     </FeedbackProvider>
   );

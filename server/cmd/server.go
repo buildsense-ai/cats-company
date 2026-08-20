@@ -385,6 +385,7 @@ func main() {
 	cloudArtifactHandler := server.NewCloudArtifactHandlerFromEnv()
 	cloudArtifactHandler.SetStore(db)
 	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
+	cloudArtifactHandler.SetNotifier(hub)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	imageUpscaleTaskStore, _ := db.(store.ImageUpscaleTaskStore)

@@ -5,6 +5,7 @@ import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
 import NotificationSettings from './notification-settings';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { Check, Droplets, LockKeyhole, Moon, Sun, X } from 'lucide-react';
 
 const THEME_OPTIONS = [
@@ -30,7 +31,7 @@ export default function ProfileEditor({
   const [displayName, setDisplayName] = useState(user?.display_name || '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
   const [showThinking, setShowThinking] = useState(() => {
-    const saved = localStorage.getItem('cc_show_thinking');
+    const saved = readStorageValue('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
   const [saving, setSaving] = useState(false);
@@ -84,7 +85,7 @@ export default function ProfileEditor({
     setSaving(true);
     setError('');
     try {
-      localStorage.setItem('cc_show_thinking', String(showThinking));
+      writeStorageValue('cc_show_thinking', String(showThinking));
       const updated = await api.updateMe(displayName.trim(), avatarUrl || '');
       if (onSaved) onSaved(updated);
       onClose();
