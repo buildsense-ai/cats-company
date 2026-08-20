@@ -13,6 +13,23 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+func TestValidateCommercialOfficialPaidPlanModelsRequiresAllPublicModels(t *testing.T) {
+	complete := map[string]float64{
+		"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750,
+		"gpt-5.6-terra": 1750, "gpt-5.6-sol": 1750, "gpt-5.6-luna": 1750,
+	}
+	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err != nil {
+		t.Fatalf("complete paid plan rejected: %v", err)
+	}
+	delete(complete, "gpt-5.6-luna")
+	if err := validateCommercialOfficialPaidPlanModels("catsco-pro", complete); err == nil {
+		t.Fatal("incomplete paid plan was accepted")
+	}
+	if err := validateCommercialOfficialPaidPlanModels("catsco-free", map[string]float64{}); err != nil {
+		t.Fatalf("non-official plan should not be constrained: %v", err)
+	}
+}
+
 type commercialTestStore struct {
 	nextID          int64
 	plans           []*types.CommercialPlan
