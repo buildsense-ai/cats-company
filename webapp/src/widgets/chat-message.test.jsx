@@ -3301,11 +3301,49 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-message')).not.toBeNull();
   });
 
-  it('does not create a preview blob when a shared media body exceeds its cap without Content-Length', async () => {
+  it('keeps previewing a shared video above the generic media cap', async () => {
     const url = '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    const videoSize = (32 << 20) + 1;
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      blob: () => Promise.resolve({ size: (32 << 20) + 1 }),
+      headers: {
+        get: () => String(videoSize),
+      },
+      blob: () => Promise.resolve({ size: videoSize }),
+    });
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 'large-shared-video',
+            from_uid: 2,
+            content: '',
+            content_blocks: [{
+              type: 'video',
+              payload: {
+                name: 'large-shared-demo.mp4',
+                url,
+                mime_type: 'video/mp4',
+              },
+            }],
+          }}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(URL.createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ size: videoSize }));
+    expect(container.querySelector('video.oc-rich-video-thumb')).not.toBeNull();
+    expect(container.querySelector('.oc-rich-video-fallback')).toBeNull();
+  });
+
+  it('does not create a preview blob when a shared video exceeds the upload limit without Content-Length', async () => {
+    const url = '/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    const videoSize = (300 << 20) + 1;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve({ size: videoSize }),
     });
     await act(async () => {
       root.render(

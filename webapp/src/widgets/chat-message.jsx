@@ -17,6 +17,7 @@ import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet
 import MobilePdfPreview from './mobile-pdf-preview';
 import { artifactRefFromPreviewFile, requestArtifactPageContext } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
+import { MAX_ATTACHMENT_SIZE } from '../utils/upload-rules';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -39,6 +40,9 @@ const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-orig
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
 const MAX_SHARED_MEDIA_PREVIEW_BYTES = 32 << 20;
+// Shared video assets inherit the normal upload limit, so valid uploads keep
+// the existing video preview instead of silently becoming download-only.
+const MAX_SHARED_VIDEO_PREVIEW_BYTES = MAX_ATTACHMENT_SIZE;
 const trustedArtifactPreviewPayloads = new WeakSet();
 
 function remoteArtifactPreviewKey(file, descriptor) {
@@ -1875,7 +1879,7 @@ function isSharedConversationAssetURL(url) {
 // Native media elements cannot opt out of same-origin cookies. Public share
 // assets are therefore fetched without credentials and exposed to the media
 // element through a short-lived blob URL.
-function useSharedConversationAssetURL(url) {
+function useSharedConversationAssetURL(url, maxPreviewBytes = MAX_SHARED_MEDIA_PREVIEW_BYTES) {
   const shared = isSharedConversationAssetURL(url);
   const [state, setState] = useState(() => ({
     source: url,
@@ -1905,14 +1909,14 @@ function useSharedConversationAssetURL(url) {
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
         const contentLength = Number(response.headers?.get?.('content-length') || 0);
-        if (contentLength > MAX_SHARED_MEDIA_PREVIEW_BYTES) {
+        if (contentLength > maxPreviewBytes) {
           throw new Error('shared media preview is too large');
         }
         return response.blob().then((blob) => {
           // Content-Length is commonly present for copied assets, but a proxy
           // may omit or misreport it. Never turn an unexpectedly large body
           // into an in-page media preview.
-          if (blob.size > MAX_SHARED_MEDIA_PREVIEW_BYTES) {
+          if (blob.size > maxPreviewBytes) {
             throw new Error('shared media preview is too large');
           }
           return blob;
@@ -1935,7 +1939,7 @@ function useSharedConversationAssetURL(url) {
       controller.abort();
       if (objectURL) URL.revokeObjectURL(objectURL);
     };
-  }, [shared, url]);
+  }, [maxPreviewBytes, shared, url]);
 
   return currentState;
 }
@@ -2000,7 +2004,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const shouldFocusFallbackRef = useRef(false);
   const sourceURL = resolveMediaURL(payload?.url);
   const sharedAsset = isSharedConversationAssetURL(sourceURL);
-  const sharedAssetState = useSharedConversationAssetURL(sourceURL);
+  const sharedAssetState = useSharedConversationAssetURL(sourceURL, MAX_SHARED_VIDEO_PREVIEW_BYTES);
   const src = sharedAsset ? sharedAssetState.url : sourceURL;
 
   useEffect(() => {
