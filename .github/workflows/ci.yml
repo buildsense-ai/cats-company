@@ -138,6 +138,7 @@ jobs:
 
       - name: Validate deploy env updates
         run: |
+          python3 deploy/cloud-worker-project-config_test.py
           bash -n deploy/shared/ensure-build-cache.sh
           bash deploy/tests/ensure-build-cache.sh
           bash -n deploy/shared/cache-source-bundle.sh
@@ -147,6 +148,7 @@ jobs:
           bash -n deploy/prod/remote-deploy.sh
           bash -n deploy/test/remote-deploy.sh
           python3 deploy/prod/sync-artifact-node-env_test.py
+          python3 deploy/prod/sync-worker-project-env_test.py
           python3 deploy/sync-vapid-env_test.py
           python3 deploy/sync-stt-env_test.py
           python3 deploy/stt-nginx-config_test.py

@@ -25,6 +25,8 @@ jobs:
       CATSCO_ARTIFACT_INDEX_URL: https://logs.catsco.fun:9000/artifacts/artifacts-index.json
       CATSCO_ARTIFACT_MANAGEMENT_URL: https://logs.catsco.fun:9000/internal/artifacts
       CATSCO_ARTIFACT_NODES_JSON: ${{ vars.CATSCO_ARTIFACT_NODES_JSON }}
+      CTYUN_WORKER_PROJECT_ID: ${{ vars.CTYUN_WORKER_PROJECT_ID }}
+      CTYUN_IMAGE_PROJECT_ID: ${{ vars.CTYUN_IMAGE_PROJECT_ID }}
 
     steps:
       - name: Checkout tested revision
@@ -63,6 +65,7 @@ jobs:
           cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"
           cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
+          cp deploy/prod/sync-worker-project-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
@@ -113,6 +116,9 @@ jobs:
           printf '%s\0' "$VOLCENGINE_STT_API_KEY" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "python3 ${PROD_STACK_ROOT}/compose/sync-stt-env.py ${PROD_STACK_ROOT}/env/prod.env"
+          printf '%s\0%s\0' "$CTYUN_WORKER_PROJECT_ID" "$CTYUN_IMAGE_PROJECT_ID" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "python3 ${PROD_STACK_ROOT}/compose/sync-worker-project-env.py ${PROD_STACK_ROOT}/env/prod.env"
           ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} DEPLOY_CACHE_ROOT=${DEPLOY_CACHE_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} CATSCO_ARTIFACT_NODES_JSON_B64=${CATSCO_ARTIFACT_NODES_JSON_B64} CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64=${CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64} CATSCO_ARTIFACT_DNS_SECRET_KEY_B64=${CATSCO_ARTIFACT_DNS_SECRET_KEY_B64} bash -s" <<'EOF'
           set -euo pipefail
 
