@@ -30,6 +30,15 @@ function voiceWavePath(level, phase, baseline) {
   ].join(' ');
 }
 
+function findTouchAtPosition(touches, clientX, clientY, target = null) {
+  const candidates = Array.from(touches || []).filter((touch) => (
+    !target || target.contains?.(touch.target)
+  ));
+  return candidates.find((touch) => (
+    Math.hypot(touch.clientX - clientX, touch.clientY - clientY) <= 8
+  ));
+}
+
 const VoiceHoldWave = React.memo(function VoiceHoldWave({ levelRef }) {
   const rimPathRef = useRef(null);
   const fillPathRef = useRef(null);
@@ -135,6 +144,7 @@ export default function ChatComposer({
   const voiceTranscriptRef = useRef(null);
   const voiceHoldTimerRef = useRef(null);
   const voiceHoldGestureRef = useRef(null);
+  const voiceHoldTouchStartsRef = useRef([]);
   const voiceHoldFinishRef = useRef(null);
   const suppressVoiceClickRef = useRef(false);
   const voiceWaveLevelRef = useRef(0);
@@ -223,6 +233,7 @@ export default function ChatComposer({
     voiceInsertionRef.current = null;
     clearVoiceHoldTimer();
     voiceHoldGestureRef.current = null;
+    voiceHoldTouchStartsRef.current = [];
     setVoiceHoldActive(false);
     setVoiceHoldCancel(false);
     voiceWaveLevelRef.current = 0;
@@ -268,6 +279,7 @@ export default function ChatComposer({
         const insertion = voiceInsertionRef.current;
         voiceSessionRef.current = null;
         voiceInsertionRef.current = null;
+        voiceHoldTouchStartsRef.current = [];
         setVoiceState('idle');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
@@ -280,6 +292,7 @@ export default function ChatComposer({
         const gesture = voiceHoldGestureRef.current;
         clearVoiceHoldTimer();
         voiceHoldGestureRef.current = null;
+        voiceHoldTouchStartsRef.current = [];
         if (gesture?.triggered) suppressVoiceClickRef.current = true;
         setVoiceHoldActive(false);
         setVoiceHoldCancel(false);
@@ -320,6 +333,7 @@ export default function ChatComposer({
     const session = voiceSessionRef.current;
     voiceSessionRef.current = null;
     voiceInsertionRef.current = null;
+    voiceHoldTouchStartsRef.current = [];
     session?.cancel();
     setVoiceState('idle');
     setVoicePartial('');
@@ -371,6 +385,7 @@ export default function ChatComposer({
     if (!gesture || (eventPointerId != null && gesture.pointerId !== eventPointerId)) return;
     clearVoiceHoldTimer();
     voiceHoldGestureRef.current = null;
+    voiceHoldTouchStartsRef.current = [];
     // Mobile browsers can lose pointer capture before delivering the final
     // event. A NotFoundError here must not prevent stop() from running.
     try {
@@ -397,7 +412,11 @@ export default function ChatComposer({
   };
 
   const handleVoicePointerDown = (event) => {
-    if ((event.pointerType !== 'touch' && event.pointerType !== 'pen') || voiceActive) return;
+    if (
+      (event.pointerType !== 'touch' && event.pointerType !== 'pen')
+      || voiceActive
+      || voiceHoldGestureRef.current
+    ) return;
     suppressVoiceClickRef.current = false;
     clearVoiceHoldTimer();
     prepareVoiceInput();
@@ -406,9 +425,20 @@ export default function ChatComposer({
     } catch {
       // Document-level release listeners cover WebViews without capture.
     }
+    const touch = event.pointerType === 'touch'
+      ? findTouchAtPosition(
+        voiceHoldTouchStartsRef.current,
+        event.clientX,
+        event.clientY,
+        event.currentTarget,
+      )
+      : null;
+    voiceHoldTouchStartsRef.current = [];
     voiceHoldGestureRef.current = {
       pointerId: event.pointerId,
       pointerType: event.pointerType,
+      touchId: touch?.identifier,
+      startX: event.clientX,
       startY: event.clientY,
       triggered: false,
       cancelled: false,
@@ -432,10 +462,31 @@ export default function ChatComposer({
     setVoiceHoldCancel(cancelled);
   };
 
+  const handleVoiceTouchStart = (event) => {
+    const touches = Array.from(event.changedTouches || []);
+    const gesture = voiceHoldGestureRef.current;
+    if (gesture?.pointerType === 'touch' && gesture.touchId == null) {
+      const touch = findTouchAtPosition(
+        touches,
+        gesture.startX,
+        gesture.startY,
+        voiceButtonRef.current,
+      );
+      if (touch) gesture.touchId = touch.identifier;
+      return;
+    }
+    if (gesture) return;
+    if (voiceActive) {
+      voiceHoldTouchStartsRef.current = [];
+      return;
+    }
+    voiceHoldTouchStartsRef.current = touches;
+  };
+
   // Pointer capture normally routes the release back to the button. Mobile
-  // Safari/WebViews can lose it while a finger is ending the gesture, so keep
-  // a document-level fallback. The touch fallback covers older WebViews that
-  // do not reliably deliver pointerup.
+  // Safari/WebViews can send the release outside it, so keep a document-level
+  // fallback for actual release and cancellation events. The touch fallback
+  // verifies the touch that started this gesture before finishing it.
   voiceHoldFinishRef.current = finishVoiceHold;
   useEffect(() => {
     const finishFromDocument = (event) => {
@@ -445,19 +496,19 @@ export default function ChatComposer({
     const finishFromTouch = (event) => {
       const gesture = voiceHoldGestureRef.current;
       if (!gesture || gesture.pointerType !== 'touch') return;
-      if (event.changedTouches && event.changedTouches.length === 0) return;
+      const touches = Array.from(event.changedTouches || []);
+      if (gesture.touchId == null) return;
+      if (!touches.some((touch) => touch.identifier === gesture.touchId)) return;
       voiceHoldFinishRef.current?.(event, event.type === 'touchcancel');
     };
 
     document.addEventListener('pointerup', finishFromDocument, true);
     document.addEventListener('pointercancel', finishFromDocument, true);
-    document.addEventListener('lostpointercapture', finishFromDocument, true);
     document.addEventListener('touchend', finishFromTouch, true);
     document.addEventListener('touchcancel', finishFromTouch, true);
     return () => {
       document.removeEventListener('pointerup', finishFromDocument, true);
       document.removeEventListener('pointercancel', finishFromDocument, true);
-      document.removeEventListener('lostpointercapture', finishFromDocument, true);
       document.removeEventListener('touchend', finishFromTouch, true);
       document.removeEventListener('touchcancel', finishFromTouch, true);
     };
@@ -587,6 +638,7 @@ export default function ChatComposer({
               onPointerMove={handleVoicePointerMove}
               onPointerUp={(event) => finishVoiceHold(event)}
               onPointerCancel={(event) => finishVoiceHold(event, true)}
+              onTouchStart={handleVoiceTouchStart}
               onContextMenu={(event) => {
                 if (voiceHoldGestureRef.current?.triggered) event.preventDefault();
               }}
