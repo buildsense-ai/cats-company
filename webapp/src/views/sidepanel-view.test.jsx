@@ -269,6 +269,8 @@ describe('ChatListView sidebar sections', () => {
     tasksToggle.dispatchEvent(mouseDown);
 
     expect(mouseDown.defaultPrevented).toBe(true);
+  });
+
   it('keeps the sidebar mountable when browser storage is blocked', async () => {
     const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     Object.defineProperty(globalThis, 'localStorage', {

@@ -63,7 +63,7 @@ function TestPanel({ initialTab = 'active', topicId = 'p2p_7_440', agentUid = 44
     <FeedbackProvider>
       <CloudArtifactsPanel
         agentUid={agentUid}
-        topicId="p2p_7_440"
+        topicId={topicId}
         tab={tab}
         onTabChange={setTab}
         onClose={vi.fn()}
