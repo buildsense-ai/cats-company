@@ -169,6 +169,29 @@ func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
 	}
 }
 
+// NotifyCloudArtifactShared sends the generic owner notification over every
+// connected messaging session and queues the same privacy-minimized message
+// for offline Web Push subscribers.
+func (h *Hub) NotifyCloudArtifactShared(ownerUID int64) {
+	if h == nil || ownerUID <= 0 {
+		return
+	}
+	h.SendToUser(ownerUID, &ServerMessage{Notification: &MsgServerNotification{
+		Type:    "cloud_artifact_shared",
+		Message: "有新文件在云端共享",
+	}})
+	if !h.IsOnline(ownerUID) && h.push != nil && h.push.Enabled() {
+		if !h.push.EnqueueToUser(ownerUID, PushNotification{
+			Title: "CatsCo",
+			Body:  "有新文件在云端共享",
+			URL:   "/",
+			Tag:   "catsco-cloud-artifact-shared",
+		}) {
+			log.Printf("cloud artifact: owner push notification was not queued for uid=%d", ownerUID)
+		}
+	}
+}
+
 // BotStats returns the hub's bot stats tracker.
 func (h *Hub) BotStats() *BotStats {
 	return h.botStats

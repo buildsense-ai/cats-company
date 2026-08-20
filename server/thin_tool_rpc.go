@@ -368,6 +368,7 @@ func isSkillHubThinToolOperation(operation DeviceGrantOperation) bool {
 	case DeviceGrantSkillHubWorkspaceGet,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubSkillDelete,
 		DeviceGrantSkillHubBotSwitch:
 		return true
 	default:

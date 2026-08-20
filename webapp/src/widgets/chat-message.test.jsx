@@ -227,6 +227,48 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
   });
 
+  it('removes a redundant artifact delivery announcement from the result summary', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 21,
+            from_uid: 2,
+            content: 'market-report.pdf 已发出。\n\n报告覆盖近期公开资讯。',
+            content_blocks: [
+              {
+                type: 'file',
+                payload: {
+                  name: 'market-report.pdf',
+                  url: '/uploads/files/market-report.pdf',
+                  size: 4096,
+                  mime_type: 'application/pdf',
+                },
+              },
+              {
+                type: 'text',
+                text: 'market-report.pdf 已发出。\n\n报告覆盖近期公开资讯。',
+                presentation_role: 'result',
+              },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          artifactsFirst
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const summary = container.querySelector('.v3-message-followup-text');
+    expect(summary?.textContent).toBe('报告覆盖近期公开资讯。');
+    expect(container.textContent).not.toContain('market-report.pdf 已发出。');
+    expect(container.querySelector('.v3-attachment-name')?.textContent).toBe('market-report.pdf');
+  });
+
   it('moves Agent process text into the completed tool trace and keeps only the result below the artifact', async () => {
     await act(async () => {
       root.render(
@@ -294,31 +336,57 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
   });
 
-  it('preserves line breaks in group plain text messages', async () => {
+  it('uses compact paragraphs while preserving intra-paragraph line breaks in group messages', async () => {
     await act(async () => {
       root.render(
         <ChatMessage
           message={{
             id: 21,
             from_uid: 2,
-            content: '第一段\n\n第二段\n第三段',
+            content: '第一段\n\n第二段 @usr535\n第三段',
             created_at: '2026-06-09T00:00:00Z',
           }}
           isSelf={false}
           isGroup={true}
           senderName="CatsCo"
+          mentionDisplayNames={{ 535: '自迭代测试' }}
         />,
       );
       await Promise.resolve();
     });
 
-    const textNode = Array.from(container.querySelectorAll('span'))
-      .find((node) => node.textContent === '第一段\n\n第二段\n第三段');
-    expect(textNode).not.toBeUndefined();
-    expect(textNode.style.whiteSpace).toBe('pre-wrap');
-    expect(textNode.style.overflowWrap).toBe('anywhere');
+    const paragraphs = container.querySelectorAll('.oc-plain-text-paragraph');
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].textContent).toBe('第一段');
+    expect(paragraphs[1].textContent).toBe('第二段 @自迭代测试\n第三段');
+    expect(container.querySelector('.oc-mention')?.dataset.mentionUid).toBe('535');
     expect(container.querySelector('.v3-message-deliverables')).toBeNull();
     expect(container.querySelector('.v3-message-followup-text')).toBeNull();
+  });
+
+  it('renders a structured bot mention with the bot display name while retaining its uid', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 23,
+            from_uid: 2,
+            content: '请让 @usr535 回顾这个任务',
+            created_at: '2026-08-18T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={true}
+          senderName="布鲁斯"
+          mentionDisplayNames={{ 535: '自迭代测试' }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const mention = container.querySelector('.oc-mention');
+    expect(mention?.textContent).toBe('@自迭代测试');
+    expect(mention?.dataset.mentionUid).toBe('535');
+    expect(container.textContent).not.toContain('@usr535');
   });
 
   it('uses compact paragraph spacing for direct plain text messages', async () => {
@@ -1041,6 +1109,49 @@ describe('ChatMessage rich file rendering', () => {
     });
     expect(document.body.querySelector('.oc-rich-image-preview')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('opens a gallery image when its render index differs from the gallery index', async () => {
+    const onOpenImage = vi.fn();
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 2702,
+            from_uid: 1,
+            content: 'Preview image',
+            content_blocks: [{
+              type: 'image',
+              payload: {
+                file_key: 'fallback.png',
+                url: '/uploads/images/fallback.png',
+                name: 'fallback.png',
+              },
+            }],
+          }}
+          imageGallery={[{
+            id: 'stable-gallery-id',
+            payload: { url: '/uploads/images/fallback.png', name: 'fallback.png' },
+          }]}
+          onOpenImage={onOpenImage}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.oc-rich-image-trigger'));
+      await Promise.resolve();
+    });
+
+    expect(onOpenImage).toHaveBeenCalledWith(
+      'stable-gallery-id',
+      expect.anything(),
+      expect.objectContaining({ url: '/uploads/images/fallback.png' }),
+    );
   });
 
   it('writes an internal attachment token when a system file is dragged', async () => {

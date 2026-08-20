@@ -46,7 +46,195 @@ func TestPostgresCommercialPaymentContract(t *testing.T) {
 		t.Fatalf("create commercial test owner: %v", err)
 	}
 	testCommercialPaymentContract(t, db, ownerID)
+	testCommercialAdjustmentContract(t, db)
 	testCommercialOfficialPlanUpgradeUsers(t, db)
+	testCommercialRelayBaselineContract(t, db)
+}
+
+func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
+	t.Helper()
+	uid, err := db.CreateUser(&types.User{
+		Username: "commercial-adjustment", Email: "commercial-adjustment@example.test", DisplayName: "Adjustment User",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-adjustment-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create adjustment user: %v", err)
+	}
+	currentPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: "adjustment-current", Name: "Adjustment Current", ModelBudgets: map[string]float64{"gpt-5.6-terra": 100}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create adjustment current plan: %v", err)
+	}
+	targetPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: "adjustment-target", Name: "Adjustment Target", ModelBudgets: map[string]float64{"gpt-5.6-terra": 200}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create adjustment target plan: %v", err)
+	}
+	startsAt := time.Now().UTC().Add(-time.Hour)
+	expiresAt := startsAt.Add(30 * 24 * time.Hour)
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'order', 'adjustment-seed', 'active', $3, $4)`, uid, currentPlanID, startsAt, expiresAt); err != nil {
+		t.Fatalf("seed adjustment entitlement: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, plan_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, source_ref)
+		VALUES ($1, $2, 'order', 'gpt-5.6-terra', 100, '1M', $3, $4, 'adjustment-seed'),
+		       ($1, NULL, 'manual', 'gpt-5.6-terra', 7, '1M', $3, $4, 'adjustment-manual')`, uid, currentPlanID, startsAt, expiresAt); err != nil {
+		t.Fatalf("seed adjustment grants: %v", err)
+	}
+
+	expected := 107.0
+	credit, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "increase", AmountCNY: 25, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-credit", Note: "contract credit", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !credit.Applied || credit.NextTotalCNY != 132 {
+		t.Fatalf("credit adjustment failed: result=%#v err=%v", credit, err)
+	}
+	repeated, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "increase", AmountCNY: 25, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-credit", Note: "contract credit", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || repeated.Applied || repeated.NextTotalCNY != 132 {
+		t.Fatalf("credit idempotency failed: result=%#v err=%v", repeated, err)
+	}
+
+	expected = 132
+	debit, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "decrease", AmountCNY: 5, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-debit", Note: "contract debit", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !debit.Applied || debit.NextTotalCNY != 127 {
+		t.Fatalf("debit adjustment failed: result=%#v err=%v", debit, err)
+	}
+	summary, err := db.GetCommercialSummary(uid)
+	if err != nil || summary.TotalCNY != 127 {
+		t.Fatalf("debit was not reflected in shared total: summary=%#v err=%v", summary, err)
+	}
+
+	expected = 127
+	changed, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "change_plan", PlanID: targetPlanID, ExpectedTotalCNY: &expected,
+		OperationID: "adjustment-plan", Note: "contract plan change", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !changed.Applied || changed.NextTotalCNY != 227 || changed.CycleStartedAt == nil {
+		t.Fatalf("plan adjustment failed: result=%#v err=%v", changed, err)
+	}
+	summary, err = db.GetCommercialSummary(uid)
+	if err != nil || summary.TotalCNY != 227 {
+		t.Fatalf("plan change did not preserve manual adjustments: summary=%#v err=%v", summary, err)
+	}
+
+	resetAt := time.Now().UTC()
+	applied, recordedAt, err := db.RecordCommercialCycleReset(uid, "adjustment-reset", "contract reset", resetAt)
+	if err != nil || !applied || recordedAt.IsZero() {
+		t.Fatalf("record cycle reset failed: applied=%v at=%v err=%v", applied, recordedAt, err)
+	}
+	applied, repeatedAt, err := db.RecordCommercialCycleReset(uid, "adjustment-reset", "changed retry note", resetAt.Add(time.Minute))
+	if err != nil || applied || !repeatedAt.Equal(recordedAt) {
+		t.Fatalf("cycle reset idempotency failed: applied=%v first=%v repeat=%v err=%v", applied, recordedAt, repeatedAt, err)
+	}
+}
+
+func TestPostgresCommercialRelayBaselineContract(t *testing.T) {
+	rawDSN := os.Getenv("CATS_PG_TEST_DSN")
+	if rawDSN == "" {
+		t.Skip("set CATS_PG_TEST_DSN to run PostgreSQL integration tests")
+	}
+	schemaName := fmt.Sprintf("cats_commercial_baseline_test_%d", time.Now().UnixNano())
+	base := &Adapter{}
+	if err := base.Open(rawDSN); err != nil {
+		t.Fatalf("open base postgres connection: %v", err)
+	}
+	defer base.Close()
+	if _, err := base.db.Exec(`CREATE SCHEMA ` + quoteIdent(schemaName)); err != nil {
+		t.Fatalf("create commercial baseline test schema: %v", err)
+	}
+	defer base.db.Exec(`DROP SCHEMA ` + quoteIdent(schemaName) + ` CASCADE`)
+
+	db := &Adapter{}
+	if err := db.Open(dsnWithSearchPath(t, rawDSN, schemaName)); err != nil {
+		t.Fatalf("open commercial baseline postgres connection: %v", err)
+	}
+	defer db.Close()
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("create commercial baseline schema objects: %v", err)
+	}
+	testCommercialRelayBaselineContract(t, db)
+}
+
+func testCommercialRelayBaselineContract(t *testing.T, db *Adapter) {
+	t.Helper()
+	freeUID, err := db.CreateUser(&types.User{
+		Username: "commercial-free-baseline", Email: "commercial-free-baseline@example.test", DisplayName: "Free Baseline",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-free-baseline-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create free baseline user: %v", err)
+	}
+	anchor := time.Date(2026, 8, 1, 8, 30, 0, 0, time.UTC)
+	budgets := map[string]float64{"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-v4-flash": 100}
+	created, err := db.EnsureCommercialRelayBaseline(freeUID, "free", budgets, anchor)
+	if err != nil || !created {
+		t.Fatalf("create free relay baseline: created=%v err=%v", created, err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(freeUID, "free", budgets, anchor)
+	if err != nil || created {
+		t.Fatalf("free relay baseline was not idempotent: created=%v err=%v", created, err)
+	}
+	summary, err := db.GetCommercialSummary(freeUID)
+	if err != nil || summary.TotalCNY != 1600 || len(summary.Entitlements) != 1 || len(summary.Grants) != 3 {
+		t.Fatalf("unexpected free relay baseline summary: summary=%#v err=%v", summary, err)
+	}
+	if summary.Entitlements[0].PlanSlug != "catsco-free" || !summary.Entitlements[0].StartsAt.Equal(anchor) {
+		t.Fatalf("free baseline entitlement mismatch: %#v", summary.Entitlements[0])
+	}
+
+	legacyUID, err := db.CreateUser(&types.User{
+		Username: "commercial-legacy-baseline", Email: "commercial-legacy-baseline@example.test", DisplayName: "Legacy Baseline",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-legacy-baseline-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create legacy baseline user: %v", err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(legacyUID, "legacy", map[string]float64{"gpt-5.6-terra": 5000}, anchor)
+	if err != nil || !created {
+		t.Fatalf("create legacy relay baseline: created=%v err=%v", created, err)
+	}
+	legacySummary, err := db.GetCommercialSummary(legacyUID)
+	if err != nil || legacySummary.TotalCNY != 5000 || len(legacySummary.Entitlements) != 1 {
+		t.Fatalf("unexpected legacy relay baseline summary: summary=%#v err=%v", legacySummary, err)
+	}
+	if legacySummary.Entitlements[0].PlanSlug != "catsco-legacy-custom" {
+		t.Fatalf("legacy baseline was not classified separately: %#v", legacySummary.Entitlements[0])
+	}
+
+	manualUID, err := db.CreateUser(&types.User{
+		Username: "commercial-manual-baseline", Email: "commercial-manual-baseline@example.test", DisplayName: "Manual Baseline",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-manual-baseline-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create manual baseline user: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, grant_type, model, amount_cny, reset_duration, effective_at, source_ref, note)
+		VALUES ($1, 'manual', 'MiniMax-M3', 77, '1M', $2, 'pre-migration-manual', 'preserve manual quota')`, manualUID, anchor); err != nil {
+		t.Fatalf("seed manual relay quota: %v", err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(manualUID, "legacy", nil, anchor)
+	if err != nil || !created {
+		t.Fatalf("attach legacy entitlement to manual quota: created=%v err=%v", created, err)
+	}
+	manualSummary, err := db.GetCommercialSummary(manualUID)
+	if err != nil || manualSummary.TotalCNY != 77 || len(manualSummary.Grants) != 1 || len(manualSummary.Entitlements) != 1 {
+		t.Fatalf("manual quota changed during legacy migration: summary=%#v err=%v", manualSummary, err)
+	}
+	if manualSummary.Entitlements[0].PlanSlug != "catsco-legacy-custom" {
+		t.Fatalf("manual quota did not receive the legacy package: %#v", manualSummary.Entitlements[0])
+	}
 }
 
 func testCommercialOfficialPlanUpgradeUsers(t *testing.T, db *Adapter) {

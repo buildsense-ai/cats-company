@@ -57,11 +57,34 @@ const cloudWorkerCreateMessage = (e) => {
       return '云端资源供给失败，请稍后重试或联系管理员';
     case 'cloud_worker_provision_failed_pending_cleanup':
       return '云端实例供给失败，可能有残留实例待清理，可在列表中删除';
+    case 'cloud_worker_operation_busy':
+      return '另一项云员工操作正在执行，请等待完成后再创建';
     case 'cloud_worker_invalid_username':
     case 'cloud_worker_create_failed':
     default:
       return '云端资源创建失败，请稍后重试或联系管理员';
   }
+};
+
+const cloudWorkerActionMessage = (e, actionLabel) => {
+  const code = e?.data?.code;
+  if (code === 'cloud_worker_operation_busy' || e?.status === 409) {
+    return '另一项云员工操作正在执行，请等待完成后再试';
+  }
+  const unavailableMessages = {
+    cloud_worker_update_unconfigured: '云端更新服务尚未配置，请联系管理员',
+    cloud_worker_rollback_unconfigured: '云端回滚服务尚未配置，请联系管理员',
+    cloud_worker_reset_unconfigured: '云端重置服务尚未配置，请联系管理员',
+    cloud_worker_delete_unconfigured: '云端删除服务尚未配置，请联系管理员',
+  };
+  if (unavailableMessages[code]) return unavailableMessages[code];
+  if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(e?.code)) {
+    return `${actionLabel}连接中断，操作可能仍在服务器执行。请先等待并刷新状态，不要重复提交`;
+  }
+  if ([502, 503, 504].includes(e?.status)) {
+    return `${actionLabel}未完成，云端服务暂不可用。请刷新状态确认后再重试`;
+  }
+  return e?.message || `${actionLabel}失败，请稍后重试`;
 };
 
 const CHANNEL_AGENT_ACCESS_MODES = {
@@ -251,6 +274,34 @@ async function resolveSharedLocalSkill(skill, shared) {
 
 const isOwnedBot = (bot) => bot?.is_owner === true || bot?.relation === 'owner';
 
+const mergeCloudWorkerFacts = (bots, workers) => {
+  const byTenant = new Map(
+    (workers || []).filter((worker) => worker?.tenant_name).map((worker) => [worker.tenant_name, worker]),
+  );
+  return bots.map((bot) => {
+    const cloud = byTenant.get(bot.tenant_name);
+    if (!cloud) return bot;
+    const reportedStatus = String(cloud.cloud_status || cloud.status || '').toLowerCase();
+    const presenceFallback = bot.is_online === true || bot.online === true
+      ? 'online'
+      : (bot.is_online === false || bot.online === false ? 'offline' : '');
+    const cloudStatus = !reportedStatus || reportedStatus === 'unknown' || reportedStatus === 'unavailable'
+      ? (presenceFallback || reportedStatus || 'unavailable')
+      : reportedStatus;
+    return {
+      ...bot,
+      cloud_status: cloudStatus,
+      // The cloud-worker API owns runtime version truth. An explicit empty
+      // value means unknown and must not fall back to the assistant definition.
+      app_version: Object.prototype.hasOwnProperty.call(cloud, 'app_version')
+        ? cloud.app_version
+        : bot.app_version,
+      cloud_version: cloud.cloud_version || cloud.version,
+      cloud_image_id: cloud.cloud_image_id || cloud.image_id,
+    };
+  });
+};
+
 const normalizeAssistantRole = (value) => (
   ASSISTANT_ROLES.some((role) => role.value === value) ? value : 'general'
 );
@@ -356,7 +407,9 @@ export default function AgentStoreModal({
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
-  const [cloudActioning, setCloudActioning] = useState(null); // tenant_name being acted on
+  const [cloudReleases, setCloudReleases] = useState([]); // published application releases for update/rollback
+  const [cloudActions, setCloudActions] = useState(null); // configured cloud operation capabilities
+  const [cloudActioning, setCloudActioning] = useState(null); // { name, action }
   const [editingBot, setEditingBot] = useState(null);
   const [manageSection, setManageSection] = useState('basic');
   const [managedSkills, setManagedSkills] = useState({ count: 0, skills: [], loading: false, error: '' });
@@ -563,14 +616,31 @@ export default function AgentStoreModal({
     loadBots();
   }, [initialAgentId]);
 
-  // Available worker image versions (used by the cloud panel for version
-  // selection on rollback/reset). Fetched once on mount; the list is stable.
+  // Application releases and base images are independent catalogs. A cold
+  // backend snapshot gets one short follow-up poll; settled responses do not
+  // keep polling.
   useEffect(() => {
     let cancelled = false;
-    api.getCloudWorkerMeta?.().then((meta) => {
-      if (!cancelled) setCloudImages(meta?.images || []);
-    }).catch(() => {});
-    return () => { cancelled = true; };
+    let retryTimer = null;
+    const loadMeta = async () => {
+      try {
+        const meta = await api.getCloudWorkerMeta?.();
+        if (cancelled) return;
+        setCloudImages(meta?.images || []);
+        setCloudReleases(meta?.releases || []);
+        setCloudActions(meta?.actions || null);
+        if (meta?.images_refreshing || meta?.releases_refreshing) {
+          retryTimer = window.setTimeout(loadMeta, 2_000);
+        }
+      } catch {
+        // Cloud image metadata is optional; worker management remains usable.
+      }
+    };
+    loadMeta();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -830,36 +900,27 @@ export default function AgentStoreModal({
   }, [entryBot, onClose, skillDetail, skillPickerOpen]);
 
   const loadBots = async ({ silent = false } = {}) => {
+    const cloudRequest = api.getCloudWorkers
+      ? api.getCloudWorkers().then((data) => ({ data })).catch((requestError) => ({ requestError }))
+      : Promise.resolve({ data: {} });
+    let manageableBots = null;
     try {
       if (!silent) setLoading(true);
-      const [botsRes, agentsRes, friendsRes, cloudRes] = await Promise.all([
+      const [botsRes, agentsRes, friendsRes] = await Promise.all([
         api.getMyBots().catch((err) => {
           throw err;
         }),
         api.getAgents ? api.getAgents().catch(() => ({})) : Promise.resolve({}),
         api.getFriends ? api.getFriends().catch(() => ({})) : Promise.resolve({}),
-        api.getCloudWorkers ? api.getCloudWorkers().catch(() => ({})) : Promise.resolve({}),
       ]);
-      const manageableBots = mergeManageableBots(
+      manageableBots = mergeManageableBots(
         botsRes.bots || [],
         agentsRes.agents || [],
         friendsRes.friends || [],
       ).filter(isOwnedBot);
+      // Core assistant data is entirely local to CatsCompany and should render
+      // without waiting for cloud-provider reconciliation.
       setBots(manageableBots);
-      // Distinguish "quota fetch failed" (null + error) from "cloud hosting
-      // disabled" (quota.enabled === false) so the UI does not mislead.
-      setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
-      setCloudQuota(cloudRes.quota || null);
-      // Enrich cloud-managed workers with version/status from the control plane.
-      const cloudWorkers = cloudRes.workers || [];
-      if (cloudWorkers.length > 0) {
-        setBots(prev => prev.map(bot => {
-          const cloud = cloudWorkers.find(w => w.tenant_name === bot.tenant_name);
-          return cloud
-            ? { ...bot, cloud_status: cloud.status, cloud_version: cloud.version, cloud_image_id: cloud.image_id }
-            : bot;
-        }));
-      }
 
       if (
         !initialAgentAppliedRef.current
@@ -881,7 +942,56 @@ export default function AgentStoreModal({
     } finally {
       if (!silent) setLoading(false);
     }
+
+    if (!manageableBots) return;
+    const { data: cloudRes = {}, requestError } = await cloudRequest;
+    if (requestError) {
+      setCloudQuotaError(true);
+      return;
+    }
+    // Distinguish "quota fetch failed" (null + error) from "cloud hosting
+    // disabled" (quota.enabled === false) so the UI does not mislead.
+    setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
+    setCloudQuota(cloudRes.quota || null);
+    // Enrich provider-only facts after the roster is already visible. Online
+    // presence and the application version continue to come from CatsCompany.
+    setBots((current) => mergeCloudWorkerFacts(current, cloudRes.workers || []));
   };
+
+  // Cloud status is operational data, not static bot metadata. Refresh only
+  // while the managed panel is visible so a transient first-request failure
+  // settles automatically without polling the rest of the assistant UI.
+  useEffect(() => {
+    const visible = (tab === 'hub' && hubCloudView)
+      || (tab === 'create' && createMode === CREATE_MODES.MANAGED);
+    if (!visible || !api.getCloudWorkers) return undefined;
+
+    let active = true;
+    let retryTimer = null;
+    const refresh = async () => {
+      try {
+        const cloudRes = await api.getCloudWorkers();
+        if (!active) return;
+        setCloudQuotaError(false);
+        setCloudQuota(cloudRes?.quota || null);
+        setBots((current) => mergeCloudWorkerFacts(current, cloudRes?.workers || []));
+        if (cloudRes?.status_refreshing) {
+          if (retryTimer) window.clearTimeout(retryTimer);
+          retryTimer = window.setTimeout(refresh, 2_000);
+        }
+      } catch {
+        if (active) setCloudQuotaError(true);
+      }
+    };
+
+    refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => {
+      active = false;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      window.clearInterval(timer);
+    };
+  }, [createMode, hubCloudView, tab]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -1036,15 +1146,17 @@ export default function AgentStoreModal({
     if (!botId) return;
     const owned = isOwnedBot(bot);
     const confirmed = await feedback.confirm({
-      title: owned ? `永久删除“${bot.display_name}”？` : `移除“${bot.display_name}”？`,
+      title: owned ? `再次确认：永久删除“${bot.display_name}”？` : `再次确认：移除“${bot.display_name}”？`,
       message: owned
-        ? '该虚拟员工及其相关配置会被永久删除，且无法恢复。'
-        : '这只会解除好友关系，不会删除对方创建的虚拟员工。',
+        ? '该云端实例、员工记录及相关配置会被永久删除，且无法恢复。'
+        : '这只会解除好友关系，不会删除对方创建的虚拟员工。请确认这是你要执行的操作。',
       confirmLabel: owned ? '永久删除' : '移除',
       tone: 'danger',
     });
     if (!confirmed) return;
+    const cloudName = owned ? bot.tenant_name : '';
     try {
+      if (cloudName) setCloudActioning({ name: cloudName, action: 'delete' });
       if (owned) {
         if (bot.tenant_name) {
           // Cloud workers are removed through the control plane so the cloud
@@ -1064,35 +1176,56 @@ export default function AgentStoreModal({
       setTab('hub');
       feedback.notify({ tone: 'success', message: owned ? '虚拟员工已删除' : '助手已移除' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudName
+        ? cloudWorkerActionMessage(e, '删除')
+        : (e.message || t('error_server')));
+    } finally {
+      if (cloudName) setCloudActioning(null);
     }
   };
 
-  // Cloud-managed rollback. The cloud panel passes an explicit version (or '' =
-  // latest) with fromPanel:true; the hub card keeps the legacy prompt-based
-  // version picker when no version is given.
-  const handleCloudRollback = async (bot, version = '', opts = {}) => {
+  const handleCloudUpdate = async (bot, version = '') => {
     const name = bot.tenant_name;
     if (!name) return;
+    if (!version) {
+      setError('暂无可用的应用发布版本，请稍后刷新后重试');
+      return;
+    }
     const confirmed = await feedback.confirm({
-      title: `回滚“${bot.display_name}”？`,
-      message: version
-        ? `回滚会把云端虚拟员工切换到镜像版本 ${version}，但会保留当前数据。`
-        : '回滚会把云端虚拟员工回滚到最新镜像版本，但会保留当前数据。',
-      confirmLabel: '确认回滚',
+      title: `再次确认：更新“${bot.display_name}”？`,
+      message: `将应用更新到版本 ${version}，会保留会话、文件和本地配置。更新期间员工会短暂重启，请确认目标版本无误。`,
+      confirmLabel: '确认更新',
       tone: 'default',
     });
     if (!confirmed) return;
     try {
+      setCloudActioning({ name, action: 'update' });
+      await api.updateCloudWorker(name, { version });
+      await loadBots({ silent: true });
+      feedback.notify({ tone: 'success', message: '应用更新完成' });
+    } catch (e) {
+      setError(cloudWorkerActionMessage(e, '更新'));
+      await loadBots({ silent: true }).catch(() => {});
+    } finally {
+      setCloudActioning(null);
+    }
+  };
+
+  // Cloud-managed rollback. The cloud panel passes an explicit application
+  // release; the legacy caller can still fetch and choose one on demand.
+  const handleCloudRollback = async (bot, version = '', opts = {}) => {
+    const name = bot.tenant_name;
+    if (!name) return;
+    try {
       if (!version && !opts.fromPanel) {
-        // hub 卡片旧逻辑：从控制面 meta 拉可用镜像版本供选择
+        // Legacy caller: fetch published application releases for selection.
         let meta = null;
         try { meta = await api.getCloudWorkerMeta(); } catch { meta = null; }
-        const versions = (meta?.images || []).map((img) => img?.version).filter(Boolean);
+        const versions = (meta?.releases || []).map((release) => release?.version).filter(Boolean);
         if (versions.length > 1) {
           const picked = window.prompt(
-            `可用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本（留空=最新）：`,
-            '',
+            `可用应用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本：`,
+            versions[0],
           );
           if (picked === null) return; // 用户取消
           version = picked.trim();
@@ -1100,11 +1233,23 @@ export default function AgentStoreModal({
           version = versions[0];
         }
       }
-      setCloudActioning(name);
-      await api.rollbackCloudWorker(name, version ? { version } : {});
+      if (!version) {
+        setError('暂无可用的应用发布版本，请稍后刷新后重试');
+        return;
+      }
+      const confirmed = await feedback.confirm({
+        title: `再次确认：回滚“${bot.display_name}”？`,
+        message: `回滚会把云端虚拟员工切换到应用版本 ${version}，但会保留当前数据。请确认目标版本无误。`,
+        confirmLabel: '确认回滚',
+        tone: 'default',
+      });
+      if (!confirmed) return;
+      setCloudActioning({ name, action: 'rollback' });
+      await api.rollbackCloudWorker(name, { version });
       feedback.notify({ tone: 'success', message: '回滚已触发，稍后刷新查看状态' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudWorkerActionMessage(e, '回滚'));
+      await loadBots({ silent: true }).catch(() => {});
     } finally {
       setCloudActioning(null);
     }
@@ -1118,7 +1263,7 @@ export default function AgentStoreModal({
     if (!name) return;
     if (!opts.verified) {
       const confirmed = await feedback.confirm({
-        title: `重置“${bot.display_name}”？`,
+        title: `再次确认：重置“${bot.display_name}”？`,
         message: version
           ? `重置会销毁该云端虚拟员工的实例并从镜像版本 ${version} 重建，所有数据将丢失且无法恢复！`
           : '重置会销毁该云端虚拟员工的实例并从镜像重建，所有数据将丢失且无法恢复！',
@@ -1128,11 +1273,12 @@ export default function AgentStoreModal({
       if (!confirmed) return;
     }
     try {
-      setCloudActioning(name);
+      setCloudActioning({ name, action: 'reset' });
       await api.resetCloudWorker(name, version ? { version } : {});
       feedback.notify({ tone: 'success', message: '重置已触发，稍后刷新查看状态' });
     } catch (e) {
-      setError(e.message || t('error_server'));
+      setError(cloudWorkerActionMessage(e, '重置'));
+      await loadBots({ silent: true }).catch(() => {});
     } finally {
       setCloudActioning(null);
     }
@@ -1237,9 +1383,12 @@ export default function AgentStoreModal({
                   quotaError={cloudQuotaError}
                   workers={cloudWorkers}
                   images={cloudImages}
+                  releases={cloudReleases}
+                  actions={cloudActions}
                   actioning={cloudActioning}
                   showHostingSwitch={false}
                   onCreate={handleCloudCreate}
+                  onUpdate={handleCloudUpdate}
                   onRollback={handleCloudRollback}
                   onReset={handleCloudReset}
                   onDelete={handleDelete}
@@ -1351,26 +1500,14 @@ export default function AgentStoreModal({
                           </button>
                         )}
                         {owned && bot.tenant_name && (
-                          <>
-                            <button
-                              type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action"
-                              onClick={() => handleCloudRollback(bot)}
-                              disabled={cloudActioning === bot.tenant_name}
-                              title="回滚：切换镜像版本，保留数据"
-                            >
-                              {cloudActioning === bot.tenant_name ? '处理中...' : '回滚'}
-                            </button>
-                            <button
-                              type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
-                              onClick={() => handleCloudReset(bot)}
-                              disabled={cloudActioning === bot.tenant_name}
-                              title="重置：销毁并从镜像重建，数据会丢失"
-                            >
-                              {cloudActioning === bot.tenant_name ? '处理中...' : '重置'}
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action"
+                            onClick={() => setHubCloudView(true)}
+                            title="选择版本并更新、回滚或重置"
+                          >
+                            <Cloud size={14} aria-hidden="true" /> 云托管管理
+                          </button>
                         )}
                         <button
                           type="button"
@@ -1404,8 +1541,11 @@ export default function AgentStoreModal({
                 quotaError={cloudQuotaError}
                 workers={cloudWorkers}
                 images={cloudImages}
+                releases={cloudReleases}
+                actions={cloudActions}
                 actioning={cloudActioning}
                 onCreate={handleCloudCreate}
+                onUpdate={handleCloudUpdate}
                 onRollback={handleCloudRollback}
                 onReset={handleCloudReset}
                 onDelete={handleDelete}

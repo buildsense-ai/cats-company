@@ -305,9 +305,14 @@ type BotSkillMutationPolicyStore interface {
 type BotSkillMutationStore interface {
 	BeginBotSkillMutation(input types.BotSkillMutationCreateInput, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, bool, error)
 	GetBotSkillMutation(botUID, mutationID int64) (*types.BotSkillMutation, error)
+	GetBotSkillMutationByRequest(input types.BotSkillMutationCreateInput) (*types.BotSkillMutation, error)
 	AdvanceBotSkillMutation(botUID, mutationID, expectedLeaseGeneration int64, expected, next types.BotSkillMutationStatus, patch types.BotSkillMutationTransition, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
 	CommitBotSkillMutationDefinition(botUID, mutationID, expectedLeaseGeneration int64, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, *types.BotDefinitionRecord, error)
 	RenewBotSkillMutationLease(botUID, mutationID, expectedLeaseGeneration int64, expected types.BotSkillMutationStatus, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
+	// RecoverBotSkillMutationLease takes over an expired non-terminal mutation
+	// with a generation CAS. It is intentionally separate from Renew so an
+	// active lease can never be silently stolen.
+	RecoverBotSkillMutationLease(botUID, mutationID, expectedLeaseGeneration int64, expected types.BotSkillMutationStatus, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
 }
 
 // BotModelConfigStore is optional so existing narrow Store test doubles do not
@@ -411,6 +416,13 @@ type ChannelNativeGroupStore interface {
 // channel-owned sessions without requiring lightweight Store mocks to support it.
 type ChannelManagedGroupStore interface {
 	IsChannelManagedGroup(groupID int64) (bool, error)
+}
+
+// ImageUpscaleTaskStore persists the owner of an asynchronous image upscale
+// task so polling remains authorized across restarts and server instances.
+type ImageUpscaleTaskStore interface {
+	UpsertImageUpscaleTaskOwner(ctx context.Context, processID string, ownerUID int64, expiresAt time.Time) error
+	GetImageUpscaleTaskOwner(ctx context.Context, processID string, now time.Time) (ownerUID int64, found bool, err error)
 }
 
 // Store is the complete persistence boundary required by the current server.

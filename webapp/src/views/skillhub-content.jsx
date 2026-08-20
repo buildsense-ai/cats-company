@@ -253,7 +253,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
         {!isReadOnly && !skill.localOnly && <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
           {copying ? '复制中…' : '复制'}
         </button>}
-        {!isReadOnly && !skill.localOnly && <button
+        {!isReadOnly && <button
           ref={triggerRef}
           type='button'
           className='subtle cc-skillhub-more-action'
@@ -308,7 +308,13 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
               onRemoveSkill(skill.skillId);
             }}
           >
-            <PackageMinus size={15} aria-hidden='true' /> {removing ? '移除中…' : '从 Agent 移除'}
+            <PackageMinus size={15} aria-hidden='true' /> {removing
+              ? (skill.local ? '删除中…' : '移除中…')
+              : skill.localOnly
+                ? '删除本地能力'
+                : skill.local
+                  ? '从 Agent 移除并删除本地'
+                  : '从 Agent 移除'}
           </button>
         </div>,
         document.body,

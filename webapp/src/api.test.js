@@ -374,6 +374,40 @@ describe('WebSocket connection recovery', () => {
     }));
   });
 
+  test('strips response-only Skill metadata before updating BotDefinition', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ revision: 4, skills: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.api.updateBotDefinitionSkills('42', 3, [{
+      source: 'skillhub',
+      skillId: 'priv_local1',
+      version: 'private-v1',
+      contentHash: 'a'.repeat(64),
+      displayName: 'read-pdf',
+      localName: 'read-pdf',
+      localDetails: { path: 'C:\\xiaoba\\skills\\read-pdf' },
+    }]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/bots/definition/skills?uid=42',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          revision: 3,
+          skills: [{
+            source: 'skillhub',
+            skillId: 'priv_local1',
+            version: 'private-v1',
+            contentHash: 'a'.repeat(64),
+          }],
+        }),
+      }),
+    );
+  });
+
   test('can remove every tab registration for the current account endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -651,6 +685,39 @@ describe('message history request controls', () => {
     const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
 
     controller.abort();
+    await rejection;
+  });
+});
+
+describe('cloud worker operation request controls', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    localStorage.clear();
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  test('bounds a long-running update without timing out before the server limit', async () => {
+    global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+
+    const request = apiModule.api.updateCloudWorker('bot-a', { version: '1.4.9' });
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(629_999);
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
     await rejection;
   });
 });

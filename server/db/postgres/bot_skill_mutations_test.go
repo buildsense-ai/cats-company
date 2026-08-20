@@ -119,6 +119,42 @@ func TestBeginBotSkillMutationRejectsChangedIdempotentPayload(t *testing.T) {
 	}
 }
 
+func TestGetBotSkillMutationByRequestRequiresMatchingFingerprint(t *testing.T) {
+	input := postgresMutationCreateInput()
+	_, fingerprint, err := store.NormalizeBotSkillMutationCreateInput(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name        string
+		fingerprint string
+		wantErr     error
+	}{
+		{name: "match", fingerprint: fingerprint},
+		{name: "conflict", fingerprint: strings.Repeat("f", 64), wantErr: store.ErrBotSkillMutationIdempotencyConflict},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sqlDB, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sqlDB.Close()
+			mock.ExpectQuery(`FROM bot_skill_mutations\s+WHERE actor_user_uid = \$1 AND bot_uid = \$2 AND client_request_id = \$3`).
+				WithArgs(int64(7), int64(42), "request-0001").
+				WillReturnRows(postgresBotSkillMutationTestRow(101, tt.fingerprint, types.BotSkillMutationValidating, 1, now.Add(time.Minute), nil, ""))
+
+			mutation, err := (&Adapter{db: sqlDB}).GetBotSkillMutationByRequest(input)
+			if err != tt.wantErr || (err == nil && mutation.ID != 101) {
+				t.Fatalf("mutation=%#v err=%v, want %v", mutation, err, tt.wantErr)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestBeginBotSkillMutationBlocksActiveOrExpiredRecovery(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
@@ -221,6 +257,57 @@ func TestRenewBotSkillMutationLeaseRejectsExpiredLease(t *testing.T) {
 	)
 	if err != store.ErrBotSkillMutationLeaseExpired {
 		t.Fatalf("err=%v, want lease expired", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoverBotSkillMutationLeaseOnlyTakesExpiredGeneration(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	expires := now.Add(2 * time.Minute)
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectQuery(`UPDATE bot_skill_mutations\s+SET lease_generation = lease_generation \+ 1`).
+		WithArgs(expires, int64(42), int64(101), "validating", int64(1), now).
+		WillReturnRows(postgresBotSkillMutationTestRow(101, strings.Repeat("f", 64), types.BotSkillMutationValidating, 2, expires, nil, ""))
+
+	mutation, err := (&Adapter{db: sqlDB}).RecoverBotSkillMutationLease(
+		42, 101, 1, types.BotSkillMutationValidating, now, 2*time.Minute,
+	)
+	if err != nil || mutation.LeaseGeneration != 2 || mutation.LeaseExpiresAt != expires {
+		t.Fatalf("mutation=%#v err=%v", mutation, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoverBotSkillMutationLeaseDoesNotStealActiveLease(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	activeUntil := now.Add(time.Minute)
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+
+	mock.ExpectQuery(`UPDATE bot_skill_mutations\s+SET lease_generation = lease_generation \+ 1`).
+		WithArgs(now.Add(2*time.Minute), int64(42), int64(101), "validating", int64(1), now).
+		WillReturnRows(sqlmock.NewRows(postgresBotSkillMutationTestColumns))
+	mock.ExpectQuery(`FROM bot_skill_mutations WHERE bot_uid = \$1 AND id = \$2`).
+		WithArgs(int64(42), int64(101)).
+		WillReturnRows(postgresBotSkillMutationTestRow(101, strings.Repeat("f", 64), types.BotSkillMutationValidating, 1, activeUntil, nil, ""))
+
+	_, err = (&Adapter{db: sqlDB}).RecoverBotSkillMutationLease(
+		42, 101, 1, types.BotSkillMutationValidating, now, 2*time.Minute,
+	)
+	if err != store.ErrBotSkillMutationStateConflict {
+		t.Fatalf("err=%v, want state conflict", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

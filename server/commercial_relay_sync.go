@@ -23,6 +23,10 @@ type CommercialRelayManagedStore interface {
 	ListCommercialReconcileUIDs(afterUID int64, limit int) ([]int64, error)
 }
 
+type commercialRelayBaselineStore interface {
+	EnsureCommercialRelayBaseline(uid int64, profile string, budgets map[string]float64, startsAt time.Time) (bool, error)
+}
+
 type CommercialRelaySyncerOptions struct {
 	EnforceEnabled bool
 	EnforceUIDs    map[int64]bool
@@ -99,7 +103,54 @@ func (s *CommercialRelaySyncer) Start(ctx context.Context) {
 	}
 	go s.run(ctx)
 	go s.runReconciliation(ctx)
+	if s.enforceEnabled {
+		go s.bootstrapConfiguredRelayUsers(ctx)
+	}
 	s.requestReconciliation()
+}
+
+func (s *CommercialRelaySyncer) bootstrapConfiguredRelayUsers(ctx context.Context) {
+	for {
+		if err := s.bootstrapConfiguredRelayUsersOnce(ctx); err == nil {
+			return
+		} else {
+			log.Printf("commercial relay baseline bootstrap failed: %v", err)
+		}
+		timer := time.NewTimer(30 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *CommercialRelaySyncer) bootstrapConfiguredRelayUsersOnce(ctx context.Context) error {
+	// Relay usage rows include the full provider/model catalog. Keep bootstrap
+	// pages comfortably below RelayAdminClient's bounded response size.
+	const pageSize = 10
+	for offset := 0; ; offset += pageSize {
+		var page commercialRelayUsageResponse
+		path := fmt.Sprintf("/internal/usage/users?offset=%d&limit=%d&include_governance=1", offset, pageSize)
+		if err := s.relayAdmin.Do(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return fmt.Errorf("offset %d: %w", offset, err)
+		}
+		for index := range page.Users {
+			user := &page.Users[index]
+			if user.Configured && user.UID > 0 {
+				if !s.notifyAndQueue(ctx, user.UID, true) {
+					if err := ctx.Err(); err != nil {
+						return fmt.Errorf("queue uid %d: %w", user.UID, err)
+					}
+					return fmt.Errorf("queue uid %d", user.UID)
+				}
+			}
+		}
+		if len(page.Users) < pageSize || (page.TotalCount > 0 && offset+len(page.Users) >= page.TotalCount) {
+			return nil
+		}
+	}
 }
 
 func (s *CommercialRelaySyncer) run(ctx context.Context) {
@@ -413,18 +464,58 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 	if relayUser == nil || !relayUser.Configured {
 		return nil, fmt.Errorf("relay key is not configured")
 	}
+	if s.EnforcedFor(uid) && !commercialRelayHasBaselineEntitlement(summary) {
+		if baselineStore, ok := s.store.(commercialRelayBaselineStore); ok {
+			profile, budgets, baselineErr := commercialRelayBaselineForSummary(summary, relayUser)
+			if baselineErr != nil {
+				return nil, baselineErr
+			}
+			startsAt := commercialRelayBaselineStart(relayUser)
+			created, baselineErr := baselineStore.EnsureCommercialRelayBaseline(uid, profile, budgets, startsAt)
+			if baselineErr != nil {
+				return nil, fmt.Errorf("create commercial relay baseline: %w", baselineErr)
+			}
+			if created {
+				summary, err = s.store.GetCommercialSummary(uid)
+				if err != nil {
+					return nil, fmt.Errorf("reload commercial summary: %w", err)
+				}
+			}
+		}
+	}
 	if err := validateCommercialRelayRequiredModels(summary, relayUser, managed); err != nil {
 		return nil, err
 	}
 	updates, nextManaged := commercialRelayManagedPlan(uid, summary, relayUser, managed)
 	modelScopes := commercialRelayModelScopes(summary, relayUser, managed)
 	scopesChanged := !commercialRelayModelScopesMatch(relayUser.Limits.ModelScopes, modelScopes)
-	if len(updates) > 0 || scopesChanged {
-		var response map[string]interface{}
-		payload := map[string]interface{}{"provider_config_budgets": updates}
+	sharedQuota := s.EnforcedFor(uid)
+	if sharedQuota {
+		updates, nextManaged = commercialRelaySharedManagedPlan(uid, summary, relayUser, managed)
+	}
+	sharedLimit := commercialRelaySharedLimit(summary)
+	usageWindowStart := commercialRelayUsageWindowStartForSync(summary, relayUser)
+	policyNeedsSync := sharedQuota && (!nearlyEqual(relayUser.Limits.MonthlyBudget.MaxLimit, sharedLimit) ||
+		defaultRelayResetDuration(relayUser.Limits.MonthlyBudget.ResetDuration) != "1M" ||
+		!sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart))
+	if len(updates) > 0 || scopesChanged || policyNeedsSync {
+		payload := map[string]interface{}{}
+		if len(updates) > 0 {
+			payload["provider_config_budgets"] = updates
+		}
 		if scopesChanged {
 			payload["model_scopes"] = modelScopes
 		}
+		if sharedQuota {
+			payload["monthly_budget"] = sharedLimit
+			payload["monthly_budget_duration"] = "1M"
+			if usageWindowStart == "" {
+				payload["usage_window_start"] = nil
+			} else {
+				payload["usage_window_start"] = usageWindowStart
+			}
+		}
+		var response map[string]interface{}
 		if err := s.relayAdmin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key/limits", uid), payload, &response); err != nil {
 			return nil, fmt.Errorf("write relay budgets: %w", err)
 		}
@@ -438,11 +529,143 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		if err := verifyCommercialRelayModelScopes(modelScopes, verified); err != nil {
 			return nil, err
 		}
+		if sharedQuota {
+			if err := verifyCommercialRelaySharedPolicy(sharedLimit, usageWindowStart, verified); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := s.store.ReplaceCommercialManagedRelayBudgets(uid, nextManaged); err != nil {
 		return nil, fmt.Errorf("save managed relay budgets: %w", err)
 	}
 	return updates, nil
+}
+
+const (
+	commercialRelayBaselineProfileFree   = "free"
+	commercialRelayBaselineProfileLegacy = "legacy"
+)
+
+var commercialRelayFreeBudgets = map[string]float64{
+	"MiniMax-M2.7":      1000,
+	"MiniMax-M3":        500,
+	"deepseek-v4-flash": 100,
+}
+
+func commercialRelayHasBaselineEntitlement(summary *types.CommercialSummary) bool {
+	if summary == nil {
+		return false
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil || !strings.EqualFold(strings.TrimSpace(entitlement.State), "active") {
+			continue
+		}
+		source := strings.ToLower(strings.TrimSpace(entitlement.Source))
+		if source == commercialRelayBaselineProfileFree || source == commercialRelayBaselineProfileLegacy {
+			return true
+		}
+	}
+	return false
+}
+
+func commercialRelayBaselineForSummary(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser) (string, map[string]float64, error) {
+	if summary != nil {
+		for _, grant := range summary.Grants {
+			if grant != nil && grant.AmountCNY > 0 && strings.EqualFold(strings.TrimSpace(grant.GrantType), "manual") {
+				return commercialRelayBaselineProfileLegacy, nil, nil
+			}
+		}
+		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
+			budgets := make(map[string]float64, len(commercialRelayFreeBudgets))
+			for model, amount := range commercialRelayFreeBudgets {
+				budgets[model] = amount
+			}
+			return commercialRelayBaselineProfileFree, budgets, nil
+		}
+	}
+	if relayUser != nil && relayUser.Limits.MonthlyBudget.MaxLimit > commercialRelayBlockedLimit {
+		return "", nil, fmt.Errorf("relay shared quota exists without a commercial baseline")
+	}
+	profile, budgets := commercialRelayBaseline(relayUser)
+	if len(budgets) == 0 {
+		return "", nil, fmt.Errorf("relay baseline quota is unavailable")
+	}
+	return profile, budgets, nil
+}
+
+func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[string]float64) {
+	budgets := map[string]float64{}
+	allowed := map[string]bool{}
+	hasScopes := relayUser != nil && len(relayUser.Limits.ModelScopes) > 0
+	if hasScopes {
+		for _, scope := range relayUser.Limits.ModelScopes {
+			for _, model := range scope.AllowedModels {
+				allowed[normalizeRelayModelName(model)] = true
+			}
+		}
+	}
+	if relayUser != nil {
+		for _, limit := range relayUser.Limits.ModelLimits {
+			model := strings.TrimSpace(limit.Model)
+			if model == "" || model == "*" || limit.Budget.MaxLimit <= commercialRelayBlockedLimit {
+				continue
+			}
+			if hasScopes && !allowed[normalizeRelayModelName(model)] {
+				continue
+			}
+			if limit.Budget.MaxLimit > budgets[model] {
+				budgets[model] = limit.Budget.MaxLimit
+			}
+		}
+	}
+	profile := commercialRelayBaselineProfileFree
+	if len(budgets) != len(commercialRelayFreeBudgets) {
+		profile = commercialRelayBaselineProfileLegacy
+	} else {
+		normalizedBudgets := map[string]float64{}
+		for model, amount := range budgets {
+			normalizedBudgets[normalizeRelayModelName(model)] = amount
+		}
+		for model, amount := range commercialRelayFreeBudgets {
+			if !nearlyEqual(normalizedBudgets[normalizeRelayModelName(model)], amount) {
+				profile = commercialRelayBaselineProfileLegacy
+				break
+			}
+		}
+	}
+	return profile, budgets
+}
+
+func commercialRelayBaselineStart(relayUser *commercialRelayUsageUser) time.Time {
+	if relayUser == nil {
+		return time.Now().UTC()
+	}
+	if parsed, ok := parseCommercialRelayTime(relayUser.UsageWindowStart); ok {
+		return parsed
+	}
+	var earliest time.Time
+	for _, limit := range relayUser.Limits.ModelLimits {
+		if limit.Budget.MaxLimit <= commercialRelayBlockedLimit {
+			continue
+		}
+		if parsed, ok := parseCommercialRelayTime(limit.Budget.LastReset); ok && (earliest.IsZero() || parsed.Before(earliest)) {
+			earliest = parsed
+		}
+	}
+	if earliest.IsZero() {
+		return time.Now().UTC()
+	}
+	return earliest
+}
+
+func parseCommercialRelayTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999Z07:00"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (s *CommercialRelaySyncer) ValidatePurchase(ctx context.Context, uid int64, plan *types.CommercialPlan) error {
@@ -503,6 +726,7 @@ func validateCommercialRelayModels(budgets map[string]float64, relayUser *commer
 
 func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) error {
 	required := map[string]bool{}
+	legacyManual := map[string]bool{}
 	if summary != nil {
 		for _, grant := range summary.Grants {
 			if grant == nil || grant.AmountCNY <= 0 {
@@ -510,7 +734,12 @@ func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, rel
 			}
 			model := strings.TrimSpace(grant.Model)
 			grantType := strings.ToLower(strings.TrimSpace(grant.GrantType))
-			if model != "" && model != "*" && (grantType == "order" || grantType == "invite" || grantType == "trial" || grantType == "bonus") {
+			if model != "" && model != "*" && grantType == "manual" && commercialRelayGrantGoverned(summary, grantType) {
+				// Retired manual models keep their value in the shared pool without requiring a live route.
+				legacyManual[model] = true
+				continue
+			}
+			if model != "" && model != "*" && commercialRelayGrantGoverned(summary, grantType) {
 				required[model] = true
 			}
 		}
@@ -519,7 +748,7 @@ func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, rel
 				continue
 			}
 			model := strings.TrimSpace(item.Model)
-			if model != "" && model != "*" {
+			if model != "" && model != "*" && (!legacyManual[model] || required[model]) {
 				required[model] = true
 			}
 		}
@@ -651,7 +880,7 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 				continue
 			}
 			grantType := strings.ToLower(strings.TrimSpace(grant.GrantType))
-			if grantType == "order" || grantType == "invite" || grantType == "trial" || grantType == "bonus" {
+			if commercialRelayGrantGoverned(summary, grantType) {
 				governed[strings.ToLower(strings.TrimSpace(grant.Model))] = true
 			}
 		}
@@ -707,6 +936,31 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 	return scopes
 }
 
+func commercialRelayGovernedGrant(grantType string) bool {
+	switch strings.ToLower(strings.TrimSpace(grantType)) {
+	case "order", "invite", "trial", "bonus", "free", "legacy", "operator_plan", "adjustment_credit", "adjustment_debit":
+		return true
+	default:
+		return false
+	}
+}
+
+func commercialRelayGrantGoverned(summary *types.CommercialSummary, grantType string) bool {
+	if commercialRelayGovernedGrant(grantType) {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(grantType), "manual") || summary == nil {
+		return false
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement != nil && strings.EqualFold(strings.TrimSpace(entitlement.State), "active") &&
+			strings.EqualFold(strings.TrimSpace(entitlement.Source), commercialRelayBaselineProfileLegacy) {
+			return true
+		}
+	}
+	return false
+}
+
 func commercialRelayScopedAllowedModels(models []string, totals map[string]float64) []string {
 	allowed := []string{}
 	for _, model := range normalizedCommercialModels(models) {
@@ -733,6 +987,14 @@ func commercialRelayScopeOwnsModels(scopes []commercialRelayModelScope, models [
 }
 
 func commercialRelayManagedPlan(uid int64, summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) ([]commercialRelayProviderBudgetUpdate, []*types.CommercialManagedRelayBudget) {
+	return commercialRelayManagedPlanForMode(uid, summary, relayUser, managed, false)
+}
+
+func commercialRelaySharedManagedPlan(uid int64, summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) ([]commercialRelayProviderBudgetUpdate, []*types.CommercialManagedRelayBudget) {
+	return commercialRelayManagedPlanForMode(uid, summary, relayUser, managed, true)
+}
+
+func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget, shared bool) ([]commercialRelayProviderBudgetUpdate, []*types.CommercialManagedRelayBudget) {
 	totals := map[string]float64{}
 	normalizedTotals := map[string]float64{}
 	if summary != nil {
@@ -764,6 +1026,7 @@ func commercialRelayManagedPlan(uid int64, summary *types.CommercialSummary, rel
 	nextByKey := map[string]*types.CommercialManagedRelayBudget{}
 	configByKey := map[string]*types.CommercialManagedRelayBudget{}
 	desiredByKey := map[string]float64{}
+	sharedLimit := commercialRelaySharedLimit(summary)
 	for model, amount := range totals {
 		candidateByKey := map[string]*types.CommercialManagedRelayBudget{}
 		for _, limit := range relayByModel[model] {
@@ -782,7 +1045,11 @@ func commercialRelayManagedPlan(uid int64, summary *types.CommercialSummary, rel
 		for _, item := range candidateByKey {
 			key := commercialManagedBudgetKey(item.Provider, item.AllowedModels)
 			configByKey[key] = item
-			desiredByKey[key] += amount
+			if shared {
+				desiredByKey[key] = sharedLimit
+			} else {
+				desiredByKey[key] += amount
+			}
 			nextByKey[model+"\x00"+key] = &types.CommercialManagedRelayBudget{
 				UID: uid, Model: model, Provider: item.Provider, AllowedModels: append([]string(nil), item.AllowedModels...),
 				ResetDuration: defaultRelayResetDuration(item.ResetDuration),
@@ -852,6 +1119,90 @@ func commercialRelayManagedPlan(uid int64, summary *types.CommercialSummary, rel
 		return commercialManagedBudgetKey(nextManaged[i].Provider, nextManaged[i].AllowedModels) < commercialManagedBudgetKey(nextManaged[j].Provider, nextManaged[j].AllowedModels)
 	})
 	return updates, nextManaged
+}
+
+func commercialRelaySharedLimit(summary *types.CommercialSummary) float64 {
+	total := 0.0
+	if summary != nil {
+		total = summary.TotalCNY
+		if total <= 0 {
+			for _, amount := range summary.TotalsByModel {
+				if amount > 0 {
+					total += amount
+				}
+			}
+		}
+	}
+	if total <= 0 {
+		return commercialRelayBlockedLimit
+	}
+	return total
+}
+
+func commercialRelayUsageWindowStart(summary *types.CommercialSummary) string {
+	var earliestPackage time.Time
+	var earliestBaseline time.Time
+	if summary != nil {
+		for _, entitlement := range summary.Entitlements {
+			if entitlement == nil || !strings.EqualFold(strings.TrimSpace(entitlement.State), "active") || entitlement.StartsAt.IsZero() {
+				continue
+			}
+			source := strings.ToLower(strings.TrimSpace(entitlement.Source))
+			if source == commercialRelayBaselineProfileFree || source == commercialRelayBaselineProfileLegacy {
+				if earliestBaseline.IsZero() || entitlement.StartsAt.Before(earliestBaseline) {
+					earliestBaseline = entitlement.StartsAt
+				}
+				continue
+			}
+			if earliestPackage.IsZero() || entitlement.StartsAt.Before(earliestPackage) {
+				earliestPackage = entitlement.StartsAt
+			}
+		}
+	}
+	earliest := earliestPackage
+	if earliest.IsZero() {
+		earliest = earliestBaseline
+	}
+	if earliest.IsZero() {
+		return ""
+	}
+	return earliest.UTC().Format(time.RFC3339)
+}
+
+func commercialRelayUsageWindowStartForSync(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser) string {
+	desired := commercialRelayUsageWindowStart(summary)
+	if desired == "" || relayUser == nil || strings.TrimSpace(relayUser.UsageWindowStart) == "" {
+		return desired
+	}
+	desiredTime, desiredOK := parseCommercialRelayTime(desired)
+	currentTime, currentOK := parseCommercialRelayTime(relayUser.UsageWindowStart)
+	if desiredOK && currentOK && currentTime.After(desiredTime) {
+		return relayUser.UsageWindowStart
+	}
+	return desired
+}
+
+func sameCommercialRelayTimestamp(left, right string) bool {
+	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
+		return strings.TrimSpace(left) == strings.TrimSpace(right)
+	}
+	leftTime, leftErr := time.Parse(time.RFC3339, strings.TrimSpace(left))
+	rightTime, rightErr := time.Parse(time.RFC3339, strings.TrimSpace(right))
+	return leftErr == nil && rightErr == nil && leftTime.Equal(rightTime)
+}
+
+func verifyCommercialRelaySharedPolicy(limit float64, usageWindowStart string, relayUser *commercialRelayUsageUser) error {
+	if relayUser == nil || !relayUser.Configured {
+		return fmt.Errorf("relay shared quota verification failed: relay key is not configured")
+	}
+	if !nearlyEqual(relayUser.Limits.MonthlyBudget.MaxLimit, limit) ||
+		defaultRelayResetDuration(relayUser.Limits.MonthlyBudget.ResetDuration) != "1M" {
+		return fmt.Errorf("relay shared quota verification failed: monthly budget mismatch")
+	}
+	if !sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart) {
+		return fmt.Errorf("relay shared quota verification failed: usage window mismatch")
+	}
+	return nil
 }
 
 func findCommercialRelayLimit(limits []commercialRelayModelLimit, provider string, allowedModels []string) (commercialRelayModelLimit, bool) {

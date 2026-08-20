@@ -61,7 +61,7 @@ export default function EditableConversationTitle({ title, onSave, editable = fa
   };
 
   if (!editable) {
-    return <strong className="v3-shell-title">{normalizedTitle}</strong>;
+    return <strong className="v3-shell-title" title={normalizedTitle}>{normalizedTitle}</strong>;
   }
 
   if (editing) {
@@ -99,7 +99,7 @@ export default function EditableConversationTitle({ title, onSave, editable = fa
         setEditing(true);
       }}
       aria-label={`修改对话标题 ${normalizedTitle}`}
-      title="点击修改对话标题"
+      title={`点击修改：${normalizedTitle}`}
     >
       {normalizedTitle}
     </button>

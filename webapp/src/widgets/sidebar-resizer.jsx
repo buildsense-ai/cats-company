@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { getStorage } from '../utils/storage-access';
 
 export const APP_SIDEBAR_WIDTH_STORAGE_KEY = 'cc_app_sidebar_width_v1';
 export const DEFAULT_APP_SIDEBAR_WIDTH = 260;
@@ -24,7 +25,7 @@ export function getSidebarMaxWidth(viewportWidth) {
   );
 }
 
-export function loadSidebarWidth(storage = globalThis.localStorage) {
+export function loadSidebarWidth(storage = getStorage()) {
   if (!storage) return DEFAULT_APP_SIDEBAR_WIDTH;
   try {
     const stored = storage.getItem(APP_SIDEBAR_WIDTH_STORAGE_KEY);
@@ -37,7 +38,7 @@ export function loadSidebarWidth(storage = globalThis.localStorage) {
   }
 }
 
-export function saveSidebarWidth(width, storage = globalThis.localStorage) {
+export function saveSidebarWidth(width, storage = getStorage()) {
   if (!storage) return;
   try {
     storage.setItem(APP_SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)));

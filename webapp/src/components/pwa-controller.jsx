@@ -2,11 +2,15 @@ import React, {
   useCallback, useEffect, useRef, useState,
 } from 'react';
 import { Bell } from 'lucide-react';
-import { registerSW } from 'virtual:pwa-register';
 import {
   api,
   getPushRegistrationID,
 } from '../api';
+import {
+  getPwaUpdateServiceWorker,
+  registerPwaServiceWorker,
+  subscribeToPwaRefresh,
+} from '../pwa-registration';
 import {
   canUsePush,
   pushDismissedStorageKey,
@@ -18,16 +22,17 @@ import {
 import { enqueuePushOperation } from '../utils/push-operation';
 import { registerBrowserPush } from '../utils/push-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import './pwa-controller.css';
 
 function readDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
-  return Boolean(storageKey) && localStorage.getItem(storageKey) === 'true';
+  return Boolean(storageKey) && readStorageValue(storageKey) === 'true';
 }
 
 function persistDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
-  if (storageKey) localStorage.setItem(storageKey, 'true');
+  if (storageKey) writeStorageValue(storageKey, 'true');
 }
 
 export default function PwaController({
@@ -51,20 +56,17 @@ export default function PwaController({
   const updateServiceWorkerRef = useRef(null);
 
   useEffect(() => {
-    if (updateServiceWorkerRef.current) return;
-    updateServiceWorkerRef.current = registerSW({
-      immediate: true,
-      onNeedRefresh: () => {
-        // Activate transport fixes immediately. Otherwise the new WebApp can
-        // keep running behind an older worker that still clones POST bodies.
-        Promise.resolve().then(() => {
-          const updateServiceWorker = updateServiceWorkerRef.current;
-          if (updateServiceWorker) updateServiceWorker(true);
-          else setNeedRefresh(true);
-        });
-      },
-      onRegisterError: (error) => console.warn('PWA registration failed:', error),
+    const unsubscribe = subscribeToPwaRefresh(() => {
+      // Activate transport fixes immediately. Otherwise the new WebApp can
+      // keep running behind an older worker that still clones POST bodies.
+      Promise.resolve().then(() => {
+        const updateServiceWorker = updateServiceWorkerRef.current || getPwaUpdateServiceWorker();
+        if (updateServiceWorker) updateServiceWorker(true);
+        else setNeedRefresh(true);
+      });
     });
+    updateServiceWorkerRef.current = registerPwaServiceWorker();
+    return unsubscribe;
   }, []);
 
   useEffect(() => {

@@ -68,7 +68,7 @@ describe('feedback system', () => {
     });
   }
 
-  it('renders accessible inline feedback and dismissible toasts', async () => {
+  it('renders accessible inline feedback and auto-dismissing toasts without extra controls', async () => {
     await mount();
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('保存失败');
@@ -79,11 +79,8 @@ describe('feedback system', () => {
     const toast = document.body.querySelector('.cc-toast-success');
     expect(toast?.textContent).toContain('设置已经更新');
     expect(toast?.getAttribute('role')).toBe('status');
-
-    await act(async () => {
-      Simulate.click(toast.querySelector('.cc-toast-close'));
-    });
-    expect(document.body.querySelector('.cc-toast-success')).toBeFalsy();
+    expect(toast?.querySelector('.cc-toast-icon')).toBeNull();
+    expect(toast?.querySelector('.cc-toast-close')).toBeNull();
   });
 
   it('uses a cancel-first destructive confirmation and reports acceptance', async () => {

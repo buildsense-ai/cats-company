@@ -1,13 +1,53 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
+
+func TestSkillHubPrivateMetadataUsesBotCredentialsAndReturnsOnlyRequestedNames(t *testing.T) {
+	var gotAuthorization string
+	var gotBotID string
+	var gotReferences []privateSkillMetadataReference
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		gotBotID = r.Header.Get("X-CatsCo-Bot-Id")
+		var body privateSkillMetadataRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		gotReferences = body.References
+		_, _ = w.Write([]byte(`{"skills":[` +
+			`{"skillId":"priv_owned","version":"v_1","displayName":"cloud-html-artifact","contentHash":"do-not-forward"},` +
+			`{"skillId":"priv_unrequested","version":"v_2","displayName":"ignore-me"}` +
+			`]}`))
+	}))
+	defer upstream.Close()
+
+	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{Timeout: time.Second})
+	metadata, err := h.ResolvePrivateSkillMetadata(context.Background(), "43", "secret-bot-key", []types.BotSkillRef{
+		{Source: "skillhub", SkillID: "priv_owned", Version: "v_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuthorization != "ApiKey secret-bot-key" || gotBotID != "43" {
+		t.Fatalf("credentials were not forwarded correctly: auth=%q bot=%q", gotAuthorization, gotBotID)
+	}
+	if len(gotReferences) != 1 || gotReferences[0].SkillID != "priv_owned" {
+		t.Fatalf("references=%+v", gotReferences)
+	}
+	if len(metadata) != 1 || metadata[botSkillMetadataKey("priv_owned", "v_1")] != "cloud-html-artifact" {
+		t.Fatalf("metadata=%+v", metadata)
+	}
+}
 
 func TestSkillHubProxyForwardsCatalogueQuery(t *testing.T) {
 	var gotPath string

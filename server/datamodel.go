@@ -35,6 +35,7 @@ type ServerMessage struct {
 	Meta               *MsgServerMeta                `json:"meta,omitempty"`
 	Info               *MsgServerInfo                `json:"info,omitempty"`
 	Friend             *MsgServerFriend              `json:"friend,omitempty"`
+	Notification       *MsgServerNotification        `json:"notification,omitempty"`
 	DeviceRPC          *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
 	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
 	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
@@ -272,4 +273,12 @@ type MsgServerFriend struct {
 	From   int64  `json:"from"`
 	To     int64  `json:"to"`
 	Msg    string `json:"msg,omitempty"`
+}
+
+// MsgServerNotification carries a privacy-minimized, non-chat notification.
+// Keep this envelope free of artifact metadata; clients only need the event
+// type and the already-approved user-visible message.
+type MsgServerNotification struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }

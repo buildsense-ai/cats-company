@@ -97,6 +97,24 @@ const readLosslessWebpDimensions = (buffer) => {
 };
 
 describe('CatsCo shell styling', () => {
+  it('uses a neutral theme-aware tooltip above controls with a centered arrow', () => {
+    const tooltipRule = ruleFor('.cc-app-tooltip');
+    const arrowRule = ruleFor('.cc-app-tooltip::after');
+
+    expect(ruleFor(':root')).toContain('--cc-tooltip-bg: #3b3b3e;');
+    expect(ruleFor(':root')).toContain('--cc-tooltip-text: #ececec;');
+    expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-tooltip-bg: #3b3b3e;');
+    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-tooltip-bg: #3b3b3e;');
+    expect(tooltipRule).toContain('position: fixed;');
+    expect(tooltipRule).toContain('border-radius: var(--cc-radius-md);');
+    expect(tooltipRule).toContain('background: var(--cc-tooltip-bg);');
+    expect(tooltipRule).toContain('box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);');
+    expect(tooltipRule).toContain('pointer-events: none;');
+    expect(ruleFor('.cc-app-tooltip.is-top')).toContain('transform: translate(-50%, -100%);');
+    expect(arrowRule).toContain('left: var(--cc-tooltip-arrow-left, 50%);');
+    expect(arrowRule).toContain('background: var(--cc-tooltip-bg);');
+  });
+
   it('keeps global search selection and focus surfaces chromatically neutral', () => {
     const tabsRule = ruleIn(searchOverlayCss, '.cc-global-search-tabs');
     const activeScopeRule = ruleIn(searchOverlayCss, '.cc-global-search-tabs button.active');
@@ -107,6 +125,32 @@ describe('CatsCo shell styling', () => {
     expect(activeScopeRule).toContain('background: color-mix(in srgb, #808080 22%, transparent);');
     expect(activeScopeRule).toContain('color: var(--cc-text);');
     expect(placeholderRule).toContain('color: var(--cc-placeholder);');
+  });
+
+  it('keeps task hover and selection contrast separate from generic controls', () => {
+    const rootRule = ruleFor(':root');
+    const darkRule = ruleFor('html[data-theme="dark"]');
+    const liquidRule = ruleFor('html[data-theme="liquid"]');
+    const taskHoverRule = ruleFor('.v3-chat-item:hover');
+    const taskSelectedRule = ruleFor('.v3-chat-item.active');
+    const historySelectedRule = ruleFor('.v3-chat-item.cc-history-item.active');
+    const activeHistoryInteractionRule = ruleFor(
+      '.v3-chat-item.cc-history-item.active:is(:hover, :focus-within)',
+    );
+
+    expect(rootRule).toContain('--cc-task-hover: #f5f5f6;');
+    expect(rootRule).toContain('--cc-task-selected: #e7e7e9;');
+    expect(darkRule).toContain('--cc-task-hover: #232325;');
+    expect(darkRule).toContain('--cc-task-selected: #303034;');
+    expect(liquidRule).toContain('--cc-task-hover: rgba(86, 98, 217, 0.055);');
+    expect(liquidRule).toContain('--cc-task-selected: rgba(73, 86, 168, 0.12);');
+    expect(taskHoverRule).toContain('background: var(--cc-task-hover);');
+    expect(taskSelectedRule).toContain('background: var(--cc-task-selected);');
+    expect(historySelectedRule).toContain('background: var(--cc-task-selected);');
+    expect(historySelectedRule).toContain('box-shadow: none;');
+    expect(activeHistoryInteractionRule).toContain('background: var(--cc-task-selected);');
+    expect(activeHistoryInteractionRule).toContain('box-shadow: none;');
+    expect(css).toContain('html[data-theme="liquid"] .v3-chat-item.active {\n  border-color: var(--cc-liquid-edge);\n  background: rgba(73, 86, 168, 0.12);');
   });
 
   it('keeps neutral borders quiet while focus remains a distinct semantic state', () => {
@@ -247,6 +291,24 @@ describe('CatsCo shell styling', () => {
     );
   });
 
+  it('keeps operation notifications centered in the workspace, neutral, and text-only', () => {
+    const viewportRule = ruleFor('.cc-toast-viewport');
+    const toastRule = ruleFor('.cc-toast');
+    const copyRule = ruleFor('.cc-toast-copy');
+
+    expect(viewportRule).toContain('top: 58px;');
+    expect(viewportRule).toContain('left: calc(');
+    expect(viewportRule).toContain('var(--cc-toast-sidebar-width, var(--cc-sidebar-width))');
+    expect(css).toContain('--cc-toast-sidebar-width');
+    expect(viewportRule).toContain('transform: translateX(-50%);');
+    expect(toastRule).toContain('padding: 8px 16px;');
+    expect(toastRule).toContain('text-align: center;');
+    expect(toastRule).toContain('background: color-mix(in srgb, var(--cc-panel) 94%, var(--cc-text) 6%);');
+    expect(toastRule).not.toContain('var(--cc-accent)');
+    expect(copyRule).toContain('text-align: center;');
+    expect(css).not.toContain('.cc-toast-close');
+  });
+
   it('renders video thumbnails in a compact, centered viewport while previews retain the source', () => {
     const videoContainerRule = ruleFor('.v3-message .oc-rich-video');
     const triggerRule = ruleFor('.v3-message .oc-rich-video-trigger');
@@ -290,6 +352,17 @@ describe('CatsCo shell styling', () => {
     expect(ruleIn(openchatCss, '.oc-rich-image-trigger')).toContain('cursor: zoom-in;');
     expect(ruleIn(openchatCss, '.oc-rich-image-trigger:focus-visible'))
       .toContain('outline: 2px solid var(--v3-primary);');
+  });
+
+  it('keeps gallery navigation large, transparent, and low-contrast when unavailable', () => {
+    const galleryRule = ruleIn(openchatCss, '.oc-rich-image-gallery-nav');
+    const disabledRule = ruleIn(openchatCss, '.oc-rich-image-gallery-nav:disabled');
+
+    expect(galleryRule).toContain('width: 128px;');
+    expect(galleryRule).toContain('height: 128px;');
+    expect(galleryRule).toContain('background: transparent;');
+    expect(disabledRule).toContain('color: rgba(255, 255, 255, 0.34);');
+    expect(openchatCss).toContain('.oc-rich-image-gallery-nav { width: 112px; height: 112px; }');
   });
 
   it('standardizes scrollbar tiers, states, and browser-specific rendering', () => {
@@ -788,27 +861,21 @@ describe('CatsCo shell styling', () => {
     );
   });
 
-  it('uses filled terminal-state dots that remain distinguishable without color alone', () => {
+  it('uses clean filled terminal-state dots without decorative outer rings', () => {
     const dotRule = ruleFor('.cc-task-status-dot');
 
     expect(dotRule).toContain('width: 8px;');
     expect(dotRule).toContain('height: 8px;');
     expect(dotRule).toContain('border-radius: 999px;');
     expect(dotRule).toContain('background: currentColor;');
-    expect(dotRule).toContain('position: relative;');
+    expect(dotRule).not.toContain('position: relative;');
     expect(ruleFor('.cc-task-row-status.completed')).toContain('color: var(--cc-success-text);');
     expect(ruleFor('.cc-task-row-status.failed')).toContain('color: var(--cc-danger);');
     expect(ruleFor('.cc-task-row-status.cancelled,\n.cc-task-row-status.stale'))
       .toContain('color: var(--cc-warning-text);');
-    expect(css).toContain(`.cc-task-status-dot--failed::after,
-.cc-task-status-dot--cancelled::after,
-.cc-task-status-dot--stale::after {`);
-    expect(css).toContain(`.cc-task-status-dot--cancelled::after {
-  border-style: dashed;
-}`);
-    expect(css).toContain(`.cc-task-status-dot--stale::after {
-  border-style: dotted;
-}`);
+    expect(css).not.toContain('.cc-task-status-dot--failed::after');
+    expect(css).not.toContain('.cc-task-status-dot--cancelled::after');
+    expect(css).not.toContain('.cc-task-status-dot--stale::after');
     expect(css).not.toContain('.cc-task-status-icon');
   });
 
@@ -938,7 +1005,7 @@ describe('CatsCo shell styling', () => {
 
     expect(liquidSidebar).toContain('background: linear-gradient(180deg');
     expect(liquidSection).toContain('background: rgb(249, 251, 255);');
-    expect(liquidActive).toContain('background: rgba(233, 237, 255, 0.72);');
+    expect(liquidActive).toContain('background: rgba(73, 86, 168, 0.12);');
     expect(greenSidebar).toContain('background: linear-gradient(180deg, #151b19 0%, #111714 58%, #0f1513 100%);');
     expect(greenSection).toContain('background: rgb(18, 24, 22);');
     expect(greenActive).toContain('background: rgba(255, 255, 255, 0.09);');
@@ -979,16 +1046,19 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
-  it('reveals top-level section actions without adding a row hover surface', () => {
+  it('reveals top-level section actions on hover, expansion, or visible keyboard focus', () => {
     const actionRevealRule = ruleFor(
       `.v3-chat-section:hover > .cc-section-add,
-.v3-chat-section:focus-within > .cc-section-add,
+.v3-chat-section:has(> .cc-section-toggle:focus-visible) > .cc-section-add,
+.v3-chat-section[data-expanded="true"] > .cc-section-add,
 .cc-section-add:focus-visible`,
     );
     const nestedHoverRule = ruleFor('.v3-chat-section:not(.cc-top-level-section):hover');
 
     expect(actionRevealRule).toContain('opacity: 1;');
     expect(actionRevealRule).toContain('visibility: visible;');
+    expect(css).toContain('.v3-chat-section:has(> .cc-section-toggle:focus-visible) > .cc-section-add');
+    expect(css).not.toContain('.v3-chat-section:focus-within > .cc-section-add');
     expect(nestedHoverRule).toContain('background: var(--cc-hover);');
     expect(css).not.toContain('.v3-chat-section:hover {\n  background: var(--cc-hover);');
   });
@@ -1279,8 +1349,8 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('--cc-history-hover-border: rgba(255, 255, 255, 0.08);');
     expect(compactHistoryHoverRule).toContain('background: var(--cc-history-hover);');
     expect(compactHistoryHoverRule).toContain('box-shadow: inset 0 0 0 1px var(--cc-history-hover-border);');
-    expect(expandedHistoryHoverRule).toContain('background: var(--cc-history-hover);');
-    expect(expandedHistoryHoverRule).toContain('box-shadow: inset 0 0 0 1px var(--cc-history-hover-border);');
+    expect(expandedHistoryHoverRule).toContain('background: var(--cc-task-hover);');
+    expect(expandedHistoryHoverRule).toContain('box-shadow: none;');
     expect(interactionRule).toContain('background: var(--cc-hover);');
   });
 
@@ -1300,7 +1370,7 @@ describe('CatsCo shell styling', () => {
     expect(dotRule).toContain('right: 3px;');
     expect(dotRule).toContain('bottom: 3px;');
     expect(dotRule).toContain('width: 9px;');
-    expect(dotRule).toContain('box-shadow: 0 0 0 2px var(--cc-bg);');
+    expect(dotRule).not.toContain('box-shadow:');
     expect(runningRule).toContain('inset: 0;');
     expect(runningRule).toContain('justify-content: center;');
     expect(spinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
@@ -1309,15 +1379,9 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: var(--cc-danger);');
     expect(ruleFor('.cc-compact-task-status.cancelled,\n.cc-compact-task-status.stale'))
       .toContain('color: var(--cc-warning-text);');
-    expect(css).toContain(`.cc-compact-task-status.failed::after,
-.cc-compact-task-status.cancelled::after,
-.cc-compact-task-status.stale::after {`);
-    expect(css).toContain(`.cc-compact-task-status.cancelled::after {
-  border-style: dashed;
-}`);
-    expect(css).toContain(`.cc-compact-task-status.stale::after {
-  border-style: dotted;
-}`);
+    expect(css).not.toContain('.cc-compact-task-status.failed::after');
+    expect(css).not.toContain('.cc-compact-task-status.cancelled::after');
+    expect(css).not.toContain('.cc-compact-task-status.stale::after');
     expect(css).toContain('.cc-task-row-status.running svg,\n  .cc-compact-task-status.running svg');
   });
 
@@ -1550,18 +1614,38 @@ describe('CatsCo shell styling', () => {
 
   it('separates delivered files from the completion summary without splitting the reply', () => {
     const contentRule = ruleFor('.v3-message.artifacts-first .v3-message-content');
+    const peerBodyRule = ruleFor('.v3-message.is-peer.artifacts-first .v3-msg-body');
     const deliverablesRule = ruleFor('.v3-message.artifacts-first .v3-message-deliverables');
     const summaryRule = ruleFor('.v3-message.artifacts-first .v3-message-followup-text');
+    const artifactCardRule = ruleFor('.v3-message.artifacts-first .v3-attachment-card.v3-artifact-card');
+    const footerRule = ruleFor('.v3-message.is-peer.artifacts-first .v3-message-footer');
     const adjacentCardRule = ruleFor(
       '.oc-working-group + .v3-message.artifacts-first .v3-attachment-card.v3-artifact-card',
     );
 
     expect(contentRule).toContain('display: flex;');
+    expect(contentRule).toContain('width: 100%;');
     expect(contentRule).toContain('flex-direction: column;');
+    expect(peerBodyRule).toContain('width: calc(100% - 46px);');
+    expect(peerBodyRule).toContain('flex: 0 1 auto;');
     expect(deliverablesRule).toContain('width: 100%;');
     expect(deliverablesRule).toContain('gap: 8px;');
     expect(summaryRule).toContain('width: 100%;');
-    expect(summaryRule).toContain('margin-top: 14px;');
+    expect(summaryRule).toContain('margin-top: 8px;');
+    expect(summaryRule).toContain('gap: 4px;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section > span'))
+      .toContain('display: block;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section .oc-plain-text-paragraphs'))
+      .toContain('gap: 2px;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-message-followup-section .oc-markdown p'))
+      .toContain('margin-block: 2px;');
+    expect(artifactCardRule).toContain('width: min(480px, 100%);');
+    expect(artifactCardRule).toContain('max-width: min(480px, 100%);');
+    expect(ruleFor('.v3-message.artifacts-first .v3-attachment-info')).toContain('overflow: hidden;');
+    expect(ruleFor('.v3-message.artifacts-first .v3-attachment-name'))
+      .toContain('text-overflow: ellipsis;');
+    expect(footerRule).toContain('width: 100%;');
+    expect(footerRule).toContain('margin-top: 2px;');
     expect(adjacentCardRule).toContain('margin-bottom: 0;');
   });
 

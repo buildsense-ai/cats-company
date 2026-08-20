@@ -59,8 +59,13 @@ FLAVOR_ID="${CTYUN_WORKER_FLAVOR_ID:-}"
 VPC_ID="${CTYUN_WORKER_VPC_ID:-}"
 SUBNET_ID="${CTYUN_WORKER_SUBNET_ID:-}"
 SECURITY_GROUP_ID="${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
-# 内网模式：0 = 不绑定公网 IP（NAT 跳板架构，默认 1 兼容旧行为）
-EXT_IP="${CTYUN_WORKER_EXT_IP:-1}"
+# 默认使用内网 IP（NAT/跳板架构），不消耗公网 IP 配额。只有显式设为
+# 1 时才申请公网 IP 与带宽。
+EXT_IP="${CTYUN_WORKER_EXT_IP:-0}"
+if [[ "$EXT_IP" != "0" && "$EXT_IP" != "1" ]]; then
+  echo "error: CTYUN_WORKER_EXT_IP must be 0 or 1" >&2
+  exit 2
+fi
 # 计费模式（平台按月售卖，默认 month）：month = 包月 + 到期时间，ondemand = 按量
 # CTYUN_WORKER_CYCLE_COUNT：包月时长（月），默认 1
 # CTYUN_WORKER_AUTO_RENEW：1 = 创建后开自动续费（默认），0 = 不开
@@ -108,8 +113,13 @@ for v in "$REGION_ID" "$AZ_NAME" "$FLAVOR_ID" "$VPC_ID" "$SUBNET_ID" "$SECURITY_
 done
 
 INSTANCE_NAME="worker-${NAME}"
-# 供私钥/known_hosts 持久化（生产应为挂载卷；测试/本地可覆盖）
-STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+# 供私钥/known_hosts/身份快照持久化。生产使用 STATE_ROOT 按 tenant
+# 隔离；STATE_DIR 保留为测试和旧运维命令的精确目录覆盖。
+if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
+  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+fi
 
 # --- 工具 ---
 ctyun() {
@@ -244,6 +254,20 @@ PRIVATE_KEY="$STATE_DIR/id_rsa"
 keypair_id="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
   --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
   | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
+[[ ! -f "$PRIVATE_KEY" ]] || chmod 600 "$PRIVATE_KEY"
+
+# Tenant state became isolated after the first cloud-worker implementation.
+# A legacy or partially cleaned tenant can therefore retain its cloud key pair
+# after the only matching local private key has disappeared. Reusing that pair
+# would create an instance that this control plane can never SSH into. The
+# idempotency check above already proved that no same-name tenant instance is
+# running, so replace the orphan pair before creating any billable resource.
+if [[ -n "$keypair_id" ]] && ! ssh-keygen -y -f "$PRIVATE_KEY" >/dev/null 2>&1; then
+  echo "warning: replacing orphaned key pair $KEYPAIR_NAME because the tenant private key is unavailable" >&2
+  ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null
+  keypair_id=""
+fi
+
 if [[ -z "$keypair_id" ]]; then
   # 本次新建的 key pair 才允许失败清理删除（复用的不动，可能仍绑其他实例）
   KEYPAIR_CREATED=1
@@ -405,6 +429,16 @@ ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/cat
 # --- 7. 启用 service ---
 # 输出重定向：is-active 的 stdout（"active"）会污染下方 JSON 约定，仅保留退出码
 ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1
+
+APP_VERSION="$(ssh_run "root@$INSTANCE_IP" \
+  "cat /opt/catsco/current/worker-release.json 2>/dev/null" 2>/dev/null \
+  | jq -r '.version // empty' 2>/dev/null || true)"
+if [[ "$APP_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
+  printf '%s\n' "$APP_VERSION" > "$STATE_DIR/app_version.tmp"
+  mv -f "$STATE_DIR/app_version.tmp" "$STATE_DIR/app_version"
+else
+  echo "warning: provisioned application version could not be persisted" >&2
+fi
 
 echo "{\"status\":\"provisioned\",\"instance_id\":\"$CREATED_INSTANCE_ID\",\"instance_name\":\"$INSTANCE_NAME\",\"ip\":\"$INSTANCE_IP\",\"image_id\":\"$IMAGE_ID\"}"
 trap - EXIT

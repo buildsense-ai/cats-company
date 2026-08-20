@@ -4,8 +4,13 @@ import { Simulate } from 'react-dom/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const { artifactRefreshPreviewObserved } = vi.hoisted(() => ({
+const { artifactRefreshPreviewObserved, feedbackNotify } = vi.hoisted(() => ({
   artifactRefreshPreviewObserved: vi.fn(),
+  feedbackNotify: vi.fn(),
+}));
+
+vi.mock('../components/feedback-system', () => ({
+  useFeedback: () => ({ notify: feedbackNotify }),
 }));
 
 vi.mock('../widgets/chat-message', () => ({
@@ -176,8 +181,10 @@ vi.mock('../utils/conversation-share-image', () => ({
     }
     return typeof message?.content === 'string' ? message.content : message?.content?.text || '';
   },
-  downloadConversationShareImage: vi.fn(),
-  downloadConversationShareImages: vi.fn(),
+  downloadConversationShareImage: vi.fn(async () => true),
+  downloadConversationShareImages: vi.fn(async () => true),
+  isMobileConversationShareBrowser: vi.fn(() => false),
+  openConversationShareImageForManualSave: vi.fn(() => true),
   renderConversationShareImage: vi.fn(async () => ({
     dataUrl: 'data:image/png;base64,catsco-share',
     width: 1080,
@@ -201,6 +208,7 @@ vi.mock('../api', () => ({
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
@@ -212,17 +220,28 @@ vi.mock('../api', () => ({
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
   getApiBaseURL: () => window.location.origin,
+  resolveMediaURL: (url) => url,
 }));
 
 import MessagesView, {
+  canonicalizeStructuredMentionText,
   collectStructuredMentionTargets,
+  mergeOwnServerEcho,
+  ImageGalleryPreview,
+  reconcileRenderedGroupConsecutiveness,
   reconcileStructuredMentionSelections,
   shouldConvertPastedTextToDocument,
 } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
 import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
-import { downloadConversationShareImage, downloadConversationShareImages, renderConversationShareImage } from '../utils/conversation-share-image';
+import {
+  downloadConversationShareImage,
+  downloadConversationShareImages,
+  isMobileConversationShareBrowser,
+  openConversationShareImageForManualSave,
+  renderConversationShareImage,
+} from '../utils/conversation-share-image';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -365,6 +384,40 @@ describe('structured composer mention provenance', () => {
     expect(collectStructuredMentionTargets('请 @usr42 处理', reconciled)).toEqual(['usr42']);
   });
 
+  it('keeps the uid target while the selected token uses the Agent display name', () => {
+    const selection = [{ target: 'usr42', label: '市场助手', start: 0, end: 5 }];
+    const afterAppending = reconcileStructuredMentionSelections('@市场助手 ', '@市场助手 请处理', selection);
+    const reconciled = reconcileStructuredMentionSelections('@市场助手 请处理', '请 @市场助手 请处理', afterAppending);
+
+    expect(reconciled).toEqual([{
+      target: 'usr42',
+      label: '市场助手',
+      start: 2,
+      end: 7,
+    }]);
+    expect(collectStructuredMentionTargets('请 @市场助手 请处理', reconciled)).toEqual(['usr42']);
+    expect(canonicalizeStructuredMentionText('请 @市场助手 请处理', reconciled)).toBe('请 @usr42 请处理');
+  });
+
+  it('matches a UID server echo to its display-name optimistic message', () => {
+    const optimisticMessage = {
+      id: 100,
+      from_uid: 1,
+      content: '@市场助手 请处理',
+      _canonical_content: '@usr42 请处理',
+      _pending: true,
+    };
+    const serverMessage = {
+      id: 101,
+      seq_id: 101,
+      from_uid: 1,
+      content: '@usr42 请处理',
+    };
+
+    expect(mergeOwnServerEcho([optimisticMessage], serverMessage, 1)).toEqual([serverMessage]);
+    expect(mergeOwnServerEcho([optimisticMessage], serverMessage, 2)).toBeNull();
+  });
+
   it('keeps the picker-only all-bots target across surrounding edits', () => {
     const selection = [{ target: 'all', start: 0, end: 4 }];
     const afterAppending = reconcileStructuredMentionSelections('@所有人 ', '@所有人 一起处理', selection);
@@ -385,6 +438,78 @@ describe('structured composer mention provenance', () => {
     expect(collectStructuredMentionTargets('@usr42x ', selection)).toEqual([]);
   });
 
+});
+
+describe('ImageGalleryPreview', () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    document.querySelector('.oc-rich-image-gallery-preview')?.remove();
+  });
+
+  it('shows boundary controls, supports keyboard navigation, and restores the trigger focus', async () => {
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    document.body.appendChild(trigger);
+    const triggerRef = { current: trigger };
+    const items = [
+      { id: 'one', payload: { url: '/uploads/images/one.png', name: 'one.png' } },
+      { id: 'two', payload: { url: '/uploads/images/two.png', name: 'two.png' } },
+      { id: 'three', payload: { url: '/uploads/images/three.png', name: 'three.png' } },
+    ];
+    let selectedIndex = 0;
+    const render = () => root.render(
+      <ImageGalleryPreview
+        item={items[selectedIndex]}
+        index={selectedIndex}
+        items={items}
+        triggerRef={triggerRef}
+        onClose={() => root.render(null)}
+        onChange={(nextIndex) => {
+          selectedIndex = nextIndex;
+          render();
+        }}
+      />,
+    );
+
+    await act(async () => render());
+    expect(document.querySelector('[aria-label="上一张图片"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="上一张图片"]')?.disabled).toBe(true);
+    expect(document.querySelector('[aria-label="下一张图片"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    expect(document.querySelector('.oc-rich-image-preview-media')?.getAttribute('src')).toBe('/uploads/images/two.png');
+    expect(document.querySelector('[aria-label="上一张图片"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="上一张图片"]')?.disabled).toBe(false);
+    expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    expect(document.querySelector('.oc-rich-image-preview-media')?.getAttribute('src')).toBe('/uploads/images/three.png');
+    expect(document.querySelector('[aria-label="上一张图片"]')?.disabled).toBe(false);
+    expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(true);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('.oc-rich-image-gallery-preview')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
 });
 
 describe('long pasted text detection', () => {
@@ -423,6 +548,8 @@ describe('MessagesView composer draft isolation', () => {
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    feedbackNotify.mockReset();
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
@@ -437,6 +564,7 @@ describe('MessagesView composer draft isolation', () => {
       api_upload_url: '/api/mobile-upload/sessions/abc123/files',
     });
     api.getMobileUploadSession.mockResolvedValue({ session_id: 'abc123', files: [] });
+    isMobileConversationShareBrowser.mockReturnValue(false);
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
       wsHandler = handler;
@@ -459,6 +587,23 @@ describe('MessagesView composer draft isolation', () => {
     window.IntersectionObserver = originalIntersectionObserver;
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it('keeps the message view mountable when browser storage is blocked', async () => {
+    const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage access is blocked', 'SecurityError');
+      },
+    });
+
+    try {
+      await mountTopic(root, 'p2p_1_2');
+      expect(container.querySelector('textarea')).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+    }
   });
 
   it('loads around a search result, highlights its anchor, and returns to search', async () => {
@@ -583,7 +728,10 @@ describe('MessagesView composer draft isolation', () => {
         }));
       });
       expect(document.activeElement).toBe(downloadButton);
-      await act(async () => downloadButton.click());
+      await act(async () => {
+        downloadButton.click();
+        await flushPromises();
+      });
       expect(downloadConversationShareImage).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
       await act(async () => {
         document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -679,12 +827,96 @@ describe('MessagesView composer draft isolation', () => {
     expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,page-two');
 
     const downloadAllButton = [...preview.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('下载全部 PNG'));
-    await act(async () => downloadAllButton.click());
+      .find((button) => button.textContent.includes('下载全部图片（ZIP）'));
+    expect(downloadAllButton?.textContent).toBe('下载全部图片（ZIP）');
+    await act(async () => {
+      downloadAllButton.click();
+      await flushPromises();
+    });
     expect(downloadConversationShareImages).toHaveBeenCalledWith([
       'data:image/png;base64,page-one',
       'data:image/png;base64,page-two',
     ]);
+  });
+
+  it('labels multi-page mobile sharing as a system share action', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 202,
+        seq_id: 202,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '两张分享图',
+      }],
+    });
+    isMobileConversationShareBrowser.mockReturnValue(true);
+    renderConversationShareImage.mockResolvedValueOnce({
+      dataUrl: 'data:image/png;base64:page-one',
+      pages: [
+        { dataUrl: 'data:image/png;base64:page-one', width: 720, height: 1200, page: 1, total: 2 },
+        { dataUrl: 'data:image/png;base64:page-two', width: 720, height: 1200, page: 2, total: 2 },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    expect([...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('系统分享全部图片'))?.textContent)
+      .toBe('系统分享全部图片');
+  });
+
+  it('shows a visible recovery message when image saving cannot start', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 301,
+        seq_id: 301,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '请保存这张分享图',
+      }],
+    });
+    downloadConversationShareImage.mockResolvedValueOnce(false);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    const downloadButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('下载 PNG'));
+    await act(async () => {
+      downloadButton.click();
+      await flushPromises();
+    });
+
+    expect(preview?.textContent).toContain('无法启动图片保存。请在新标签页中打开图片后，使用浏览器的保存功能。');
+    const manualSaveButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('在新标签页打开图片'));
+    await act(async () => {
+      manualSaveButton.click();
+    });
+    expect(openConversationShareImageForManualSave).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {
@@ -815,6 +1047,93 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.senderName).toBe('Agent');
     expect(message?.dataset.senderAvatar).toBe('/uploads/agent.png');
     expect(message?.dataset.consecutive).toBe('false');
+  });
+
+  it('keeps sender metadata when the first Agent narrative is folded into a tool trace', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 741,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: '整理近期公开的金融行业新闻资讯，生成一份市场洞察摘要。',
+          created_at: '2026-08-18T09:00:00Z',
+        },
+        {
+          id: 742,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '收到。我会先核实公开来源，再生成市场洞察摘要。',
+          created_at: '2026-08-18T09:00:01Z',
+        },
+        {
+          id: 743,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-743' },
+          created_at: '2026-08-18T09:00:02Z',
+        },
+      ],
+    });
+    api.getFriends.mockResolvedValueOnce({
+      friends: [{
+        id: 2,
+        display_name: '市场洞察助理',
+        avatar_url: '/uploads/market-agent.png',
+        is_bot: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', {
+      topicName: '市场洞察助理',
+      topicAvatarUrl: '/uploads/market-agent.png',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const workingMessage = container.querySelector('[data-working-only="true"]');
+    expect(workingMessage?.dataset.workingMessageIds).toBe('742,743');
+    expect(workingMessage?.dataset.senderName).toBe('市场洞察助理');
+    expect(workingMessage?.dataset.senderAvatar).toBe('/uploads/market-agent.png');
+    expect(workingMessage?.dataset.consecutive).toBe('false');
+  });
+
+  it('shows Agent identity when a live working group follows a visible user message', () => {
+    const userGroup = {
+      type: 'text',
+      message: { id: 751, from_uid: 1 },
+      sourceMessages: [{ id: 751, from_uid: 1 }],
+      sender: { name: 'Cycren', isBot: false },
+      isConsecutive: false,
+    };
+    const workingGroup = {
+      type: 'working',
+      messages: [{ id: 752, from_uid: 2, type: 'tool_use', content: 'execute_shell' }],
+      sender: { name: '市场洞察助理', isBot: true },
+      isConsecutive: true,
+    };
+    const outputGroup = {
+      type: 'text',
+      message: { id: 753, from_uid: 2, role: 'assistant', type: 'text', content: '已完成。' },
+      sourceMessages: [{ id: 753, from_uid: 2, role: 'assistant', type: 'text', content: '已完成。' }],
+      sender: { name: '市场洞察助理', isBot: true },
+      isConsecutive: true,
+    };
+
+    const reconciled = reconcileRenderedGroupConsecutiveness([
+      userGroup,
+      workingGroup,
+      outputGroup,
+    ]);
+
+    expect(reconciled[1].isConsecutive).toBe(false);
+    expect(reconciled[2].isConsecutive).toBe(true);
   });
 
   it('ignores a stale group profile response after switching conversations', async () => {
@@ -2393,7 +2712,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果');
+        .find((button) => button.textContent === '共享');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -2847,7 +3166,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
   });
 
-  it('filters bot names and inserts the canonical uid mention with Enter', async () => {
+  it('filters bot names and inserts the display-name mention with Enter', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       group: { id: 80, name: 'Agent Room' },
       members: [
@@ -2873,12 +3192,12 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(textarea.value).toBe('@usr43 ');
+    expect(textarea.value).toBe('@Wanyu ');
     expect(container.querySelector('.oc-mention-picker')).toBeNull();
     expect(api.sendMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      typeDraft(textarea, '@usr43 请处理');
+      typeDraft(textarea, '@Wanyu 请处理');
     });
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2910,17 +3229,17 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await Promise.resolve();
     });
-    expect(textarea.value).toBe('@usr43 ');
+    expect(textarea.value).toBe('@Wanyu ');
 
     await act(async () => {
-      typeDraft(textarea, '@usr43x 请处理');
+      typeDraft(textarea, '@Wanyux 请处理');
     });
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43x 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@Wanyux 请处理', undefined);
   });
 
   it('restores picker provenance and original text after a send failure', async () => {
@@ -2947,10 +3266,10 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
     await act(async () => {
-      typeDraft(textarea, '  @usr43 ');
+      typeDraft(textarea, '  @Wanyu ');
     });
     await act(async () => {
-      typeDraft(textarea, '  @usr43 请处理  ');
+      typeDraft(textarea, '  @Wanyu 请处理  ');
     });
 
     await act(async () => {
@@ -2959,7 +3278,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
-    expect(textarea.value).toBe('  @usr43 请处理  ');
+    expect(textarea.value).toBe('  @Wanyu 请处理  ');
 
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -2991,20 +3310,20 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await Promise.resolve();
     });
-    expect(textarea.value).toBe('@usr43 ');
+    expect(textarea.value).toBe('@Wanyu ');
 
     await act(async () => {
       typeDraft(textarea, '请处理');
     });
     await act(async () => {
-      typeDraft(textarea, '@usr43 请处理');
+      typeDraft(textarea, '@Wanyu 请处理');
     });
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@Wanyu 请处理', undefined);
   });
 
   it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
@@ -3041,7 +3360,7 @@ describe('MessagesView composer draft isolation', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(textarea.value).toBe('前@usr42 后');
+    expect(textarea.value).toBe('前@Saturday 后');
   });
 
   it('lets the file preview panel width be adjusted and persisted', async () => {
@@ -3123,10 +3442,11 @@ describe('MessagesView composer draft isolation', () => {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
 
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3141,6 +3461,69 @@ describe('MessagesView composer draft isolation', () => {
     const preview = container.querySelector('.mock-file-preview');
     expect(preview?.textContent).toContain('课堂小游戏');
     expect(preview?.getAttribute('data-url')).toBe(artifact.url);
+  });
+
+  it('consumes a cloud artifacts request after opening it once', async () => {
+    const onRequestConsumed = vi.fn();
+    let switchTopic;
+    function TopicHarness() {
+      const [currentTopic, setCurrentTopic] = React.useState('p2p_1_440');
+      const [request, setRequest] = React.useState({
+        agentUid: 440,
+        requestId: 1,
+        topicId: 'p2p_1_440',
+      });
+      switchTopic = setCurrentTopic;
+      const consumeRequest = React.useCallback((requestId) => {
+        onRequestConsumed(requestId);
+        setRequest((current) => (
+          current?.requestId === requestId ? null : current
+        ));
+      }, []);
+
+      return (
+        <MessagesView
+          topic={currentTopic}
+          topicName={currentTopic}
+          user={user}
+          isGroup={false}
+          groupId={null}
+          topicAvatarUrl=""
+          onTopicUpdated={vi.fn()}
+          cloudArtifactsRequest={request}
+          onCloudArtifactsRequestConsumed={consumeRequest}
+        />
+      );
+    }
+
+    await act(async () => {
+      root.render(<TopicHarness />);
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(onRequestConsumed).toHaveBeenCalledTimes(1);
+    expect(onRequestConsumed).toHaveBeenCalledWith(1);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="关闭云文件"]'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+
+    await act(async () => {
+      switchTopic('p2p_1_2');
+      await flushPromises();
+    });
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+
+    await act(async () => {
+      switchTopic('p2p_1_440');
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+    expect(onRequestConsumed).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes the visible exact Artifact once when its published version increases', async () => {
@@ -3173,7 +3556,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -3254,7 +3637,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -3338,7 +3721,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -3415,7 +3798,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -3467,7 +3850,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果');
+        .find((button) => button.textContent === '共享');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await Promise.resolve();
@@ -3540,7 +3923,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -3594,7 +3977,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -3689,7 +4072,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果');
+        .find((button) => button.textContent === '共享');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -3798,7 +4181,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -3898,7 +4281,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -4026,7 +4409,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '成果'));
+        .find((button) => button.textContent === '共享'));
       await flushPromises();
     });
     await act(async () => {
@@ -4051,7 +4434,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined);
   });
 
-  it('finds an agent file from history and opens it in the existing file preview', async () => {
+  it('finds a conversation file from history and opens it in the existing file preview', async () => {
     const historicalFile = {
       id: '820:0',
       name: '期末学情报告.pdf',
@@ -4078,6 +4461,7 @@ describe('MessagesView composer draft isolation', () => {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]'));
       await Promise.resolve();
@@ -4099,6 +4483,7 @@ describe('MessagesView composer draft isolation', () => {
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
     expect(api.getTopicFiles).toHaveBeenCalledTimes(2);
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
   it('scopes the file panel request to the current group conversation', async () => {
@@ -4116,6 +4501,7 @@ describe('MessagesView composer draft isolation', () => {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
   it('opens conversation files without an Agent and hides the results tab', async () => {
@@ -5468,6 +5854,91 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('0');
   });
 
+  it('does not announce an Artifact that was already present when history loaded', async () => {
+    const artifactURL = 'https://artifacts.example.test/by-agent/440/history/latest/';
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 700,
+        from_uid: 440,
+        content: `已发布：${artifactURL}`,
+        created_at: '2026-07-27T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        topic_id: 'p2p_1_440',
+        username: 'doubao',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{ id: 'history', url: artifactURL }],
+    });
+
+    await mountTopic(root, 'p2p_1_440');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(feedbackNotify).not.toHaveBeenCalled();
+  });
+
+  it('announces a newly completed republish even when the latest URL is unchanged', async () => {
+    const artifactURL = 'https://artifacts.example.test/by-agent/440/reused/latest/';
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 700,
+        from_uid: 440,
+        content: `已发布：${artifactURL}`,
+        created_at: '2026-07-27T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        topic_id: 'p2p_1_440',
+        username: 'doubao',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{ id: 'reused', url: artifactURL, publish_version: 2 }],
+    });
+
+    await mountTopic(root, 'p2p_1_440');
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(feedbackNotify).not.toHaveBeenCalled();
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_440',
+          from: 'usr440',
+          seq_id: 704,
+          type: 'text',
+          content: `已重新发布：${artifactURL}`,
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(feedbackNotify).toHaveBeenCalledWith({
+      tone: 'success',
+      message: '已共享内容到云端',
+    });
+  });
+
   it('lets only the latest Artifact registry request update the active Agent state', async () => {
     const firstRegistry = deferred();
     const refreshedRegistry = deferred();
@@ -5570,6 +6041,15 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(api.getCloudArtifacts).toHaveBeenCalledTimes(callsBeforeStream);
+    expect(feedbackNotify).not.toHaveBeenCalled();
+
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{
+        id: 'game',
+        title: '课堂小游戏',
+        url: 'https://artifacts.example.test/by-agent/440/game/latest/',
+      }],
+    });
 
     await act(async () => {
       wsHandler({
@@ -5585,6 +6065,10 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(api.getCloudArtifacts).toHaveBeenCalledTimes(callsBeforeStream + 1);
+    expect(feedbackNotify).toHaveBeenCalledWith({
+      tone: 'success',
+      message: '已共享内容到云端',
+    });
   });
 
   it('recognizes the only task Agent from the Agent roster when member disclosure is absent', async () => {

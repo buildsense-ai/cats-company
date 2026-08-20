@@ -17,6 +17,7 @@ describe('CloudWorkerPanel', () => {
     display_name: '云端审查助手',
     username: 'bot-cloud-1',
     cloud_status: 'running',
+    app_version: '1.4.9',
     cloud_version: '1.4.8',
     cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
     ...overrides,
@@ -29,8 +30,10 @@ describe('CloudWorkerPanel', () => {
         quotaError: false,
         workers: [],
         images: [],
+        releases: [],
         actioning: null,
         onCreate: vi.fn(),
+        onUpdate: vi.fn(),
         onRollback: vi.fn(),
         onReset: vi.fn(),
         onDelete: vi.fn(),
@@ -140,8 +143,9 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('@bot-cloud-1');
     expect(container.textContent).toContain('运行中');
-    expect(container.textContent).toContain('版本 1.4.8');
-    expect(container.textContent).toContain('镜像 79f5b7f4');
+    expect(container.textContent).toContain('应用版本 1.4.9');
+    expect(container.textContent).toContain('基础镜像 1.4.8');
+    expect(container.textContent).not.toContain('镜像 79f5b7f4');
     expect(container.textContent).toContain('1 个');
   });
 
@@ -149,7 +153,21 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker({ cloud_status: 'weird_state' })],
     });
-    expect(container.textContent).toContain('状态同步中');
+    expect(container.textContent).toContain('状态未知');
+  });
+
+  test('renders an unavailable probe as a settled state instead of loading forever', async () => {
+    await renderPanel({
+      workers: [worker({
+        cloud_status: 'unavailable',
+        app_version: '',
+        cloud_version: '',
+        cloud_image_id: '',
+      })],
+    });
+    expect(container.textContent).toContain('状态暂不可用');
+    expect(container.textContent).toContain('暂未读取到版本信息');
+    expect(container.textContent).not.toContain('同步中');
   });
 
   test('labels creating / stopped / missing cloud states distinctly', async () => {
@@ -166,32 +184,45 @@ describe('CloudWorkerPanel', () => {
     expect(text).toContain('实例不存在');
   });
 
-  test('calls rollback/reset/delete callbacks from worker actions', async () => {
+  test('calls update/rollback/reset/delete callbacks from worker actions', async () => {
+    const onUpdate = vi.fn();
     const onRollback = vi.fn();
     const onReset = vi.fn();
     const onDelete = vi.fn();
     const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
+    const releases = [{ version: '1.4.10' }, { version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
       workers: [worker()],
       images,
+      releases,
+      onUpdate,
       onRollback,
       onReset,
       onDelete,
     });
 
     const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
     const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
     const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
     const deleteBtn = buttons[buttons.length - 1];
 
-    // rollback with no explicit version passes '' (latest) + fromPanel flag
+    await act(async () => {
+      Simulate.click(updateBtn);
+    });
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '1.4.10',
+    );
+
+    // rollback defaults to the newest published application release.
     await act(async () => {
       Simulate.click(rollbackBtn);
     });
     expect(onRollback).toHaveBeenCalledTimes(1);
     expect(onRollback).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
+      '1.4.8',
       { fromPanel: true },
     );
 
@@ -212,7 +243,7 @@ describe('CloudWorkerPanel', () => {
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onReset).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
+      '1.4.8',
       { verified: true },
     );
 
@@ -242,6 +273,10 @@ describe('CloudWorkerPanel', () => {
     // 验证码确认区明确标注被重置的机器人
     expect(container.querySelector('.cc-cloud-reset-confirm-title').textContent)
       .toContain('重置「云端审查助手」');
+    expect(container.querySelector('.cc-cloud-reset-confirm-title').textContent)
+      .toContain('基础镜像 1.4.8');
+    expect(container.querySelector('.cc-cloud-reset-confirm-warning').textContent)
+      .toContain('二次确认');
 
     const code = container.querySelector('.cc-cloud-reset-confirm-code b').textContent;
     const captchaInput = container.querySelector('.cc-cloud-reset-confirm-input input');
@@ -268,7 +303,7 @@ describe('CloudWorkerPanel', () => {
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onReset).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
+      '1.4.8',
       { verified: true },
     );
     // confirmation panel closes after a successful reset
@@ -277,16 +312,16 @@ describe('CloudWorkerPanel', () => {
 
   test('rollback passes a user-selected version from the dropdown', async () => {
     const onRollback = vi.fn();
-    const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
+    const releases = [{ version: '1.4.9' }, { version: '1.4.8' }, { version: '1.4.7' }];
     await renderPanel({
       workers: [worker()],
-      images,
+      releases,
       onRollback,
     });
 
-    const select = container.querySelector('.cc-cloud-version-select');
-    expect(select.value).toBe(''); // defaults to '' (latest), not the first image
-    expect(Array.from(select.options).map((o) => o.value)).toEqual(['', '1.4.8', '1.4.7']);
+    const select = container.querySelector('.cc-cloud-rollback-version-select');
+    expect(select.value).toBe('1.4.8');
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['1.4.8', '1.4.7']);
 
     await act(async () => {
       Simulate.change(select, { target: { value: '1.4.7' } });
@@ -303,54 +338,135 @@ describe('CloudWorkerPanel', () => {
     );
   });
 
-  test('latest version passes an empty version even when images are unordered', async () => {
-    // 无序镜像列表：选择「最新版本」必须传 ''，而不是镜像列表第一项
-    const onRollback = vi.fn();
-    const images = [{ version: '1.4.7' }, { version: '1.4.8' }, { version: '1.4.5' }];
+  test('update always passes the explicit newest published release', async () => {
+    const onUpdate = vi.fn();
+    const releases = [{ version: '1.4.10' }, { version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
       workers: [worker()],
-      images,
-      onRollback,
+      releases,
+      onUpdate,
     });
 
-    const select = container.querySelector('.cc-cloud-version-select');
-    expect(select.value).toBe('');
+    const select = container.querySelector('.cc-cloud-update-version-select');
+    expect(select.value).toBe('1.4.10');
+    const updateBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
+      .find((el) => el.textContent.includes('更新'));
     await act(async () => {
-      Simulate.change(select, { target: { value: '' } }); // 明确选「最新版本」
+      Simulate.click(updateBtn);
     });
-    const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
-      .find((el) => el.textContent.includes('回滚'));
-    await act(async () => {
-      Simulate.click(rollbackBtn);
-    });
-    expect(onRollback).toHaveBeenCalledWith(
+    expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '',
-      { fromPanel: true },
+      '1.4.10',
     );
   });
 
-  test('rollback is disabled when no image versions are available', async () => {
+  test('shows only higher releases for update, lower releases for rollback, and every image for reset', async () => {
+    await renderPanel({
+      workers: [worker({ app_version: '1.4.9' })],
+      releases: [
+        { version: '1.5.0' },
+        { version: '1.4.10' },
+        { version: '1.4.9' },
+        { version: '1.4.8' },
+        { version: '1.3.12' },
+      ],
+      images: [{ version: '1.4.9' }, { version: '1.4.8' }],
+    });
+
+    const updates = container.querySelector('.cc-cloud-update-version-select');
+    const rollbacks = container.querySelector('.cc-cloud-rollback-version-select');
+    const images = container.querySelector('.cc-cloud-image-select');
+    expect(Array.from(updates.options).map((option) => option.value)).toEqual(['1.5.0', '1.4.10']);
+    expect(Array.from(rollbacks.options).map((option) => option.value)).toEqual(['1.4.8', '1.3.12']);
+    expect(Array.from(images.options).map((option) => option.value)).toEqual(['1.4.9', '1.4.8']);
+  });
+
+  test('disables update and rollback when the current application version is unknown', async () => {
+    await renderPanel({
+      workers: [worker({ app_version: '' })],
+      releases: [{ version: '1.4.9' }, { version: '1.4.8' }],
+      images: [{ version: '1.4.8' }],
+    });
+
+    expect(container.querySelector('.cc-cloud-update-version-select').disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-rollback-version-select').disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-image-select').disabled).toBe(false);
+    expect(container.textContent).toContain('当前版本未知');
+  });
+
+  test('rollback is disabled when no application releases are available', async () => {
     await renderPanel({
       workers: [worker()],
       images: [],
+      releases: [],
     });
     const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
       .find((el) => el.textContent.includes('回滚'));
     expect(rollbackBtn.disabled).toBe(true);
-    const select = container.querySelector('.cc-cloud-version-select');
+    const select = container.querySelector('.cc-cloud-update-version-select');
     expect(select.disabled).toBe(true);
+  });
+
+  test('disables only cloud actions explicitly reported as unavailable', async () => {
+    await renderPanel({
+      workers: [worker()],
+      images: [{ version: '1.4.9' }],
+      releases: [{ version: '1.4.10' }, { version: '1.4.8' }],
+      actions: {
+        create: false,
+        update: false,
+        rollback: true,
+        reset: false,
+        delete: false,
+      },
+    });
+
+    expect(container.textContent).toContain('云端创建服务尚未配置');
+    expect(container.textContent).toContain('部分云端管理功能暂不可用');
+    const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
+    const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
+    const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
+    const deleteBtn = buttons[buttons.length - 1];
+    expect(updateBtn.disabled).toBe(true);
+    expect(updateBtn.title).toContain('尚未配置');
+    expect(rollbackBtn.disabled).toBe(false);
+    expect(resetBtn.disabled).toBe(true);
+    expect(deleteBtn.disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-update-version-select').disabled).toBe(true);
+    expect(container.querySelector('.cc-cloud-rollback-version-select').disabled).toBe(false);
   });
 
   test('disables worker actions while the worker is being acted on', async () => {
     await renderPanel({
       workers: [worker()],
       images: [{ version: '1.4.8' }],
+      releases: [{ version: '1.4.9' }],
       actioning: 'tenant-a',
     });
     const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     expect(actionButtons.length).toBeGreaterThan(0);
     actionButtons.forEach((btn) => expect(btn.disabled).toBe(true));
+  });
+
+  test('shows the exact wait state and blocks actions on every worker', async () => {
+    await renderPanel({
+      workers: [worker(), worker({ tenant_name: 'tenant-b', id: 92, uid: 92 })],
+      images: [{ version: '1.4.8' }],
+      releases: [{ version: '1.4.9' }],
+      actioning: { name: 'tenant-a', action: 'update' },
+    });
+
+    const status = container.querySelector('.cc-cloud-operation-status');
+    expect(status).toBeTruthy();
+    expect(status.textContent).toContain('正在更新应用');
+    expect(status.querySelector('.cc-cloud-operation-progress')).toBeTruthy();
+    expect(status.textContent).toContain('保持页面打开');
+    expect(container.textContent).toContain('更新中...');
+    const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    actionButtons.forEach((button) => expect(button.disabled).toBe(true));
+    const selectors = Array.from(container.querySelectorAll('.cc-cloud-version-select, .cc-cloud-image-select'));
+    selectors.forEach((select) => expect(select.disabled).toBe(true));
   });
 
   test('shows the categorized failure message inline in the create card', async () => {

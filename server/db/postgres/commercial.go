@@ -553,8 +553,9 @@ func (a *Adapter) GetCommercialSummary(uid int64) (*types.CommercialSummary, err
 			return nil, fmt.Errorf("scan commercial quota grant: %w", err)
 		}
 		summary.Grants = append(summary.Grants, item)
-		summary.TotalsByModel[item.Model] += item.AmountCNY
-		summary.TotalCNY += item.AmountCNY
+		signedAmount := commercialQuotaGrantSignedAmount(item)
+		summary.TotalsByModel[item.Model] += signedAmount
+		summary.TotalCNY += signedAmount
 	}
 	if err := grantRows.Close(); err != nil {
 		return nil, err

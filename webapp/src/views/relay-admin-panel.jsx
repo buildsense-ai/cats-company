@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw, X } from 'lucide-react';
 import { api } from '../api';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 
 export const RELAY_ADMIN_WIDTH_STORAGE_KEY = 'cc_relay_admin_width_v1';
 export const RELAY_ADMIN_WIDTH_MIN = 360;
@@ -19,15 +20,13 @@ export function clampRelayAdminWidth(width) {
 }
 
 export function loadRelayAdminWidth() {
-  if (typeof window === 'undefined' || !window.localStorage) return RELAY_ADMIN_WIDTH_DEFAULT;
   return clampRelayAdminWidth(
-    Number(window.localStorage.getItem(RELAY_ADMIN_WIDTH_STORAGE_KEY)) || RELAY_ADMIN_WIDTH_DEFAULT,
+    Number(readStorageValue(RELAY_ADMIN_WIDTH_STORAGE_KEY)) || RELAY_ADMIN_WIDTH_DEFAULT,
   );
 }
 
 export function saveRelayAdminWidth(width) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(RELAY_ADMIN_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  writeStorageValue(RELAY_ADMIN_WIDTH_STORAGE_KEY, String(Math.round(width)));
 }
 
 export default function RelayAdminPanel({ onClose }) {

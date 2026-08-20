@@ -357,7 +357,7 @@ Runtime 仍使用 `X-API-Key` 连接 WebSocket，并额外通过 `X-CatsCo-Runti
 
 #### GET /api/agents/skills — 读取 Agent 技能列表
 
-需要用户 JWT 鉴权。Agent 所有者和好友可读取脱敏技能元数据；`skills_visibility=public` 还允许非好友用户读取。响应只包含已经同步到 BotDefinition 的技能标识、来源和版本，不返回内容哈希、Bot definition、模型、提示词、设备路径、技能源码或密钥。
+需要用户 JWT 鉴权。Agent 所有者和好友可读取脱敏技能元数据；`skills_visibility=public` 还允许非好友用户读取。响应只包含已经同步到 BotDefinition 的技能标识、来源、版本，以及 SkillHub 能安全解析时的可选 `displayName`。私有能力名称由服务端使用目标 Bot 的身份向 SkillHub 查询；Bot API key 不会返回浏览器。接口不返回内容哈希、Bot definition、模型、提示词、设备路径、技能源码或密钥。SkillHub 暂时不可用时，`displayName` 会省略，但技能列表仍然可读。
 
 ```json
 // Response 200
@@ -365,7 +365,7 @@ Runtime 仍使用 `X-API-Key` 连接 WebSocket，并额外通过 `X-CatsCo-Runti
   "botId": "10",
   "skills_visibility": "authorized",
   "skills": [
-    { "source": "skillhub", "skillId": "catsco/example", "version": "1.0.0" }
+    { "source": "skillhub", "skillId": "priv_example", "version": "v_1", "displayName": "example" }
   ]
 }
 ```
@@ -638,6 +638,16 @@ XiaoBa-CLI 等 Agent runtime 在多人群中接收、处理或转发取消事件
 // 已读
 { "info": { "topic": "p2p_1_10", "from": "1", "what": "read", "seq": 42 } }
 ```
+
+#### 应用通知 (notification)
+
+成员成功共享 Agent 云成果后，所有者在线客户端会收到隐私最小化事件：
+
+```json
+{ "notification": { "type": "cloud_artifact_shared", "message": "有新文件在云端共享" } }
+```
+
+事件不携带成果标题、文件 URL、任务名或上传者信息。
 
 ### 3.5 富媒体消息格式
 

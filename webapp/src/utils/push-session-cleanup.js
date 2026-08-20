@@ -1,34 +1,27 @@
 import { getPushSubscription } from './push-notifications';
+import {
+  readStorageValue,
+  removeStorageValue,
+  writeStorageValue,
+} from './storage-access';
 
 const PENDING_PUSH_UNSUBSCRIBE_KEY = 'oc_push_pending_unsubscribe_v1';
 
 function pendingPushUnsubscribeEndpoint() {
-  try {
-    return String(globalThis.localStorage?.getItem(PENDING_PUSH_UNSUBSCRIBE_KEY) || '').trim();
-  } catch {
-    return '';
-  }
+  return String(readStorageValue(PENDING_PUSH_UNSUBSCRIBE_KEY) || '').trim();
 }
 
 export function rememberPendingPushUnsubscribe(endpoint) {
   const normalizedEndpoint = String(endpoint || '').trim();
   if (!normalizedEndpoint) return;
-  try {
-    globalThis.localStorage?.setItem(PENDING_PUSH_UNSUBSCRIBE_KEY, normalizedEndpoint);
-  } catch {
-    // A later session can still reclaim the browser endpoint on the server.
-  }
+  writeStorageValue(PENDING_PUSH_UNSUBSCRIBE_KEY, normalizedEndpoint);
 }
 
 export function clearPendingPushUnsubscribe(endpoint = '') {
   const normalizedEndpoint = String(endpoint || '').trim();
-  try {
-    const pendingEndpoint = pendingPushUnsubscribeEndpoint();
-    if (normalizedEndpoint && pendingEndpoint !== normalizedEndpoint) return;
-    globalThis.localStorage?.removeItem(PENDING_PUSH_UNSUBSCRIBE_KEY);
-  } catch {
-    // Storage can be unavailable in private browsing modes.
-  }
+  const pendingEndpoint = pendingPushUnsubscribeEndpoint();
+  if (normalizedEndpoint && pendingEndpoint !== normalizedEndpoint) return;
+  removeStorageValue(PENDING_PUSH_UNSUBSCRIBE_KEY);
 }
 
 async function unsubscribeBrowserSubscription(subscription) {
