@@ -2,6 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Bug, Plus, X } from 'lucide-react';
 import { api } from '../api';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import {
+  readStorageValue,
+  removeStorageValue,
+  writeStorageValue,
+} from '../utils/storage-access';
 
 const MAX_ATTACHMENTS = 5;
 const FEEDBACK_DRAFT_VERSION = 1;
@@ -11,15 +16,14 @@ function getDraftKey(user) {
 }
 
 function readDraft(draftKey) {
+  const saved = readStorageValue(draftKey);
+  if (!saved) return null;
   try {
-    const saved = localStorage.getItem(draftKey);
-    if (!saved) return null;
     const draft = JSON.parse(saved);
-    if (draft?.version !== FEEDBACK_DRAFT_VERSION) return null;
-    return draft;
+    return draft?.version === FEEDBACK_DRAFT_VERSION ? draft : null;
   } catch (error) {
     console.warn('Failed to restore feedback draft:', error);
-    localStorage.removeItem(draftKey);
+    removeStorageValue(draftKey);
     return null;
   }
 }
@@ -63,9 +67,9 @@ export default function FeedbackModal({ onClose, user }) {
     };
 
     if (isEmptyDraft(draft)) {
-      localStorage.removeItem(draftKey);
+      removeStorageValue(draftKey);
     } else {
-      localStorage.setItem(draftKey, JSON.stringify(draft));
+      writeStorageValue(draftKey, JSON.stringify(draft));
     }
   }, [category, description, draftKey, submitted, title]);
 
@@ -154,7 +158,7 @@ export default function FeedbackModal({ onClose, user }) {
         attachments: uploaded,
       });
 
-      localStorage.removeItem(draftKey);
+      removeStorageValue(draftKey);
       setSubmitted(true);
     } catch (err) {
       setError(err.message || '提交失败，请稍后再试。');

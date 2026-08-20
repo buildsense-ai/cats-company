@@ -7286,6 +7286,18 @@ button.catsco-download-action:disabled {
   background: var(--cc-panel);
 }
 
+.cc-conversation-share-preview-status {
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--cc-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cc-conversation-share-preview-status.is-error {
+  color: var(--cc-danger);
+}
+
 .cc-conversation-share-preview-actions {
   justify-content: flex-end;
   flex-wrap: wrap;

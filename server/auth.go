@@ -150,7 +150,10 @@ func activeUserFromClaims(claims *JWTClaims, lookupUser func(int64) (*types.User
 
 func activeUserByID(uid int64, lookupUser func(int64) (*types.User, error)) (*types.User, int, string) {
 	user, err := lookupUser(uid)
-	if err != nil || user == nil {
+	if err != nil {
+		return nil, http.StatusInternalServerError, "authentication service unavailable"
+	}
+	if user == nil {
 		return nil, http.StatusUnauthorized, "invalid or expired token"
 	}
 	if user.State != 0 {

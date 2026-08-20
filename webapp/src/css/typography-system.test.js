@@ -5,6 +5,7 @@ const readSource = (path) => readFileSync(resolve(process.cwd(), path), 'utf8')
   .replace(/\r\n?/g, '\n');
 
 const indexSource = readSource('src/index.jsx');
+const workspaceStylesSource = readSource('src/views/workspace-styles.js');
 const catscoCss = readSource('src/css/catsco-ui-system.css');
 const openchatCss = readSource('src/css/openchat-theme.css');
 const markdownSource = readSource('src/widgets/markdown-utils.js');
@@ -15,10 +16,13 @@ const allCss = readdirSync(resolve(process.cwd(), 'src/css'))
   .join('\n');
 
 describe('CatsCo typography system', () => {
-  it('bundles the three variable font families locally', () => {
+  it('loads auth-facing font families before the workspace and defers only monospace', () => {
     expect(indexSource).toContain("import '@fontsource-variable/inter/wght.css';");
     expect(indexSource).toContain("import '@fontsource-variable/noto-sans-sc/wght.css';");
-    expect(indexSource).toContain("import '@fontsource-variable/jetbrains-mono/wght.css';");
+    expect(indexSource).not.toContain("import '@fontsource-variable/jetbrains-mono/wght.css';");
+    expect(workspaceStylesSource).not.toContain("import '@fontsource-variable/inter/wght.css';");
+    expect(workspaceStylesSource).not.toContain("import '@fontsource-variable/noto-sans-sc/wght.css';");
+    expect(workspaceStylesSource).toContain("import '@fontsource-variable/jetbrains-mono/wght.css';");
   });
 
   it('uses Inter with Noto Sans SC fallback across the interface', () => {

@@ -1,4 +1,5 @@
 import { isStandaloneWebApp } from './standalone-web-app';
+import { readStorageValue, writeStorageValue } from './storage-access';
 
 export const PUSH_DISMISSED_KEY = 'cc_push_prompt_dismissed_v1';
 export const PUSH_ENABLED_KEY = 'cc_push_enabled_v1';
@@ -16,13 +17,13 @@ export function pushEnabledStorageKey(owner) {
 export function readPushEnabled(owner) {
   const storageKey = pushEnabledStorageKey(owner);
   if (!storageKey) return true;
-  return localStorage.getItem(storageKey) !== 'false';
+  return readStorageValue(storageKey) !== 'false';
 }
 
 export function writePushEnabled(owner, enabled) {
   const storageKey = pushEnabledStorageKey(owner);
   if (!storageKey) return;
-  localStorage.setItem(storageKey, String(Boolean(enabled)));
+  writeStorageValue(storageKey, String(Boolean(enabled)));
 }
 
 export function urlBase64ToUint8Array(value) {
