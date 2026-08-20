@@ -474,6 +474,131 @@ describe('ChatComposer', () => {
     vi.useRealTimers();
   });
 
+  it('finishes a mobile hold when the release lands on document after capture is lost', async () => {
+    vi.useFakeTimers();
+    const onVoiceFinal = vi.fn();
+    let callbacks;
+    const voiceSession = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal,
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return voiceSession;
+      },
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 21,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      document.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 21,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(voiceSession.stop).toHaveBeenCalledTimes(1);
+    expect(voiceSession.cancel).not.toHaveBeenCalled();
+
+    await act(async () => {
+      callbacks.onFinal('移动端最终文字');
+    });
+    expect(onVoiceFinal).toHaveBeenCalledWith('移动端最终文字', expect.objectContaining({
+      baseValue: '',
+      start: 0,
+      end: 0,
+    }));
+    vi.useRealTimers();
+  });
+
+  it('still stops when releasing pointer capture reports that capture is already gone', async () => {
+    vi.useFakeTimers();
+    const voiceSession = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: () => voiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    voiceButton.setPointerCapture = vi.fn();
+    voiceButton.releasePointerCapture = vi.fn(() => {
+      throw new DOMException('No active pointer capture', 'NotFoundError');
+    });
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 22,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+      voiceButton.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 22,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(voiceSession.stop).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('finishes a mobile hold from touchend when no pointerup is delivered', async () => {
+    vi.useFakeTimers();
+    const voiceSession = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: () => voiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 23,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+      document.dispatchEvent(new Event('touchend', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(voiceSession.stop).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it('keeps the hold waveform static when reduced motion is requested', async () => {
     vi.useFakeTimers();
     window.matchMedia.mockReturnValue({ matches: true });
