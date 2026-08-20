@@ -2939,11 +2939,11 @@ export default function MessagesView({
   const generateConversationShareImage = useCallback(async () => {
     if (selectedConversationShareItems.length === 0) {
       setConversationShareError(t('conversation_share_select_required'));
-      return;
+      return false;
     }
     if (selectedConversationShareItems.length > MAX_CONVERSATION_SHARE_IMAGE_ITEMS) {
       setConversationShareError(t('conversation_share_image_limit_error', { limit: MAX_CONVERSATION_SHARE_IMAGE_ITEMS }));
-      return;
+      return false;
     }
     setConversationShareGenerating(true);
     setConversationShareError('');
@@ -2966,8 +2966,10 @@ export default function MessagesView({
       setConversationShareImages(pages);
       setConversationSharePreviewPage(0);
       setConversationSharePreviewOpen(true);
+      return true;
     } catch (error) {
       setConversationShareError(error?.message || t('conversation_share_image_error'));
+      return false;
     } finally {
       setConversationShareGenerating(false);
     }
@@ -3348,6 +3350,7 @@ export default function MessagesView({
                       className="cc-conversation-share-secondary"
                       disabled={!canOpenConversationShare || selectedConversationShareMessageIDs.length === 0}
                       onClick={() => {
+                        setConversationShareError('');
                         setConversationLinkShareReviewMode('create');
                         setConversationLinkShareReviewOpen(true);
                       }}
@@ -3371,7 +3374,11 @@ export default function MessagesView({
                       type="button"
                       className="cc-conversation-share-primary"
                       disabled={!canOpenConversationShare || conversationShareGenerating || selectedConversationShareItems.length === 0}
-                      onClick={() => void generateConversationShareImage()}
+                      onClick={() => {
+                        setConversationShareError('');
+                        setConversationLinkShareReviewMode('image');
+                        setConversationLinkShareReviewOpen(true);
+                      }}
                     >
                       {conversationShareGenerating ? <LoaderCircle className="is-spinning" size={16} aria-hidden="true" /> : <ImageDown size={16} aria-hidden="true" />}
                       {conversationShareGenerating ? t('conversation_share_generating') : t('conversation_share_generate_image')}
@@ -3391,7 +3398,11 @@ export default function MessagesView({
                   messageIds={selectedConversationShareMessageIDs}
                   mode={conversationLinkShareReviewMode}
                   onClose={() => setConversationLinkShareReviewOpen(false)}
-                  onComplete={closeConversationShare}
+                  onComplete={conversationLinkShareReviewMode === 'image'
+                    ? () => setConversationLinkShareReviewOpen(false)
+                    : closeConversationShare}
+                  onGenerateImage={conversationLinkShareReviewMode === 'image' ? generateConversationShareImage : undefined}
+                  externalError={conversationLinkShareReviewMode === 'image' ? conversationShareError : ''}
                 />
               )}
               <div className="v3-date-divider">

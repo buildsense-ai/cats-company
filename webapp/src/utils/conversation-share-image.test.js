@@ -46,6 +46,15 @@ describe('conversation share image helpers', () => {
     expect(conversationShareText({ content: longText })).toBe(longText);
   });
 
+  it('sanitizes private URLs before rendering a share image', () => {
+    const text = conversationShareText({
+      content: '附件 /uploads/files/private.pdf，公开文档 https://example.com/docs',
+    });
+
+    expect(text).not.toContain('/uploads/files/private.pdf');
+    expect(text).toContain('https://example.com/docs');
+  });
+
   it('prefers stable message identifiers for selection keys', () => {
     expect(conversationShareMessageKey({ id: 42 }, 3)).toBe('42');
     expect(conversationShareMessageKey({ seq_id: 8 }, 3)).toBe('8');

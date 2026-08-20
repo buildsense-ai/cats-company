@@ -571,6 +571,16 @@ describe('MessagesView composer draft isolation', () => {
         generateButton.click();
         await flushPromises();
       });
+      expect(renderConversationShareImage).not.toHaveBeenCalled();
+
+      const review = container.querySelector('.cc-conversation-link-share-review');
+      expect(review?.textContent).toContain('确认分享内容');
+      const reviewGenerateButton = [...review.querySelectorAll('button')]
+        .find((button) => button.textContent.includes('生成分享图'));
+      await act(async () => {
+        reviewGenerateButton.click();
+        await flushPromises();
+      });
       expect(renderConversationShareImage).toHaveBeenCalledWith(expect.objectContaining({
         topicName: '项目周报',
         theme: 'liquid-green',
@@ -715,7 +725,13 @@ describe('MessagesView composer draft isolation', () => {
     const generateButton = [...toolbar.querySelectorAll('button')]
       .find((button) => button.textContent.includes('生成分享图'));
     await act(async () => generateButton.click());
+    const reviewGenerateButton = [...container.querySelectorAll('.cc-conversation-link-share-review button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => reviewGenerateButton.click());
     expect(toolbar?.textContent).toContain('分享图最多选择 50 个展示项。');
+    await act(async () => {
+      container.querySelector('.cc-conversation-link-share-review button.cc-conversation-share-secondary').click();
+    });
 
     const createLink = [...toolbar.querySelectorAll('button')]
       .find((button) => button.textContent.includes('创建链接'));
@@ -809,6 +825,12 @@ describe('MessagesView composer draft isolation', () => {
       .find((button) => button.textContent.includes('生成分享图'));
     await act(async () => {
       generateButton.click();
+      await flushPromises();
+    });
+    const reviewGenerateButton = [...container.querySelectorAll('.cc-conversation-link-share-review button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      reviewGenerateButton.click();
       await flushPromises();
     });
 

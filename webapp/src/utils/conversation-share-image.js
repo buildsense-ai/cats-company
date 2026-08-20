@@ -1,3 +1,5 @@
+import { sanitizeConversationShareText } from './conversation-share-text';
+
 const DEFAULT_WIDTH = 720;
 const DEFAULT_SCALE = 1.5;
 const MIN_OUTPUT_SCALE = 0.75;
@@ -108,7 +110,7 @@ export function conversationShareText(message) {
   const parts = blockParts.length > 0
     ? blockParts
     : structuredContentParts(message?.content);
-  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return sanitizeConversationShareText(parts.join('\n').replace(/\n{3,}/g, '\n\n'));
 }
 
 export function conversationShareMessageKey(message, index = 0) {

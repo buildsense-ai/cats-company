@@ -113,4 +113,36 @@ describe('ConversationShareReview', () => {
     expect(api.revokeConversationShare).toHaveBeenCalledWith('share-existing');
     expect(container.textContent).toContain('已撤销');
   });
+
+  it('reviews selected messages before generating a share image', async () => {
+    const onGenerateImage = vi.fn(() => Promise.resolve(true));
+    const onComplete = vi.fn();
+    await act(async () => {
+      root.render(
+        <ConversationShareReview
+          mode="image"
+          topicId="p2p_1_2"
+          messageIds={[17, 23]}
+          onClose={vi.fn()}
+          onComplete={onComplete}
+          onGenerateImage={onGenerateImage}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain('确认分享内容');
+    expect(container.textContent).toContain('2');
+    const generateButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('生成分享图'));
+    expect(generateButton).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(generateButton);
+      await Promise.resolve();
+    });
+
+    expect(onGenerateImage).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(api.createConversationShare).not.toHaveBeenCalled();
+  });
 });

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Check, Copy, Link2, LoaderCircle, RefreshCw, RotateCcw, X } from 'lucide-react';
+import { Check, Copy, ImageDown, Link2, LoaderCircle, RefreshCw, RotateCcw, X } from 'lucide-react';
 
 import { api } from '../api';
 import { useFeedback } from '../components/feedback-system';
@@ -44,7 +44,15 @@ function normalizeManagedShares(value) {
     }));
 }
 
-export default function ConversationShareReview({ topicId, messageIds = [], mode = 'create', onClose, onComplete = onClose }) {
+export default function ConversationShareReview({
+  topicId,
+  messageIds = [],
+  mode = 'create',
+  onClose,
+  onComplete = onClose,
+  onGenerateImage,
+  externalError = '',
+}) {
   const [title, setTitle] = useState(() => t('conversation_share_default_title'));
   const [expiresIn, setExpiresIn] = useState(EXPIRY_OPTIONS[1].seconds);
   const [status, setStatus] = useState('ready');
@@ -73,7 +81,7 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
   }, []);
 
   useEffect(() => {
-    if (mode === 'manage' || status !== 'ready') {
+    if (mode === 'manage' || mode === 'image' || status !== 'ready') {
       panelHeadingRef.current?.focus();
       return;
     }
@@ -176,6 +184,23 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
     }
   };
 
+  const generateImage = async () => {
+    if (status === 'saving' || selectedMessageIDs.length === 0 || typeof onGenerateImage !== 'function') return;
+    setStatus('saving');
+    setError('');
+    try {
+      const generated = await onGenerateImage();
+      if (generated === false) {
+        setStatus('ready');
+        return;
+      }
+      onComplete();
+    } catch (cause) {
+      setError(cause?.message || t('conversation_share_image_error'));
+      setStatus('ready');
+    }
+  };
+
   if (mode === 'manage') {
     return (
       <section className="cc-conversation-link-share-review" aria-live="polite" aria-labelledby={panelHeadingID}>
@@ -229,6 +254,31 @@ export default function ConversationShareReview({ topicId, messageIds = [], mode
             ))}
           </div>
         )}
+      </section>
+    );
+  }
+
+  if (mode === 'image') {
+    return (
+      <section className="cc-conversation-link-share-review" aria-live="polite" aria-labelledby={panelHeadingID}>
+        <div className="cc-conversation-link-share-heading">
+          <div>
+            <span className="cc-conversation-link-share-kicker"><ImageDown size={15} /> {t('conversation_share_create_kicker')}</span>
+            <h2 id={panelHeadingID} ref={panelHeadingRef} tabIndex="-1">{t('conversation_share_create_title')}</h2>
+            <p>{t('conversation_share_create_description', { count: selectedMessageIDs.length })}</p>
+          </div>
+          <button type="button" className="cc-conversation-link-share-close" aria-label={t('conversation_share_close_panel')} onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
+        {(error || externalError) && <p className="cc-conversation-link-share-error" role="alert">{error || externalError}</p>}
+        <div className="cc-conversation-link-share-actions">
+          <button type="button" className="cc-conversation-share-secondary" onClick={onClose}>{t('conversation_share_back_to_selection')}</button>
+          <button type="button" className="cc-conversation-share-primary" onClick={() => void generateImage()} disabled={status === 'saving'}>
+            {status === 'saving' ? <LoaderCircle className="is-spinning" size={16} /> : <ImageDown size={16} />}
+            {status === 'saving' ? t('conversation_share_generating') : t('conversation_share_generate_image')}
+          </button>
+        </div>
       </section>
     );
   }
