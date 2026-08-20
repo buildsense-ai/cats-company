@@ -276,7 +276,7 @@ func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit in
 	args = append(args, limit)
 	rows, err := a.db.Query(
 		fmt.Sprintf(
-			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 			 FROM messages
 			 WHERE topic_id = ?
 			   AND (
@@ -294,26 +294,7 @@ func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit in
 	}
 	defer rows.Close()
 
-	msgs := make([]*types.Message, 0)
-	for rows.Next() {
-		m := &types.Message{}
-		var blocksJSON []byte
-		var mode, role *string
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role); err != nil {
-			return nil, fmt.Errorf("scan topic file message: %w", err)
-		}
-		if len(blocksJSON) > 0 {
-			json.Unmarshal(blocksJSON, &m.ContentBlocks)
-		}
-		if mode != nil {
-			m.Mode = *mode
-		}
-		if role != nil {
-			m.Role = *role
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs, rows.Err()
+	return scanMessages(rows, "scan topic file message")
 }
 
 // GetLatestMessagesForTopics returns the newest persisted message for each topic.

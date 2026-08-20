@@ -2,7 +2,6 @@ package mysql
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
 	"github.com/openchat/openchat/server/store"
@@ -218,37 +217,5 @@ SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mo
 		return nil, fmt.Errorf("get messages around: %w", err)
 	}
 	defer rows.Close()
-	return scanMySQLMessages(rows, "scan message around")
-}
-
-func scanMySQLMessages(rows *sql.Rows, context string) ([]*types.Message, error) {
-	messages := make([]*types.Message, 0)
-	for rows.Next() {
-		message := &types.Message{}
-		var blocksJSON, metadataJSON []byte
-		var mode, role, clientMsgID *string
-		if err := rows.Scan(&message.ID, &message.TopicID, &message.FromUID, &message.Content, &message.MsgType,
-			&message.CreatedAt, &blocksJSON, &mode, &role, &clientMsgID, &metadataJSON); err != nil {
-			return nil, fmt.Errorf("%s: %w", context, err)
-		}
-		if len(blocksJSON) > 0 {
-			_ = json.Unmarshal(blocksJSON, &message.ContentBlocks)
-		}
-		if mode != nil {
-			message.Mode = *mode
-		}
-		if role != nil {
-			message.Role = *role
-		}
-		if clientMsgID != nil {
-			message.ClientMsgID = *clientMsgID
-		}
-		if len(metadataJSON) > 0 {
-			if err := json.Unmarshal(metadataJSON, &message.Metadata); err != nil {
-				return nil, fmt.Errorf("%s metadata: %w", context, err)
-			}
-		}
-		messages = append(messages, message)
-	}
-	return messages, rows.Err()
+	return scanMessages(rows, "scan message around")
 }

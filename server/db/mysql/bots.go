@@ -2,7 +2,6 @@
 package mysql
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/openchat/openchat/server/store"
@@ -135,34 +134,7 @@ func (a *Adapter) GetBotDebugMessages(uid int64, limit int) ([]*types.Message, e
 	}
 	defer rows.Close()
 
-	var msgs []*types.Message
-	for rows.Next() {
-		m := &types.Message{}
-		var blocksJSON, metadataJSON []byte
-		var mode, role, clientMsgID *string
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role, &clientMsgID, &metadataJSON); err != nil {
-			return nil, fmt.Errorf("scan debug message: %w", err)
-		}
-		if len(blocksJSON) > 0 {
-			_ = json.Unmarshal(blocksJSON, &m.ContentBlocks)
-		}
-		if mode != nil {
-			m.Mode = *mode
-		}
-		if role != nil {
-			m.Role = *role
-		}
-		if clientMsgID != nil {
-			m.ClientMsgID = *clientMsgID
-		}
-		if len(metadataJSON) > 0 {
-			if err := json.Unmarshal(metadataJSON, &m.Metadata); err != nil {
-				return nil, fmt.Errorf("scan debug message metadata: %w", err)
-			}
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs, rows.Err()
+	return scanMessages(rows, "scan debug message")
 }
 
 // GetBotByAPIKey looks up a bot's user ID by its API key.
