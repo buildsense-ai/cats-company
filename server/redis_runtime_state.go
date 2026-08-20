@@ -191,7 +191,8 @@ func (s *RedisRuntimeState) broadcastUserMessage(uid int64, msg *ServerMessage) 
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
 	defer cancel()
-	return s.client.Publish(ctx, s.userMessageChannel(), payload).Err() == nil
+	subscriberCount, err := s.client.Publish(ctx, s.userMessageChannel(), payload).Result()
+	return err == nil && subscriberCount > 0
 }
 
 func (s *RedisRuntimeState) clearMatchingRuntimeRoute(key string, route runtimeRoute) {
