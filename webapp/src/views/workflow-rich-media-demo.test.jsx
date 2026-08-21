@@ -69,4 +69,15 @@ describe('WorkflowRichMediaDemo file preview', () => {
     expect(card.textContent).toContain('v2');
     expect(container.querySelector('.oc-artifact-source-link')).not.toBeNull();
   });
+
+  it('includes interactive image and video download examples', async () => {
+    await act(async () => {
+      root.render(<WorkflowRichMediaDemo />);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('button[aria-label="预览图片 catsco-media-demo.png"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="预览视频 catsco-media-demo.mp4"]')).not.toBeNull();
+    expect(container.textContent).toContain('使用右上角的下载按钮保存原文件');
+  });
 });

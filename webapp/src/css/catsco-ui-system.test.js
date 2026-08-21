@@ -371,6 +371,16 @@ describe('CatsCo shell styling', () => {
       .toContain('outline: 2px solid var(--v3-primary);');
   });
 
+  it('provides a touch-sized, keyboard-visible download action in media previews', () => {
+    const downloadRule = ruleFor('.oc-rich-media-preview-download');
+
+    expect(downloadRule).toContain('width: 44px;');
+    expect(downloadRule).toContain('height: 44px;');
+    expect(downloadRule).toContain('right: 76px;');
+    expect(ruleFor('.oc-rich-media-preview-download:focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring);');
+  });
+
   it('keeps gallery navigation large, transparent, and low-contrast when unavailable', () => {
     const galleryRule = ruleIn(openchatCss, '.oc-rich-image-gallery-nav');
     const disabledRule = ruleIn(openchatCss, '.oc-rich-image-gallery-nav:disabled');

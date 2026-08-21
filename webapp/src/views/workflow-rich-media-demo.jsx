@@ -106,6 +106,36 @@ const demoMessages = [
     ],
   },
   {
+    id: 'media-download-demo',
+    from_uid: demoBot.uid,
+    created_at: '2026-06-09T09:32:00Z',
+    content: '图片和视频都可以点开预览。打开后，使用右上角的下载按钮保存原文件。',
+    content_blocks: [
+      {
+        type: 'text',
+        text: '图片和视频都可以点开预览。打开后，使用右上角的下载按钮保存原文件。',
+      },
+      {
+        type: 'image',
+        payload: {
+          name: 'catsco-media-demo.png',
+          url: '/demo-artifacts/catsco-tutorial-sample.png',
+          size: 22137,
+          mime_type: 'image/png',
+        },
+      },
+      {
+        type: 'file',
+        payload: {
+          name: 'catsco-media-demo.mp4',
+          url: '/demo-artifacts/catsco-media-demo.mp4',
+          size: 41358,
+          mime_type: 'video/mp4',
+        },
+      },
+    ],
+  },
+  {
     id: 3,
     from_uid: demoUser.uid,
     created_at: '2026-06-09T09:35:00Z',

@@ -1074,6 +1074,7 @@ describe('ChatMessage rich file rendering', () => {
     const preview = document.body.querySelector('.oc-rich-image-preview');
     const previewImage = preview?.querySelector('.oc-rich-image-preview-media');
     const closeButton = preview?.querySelector('button.oc-rich-image-preview-close');
+    const download = preview?.querySelector('a.oc-rich-media-preview-download');
     expect(preview).not.toBeNull();
     expect(container.contains(preview)).toBe(false);
     expect(preview.getAttribute('role')).toBe('dialog');
@@ -1082,6 +1083,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(previewImage?.getAttribute('src')).toBe('/uploads/images/poster.png');
     expect(previewImage?.getAttribute('alt')).toBe('poster.png preview');
     expect(closeButton?.getAttribute('aria-label')).toBe('关闭图片预览');
+    expect(download?.getAttribute('aria-label')).toBe('下载图片 poster.png');
+    expect(download?.getAttribute('href')).toBe('/uploads/images/poster.png?download=1');
+    expect(download?.getAttribute('download')).toBe('poster.png');
     expect(document.activeElement).toBe(closeButton);
 
     await act(async () => {
@@ -2853,11 +2857,15 @@ describe('ChatMessage rich file rendering', () => {
 
     const preview = container.querySelector('video.oc-rich-video-player');
     const closeButton = container.querySelector('button.oc-rich-video-preview-close');
+    const download = container.querySelector('a.oc-rich-media-preview-download');
     expect(preview).not.toBeNull();
     expect(preview.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
     expect(preview.controls).toBe(true);
     expect(preview.autoplay).toBe(true);
     expect(preview.getAttribute('aria-label')).toBe('product-demo.mp4');
+    expect(download.getAttribute('aria-label')).toBe('下载视频 product-demo.mp4');
+    expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1');
+    expect(download.getAttribute('download')).toBe('product-demo.mp4');
     expect(container.querySelector('.oc-rich-video-preview').getAttribute('role')).toBe('dialog');
     expect(document.activeElement).toBe(closeButton);
 

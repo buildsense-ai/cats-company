@@ -1689,6 +1689,8 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
   const src = payload?.url || payload?.thumbnail;
+  const resolvedSrc = resolveMediaURL(payload?.url || src);
+  const downloadURL = downloadableMediaURL(resolvedSrc);
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -1787,8 +1789,20 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
       >
         <X size={20} />
       </button>
+      <PwaDownloadLink
+        aria-label={`下载图片 ${payload.name || ''}`.trim()}
+        className="oc-rich-media-preview-download"
+        download={payload.name || true}
+        href={downloadURL || undefined}
+        onClick={(event) => event.stopPropagation()}
+        rel="noopener noreferrer"
+        target="_blank"
+        title="下载图片"
+      >
+        <Download size={20} />
+      </PwaDownloadLink>
       <img
-        src={resolveMediaURL(payload.url || src)}
+        src={resolvedSrc}
         alt={payload.name ? `${payload.name} preview` : 'image preview'}
         className="oc-rich-image-preview-media"
         onClick={(event) => event.stopPropagation()}
@@ -1966,13 +1980,16 @@ function fetchableMediaURL(url) {
   }
 }
 
-function downloadableMediaURL(url) {
+export function downloadableMediaURL(url) {
   if (!url) return '';
   try {
     const urlObj = new URL(url, window.location.origin);
     const mediaBase = new URL(resolveMediaURL('/'), window.location.origin);
-    const uploadFilesPath = `${mediaBase.pathname.replace(/\/+$/, '')}/uploads/files/`;
-    if (urlObj.origin !== mediaBase.origin || !urlObj.pathname.startsWith(uploadFilesPath)) {
+    const uploadRootPath = `${mediaBase.pathname.replace(/\/+$/, '')}/uploads/`;
+    const isDownloadableUpload = ['files', 'images'].some(
+      (directory) => urlObj.pathname.startsWith(`${uploadRootPath}${directory}/`),
+    );
+    if (urlObj.origin !== mediaBase.origin || !isDownloadableUpload) {
       return url;
     }
     urlObj.searchParams.set('download', '1');
@@ -2063,6 +2080,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const fallbackActionRef = useRef(null);
   const shouldFocusFallbackRef = useRef(false);
   const src = resolveMediaURL(payload?.url);
+  const downloadURL = downloadableMediaURL(src);
 
   useEffect(() => {
     setPlaybackFailed(false);
@@ -2177,6 +2195,18 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
           >
             <X size={20} />
           </button>
+          <PwaDownloadLink
+            aria-label={`下载视频 ${payload.name || ''}`.trim()}
+            className="oc-rich-media-preview-download"
+            download={payload.name || true}
+            href={downloadURL || undefined}
+            onClick={(event) => event.stopPropagation()}
+            rel="noopener noreferrer"
+            target="_blank"
+            title="下载视频"
+          >
+            <Download size={20} />
+          </PwaDownloadLink>
           <video
             aria-label={payload.name || '视频'}
             autoPlay
