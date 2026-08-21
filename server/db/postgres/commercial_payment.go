@@ -497,8 +497,8 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		// not deleted at the old expiry while a new monthly package is active.
 		if _, err := tx.Exec(`
 			UPDATE cloud_worker_lifecycles
-			SET package_expires_at = $2,
-			    delete_after = $2 + INTERVAL '15 days',
+			SET package_expires_at = $2::timestamptz,
+			    delete_after = $2::timestamptz + INTERVAL '15 days',
 			    state = 'active', archived_at = NULL, delete_started_at = NULL,
 			    last_error = '', updated_at = CURRENT_TIMESTAMP
 			WHERE owner_uid = $1 AND state <> 'deleted'`, order.UID, expiresAt); err != nil {
