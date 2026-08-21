@@ -69,10 +69,10 @@ export default defineConfig({
         ],
       },
       injectManifest: {
-        // Keep the app shell available offline without downloading the lazy
-        // workspace, PDF, and media chunks during service worker install.
+        // Navigation HTML always comes from the network so a cached document
+        // cannot reference an outdated application bundle. The offline page
+        // remains available when navigation cannot reach the service.
         globPatterns: [
-          'index.html',
           'assets/index-*.{js,css}',
           'assets/workbox-window.*.js',
           'offline.html',

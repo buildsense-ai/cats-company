@@ -20,8 +20,11 @@ vi.mock('workbox-routing', () => ({
 }));
 
 vi.mock('workbox-strategies', () => ({
-  NetworkFirst: class NetworkFirst {},
-  NetworkOnly: class NetworkOnly {},
+  NetworkOnly: class NetworkOnly {
+    constructor(options) {
+      this.options = options;
+    }
+  },
 }));
 
 describe('service worker API routing', () => {
@@ -53,7 +56,7 @@ describe('service worker API routing', () => {
     expect(registeredMethods).toEqual(['GET']);
   });
 
-  test('leaves authentication navigations out of the app navigation cache', async () => {
+  test('leaves authentication navigations out of service worker navigation handling', async () => {
     await import('./sw');
 
     const navigationRoute = registerRoute.mock.calls
@@ -66,5 +69,17 @@ describe('service worker API routing', () => {
     expect(denylist.some((pattern) => pattern.test('/register/'))).toBe(true);
     expect(denylist.some((pattern) => pattern.test('/reset-password'))).toBe(true);
     expect(denylist.some((pattern) => pattern.test('/login///'))).toBe(true);
+  });
+
+  test('uses network-only navigation with an explicit offline fallback', async () => {
+    await import('./sw');
+
+    const navigationRoute = registerRoute.mock.calls
+      .map(([route]) => route)
+      .find((route) => Array.isArray(route?.options?.denylist));
+
+    expect(navigationRoute.handler.constructor.name).toBe('NetworkOnly');
+    await navigationRoute.handler.options.plugins[0].handlerDidError();
+    expect(caches.match).toHaveBeenCalledWith('/offline.html', { ignoreSearch: true });
   });
 });

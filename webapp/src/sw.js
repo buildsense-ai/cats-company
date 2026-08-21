@@ -3,12 +3,11 @@
 import { clientsClaim } from 'workbox-core';
 import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
 import { registerRoute, NavigationRoute } from 'workbox-routing';
-import { NetworkFirst, NetworkOnly } from 'workbox-strategies';
+import { NetworkOnly } from 'workbox-strategies';
 
 import { sameOriginNotificationURL } from './utils/notification-url';
 import {
   cleanupNavigationCaches,
-  NAVIGATION_CACHE_NAME,
 } from './utils/navigation-cache';
 
 clientsClaim();
@@ -42,14 +41,8 @@ registerRoute(neverCache, new NetworkOnly(), 'GET');
 // stack. Non-cacheable writes do not benefit from a Workbox strategy, and the
 // native path avoids an extra Request clone for large mobile upload bodies.
 
-const navigationHandler = new NetworkFirst({
-  cacheName: NAVIGATION_CACHE_NAME,
-  networkTimeoutSeconds: 4,
+const navigationHandler = new NetworkOnly({
   plugins: [{
-    cacheWillUpdate: async ({ response }) => {
-      if (!response || response.status !== 200) return null;
-      return response;
-    },
     handlerDidError: async () => caches.match('/offline.html', { ignoreSearch: true }),
   }],
 });

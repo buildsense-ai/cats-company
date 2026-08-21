@@ -150,7 +150,8 @@ export function statusMessage(status) {
   if (status === 404) return '请求的功能暂时不可用';
   if (status === 409) return '当前数据已发生变化，请刷新后重试';
   if (status === 429) return '操作过于频繁，请稍后再试';
-  if (status >= 500) return '后端服务暂时异常，请稍后重试';
+  if ([502, 503, 504].includes(status)) return '服务暂时不可用，请稍后重试';
+  if (status >= 500) return '服务请求失败，请稍后重试';
   return '请求失败，请稍后重试';
 }
 
@@ -213,7 +214,11 @@ export async function request(method, path, body, options = {}) {
       throw error;
     }
     if (cause?.status) throw cause;
-    const error = new Error('网络连接失败，请检查后端服务是否运行');
+    const error = new Error(
+      globalThis.navigator?.onLine === false
+        ? '当前无网络连接，连接网络后再试'
+        : '暂时无法连接服务，请稍后重试',
+    );
     error.code = 'NETWORK_ERROR';
     error.cause = cause;
     throw error;

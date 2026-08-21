@@ -4867,7 +4867,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(container.textContent).toContain('聊天记录加载失败');
+    expect(container.textContent).toContain('暂时无法获取聊天记录');
     const retryButton = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent.includes('重新加载'));
     expect(retryButton).not.toBeNull();
@@ -4877,7 +4877,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(container.textContent).not.toContain('聊天记录加载失败');
+    expect(container.textContent).not.toContain('暂时无法获取聊天记录');
   });
 
   it('uses a stable before cursor when loading older history', async () => {
@@ -4937,7 +4937,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(container.textContent).toContain('聊天记录加载超时，请重试');
+    expect(container.textContent).toContain('获取聊天记录超时，请重试');
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('重新加载'))).toBe(true);
   });
@@ -4965,7 +4965,7 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(firstOptions.signal.aborted).toBe(true);
     expect(container.querySelector('[data-message-content="topic B"]')).not.toBeNull();
-    expect(container.textContent).not.toContain('聊天记录加载失败');
+    expect(container.textContent).not.toContain('暂时无法获取聊天记录');
   });
 
   it('cancels an in-flight question index request when switching topics', async () => {
@@ -5152,6 +5152,32 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('[data-message-content="fresh topic A"]')).not.toBeNull();
+  });
+
+  it('keeps cached history and identifies it when the service is unavailable', async () => {
+    const unavailable = Object.assign(new Error('bad gateway'), { status: 502 });
+    api.getMessages
+      .mockResolvedValueOnce({
+        messages: [{ id: 1, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'cached topic A' }],
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        messages: [{ id: 2, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      })
+      .mockRejectedValueOnce(unavailable);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    expect(container.querySelector('[data-message-content="cached topic A"]')).not.toBeNull();
+    expect(container.textContent).toContain('服务暂时不可用。当前显示');
+    expect(container.textContent).toContain('加载的聊天记录');
+    expect(container.textContent).not.toContain('后端');
   });
 
   it('resumes older history loading after a cached topic refresh finishes at the top', async () => {

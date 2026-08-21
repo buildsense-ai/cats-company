@@ -47,10 +47,10 @@ describe('entry bundle split', () => {
     expect(entrySource).not.toContain("from './api'");
   });
 
-  it('precaches only the app shell and PWA runtime, not lazy workspace chunks', () => {
+  it('precaches entry assets and the offline fallback, but not navigation HTML', () => {
     expect(viteConfig).toContain("'assets/index-*.{js,css}'");
     expect(viteConfig).toContain("'assets/workbox-window.*.js'");
-    expect(viteConfig).toContain("'index.html'");
+    expect(viteConfig).not.toContain("'index.html'");
     expect(viteConfig).toContain("'offline.html'");
     expect(viteConfig).toContain("'pwa-192x192.png'");
     expect(viteConfig).not.toContain("'assets/**/*.{js,css}'");
