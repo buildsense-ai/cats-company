@@ -1730,11 +1730,11 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
   const galleryMode = Array.isArray(imageGallery) && imageGallery.length > 0 && typeof onOpenImage === 'function';
   const openPreview = () => {
     if (galleryMode) {
-      const matchingItem = imageGallery.find((item) => (
-        item?.id === imageId
-        || item?.payload?.url === payload?.url
-        || item?.payload?.thumbnail === payload?.thumbnail
-      ));
+      const matchingItem = imageGallery.find((item) => item?.id === imageId)
+        || imageGallery.find((item) => payload?.url && item?.payload?.url === payload.url)
+        || imageGallery.find((item) => (
+          payload?.thumbnail && item?.payload?.thumbnail === payload.thumbnail
+        ));
       onOpenImage(matchingItem?.id || imageId || '', triggerRef.current, payload);
       return;
     }

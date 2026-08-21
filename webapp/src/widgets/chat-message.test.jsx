@@ -1154,6 +1154,55 @@ describe('ChatMessage rich file rendering', () => {
     );
   });
 
+  it('does not match an earlier gallery image when both thumbnails are absent', async () => {
+    const onOpenImage = vi.fn();
+    const selectedPayload = {
+      file_key: 'selected.png',
+      url: '/uploads/images/selected.png',
+      name: 'selected.png',
+    };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 2703,
+            from_uid: 1,
+            content: 'Preview selected image',
+            content_blocks: [{ type: 'image', payload: selectedPayload }],
+          }}
+          imageGallery={[
+            {
+              id: 'earlier-image-id',
+              payload: {
+                file_key: 'earlier.png',
+                url: '/uploads/images/earlier.png',
+                name: 'earlier.png',
+              },
+            },
+            { id: 'selected-image-id', payload: selectedPayload },
+          ]}
+          imageId="selected-image-id"
+          onOpenImage={onOpenImage}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.oc-rich-image-trigger'));
+      await Promise.resolve();
+    });
+
+    expect(onOpenImage).toHaveBeenCalledWith(
+      'selected-image-id',
+      expect.anything(),
+      selectedPayload,
+    );
+  });
+
   it('writes an internal attachment token when a system file is dragged', async () => {
     const setData = vi.fn();
     const dataTransfer = { setData, effectAllowed: 'none' };
