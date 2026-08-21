@@ -126,7 +126,8 @@ func (a *Adapter) ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, gr
 	}
 	_, err := a.db.Exec(`
 		UPDATE cloud_worker_lifecycles
-		SET package_expires_at = $2, delete_after = $2 + ($3 * INTERVAL '1 day'),
+		SET package_expires_at = $2::timestamptz,
+		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
 		WHERE owner_uid = $1 AND state <> 'deleted'`, uid, expiresAt, graceDays)
