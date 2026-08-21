@@ -1186,9 +1186,9 @@ func sameCommercialRelayTimestamp(left, right string) bool {
 	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
 		return strings.TrimSpace(left) == strings.TrimSpace(right)
 	}
-	leftTime, leftErr := time.Parse(time.RFC3339, strings.TrimSpace(left))
-	rightTime, rightErr := time.Parse(time.RFC3339, strings.TrimSpace(right))
-	return leftErr == nil && rightErr == nil && leftTime.Equal(rightTime)
+	leftTime, leftOK := parseCommercialRelayTime(left)
+	rightTime, rightOK := parseCommercialRelayTime(right)
+	return leftOK && rightOK && leftTime.Truncate(time.Second).Equal(rightTime.Truncate(time.Second))
 }
 
 func verifyCommercialRelaySharedPolicy(limit float64, usageWindowStart string, relayUser *commercialRelayUsageUser) error {
