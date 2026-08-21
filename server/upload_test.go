@@ -459,6 +459,30 @@ func TestHandleServeFileForcesDownloadWithoutFilenameInURL(t *testing.T) {
 	}
 }
 
+func TestHandleServeFileForcesImageDownload(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260821_0123456789abcdef0123456789abcdef.png"
+	fullPath := filepath.Join(dir, "images", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	req := httptest.NewRequest(http.MethodGet, "/uploads/images/"+fileName+"?download=1", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleServeFile(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "attachment" {
+		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	}
+}
+
 func TestHandleServeFileServesPDFFilesInline(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"

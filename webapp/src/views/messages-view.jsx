@@ -3,13 +3,14 @@ import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import PwaDownloadLink from '../widgets/pwa-download-link';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
@@ -5304,6 +5305,8 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
   stateRef.current = { item, index, items, onClose, onChange, triggerRef };
   const hasPrevious = index > 0;
   const hasNext = index < items.length - 1;
+  const imageURL = resolveMediaURL(item.payload?.url || item.payload?.thumbnail);
+  const downloadURL = downloadableMediaURL(imageURL);
 
   useEffect(() => {
     closeRef.current?.focus({ preventScroll: true });
@@ -5328,7 +5331,7 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
       }
       if (event.key !== 'Tab') return;
       const focusable = Array.from(dialogRef.current?.querySelectorAll(
-        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
       ) || []);
       if (focusable.length === 0) {
         event.preventDefault();
@@ -5382,8 +5385,20 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
       >
         <X size={28} aria-hidden="true" />
       </button>
+      <PwaDownloadLink
+        aria-label={`下载图片 ${item.payload?.name || ''}`.trim()}
+        className="oc-rich-media-preview-download"
+        download={item.payload?.name || true}
+        href={downloadURL || undefined}
+        onClick={(event) => event.stopPropagation()}
+        rel="noopener noreferrer"
+        target="_blank"
+        title="下载图片"
+      >
+        <Download size={24} aria-hidden="true" />
+      </PwaDownloadLink>
       <img
-        src={resolveMediaURL(item.payload?.url || item.payload?.thumbnail)}
+        src={imageURL}
         alt={item.payload?.name ? `${item.payload.name} preview` : 'image preview'}
         className="oc-rich-image-preview-media"
         onClick={(event) => event.stopPropagation()}
