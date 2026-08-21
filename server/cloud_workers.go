@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // CloudWorkerHandler exposes the cloud-managed virtual employee control plane.
@@ -53,6 +54,7 @@ type CloudWorkerHandler struct {
 	imagesScript    string
 	releasesScript  string
 	statusScript    string
+	credits         CloudWorkerCreditStore
 
 	scriptTimeout time.Duration
 
@@ -121,6 +123,27 @@ type CloudWorkerConfig struct {
 	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
 }
 
+// CloudWorkerCreditStore is optional for compatibility with focused test
+// stores. Production adapters persist one-time paid cloud-worker credits.
+type CloudWorkerCreditStore interface {
+	CloudWorkerCreditSummary(uid int64) (total, available int, err error)
+	ReserveCloudWorkerCredit(uid int64, reservation string) (bool, error)
+	CommitCloudWorkerCredit(uid int64, reservation string, workerUID int64, tenantName string, graceDays int) error
+	ReleaseCloudWorkerCredit(uid int64, reservation string) error
+	ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, graceDays int) error
+	ListCloudWorkerLifecycleDue(now time.Time, limit int) ([]CloudWorkerLifecycle, error)
+	MarkCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error
+	ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error)
+	MarkCloudWorkerLifecycleDeleted(id int64, errText string) error
+}
+
+type CloudWorkerLifecycle = types.CloudWorkerLifecycle
+
+// Tianyi ECS monthly instances enter a provider-side frozen retention period
+// of 15 days after package expiry. Keep our lifecycle deadline aligned with
+// that documented window so we never promise a shorter recovery period.
+const cloudWorkerExpiryGraceDays = 15
+
 // CloudWorkerConfigFromEnv reads configuration from the environment.
 func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 	return CloudWorkerConfig{
@@ -150,7 +173,11 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		imagesScript:    cfg.ImagesScript,
 		releasesScript:  cfg.ReleasesScript,
 		statusScript:    cfg.StatusScript,
+		credits:         nil,
 		scriptTimeout:   10 * time.Minute,
+	}
+	if credits, ok := db.(CloudWorkerCreditStore); ok {
+		handler.credits = credits
 	}
 
 	// Warm snapshots as soon as the service starts. This is deliberately
@@ -257,6 +284,18 @@ func (h *CloudWorkerHandler) quotaInfo(uid int64, used int) (total, remaining in
 	return total, remaining
 }
 
+func (h *CloudWorkerHandler) creditInfo(uid int64) (total, available int) {
+	if h.credits == nil {
+		return 0, 0
+	}
+	total, available, err := h.credits.CloudWorkerCreditSummary(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] credit summary for uid %d failed: %v", uid, err)
+		return 0, 0
+	}
+	return total, available
+}
+
 // HandleList handles GET /api/cloud-workers — cloud worker roster + quota.
 func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -301,7 +340,9 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	total, remaining := h.quotaInfo(uid, len(workers))
+	staticTotal, staticRemaining := h.quotaInfo(uid, len(workers))
+	creditTotal, creditAvailable := h.creditInfo(uid)
+	total, remaining := staticTotal+creditTotal, staticRemaining+creditAvailable
 	response := map[string]interface{}{
 		"workers":           workers,
 		"status_refreshing": statusRefreshing,
@@ -618,8 +659,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	}
 	defer h.opMu.Unlock()
 
-	total := h.quota[uid]
-	if total <= 0 {
+	staticTotal := h.quota[uid]
+	_, creditAvailable := h.creditInfo(uid)
+	if staticTotal <= 0 && creditAvailable <= 0 {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation is not enabled for this account",
 			"code":  "cloud_worker_not_enabled",
@@ -632,7 +674,21 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list cloud workers", "code": "cloud_worker_create_failed"})
 		return
 	}
-	if len(workers) >= total {
+	staticRemaining := staticTotal - len(workers)
+	if staticRemaining < 0 {
+		staticRemaining = 0
+	}
+	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
+	reservedCredit := false
+	if staticRemaining == 0 && h.credits != nil {
+		var reserveErr error
+		reservedCredit, reserveErr = h.credits.ReserveCloudWorkerCredit(uid, reservation)
+		if reserveErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reserve cloud worker credit", "code": "cloud_worker_create_failed"})
+			return
+		}
+	}
+	if staticRemaining == 0 && !reservedCredit {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation quota exhausted",
 			"code":  "cloud_worker_quota_exhausted",
@@ -657,6 +713,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 
 	result, status, err := h.bots.createBotAccount(uid, req)
 	if err != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
 		writeJSON(w, status, map[string]string{"error": err.Error(), "code": "cloud_worker_create_failed"})
 		return
 	}
@@ -667,6 +726,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	// bot 记录都有 tenant handle —— 云托管列表可见、可重试删除、且计入创建配额。
 	// 若这里写入失败，云资源尚未创建，直接回滚删 bot 是安全的（不会产生孤儿实例）。
 	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
 		log.Printf("[cloud-worker] failed to persist tenant_name for uid %d before provision: %v", result.UID, err)
 		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
@@ -679,6 +741,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	// script this control plane cannot provision, so roll back the bot account
 	// (no cloud resource was created yet, so deleting the record is safe).
 	if h.provisionScript == "" {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
 		log.Printf("[cloud-worker] provision script not configured; rolling back bot %d", result.UID)
 		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
@@ -722,6 +787,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			log.Printf("[cloud-worker] destroy %s after provision failure also failed: %v", tenantName, destroyErr)
 		}
 		if destroyOK {
+			if reservedCredit {
+				_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+			}
 			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 				log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 			}
@@ -741,6 +809,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			"code":  "cloud_worker_provision_failed_pending_cleanup",
 		})
 		return
+	}
+	if reservedCredit {
+		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, cloudWorkerExpiryGraceDays); err != nil {
+			log.Printf("[cloud-worker] commit credit for uid %d failed: %v", uid, err)
+			// Keep the worker record: the credit was reserved and the operation
+			// succeeded; an operator can reconcile this durable reservation.
+		}
 	}
 
 	friendAutoAdded := false
@@ -762,6 +837,50 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		"deployment_status": "running",
 		"friend_auto_added": friendAutoAdded,
 	})
+}
+
+// SweepExpiredWorkers archives expired monthly workers and, after the grace
+// period, destroys their cloud instance before deleting the bot record.
+// It is deliberately best-effort and idempotent; a failed destroy remains
+// visible as delete_failed for operator retry and never silently disappears.
+func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
+	store, ok := h.credits.(interface {
+		ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error)
+		MarkCloudWorkerLifecyclePending(int64, time.Time) error
+		ClaimCloudWorkerLifecycleDeletion(int64) (bool, error)
+		MarkCloudWorkerLifecycleDeleted(int64, string) error
+	})
+	if !ok || h.destroyScript == "" {
+		return
+	}
+	items, err := store.ListCloudWorkerLifecycleDue(now, 100)
+	if err != nil {
+		log.Printf("[cloud-worker] lifecycle sweep list failed: %v", err)
+		return
+	}
+	for _, item := range items {
+		if item.State == "active" {
+			if err := store.MarkCloudWorkerLifecyclePending(item.ID, item.DeleteAfter); err != nil {
+				log.Printf("[cloud-worker] lifecycle %s archive failed: %v", item.TenantName, err)
+			}
+			continue
+		}
+		claimed, err := store.ClaimCloudWorkerLifecycleDeletion(item.ID)
+		if err != nil || !claimed {
+			continue
+		}
+		if _, err := h.runScript(h.destroyScript, "--name", item.TenantName); err != nil {
+			log.Printf("[cloud-worker] lifecycle destroy %s failed: %v", item.TenantName, err)
+			_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, truncateWorkerOutput(err.Error()))
+			continue
+		}
+		if err := h.db.DeleteBot(item.WorkerUID); err != nil {
+			log.Printf("[cloud-worker] lifecycle delete bot %d failed: %v", item.WorkerUID, err)
+			_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, err.Error())
+			continue
+		}
+		_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, "")
+	}
 }
 
 // HandleRollback handles POST /api/cloud-workers/{name}/rollback — swap Part A

@@ -13,15 +13,19 @@
 # 依赖：ctyun-cli + jq + timeout
 # 凭据：CTYUN_AK/CTYUN_SK（ctyun-cli 环境变量或 ~/.ctyun-cli.yaml）
 # 云环境：CTYUN_WORKER_REGION_ID / CTYUN_WORKER_PROJECT_ID（实例所在项目）/
-#         CTYUN_IMAGE_PROJECT_ID（bake 镜像所在项目，默认 0）
+#         CTYUN_IMAGE_PROJECT_ID（bake 镜像所在项目，必须显式配置）
 set -Eeuo pipefail
 
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
-IMAGE_PROJECT_ID="${CTYUN_IMAGE_PROJECT_ID:-0}"
+IMAGE_PROJECT_ID="${CTYUN_IMAGE_PROJECT_ID:-}"
 
 if [[ -z "$REGION_ID" ]]; then
   echo "error: CTYUN_WORKER_REGION_ID is required" >&2
+  exit 2
+fi
+if [[ -z "$IMAGE_PROJECT_ID" ]]; then
+  echo "error: CTYUN_IMAGE_PROJECT_ID is required (bake image project)" >&2
   exit 2
 fi
 for cmd in ctyun-cli jq timeout ssh; do

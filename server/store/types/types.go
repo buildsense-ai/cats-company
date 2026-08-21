@@ -313,6 +313,17 @@ type CommercialSummary struct {
 	TotalCNY      float64                  `json:"total_cny"`
 }
 
+// CloudWorkerLifecycle tracks monthly package expiry and delayed deletion.
+type CloudWorkerLifecycle struct {
+	ID               int64
+	WorkerUID        int64
+	OwnerUID         int64
+	TenantName       string
+	PackageExpiresAt time.Time
+	DeleteAfter      time.Time
+	State            string
+}
+
 // FriendStatus represents the state of a friend relationship.
 type FriendStatus string
 

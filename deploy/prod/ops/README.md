@@ -47,6 +47,7 @@ CTYUN_WORKER_EXT_IP=0                  # 默认内网，不申请公网 IP/带�
 ```bash
 CTYUN_WORKER_REGION_ID=200000002530       # 华南2
 CTYUN_WORKER_PROJECT_ID=0                 # 企业项目（0 = default）
+CTYUN_IMAGE_PROJECT_ID=<bake-image-project-id> # 必填；与 worker 项目隔离，禁止回退到 0
 CTYUN_WORKER_AZ_NAME=cn-huanan2-2A-public-ctcloud
 CTYUN_WORKER_FLAVOR_ID=<flavor-id>
 CTYUN_WORKER_VPC_ID=<vpc-id>
@@ -55,7 +56,7 @@ CTYUN_WORKER_SECURITY_GROUP_ID=<sg-id>
 CTYUN_WORKER_STATE_ROOT=/var/lib/catsco-worker  # 默认 <root>/<tenant>，见下
 CTYUN_WORKER_BILLING_MODE=month          # month（默认包月）或 ondemand
 CTYUN_WORKER_CYCLE_COUNT=1               # 包月购买月数，1-60
-CTYUN_WORKER_AUTO_RENEW=1                # 包月实例创建后开启按月自动续费
+CTYUN_WORKER_AUTO_RENEW=0                # 云托管严禁自动续费；到期由天翼云保留期和控制面清理
 CATSCO_WORKER_ARTIFACT_BUCKET=catsco-worker-release
 CATSCO_WORKER_ARTIFACT_PREFIX=update/worker
 CATSCO_WORKER_ARTIFACT_REGION=cn-guangzhou
@@ -74,7 +75,7 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
   默认 `/var/lib/catsco-worker/<tenant>`。
 - worker 应用包从私有 TOS 桶下载。生产凭证只授予
   `catsco-worker-release/update/worker/*` 的只读权限，不下发给浏览器或 worker。
-- 包月实例创建后会配置自动续费，删除时调用退订接口；按量实例沿用直接删除。
+- 云托管员工按套餐 30 天计费；不独立自动续费。套餐到期后天翼云进入 15 天冻结保留期（不收费、不可用），续费可恢复；窗口结束后控制面核对实例并调用退订/销毁接口，按量实例沿用直接删除。
   供给失败清理会短暂重试实例目录，并使用创建时记住的实例 ID 和计费模式
   兜底，避免目录最终一致性造成持续计费的孤儿实例。
 - ⚠️ **公网 IP 配额**：provision 需要公网 IP（`extIP 1`）做 SSH 注入；若区域
@@ -109,5 +110,5 @@ cd deploy/prod/ops && node --test *.test.mjs
 ```
 
 测试覆盖 list / status / provision / update / destroy / reset / rollback
-（fake ctyun-cli + fake ssh + fake timeout），包含包月、按量、自动续费、
+（fake ctyun-cli + fake ssh + fake timeout），包含包月、按量、到期退订、
 失败回收、版本安装与状态同步路径。
