@@ -219,6 +219,7 @@ export default function CloudArtifactsPanel({
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
       setConfirmArtifact(null);
       notifyArtifactsChanged(agentUid);
+      feedback.notify({ tone: 'success', message: '已下架共享成果' });
     } catch (err) {
       setError(err.message || '下架失败，请稍后重试');
     } finally {
@@ -270,6 +271,7 @@ export default function CloudArtifactsPanel({
       await api.restoreCloudArtifact(agentUid, artifact.id);
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
       notifyArtifactsChanged(agentUid);
+      feedback.notify({ tone: 'success', message: '已恢复共享成果' });
     } catch (err) {
       setError(err.message || '恢复失败，请稍后重试');
     } finally {

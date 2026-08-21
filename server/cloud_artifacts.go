@@ -471,7 +471,10 @@ func (h *CloudArtifactHandler) handleManagedList(
 		for i := range list.Artifacts {
 			list.Artifacts[i].UploadedByMe = list.Artifacts[i].UploaderUID != "" &&
 				list.Artifacts[i].UploaderUID == strconv.FormatInt(viewerUID, 10)
-			if viewerRelation != "owner" {
+			if viewerRelation == "owner" {
+				list.Artifacts[i].CanDelete = list.Artifacts[i].Status == "active"
+				list.Artifacts[i].CanRestore = list.Artifacts[i].Status == "deleted"
+			} else {
 				list.Artifacts[i].CanDelete = list.Artifacts[i].Status == "active" && list.Artifacts[i].UploadedByMe
 				list.Artifacts[i].CanRestore = false
 			}
@@ -1007,13 +1010,7 @@ func validateManagedArtifact(artifact cloudArtifact) error {
 	if _, err := time.Parse(time.RFC3339, artifact.UpdatedAt); err != nil {
 		return errors.New("invalid artifact updated timestamp")
 	}
-	if artifact.Status == "active" && !artifact.CanDelete {
-		return errors.New("active artifact must be deletable")
-	}
 	if artifact.Status == "deleted" {
-		if !artifact.CanRestore {
-			return errors.New("deleted artifact must be restorable")
-		}
 		if _, err := time.Parse(time.RFC3339, artifact.DeletedAt); err != nil {
 			return errors.New("invalid artifact deleted timestamp")
 		}

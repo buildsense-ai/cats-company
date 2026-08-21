@@ -1402,8 +1402,35 @@ function TinodeWebApp({ location }) {
 }
 
 export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin }) {
+  const barRef = useRef(null);
+
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return undefined;
+
+    const syncToastAnchor = () => {
+      const bounds = bar.getBoundingClientRect();
+      document.documentElement.style.setProperty(
+        '--cc-toast-anchor-x',
+        `${bounds.left + bounds.width / 2}px`,
+      );
+    };
+
+    syncToastAnchor();
+    const observer = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(syncToastAnchor)
+      : null;
+    observer?.observe(bar);
+    window.addEventListener('resize', syncToastAnchor);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', syncToastAnchor);
+      document.documentElement.style.removeProperty('--cc-toast-anchor-x');
+    };
+  }, []);
+
   return (
-    <header className="v3-local-assistant-bar">
+    <header ref={barRef} className="v3-local-assistant-bar">
       <div className="v3-model-select">
         <BotModelSelector
           currentModelName={currentModelName}
