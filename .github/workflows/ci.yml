@@ -152,6 +152,7 @@ jobs:
           python3 deploy/sync-vapid-env_test.py
           python3 deploy/sync-stt-env_test.py
           python3 deploy/stt-nginx-config_test.py
+          python3 deploy/nginx-share-route_test.py
 
       - name: Build server image
         run: docker build -f deploy/Dockerfile.server -t cats-company-server-ci .

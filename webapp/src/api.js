@@ -41,6 +41,7 @@ let wsPushSubscriptionID = '';
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
+const PUBLIC_SHARE_REQUEST_TIMEOUT_MS = 15000;
 
 export function toWritableBotSkillRefs(skills) {
   if (!Array.isArray(skills)) return skills;
@@ -134,6 +135,74 @@ export function resolveMediaURL(url) {
 
 export function isWSConnected() {
   return wsConnected;
+}
+
+// Capability links are intentionally detached from the owner session. Keeping
+// this request separate from `request` makes it impossible to accidentally
+// attach an Authorization header or ambient cookies to public share reads.
+async function publicRequest(path, options = {}) {
+  const { signal, timeoutMs = PUBLIC_SHARE_REQUEST_TIMEOUT_MS } = options;
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutID = null;
+  const abortFromCaller = () => controller.abort(signal?.reason);
+
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else if (signal) {
+    signal.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutID = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      credentials: 'omit',
+      signal: controller.signal,
+    });
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (cause) {
+      if (cause?.name === 'AbortError') throw cause;
+      // Keep the public error generic when an intermediary returns HTML.
+    }
+    if (!response.ok) {
+      const error = new Error(data.error || statusMessage(response.status));
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  } catch (cause) {
+    if (timedOut) {
+      const error = new Error('请求超时，请稍后重试');
+      error.code = 'REQUEST_TIMEOUT';
+      error.cause = cause;
+      throw error;
+    }
+    if (signal?.aborted || cause?.name === 'AbortError') {
+      const error = new Error('请求已取消');
+      error.code = 'REQUEST_ABORTED';
+      error.cause = cause;
+      throw error;
+    }
+    if (cause?.status) throw cause;
+    const error = new Error('网络连接失败，请检查后端服务是否运行');
+    error.code = 'NETWORK_ERROR';
+    error.cause = cause;
+    throw error;
+  } finally {
+    if (timeoutID) clearTimeout(timeoutID);
+    signal?.removeEventListener('abort', abortFromCaller);
+  }
 }
 
 async function localRequest(method, path, body, options = {}) {
@@ -418,6 +487,28 @@ export const api = {
       undefined,
       options,
     ),
+  createConversationShare: ({ topicId, messageIds, title, expiresIn }) => request(
+    'POST',
+    '/api/conversation-shares',
+    {
+      topic_id: topicId,
+      message_ids: messageIds,
+      title,
+      expires_in: expiresIn,
+    },
+  ),
+  listConversationShares: (topicId) => request(
+    'GET',
+    `/api/conversation-shares?topic_id=${encodeURIComponent(topicId)}`,
+  ),
+  revokeConversationShare: (shareId) => request(
+    'DELETE',
+    `/api/conversation-shares/${encodeURIComponent(shareId)}`,
+  ),
+  getConversationShare: (token, options = {}) => publicRequest(
+    `/api/shared-conversations/${encodeURIComponent(token)}`,
+    options,
+  ),
   getMessageSearch: (query, searchType = 'all', options = {}) =>
     request(
       'GET',

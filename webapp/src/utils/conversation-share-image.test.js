@@ -12,10 +12,11 @@ describe('conversation share image helpers', () => {
     expect(conversationShareText({
       content_blocks: [
         { type: 'text', text: '先整理重点' },
+        { type: 'assistant_text', text: '这是最终回答' },
         { type: 'file', payload: { name: 'brief.pdf' } },
         { type: 'image', payload: { name: 'cover.png' } },
       ],
-    })).toBe('先整理重点\n[文件] brief.pdf\n[图片] cover.png');
+    })).toBe('先整理重点\n这是最终回答\n[文件] brief.pdf\n[图片] cover.png');
   });
 
   it('keeps full long text and attachment labels', () => {
@@ -29,6 +30,16 @@ describe('conversation share image helpers', () => {
     })).toBe(`${longText}\n[文件] brief.pdf\n[图片] cover.png`);
   });
 
+  it('omits process narration from a share image', () => {
+    expect(conversationShareText({
+      content_blocks: [
+        { type: 'text', text: '正在处理的内部说明', presentation_role: ' Process ' },
+        { type: 'text', text: '可以分享的结论', presentation_role: 'result' },
+        { type: 'file', payload: { name: 'brief.pdf' } },
+      ],
+    })).toBe('可以分享的结论\n[文件] brief.pdf');
+  });
+
   it('falls back to legacy content without truncating messages', () => {
     expect(conversationShareText({ content: 'legacy message' })).toBe('legacy message');
     expect(conversationShareText({
@@ -36,6 +47,15 @@ describe('conversation share image helpers', () => {
     })).toBe('[图片] legacy-cover.png');
     const longText = 'a'.repeat(40);
     expect(conversationShareText({ content: longText })).toBe(longText);
+  });
+
+  it('sanitizes private URLs before rendering a share image', () => {
+    const text = conversationShareText({
+      content: '附件 /uploads/files/private.pdf，公开文档 https://example.com/docs',
+    });
+
+    expect(text).not.toContain('/uploads/files/private.pdf');
+    expect(text).toContain('https://example.com/docs');
   });
 
   it('prefers stable message identifiers for selection keys', () => {

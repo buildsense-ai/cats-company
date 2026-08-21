@@ -1,3 +1,5 @@
+import { sanitizeConversationShareText } from './conversation-share-text';
+
 const DEFAULT_WIDTH = 720;
 const DEFAULT_SCALE = 1.5;
 // Keep long shares within a scanner-friendly page height as well as browser
@@ -105,10 +107,15 @@ function safeString(value) {
 
 function contentBlockText(block) {
   if (!block || typeof block !== 'object') return '';
-  if (block.type === 'text') return safeString(block.text || block.content);
+  if (typeof block.presentation_role === 'string' && block.presentation_role.trim().toLowerCase() === 'process') return '';
+  if (block.type === 'text' || block.type === 'assistant_text') {
+    return safeString(block.text || block.content);
+  }
   const payload = block.payload || block;
   if (block.type === 'image') return `[图片] ${safeString(payload.name) || '图片附件'}`;
   if (block.type === 'file') return `[文件] ${safeString(payload.name) || '文件附件'}`;
+  if (block.type === 'audio' || block.type === 'voice') return `[音频] ${safeString(payload.name) || '音频附件'}`;
+  if (block.type === 'video') return `[视频] ${safeString(payload.name) || '视频附件'}`;
   return '';
 }
 
@@ -142,13 +149,13 @@ function structuredContentParts(content) {
 export function conversationShareText(message) {
   const blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
   const blockParts = blocks
-    .filter((block) => ['text', 'image', 'file'].includes(block?.type))
+    .filter((block) => ['text', 'assistant_text', 'image', 'file', 'audio', 'voice', 'video'].includes(block?.type))
     .map(contentBlockText)
     .filter(Boolean);
   const parts = blockParts.length > 0
     ? blockParts
     : structuredContentParts(message?.content);
-  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return sanitizeConversationShareText(parts.join('\n').replace(/\n{3,}/g, '\n\n'));
 }
 
 export function conversationShareMessageKey(message, index = 0) {

@@ -51,6 +51,7 @@ vi.mock('../utils/push-tab-coordination', () => ({ pushTabCoordinator: {} }));
 vi.mock('../utils/push-session-cleanup', () => ({ cleanupPushForSession: vi.fn() }));
 vi.mock('../utils/theme-access', () => ({
   THEME_STORAGE_KEY: 'theme',
+  applyThemeAttributes: vi.fn(),
   isLiquidTheme: () => false,
   isLiquidThemeUnlocked: () => false,
   normalizeTheme: () => 'light',

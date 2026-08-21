@@ -12,6 +12,7 @@ import {
   setToken,
 } from './auth-session';
 import { FeedbackProvider } from './components/feedback-system';
+import t from './i18n';
 import { registerPwaServiceWorker } from './pwa-registration';
 import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
@@ -19,6 +20,7 @@ import { readStorageValue } from './utils/storage-access';
 import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
 import './css/auth-critical.css';
 
+const SharedConversationView = lazy(() => import('./views/shared-conversation-view'));
 const importWorkspace = () => import('./views/tinode-web');
 const TinodeWeb = lazy(importWorkspace);
 const PwaController = lazy(() => import('./components/pwa-controller'));
@@ -40,6 +42,14 @@ function readBrowserLocation() {
     search: window.location.search,
     hash: window.location.hash,
   };
+}
+
+function decodeSharedConversationToken(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return '';
+  }
 }
 
 function hasUsableSessionToken(token = getToken()) {
@@ -154,16 +164,22 @@ export function App() {
     return () => window.removeEventListener('popstate', handleHistoryChange);
   }, []);
 
+  const sharedConversationMatch = browserLocation.pathname.match(/^\/share\/([^/]+)\/?$/);
+  const isSharedConversationRoute = Boolean(sharedConversationMatch);
+
   useLayoutEffect(() => {
+    if (isSharedConversationRoute) return;
     const token = getToken();
     if (auth.loggedIn || (token && !isTokenExpired(token))) return;
     if (token) setToken(null);
     if (readStoredUserProfile()) clearStoredUserProfile();
-  }, [auth.loggedIn, auth.revision]);
+  }, [auth.loggedIn, auth.revision, isSharedConversationRoute]);
 
   const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
     || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
-  const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
+  const shouldLoadWorkspace = !isSharedConversationRoute && (
+    auth.loggedIn || standaloneRoute || developmentWorkspacePreview
+  );
   // Keep service-worker startup off the anonymous auth shell while preserving
   // PWA support for authenticated and standalone application entry points.
   const shouldRegisterPwa = shouldLoadWorkspace
@@ -183,28 +199,36 @@ export function App() {
 
   return (
     <FeedbackProvider>
-      {showAuthGateway && <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
-      {shouldLoadWorkspace && (
-        <WorkspaceLoadErrorBoundary
-          preservePreviousScreen={preserveAuthShell}
-          onRecoverableError={handleWorkspaceLoadError}
-        >
-          <Suspense fallback={showAuthGateway ? null : <WorkspaceLoadingFallback />}>
-            <WorkspaceEntry location={browserLocation} onReady={handleWorkspaceReady} />
-          </Suspense>
-        </WorkspaceLoadErrorBoundary>
-      )}
-      {!auth.loggedIn && <PushCleanupController />}
-      {mountPwa && (
-        <PwaLoadErrorBoundary>
-          <Suspense fallback={null}>
-            <PwaController
-              loggedIn={auth.loggedIn}
-              pushPromptOwner={auth.pushPromptOwner}
-              sessionRevision={auth.revision}
-            />
-          </Suspense>
-        </PwaLoadErrorBoundary>
+      {isSharedConversationRoute ? (
+        <Suspense fallback={<main className="cc-shared-conversation-state" role="status">{t('conversation_share_loading')}</main>}>
+          <SharedConversationView token={decodeSharedConversationToken(sharedConversationMatch[1])} />
+        </Suspense>
+      ) : (
+        <>
+          {!isSharedConversationRoute && showAuthGateway && <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
+          {shouldLoadWorkspace && (
+            <WorkspaceLoadErrorBoundary
+              preservePreviousScreen={preserveAuthShell}
+              onRecoverableError={handleWorkspaceLoadError}
+            >
+              <Suspense fallback={showAuthGateway ? null : <WorkspaceLoadingFallback />}>
+                <WorkspaceEntry location={browserLocation} onReady={handleWorkspaceReady} />
+              </Suspense>
+            </WorkspaceLoadErrorBoundary>
+          )}
+          {!auth.loggedIn && <PushCleanupController />}
+          {mountPwa && (
+            <PwaLoadErrorBoundary>
+              <Suspense fallback={null}>
+                <PwaController
+                  loggedIn={auth.loggedIn}
+                  pushPromptOwner={auth.pushPromptOwner}
+                  sessionRevision={auth.revision}
+                />
+              </Suspense>
+            </PwaLoadErrorBoundary>
+          )}
+        </>
       )}
     </FeedbackProvider>
   );

@@ -77,16 +77,21 @@ async function loadPdfJs() {
   return pdfJsPromise;
 }
 
-async function defaultLoadDocument(url, { signal } = {}) {
+async function defaultLoadDocument(url, { signal, withCredentials = true } = {}) {
   const pdfjs = await loadPdfJs();
   if (signal?.aborted) return null;
   return {
-    loadingTask: pdfjs.getDocument({ url, withCredentials: true }),
+    loadingTask: pdfjs.getDocument({ url, withCredentials }),
     TextLayer: pdfjs.TextLayer,
   };
 }
 
-export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocument }) {
+export default function MobilePdfPreview({
+  url,
+  loadDocument = defaultLoadDocument,
+  withCredentials = true,
+  accessibleURL = url,
+}) {
   const canvasRef = useRef(null);
   const viewportRef = useRef(null);
   const textLayerContainerRef = useRef(null);
@@ -151,7 +156,10 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
 
     const loadPdf = async () => {
       try {
-        const loadResult = await loadDocument(url, { signal: loadController.signal });
+        const loadResult = await loadDocument(url, {
+          signal: loadController.signal,
+          withCredentials,
+        });
         if (!loadResult) return;
         if (loadResult?.loadingTask) {
           loadingTask = loadResult.loadingTask;
@@ -190,7 +198,7 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
       textLayerTaskRef.current?.cancel?.();
       void disposePdf();
     };
-  }, [loadDocument, url]);
+  }, [loadDocument, url, withCredentials]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -445,14 +453,16 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
           </button>
         </div>
       </div>
-      <a
+      {accessibleURL && (
+        <a
         className="v3-mobile-pdf-accessible-link"
-        href={url}
+        href={accessibleURL}
         target="_blank"
         rel="noopener noreferrer"
-      >
-        使用系统 PDF 阅读器打开可访问版本
-      </a>
+        >
+          使用系统 PDF 阅读器打开可访问版本
+        </a>
+      )}
       <div
         ref={viewportRef}
         className="v3-mobile-pdf-viewport"

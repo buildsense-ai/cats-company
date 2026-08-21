@@ -360,16 +360,17 @@ type Message struct {
 
 // ContentBlock represents a block of content in code mode.
 type ContentBlock struct {
-	Type      string                 `json:"type"`
-	Text      string                 `json:"text,omitempty"`
-	Thinking  string                 `json:"thinking,omitempty"`
-	Payload   map[string]interface{} `json:"payload,omitempty"`
-	ID        string                 `json:"id,omitempty"`
-	Name      string                 `json:"name,omitempty"`
-	Input     map[string]interface{} `json:"input,omitempty"`
-	ToolUseID string                 `json:"tool_use_id,omitempty"`
-	Content   string                 `json:"content,omitempty"`
-	IsError   bool                   `json:"is_error,omitempty"`
+	Type             string                 `json:"type"`
+	Text             string                 `json:"text,omitempty"`
+	Thinking         string                 `json:"thinking,omitempty"`
+	Payload          map[string]interface{} `json:"payload,omitempty"`
+	ID               string                 `json:"id,omitempty"`
+	Name             string                 `json:"name,omitempty"`
+	Input            map[string]interface{} `json:"input,omitempty"`
+	ToolUseID        string                 `json:"tool_use_id,omitempty"`
+	Content          string                 `json:"content,omitempty"`
+	IsError          bool                   `json:"is_error,omitempty"`
+	PresentationRole string                 `json:"presentation_role,omitempty"`
 }
 
 // ConversationSummary is the lightweight chat-list payload for a topic.

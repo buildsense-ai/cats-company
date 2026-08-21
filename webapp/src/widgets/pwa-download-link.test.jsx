@@ -58,6 +58,35 @@ describe('PwaDownloadLink', () => {
     expect(window.location.pathname).not.toBe('/uploads/files/report.pdf');
   });
 
+  test('uses omitted credentials for capability-scoped downloads', async () => {
+    const sharedAssetURL = 'https://api.example.test/api/shared-conversations/abcdefghijklmnopqrstuvwxyz_0123456789-ABCDE/assets/0123456789abcdef0123456789abcdef';
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(['pdf'])),
+    });
+
+    await act(async () => {
+      root.render(
+        <PwaDownloadLink
+          href={sharedAssetURL}
+          credentialless
+          credentials="omit"
+          download="report.pdf"
+        >
+          下载
+        </PwaDownloadLink>,
+      );
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('a'));
+      await Promise.resolve();
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(sharedAssetURL, { credentials: 'omit' });
+    expect(container.querySelector('a').getAttribute('target')).toBeNull();
+  });
+
   test('keeps the app and exposes a return-home fallback when a same-origin blob download fails', async () => {
     const onDownloadStart = vi.fn();
     global.fetch = vi.fn().mockRejectedValue(new Error('CORS blocked'));

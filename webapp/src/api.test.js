@@ -689,6 +689,83 @@ describe('message history request controls', () => {
   });
 });
 
+describe('public conversation share requests', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    localStorage.clear();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ title: '会话片段', items: [] }),
+    });
+    apiModule = await import('./api');
+    apiModule.setToken('owner-session-token');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  test('loads a capability link without forwarding the owner session', async () => {
+    await expect(apiModule.api.getConversationShare('visitor-capability')).resolves.toEqual({
+      title: '会话片段',
+      items: [],
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/shared-conversations/visitor-capability',
+      expect.objectContaining({
+        method: 'GET',
+        credentials: 'omit',
+        headers: { Accept: 'application/json' },
+      }),
+    );
+    expect(global.fetch.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
+  });
+
+  test('aborts a capability-link request when its timeout expires', async () => {
+    global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+
+    const request = apiModule.api.getConversationShare('visitor-capability', { timeoutMs: 15000 });
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  test('distinguishes caller cancellation from a capability-link timeout', async () => {
+    global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    const controller = new AbortController();
+    const request = apiModule.api.getConversationShare('visitor-capability', {
+      signal: controller.signal,
+      timeoutMs: 15000,
+    });
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
+
+    controller.abort();
+    await rejection;
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+});
+
 describe('cloud worker operation request controls', () => {
   let apiModule;
 

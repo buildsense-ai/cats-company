@@ -107,6 +107,29 @@ describe('MobilePdfPreview', () => {
     expect(container.querySelector('button[aria-label="适合宽度"]').disabled).toBe(true);
   });
 
+  it('can load a public PDF without credentials or a direct-link fallback', async () => {
+    const fixture = createPdfFixture();
+    const loadDocument = vi.fn().mockResolvedValue(fixture.document);
+
+    await act(async () => {
+      root.render(
+        <MobilePdfPreview
+          url="https://api.example.test/api/shared-conversations/capability/assets/asset"
+          withCredentials={false}
+          accessibleURL=""
+          loadDocument={loadDocument}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(loadDocument).toHaveBeenCalledWith(
+      'https://api.example.test/api/shared-conversations/capability/assets/asset',
+      expect.objectContaining({ withCredentials: false }),
+    );
+    expect(container.querySelector('.v3-mobile-pdf-accessible-link')).toBeNull();
+  });
+
   it('keeps a normal page renderable at 300% in a tablet-width preview', async () => {
     const fixture = createPdfFixture(1, { width: 600, height: 800 });
     const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1024);

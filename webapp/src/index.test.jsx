@@ -54,6 +54,10 @@ vi.mock('./views/auth-gateway', () => ({
   default: () => <div data-testid="auth-gateway" />,
 }));
 
+vi.mock('./views/shared-conversation-view', () => ({
+  default: ({ token }) => <div data-testid="shared-conversation-view">{token}</div>,
+}));
+
 vi.mock('./components/pwa-controller', () => ({
   default: (props) => {
     mocks.pwaController(props);
@@ -330,4 +334,17 @@ test('keeps the application mounted when the optional PWA chunk fails to load', 
   } finally {
     consoleError.mockRestore();
   }
+});
+
+test('opens a shared conversation when the copied URL has a trailing slash', async () => {
+  window.history.replaceState(null, '', '/share/visitor-capability/');
+
+  await act(async () => {
+    root.render(<App />);
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('[data-testid="shared-conversation-view"]')?.textContent)
+    .toBe('visitor-capability');
+  expect(container.querySelector('[data-testid="tinode-web"]')).toBeNull();
 });

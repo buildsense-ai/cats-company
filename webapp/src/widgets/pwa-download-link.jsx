@@ -36,11 +36,16 @@ function isSameOriginURL(url) {
   }
 }
 
-export async function downloadPwaFile(url, fileName) {
+export async function downloadPwaFile(url, fileName, {
+  credentials = 'include',
+  allowCrossOrigin = false,
+} = {}) {
   if (!url) throw new Error('下载地址为空');
   const requestURL = new URL(url, window.location.href);
-  if (requestURL.origin !== window.location.origin) throw new Error('跨域文件应使用浏览器原生下载');
-  const response = await fetch(url, { credentials: 'include' });
+  if (!allowCrossOrigin && requestURL.origin !== window.location.origin) {
+    throw new Error('跨域文件应使用浏览器原生下载');
+  }
+  const response = await fetch(url, { credentials });
   if (!response.ok) throw new Error(`下载失败（HTTP ${response.status}）`);
   const blob = await response.blob();
   const objectURL = URL.createObjectURL(blob);
@@ -59,6 +64,9 @@ export default function PwaDownloadLink({
   download = true,
   target,
   rel,
+  credentials = 'include',
+  credentialless = false,
+  linkRef,
   onClick,
   onDownloadStart,
   children,
@@ -67,7 +75,7 @@ export default function PwaDownloadLink({
   const [state, setState] = useState('idle');
   const noticeHostRef = useRef(null);
   const standalone = isStandaloneWebApp();
-  const useBlobDownload = standalone && isSameOriginURL(href);
+  const useBlobDownload = credentialless || (standalone && isSameOriginURL(href));
   const fileName = typeof download === 'string' ? download : fileNameFromURL(href);
 
   const handleClick = async (event) => {
@@ -82,7 +90,10 @@ export default function PwaDownloadLink({
     noticeHostRef.current = ensureDownloadNoticeHost();
     setState('downloading');
     try {
-      await downloadPwaFile(href, fileName);
+      await downloadPwaFile(href, fileName, {
+        credentials,
+        allowCrossOrigin: credentialless,
+      });
     } catch {
       setState('failed');
       return;
@@ -95,6 +106,7 @@ export default function PwaDownloadLink({
     <>
       <a
         {...props}
+        ref={linkRef}
         href={href}
         download={download}
         target={useBlobDownload ? undefined : target}
@@ -107,7 +119,7 @@ export default function PwaDownloadLink({
       {noticeHostRef.current && state !== 'idle' && createPortal(
         <div className={`catsco-pwa-download-notice${state === 'failed' ? ' is-error' : ''}`} role={state === 'failed' ? 'alert' : 'status'}>
           <span>{state === 'failed' ? '下载未开始' : '正在准备下载…'}</span>
-          {state === 'failed' && (
+          {state === 'failed' && !credentialless && (
             <>
               <a href={href} target="_blank" rel="noopener noreferrer">在新窗口尝试</a>
               <a href="/">返回 CatsCo</a>

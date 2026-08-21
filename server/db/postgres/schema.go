@@ -18,6 +18,9 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTitlesTable,
 		createConversationNotificationMutesTable,
 		createMessagesTable,
+		createConversationSharesTable,
+		createConversationShareItemsTable,
+		createConversationShareAssetsTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
@@ -265,6 +268,48 @@ CREATE TABLE IF NOT EXISTS messages (
     metadata JSONB DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+const createConversationSharesTable = `
+CREATE TABLE IF NOT EXISTS conversation_shares (
+    id VARCHAR(64) PRIMARY KEY,
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id VARCHAR(64) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    title VARCHAR(80) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'active',
+    expires_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    revoked_at TIMESTAMPTZ DEFAULT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_shares_owner_topic ON conversation_shares (owner_uid, topic_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_shares_expires_at ON conversation_shares (expires_at);
+`
+
+const createConversationShareItemsTable = `
+CREATE TABLE IF NOT EXISTS conversation_share_items (
+    id VARCHAR(64) PRIMARY KEY,
+    share_id VARCHAR(64) NOT NULL REFERENCES conversation_shares(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    speaker VARCHAR(16) NOT NULL,
+    snapshot TEXT NOT NULL,
+    CONSTRAINT uk_conversation_share_item_position UNIQUE (share_id, position)
+);
+`
+
+const createConversationShareAssetsTable = `
+CREATE TABLE IF NOT EXISTS conversation_share_assets (
+    id VARCHAR(64) PRIMARY KEY,
+    share_id VARCHAR(64) NOT NULL REFERENCES conversation_shares(id) ON DELETE CASCADE,
+    item_id VARCHAR(64) NOT NULL REFERENCES conversation_share_items(id) ON DELETE CASCADE,
+    storage_key VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(128) NOT NULL,
+    size BIGINT NOT NULL,
+    kind VARCHAR(16) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_share_assets_share ON conversation_share_assets (share_id);
 `
 
 const createConversationTaskStatusesTable = `
