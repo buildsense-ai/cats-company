@@ -3614,6 +3614,301 @@ describe('MessagesView composer draft isolation', () => {
     vi.useRealTimers();
   });
 
+  it('waits to switch a verified Artifact update while the current page reports unsaved state', async () => {
+    vi.useFakeTimers();
+    const origin = 'https://artifacts.example.test';
+    let dirty = true;
+    let contextRequests = 0;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        contextRequests += 1;
+        expect(targetOrigin).toBe(origin);
+        const event = new Event('message');
+        Object.defineProperties(event, {
+          source: { value: frameWindow },
+          origin: { value: origin },
+          data: {
+            value: {
+              type: 'catsco.artifact.context.response.v1',
+              request_id: message.request_id,
+              context: {
+                contract_version: 'catsco.artifact-page-context.v1',
+                observed_at: '2026-08-21T10:00:00Z',
+                dirty,
+                artifact_version: 2,
+              },
+            },
+          },
+        });
+        window.dispatchEvent(event);
+      },
+    };
+    const versionTwo = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    let currentArtifact = versionTwo;
+    api.getCloudArtifacts.mockImplementation(async () => ({ artifacts: [currentArtifact] }));
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    currentArtifact = { ...versionTwo, publish_version: 3 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+        await flushPromises();
+      });
+    }
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+    expect(contextRequests).toBeGreaterThanOrEqual(3);
+
+    dirty = false;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('keeps one verified Artifact candidate pending while the current page context is unavailable', async () => {
+    vi.useFakeTimers();
+    const origin = 'https://artifacts.example.test';
+    let contextAvailable = false;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        if (!contextAvailable) return;
+        const event = new Event('message');
+        Object.defineProperties(event, {
+          source: { value: frameWindow },
+          origin: { value: origin },
+          data: {
+            value: {
+              type: 'catsco.artifact.context.response.v1',
+              request_id: message.request_id,
+              context: {
+                contract_version: 'catsco.artifact-page-context.v1',
+                observed_at: '2026-08-21T10:00:00Z',
+                dirty: false,
+                artifact_version: 2,
+              },
+            },
+          },
+        });
+        window.dispatchEvent(event);
+      },
+    };
+    const versionTwo = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    let currentArtifact = versionTwo;
+    api.getCloudArtifacts.mockImplementation(async () => ({ artifacts: [currentArtifact] }));
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    currentArtifact = { ...versionTwo, publish_version: 3 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
+      await vi.advanceTimersByTimeAsync(300);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST + 300);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+
+    contextAvailable = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('switches a verified Artifact update when a valid legacy page context omits dirty', async () => {
+    vi.useFakeTimers();
+    const origin = 'https://artifacts.example.test';
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        const event = new Event('message');
+        Object.defineProperties(event, {
+          source: { value: frameWindow },
+          origin: { value: origin },
+          data: {
+            value: {
+              type: 'catsco.artifact.context.response.v1',
+              request_id: message.request_id,
+              context: {
+                contract_version: 'catsco.artifact-page-context.v1',
+                observed_at: '2026-08-21T10:00:00Z',
+                artifact_version: 2,
+              },
+            },
+          },
+        });
+        window.dispatchEvent(event);
+      },
+    };
+    const versionTwo = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    let currentArtifact = versionTwo;
+    api.getCloudArtifacts.mockImplementation(async () => ({ artifacts: [currentArtifact] }));
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    currentArtifact = { ...versionTwo, publish_version: 3 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
+    vi.useRealTimers();
+  });
+
   it('keeps the current Artifact visible after a failed candidate load and retries on the next poll', async () => {
     vi.useFakeTimers();
     const versionTwo = {
