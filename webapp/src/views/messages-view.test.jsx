@@ -6262,6 +6262,123 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.v3-peer-typing')).toBeNull();
   });
 
+  it('keeps a manually up-scrolled conversation fixed during a runtime-plan update', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+
+    timeline.scrollTop = 500;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    timeline.scrollTop = 444;
+    await act(async () => {
+      Simulate.wheel(timeline, { deltaY: -56 });
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    const scrollCallsBeforeUpdate = window.HTMLElement.prototype.scrollIntoView.mock.calls.length;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 28,
+          seq: 28,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: '仍在加载', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(timeline.scrollTop).toBe(444);
+    expect(window.HTMLElement.prototype.scrollIntoView)
+      .toHaveBeenCalledTimes(scrollCallsBeforeUpdate);
+  });
+
+  it('stops auto-follow when a touch drag moves toward older messages', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+
+    timeline.scrollTop = 500;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      Simulate.touchStart(timeline, { touches: [{ clientY: 320 }] });
+      Simulate.touchMove(timeline, { touches: [{ clientY: 376 }] });
+      await Promise.resolve();
+    });
+    timeline.scrollTop = 444;
+
+    const scrollCallsBeforeUpdate = window.HTMLElement.prototype.scrollIntoView.mock.calls.length;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 30,
+          seq: 30,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: '正在处理',
+          type: 'tool_use',
+          msg_type: 'tool_use',
+          metadata: { id: 'tool-30', input: { task: '加载进度' } },
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(timeline.scrollTop).toBe(444);
+    expect(window.HTMLElement.prototype.scrollIntoView)
+      .toHaveBeenCalledTimes(scrollCallsBeforeUpdate);
+  });
+
+  it('follows fresh messages within the timeline without scrolling the page', async () => {
+    const initialHistory = deferred();
+    api.getMessages.mockImplementationOnce(() => initialHistory.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [{
+          id: 29,
+          seq_id: 29,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: '最新回复',
+        }],
+        has_more: false,
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1000);
+    expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
   it('hides the transient runtime plan once the same plan is persisted in working messages', async () => {
     await mountTopic(root, 'p2p_1_2');
 

@@ -480,7 +480,6 @@ export default function MessagesView({
     return result;
   }, [messages]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
-  const bottomRef = useRef(null);
   const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -493,6 +492,8 @@ export default function MessagesView({
   const messageHighlightTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
   const stickToBottomRef = useRef(true);
+  const lastTimelineScrollTopRef = useRef(0);
+  const timelineTouchYRef = useRef(null);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -935,6 +936,8 @@ export default function MessagesView({
     loadingOlderRef.current = false;
     questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
+    lastTimelineScrollTopRef.current = 0;
+    timelineTouchYRef.current = null;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
@@ -1202,23 +1205,25 @@ export default function MessagesView({
     return () => unsub();
   }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
 
-  // Auto-scroll to bottom or restore scroll anchor depending on state
+  // Restore an older-history anchor, or follow actual chat messages while the
+  // reader remains at the latest position. Runtime-only state must not move a
+  // reader who is reviewing the conversation.
   React.useLayoutEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
     if (previousScrollRef.current) {
-      // Anchoring condition: We just prepended older history.
       const { scrollHeight, scrollTop } = previousScrollRef.current;
       const newScrollHeight = timeline.scrollHeight;
       timeline.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
-      previousScrollRef.current = null; // Clear atomic lock
+      previousScrollRef.current = null;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
       stickToBottomRef.current = isTimelineNearBottom(timeline);
     } else if (stickToBottomRef.current) {
-      // Only follow fresh messages while the user is already near the bottom.
-      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      timeline.scrollTop = timeline.scrollHeight;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
     }
-  }, [messages, runtimePlan, peerTyping]);
+  }, [messages]);
 
   const loadQuestionNavigationHistory = useCallback(async ({ continueOlder = false } = {}) => {
     const targetTopic = topic;
@@ -3517,7 +3522,14 @@ export default function MessagesView({
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
-    stickToBottomRef.current = isTimelineNearBottom(el);
+    const currentScrollTop = el.scrollTop;
+    const movedUp = currentScrollTop < lastTimelineScrollTopRef.current;
+    lastTimelineScrollTopRef.current = currentScrollTop;
+    if (movedUp) {
+      stickToBottomRef.current = false;
+    } else if (isTimelineNearBottom(el)) {
+      stickToBottomRef.current = true;
+    }
     const pendingQuestionKey = pendingQuestionJumpRef.current;
     if (pendingQuestionKey) {
       setActiveQuestionKey((current) => current === pendingQuestionKey ? current : pendingQuestionKey);
@@ -3529,6 +3541,33 @@ export default function MessagesView({
     if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD) {
       loadOlderHistory({ automatic: true });
     }
+  };
+
+  const handleTimelineWheel = (event) => {
+    clearPendingQuestionJump();
+    if (event.deltaY < 0) stickToBottomRef.current = false;
+  };
+
+  const handleTimelineTouchStart = (event) => {
+    clearPendingQuestionJump();
+    timelineTouchYRef.current = event.touches?.[0]?.clientY ?? null;
+  };
+
+  const handleTimelineTouchMove = (event) => {
+    const currentTouchY = event.touches?.[0]?.clientY;
+    const previousTouchY = timelineTouchYRef.current;
+    if (
+      Number.isFinite(currentTouchY)
+      && Number.isFinite(previousTouchY)
+      && currentTouchY > previousTouchY
+    ) {
+      stickToBottomRef.current = false;
+    }
+    timelineTouchYRef.current = Number.isFinite(currentTouchY) ? currentTouchY : null;
+  };
+
+  const handleTimelineTouchEnd = () => {
+    timelineTouchYRef.current = null;
   };
 
   const openImagePreview = useCallback((imageId, trigger, payload = null) => {
@@ -3570,8 +3609,11 @@ export default function MessagesView({
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}${conversationShareMode ? ' is-conversation-share-mode' : ''}`}
             ref={timelineRef}
             onScroll={handleTimelineScroll}
-            onWheel={clearPendingQuestionJump}
-            onTouchStart={clearPendingQuestionJump}
+            onWheel={handleTimelineWheel}
+            onTouchStart={handleTimelineTouchStart}
+            onTouchMove={handleTimelineTouchMove}
+            onTouchEnd={handleTimelineTouchEnd}
+            onTouchCancel={handleTimelineTouchEnd}
             onPointerDown={clearPendingQuestionJump}
             onDragEnter={handleDragEnter}
             onDragOver={handleDragOver}
@@ -3778,7 +3820,6 @@ export default function MessagesView({
               <span className="v3-peer-typing-label">{t('typing')}</span>
             </div>
           )}
-          <div ref={bottomRef} />
         </div>
       </div>
 
