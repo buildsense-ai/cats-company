@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Bell,
   CircleAlert,
+  Download,
   LoaderCircle,
   MonitorCheck,
   Send,
@@ -25,6 +26,11 @@ import {
   rememberPendingPushUnsubscribe,
 } from '../utils/push-session-cleanup';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
+import {
+  getPwaInstallState,
+  promptPwaInstall,
+  subscribePwaInstall,
+} from '../utils/pwa-install';
 
 function pushOwnerForUser(user) {
   const uid = user?.uid || user?.id;
@@ -79,6 +85,10 @@ export default function NotificationSettings({ user }) {
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [install, setInstall] = useState(getPwaInstallState);
+  const [installing, setInstalling] = useState(false);
+
+  useEffect(() => subscribePwaInstall(setInstall), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -253,6 +263,15 @@ export default function NotificationSettings({ user }) {
     }
   };
 
+  const installApp = async () => {
+    setInstalling(true);
+    try {
+      await promptPwaInstall();
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   return (
     <div className="oc-settings-section oc-notification-settings">
       <div className="oc-settings-section-title">消息通知</div>
@@ -276,6 +295,29 @@ export default function NotificationSettings({ user }) {
           <span aria-hidden="true" />
         </button>
       </div>
+      {(install.canPrompt || install.requiresManualIOSInstall) && (
+        <div className="oc-notification-row oc-pwa-install-row">
+          <span className="oc-notification-icon" aria-hidden="true"><Download size={18} /></span>
+          <div className="oc-settings-list-text">
+            <div className="oc-notification-label">安装 CatsCo</div>
+            <div className="oc-settings-secondary">
+              {install.requiresManualIOSInstall
+                ? '打开浏览器分享菜单，选择“添加到主屏幕”，安装后即可开启通知。'
+                : '安装到当前设备后，可从桌面直接打开并获得更稳定的通知体验。'}
+            </div>
+          </div>
+          {install.canPrompt && (
+            <button
+              type="button"
+              className="oc-btn oc-btn-default oc-pwa-install-action"
+              disabled={installing}
+              onClick={installApp}
+            >
+              {installing ? '安装中' : '安装'}
+            </button>
+          )}
+        </div>
+      )}
       <div className="oc-notification-warning">
         <CircleAlert size={16} aria-hidden="true" />
         <span>部分国产 Android 手机可能因浏览器、系统推送通道或 Google 服务不可用而收不到通知。测试结果以当前设备实际收到为准。</span>

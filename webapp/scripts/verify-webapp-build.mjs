@@ -3,18 +3,27 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 const BUILD_ROOT = new URL('../build/', import.meta.url);
 const assetsRoot = new URL('./assets/', BUILD_ROOT);
 const serviceWorkerPath = new URL('./sw.js', BUILD_ROOT);
+const manifestPath = new URL('./manifest.webmanifest', BUILD_ROOT);
 
 function fail(message) {
   throw new Error(`[webapp build] ${message}`);
 }
 
-if (!existsSync(serviceWorkerPath)) fail('missing build/sw.js');
+for (const artifact of ['index.html', 'manifest.webmanifest', 'offline.html', 'sw.js']) {
+  if (!existsSync(new URL(`./${artifact}`, BUILD_ROOT))) fail(`missing build/${artifact}`);
+}
 if (!existsSync(assetsRoot)) fail('missing build/assets directory');
 
 const serviceWorker = readFileSync(serviceWorkerPath, 'utf8');
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+if (manifest.id !== '/' || manifest.scope !== '/' || manifest.display !== 'standalone') {
+  fail('manifest does not declare the required standalone app identity');
+}
 const requiredPrecacheEntries = [
   'index.html',
+  'manifest.webmanifest',
   'assets/index-',
+  'assets/tinode-web-',
   'assets/workbox-window',
   'offline.html',
 ];
@@ -25,7 +34,7 @@ for (const entry of requiredPrecacheEntries) {
   }
 }
 
-for (const forbiddenEntry of ['tinode-web-', 'pdf-']) {
+for (const forbiddenEntry of ['assets/pdf-', 'assets/pdf.worker.']) {
   if (serviceWorker.includes(forbiddenEntry)) {
     fail(`service worker unexpectedly precaches ${forbiddenEntry} chunk`);
   }

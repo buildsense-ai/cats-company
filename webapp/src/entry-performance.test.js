@@ -19,6 +19,7 @@ describe('entry bundle split', () => {
   it('defers the authenticated workspace while preserving direct-route support', () => {
     expect(entrySource).toContain("const TinodeWeb = lazy(importWorkspace);");
     expect(entrySource).toContain("const PwaController = lazy(() => import('./components/pwa-controller'));");
+    expect(entrySource).toContain("import PwaUpdateController from './components/pwa-update-controller';");
     expect(entrySource).toContain("const preloadWorkspace = () => { void importWorkspace().catch(() => undefined); };");
     expect(entrySource).toContain("from './auth-session';");
     expect(entrySource).toContain('  isTokenExpired,');
@@ -36,10 +37,10 @@ describe('entry bundle split', () => {
     expect(entrySource).toContain("browserLocation.pathname.startsWith('/mobile-upload/')");
     expect(entrySource).toContain("get('workflow_demo') === '1'");
     expect(entrySource).toContain('onAuthenticationIntent={preloadWorkspace}');
-    expect(entrySource).toContain('const mountPwa = auth.loggedIn && shouldRegisterPwa;');
-    expect(entrySource).toContain('const shouldRegisterPwa = shouldLoadWorkspace');
+    expect(entrySource).toContain('const shouldMountPwaController = auth.loggedIn');
+    expect(entrySource).toContain('&& shouldLoadWorkspace');
     expect(entrySource).toContain('&& shouldMountPwaForPathname(browserLocation.pathname);');
-    expect(entrySource).toContain('if (shouldRegisterPwa) registerPwaServiceWorker();');
+    expect(entrySource).toContain('registerPwaServiceWorker();');
     expect(entrySource).toContain('<Suspense fallback={null}>');
     expect(entrySource).toContain('<PwaLoadErrorBoundary>');
     expect(entrySource).not.toContain("import TinodeWeb from './views/tinode-web';");
@@ -47,14 +48,9 @@ describe('entry bundle split', () => {
     expect(entrySource).not.toContain("from './api'");
   });
 
-  it('precaches only the app shell and PWA runtime, not lazy workspace chunks', () => {
-    expect(viteConfig).toContain("'assets/index-*.{js,css}'");
-    expect(viteConfig).toContain("'assets/workbox-window.*.js'");
-    expect(viteConfig).toContain("'index.html'");
-    expect(viteConfig).toContain("'offline.html'");
-    expect(viteConfig).toContain("'pwa-192x192.png'");
-    expect(viteConfig).not.toContain("'assets/**/*.{js,css}'");
-    expect(viteConfig).not.toContain("'pwa-*.png'");
+  it('precaches application chunks while excluding the optional PDF engine', () => {
+    expect(viteConfig).toContain("globPatterns: ['index.html', 'assets/**/*.{js,css}', 'offline.html', 'pwa-*.png']");
+    expect(viteConfig).toContain("globIgnores: ['assets/pdf-*.js', 'assets/pdf.worker.*']");
   });
 
   it('preserves the workspace stylesheet cascade after lazy loading', () => {

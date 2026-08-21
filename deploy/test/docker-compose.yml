@@ -234,7 +234,7 @@ services:
     ports:
       - "${TEST_WEB_BIND_HOST:-127.0.0.1}:${TEST_WEB_HOST_PORT:-18080}:80"
     healthcheck:
-      test: ["CMD-SHELL", "nginx -t && test -s /usr/share/nginx/html/index.html"]
+      test: ["CMD-SHELL", "nginx -t && test -s /usr/share/nginx/html/index.html && test -s /usr/share/nginx/html/manifest.webmanifest && test -s /usr/share/nginx/html/sw.js && test -s /usr/share/nginx/html/offline.html"]
       interval: 30s
       timeout: 5s
       retries: 5

@@ -10,17 +10,7 @@ function notifyRefreshListeners() {
 
 function handleNeedRefresh() {
   refreshPending = true;
-  if (refreshListeners.size > 0) {
-    notifyRefreshListeners();
-    return;
-  }
-
-  // Preserve the existing immediate activation behavior when no authenticated
-  // PWA controller is mounted to present the update state.
-  Promise.resolve().then(() => {
-    if (!refreshPending || refreshListeners.size > 0) return;
-    updateServiceWorker?.(true);
-  });
+  notifyRefreshListeners();
 }
 
 export function registerPwaServiceWorker() {
