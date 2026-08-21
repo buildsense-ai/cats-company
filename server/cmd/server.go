@@ -336,6 +336,14 @@ func main() {
 	botHandler := server.NewBotHandler(db)
 	botHandler.SetHub(hub)
 	cloudWorkerHandler := server.NewCloudWorkerHandler(db, botHandler, server.CloudWorkerConfigFromEnv())
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		cloudWorkerHandler.SweepExpiredWorkers(time.Now().UTC())
+		for range ticker.C {
+			cloudWorkerHandler.SweepExpiredWorkers(time.Now().UTC())
+		}
+	}()
 	botModelStore, _ := db.(store.BotModelConfigStore)
 	botModelConfigHandler := server.NewBotModelConfigHandler(db, botModelStore)
 	artifactRuntimeConfigHandler := server.NewArtifactRuntimeConfigHandlerFromEnv()

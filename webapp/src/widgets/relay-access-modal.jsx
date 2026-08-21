@@ -31,6 +31,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '后台任务与主动协作',
       '个人 Skill 与使用偏好持续沉淀',
       '常规响应优先级',
+      '含 1 次云托管员工创建',
+      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
     ],
   },
   'catsco-pro': {
@@ -47,6 +49,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '复杂任务优先获得更强执行能力',
       '高峰期更高响应优先级',
       '更宽松的公平使用边界',
+      '含 1 次云托管员工创建',
+      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
     ],
   },
   'catsco-trial-3d': {
@@ -1419,7 +1423,7 @@ export default function RelayAccessModal({ onClose }) {
                         <div className="relay-access-mini-title">
                           {hasCurrentCommercialPlans ? '选择适合你的工作强度' : '选一档，开始你的协作节奏'}
                         </div>
-                        <span>{hasCurrentCommercialPlans ? '按实际工作频率选择，套餐到期前不会自动续费。' : '按使用频率选择，套餐到期前不会自动续费。'}</span>
+                        <span>均为 30 天月套餐，到期前不会自动续费；云员工到期后有 15 天天翼云保留期。</span>
                       </div>
                       {paymentChannels.length > 1 ? (
                         <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>

@@ -488,6 +488,23 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, paidAt, expiresAt); err != nil {
 		return nil, false, err
 	}
+	if order.PlanSlug == commercialPersonalPlanSlug || order.PlanSlug == commercialProPlanSlug {
+		if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt); err != nil {
+			return nil, false, err
+		}
+		// If the user already has a cloud worker, a renewal/upgrade extends the
+		// retention window atomically with the paid entitlement. The worker is
+		// not deleted at the old expiry while a new monthly package is active.
+		if _, err := tx.Exec(`
+			UPDATE cloud_worker_lifecycles
+			SET package_expires_at = $2,
+			    delete_after = $2 + INTERVAL '15 days',
+			    state = 'active', archived_at = NULL, delete_started_at = NULL,
+			    last_error = '', updated_at = CURRENT_TIMESTAMP
+			WHERE owner_uid = $1 AND state <> 'deleted'`, order.UID, expiresAt); err != nil {
+			return nil, false, fmt.Errorf("extend cloud worker lifecycle: %w", err)
+		}
+	}
 	fulfilled, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders
 		SET status = 'fulfilled', provider_trade_no = $2, paid_at = $3, fulfilled_at = CURRENT_TIMESTAMP,
@@ -641,6 +658,12 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 		SET revoked_at = $3, expires_at = LEAST(COALESCE(expires_at, $3), $3)
 		WHERE uid = $1 AND grant_type = 'order' AND source_ref = $2 AND revoked_at IS NULL`, order.UID, order.OrderNo, refundedAt); err != nil {
 		return nil, false, fmt.Errorf("revoke refunded quota grants: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE cloud_worker_credits
+		SET state = 'revoked', reservation_ref = '', reserved_at = NULL
+		WHERE uid = $1 AND source_ref = $2 AND state IN ('available','reserved')`, order.UID, "order:"+order.OrderNo); err != nil {
+		return nil, false, fmt.Errorf("revoke refunded cloud worker credit: %w", err)
 	}
 	refunded, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders

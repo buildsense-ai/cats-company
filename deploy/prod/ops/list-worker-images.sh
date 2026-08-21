@@ -11,13 +11,16 @@
 set -Eeuo pipefail
 
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
-# bake 通道镜像在 default 企业项目（projectID=0）下制作。天翼云私有镜像的
-# ListImage 按项目隔离，但 CreateEcsInstance 引用 imageID 不校验项目；
-# 因此 worker 实例可建在企业项目内网子网，而镜像列表始终在 default 项目查。
-IMAGE_PROJECT_ID="${CTYUN_IMAGE_PROJECT_ID:-0}"
+# Bake 镜像和 worker 实例位于不同的天翼云企业项目。镜像项目必须显式配置，
+# 禁止回退到 projectID=0，否则会把旧项目里的镜像误选为生产版本。
+IMAGE_PROJECT_ID="${CTYUN_IMAGE_PROJECT_ID:-}"
 
 if [[ -z "$REGION_ID" ]]; then
   echo "error: CTYUN_WORKER_REGION_ID is required" >&2
+  exit 2
+fi
+if [[ -z "$IMAGE_PROJECT_ID" ]]; then
+  echo "error: CTYUN_IMAGE_PROJECT_ID is required (bake image project)" >&2
   exit 2
 fi
 for cmd in ctyun-cli jq timeout; do

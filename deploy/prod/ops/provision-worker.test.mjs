@@ -364,7 +364,7 @@ test("provision-worker: create failure fails closed and cleans up", () => {
   assert.ok((state.deletedKeypairs || []).includes("worker-key-bot-a"), "key pair should be cleaned up");
 });
 
-test("provision-worker: monthly billing by default with auto-renew", () => {
+test("provision-worker: monthly billing by default without auto-renew", () => {
   const sb = setupSandbox({});
   const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
     "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
@@ -375,9 +375,7 @@ test("provision-worker: monthly billing by default with auto-renew", () => {
   assert.match(state.createArgs, /--cycleCount 1/);
   assert.match(state.createArgs, /--extIP 0/);
   assert.ok(!state.createArgs.includes("--bandwidth"), "private-IP provisioning must not request public bandwidth");
-  assert.equal((state.renewCalls || []).length, 1, "auto-renew must be configured once");
-  assert.equal(state.renewCalls[0].autoRenewStatus, "1");
-  assert.equal(state.renewCalls[0].autoRenewCycleType, "MONTH");
+  assert.equal((state.renewCalls || []).length, 0, "cloud workers must never auto-renew");
   assert.ok((state.instances || [])[0].expiredTime, "monthly instance should carry expiredTime");
 });
 
@@ -405,26 +403,15 @@ test("provision-worker: ondemand billing mode keeps on-demand and skips auto-ren
   assert.ok(!(state.instances || [])[0].expiredTime, "on-demand instance has no expiredTime");
 });
 
-test("provision-worker: AUTO_RENEW=0 disables auto-renew for monthly billing", () => {
+test("provision-worker: deprecated AUTO_RENEW setting is ignored", () => {
   const sb = setupSandbox({});
   const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
     "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"],
-    { CTYUN_WORKER_AUTO_RENEW: "0" });
+    { CTYUN_WORKER_AUTO_RENEW: "1" });
   if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.match(state.createArgs, /--onDemand false/);
-  assert.equal((state.renewCalls || []).length, 0, "auto-renew must be skipped");
-});
-
-test("provision-worker: auto-renew failure warns but does not fail provisioning", () => {
-  const sb = setupSandbox({ failAutoRenew: true });
-  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
-    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
-  if (r.status !== 0) assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-  assert.match(r.stderr, /warning: auto-renew configuration failed/);
-  assert.match(r.stdout, /"status":"provisioned"/);
-  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
-  assert.ok(state.injectedEnv, "provisioning must complete despite auto-renew failure");
+  assert.equal((state.renewCalls || []).length, 0, "auto-renew must remain disabled");
 });
 
 test("provision-worker: post-create failure unsubscribes monthly instance in cleanup", () => {
