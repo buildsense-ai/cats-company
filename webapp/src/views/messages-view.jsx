@@ -48,7 +48,7 @@ const LONG_PASTE_MULTILINE_CHAR_THRESHOLD = 2000;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
 const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
-const STICK_TO_BOTTOM_THRESHOLD = 96;
+const TIMELINE_BOTTOM_EPSILON = 1;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
@@ -491,9 +491,11 @@ export default function MessagesView({
   const visibleQuestionAnchorsRef = useRef(new Map());
   const messageHighlightTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
+  const pendingOlderHistoryAnchorRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const lastTimelineScrollTopRef = useRef(0);
   const timelineTouchYRef = useRef(null);
+  const timelineTouchStartedInNestedScrollerRef = useRef(false);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -933,11 +935,13 @@ export default function MessagesView({
     historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     loadingOlderRef.current = false;
     questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
     lastTimelineScrollTopRef.current = 0;
     timelineTouchYRef.current = null;
+    timelineTouchStartedInNestedScrollerRef.current = false;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
@@ -1205,25 +1209,21 @@ export default function MessagesView({
     return () => unsub();
   }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
 
-  // Restore an older-history anchor, or follow actual chat messages while the
-  // reader remains at the latest position. Runtime-only state must not move a
-  // reader who is reviewing the conversation.
+  // Restore an older-history anchor, or follow updates while the reader
+  // remains at the latest position.
   React.useLayoutEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
     if (previousScrollRef.current) {
-      const { scrollHeight, scrollTop } = previousScrollRef.current;
-      const newScrollHeight = timeline.scrollHeight;
-      timeline.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
+      restoreTimelineReadingAnchor(timeline, previousScrollRef.current);
       previousScrollRef.current = null;
       lastTimelineScrollTopRef.current = timeline.scrollTop;
-      stickToBottomRef.current = isTimelineNearBottom(timeline);
     } else if (stickToBottomRef.current) {
       timeline.scrollTop = timeline.scrollHeight;
       lastTimelineScrollTopRef.current = timeline.scrollTop;
     }
-  }, [messages]);
+  }, [messages, runtimePlan, peerTyping]);
 
   const loadQuestionNavigationHistory = useCallback(async ({ continueOlder = false } = {}) => {
     const targetTopic = topic;
@@ -1322,6 +1322,7 @@ export default function MessagesView({
     const hasCachedHistory = !aroundId && historyCacheRef.current.has(cacheKey);
     historyLoadingRef.current = true;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     setRefreshingHistory(true);
     setHistoryError('');
     setOlderHistoryError('');
@@ -1415,15 +1416,8 @@ export default function MessagesView({
     const requestID = historyRequestRef.current;
     const controller = new AbortController();
     olderHistoryAbortControllerRef.current = controller;
-    
-    // Capture the absolute scroll geometry BEFORE rendering the older batch
-    if (timelineRef.current) {
-      previousScrollRef.current = {
-        scrollHeight: timelineRef.current.scrollHeight,
-        scrollTop: timelineRef.current.scrollTop,
-      };
-    }
-    
+    pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(timelineRef.current);
+
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     setOlderHistoryError('');
@@ -1439,6 +1433,10 @@ export default function MessagesView({
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
       const { visibleMessages } = normalizeHistoryMessages(rawMessages);
+      previousScrollRef.current = stickToBottomRef.current
+        ? null
+        : pendingOlderHistoryAnchorRef.current;
+      pendingOlderHistoryAnchorRef.current = null;
       setMessages((prev) => mergeMessages(visibleMessages, prev));
       historyOffsetRef.current += rawMessages.length;
       historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
@@ -1485,6 +1483,7 @@ export default function MessagesView({
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
+        pendingOlderHistoryAnchorRef.current = null;
         if (e?.code !== 'REQUEST_ABORTED') {
           setOlderHistoryError(e?.code === 'REQUEST_TIMEOUT'
             ? '更早的聊天记录加载超时，请重试。'
@@ -3460,6 +3459,7 @@ export default function MessagesView({
 
     stickToBottomRef.current = false;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     const targetTopic = topic;
     const controller = new AbortController();
     questionJumpAbortControllerRef.current = controller;
@@ -3523,12 +3523,19 @@ export default function MessagesView({
   const handleTimelineScroll = (e) => {
     const el = e.target;
     const currentScrollTop = el.scrollTop;
-    const movedUp = currentScrollTop < lastTimelineScrollTopRef.current;
+    const previousScrollTop = lastTimelineScrollTopRef.current;
+    const movedUp = currentScrollTop < previousScrollTop;
+    const scrollPositionChanged = currentScrollTop !== previousScrollTop;
     lastTimelineScrollTopRef.current = currentScrollTop;
-    if (movedUp) {
+    if (movedUp && !isTimelineAtBottom(el)) {
       stickToBottomRef.current = false;
-    } else if (isTimelineNearBottom(el)) {
+    } else if (isTimelineAtBottom(el)) {
       stickToBottomRef.current = true;
+    }
+    if (scrollPositionChanged
+      && loadingOlderRef.current
+      && pendingOlderHistoryAnchorRef.current) {
+      pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(el);
     }
     const pendingQuestionKey = pendingQuestionJumpRef.current;
     if (pendingQuestionKey) {
@@ -3545,12 +3552,15 @@ export default function MessagesView({
 
   const handleTimelineWheel = (event) => {
     clearPendingQuestionJump();
-    if (event.deltaY < 0) stickToBottomRef.current = false;
+    if (event.deltaY < 0 && !isNestedTimelineScroller(event.target)) {
+      stickToBottomRef.current = false;
+    }
   };
 
   const handleTimelineTouchStart = (event) => {
     clearPendingQuestionJump();
     timelineTouchYRef.current = event.touches?.[0]?.clientY ?? null;
+    timelineTouchStartedInNestedScrollerRef.current = isNestedTimelineScroller(event.target);
   };
 
   const handleTimelineTouchMove = (event) => {
@@ -3560,6 +3570,7 @@ export default function MessagesView({
       Number.isFinite(currentTouchY)
       && Number.isFinite(previousTouchY)
       && currentTouchY > previousTouchY
+      && !timelineTouchStartedInNestedScrollerRef.current
     ) {
       stickToBottomRef.current = false;
     }
@@ -3568,6 +3579,7 @@ export default function MessagesView({
 
   const handleTimelineTouchEnd = () => {
     timelineTouchYRef.current = null;
+    timelineTouchStartedInNestedScrollerRef.current = false;
   };
 
   const openImagePreview = useCallback((imageId, trigger, payload = null) => {
@@ -5161,9 +5173,43 @@ function getStreamId(message) {
   return typeof id === 'string' && id.trim() ? id.trim() : '';
 }
 
-function isTimelineNearBottom(el) {
+function isTimelineAtBottom(el) {
   if (!el) return true;
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= TIMELINE_BOTTOM_EPSILON;
+}
+
+function captureTimelineReadingAnchor(timeline) {
+  if (!timeline) return null;
+  const timelineRect = timeline.getBoundingClientRect();
+  const anchors = Array.from(timeline.querySelectorAll('[data-search-message-id]'));
+  const anchor = anchors.find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.bottom > timelineRect.top && rect.top < timelineRect.bottom;
+  }) || anchors[0];
+  return {
+    scrollHeight: timeline.scrollHeight,
+    scrollTop: timeline.scrollTop,
+    messageID: anchor?.dataset.searchMessageId || '',
+    offsetTop: anchor ? anchor.getBoundingClientRect().top - timelineRect.top : null,
+  };
+}
+
+function restoreTimelineReadingAnchor(timeline, anchor) {
+  if (anchor.messageID && Number.isFinite(anchor.offsetTop)) {
+    const target = Array.from(timeline.querySelectorAll('[data-search-message-id]'))
+      .find((element) => element.dataset.searchMessageId === anchor.messageID);
+    if (target) {
+      const offsetTop = target.getBoundingClientRect().top - timeline.getBoundingClientRect().top;
+      timeline.scrollTop += offsetTop - anchor.offsetTop;
+      return;
+    }
+  }
+  timeline.scrollTop = anchor.scrollTop + (timeline.scrollHeight - anchor.scrollHeight);
+}
+
+function isNestedTimelineScroller(target) {
+  return target instanceof Element
+    && Boolean(target.closest('.v3-working-steps, .v3-wpi-code-block pre'));
 }
 
 function streamDeltaText(content) {

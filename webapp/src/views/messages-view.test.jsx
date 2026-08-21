@@ -6262,6 +6262,326 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.v3-peer-typing')).toBeNull();
   });
 
+  it('keeps the current reading position when streaming and scrolling overlap an older-history load', async () => {
+    const initialHistory = deferred();
+    const olderHistory = deferred();
+    api.getMessages
+      .mockImplementationOnce(() => initialHistory.promise)
+      .mockImplementationOnce(() => olderHistory.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => (
+        container.querySelector('[data-message-content="older message"]') ? 1100 : scrollHeight
+      ),
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+    timeline.getBoundingClientRect = vi.fn(() => ({ top: 0, bottom: 500 }));
+    const messageRectSpy = vi.spyOn(window.HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.dataset?.searchMessageId === '101') {
+          if (container.querySelector('[data-message-content="older message"]')) {
+            return { top: 180, bottom: 220 };
+          }
+          if (container.querySelector('.oc-history-load') && scrollTop >= 200) {
+            return { top: -40, bottom: 0 };
+          }
+          if (container.querySelector('.oc-history-load')) {
+            return { top: 120, bottom: 160 };
+          }
+          return { top: 100, bottom: 140 };
+        }
+        if (this.dataset?.searchMessageId === '102') {
+          if (container.querySelector('[data-message-content="older message"]')) {
+            return { top: 300, bottom: 340 };
+          }
+          if (container.querySelector('.oc-history-load') && scrollTop >= 200) {
+            return { top: 140, bottom: 180 };
+          }
+          if (container.querySelector('.oc-history-load')) {
+            return { top: 320, bottom: 360 };
+          }
+          return { top: 300, bottom: 340 };
+        }
+        return { top: 0, bottom: 0 };
+      });
+
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [
+          {
+            id: 101,
+            seq_id: 101,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            type: 'text',
+            content: 'earlier visible message',
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            type: 'text',
+            content: 'latest message',
+          },
+        ],
+        has_more: true,
+        next_before_id: 101,
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(1000);
+
+    scrollTop = 100;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1020;
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          content: 'stream update',
+          metadata: { stream_id: 'stream-before-history' },
+        },
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(100);
+
+    scrollTop = 220;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      olderHistory.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'older message',
+        }],
+        has_more: false,
+        next_before_id: 100,
+      });
+      await flushPromises();
+    });
+    messageRectSpy.mockRestore();
+    expect(scrollTop).toBe(380);
+  });
+
+  it('keeps following when the reader returns to the live edge during an older-history load', async () => {
+    const initialHistory = deferred();
+    const olderHistory = deferred();
+    api.getMessages
+      .mockImplementationOnce(() => initialHistory.promise)
+      .mockImplementationOnce(() => olderHistory.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [{
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'latest message',
+        }],
+        has_more: true,
+        next_before_id: 101,
+      });
+      await flushPromises();
+    });
+
+    scrollTop = 100;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollTop = 500;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1100;
+    await act(async () => {
+      olderHistory.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'older message',
+        }],
+        has_more: false,
+        next_before_id: 100,
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1100);
+  });
+
+  it('keeps auto-follow enabled when an inner timeline scroller receives up-scroll gestures', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 500;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    const nestedScroller = document.createElement('div');
+    nestedScroller.className = 'v3-working-steps';
+    timeline.append(nestedScroller);
+    await act(async () => {
+      nestedScroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -56 }));
+      const touchStart = new Event('touchstart', { bubbles: true });
+      Object.defineProperty(touchStart, 'touches', { value: [{ clientY: 320 }] });
+      nestedScroller.dispatchEvent(touchStart);
+      const touchMove = new Event('touchmove', { bubbles: true });
+      Object.defineProperty(touchMove, 'touches', { value: [{ clientY: 376 }] });
+      nestedScroller.dispatchEvent(touchMove);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1100;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 36,
+          seq: 36,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: 'fresh message',
+          type: 'text',
+          msg_type: 'text',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1100);
+  });
+
+  it('follows runtime-only updates while the reader remains at the bottom', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 500;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1080;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 37,
+          seq: 37,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: 'still working', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(1080);
+
+    scrollHeight = 1110;
+    await act(async () => {
+      wsHandler({
+        info: {
+          topic: 'p2p_1_2',
+          what: 'kp',
+          from: 'usr2',
+        },
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(1110);
+  });
+
   it('keeps a manually up-scrolled conversation fixed during a runtime-plan update', async () => {
     await mountTopic(root, 'p2p_1_2');
     const timeline = container.querySelector('.v3-timeline');
@@ -6304,6 +6624,71 @@ describe('MessagesView composer draft isolation', () => {
     expect(timeline.scrollTop).toBe(444);
     expect(window.HTMLElement.prototype.scrollIntoView)
       .toHaveBeenCalledTimes(scrollCallsBeforeUpdate);
+  });
+
+  it('does not resume auto-follow after browser anchoring adjusts a near-bottom reader', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 500;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollTop = 444;
+    await act(async () => {
+      Simulate.wheel(timeline, { deltaY: -56 });
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    // Native scroll anchoring can compensate for new content above the reader
+    // without representing an explicit request to return to the live edge.
+    scrollHeight = 1100;
+    scrollTop = 544;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1180;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 29,
+          seq: 29,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: '仍在加载', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(544);
   });
 
   it('stops auto-follow when a touch drag moves toward older messages', async () => {
