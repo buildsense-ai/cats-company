@@ -325,6 +325,7 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
     expect(api.deleteCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
+    expect(document.body.querySelector('.cc-toast')?.textContent).toContain('已下架共享成果');
 
     await act(async () => {
       container.querySelector('button[aria-label="打开回收站"]').click();
@@ -335,6 +336,9 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
     expect(api.restoreCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
+    expect([...document.body.querySelectorAll('.cc-toast')].some(
+      (toast) => toast.textContent.includes('已恢复共享成果'),
+    )).toBe(true);
   });
 
   test('keeps a friend viewer read-only', async () => {

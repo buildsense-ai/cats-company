@@ -1687,14 +1687,34 @@ body {
   gap: 6px;
 }
 
+.cloud-artifact-actions button,
+.cloud-artifact-actions a {
+  border: 0;
+  color: var(--v3-text-main);
+  background: transparent;
+  transition: background-color 140ms ease;
+}
+
+.cloud-artifact-actions button:hover,
+.cloud-artifact-actions a:hover {
+  border: 0;
+  color: var(--v3-text-main);
+  background: color-mix(in srgb, var(--v3-text-main) 18%, transparent);
+}
+
+.cloud-artifact-actions button:active,
+.cloud-artifact-actions a:active {
+  background: color-mix(in srgb, var(--v3-text-main) 26%, transparent);
+}
+
 .cloud-artifact-actions button.danger {
-  color: #fca5a5;
+  color: var(--v3-text-main);
 }
 
 .cloud-artifact-actions button.danger:hover {
-  color: #fecaca;
-  border-color: rgba(248, 113, 113, 0.45);
-  background: rgba(248, 113, 113, 0.1);
+  border: 0;
+  color: var(--v3-text-main);
+  background: color-mix(in srgb, var(--v3-text-main) 18%, transparent);
 }
 
 .cloud-artifact-actions button:disabled {
@@ -1797,9 +1817,15 @@ body {
 }
 
 .cloud-artifact-confirm-actions button.danger {
-  border-color: #dc2626;
-  color: #fff;
-  background: #dc2626;
+  border-color: transparent;
+  color: #171717;
+  background: #f3f3f3;
+}
+
+.cloud-artifact-confirm-actions button.danger:hover:not(:disabled) {
+  border-color: transparent;
+  color: #171717;
+  background: #fff;
 }
 
 .cloud-artifact-confirm-actions button:disabled {

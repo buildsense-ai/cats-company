@@ -297,16 +297,33 @@ describe('CatsCo shell styling', () => {
     const copyRule = ruleFor('.cc-toast-copy');
 
     expect(viewportRule).toContain('top: 58px;');
-    expect(viewportRule).toContain('left: calc(');
+    expect(viewportRule).toContain('left: var(--cc-toast-anchor-x, calc(');
     expect(viewportRule).toContain('var(--cc-toast-sidebar-width, var(--cc-sidebar-width))');
     expect(css).toContain('--cc-toast-sidebar-width');
     expect(viewportRule).toContain('transform: translateX(-50%);');
     expect(toastRule).toContain('padding: 8px 16px;');
     expect(toastRule).toContain('text-align: center;');
-    expect(toastRule).toContain('background: color-mix(in srgb, var(--cc-panel) 94%, var(--cc-text) 6%);');
+    expect(toastRule).toContain('background: var(--cc-tooltip-bg);');
+    expect(toastRule).toContain('color: var(--cc-tooltip-text);');
     expect(toastRule).not.toContain('var(--cc-accent)');
     expect(copyRule).toContain('text-align: center;');
+    expect(ruleFor('.cc-toast-copy span')).toContain('font-weight: 600;');
     expect(css).not.toContain('.cc-toast-close');
+  });
+
+  it('keeps cloud artifact actions neutral and borderless', () => {
+    const neutralActionRules = openchatCss.slice(openchatCss.lastIndexOf('.cloud-artifact-actions button,'));
+    const actionRule = ruleIn(neutralActionRules, '.cloud-artifact-actions button,\n.cloud-artifact-actions a');
+    const hoverRule = ruleIn(neutralActionRules, '.cloud-artifact-actions button:hover,\n.cloud-artifact-actions a:hover');
+    const dangerRule = ruleIn(openchatCss, '.cloud-artifact-actions button.danger');
+    const confirmRule = ruleIn(openchatCss, '.cloud-artifact-confirm-actions button.danger');
+
+    expect(actionRule).toContain('border: 0;');
+    expect(actionRule).toContain('color: var(--v3-text-main);');
+    expect(hoverRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 18%, transparent);');
+    expect(dangerRule).toContain('color: var(--v3-text-main);');
+    expect(confirmRule).toContain('background: #f3f3f3;');
+    expect(confirmRule).not.toContain('#dc2626');
   });
 
   it('renders video thumbnails in a compact, centered viewport while previews retain the source', () => {

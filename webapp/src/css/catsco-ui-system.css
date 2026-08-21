@@ -4173,10 +4173,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .cc-toast-viewport {
   position: fixed;
   top: 58px;
-  left: calc(
+  left: var(--cc-toast-anchor-x, calc(
     var(--cc-toast-sidebar-width, var(--cc-sidebar-width)) +
     (100vw - var(--cc-toast-sidebar-width, var(--cc-sidebar-width))) / 2
-  );
+  ));
   right: auto;
   z-index: 2400;
   display: grid;
@@ -4192,10 +4192,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
   max-width: 100%;
   justify-self: center;
   padding: 8px 16px;
-  border: 1px solid color-mix(in srgb, var(--cc-text) 18%, var(--cc-border));
+  border: 1px solid var(--cc-tooltip-border);
   border-radius: var(--cc-radius-md);
-  background: color-mix(in srgb, var(--cc-panel) 94%, var(--cc-text) 6%);
-  color: var(--cc-text);
+  background: var(--cc-tooltip-bg);
+  color: var(--cc-tooltip-text);
   text-align: center;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
   pointer-events: auto;
@@ -4228,12 +4228,14 @@ html[data-theme="liquid"] .catsco-brand-mark {
   display: block;
   color: inherit;
   font-size: 13px;
+  font-weight: 600;
   line-height: 1.4;
 }
 
 .cc-toast-copy span {
   display: block;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
