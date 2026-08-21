@@ -791,6 +791,78 @@ describe('SkillHubView', () => {
       .toContain('Design Bot');
   });
 
+  it('presents local-only abilities as unpublished device-local content', async () => {
+    api.getBotDefinitionSkills.mockResolvedValueOnce({ botId: '42', revision: 3, skills: [] });
+    api.getDevices.mockResolvedValueOnce({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        runtimeRole: 'desktop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localSkill.delete',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: [{
+        local_skill_id: 'draft-1',
+        name: 'web-search',
+        description: 'Search the web',
+        relative_path: 'web-search',
+        source: 'user',
+        can_share: true,
+        skill_hub: {},
+      }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const localItem = [...container.querySelectorAll('.cc-skillhub-added-item')]
+      .find((item) => item.querySelector('h3')?.textContent === 'web-search');
+    expect(localItem).toBeTruthy();
+    expect(localItem.textContent).toContain('仅本地');
+    expect(localItem.textContent).toContain('尚未发布 · 当前设备本地');
+    expect(localItem.textContent).not.toContain('版本未确认');
+
+    await act(async () => {
+      Simulate.click(localItem.querySelector('button[aria-label="更多操作 web-search"]'));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    const menu = document.body.querySelector('[role="menu"][aria-label="web-search 操作"]');
+    await act(async () => {
+      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')]
+        .find((button) => button.textContent.includes('查看详情')));
+      await Promise.resolve();
+    });
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(dialog.textContent).toContain('本地能力');
+    expect(dialog.textContent).toContain('本地能力名web-search');
+    expect(dialog.textContent).toContain('发布状态尚未发布');
+    expect(dialog.textContent).toContain('存放范围当前设备本地');
+    expect(dialog.textContent).toContain('尚未发布到 SkillHub');
+    expect(dialog.textContent).not.toContain('local:draft-1');
+    expect(dialog.textContent).not.toContain('版本待确认');
+    expect(dialog.textContent).not.toContain('发布者SkillHub');
+  });
+
   it('copies an added SkillHub ability without opening the platform share action', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const share = vi.fn().mockResolvedValue(undefined);

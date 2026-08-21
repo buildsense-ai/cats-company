@@ -247,7 +247,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
           <h3>{label}</h3><span className={`cc-skillhub-availability${skill.localOnly ? ' is-local-only' : ''}`}><Check size={12} aria-hidden='true' /> {skill.localOnly ? '仅本地' : '已启用'}</span>
         </div>
         <p>{description}</p>
-        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.version ? (String(skill.version).startsWith('v') ? skill.version : `v${skill.version}`) : '版本未确认'}{(details?.author || skill.author) ? ` · ${details?.author || skill.author}` : ''}{skill.localOnly ? ' · 未正式启用' : (privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : '')}</span>
+        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前设备本地' : <>{skill.version ? (String(skill.version).startsWith('v') ? skill.version : `v${skill.version}`) : '版本未确认'}{(details?.author || skill.author) ? ` · ${details?.author || skill.author}` : ''}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
       </div>
       <div className='cc-skillhub-added-actions'>
         {!isReadOnly && !skill.localOnly && <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
@@ -332,7 +332,10 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
   const closeButtonRef = useRef(null);
   const titleId = useId();
   const descriptionId = useId();
-  const description = details?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
+  const localOnly = Boolean(skill?.localOnly);
+  const description = localOnly
+    ? '该能力当前存在于这台 XiaoBa 的本地工作区，可供本地运行时使用；尚未发布到 SkillHub，也未写入 Agent 的云端能力配置。'
+    : details?.description || skill?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
 
   useEffect(() => {
     closeButtonRef.current?.focus({ preventScroll: true });
@@ -377,7 +380,7 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
         <header className='cc-skillhub-detail-header'>
           <span className='cc-skillhub-detail-icon' aria-hidden='true'><Package size={19} /></span>
           <div>
-            <span>{privateReference ? 'Agent 私有能力' : 'SkillHub 能力'}</span>
+            <span>{localOnly ? '本地能力' : privateReference ? 'Agent 私有能力' : 'SkillHub 能力'}</span>
             <h2 id={titleId}>{label}</h2>
           </div>
           <button ref={closeButtonRef} type='button' className='icon-button' aria-label='关闭能力详情' onClick={onClose}>
@@ -386,9 +389,9 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
         </header>
         <p id={descriptionId} className='cc-skillhub-detail-description'>{description}</p>
         <dl className='cc-skillhub-detail-meta'>
-          <div><dt>{privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{skill.skillId}</code></dd></div>
-          <div><dt>当前版本</dt><dd>{skill.version ? <code translate='no'>v{skill.version}</code> : '版本待确认'}</dd></div>
-          <div><dt>{privateReference ? '可见范围' : '发布者'}</dt><dd>{privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
+          <div><dt>{localOnly ? '本地能力名' : privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{localOnly ? skill.localName || label : skill.skillId}</code></dd></div>
+          <div><dt>{localOnly ? '发布状态' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : skill.version ? <code translate='no'>v{skill.version}</code> : '版本待确认'}</dd></div>
+          <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前设备本地' : privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
         </dl>
         <div className='cc-skillhub-detail-footer'>
           <button type='button' onClick={onClose}>完成</button>
