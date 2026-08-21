@@ -99,6 +99,7 @@ describe('SkillHubView', () => {
         id: 'tools/summarize',
         name: 'Summarize',
         description: 'Summarize text',
+        author: 'arrowhaken',
         latestVersion: '2.0.0',
         contentHash: 'b'.repeat(64),
       }],
@@ -560,12 +561,13 @@ describe('SkillHubView', () => {
     expect(clock).toBe(103);
   });
 
-  it('builds one library with local abilities first and simple source labels', () => {
+  it('builds one library with local abilities first and preserves online metadata', () => {
     const library = buildSkillLibrary({
       catalogue: [{
         skillId: 'online/writer',
         displayName: 'Online Writer',
         description: 'Cloud ability',
+        author: 'alice',
         latestVersion: '1.0.0',
         contentHash: 'b'.repeat(64),
       }],
@@ -581,6 +583,23 @@ describe('SkillHubView', () => {
     expect(library.map((skill) => skill.displayName)).toEqual(['Local Writer', 'Online Writer']);
     expect(library.map((skill) => skill.sourceLabel)).toEqual(['本机', '在线']);
     expect(library[0]).toMatchObject({ isLocalSkill: true, canBind: false });
+    expect(library[1]).toMatchObject({ latestVersion: '1.0.0', author: 'alice' });
+  });
+
+  it('shows the stable version and CatsCo publisher on online catalogue cards', async () => {
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+
+    const card = [...container.querySelectorAll('.cc-skillhub-card')]
+      .find(candidate => candidate.textContent.includes('Summarize'));
+    const source = card?.querySelector('.cc-skillhub-card-source');
+    expect(source?.textContent).toBe('在线 · v2.0.0 · arrowhaken');
+    expect(source?.getAttribute('title')).toBe('在线 · v2.0.0 · arrowhaken');
   });
 
   it('explains account sync before adding a local-only ability from the library', async () => {
