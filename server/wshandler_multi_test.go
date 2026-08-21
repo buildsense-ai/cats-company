@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -73,6 +74,95 @@ func TestNotifyCloudArtifactSharedSendsPrivacyMinimizedRealtimeEvent(t *testing.
 		}
 	default:
 		t.Fatal("owner did not receive cloud artifact notification")
+	}
+}
+
+func TestNotifyCloudArtifactSharedReachesAnotherRuntimeNode(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	publisher := NewHubWithRuntime(nil, nil, shared, "publisher")
+	recipient := NewHubWithRuntime(nil, nil, shared, "recipient")
+	owner := &Client{uid: 42, send: make(chan []byte, 1)}
+	recipient.addClient(owner)
+
+	publisher.NotifyCloudArtifactShared(42)
+
+	select {
+	case raw := <-owner.send:
+		var message ServerMessage
+		if err := json.Unmarshal(raw, &message); err != nil {
+			t.Fatalf("unmarshal notification: %v", err)
+		}
+		if message.Notification == nil || message.Notification.Type != "cloud_artifact_shared" {
+			t.Fatalf("notification = %#v", message.Notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner on another runtime node did not receive cloud artifact notification")
+	}
+}
+
+func TestNotifyCloudArtifactSharedFallsBackLocallyWithoutRedisSubscribers(t *testing.T) {
+	url, closeRedis := newRedisRuntimeTestServer(t)
+	defer closeRedis()
+
+	state := newRedisRuntimeStateForTest(t, url, "cloud-artifact-local-fallback")
+	defer state.Close()
+
+	hub := NewHub(nil, nil)
+	hub.sharedRuntime = state
+	owner := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(owner)
+
+	hub.NotifyCloudArtifactShared(42)
+
+	select {
+	case raw := <-owner.send:
+		var message ServerMessage
+		if err := json.Unmarshal(raw, &message); err != nil {
+			t.Fatalf("unmarshal notification: %v", err)
+		}
+		if message.Notification == nil || message.Notification.Type != "cloud_artifact_shared" {
+			t.Fatalf("notification = %#v", message.Notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("local owner did not receive fallback notification with zero Redis subscribers")
+	}
+}
+
+func TestNotifyCloudArtifactSharedReachesAnotherRedisRuntimeNode(t *testing.T) {
+	url, closeRedis := newRedisRuntimeTestServer(t)
+	defer closeRedis()
+
+	stateA := newRedisRuntimeStateForTest(t, url, "cloud-artifact-cross-node")
+	defer stateA.Close()
+	stateB := newRedisRuntimeStateForTest(t, url, "cloud-artifact-cross-node")
+	defer stateB.Close()
+
+	publisher := NewHubWithRuntime(nil, nil, stateA, "publisher")
+	recipient := NewHubWithRuntime(nil, nil, stateB, "recipient")
+	owner := &Client{uid: 42, send: make(chan []byte, 1)}
+	recipient.addClient(owner)
+
+	eventually(t, func() bool {
+		counts, err := stateA.client.PubSubNumSub(
+			context.Background(),
+			stateA.userMessageChannel(),
+		).Result()
+		return err == nil && counts[stateA.userMessageChannel()] == 2
+	}, "both Redis runtime nodes to subscribe to user messages")
+
+	publisher.NotifyCloudArtifactShared(42)
+
+	select {
+	case raw := <-owner.send:
+		var message ServerMessage
+		if err := json.Unmarshal(raw, &message); err != nil {
+			t.Fatalf("unmarshal notification: %v", err)
+		}
+		if message.Notification == nil || message.Notification.Type != "cloud_artifact_shared" {
+			t.Fatalf("notification = %#v", message.Notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner on another Redis runtime node did not receive cloud artifact notification")
 	}
 }
 

@@ -72,6 +72,7 @@ type sharedRuntimeState interface {
 	registerRuntimeNode(nodeID string, hub *Hub)
 	bindRuntimeRoute(route runtimeRoute, now time.Time)
 	clearRuntimeRoute(route runtimeRoute)
+	broadcastUserMessage(uid int64, msg *ServerMessage) bool
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
@@ -220,6 +221,29 @@ func (s *sharedMemoryRuntimeState) bindRuntimeRoute(route runtimeRoute, now time
 }
 
 func (s *sharedMemoryRuntimeState) clearRuntimeRoute(route runtimeRoute) {
+}
+
+func (s *sharedMemoryRuntimeState) broadcastUserMessage(uid int64, msg *ServerMessage) bool {
+	if s == nil || uid <= 0 || msg == nil {
+		return false
+	}
+	s.mu.Lock()
+	nodes := make([]*Hub, 0, len(s.nodes))
+	for _, hub := range s.nodes {
+		nodes = append(nodes, hub)
+	}
+	s.mu.Unlock()
+	delivered := false
+	for _, hub := range nodes {
+		if hub == nil {
+			continue
+		}
+		if len(hub.getClients(uid)) > 0 {
+			hub.SendToUser(uid, msg)
+			delivered = true
+		}
+	}
+	return delivered
 }
 
 func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool {

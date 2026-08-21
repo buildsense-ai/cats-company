@@ -176,10 +176,17 @@ func (h *Hub) NotifyCloudArtifactShared(ownerUID int64) {
 	if h == nil || ownerUID <= 0 {
 		return
 	}
-	h.SendToUser(ownerUID, &ServerMessage{Notification: &MsgServerNotification{
+	message := &ServerMessage{Notification: &MsgServerNotification{
 		Type:    "cloud_artifact_shared",
 		Message: "有新文件在云端共享",
-	}})
+	}}
+	delivered := false
+	if h.sharedRuntime != nil {
+		delivered = h.sharedRuntime.broadcastUserMessage(ownerUID, message)
+	}
+	if !delivered {
+		h.SendToUser(ownerUID, message)
+	}
 	if !h.IsOnline(ownerUID) && h.push != nil && h.push.Enabled() {
 		if !h.push.EnqueueToUser(ownerUID, PushNotification{
 			Title: "CatsCo",
