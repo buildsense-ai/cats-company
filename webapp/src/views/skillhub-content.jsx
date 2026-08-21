@@ -449,6 +449,10 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
   const unavailable = skill.isLocalSkill && !skill.canBind
     && (!skill.localSkill?.canShare || skill.localSkill?.source === 'system');
+  const sourceMetadata = [
+    skill.sourceLabel || '在线',
+    ...(!skill.isLocalSkill ? [formatCatalogueVersion(skill.latestVersion), skill.author] : []),
+  ].filter(Boolean).join(' · ');
   return (
     <article className={`cc-skillhub-card${installed ? ' is-added' : ''}`}>
       <div className='cc-skillhub-card-title'>
@@ -457,7 +461,7 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
       </div>
       <p>{skill.description || '这个能力暂时没有补充说明。'}</p>
       <div className='cc-skillhub-card-footer'>
-        <span className={`cc-skillhub-card-source${skill.isLocalSkill ? ' is-local' : ''}`}>{skill.sourceLabel || '在线'}</span>
+        <span className={`cc-skillhub-card-source${skill.isLocalSkill ? ' is-local' : ''}`} title={sourceMetadata}>{sourceMetadata}</span>
         {!isReadOnly && <button type='button' className={installed ? 'added' : 'primary'} disabled={!definitionReady || installed || unavailable || saving || Boolean(sharingSkill)} title={unavailable ? '此能力暂时不能同步' : undefined} onClick={() => onInstallSkill(skill)}>
           {installed ? <Check size={14} aria-hidden='true' /> : <Package size={14} aria-hidden='true' />}
           {installed ? '已添加' : adding || sharing ? '添加中…' : '添加'}
@@ -465,6 +469,12 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
       </div>
     </article>
   );
+}
+
+function formatCatalogueVersion(version) {
+  const value = String(version || '').trim();
+  if (!value) return '';
+  return value.startsWith('v') ? value : `v${value}`;
 }
 
 function CustomSkills(props) {
