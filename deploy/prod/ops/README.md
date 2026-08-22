@@ -89,8 +89,9 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 
 ## 安全注意事项
 
-- **凭据不落前端**：`--api-key` / `--login-token` 经 argv 传子脚本；`inject.env`
-  与私钥 `chmod 600`，仅 root（或运行用户）可读。
+- **凭据不落前端**：控制面通过 root/运行用户可读的临时 `0600` credential
+  文件把 JWT/API key 传给 provision/reset；脚本仍兼容旧的 argv 选项供人工运维。
+  持久化的 `inject.env` 与私钥同样必须 `chmod 600`，仅运行用户可读。
 - **tenant / version 入参正则校验**：`^[a-z0-9][a-z0-9_-]{1,63}$` /
   `^[A-Za-z0-9._-]+$`，防路径/glob 注入。
 - **fail-closed**：任一步失败聚合报错退出非 0；key pair 只在本次新建时才由

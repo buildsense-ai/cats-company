@@ -82,6 +82,7 @@ function writeCommand(bin, name, body) {
 
 function runScript(images) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-list-img-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   try {
     const bin = path.join(sandbox, "bin");
     fs.mkdirSync(bin);
@@ -169,6 +170,7 @@ test("list-worker-images: pagination across two pages", () => {
 
 test("list-worker-images: API failure fails closed", () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-list-img-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   try {
     const bin = path.join(sandbox, "bin");
     fs.mkdirSync(bin);
@@ -204,6 +206,7 @@ process.stdout.write(JSON.stringify({ statusCode: "900", errorCode: "E.FAKE", me
 
 test("list-worker-images: missing image project fails closed", () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-list-img-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   try {
     const bin = path.join(sandbox, "bin");
     fs.mkdirSync(bin);

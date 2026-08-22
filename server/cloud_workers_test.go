@@ -180,8 +180,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "slow-status":
 			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
 		case "require-identity":
-			// 校验 argv 含 --login-token 与 --bot-uid（弱校验：只查存在）
-			body = "@echo off\r\necho %* | findstr /C:\"--login-token\" >nul || exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
+			// Credentials must arrive through the restricted file, never argv.
+			body = "@echo off\r\nif not \"%3\"==\"--credential-file\" exit /b 1\r\nif not exist \"%4\" exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
 		default:
 			t.Fatalf("unknown behavior %q", behavior)
 		}
@@ -213,9 +213,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 	case "slow-status":
 		body = "#!/bin/sh\nsleep 1\nprintf 'worker-bot-bot-a\\trunning\\timg-slow\\tv1.4.8\\n'\n"
 	case "require-identity":
-		// 校验 argv 含非空 --login-token/--bot-uid/--user-uid/--user-name/--user-display
+		// Credentials are read from the 0600 file; identity metadata remains argv.
 		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail
-		body = "#!/bin/sh\nlogin=\"\"; bot=\"\"; user=\"\"; uname=\"\"; udisp=\"\"; prev=\"\"; for a in \"$@\"; do case \"$prev\" in --login-token) login=\"$a\";; --bot-uid) bot=\"$a\";; --user-uid) user=\"$a\";; --user-name) uname=\"$a\";; --user-display) udisp=\"$a\";; esac; prev=\"$a\"; done; [ -n \"$login\" ] && [ -n \"$bot\" ] && [ -n \"$user\" ] && [ -n \"$uname\" ] && [ -n \"$udisp\" ] || { echo \"missing identity: login=$login bot=$bot user=$user uname=$uname udisp=$udisp\" >&2; exit 1; }; echo ok\n"
+		body = "#!/bin/sh\nlogin=\"\"; key=\"\"; cred=\"\"; bot=\"\"; user=\"\"; uname=\"\"; udisp=\"\"; prev=\"\"; for a in \"$@\"; do case \"$prev\" in --credential-file) cred=\"$a\";; --bot-uid) bot=\"$a\";; --user-uid) user=\"$a\";; --user-name) uname=\"$a\";; --user-display) udisp=\"$a\";; esac; prev=\"$a\"; done; [ -f \"$cred\" ] && login=\"$(sed -n '1p' \"$cred\")\" && key=\"$(sed -n '2p' \"$cred\")\"; [ -n \"$login\" ] && [ -n \"$key\" ] && [ -n \"$bot\" ] && [ -n \"$user\" ] && [ -n \"$uname\" ] && [ -n \"$udisp\" ] || { echo \"missing identity\" >&2; exit 1; }; echo ok\n"
 	default:
 		t.Fatalf("unknown behavior %q", behavior)
 	}
@@ -1263,13 +1263,17 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 		t.Fatalf("reset argv=%q want --version v1.4.7", argv)
 	}
 	for _, expected := range []string{
-		"--login-token", "test-owner-token", "--api-key", "worker-specific-key",
-		"--bot-uid", "1", "--user-uid", "7", "--user-name", "owner-name",
+		"--credential-file", "--bot-uid", "1", "--user-uid", "7", "--user-name", "owner-name",
 		"--user-display", "Owner Display", "--body-id", "worker-body-id",
 	} {
 		if !strings.Contains(string(argv), expected) {
 			t.Fatalf("reset argv=%q missing %q", argv, expected)
 		}
+	}
+	// The credential path is intentionally ephemeral; the fake script records
+	// argv only, so verify no secret value leaked into it.
+	if strings.Contains(string(argv), "test-owner-token") || strings.Contains(string(argv), "worker-specific-key") {
+		t.Fatalf("reset argv leaked credential: %q", argv)
 	}
 }
 

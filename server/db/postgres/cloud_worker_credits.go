@@ -169,6 +169,7 @@ func (a *Adapter) ListCloudWorkerLifecycleDue(now time.Time, limit int) ([]types
 		FROM cloud_worker_lifecycles
 		WHERE (state = 'active' AND package_expires_at <= $1)
 		   OR (state IN ('delete_pending','delete_failed') AND delete_after <= $1)
+		   OR (state = 'delete_running' AND delete_started_at <= $1 - INTERVAL '30 minutes')
 		ORDER BY delete_after, id LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list due cloud worker lifecycles: %w", err)
@@ -198,7 +199,8 @@ func (a *Adapter) ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error) {
 	result, err := a.db.Exec(`
 		UPDATE cloud_worker_lifecycles
 		SET state = 'delete_running', delete_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND state IN ('delete_pending','delete_failed')`, id)
+		WHERE id = $1 AND (state IN ('delete_pending','delete_failed')
+		   OR (state = 'delete_running' AND delete_started_at <= CURRENT_TIMESTAMP - INTERVAL '30 minutes'))`, id)
 	if err != nil {
 		return false, err
 	}

@@ -131,6 +131,7 @@ process.exit(result.status ?? 1);
 
 function setupSandbox(state = {}) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-deploy-version-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   const bin = path.join(sandbox, "bin");
   const stateDir = path.join(sandbox, "state");
   const cacheDir = path.join(sandbox, "cache");

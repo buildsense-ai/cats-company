@@ -599,6 +599,17 @@ func main() {
 	cloudWorkerActionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "cloud_worker_action_user", Limit: 20, Window: 10 * time.Minute, Burst: 4,
 	})
+	cloudWorkerSubtreeUserLimit := func(next http.HandlerFunc) http.HandlerFunc {
+		readLimited := cloudWorkerReadUserLimit(next)
+		actionLimited := cloudWorkerActionUserLimit(next)
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost || r.Method == http.MethodDelete {
+				actionLimited(w, r)
+				return
+			}
+			readLimited(w, r)
+		}
+	}
 
 	// HTTP routes
 	mux := http.NewServeMux()
@@ -722,7 +733,7 @@ func main() {
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
 	mux.HandleFunc("GET /api/cloud-workers", chainHTTP(cloudWorkerHandler.HandleList, jwtAuthWithDB, cloudWorkerReadUserLimit))
 	mux.HandleFunc("POST /api/cloud-workers", chainHTTP(cloudWorkerHandler.HandleCreate, jwtAuthWithDB, cloudWorkerCreateUserLimit))
-	mux.HandleFunc("/api/cloud-workers/", chainHTTP(cloudWorkerHandler.HandleSub, jwtAuthWithDB, cloudWorkerActionUserLimit))
+	mux.HandleFunc("/api/cloud-workers/", chainHTTP(cloudWorkerHandler.HandleSub, jwtAuthWithDB, cloudWorkerSubtreeUserLimit))
 	mux.HandleFunc("/api/desktop-connect/session", jwtAuthWithDB(desktopConnectHandler.HandleCreateSession))
 	mux.HandleFunc("/api/desktop-connect/exchange", desktopConnectHandler.HandleExchange)
 	mux.HandleFunc("/api/desktop-connect/status", desktopConnectHandler.HandleStatus)

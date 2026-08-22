@@ -779,10 +779,20 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		creatorName = creator.Username
 		creatorDisplay = creator.DisplayName
 	}
+	credentialFile, cleanupCredentialFile, credentialErr := writeWorkerCredentialFile(creatorJWT, result.APIKey)
+	if credentialErr != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		_ = h.db.DeleteBot(result.UID)
+		log.Printf("[cloud-worker] failed to create credential file for %s: %v", tenantName, credentialErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker credentials", "code": "cloud_worker_create_failed"})
+		return
+	}
+	defer cleanupCredentialFile()
 	provOut, err := h.runScript(h.provisionScript,
 		"--name", tenantName,
-		"--login-token", creatorJWT,
-		"--api-key", result.APIKey,
+		"--credential-file", credentialFile,
 		"--bot-uid", strconv.FormatInt(result.UID, 10),
 		"--user-uid", strconv.FormatInt(uid, 10),
 		"--user-name", creatorName,
@@ -818,8 +828,31 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		// Destroy could not be confirmed: the instance may still exist and
 		// keep billing. The bot record already carries tenant_name (persisted
 		// before provision), so the roster still shows this worker and the
-		// owner can retry delete (which attempts the destroy again) — the
-		// record is never lost while an instance might still be billed.
+		// owner can retry delete (which attempts the destroy again). Consume the
+		// reservation and register an immediately-due lifecycle when possible so
+		// the hourly sweeper also retries cleanup; do not return the paid credit
+		// while an instance might still be billed.
+		if reservedCredit {
+			if commitErr := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, 0); commitErr != nil {
+				log.Printf("[cloud-worker] failed to bind reserved credit to pending cleanup uid=%d worker=%d: %v", uid, result.UID, commitErr)
+			} else if lifecycleStore, ok := h.credits.(interface {
+				ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+				MarkCloudWorkerLifecyclePending(int64, time.Time) error
+			}); ok {
+				if lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid); listErr != nil {
+					log.Printf("[cloud-worker] failed to list pending cleanup lifecycle uid=%d worker=%d: %v", uid, result.UID, listErr)
+				} else {
+					for _, lifecycle := range lifecycles {
+						if lifecycle.WorkerUID == result.UID && lifecycle.TenantName == tenantName && lifecycle.State == "active" {
+							if markErr := lifecycleStore.MarkCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC()); markErr != nil {
+								log.Printf("[cloud-worker] failed to mark pending cleanup tenant=%s: %v", tenantName, markErr)
+							}
+							break
+						}
+					}
+				}
+			}
+		}
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "failed to provision cloud worker; the instance may still exist, retry delete to clean up",
 			"code":  "cloud_worker_provision_failed_pending_cleanup",
@@ -1035,9 +1068,15 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load cloud worker owner"})
 			return
 		}
+		credentialFile, cleanupCredentialFile, credentialErr := writeWorkerCredentialFile(loginToken, apiKey)
+		if credentialErr != nil {
+			log.Printf("[cloud-worker] reset %s cannot create credential file: %v", name, credentialErr)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity"})
+			return
+		}
+		defer cleanupCredentialFile()
 		args = append(args,
-			"--login-token", loginToken,
-			"--api-key", apiKey,
+			"--credential-file", credentialFile,
 			"--bot-uid", strconv.FormatInt(worker.UID, 10),
 			"--user-uid", strconv.FormatInt(uid, 10),
 			"--user-name", owner.Username,
@@ -1131,6 +1170,32 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
 		return
 	}
+	// Paid workers have a durable lifecycle row in addition to the bot record.
+	// Finalize it before deleting the bot: the lifecycle row has a cascading FK
+	// to users, so looking it up after DeleteBot would silently lose the chance
+	// to record the terminal state. If finalization fails, keep the bot record so
+	// an operator/user can retry the idempotent provider delete.
+	if lifecycleStore, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+		MarkCloudWorkerLifecycleDeleted(int64, string) error
+	}); ok && botUID != 0 {
+		lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid)
+		if listErr != nil {
+			log.Printf("[cloud-worker] list lifecycle after delete %s failed: %v", name, listErr)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker deletion"})
+			return
+		}
+		for _, lifecycle := range lifecycles {
+			if lifecycle.WorkerUID != botUID || lifecycle.State == "deleted" {
+				continue
+			}
+			if markErr := lifecycleStore.MarkCloudWorkerLifecycleDeleted(lifecycle.ID, ""); markErr != nil {
+				log.Printf("[cloud-worker] mark lifecycle deleted %s failed: %v", name, markErr)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker deletion"})
+				return
+			}
+		}
+	}
 	if botUID != 0 {
 		if err := h.db.DeleteBot(botUID); err != nil {
 			log.Printf("[cloud-worker] delete bot %d failed: %v", botUID, err)
@@ -1207,6 +1272,33 @@ func truncateWorkerOutput(out string) string {
 		out = out[:maxWorkerOutputLog] + "...(truncated)"
 	}
 	return out
+}
+
+// writeWorkerCredentialFile keeps short-lived worker credentials out of
+// process argv, where they would otherwise be visible to /proc and process
+// supervisors. The caller owns the returned cleanup function.
+func writeWorkerCredentialFile(loginToken, apiKey string) (string, func(), error) {
+	file, err := os.CreateTemp("", "catsco-worker-credentials-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", func() {}, err
+	}
+	if _, err := io.WriteString(file, loginToken+"\n"+apiKey+"\n"); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", func() {}, err
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return path, cleanup, nil
 }
 
 // cloudImageSummary is one image row from the CATSCO_WORKER_IMAGES_SCRIPT

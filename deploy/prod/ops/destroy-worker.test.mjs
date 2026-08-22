@@ -104,6 +104,7 @@ function writeCommand(bin, name, body) {
 
 function setupSandbox(state) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-destroy-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   const bin = path.join(sandbox, "bin");
   fs.mkdirSync(bin);
   writeCommand(bin, "ctyun-cli", FAKE_CTYUN);
