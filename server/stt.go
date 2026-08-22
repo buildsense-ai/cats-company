@@ -659,7 +659,13 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				}
 				switch command.Type {
 				case "stop":
-					stopReason = "client_stop"
+					// A foreground timer may be delayed until the user releases the
+					// control. Preserve a duration boundary if the explicit stop
+					// arrives after the advertised limit.
+					markElapsedDurationBoundary()
+					if !sttIsDurationStopReason(stopReason) {
+						stopReason = "client_stop"
+					}
 					if !finish() {
 						return
 					}
