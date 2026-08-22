@@ -118,12 +118,17 @@ function AddedSkills(props) {
   const {
     catalogueByID, definition, definitionReady, loadingDefinition, onChangeSection,
     onCopySkill, onRefreshDefinition, onRemoveSkill, saving, selectedAgentName, selectedBotUID,
-    sharingSkill, skillAction,
+    sharingSkill, skillAction, isReadOnly,
   } = props;
+  const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
+  const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
+  const sourceExplanation = isReadOnly
+    ? '这里只读展示该 Agent 已同步到 BotDefinition 的能力。该 Agent 运行环境中尚未同步的本地 Skill 不会显示。'
+    : '正式能力来自 BotDefinition；本地能力来自当前已连接的 XiaoBa 工作区。未同步的本地能力只在当前设备可见。';
   return (
     <section id='skillhub-added-panel' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
       <div className='cc-skillhub-content-header'>
-        <div><h2>当前 Agent 能力</h2><p>同时展示正式启用能力和本地工作区能力，本地能力会明确标记为未正式启用。</p></div>
+        <div><h2>当前 Agent 能力</h2><p>{sourceExplanation}</p></div>
         <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={15} aria-hidden='true' />
         </button>
@@ -134,15 +139,44 @@ function AddedSkills(props) {
         <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取 Agent 能力' status />
       ) : definition.skills.length === 0 ? (
         <div className='cc-skillhub-empty cc-skillhub-empty-added'>
-          <Package size={22} aria-hidden='true' /><strong>还没有添加能力</strong>
-          <span>前往能力库，为当前 Agent 选择第一项能力。</span>
-          <button type='button' className='primary' onClick={() => onChangeSection('catalogue')}>浏览能力库</button>
+          <Package size={22} aria-hidden='true' /><strong>{isReadOnly ? '暂无已同步能力' : '还没有添加能力'}</strong>
+          <span>{isReadOnly ? '该 Agent 尚未把能力同步到 BotDefinition，其运行环境中独有的本地 Skill 也不会在这里显示。' : '前往能力库，为当前 Agent 选择第一项能力。'}</span>
+          {!isReadOnly && <button type='button' className='primary' onClick={() => onChangeSection('catalogue')}>浏览能力库</button>}
         </div>
       ) : (
-        <div className='cc-skillhub-added-list'>
-          {definition.skills.map((skill) => <AddedSkillItem key={skill.skillId} skill={skill} {...props} />)}
+        <div className='cc-skillhub-added-groups'>
+          {formalSkills.length > 0 && (
+            <AbilityGroup
+              label={isReadOnly ? '已同步能力' : '正式启用能力'}
+              description={isReadOnly ? '来自该 Agent 已同步到 BotDefinition 的只读元数据。' : '已写入 BotDefinition，可随 Agent 配置同步。'}
+              skills={formalSkills}
+              {...props}
+            />
+          )}
+          {localOnlySkills.length > 0 && (
+            <AbilityGroup
+              label='当前设备本地能力'
+              description='来自当前连接的 XiaoBa 工作区，尚未同步到 BotDefinition。'
+              skills={localOnlySkills}
+              {...props}
+            />
+          )}
         </div>
       )}
+    </section>
+  );
+}
+
+function AbilityGroup({ description, label, skills, ...props }) {
+  return (
+    <section className='cc-skillhub-ability-group' aria-label={label}>
+      <div className='cc-skillhub-ability-group-heading'>
+        <div><h3>{label}</h3><p>{description}</p></div>
+        <span>{skills.length}</span>
+      </div>
+      <div className='cc-skillhub-added-list'>
+        {skills.map((skill) => <AddedSkillItem key={skill.skillId} skill={skill} {...props} />)}
+      </div>
     </section>
   );
 }
@@ -155,6 +189,10 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
   const copying = skillAction?.type === 'copy' && skillAction.skillId === skill.skillId;
   const removing = skillAction?.type === 'remove' && skillAction.skillId === skill.skillId;
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
+  const versionLabel = formatAddedSkillVersion(skill, privateReference);
+  const authorLabel = privateReference
+    ? `最近变更：${skill.lastChangedBy || '修改者未记录'}`
+    : details?.author || skill.author || '发布者待确认';
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const firstMenuItemRef = useRef(null);
@@ -247,7 +285,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
           <h3>{label}</h3><span className={`cc-skillhub-availability${skill.localOnly ? ' is-local-only' : ''}`}><Check size={12} aria-hidden='true' /> {skill.localOnly ? '仅本地' : '已启用'}</span>
         </div>
         <p>{description}</p>
-        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前设备本地' : <>{skill.version ? (String(skill.version).startsWith('v') ? skill.version : `v${skill.version}`) : '版本未确认'}{(details?.author || skill.author) ? ` · ${details?.author || skill.author}` : ''}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
+        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前设备本地' : <>{versionLabel} · {authorLabel}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
       </div>
       <div className='cc-skillhub-added-actions'>
         {!isReadOnly && !skill.localOnly && <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
@@ -390,7 +428,7 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
         <p id={descriptionId} className='cc-skillhub-detail-description'>{description}</p>
         <dl className='cc-skillhub-detail-meta'>
           <div><dt>{localOnly ? '本地能力名' : privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{localOnly ? skill.localName || label : skill.skillId}</code></dd></div>
-          <div><dt>{localOnly ? '发布状态' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : skill.version ? <code translate='no'>v{skill.version}</code> : '版本待确认'}</dd></div>
+          <div><dt>{localOnly ? '发布状态' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
           <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前设备本地' : privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
         </dl>
         <div className='cc-skillhub-detail-footer'>
@@ -451,7 +489,7 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
     && (!skill.localSkill?.canShare || skill.localSkill?.source === 'system');
   const sourceMetadata = [
     skill.sourceLabel || '在线',
-    ...(!skill.isLocalSkill ? [formatCatalogueVersion(skill.latestVersion), skill.author] : []),
+    ...(!skill.isLocalSkill ? [formatCatalogueVersion(skill.latestVersion) || '版本待确认', skill.author || '发布者待确认'] : []),
   ].filter(Boolean).join(' · ');
   return (
     <article className={`cc-skillhub-card${installed ? ' is-added' : ''}`}>
@@ -475,6 +513,18 @@ function formatCatalogueVersion(version) {
   const value = String(version || '').trim();
   if (!value) return '';
   return value.startsWith('v') ? value : `v${value}`;
+}
+
+function formatAddedSkillVersion(skill, privateReference) {
+  const displayVersion = String(skill?.displayVersion || '').trim();
+  if (displayVersion) return /^\d+(?:\.\d+)*$/.test(displayVersion) ? `v${displayVersion}` : displayVersion;
+  if (privateReference && Number.isSafeInteger(skill?.revisionNumber) && skill.revisionNumber > 0) {
+    return `第 ${skill.revisionNumber} 版`;
+  }
+  if (privateReference) return '私有版本待确认';
+  const version = String(skill?.version || '').trim();
+  if (!version) return '版本待确认';
+  return version.startsWith('v') ? version : `v${version}`;
 }
 
 function CustomSkills(props) {

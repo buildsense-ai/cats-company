@@ -320,8 +320,12 @@ export function normalizeViewerSkills(response) {
     source: String(skill?.source || 'skillhub').trim().toLowerCase(),
     skillId: String(skill?.skillId || skill?.skill_id || skill?.id || '').trim(),
     version: String(skill?.version || '').trim(),
+    displayVersion: String(skill?.displayVersion || skill?.display_version || '').trim(),
+    revisionNumber: Number(skill?.revisionNumber || skill?.revision_number || 0),
     displayName: String(skill?.displayName || skill?.display_name || skill?.name || '').trim(),
     description: String(skill?.description || '').trim(),
+    lastChangedBy: String(skill?.lastChangedBy || skill?.last_changed_by || '').trim(),
+    lastChangedAt: String(skill?.lastChangedAt || skill?.last_changed_at || '').trim(),
     author: String(skill?.author || skill?.publisher || '').trim(),
     public: skill?.public ?? skill?.is_public ?? false,
   })).filter((skill) => skill.skillId);

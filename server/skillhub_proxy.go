@@ -44,9 +44,13 @@ type privateSkillMetadataRequest struct {
 }
 
 type privateSkillMetadataReference struct {
-	SkillID     string `json:"skillId"`
-	Version     string `json:"version"`
-	DisplayName string `json:"displayName,omitempty"`
+	SkillID              string `json:"skillId"`
+	Version              string `json:"version"`
+	DisplayName          string `json:"displayName,omitempty"`
+	RevisionNumber       int64  `json:"revisionNumber,omitempty"`
+	LastChangedByUserUID int64  `json:"lastChangedByUserUid,omitempty"`
+	LastChangedAt        string `json:"lastChangedAt,omitempty"`
+	ChangeSource         string `json:"changeSource,omitempty"`
 }
 
 type privateSkillMetadataResponse struct {
@@ -183,7 +187,7 @@ func (h *SkillHubProxyHandler) ResolvePrivateSkillMetadata(
 	botID string,
 	apiKey string,
 	references []types.BotSkillRef,
-) (map[string]string, error) {
+) (map[string]BotSkillDisplayMetadata, error) {
 	if h == nil || h.configError != nil || h.baseURL == nil {
 		return nil, errors.New("SkillHub is not configured")
 	}
@@ -193,7 +197,7 @@ func (h *SkillHubProxyHandler) ResolvePrivateSkillMetadata(
 		return nil, errors.New("Bot SkillHub credentials are unavailable")
 	}
 	if len(references) == 0 {
-		return map[string]string{}, nil
+		return map[string]BotSkillDisplayMetadata{}, nil
 	}
 	if len(references) > maxBotSkillRefs {
 		return nil, errors.New("too many private Skill metadata references")
@@ -245,14 +249,30 @@ func (h *SkillHubProxyHandler) ResolvePrivateSkillMetadata(
 	if err := json.Unmarshal(responseBody, &decoded); err != nil {
 		return nil, errors.New("SkillHub returned invalid private metadata")
 	}
-	metadata := make(map[string]string, len(decoded.Skills))
+	metadata := make(map[string]BotSkillDisplayMetadata, len(decoded.Skills))
 	for _, skill := range decoded.Skills {
 		key := botSkillMetadataKey(strings.TrimSpace(skill.SkillID), strings.TrimSpace(skill.Version))
 		name := strings.TrimSpace(skill.DisplayName)
 		if _, ok := requested[key]; !ok || !validBotSkillDisplayName(name) {
 			continue
 		}
-		metadata[key] = name
+		presentation := BotSkillDisplayMetadata{DisplayName: name}
+		if skill.RevisionNumber > 0 && skill.RevisionNumber <= 1_000_000_000 {
+			presentation.RevisionNumber = skill.RevisionNumber
+		}
+		if skill.LastChangedByUserUID > 0 {
+			presentation.LastChangedByUserUID = skill.LastChangedByUserUID
+		}
+		if lastChangedAt := strings.TrimSpace(skill.LastChangedAt); len(lastChangedAt) <= 64 {
+			if _, err := time.Parse(time.RFC3339Nano, lastChangedAt); err == nil {
+				presentation.LastChangedAt = lastChangedAt
+			}
+		}
+		switch skill.ChangeSource {
+		case "runtime_backup", "conversation_mutation":
+			presentation.ChangeSource = skill.ChangeSource
+		}
+		metadata[key] = presentation
 	}
 	return metadata, nil
 }

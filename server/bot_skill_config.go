@@ -36,18 +36,26 @@ type botDefinitionSkillsResponse struct {
 }
 
 type botViewerSkill struct {
-	Source      string `json:"source"`
-	SkillID     string `json:"skillId"`
-	Version     string `json:"version"`
-	DisplayName string `json:"displayName,omitempty"`
+	Source         string `json:"source"`
+	SkillID        string `json:"skillId"`
+	Version        string `json:"version"`
+	DisplayName    string `json:"displayName,omitempty"`
+	RevisionNumber int64  `json:"revisionNumber,omitempty"`
+	LastChangedBy  string `json:"lastChangedBy,omitempty"`
+	LastChangedAt  string `json:"lastChangedAt,omitempty"`
+	ChangeSource   string `json:"changeSource,omitempty"`
 }
 
 type botDefinitionSkillResponse struct {
-	Source      string `json:"source"`
-	SkillID     string `json:"skillId"`
-	Version     string `json:"version"`
-	ContentHash string `json:"contentHash"`
-	DisplayName string `json:"displayName,omitempty"`
+	Source         string `json:"source"`
+	SkillID        string `json:"skillId"`
+	Version        string `json:"version"`
+	ContentHash    string `json:"contentHash"`
+	DisplayName    string `json:"displayName,omitempty"`
+	RevisionNumber int64  `json:"revisionNumber,omitempty"`
+	LastChangedBy  string `json:"lastChangedBy,omitempty"`
+	LastChangedAt  string `json:"lastChangedAt,omitempty"`
+	ChangeSource   string `json:"changeSource,omitempty"`
 }
 
 type botViewerSkillsResponse struct {
@@ -158,11 +166,14 @@ func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http
 		if strings.TrimSpace(record.Definition.BotID) != "" {
 			response.BotID = strings.TrimSpace(record.Definition.BotID)
 		}
-		metadata := h.resolveSkillDisplayNames(r, botUID, record.Definition.Skills)
+		metadata := h.resolveSkillDisplayMetadata(r, botUID, record.Definition.Skills)
 		for _, skill := range record.Definition.Skills {
+			presentation := metadata[botSkillMetadataKey(skill.SkillID, skill.Version)]
 			response.Skills = append(response.Skills, botViewerSkill{
 				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
-				DisplayName: metadata[botSkillMetadataKey(skill.SkillID, skill.Version)],
+				DisplayName: presentation.DisplayName, RevisionNumber: presentation.RevisionNumber,
+				LastChangedBy: presentation.LastChangedBy, LastChangedAt: presentation.LastChangedAt,
+				ChangeSource: presentation.ChangeSource,
 			})
 		}
 	}
@@ -241,15 +252,18 @@ func (h *BotDefinitionHandler) writeSkills(
 		if strings.TrimSpace(record.Definition.BotID) != "" {
 			response.BotID = strings.TrimSpace(record.Definition.BotID)
 		}
-		var metadata map[string]string
+		var metadata map[string]BotSkillDisplayMetadata
 		if includeDisplayMetadata {
-			metadata = h.resolveSkillDisplayNames(r, botUID, record.Definition.Skills)
+			metadata = h.resolveSkillDisplayMetadata(r, botUID, record.Definition.Skills)
 		}
 		for _, skill := range record.Definition.Skills {
+			presentation := metadata[botSkillMetadataKey(skill.SkillID, skill.Version)]
 			response.Skills = append(response.Skills, botDefinitionSkillResponse{
 				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
 				ContentHash: skill.ContentHash,
-				DisplayName: metadata[botSkillMetadataKey(skill.SkillID, skill.Version)],
+				DisplayName: presentation.DisplayName, RevisionNumber: presentation.RevisionNumber,
+				LastChangedBy: presentation.LastChangedBy, LastChangedAt: presentation.LastChangedAt,
+				ChangeSource: presentation.ChangeSource,
 			})
 		}
 		response.Revision = record.Runtime.DesiredRevision
@@ -258,11 +272,11 @@ func (h *BotDefinitionHandler) writeSkills(
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (h *BotDefinitionHandler) resolveSkillDisplayNames(
+func (h *BotDefinitionHandler) resolveSkillDisplayMetadata(
 	r *http.Request,
 	botUID int64,
 	skills []types.BotSkillRef,
-) map[string]string {
+) map[string]BotSkillDisplayMetadata {
 	if h == nil || h.skillMetadataResolver == nil || len(skills) == 0 {
 		return nil
 	}

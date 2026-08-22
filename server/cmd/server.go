@@ -356,17 +356,42 @@ func main() {
 		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
-	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]server.BotSkillDisplayMetadata, error) {
 		apiKey, err := db.GetBotAPIKey(botUID)
 		if err != nil {
 			return nil, err
 		}
-		return skillHubProxyHandler.ResolvePrivateSkillMetadata(
+		metadata, err := skillHubProxyHandler.ResolvePrivateSkillMetadata(
 			ctx,
 			strconv.FormatInt(botUID, 10),
 			apiKey,
 			skills,
 		)
+		if err != nil {
+			return nil, err
+		}
+		actorNames := make(map[int64]string)
+		for key, presentation := range metadata {
+			if presentation.LastChangedByUserUID > 0 {
+				actorName, lookedUp := actorNames[presentation.LastChangedByUserUID]
+				if !lookedUp {
+					if actor, lookupErr := db.GetUser(presentation.LastChangedByUserUID); lookupErr == nil && actor != nil {
+						actorName = strings.TrimSpace(actor.Username)
+					}
+					actorNames[presentation.LastChangedByUserUID] = actorName
+				}
+				presentation.LastChangedBy = actorName
+			}
+			if presentation.LastChangedBy == "" {
+				if presentation.ChangeSource == "runtime_backup" {
+					presentation.LastChangedBy = "Bot 自动同步"
+				} else {
+					presentation.LastChangedBy = "修改者未记录"
+				}
+			}
+			metadata[key] = presentation
+		}
+		return metadata, nil
 	})
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")

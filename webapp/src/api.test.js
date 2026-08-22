@@ -82,6 +82,25 @@ describe('WebSocket connection recovery', () => {
     unsubscribe();
   });
 
+  test('strips display-only Skill metadata before updating BotDefinition', () => {
+    expect(api.toWritableBotSkillRefs([{
+      source: 'skillhub',
+      skillId: 'priv_owned',
+      version: 'v_1',
+      contentHash: 'a'.repeat(64),
+      displayName: 'review-helper',
+      revisionNumber: 3,
+      lastChangedBy: 'lin',
+      lastChangedAt: '2026-08-22T02:03:04Z',
+      changeSource: 'conversation_mutation',
+    }])).toEqual([{
+      source: 'skillhub',
+      skillId: 'priv_owned',
+      version: 'v_1',
+      contentHash: 'a'.repeat(64),
+    }]);
+  });
+
   test('keeps a SkillHub device request pending after its ack and resolves its result', async () => {
     api.connectWS(vi.fn());
     const socket = MockWebSocket.instances[0];

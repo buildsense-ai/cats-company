@@ -87,6 +87,10 @@ describe('SkillHubView', () => {
         skillId: 'private/review',
         version: 'v2',
         displayName: 'cloud-html-artifact',
+        revisionNumber: 2,
+        lastChangedBy: 'lin',
+        lastChangedAt: '2026-08-22T02:03:04Z',
+        changeSource: 'conversation_mutation',
       }],
     });
     api.getBotDefinitionSkills.mockResolvedValue({
@@ -602,6 +606,24 @@ describe('SkillHubView', () => {
     expect(source?.getAttribute('title')).toBe('在线 · v2.0.0 · arrowhaken');
   });
 
+  it('keeps catalogue metadata placeholders visible when an old response omits fields', async () => {
+    api.searchSkillHubSkills.mockResolvedValueOnce({
+      skills: [{ id: 'tools/legacy', name: 'Legacy Tool', description: 'Legacy response' }],
+    });
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+
+    const card = [...container.querySelectorAll('.cc-skillhub-card')]
+      .find(candidate => candidate.textContent.includes('Legacy Tool'));
+    expect(card?.querySelector('.cc-skillhub-card-source')?.textContent)
+      .toBe('在线 · 版本待确认 · 发布者待确认');
+  });
+
   it('explains account sync before adding a local-only ability from the library', async () => {
     api.getLocalSkills.mockResolvedValue({
       skills: [{
@@ -855,6 +877,9 @@ describe('SkillHubView', () => {
     const localItem = [...container.querySelectorAll('.cc-skillhub-added-item')]
       .find((item) => item.querySelector('h3')?.textContent === 'web-search');
     expect(localItem).toBeTruthy();
+    expect(container.textContent).toContain('正式能力来自 BotDefinition');
+    expect(container.textContent).toContain('当前设备本地能力');
+    expect(container.textContent).toContain('来自当前连接的 XiaoBa 工作区');
     expect(localItem.textContent).toContain('仅本地');
     expect(localItem.textContent).toContain('尚未发布 · 当前设备本地');
     expect(localItem.textContent).not.toContain('版本未确认');
@@ -1246,8 +1271,12 @@ describe('SkillHubView', () => {
     expect(api.getDevices).not.toHaveBeenCalled();
     expect(container.textContent).toContain('cloud-html-artifact');
     expect(container.textContent).not.toContain('私有能力');
-    expect(container.textContent).toContain('v2');
+    expect(container.textContent).toContain('第 2 版 · 最近变更：lin');
+    expect(container.textContent).not.toContain('v2');
     expect(container.textContent).toContain('只读查看');
+    expect(container.textContent).toContain('该 Agent 运行环境中尚未同步的本地 Skill 不会显示');
+    expect(container.textContent).toContain('已同步能力');
+    expect(container.textContent).toContain('来自该 Agent 已同步到 BotDefinition 的只读元数据');
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
     expect(container.querySelector('.cc-skillhub-copy-action')).toBeNull();
     expect(container.querySelector('.cc-skillhub-more-action')).toBeNull();
