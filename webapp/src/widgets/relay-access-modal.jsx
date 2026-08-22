@@ -201,7 +201,7 @@ function formatPriceAmountFen(value) {
 
 function commercialPlanPresentation(plan) {
   return COMMERCIAL_PLAN_PRESENTATION[plan?.slug] || {
-    kicker: '协作套餐',
+    kicker: plan?.sale_state === 'test' ? '内测套餐' : '协作套餐',
     tagline: plan?.name || '稳定协作',
     audience: `${Number(plan?.duration_days || 30)} 天有效`,
     usageLabel: '套餐用量',
@@ -761,9 +761,13 @@ export default function RelayAccessModal({ onClose }) {
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
   const hasCurrentCommercialPlans = catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
-  const salePlans = hasCurrentCommercialPlans
-    ? catalogPlans.filter(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug))
-    : catalogPlans;
+  // The backend already filters the catalog by UID and sale state. Keep all
+  // returned plans here so gray/internal plans remain visible to their
+  // allowlisted users alongside the official plans.
+  const salePlans = catalogPlans;
+  const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
+    plan => Number(plan?.duration_days || 30) === 30,
+  );
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
@@ -1423,7 +1427,9 @@ export default function RelayAccessModal({ onClose }) {
                         <div className="relay-access-mini-title">
                           {hasCurrentCommercialPlans ? '选择适合你的工作强度' : '选一档，开始你的协作节奏'}
                         </div>
-                        <span>均为 30 天月套餐，到期前不会自动续费；云员工到期后有 15 天天翼云保留期。</span>
+                        <span>{allSalePlansAreMonthly
+                          ? '均为 30 天月套餐，到期前不会自动续费；云员工到期后有 15 天天翼云保留期。'
+                          : '内测套餐按卡片标注的有效期执行；到期前不会自动续费。'}</span>
                       </div>
                       {paymentChannels.length > 1 ? (
                         <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>

@@ -462,6 +462,51 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);
   });
 
+  it('keeps an allowlisted gray plan visible alongside the official catalog', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: false,
+      trial_available: false,
+      channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+      plans: [
+        {
+          id: 21,
+          slug: 'catsco-personal',
+          name: '个人版',
+          price_fen: 39900,
+          duration_days: 30,
+          model_budgets: { 'MiniMax-M2.7': 1750 },
+        },
+        {
+          id: 22,
+          slug: 'catsco-pro',
+          name: '专业版',
+          price_fen: 79900,
+          duration_days: 30,
+          model_budgets: { 'MiniMax-M2.7': 5250 },
+        },
+        {
+          id: 184,
+          slug: 'uid38-internal-5cny-20260822',
+          name: 'UID38 内测 ¥5',
+          description: '仅供 UID 38 验证支付链路。',
+          price_fen: 500,
+          sale_state: 'test',
+          duration_days: 1,
+          model_budgets: { 'MiniMax-M2.7': 0.05 },
+        },
+      ],
+    });
+
+    await renderModal();
+
+    expect(container.textContent).toContain('UID38 内测 ¥5');
+    expect(container.textContent).toContain('内测套餐');
+    expect(container.textContent).toContain('内测套餐按卡片标注的有效期执行');
+    expect(container.textContent).toContain('¥5');
+    expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(4);
+  });
+
   it('marks an active Pro plan and blocks both repeat and lower-tier purchases', async () => {
     const plans = [
       { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
