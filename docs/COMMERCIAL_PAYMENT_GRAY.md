@@ -137,4 +137,10 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 6. 更换正式应用材料，设置 `CATS_ALIPAY_PRODUCTION=1`，完成一笔真实小额支付。
 7. 完成人工退款和额度回收演练后，再把套餐改为 `public` 并开启公共商业化入口。
 
+### 云托管创建权益与内部补发
+
+`CATSCO_WORKER_CREATE_QUOTA` 仅用于灰度/运维账号的静态开关；正式公共环境应留空。付费套餐履约时，服务会在 `cloud_worker_credits` 中为用户发放一次性创建权益，云托管创建成功后消费该权益。静态配额与套餐权益会相加，因此不能给已购买套餐的账号同时配置静态配额。
+
+内部确需额外分配创建次数时，应使用本地管理员接口 `POST /local/account-admin/commercial/cloud-worker-credits`（或同等受保护的商业运营服务接口），提交 `uid`、`count`、幂等 `source_ref` 和可选 `expires_at`；不要直接修改生产环境静态配额。
+
 退款自动化、发票和对账单下载不在本阶段范围内；订单状态已预留 `refunding/refunded`。灰度期退款必须按订单号在账号后台核对支付宝交易号，在支付宝商家后台人工退款，再由管理员回收对应权益和 Relay 额度并留存操作记录。完成这套演练前不得开启公共销售。

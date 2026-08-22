@@ -320,6 +320,9 @@ func main() {
 	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
+	if creditAdmin, ok := db.(server.CloudWorkerCreditAdminStore); ok {
+		accountAdminHandler.SetCloudWorkerCreditAdmin(creditAdmin)
+	}
 	friendHandler := server.NewFriendHandler(db, hub)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	projectHandler := server.NewProjectHandler(db)
@@ -645,6 +648,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
 	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
+	mux.HandleFunc("/api/account/commercial-ops/cloud-worker-credits", commercialOpsHandler.HandleCloudWorkerCredits)
 	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
@@ -662,6 +666,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/plans", accountAdminHandler.HandleCommercialPlans)
 	mux.HandleFunc("/local/account-admin/commercial/invites", accountAdminHandler.HandleCommercialInvites)
 	mux.HandleFunc("/local/account-admin/commercial/grants", accountAdminHandler.HandleCommercialGrant)
+	mux.HandleFunc("/local/account-admin/commercial/cloud-worker-credits", accountAdminHandler.HandleCloudWorkerCredits)
 	mux.HandleFunc("/local/account-admin/commercial/adjustments", accountAdminHandler.HandleCommercialAdjustment)
 	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)

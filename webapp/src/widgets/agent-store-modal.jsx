@@ -1089,7 +1089,13 @@ export default function AgentStoreModal({
   const handleCloudCreate = async (displayName) => {
     const trimmed = displayName.trim();
     if (!trimmed) return;
-    const slug = trimmed.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 16);
+    const slug = trimmed.toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 16)
+      .replace(/-+$/g, '');
     const suffix = Math.floor(Math.random() * 9000) + 1000;
     const username = `bot-${slug || 'bot'}-${suffix}`;
     try {
