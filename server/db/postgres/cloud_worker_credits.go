@@ -23,6 +23,40 @@ func (a *Adapter) CloudWorkerCreditSummary(uid int64) (total, available int, err
 	return
 }
 
+// GrantCloudWorkerCredits adds idempotent operator-issued one-time credits.
+// sourceRef is the stable operation key; repeating the same request does not
+// duplicate credits. A nullable expiry is supported for short-lived internal
+// test grants as well as explicitly perpetual operational grants.
+func (a *Adapter) GrantCloudWorkerCredits(uid int64, count int, sourceRef string, expiresAt *time.Time) (int, error) {
+	sourceRef = strings.TrimSpace(sourceRef)
+	if uid <= 0 || count <= 0 || count > 100 || sourceRef == "" || len(sourceRef) > 96 {
+		return 0, fmt.Errorf("invalid cloud worker credit grant")
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin cloud worker credit grant: %w", err)
+	}
+	defer tx.Rollback()
+	granted := 0
+	for i := 1; i <= count; i++ {
+		ref := fmt.Sprintf("manual:%s:%d", sourceRef, i)
+		result, err := tx.Exec(`
+			INSERT INTO cloud_worker_credits(uid, source_ref, expires_at)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, ref, expiresAt)
+		if err != nil {
+			return 0, fmt.Errorf("grant cloud worker credit: %w", err)
+		}
+		if n, _ := result.RowsAffected(); n == 1 {
+			granted++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit cloud worker credit grant: %w", err)
+	}
+	return granted, nil
+}
+
 // ReserveCloudWorkerCredit atomically claims one available paid credit. A
 // stale reservation is released so a crashed provision request is retryable.
 func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool, error) {
@@ -215,7 +249,7 @@ func (a *Adapter) MarkCloudWorkerLifecycleDeleted(id int64, errText string) erro
 	}
 	_, err := a.db.Exec(`
 		UPDATE cloud_worker_lifecycles
-		SET state = $2, deleted_at = CASE WHEN $2 = 'deleted' THEN CURRENT_TIMESTAMP ELSE deleted_at END,
+		SET state = $2::text, deleted_at = CASE WHEN $2::text = 'deleted' THEN CURRENT_TIMESTAMP ELSE deleted_at END,
 		    last_error = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`, id, state, strings.TrimSpace(errText))
 	return err
 }

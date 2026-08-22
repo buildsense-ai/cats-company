@@ -113,6 +113,12 @@ const (
 // workerUsernameRe constrains cloud worker usernames so the derived tenant
 // name stays safe to embed in URL paths and script argv.
 var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+var workerTenantSeparatorRe = regexp.MustCompile(`-+`)
+
+func cloudWorkerTenantName(username string) string {
+	name := workerTenantSeparatorRe.ReplaceAllString("bot-"+strings.TrimSpace(username), "-")
+	return strings.Trim(name, "-.")
+}
 
 // CloudWorkerConfig configures the cloud worker control plane.
 type CloudWorkerConfig struct {
@@ -139,6 +145,14 @@ type CloudWorkerCreditStore interface {
 	MarkCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error
 	ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error)
 	MarkCloudWorkerLifecycleDeleted(id int64, errText string) error
+}
+
+// CloudWorkerCreditAdminStore is the narrow operator-only surface for
+// granting additional one-time cloud-worker credits. Paid plans create
+// credits during payment fulfillment; manual credits must go through this
+// admin path rather than the static rollout quota.
+type CloudWorkerCreditAdminStore interface {
+	GrantCloudWorkerCredits(uid int64, count int, sourceRef string, expiresAt *time.Time) (int, error)
 }
 
 type CloudWorkerLifecycle = types.CloudWorkerLifecycle
@@ -736,7 +750,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tenantName := fmt.Sprintf("bot-%s", result.Username)
+	tenantName := cloudWorkerTenantName(result.Username)
 
 	// 在创建任何云资源之前持久化 tenant 标识。这样无论 provision 后续怎么失败，
 	// bot 记录都有 tenant handle —— 云托管列表可见、可重试删除、且计入创建配额。

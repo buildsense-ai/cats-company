@@ -23,11 +23,21 @@ type AccountAdminHandler struct {
 	services                 AccountServiceVerifier
 	serviceStore             AccountAdminServiceStore
 	commercial               CommercialStore
+	cloudWorkerCredits       CloudWorkerCreditAdminStore
 	commercialPayments       *CommercialPaymentHandler
 	relayAdmin               *RelayAdminClient
 	commercialRelaySyncer    *CommercialRelaySyncer
 	commercialEnforceEnabled bool
 	commercialEnforceUIDs    map[int64]bool
+}
+
+// SetCloudWorkerCreditAdmin wires the operator-only manual credit grant
+// surface. It is optional so focused account-admin tests and non-Postgres
+// deployments remain compatible.
+func (h *AccountAdminHandler) SetCloudWorkerCreditAdmin(store CloudWorkerCreditAdminStore) {
+	if h != nil {
+		h.cloudWorkerCredits = store
+	}
 }
 
 func (h *AccountAdminHandler) SetCommercialPaymentHandler(handler *CommercialPaymentHandler) {

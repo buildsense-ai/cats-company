@@ -31,7 +31,7 @@ CATSCO_WORKER_ROLLBACK_SCRIPT=/opt/catsco/ops/rollback-worker.sh
 CATSCO_WORKER_IMAGES_SCRIPT=/opt/catsco/ops/list-worker-images.sh
 CATSCO_WORKER_RELEASES_SCRIPT=/opt/catsco/ops/list-worker-releases.sh
 CATSCO_WORKER_STATUS_SCRIPT=/opt/catsco/ops/status-worker.sh
-CATSCO_WORKER_CREATE_QUOTA=            # "<uid>=<n>;<uid>=<n>"，留空 = 未开放（0）
+CATSCO_WORKER_CREATE_QUOTA=            # 仅灰度/运维静态配额；正式公共环境留空，付费权益走 cloud_worker_credits
 CTYUN_WORKER_EXT_IP=0                  # 默认内网，不申请公网 IP/带宽
 ```
 
