@@ -906,6 +906,33 @@ func TestCommercialRelayScopeExcludesUnpurchasedSharedAlias(t *testing.T) {
 	}
 }
 
+func TestCommercialRelayModelScopesMatchRelayAdminOverlapMerge(t *testing.T) {
+	triple := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+	pair := []string{"gpt-5.6-terra", "gpt-5.6-sol"}
+	expected := []commercialRelayModelScope{
+		{ManagedModels: []string{"deepseek-v4-flash"}, AllowedModels: []string{"deepseek-v4-flash"}},
+		{ManagedModels: triple, AllowedModels: triple},
+		{ManagedModels: pair, AllowedModels: pair},
+		{ManagedModels: []string{"MiniMax-M2.7"}, AllowedModels: []string{"MiniMax-M2.7"}},
+		{ManagedModels: []string{"MiniMax-M3"}, AllowedModels: []string{"MiniMax-M3"}},
+	}
+	// Relay Admin merges the overlapping pair into the existing triple scope.
+	actual := []commercialRelayModelScope{
+		{ManagedModels: []string{"deepseek-v4-flash"}, AllowedModels: []string{"deepseek-v4-flash"}},
+		{ManagedModels: triple, AllowedModels: triple},
+		{ManagedModels: []string{"MiniMax-M2.7"}, AllowedModels: []string{"MiniMax-M2.7"}},
+		{ManagedModels: []string{"MiniMax-M3"}, AllowedModels: []string{"MiniMax-M3"}},
+	}
+	if !commercialRelayModelScopesMatch(actual, expected) {
+		t.Fatalf("valid Relay Admin overlap merge was rejected: actual=%#v expected=%#v", actual, expected)
+	}
+
+	actual[1].AllowedModels = pair
+	if commercialRelayModelScopesMatch(actual, expected) {
+		t.Fatalf("scope narrowing was not detected: actual=%#v expected=%#v", actual, expected)
+	}
+}
+
 func TestCommercialRelayUsesAvailableCatalogAfterScopedConfigWasRemoved(t *testing.T) {
 	models := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
 	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{

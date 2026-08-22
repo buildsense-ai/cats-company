@@ -850,6 +850,8 @@ func commercialRelayModelSetKey(models []string) string {
 }
 
 func commercialRelayModelScopesMatch(actual, expected []commercialRelayModelScope) bool {
+	actual = canonicalCommercialRelayModelScopes(actual)
+	expected = canonicalCommercialRelayModelScopes(expected)
 	if len(actual) != len(expected) {
 		return false
 	}
@@ -863,6 +865,94 @@ func commercialRelayModelScopesMatch(actual, expected []commercialRelayModelScop
 		}
 	}
 	return true
+}
+
+// canonicalCommercialRelayModelScopes mirrors Relay Admin's model-scope
+// merge contract. Relay Admin merges requested scopes that share any managed
+// model into one scope, retaining non-overlapping managed/allowed models from
+// the existing scope. Comparing the raw arrays would therefore report a
+// permanent mismatch for valid overlapping provider families (for example a
+// Terra/Sol provider alongside a Terra/Sol/Luna provider).
+func canonicalCommercialRelayModelScopes(scopes []commercialRelayModelScope) []commercialRelayModelScope {
+	canonical := make([]commercialRelayModelScope, 0, len(scopes))
+	for _, scope := range scopes {
+		managed := normalizedCommercialModels(scope.ManagedModels)
+		if len(managed) == 0 {
+			continue
+		}
+		allowed := normalizedCommercialModels(scope.AllowedModels)
+		managedSet := map[string]bool{}
+		for _, model := range managed {
+			managedSet[strings.ToLower(model)] = true
+		}
+		filteredAllowed := make([]string, 0, len(allowed))
+		for _, model := range allowed {
+			if managedSet[strings.ToLower(model)] {
+				filteredAllowed = append(filteredAllowed, model)
+			}
+		}
+		update := commercialRelayModelScope{ManagedModels: managed, AllowedModels: filteredAllowed}
+		merged := false
+		for index := range canonical {
+			current := canonical[index]
+			currentManagedSet := map[string]bool{}
+			for _, model := range current.ManagedModels {
+				currentManagedSet[strings.ToLower(model)] = true
+			}
+			intersects := false
+			for _, model := range update.ManagedModels {
+				if currentManagedSet[strings.ToLower(model)] {
+					intersects = true
+					break
+				}
+			}
+			if !intersects {
+				continue
+			}
+
+			mergedManaged := append([]string(nil), update.ManagedModels...)
+			updateManagedSet := map[string]bool{}
+			for _, model := range update.ManagedModels {
+				updateManagedSet[strings.ToLower(model)] = true
+			}
+			for _, model := range current.ManagedModels {
+				if !updateManagedSet[strings.ToLower(model)] {
+					mergedManaged = append(mergedManaged, model)
+				}
+			}
+			mergedAllowed := append([]string(nil), update.AllowedModels...)
+			mergedAllowedSet := map[string]bool{}
+			for _, model := range mergedAllowed {
+				mergedAllowedSet[strings.ToLower(model)] = true
+			}
+			for _, model := range current.AllowedModels {
+				key := strings.ToLower(model)
+				if updateManagedSet[key] || mergedAllowedSet[key] {
+					continue
+				}
+				mergedAllowed = append(mergedAllowed, model)
+				mergedAllowedSet[key] = true
+			}
+			canonical[index] = commercialRelayModelScope{
+				ManagedModels: normalizedCommercialModels(mergedManaged),
+				AllowedModels: normalizedCommercialModels(mergedAllowed),
+			}
+			merged = true
+			break
+		}
+		if !merged {
+			canonical = append(canonical, update)
+		}
+	}
+	sort.Slice(canonical, func(i, j int) bool {
+		left := commercialRelayModelSetKey(canonical[i].ManagedModels)
+		right := commercialRelayModelSetKey(canonical[j].ManagedModels)
+		if left == right {
+			return commercialRelayModelSetKey(canonical[i].AllowedModels) < commercialRelayModelSetKey(canonical[j].AllowedModels)
+		}
+		return left < right
+	})
+	return canonical
 }
 
 func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) []commercialRelayModelScope {
