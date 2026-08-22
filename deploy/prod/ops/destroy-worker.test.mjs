@@ -43,6 +43,14 @@ if (op === "ecs ListEcsInstances") {
   state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
+} else if (op === "ecs StopEcsInstance") {
+  state.stopCalls = state.stopCalls || [];
+  state.stopCalls.push(val("--instanceID"));
+  state.instances = (state.instances || []).map(i =>
+    i.instanceID === val("--instanceID") ? { ...i, instanceStatus: "stopped", state: "stopped" } : i
+  );
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs UnsubscribeEcsInstance") {
   if (state.failUnsubscribe) { json({ statusCode: "900", errorCode: "E.UNSUB", message: "boom" }); process.exit(0); }
   state.unsubscribedInstances = state.unsubscribedInstances || [];
@@ -213,11 +221,12 @@ test("destroy-worker: monthly instance (expiredTime) is unsubscribed, not delete
   });
   const r = run(sb, ["--name", "bot-a"]);
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-  assert.match(r.stdout, /"status":"destroyed"/);
+  assert.match(r.stdout, /"status":"unsubscribed"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.deepEqual(state.unsubscribedInstances, ["i-1"], "monthly instance must be unsubscribed");
+  assert.deepEqual(state.stopCalls, ["i-1"], "running monthly instance must be stopped first");
   assert.equal((state.deletedInstances || []).length, 0, "monthly instance must not use DeleteEcsInstance");
-  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+  assert.equal((state.deletedKeypairs || []).length, 0, "monthly retention keeps keypair attached");
 });
 
 test("destroy-worker: on-demand instance (no expiredTime) still uses DeleteEcsInstance", () => {

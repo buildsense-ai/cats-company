@@ -80,6 +80,29 @@ find_instance() {
   jq -r --arg n "$name" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" || true
 }
 
+stop_instance() {
+  local inst_json="$1" instance_id current status attempt
+  instance_id="$(jq -r '.instanceID // ""' <<<"$inst_json")"
+  [[ -n "$instance_id" ]] || return 1
+  status="$(jq -r '.instanceStatus // .state // ""' <<<"$inst_json" | tr '[:upper:]' '[:lower:]')"
+  case "$status" in
+    stopped|shutoff|unsubscribed|error|bootdiskexpired|nobootdisk) return 0 ;;
+  esac
+  ctyun ecs StopEcsInstance --regionID "$REGION_ID" --instanceID "$instance_id" --force false >/dev/null 2>&1 \
+    || { echo "error: instance stop failed (instance_id=$instance_id)" >&2; return 1; }
+  for attempt in $(seq 1 30); do
+    sleep 2
+    current="$(find_instance "$INSTANCE_NAME")"
+    [[ -n "$current" ]] || return 0
+    status="$(jq -r '.instanceStatus // .state // ""' <<<"$current" | tr '[:upper:]' '[:lower:]')"
+    case "$status" in
+      stopped|shutoff|unsubscribed|error|bootdiskexpired|nobootdisk) return 0 ;;
+    esac
+  done
+  echo "error: timed out waiting for instance stop (instance_id=$instance_id)" >&2
+  return 1
+}
+
 # 可移植 UUID（clientToken）：优先内核文件，其次 uuidgen，最后时间/pid/随机兜底
 gen_uuid() {
   if [[ -r /proc/sys/kernel/random/uuid ]]; then
@@ -93,6 +116,8 @@ gen_uuid() {
 
 # --- 1. 删实例（不存在则跳过） ---
 instance_id=""
+monthly_instance=0
+instance_status=""
 inst="$(find_instance "$INSTANCE_NAME")"
 if [[ -n "$inst" ]]; then
   instance_id="$(jq -r '.instanceID // ""' <<<"$inst")"
@@ -105,9 +130,17 @@ if [[ -n "$inst" ]]; then
   # 两个 API 都需 clientToken 且不接受 --projectID。
   if [[ -n "$instance_id" ]]; then
     if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst")" ]]; then
-      ctyun ecs UnsubscribeEcsInstance \
-        --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
-        || { echo "error: instance unsubscribe failed (instance_id=$instance_id)" >&2; exit 1; }
+      monthly_instance=1
+      instance_status="$(jq -r '.instanceStatus // .state // ""' <<<"$inst" | tr '[:upper:]' '[:lower:]')"
+      stop_instance "$inst" || exit 1
+      # Tianyi keeps an unsubscribed monthly instance in its 15-day retention
+      # window.  It remains attached to its key pair until release; treating
+      # the successful unsubscribe as terminal avoids a false failed delete.
+      if [[ "$instance_status" != "unsubscribed" ]]; then
+        ctyun ecs UnsubscribeEcsInstance \
+          --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+          || { echo "error: instance unsubscribe failed (instance_id=$instance_id)" >&2; exit 1; }
+      fi
     else
       ctyun ecs DeleteEcsInstance \
         --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
@@ -122,15 +155,17 @@ fi
 
 # --- 2. 删 key pair（幂等：不存在则跳过） ---
 errors=""
-kp="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-  --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
-  | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
-if [[ -n "$kp" ]]; then
-  # 实测（2026-08-07）：DeleteEcsKeypair 不接受 --projectID，会报 unknown flag
-  if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
-    : # ok
-  else
-    errors="key pair delete failed; "
+if [[ "$monthly_instance" -eq 0 ]]; then
+  kp="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+    --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
+    | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
+  if [[ -n "$kp" ]]; then
+    # 实测（2026-08-07）：DeleteEcsKeypair 不接受 --projectID，会报 unknown flag
+    if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
+      : # ok
+    else
+      errors="key pair delete failed; "
+    fi
   fi
 fi
 
@@ -149,7 +184,9 @@ if [[ -n "$errors" ]]; then
   exit 1
 fi
 
-if [[ -z "$instance_id" ]]; then
+if [[ "$monthly_instance" -eq 1 ]]; then
+  echo "{\"status\":\"unsubscribed\",\"instance_name\":\"$INSTANCE_NAME\",\"instance_id\":\"$instance_id\"}"
+elif [[ -z "$instance_id" ]]; then
   echo "{\"status\":\"not-found\",\"instance_name\":\"$INSTANCE_NAME\"}"
 else
   echo "{\"status\":\"destroyed\",\"instance_name\":\"$INSTANCE_NAME\",\"instance_id\":\"$instance_id\"}"
