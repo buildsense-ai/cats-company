@@ -28,20 +28,26 @@ const (
 	sttStopReasonHardTimeout               = "hard_timeout"
 	sttStopReasonAudioLimit                = "audio_limit"
 	sttStopReasonIdleTimeout               = "idle_timeout"
+	sttStopReasonDurationLimit             = "duration_limit"
+	sttStopReasonLifecycleStop             = "lifecycle_stop"
 )
 
-func sttIsDurationStopReason(reason string) bool {
+func sttIsBoundaryStopReason(reason string) bool {
 	switch reason {
-	case sttStopReasonHardTimeout, sttStopReasonAudioLimit, sttStopReasonIdleTimeout:
+	case sttStopReasonHardTimeout, sttStopReasonAudioLimit, sttStopReasonIdleTimeout, sttStopReasonDurationLimit:
 		return true
 	default:
 		return false
 	}
 }
 
+func sttShouldIncludeStopReason(reason string) bool {
+	return sttIsBoundaryStopReason(reason) || reason == sttStopReasonLifecycleStop
+}
+
 func sttTerminalErrorPayload(code, message, stopReason string) map[string]interface{} {
 	payload := map[string]interface{}{"type": "error", "code": code, "message": message}
-	if sttIsDurationStopReason(stopReason) {
+	if sttShouldIncludeStopReason(stopReason) {
 		payload["stop_reason"] = stopReason
 	}
 	return payload
@@ -543,7 +549,7 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 	idleDeadlineAt := startedAt.Add(h.config.IdleTimeout)
 	defer idleTimer.Stop()
 	markElapsedDurationBoundary := func() {
-		if stopping || sttIsDurationStopReason(stopReason) {
+		if stopping || sttIsBoundaryStopReason(stopReason) {
 			return
 		}
 		now := time.Now()
@@ -605,7 +611,7 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				// elapsed boundary before forwarding a late frame so it cannot
 				// refresh the idle deadline or hide the duration stop reason.
 				markElapsedDurationBoundary()
-				if sttIsDurationStopReason(stopReason) {
+				if sttIsBoundaryStopReason(stopReason) {
 					if !finish() {
 						return
 					}
@@ -633,7 +639,7 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				}
 				acceptedBytes += int64(len(message.payload))
 				markElapsedDurationBoundary()
-				if sttIsDurationStopReason(stopReason) {
+				if sttIsBoundaryStopReason(stopReason) {
 					if !finish() {
 						return
 					}
@@ -652,19 +658,26 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				}
 			case websocket.TextMessage:
 				var command struct {
-					Type string `json:"type"`
+					Type       string `json:"type"`
+					StopReason string `json:"stop_reason"`
 				}
 				if json.Unmarshal(message.payload, &command) != nil {
 					continue
 				}
 				switch command.Type {
 				case "stop":
-					// A foreground timer may be delayed until the user releases the
-					// control. Preserve a duration boundary if the explicit stop
-					// arrives after the advertised limit.
-					markElapsedDurationBoundary()
-					if !sttIsDurationStopReason(stopReason) {
-						stopReason = "client_stop"
+					// An explicit stop is an intentional user action. It must retain
+					// that meaning even when the browser delivers the command after
+					// the advertised deadline; the hard timer and late audio paths
+					// already classify server-enforced duration boundaries. If
+					// finalization has already started, keep its reason instead.
+					if !stopping {
+						switch command.StopReason {
+						case sttStopReasonDurationLimit, sttStopReasonLifecycleStop:
+							stopReason = command.StopReason
+						default:
+							stopReason = "client_stop"
+						}
 					}
 					if !finish() {
 						return
@@ -708,12 +721,12 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				outcome = "success"
 				if !stopping {
 					markElapsedDurationBoundary()
-					if !sttIsDurationStopReason(stopReason) {
+					if !sttIsBoundaryStopReason(stopReason) {
 						stopReason = "provider_final"
 					}
 				}
 				finalPayload := map[string]interface{}{"type": "final", "text": event.Text}
-				if sttIsDurationStopReason(stopReason) {
+				if sttShouldIncludeStopReason(stopReason) {
 					finalPayload["stop_reason"] = stopReason
 				}
 				_ = h.writeSTTJSON(conn, finalPayload)
@@ -726,11 +739,17 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-hardTimer.C:
+			if stopping {
+				continue
+			}
 			stopReason = sttStopReasonHardTimeout
 			if !finish() {
 				return
 			}
 		case <-idleTimeout:
+			if stopping {
+				continue
+			}
 			stopReason = sttStopReasonIdleTimeout
 			if !finish() {
 				return

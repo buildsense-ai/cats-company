@@ -69,6 +69,10 @@ already captured frames. Once the connection becomes ready, it must drain those
 frames in FIFO order, send the `stop` control message, and wait for the final
 transcript using the normal server timeout. This preserves short hold-to-talk
 utterances and speech spoken immediately after recording begins.
+Automatic duration stops send `stop_reason: duration_limit`, and lifecycle
+stops send `stop_reason: lifecycle_stop`; an intentional user stop keeps the
+plain `stop` command. The server echoes these reasons on terminal events so a
+delayed finalization cannot turn a recoverable segment into a generic error.
 
 `cancel` has different semantics from `stop`. Cancellation must discard queued
 preconnect PCM and must not establish or retain a connection solely to upload
@@ -109,16 +113,25 @@ conservative silence window. If speech continues, it keeps recording through
 the warning and stops only at the hard limit. This avoids cutting a sentence at
 an arbitrary warning point while still respecting the server's maximum
 duration. The hard-limit path is presented as a recoverable segment boundary,
-not as a lost recording. Audio activity and transcript events also recover a
-warning if a foreground timer fires late, and short quota-reduced limits show
-the warning immediately after the socket is ready.
+not as a lost recording. An intentional idle cutoff is also a normal segment
+boundary when the provider returns a final result, so the composer can invite
+the user to continue recording without an error state. Audio activity and
+transcript events also recover a warning if a foreground timer fires late, and
+short quota-reduced limits show the warning immediately after the socket is
+ready.
 
-When the server has to enforce that boundary while the browser timer is
-throttled (a common PWA background behavior), all terminal provider/final
-errors carry a duration stop reason. If the transport closes without a
-terminal payload after the advertised deadline, the browser uses its local
-deadline clock as a final fallback. The composer can therefore use the same
-non-error copy and preserve the latest transcript snapshot.
+When the server has to enforce the hard/audio boundary while the browser timer
+is throttled (a common PWA background behavior), terminal provider/final errors
+carry a boundary reason. If the transport closes without a terminal payload
+after the advertised deadline, the browser uses its local deadline clock as a
+final fallback. The composer can therefore use the same non-error copy and
+preserve the latest transcript snapshot. If finalization itself fails after an
+idle cutoff, the client keeps the idle reason as a real error while still
+recovering the latest transcript into the draft.
+An explicit user stop keeps its intentional-stop semantics when the control
+message arrives after the advertised deadline, provided server enforcement has
+not already begun. Once the server has started a hard/audio or idle boundary,
+that boundary reason wins.
 
 With `enable_nonstream` enabled for the Doubao 2.0 provider, a response can
 mark an utterance as `definite`. Its complete `result.text` is then forwarded
@@ -160,9 +173,11 @@ message history.
   duplicating an already stable prefix.
 - A finalization timeout, provider error, or WebSocket close preserves the
   latest recognized snapshot in the composer draft.
-- A delayed duration timer, a server duration stop reason, and a hidden-page
-  final with a pending preview all preserve the snapshot and release the
-  composer session.
+- A delayed duration timer, a server hard/audio boundary reason, and a
+  hidden-page final with a pending preview all preserve the snapshot and
+  release the composer session.
+- An idle-timeout final uses the calm boundary notice, while an idle-timeout
+  provider/finalization error keeps the error state and recovers the snapshot.
 - An explicit user cancellation still discards the preview and does not insert
   a draft.
 

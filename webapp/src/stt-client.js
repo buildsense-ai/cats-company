@@ -11,15 +11,26 @@ const DURATION_QUIET_WINDOW_MS = 900;
 const DURATION_UNPUNCTUATED_QUIET_WINDOW_MS = 2_000;
 const DURATION_BOUNDARY_POLL_MS = 250;
 const STT_VOICE_RMS_THRESHOLD = 0.008;
-const DURATION_STOP_REASONS = new Set(['hard_timeout', 'audio_limit', 'idle_timeout']);
+const HARD_DURATION_STOP_REASONS = new Set(['hard_timeout', 'audio_limit', 'duration_limit']);
+const RECOVERABLE_FINAL_BOUNDARY_REASONS = new Set([
+  'hard_timeout',
+  'audio_limit',
+  'duration_limit',
+  'idle_timeout',
+]);
+const STT_LIFECYCLE_STOP_REASON = 'lifecycle_stop';
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const TRANSCRIPT_BOUNDARY_PUNCTUATION = /[\s,.;:!?，。；：！？、]/u;
 const TRANSCRIPT_BOUNDARY_PUNCTUATION_GLOBAL = /[\s,.;:!?，。；：！？、]/gu;
 const TRANSCRIPT_TERMINAL_PUNCTUATION = /[.!?。！？；;]$/u;
 const CUMULATIVE_SNAPSHOT_PREFIX_CHARACTERS = 3;
 
-function isDurationStopReason(reason) {
-  return DURATION_STOP_REASONS.has(String(reason || ''));
+function isHardDurationStopReason(reason) {
+  return HARD_DURATION_STOP_REASONS.has(String(reason || ''));
+}
+
+function isRecoverableFinalBoundaryReason(reason) {
+  return RECOVERABLE_FINAL_BOUNDARY_REASONS.has(String(reason || ''));
 }
 
 function scheduleFrame(callback) {
@@ -429,24 +440,21 @@ export class StreamingSTTSession {
     this.sawSpeechActivity = false;
     this.stopReason = null;
     this.finalizationTimer = null;
-    this.handleVisibilityChange = () => {
-      if (!isPageHidden()) return;
+    this.handleLifecycleEnd = () => {
       this.acceptingAudio = false;
       if (this.finalReceived) {
         this.pendingFinalFinish?.();
         return;
       }
-      if (this.activated) void this.stop();
+      if (this.activated) void this.stop(STT_LIFECYCLE_STOP_REASON);
       else this.cancel();
     };
+    this.handleVisibilityChange = () => {
+      if (!isPageHidden()) return;
+      this.handleLifecycleEnd();
+    };
     this.handlePageHide = () => {
-      this.acceptingAudio = false;
-      if (this.finalReceived) {
-        this.pendingFinalFinish?.();
-        return;
-      }
-      if (this.activated) void this.stop();
-      else this.cancel();
+      this.handleLifecycleEnd();
     };
     this.lifecycleListenersInstalled = false;
   }
@@ -537,12 +545,17 @@ export class StreamingSTTSession {
   }
 
   checkDurationClock() {
-    if (this.terminal || this.stopRequested || this.finalReceived || !this.durationDeadlineAt) return;
+    if (this.terminal || this.finalReceived || !this.durationDeadlineAt) return;
     const remainingMs = this.durationDeadlineAt - Date.now();
     if (this.hasReachedDurationDeadline()) {
-      this.handleDurationLimitDeadline();
+      if (this.stopRequested) {
+        this.markLifecycleBoundaryIfExpired();
+      } else {
+        this.handleDurationLimitDeadline();
+      }
       return;
     }
+    if (this.stopRequested) return;
     if (!this.durationWarningSent && remainingMs <= DURATION_WARNING_WINDOW_MS) {
       this.handleDurationWarning();
       return;
@@ -631,19 +644,44 @@ export class StreamingSTTSession {
 
   handleDurationLimitDeadline() {
     this.durationTimer = null;
-    if (this.terminal || this.stopRequested || this.finalReceived) return;
+    if (this.terminal || this.finalReceived) return;
+    if (this.stopRequested) {
+      this.markLifecycleBoundaryIfExpired();
+      return;
+    }
     this.beginDurationLimitStop({ stoppedAtNaturalBoundary: false });
   }
 
-  beginDurationLimitStop({ stoppedAtNaturalBoundary = false } = {}) {
-    if (this.terminal || this.stopRequested || this.finalReceived || this.durationLimitReached) return;
+  markLifecycleBoundaryIfExpired() {
+    if (
+      this.stopReason !== STT_LIFECYCLE_STOP_REASON
+      || !this.hasReachedDurationDeadline()
+    ) return false;
+    this.recordDurationBoundary({ stoppedAtNaturalBoundary: false, reason: 'hard_timeout' });
+    return true;
+  }
+
+  recordDurationBoundary({ stoppedAtNaturalBoundary = false, reason = 'duration_limit' } = {}) {
+    if (
+      this.terminal
+      || this.finalReceived
+      || this.durationLimitReached
+      || (this.stopRequested && reason === 'duration_limit')
+    ) return false;
     this.durationLimitReached = true;
+    this.stopReason = reason;
     this.clearDurationTimers();
     this.onDurationLimit({
       hadRecentInput: this.hasRecentSpeechActivity(),
       stoppedAtNaturalBoundary,
     });
-    void this.stop('duration_limit');
+    return true;
+  }
+
+  beginDurationLimitStop({ stoppedAtNaturalBoundary = false } = {}) {
+    if (this.recordDurationBoundary({ stoppedAtNaturalBoundary, reason: 'duration_limit' }) !== false) {
+      void this.stop('duration_limit');
+    }
   }
 
   applyDurationLimit(payload, fallbackMilliseconds = null) {
@@ -761,7 +799,7 @@ export class StreamingSTTSession {
     // interruption boundary from the browser's point of view, so never send
     // it to CatsCo.
     this.acceptingAudio = false;
-    if (this.activated) void this.stop();
+    if (this.activated) void this.stop(STT_LIFECYCLE_STOP_REASON);
     else this.cancel();
   }
 
@@ -846,17 +884,28 @@ export class StreamingSTTSession {
         this.publishPartial(this.transcript.updateDefinite(message.text));
         break;
       case 'final': {
-        // A throttled foreground timer may not run before the provider sends
-        // its terminal frame. Classify the local deadline first so the final
-        // transcript remains a recoverable duration segment.
-        this.checkDurationClock();
+        const previousStopReason = this.stopReason;
         if (message.stop_reason) {
           this.stopReason = message.stop_reason;
           if (
-            isDurationStopReason(message.stop_reason)
+            message.stop_reason === 'client_stop'
+            && (previousStopReason === STT_LIFECYCLE_STOP_REASON || previousStopReason === 'duration_limit')
           ) {
+            this.stopReason = previousStopReason;
+          }
+          if (isHardDurationStopReason(message.stop_reason)) {
             this.durationLimitReached = true;
           }
+        }
+        const shouldCheckLocalDeadline = !message.stop_reason
+          || message.stop_reason === STT_LIFECYCLE_STOP_REASON
+          || (message.stop_reason === 'client_stop'
+            && (previousStopReason === STT_LIFECYCLE_STOP_REASON || this.durationLimitReached));
+        if (shouldCheckLocalDeadline) {
+          // A throttled foreground timer may not run before the provider sends
+          // its terminal frame. Classify the local deadline when the server
+          // did not provide a more specific boundary reason.
+          this.checkDurationClock();
         }
         this.finishWithFinal(this.transcript.finalize(message.text));
         break;
@@ -939,8 +988,14 @@ export class StreamingSTTSession {
       // The provider may legitimately finish with no recognized text (for
       // example, after silence). Composer uses this callback to release its
       // session reference, while its caller already ignores an empty draft.
+      const boundaryReason = isRecoverableFinalBoundaryReason(this.stopReason)
+        ? this.stopReason
+        : null;
+      const finalReason = boundaryReason
+        ? (isHardDurationStopReason(boundaryReason) ? 'duration_limit' : boundaryReason)
+        : (this.durationLimitReached ? 'duration_limit' : (this.stopReason || 'complete'));
       this.onFinal(text, {
-        reason: this.durationLimitReached ? 'duration_limit' : (this.stopReason || 'complete'),
+        reason: finalReason,
       });
     };
     if (!needsPreviewPaint) {
@@ -965,8 +1020,9 @@ export class StreamingSTTSession {
     }, 250);
   }
 
-  sendControl(type) {
-    if (this.socket?.readyState === 1) this.socket.send(JSON.stringify({ type }));
+  sendControl(type, payload = null) {
+    if (this.socket?.readyState !== 1) return;
+    this.socket.send(JSON.stringify(payload ? { type, ...payload } : { type }));
   }
 
   normalizeRealtimeError(message) {
@@ -1010,7 +1066,12 @@ export class StreamingSTTSession {
   maybeSendStop() {
     if (!this.ready || !this.sendStopRequested || !this.captureStopped || this.stopSent || this.terminal) return;
     this.stopSent = true;
-    this.sendControl('stop');
+    const stopReason = this.durationLimitReached
+      ? 'duration_limit'
+      : this.stopReason === STT_LIFECYCLE_STOP_REASON
+        ? STT_LIFECYCLE_STOP_REASON
+        : null;
+    this.sendControl('stop', stopReason ? { stop_reason: stopReason } : null);
   }
 
   async stop(reason = 'user_stop') {
@@ -1056,14 +1117,24 @@ export class StreamingSTTSession {
 
   fail(error) {
     if (this.terminal || this.finalReceived) return;
-    const reachedClientBoundary = !this.stopRequested && this.hasReachedDurationDeadline();
+    const normalized = error instanceof Error ? error : new Error('语音识别失败');
+    const reportedStopReason = normalized.stopReason || '';
+    const lifecycleBoundaryAlreadyReached = reportedStopReason === STT_LIFECYCLE_STOP_REASON
+      && this.durationLimitReached;
+    const implicitClientStop = reportedStopReason === 'client_stop'
+      && (this.stopReason === STT_LIFECYCLE_STOP_REASON
+        || this.stopReason === 'duration_limit'
+        || this.durationLimitReached);
+    let serverStopReason = reportedStopReason;
+    if (lifecycleBoundaryAlreadyReached) serverStopReason = 'duration_limit';
+    else if (implicitClientStop) serverStopReason = this.stopReason;
+    const reachedServerBoundary = isHardDurationStopReason(serverStopReason);
+    const serverLifecycleStop = serverStopReason === STT_LIFECYCLE_STOP_REASON;
+    const reachedClientBoundary = this.hasReachedDurationDeadline()
+      && (!serverStopReason || serverLifecycleStop)
+      && (!this.stopRequested || this.stopReason === STT_LIFECYCLE_STOP_REASON);
     if (reachedClientBoundary) {
-      this.durationLimitReached = true;
-      this.stopReason = this.stopReason || 'hard_timeout';
-      this.onDurationLimit({
-        hadRecentInput: this.hasRecentSpeechActivity(),
-        stoppedAtNaturalBoundary: false,
-      });
+      this.recordDurationBoundary({ stoppedAtNaturalBoundary: false, reason: 'hard_timeout' });
     }
     const transcript = this.transcriptSnapshot();
     // Publish the last coalesced preview before tearing down the session. The
@@ -1073,12 +1144,14 @@ export class StreamingSTTSession {
     this.terminal = true;
     this.cleanup();
     this.setState('error');
-    const normalized = error instanceof Error ? error : new Error('语音识别失败');
-    const reachedServerBoundary = isDurationStopReason(normalized.stopReason);
+    const terminalBoundaryReached = reachedServerBoundary
+      || reachedClientBoundary
+      || (serverStopReason === STT_LIFECYCLE_STOP_REASON && this.durationLimitReached);
+    const errorReason = terminalBoundaryReached
+      ? 'duration_limit'
+      : serverStopReason || (this.durationLimitReached ? 'duration_limit' : (this.stopReason || 'error'));
     this.onError(normalized, transcript, {
-      reason: this.durationLimitReached || reachedServerBoundary
-        ? 'duration_limit'
-        : (this.stopReason || 'error'),
+      reason: errorReason,
     });
   }
 

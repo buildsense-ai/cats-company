@@ -462,6 +462,142 @@ func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestSTTHandlerKeepsExplicitStopReasonAfterAdvertisedDeadline(t *testing.T) {
+	provider := &fakeSTTProvider{}
+	handler := NewSTTHandler(STTConfig{
+		Enabled:          true,
+		Provider:         "fake",
+		TicketTTL:        time.Minute,
+		MaxDuration:      25 * time.Millisecond,
+		IdleTimeout:      time.Second,
+		FinalTimeout:     time.Second,
+		MaxConcurrent:    4,
+		HourlyAudioLimit: 24 * time.Minute,
+		DailyAudioLimit:  time.Hour,
+	}, provider)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/stt/sessions", authenticatedSTTHandler(handler.HandleSession, 10))
+	mux.HandleFunc("/api/stt/realtime", handler.HandleRealtime)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ticket := issueSTTTicket(t, server.URL)
+	conn, _, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/api/stt/realtime?ticket="+ticket,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider.mu.Lock()
+	stream := provider.sessions[0]
+	provider.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"stop"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stream.finished:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("explicit stop did not finish the provider stream")
+	}
+
+	stream.events <- STTEvent{Type: STTEventFinal, Text: "用户主动结束的内容"}
+	_, terminal, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(terminal, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["type"] != "final" {
+		t.Fatalf("terminal=%s", terminal)
+	}
+	if _, ok := payload["stop_reason"]; ok {
+		t.Fatalf("explicit stop was classified as a duration boundary: %s", terminal)
+	}
+}
+
+func TestSTTHandlerCarriesClientBoundaryStopReason(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		reason string
+	}{
+		{name: "duration", reason: sttStopReasonDurationLimit},
+		{name: "lifecycle", reason: sttStopReasonLifecycleStop},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &fakeSTTProvider{}
+			handler := NewSTTHandler(STTConfig{
+				Enabled:          true,
+				Provider:         "fake",
+				TicketTTL:        time.Minute,
+				MaxDuration:      time.Second,
+				IdleTimeout:      time.Second,
+				FinalTimeout:     time.Second,
+				MaxConcurrent:    4,
+				HourlyAudioLimit: 24 * time.Minute,
+				DailyAudioLimit:  time.Hour,
+			}, provider)
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/stt/sessions", authenticatedSTTHandler(handler.HandleSession, 11))
+			mux.HandleFunc("/api/stt/realtime", handler.HandleRealtime)
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			ticket := issueSTTTicket(t, server.URL)
+			conn, _, err := websocket.DefaultDialer.Dial(
+				"ws"+strings.TrimPrefix(server.URL, "http")+"/api/stt/realtime?ticket="+ticket,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if _, _, err := conn.ReadMessage(); err != nil {
+				t.Fatal(err)
+			}
+
+			provider.mu.Lock()
+			stream := provider.sessions[0]
+			provider.mu.Unlock()
+			command := []byte(`{"type":"stop","stop_reason":"` + test.reason + `"}`)
+			if err := conn.WriteMessage(websocket.TextMessage, command); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-stream.finished:
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("client boundary stop did not finish the provider stream")
+			}
+
+			stream.events <- STTEvent{Type: STTEventFinal, Text: "边界内容"}
+			_, terminal, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload struct {
+				Type       string `json:"type"`
+				StopReason string `json:"stop_reason"`
+			}
+			if err := json.Unmarshal(terminal, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Type != "final" || payload.StopReason != test.reason {
+				t.Fatalf("terminal=%s want stop_reason=%s", terminal, test.reason)
+			}
+		})
+	}
+}
+
 func TestSTTStopToFinalMillisecondsOnlyIncludesSuccessfulFinals(t *testing.T) {
 	stoppedAt := time.Unix(100, 0)
 	completedAt := stoppedAt.Add(275 * time.Millisecond)
@@ -473,10 +609,20 @@ func TestSTTStopToFinalMillisecondsOnlyIncludesSuccessfulFinals(t *testing.T) {
 	}
 }
 
-func TestSTTTerminalErrorPayloadCarriesDurationBoundary(t *testing.T) {
+func TestSTTTerminalErrorPayloadCarriesBoundaryReason(t *testing.T) {
 	payload := sttTerminalErrorPayload("provider_closed", "closed", sttStopReasonHardTimeout)
 	if got := payload["stop_reason"]; got != sttStopReasonHardTimeout {
 		t.Fatalf("duration stop reason=%v", got)
+	}
+
+	payload = sttTerminalErrorPayload("final_timeout", "timeout", sttStopReasonIdleTimeout)
+	if got := payload["stop_reason"]; got != sttStopReasonIdleTimeout {
+		t.Fatalf("idle boundary reason=%v", got)
+	}
+
+	payload = sttTerminalErrorPayload("final_timeout", "timeout", sttStopReasonLifecycleStop)
+	if got := payload["stop_reason"]; got != sttStopReasonLifecycleStop {
+		t.Fatalf("lifecycle stop reason=%v", got)
 	}
 
 	payload = sttTerminalErrorPayload("provider_closed", "closed", "client_stop")

@@ -275,6 +275,66 @@ describe('ChatComposer', () => {
       .toContain('已保留本段语音');
   });
 
+  it('shows a calm notice for a successfully finalized idle boundary', async () => {
+    let callbacks;
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onFinal('静音前的内容', { reason: 'idle_timeout' });
+    });
+
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('已保留本段语音');
+    expect(container.querySelector('.v3-composer-hint')?.classList.contains('is-error')).toBe(false);
+  });
+
+  it('keeps idle-boundary finalization failures in the error state', async () => {
+    let callbacks;
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('finalizing');
+      callbacks.onError(
+        new Error('语音识别结束超时，请重试'),
+        '静音前的内容',
+        { reason: 'idle_timeout' },
+      );
+    });
+
+    const hint = container.querySelector('.v3-composer-hint');
+    expect(hint?.textContent).toContain('语音识别结束超时，请重试');
+    expect(hint?.classList.contains('is-error')).toBe(true);
+  });
+
   it('allows another voice session immediately after a terminal recognition error', async () => {
     const sessions = [];
     const callbacks = [];

@@ -329,7 +329,7 @@ export default function ChatComposer({
         setVoiceState('idle');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
-        if (details.reason === 'duration_limit') {
+        if (details.reason === 'duration_limit' || details.reason === 'idle_timeout') {
           showVoiceDurationBoundaryNotice(Boolean(String(text || '').trim()));
         } else {
           setVoiceNotice('');
