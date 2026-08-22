@@ -108,6 +108,7 @@ function writeShell(bin, name, body) {
 
 function runScript(t, { env = {}, fakeState = {}, appVersions = {}, remoteVersions = {}, ctyunBody = FAKE_CTYUN } = {}) {
   const tmp = fs.mkdtempSync(path.join(fs.realpathSync(path.join(__dirname, "..")), "status-test-"));
+  fs.writeFileSync(path.join(tmp, "package.json"), '{"type":"module"}');
   if (t) t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const bin = path.join(tmp, "bin");
   fs.mkdirSync(bin, { recursive: true });

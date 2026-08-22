@@ -5,8 +5,8 @@
 # + bot 连接凭证到 /srv/catsco-agent/.env，并启用 catsco-agent.service。
 #
 # 用法：
-#   provision-worker.sh --name <tenant> --login-token <jwt> \
-#     --api-key <bot-key> [--bot-uid <uid>] [--user-uid <uid>] \
+#   provision-worker.sh --name <tenant> [--credential-file <0600-file>] \
+#     [--login-token <jwt>] [--api-key <bot-key>] [--bot-uid <uid>] [--user-uid <uid>] \
 #     [--user-name <n>] [--user-display <d>] [--image-id <id>] [--dry-run]
 #
 # 幂等：实例名 worker-<tenant> 已存在（running/active）则跳过并报告。
@@ -28,6 +28,7 @@ USER_DISPLAY=""
 IMAGE_ID=""
 BODY_ID=""
 INSTALLATION_ID=""
+CREDENTIAL_FILE=""
 DRY_RUN=0
 
 usage() {
@@ -37,6 +38,7 @@ usage() {
 while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="${2:-}"; shift 2 ;;
     --login-token) LOGIN_TOKEN="${2:-}"; shift 2 ;;
     --api-key) BOT_API_KEY="${2:-}"; shift 2 ;;
     --bot-uid) BOT_UID="${2:-}"; shift 2 ;;
@@ -51,6 +53,17 @@ while (($#)); do
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# Credentials supplied through a root-owned 0600 file never appear in the
+# process argv (/proc). The two-line format is deliberately tiny: line 1 is
+# the creator JWT and line 2 is the bot API key. Legacy argv flags remain
+# supported for operator scripts and backwards compatibility.
+if [[ -n "$CREDENTIAL_FILE" ]]; then
+  [[ -f "$CREDENTIAL_FILE" && ! -L "$CREDENTIAL_FILE" ]] || { echo "error: credential file is missing" >&2; exit 2; }
+  [[ "$(stat -c '%a' "$CREDENTIAL_FILE" 2>/dev/null || echo 000)" == "600" ]] || { echo "error: credential file must be mode 600" >&2; exit 2; }
+  read -r LOGIN_TOKEN < "$CREDENTIAL_FILE" || true
+  BOT_API_KEY="$(sed -n '2p' "$CREDENTIAL_FILE")"
+fi
 
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
@@ -92,7 +105,7 @@ SERVER_URL="${CATSCO_WORKER_SERVER_URL:-wss://app.catsco.cc/v0/channels}"
 
 # --- 校验 ---
 if [[ -z "$NAME" || -z "$LOGIN_TOKEN" || -z "$BOT_API_KEY" ]]; then
-  echo "error: --name, --login-token and --api-key are required" >&2
+  echo "error: --name and credentials (--credential-file or both --login-token/--api-key) are required" >&2
   usage >&2
   exit 2
 fi

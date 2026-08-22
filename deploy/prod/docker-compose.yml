@@ -156,7 +156,9 @@ services:
       CTYUN_WORKER_SUBNET_ID: "${CTYUN_WORKER_SUBNET_ID:-}"
       CTYUN_WORKER_SECURITY_GROUP_ID: "${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
       CTYUN_WORKER_STATE_ROOT: "${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
-      CATSCO_WORKER_ARTIFACT_BUCKET: "${CATSCO_WORKER_ARTIFACT_BUCKET:-catsco-worker-release}"
+      # Must be explicitly set to the dedicated worker artifact bucket; never
+      # fall back to the application release bucket.
+      CATSCO_WORKER_ARTIFACT_BUCKET: "${CATSCO_WORKER_ARTIFACT_BUCKET:-}"
       CATSCO_WORKER_ARTIFACT_PREFIX: "${CATSCO_WORKER_ARTIFACT_PREFIX:-update/worker}"
       CATSCO_WORKER_ARTIFACT_REGION: "${CATSCO_WORKER_ARTIFACT_REGION:-cn-guangzhou}"
       CATSCO_WORKER_ARTIFACT_ENDPOINT: "${CATSCO_WORKER_ARTIFACT_ENDPOINT:-https://tos-cn-guangzhou.volces.com}"

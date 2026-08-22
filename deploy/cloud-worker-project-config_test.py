@@ -18,7 +18,7 @@ class CloudWorkerProjectConfigTest(unittest.TestCase):
     def test_production_example_declares_separate_image_project(self):
         content = (ROOT / "deploy/prod/env.prod.example").read_text(encoding="utf-8")
         self.assertIn("CTYUN_WORKER_PROJECT_ID=0", content)
-        self.assertIn("CTYUN_IMAGE_PROJECT_ID=637cfbd046df4050a3544f687eb9fb55", content)
+        self.assertIn("CTYUN_IMAGE_PROJECT_ID=<bake-image-project-id>", content)
 
 
 if __name__ == "__main__":

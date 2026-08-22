@@ -42,7 +42,7 @@ test("list-worker-releases: emits only release commit markers", () => {
   const command = `export PATH="${toMsys(bin)}:$PATH"; exec "${toMsys(scriptPath)}"`;
   const result = spawnSync(bashPath(), ["-c", command], {
     encoding: "utf8",
-    env: { ...process.env, FAKE_TOS_LIST: listing },
+    env: { ...process.env, CATSCO_WORKER_ARTIFACT_BUCKET: "worker-private-test", FAKE_TOS_LIST: listing },
   });
 
   assert.equal(result.status, 0, result.stderr);

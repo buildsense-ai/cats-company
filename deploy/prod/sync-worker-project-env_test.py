@@ -23,7 +23,7 @@ spec.loader.exec_module(sync)
 
 class SyncWorkerProjectEnvTest(unittest.TestCase):
     def test_replaces_duplicates_and_keeps_projects_independent(self) -> None:
-        project = "637cfbd046df4050a3544f687eb9fb55"
+        project = "a" * 32
         rendered = sync.render(
             "KEEP=value\nCTYUN_WORKER_PROJECT_ID=0\nCTYUN_WORKER_PROJECT_ID=old\n",
             project,
@@ -40,7 +40,7 @@ class SyncWorkerProjectEnvTest(unittest.TestCase):
             sync.render("", "12211", "0")
 
     def test_update_is_atomic_and_preserves_mode(self) -> None:
-        project = "637cfbd046df4050a3544f687eb9fb55"
+        project = "a" * 32
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / "prod.env"
             env_file.write_text("CTYUN_WORKER_PROJECT_ID=0\n", encoding="utf-8")

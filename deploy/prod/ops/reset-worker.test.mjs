@@ -136,6 +136,7 @@ function writeCommand(bin, name, body) {
 
 function setupSandbox(state, injectEnv) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-reset-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   const bin = path.join(sandbox, "bin");
   fs.mkdirSync(bin);
   writeCommand(bin, "ctyun-cli", FAKE_CTYUN);
@@ -143,12 +144,9 @@ function setupSandbox(state, injectEnv) {
   writeCommand(bin, "scp", "process.exit(0);");
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
   // Fake image list (TSV contract: imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status)
-  writeCommand(bin, "list-worker-images.sh", `
-process.stdout.write(
-  "img-178\\tcatsco-worker-1-4-8-f3f1f3e6\\t1.4.8\\tf3f1f3e6\\t1750000000000\\tactive\\n" +
-  "img-177\\tcatsco-worker-1-4-7-abc12345\\t1.4.7\\tabc12345\\t1750000000000\\tactive\\n"
-);
-`);
+  const fakeImages = path.join(bin, "list-worker-images.sh");
+  fs.writeFileSync(fakeImages, "#!/usr/bin/env bash\nprintf 'img-178\\tcatsco-worker-1-4-8-f3f1f3e6\\t1.4.8\\tf3f1f3e6\\t1750000000000\\tactive\\nimg-177\\tcatsco-worker-1-4-7-abc12345\\t1.4.7\\tabc12345\\t1750000000000\\tactive\\n'\n");
+  fs.chmodSync(fakeImages, 0o755);
   const stateDir = path.join(sandbox, "state");
   fs.mkdirSync(stateDir, { recursive: true });
   if (injectEnv) {

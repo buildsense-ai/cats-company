@@ -5,12 +5,12 @@
 # 镜像重建并重新供给（provision-worker.sh）。worker 运行时数据
 # （/srv/catsco-agent）随实例销毁而清空；bot 记录在服务器侧保留。
 #
-# 注入凭证：优先命令行参数，缺省回退 provision 写入
+# 注入凭证：优先 0600 credential file，其次命令行参数，最后回退 provision 写入
 # $STATE_DIR/inject.env 的身份快照（同一 tenant 重建身份不变）。
 #
 # 用法：
 #   reset-worker.sh --name <tenant> [--version <v> | --image-id <id>] \
-#     [--login-token <jwt>] [--api-key <key>] [--bot-uid <uid>] \
+#     [--credential-file <0600-file>] [--login-token <jwt>] [--api-key <key>] [--bot-uid <uid>] \
 #     [--user-uid <uid>] [--user-name <n>] [--user-display <d>] [--dry-run]
 #
 # --version 指定 bake 镜像版本（从 list-worker-images.sh 解析对应 image id），
@@ -32,6 +32,7 @@ USER_NAME=""
 USER_DISPLAY=""
 BODY_ID=""
 INSTALLATION_ID=""
+CREDENTIAL_FILE=""
 DRY_RUN=0
 
 usage() {
@@ -41,6 +42,7 @@ usage() {
 while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
     --image-id) IMAGE_ID="${2:-}"; shift 2 ;;
     --login-token) LOGIN_TOKEN="${2:-}"; shift 2 ;;
@@ -56,6 +58,13 @@ while (($#)); do
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [[ -n "$CREDENTIAL_FILE" ]]; then
+  [[ -f "$CREDENTIAL_FILE" && ! -L "$CREDENTIAL_FILE" ]] || { echo "error: credential file is missing" >&2; exit 2; }
+  [[ "$(stat -c '%a' "$CREDENTIAL_FILE" 2>/dev/null || echo 000)" == "600" ]] || { echo "error: credential file must be mode 600" >&2; exit 2; }
+  read -r LOGIN_TOKEN < "$CREDENTIAL_FILE" || true
+  BOT_API_KEY="$(sed -n '2p' "$CREDENTIAL_FILE")"
+fi
 
 # --- 校验 ---
 if [[ -z "$NAME" ]]; then
@@ -121,7 +130,14 @@ else
 fi
 
 # --- 2. 从指定/最新镜像重建并重新供给 ---
-prov_args=(--name "$NAME" --login-token "$LOGIN_TOKEN" --api-key "$BOT_API_KEY")
+PROV_CREDENTIAL_FILE="$CREDENTIAL_FILE"
+if [[ -z "$PROV_CREDENTIAL_FILE" ]]; then
+  PROV_CREDENTIAL_FILE="$(mktemp "${TMPDIR:-/tmp}/catsco-worker-credentials.XXXXXX")"
+  chmod 600 "$PROV_CREDENTIAL_FILE"
+  printf '%s\n%s\n' "$LOGIN_TOKEN" "$BOT_API_KEY" > "$PROV_CREDENTIAL_FILE"
+  trap 'rm -f -- "$PROV_CREDENTIAL_FILE"' EXIT
+fi
+prov_args=(--name "$NAME" --credential-file "$PROV_CREDENTIAL_FILE")
 [[ -n "$IMAGE_ID" ]] && prov_args+=(--image-id "$IMAGE_ID")
 [[ -n "$BOT_UID" ]] && prov_args+=(--bot-uid "$BOT_UID")
 [[ -n "$USER_UID" ]] && prov_args+=(--user-uid "$USER_UID")
