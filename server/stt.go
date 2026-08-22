@@ -600,6 +600,17 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 			}
 			switch message.messageType {
 			case websocket.BinaryMessage:
+				// A browser can have audio frames queued while the event loop is
+				// delayed (especially when a PWA is backgrounded). Classify the
+				// elapsed boundary before forwarding a late frame so it cannot
+				// refresh the idle deadline or hide the duration stop reason.
+				markElapsedDurationBoundary()
+				if sttIsDurationStopReason(stopReason) {
+					if !finish() {
+						return
+					}
+					continue
+				}
 				if stopping || len(message.payload) == 0 || len(message.payload) > sttMaxBrowserFrameBytes {
 					continue
 				}
@@ -611,15 +622,23 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if err := upstream.SendAudio(message.payload); err != nil {
+					markElapsedDurationBoundary()
 					outcome = "error"
 					errorCode = "provider_send_failed"
-					_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_send_failed", "message": "语音数据发送失败"})
+					_ = h.writeSTTJSON(conn, sttTerminalErrorPayload("provider_send_failed", "语音数据发送失败", stopReason))
 					return
 				}
 				if firstAcceptedAt.IsZero() {
 					firstAcceptedAt = time.Now()
 				}
 				acceptedBytes += int64(len(message.payload))
+				markElapsedDurationBoundary()
+				if sttIsDurationStopReason(stopReason) {
+					if !finish() {
+						return
+					}
+					continue
+				}
 				if sttPCMHasVoice(message.payload) {
 					if !idleTimer.Stop() {
 						select {

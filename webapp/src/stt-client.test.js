@@ -1035,6 +1035,43 @@ describe('StreamingSTTSession', () => {
     }
   });
 
+  it('refreshes the warning when speech resumes after a quiet reminder', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const warnings = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-warning-refresh', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return { stop: vi.fn().mockResolvedValue(undefined) };
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationWarning: (payload) => warnings.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].hasRecentInput).toBe(false);
+
+      emitLevel(0.02);
+
+      expect(warnings).toHaveLength(2);
+      expect(warnings[1].hasRecentInput).toBe(true);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
   it('still stops a short session when the socket is not ready by its deadline', async () => {
     vi.useFakeTimers();
     let socket;
@@ -1201,6 +1238,46 @@ describe('StreamingSTTSession', () => {
       expect(notices).toHaveLength(1);
       expect(errors[0].details.reason).toBe('duration_limit');
       expect(errors[0].transcript).toBe('硬上限前的内容');
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('classifies a provider final that arrives after a throttled deadline as a duration boundary', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const finals = [];
+    const limits = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-late-final', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: '截止前的内容' });
+      window.clearTimeout(session.durationWarningTimer);
+      window.clearTimeout(session.durationTimer);
+      session.durationWarningTimer = null;
+      session.durationTimer = null;
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      socket.receive({ type: 'final', text: '截止前的内容。' });
+
+      expect(limits).toHaveLength(1);
+      expect(finals).toEqual([{
+        text: '截止前的内容。',
+        details: { reason: 'duration_limit' },
+      }]);
     } finally {
       session.cancel();
       vi.useRealTimers();

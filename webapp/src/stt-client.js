@@ -421,6 +421,7 @@ export class StreamingSTTSession {
     this.durationBoundaryTimer = null;
     this.durationDeadlineAt = null;
     this.durationWarningSent = false;
+    this.durationWarningInputState = null;
     this.durationBoundaryQuietSince = null;
     this.durationLimitReached = false;
     this.lastVoiceAt = null;
@@ -479,6 +480,7 @@ export class StreamingSTTSession {
     this.clearDurationTimers();
     this.durationDeadlineAt = Date.now() + maxMilliseconds;
     this.durationWarningSent = false;
+    this.durationWarningInputState = null;
     this.durationBoundaryQuietSince = null;
     this.durationLimitReached = previousDurationLimitReached;
     this.stopReason = previousDurationLimitReached
@@ -543,7 +545,20 @@ export class StreamingSTTSession {
     }
     if (!this.durationWarningSent && remainingMs <= DURATION_WARNING_WINDOW_MS) {
       this.handleDurationWarning();
+      return;
     }
+    if (this.durationWarningSent) this.emitDurationWarning(remainingMs);
+  }
+
+  emitDurationWarning(remainingMs = this.durationDeadlineAt - Date.now()) {
+    if (!this.durationWarningSent || !this.durationDeadlineAt) return;
+    const hasRecentInput = this.hasRecentSpeechActivity();
+    if (this.durationWarningInputState === hasRecentInput) return;
+    this.durationWarningInputState = hasRecentInput;
+    this.onDurationWarning({
+      remainingMs: Math.max(0, remainingMs),
+      hasRecentInput,
+    });
   }
 
   handleDurationWarning() {
@@ -567,10 +582,7 @@ export class StreamingSTTSession {
       return;
     }
     this.durationWarningSent = true;
-    this.onDurationWarning({
-      remainingMs,
-      hasRecentInput: this.hasRecentSpeechActivity(),
-    });
+    this.emitDurationWarning(remainingMs);
     this.scheduleDurationBoundaryCheck();
   }
 
@@ -595,6 +607,8 @@ export class StreamingSTTSession {
       this.handleDurationLimitDeadline();
       return;
     }
+
+    this.emitDurationWarning(this.durationDeadlineAt - now);
 
     if (this.hasRecentSpeechActivity(now)) {
       this.durationBoundaryQuietSince = null;
@@ -832,6 +846,10 @@ export class StreamingSTTSession {
         this.publishPartial(this.transcript.updateDefinite(message.text));
         break;
       case 'final': {
+        // A throttled foreground timer may not run before the provider sends
+        // its terminal frame. Classify the local deadline first so the final
+        // transcript remains a recoverable duration segment.
+        this.checkDurationClock();
         if (message.stop_reason) {
           this.stopReason = message.stop_reason;
           if (
