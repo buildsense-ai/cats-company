@@ -5,10 +5,22 @@ const MAX_BUFFERED_AUDIO_BYTES = 160_000;
 const MAX_PRE_ROLL_AUDIO_BYTES = 16_000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 300;
 const FINALIZATION_TIMEOUT_MS = 5_000;
+const DURATION_WARNING_WINDOW_MS = 10_000;
+const DURATION_ACTIVITY_WINDOW_MS = 1_500;
+const DURATION_QUIET_WINDOW_MS = 900;
+const DURATION_UNPUNCTUATED_QUIET_WINDOW_MS = 2_000;
+const DURATION_BOUNDARY_POLL_MS = 250;
+const STT_VOICE_RMS_THRESHOLD = 0.008;
+const DURATION_STOP_REASONS = new Set(['hard_timeout', 'audio_limit', 'idle_timeout']);
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const TRANSCRIPT_BOUNDARY_PUNCTUATION = /[\s,.;:!?，。；：！？、]/u;
 const TRANSCRIPT_BOUNDARY_PUNCTUATION_GLOBAL = /[\s,.;:!?，。；：！？、]/gu;
+const TRANSCRIPT_TERMINAL_PUNCTUATION = /[.!?。！？；;]$/u;
 const CUMULATIVE_SNAPSHOT_PREFIX_CHARACTERS = 3;
+
+function isDurationStopReason(reason) {
+  return DURATION_STOP_REASONS.has(String(reason || ''));
+}
 
 function scheduleFrame(callback) {
   if (typeof globalThis.requestAnimationFrame === 'function') {
@@ -371,6 +383,8 @@ export class StreamingSTTSession {
     this.onState = options.onState || (() => {});
     this.onPartial = options.onPartial || (() => {});
     this.onAudioLevel = options.onAudioLevel || (() => {});
+    this.onDurationWarning = options.onDurationWarning || (() => {});
+    this.onDurationLimit = options.onDurationLimit || (() => {});
     this.onFinal = options.onFinal || (() => {});
     this.onError = options.onError || (() => {});
     this.socket = null;
@@ -398,18 +412,38 @@ export class StreamingSTTSession {
     this.transcript = new StreamingTranscript();
     this.partialFrame = null;
     this.finalFrame = null;
+    this.finalFallbackTimer = null;
+    this.pendingFinalFinish = null;
     this.pendingPartial = '';
     this.lastPublishedPartial = '';
     this.durationTimer = null;
+    this.durationWarningTimer = null;
+    this.durationBoundaryTimer = null;
+    this.durationDeadlineAt = null;
+    this.durationWarningSent = false;
+    this.durationBoundaryQuietSince = null;
+    this.durationLimitReached = false;
+    this.lastVoiceAt = null;
+    this.lastTranscriptAt = null;
+    this.sawSpeechActivity = false;
+    this.stopReason = null;
     this.finalizationTimer = null;
     this.handleVisibilityChange = () => {
       if (!isPageHidden()) return;
       this.acceptingAudio = false;
+      if (this.finalReceived) {
+        this.pendingFinalFinish?.();
+        return;
+      }
       if (this.activated) void this.stop();
       else this.cancel();
     };
     this.handlePageHide = () => {
       this.acceptingAudio = false;
+      if (this.finalReceived) {
+        this.pendingFinalFinish?.();
+        return;
+      }
       if (this.activated) void this.stop();
       else this.cancel();
     };
@@ -439,8 +473,163 @@ export class StreamingSTTSession {
     const parsed = Number(milliseconds);
     if (!Number.isFinite(parsed)) return;
     const maxMilliseconds = Math.max(1, parsed);
-    if (this.durationTimer) window.clearTimeout(this.durationTimer);
-    this.durationTimer = window.setTimeout(() => void this.stop(), maxMilliseconds);
+    const previousDurationLimitReached = this.durationLimitReached;
+    const previousStopRequested = this.stopRequested;
+    const previousStopReason = this.stopReason;
+    this.clearDurationTimers();
+    this.durationDeadlineAt = Date.now() + maxMilliseconds;
+    this.durationWarningSent = false;
+    this.durationBoundaryQuietSince = null;
+    this.durationLimitReached = previousDurationLimitReached;
+    this.stopReason = previousDurationLimitReached
+      ? 'duration_limit'
+      : (previousStopRequested ? previousStopReason : null);
+
+    const warningDelay = Math.max(0, maxMilliseconds - DURATION_WARNING_WINDOW_MS);
+    this.durationWarningTimer = window.setTimeout(
+      () => this.handleDurationWarning(),
+      warningDelay,
+    );
+    this.durationTimer = window.setTimeout(
+      () => this.handleDurationLimitDeadline(),
+      maxMilliseconds,
+    );
+  }
+
+  clearDurationTimers() {
+    if (this.durationTimer !== null) window.clearTimeout(this.durationTimer);
+    if (this.durationWarningTimer !== null) window.clearTimeout(this.durationWarningTimer);
+    if (this.durationBoundaryTimer !== null) window.clearTimeout(this.durationBoundaryTimer);
+    this.durationTimer = null;
+    this.durationWarningTimer = null;
+    this.durationBoundaryTimer = null;
+  }
+
+  markVoiceActivity() {
+    const now = Date.now();
+    this.lastVoiceAt = now;
+    this.sawSpeechActivity = true;
+    return now;
+  }
+
+  markTranscriptActivity() {
+    this.lastTranscriptAt = Date.now();
+    this.sawSpeechActivity = true;
+  }
+
+  hasRecentSpeechActivity(now = Date.now()) {
+    const lastActivityAt = Math.max(
+      this.lastVoiceAt ?? Number.NEGATIVE_INFINITY,
+      this.lastTranscriptAt ?? Number.NEGATIVE_INFINITY,
+    );
+    return Number.isFinite(lastActivityAt)
+      && now - lastActivityAt <= DURATION_ACTIVITY_WINDOW_MS;
+  }
+
+  hasReachedDurationDeadline(now = Date.now()) {
+    return this.durationDeadlineAt !== null && now >= this.durationDeadlineAt;
+  }
+
+  hasTranscriptBoundary() {
+    return TRANSCRIPT_TERMINAL_PUNCTUATION.test(this.transcript.preview().trim());
+  }
+
+  checkDurationClock() {
+    if (this.terminal || this.stopRequested || this.finalReceived || !this.durationDeadlineAt) return;
+    const remainingMs = this.durationDeadlineAt - Date.now();
+    if (this.hasReachedDurationDeadline()) {
+      this.handleDurationLimitDeadline();
+      return;
+    }
+    if (!this.durationWarningSent && remainingMs <= DURATION_WARNING_WINDOW_MS) {
+      this.handleDurationWarning();
+    }
+  }
+
+  handleDurationWarning() {
+    if (this.durationWarningTimer !== null) window.clearTimeout(this.durationWarningTimer);
+    this.durationWarningTimer = null;
+    if (
+      this.terminal
+      || this.stopRequested
+      || this.finalReceived
+      || !this.durationDeadlineAt
+      || this.durationWarningSent
+    ) return;
+    const remainingMs = this.durationDeadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      this.handleDurationLimitDeadline();
+      return;
+    }
+    if (!this.ready) {
+      const retryDelay = Math.min(250, remainingMs);
+      this.durationWarningTimer = window.setTimeout(() => this.handleDurationWarning(), retryDelay);
+      return;
+    }
+    this.durationWarningSent = true;
+    this.onDurationWarning({
+      remainingMs,
+      hasRecentInput: this.hasRecentSpeechActivity(),
+    });
+    this.scheduleDurationBoundaryCheck();
+  }
+
+  scheduleDurationBoundaryCheck() {
+    if (
+      this.durationBoundaryTimer !== null
+      || this.terminal
+      || this.stopRequested
+      || this.finalReceived
+      || !this.durationWarningSent
+    ) return;
+    this.durationBoundaryTimer = window.setTimeout(() => {
+      this.durationBoundaryTimer = null;
+      this.checkDurationBoundary();
+    }, DURATION_BOUNDARY_POLL_MS);
+  }
+
+  checkDurationBoundary() {
+    if (this.terminal || this.stopRequested || this.finalReceived || !this.durationDeadlineAt) return;
+    const now = Date.now();
+    if (this.hasReachedDurationDeadline(now)) {
+      this.handleDurationLimitDeadline();
+      return;
+    }
+
+    if (this.hasRecentSpeechActivity(now)) {
+      this.durationBoundaryQuietSince = null;
+    } else if (!this.sawSpeechActivity) {
+      this.durationBoundaryQuietSince = null;
+    } else if (this.durationBoundaryQuietSince === null) {
+      this.durationBoundaryQuietSince = now;
+    } else if (
+      now - this.durationBoundaryQuietSince >= (
+        this.hasTranscriptBoundary()
+          ? DURATION_QUIET_WINDOW_MS
+          : DURATION_UNPUNCTUATED_QUIET_WINDOW_MS
+      )
+    ) {
+      this.beginDurationLimitStop({ stoppedAtNaturalBoundary: true });
+      return;
+    }
+    this.scheduleDurationBoundaryCheck();
+  }
+
+  handleDurationLimitDeadline() {
+    this.durationTimer = null;
+    if (this.terminal || this.stopRequested || this.finalReceived) return;
+    this.beginDurationLimitStop({ stoppedAtNaturalBoundary: false });
+  }
+
+  beginDurationLimitStop({ stoppedAtNaturalBoundary = false } = {}) {
+    if (this.terminal || this.stopRequested || this.finalReceived || this.durationLimitReached) return;
+    this.durationLimitReached = true;
+    this.clearDurationTimers();
+    this.onDurationLimit({
+      hadRecentInput: this.hasRecentSpeechActivity(),
+      stoppedAtNaturalBoundary,
+    });
+    void this.stop('duration_limit');
   }
 
   applyDurationLimit(payload, fallbackMilliseconds = null) {
@@ -601,6 +790,8 @@ export class StreamingSTTSession {
 
   publishAudioLevel(rms) {
     if (this.terminal) return;
+    if (Number(rms) >= STT_VOICE_RMS_THRESHOLD) this.markVoiceActivity();
+    this.checkDurationClock();
     this.onAudioLevel(normalizeAudioLevel(rms));
   }
 
@@ -625,17 +816,30 @@ export class StreamingSTTSession {
       case 'ready':
         this.ready = true;
         this.applyDurationLimit(message);
+        this.checkDurationClock();
         this.syncReadyState();
         this.drainPreconnectFrames();
         this.maybeSendStop();
         break;
       case 'partial':
+        if (message.text) this.markTranscriptActivity();
+        this.checkDurationClock();
         this.publishPartial(this.transcript.updatePartial(message.text));
         break;
       case 'definite':
+        if (message.text) this.markTranscriptActivity();
+        this.checkDurationClock();
         this.publishPartial(this.transcript.updateDefinite(message.text));
         break;
       case 'final': {
+        if (message.stop_reason) {
+          this.stopReason = message.stop_reason;
+          if (
+            isDurationStopReason(message.stop_reason)
+          ) {
+            this.durationLimitReached = true;
+          }
+        }
         this.finishWithFinal(this.transcript.finalize(message.text));
         break;
       }
@@ -706,24 +910,41 @@ export class StreamingSTTSession {
     void this.stopCapture();
     const finish = () => {
       if (this.terminal) return;
+      this.pendingFinalFinish = null;
+      if (this.finalFallbackTimer !== null) window.clearTimeout(this.finalFallbackTimer);
+      this.finalFallbackTimer = null;
+      cancelFrame(this.finalFrame);
+      this.finalFrame = null;
       this.terminal = true;
       this.cleanup();
       this.setState('complete');
       // The provider may legitimately finish with no recognized text (for
       // example, after silence). Composer uses this callback to release its
       // session reference, while its caller already ignores an empty draft.
-      this.onFinal(text);
+      this.onFinal(text, {
+        reason: this.durationLimitReached ? 'duration_limit' : (this.stopReason || 'complete'),
+      });
     };
     if (!needsPreviewPaint) {
       finish();
       return;
     }
+    this.pendingFinalFinish = finish;
+    if (isPageHidden()) {
+      finish();
+      return;
+    }
     this.finalFrame = scheduleFrame(() => {
       this.finalFrame = scheduleFrame(() => {
-        this.finalFrame = null;
         finish();
       });
     });
+    this.finalFallbackTimer = window.setTimeout(() => {
+      this.finalFallbackTimer = null;
+      cancelFrame(this.finalFrame);
+      this.finalFrame = null;
+      finish();
+    }, 250);
   }
 
   sendControl(type) {
@@ -731,18 +952,28 @@ export class StreamingSTTSession {
   }
 
   normalizeRealtimeError(message) {
+    let messageText;
     switch (message?.code) {
       case 'quota_exhausted':
-        return new Error('语音输入额度已用完，请稍后再试');
+        messageText = '语音输入额度已用完，请稍后再试';
+        break;
       case 'session_active':
-        return new Error('已有语音输入正在进行');
+        messageText = '已有语音输入正在进行';
+        break;
       case 'capacity_full':
-        return new Error('语音输入服务繁忙，请稍后再试');
+        messageText = '语音输入服务繁忙，请稍后再试';
+        break;
       case 'final_timeout':
-        return new Error('语音识别结束超时，请重试');
+        messageText = '语音识别结束超时，请重试';
+        break;
       default:
-        return new Error(message?.message || '语音识别失败');
+        messageText = message?.message || '语音识别失败';
+        break;
     }
+    const error = new Error(messageText);
+    error.code = message?.code || '';
+    error.stopReason = message?.stop_reason || '';
+    return error;
   }
 
   startFinalizationTimer() {
@@ -764,7 +995,8 @@ export class StreamingSTTSession {
     this.sendControl('stop');
   }
 
-  async stop() {
+  async stop(reason = 'user_stop') {
+    if (reason && this.stopReason === null) this.stopReason = reason;
     if (this.terminal || this.state === 'complete') return;
     if (this.stopRequested) return this.stopPromise;
     this.stopRequested = true;
@@ -806,6 +1038,15 @@ export class StreamingSTTSession {
 
   fail(error) {
     if (this.terminal || this.finalReceived) return;
+    const reachedClientBoundary = !this.stopRequested && this.hasReachedDurationDeadline();
+    if (reachedClientBoundary) {
+      this.durationLimitReached = true;
+      this.stopReason = this.stopReason || 'hard_timeout';
+      this.onDurationLimit({
+        hadRecentInput: this.hasRecentSpeechActivity(),
+        stoppedAtNaturalBoundary: false,
+      });
+    }
     const transcript = this.transcriptSnapshot();
     // Publish the last coalesced preview before tearing down the session. The
     // composer receives the snapshot as a second argument as well, because a
@@ -815,15 +1056,22 @@ export class StreamingSTTSession {
     this.cleanup();
     this.setState('error');
     const normalized = error instanceof Error ? error : new Error('语音识别失败');
-    this.onError(normalized, transcript);
+    const reachedServerBoundary = isDurationStopReason(normalized.stopReason);
+    this.onError(normalized, transcript, {
+      reason: this.durationLimitReached || reachedServerBoundary
+        ? 'duration_limit'
+        : (this.stopReason || 'error'),
+    });
   }
 
   cleanup() {
     this.clearPartialFrame();
     cancelFrame(this.finalFrame);
     this.finalFrame = null;
-    if (this.durationTimer) window.clearTimeout(this.durationTimer);
-    this.durationTimer = null;
+    if (this.finalFallbackTimer !== null) window.clearTimeout(this.finalFallbackTimer);
+    this.finalFallbackTimer = null;
+    this.pendingFinalFinish = null;
+    this.clearDurationTimers();
     this.clearFinalizationTimer();
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     globalThis.removeEventListener?.('pagehide', this.handlePageHide);

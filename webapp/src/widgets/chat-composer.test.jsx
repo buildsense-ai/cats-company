@@ -233,6 +233,48 @@ describe('ChatComposer', () => {
 	}));
   });
 
+  it('uses a calm limit notice and confirms the draft was preserved', async () => {
+    let callbacks;
+    const onVoiceFinal = vi.fn();
+    const voiceSession = {
+      prepare: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal,
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return voiceSession;
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onDurationWarning({ remainingMs: 10_000, hasRecentInput: true });
+    });
+
+    const hint = container.querySelector('.v3-composer-hint');
+    expect(hint.textContent).toContain('当前内容会自动保留');
+    expect(hint.classList.contains('is-error')).toBe(false);
+
+    await act(async () => {
+      callbacks.onDurationLimit({ hadRecentInput: true, stoppedAtNaturalBoundary: false });
+      callbacks.onFinal('已保存的长语音', { reason: 'duration_limit' });
+    });
+
+    expect(onVoiceFinal).toHaveBeenCalledWith(
+      '已保存的长语音',
+      expect.objectContaining({ baseValue: '' }),
+    );
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('已保留本段语音');
+  });
+
   it('allows another voice session immediately after a terminal recognition error', async () => {
     const sessions = [];
     const callbacks = [];

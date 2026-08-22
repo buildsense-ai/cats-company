@@ -450,7 +450,14 @@ func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 	}
 	stream.events <- STTEvent{Type: STTEventFinal}
 	_, terminal, err := conn.ReadMessage()
-	if err != nil || !strings.Contains(string(terminal), `"type":"final"`) {
+	var terminalPayload struct {
+		Type       string `json:"type"`
+		StopReason string `json:"stop_reason"`
+	}
+	if err == nil {
+		err = json.Unmarshal(terminal, &terminalPayload)
+	}
+	if err != nil || terminalPayload.Type != "final" || terminalPayload.StopReason != sttStopReasonIdleTimeout {
 		t.Fatalf("terminal=%s err=%v", terminal, err)
 	}
 }
@@ -463,6 +470,18 @@ func TestSTTStopToFinalMillisecondsOnlyIncludesSuccessfulFinals(t *testing.T) {
 	}
 	if got := sttStopToFinalMilliseconds("error", stoppedAt, completedAt); got != -1 {
 		t.Fatalf("failed stop-to-final=%d", got)
+	}
+}
+
+func TestSTTTerminalErrorPayloadCarriesDurationBoundary(t *testing.T) {
+	payload := sttTerminalErrorPayload("provider_closed", "closed", sttStopReasonHardTimeout)
+	if got := payload["stop_reason"]; got != sttStopReasonHardTimeout {
+		t.Fatalf("duration stop reason=%v", got)
+	}
+
+	payload = sttTerminalErrorPayload("provider_closed", "closed", "client_stop")
+	if _, ok := payload["stop_reason"]; ok {
+		t.Fatalf("unexpected client stop reason in generic payload: %#v", payload)
 	}
 }
 

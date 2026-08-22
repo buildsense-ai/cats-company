@@ -10,6 +10,10 @@ const VOICE_HOLD_DELAY_MS = 280;
 const VOICE_HOLD_CANCEL_DISTANCE = 72;
 const VOICE_WAVE_RAMP_MS = 2200;
 
+function formatVoiceDurationBoundaryNotice(hasText) {
+  return hasText ? '已保留本段语音，可继续录音' : '本段语音已结束，可继续录音';
+}
+
 export function voiceWavePhaseSpeed(elapsedMs) {
   const progress = Math.min(1, Math.max(0, elapsedMs / VOICE_WAVE_RAMP_MS));
   const eased = progress * progress * (3 - (2 * progress));
@@ -139,6 +143,8 @@ export default function ChatComposer({
   const [voiceState, setVoiceState] = useState('idle');
   const [voicePartial, setVoicePartial] = useState('');
   const [voiceError, setVoiceError] = useState('');
+  const [voiceNotice, setVoiceNotice] = useState('');
+  const [voiceNoticeTone, setVoiceNoticeTone] = useState('notice');
   const voiceSessionRef = useRef(null);
   const voiceInsertionRef = useRef(null);
   const voiceLatestTextRef = useRef('');
@@ -153,6 +159,12 @@ export default function ChatComposer({
   const [voiceHoldCancel, setVoiceHoldCancel] = useState(false);
   const showAgentPicker = agentPickerVisible && (typeof onAgentToggle === 'function' || Boolean(agentMenu));
   const anyMenuOpen = attachmentOpen || (showAgentPicker && agentOpen);
+
+  const showVoiceDurationBoundaryNotice = (hasText) => {
+    setVoiceError('');
+    setVoiceNotice(formatVoiceDurationBoundaryNotice(hasText));
+    setVoiceNoticeTone('success');
+  };
 
   useEffect(() => {
     if (!anyMenuOpen || !onCloseMenus) return undefined;
@@ -243,6 +255,8 @@ export default function ChatComposer({
     setVoiceState('idle');
     setVoicePartial('');
     setVoiceError('');
+    setVoiceNotice('');
+    setVoiceNoticeTone('notice');
   }, [clearVoiceHoldTimer, voiceSessionKey]);
 
   const voiceActive = ['starting', 'connecting', 'recording', 'finalizing'].includes(voiceState);
@@ -259,6 +273,8 @@ export default function ChatComposer({
       return null;
     }
     setVoiceError('');
+    setVoiceNotice('');
+    setVoiceNoticeTone('notice');
     setVoicePartial('');
     voiceLatestTextRef.current = '';
     const textarea = textareaRef?.current || inputRef.current;
@@ -280,20 +296,50 @@ export default function ChatComposer({
         if (voiceSessionRef.current !== session) return;
         voiceWaveLevelRef.current = level;
       },
-      onFinal: (text) => {
+      onDurationWarning: ({ hasRecentInput, remainingMs } = {}) => {
+        if (voiceSessionRef.current !== session) return;
+        const remainingSeconds = Math.max(1, Math.ceil(Number(remainingMs ?? 10_000) / 1000));
+        setVoiceError('');
+        setVoiceNotice(
+          hasRecentInput
+            ? `本段语音还剩约 ${remainingSeconds} 秒，当前内容会自动保留`
+            : '本段语音即将结束，已识别内容会自动保留',
+        );
+        setVoiceNoticeTone('notice');
+      },
+      onDurationLimit: () => {
+        if (voiceSessionRef.current !== session) return;
+        setVoiceError('');
+        setVoiceNotice('正在整理本段语音…');
+        setVoiceNoticeTone('notice');
+      },
+      onFinal: (text, details = {}) => {
         if (voiceSessionRef.current !== session) return;
         const insertion = voiceInsertionRef.current;
+        const holdWasTriggered = voiceHoldGestureRef.current?.triggered;
         voiceSessionRef.current = null;
         voiceInsertionRef.current = null;
         voiceLatestTextRef.current = '';
+        clearVoiceHoldTimer();
+        voiceHoldGestureRef.current = null;
         voiceHoldTouchStartsRef.current = [];
+        if (holdWasTriggered) suppressVoiceClickRef.current = true;
+        setVoiceHoldActive(false);
+        setVoiceHoldCancel(false);
         setVoiceState('idle');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
+        if (details.reason === 'duration_limit') {
+          showVoiceDurationBoundaryNotice(Boolean(String(text || '').trim()));
+        } else {
+          setVoiceNotice('');
+          setVoiceNoticeTone('notice');
+        }
         onVoiceFinal?.(text, insertion);
       },
-      onError: (error, transcript) => {
+      onError: (error, transcript, details = {}) => {
         if (voiceSessionRef.current !== session) return;
+        const isDurationBoundary = details.reason === 'duration_limit';
         const insertion = voiceInsertionRef.current;
         const recoveredText = [
           transcript,
@@ -310,10 +356,16 @@ export default function ChatComposer({
         if (gesture?.triggered) suppressVoiceClickRef.current = true;
         setVoiceHoldActive(false);
         setVoiceHoldCancel(false);
-        setVoiceState('error');
+        setVoiceState(isDurationBoundary ? 'idle' : 'error');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
-        setVoiceError(error?.message || '语音识别失败');
+        if (isDurationBoundary) {
+          showVoiceDurationBoundaryNotice(Boolean(recoveredText));
+        } else {
+          setVoiceNotice('');
+          setVoiceNoticeTone('notice');
+          setVoiceError(error?.message || '语音识别失败');
+        }
         // Commit the last usable snapshot after releasing the session. This
         // keeps the composer recoverable even if the parent synchronously
         // renders a new draft or starts another voice attempt from the error
@@ -357,6 +409,8 @@ export default function ChatComposer({
     session?.cancel();
     setVoiceState('idle');
     setVoicePartial('');
+    setVoiceNotice('');
+    setVoiceNoticeTone('notice');
     voiceWaveLevelRef.current = 0;
   };
 
@@ -368,7 +422,10 @@ export default function ChatComposer({
   if (voiceState === 'starting' || voiceState === 'connecting') voiceStatusText = '正在连接语音输入…';
   if (voiceState === 'recording') voiceStatusText = '正在听…';
   if (voiceState === 'finalizing') voiceStatusText = '正在整理文字…';
-  if (voiceState === 'error') voiceStatusText = voiceError;
+  if (voiceError) voiceStatusText = voiceError;
+  else if (voiceNotice) voiceStatusText = voiceNotice;
+  const voiceFeedbackText = voiceError || voiceNotice;
+  const voiceFeedbackTone = voiceError ? 'is-error' : (voiceNotice ? `is-${voiceNoticeTone}` : '');
   const insertion = voiceInsertionRef.current;
   const showVoicePreview = voiceActive && insertion;
   const displayedValue = showVoicePreview
@@ -635,6 +692,7 @@ export default function ChatComposer({
             readOnly={showVoicePreview || textareaProps.readOnly}
             onChange={(event) => {
               if (voiceState === 'error') setVoiceError('');
+              if (voiceNotice) setVoiceNotice('');
               resizeInput(event.currentTarget);
               onChange?.(event);
             }}
@@ -702,8 +760,8 @@ export default function ChatComposer({
           </button>
         </div>
       </div>
-      <div className={`v3-composer-hint${voiceState === 'error' ? ' is-error' : ''}`}>
-        {voiceState === 'error' ? voiceError : CHAT_COMPOSER_HINT}
+      <div className={`v3-composer-hint${voiceFeedbackTone ? ` ${voiceFeedbackTone}` : ''}`}>
+        {voiceFeedbackText || CHAT_COMPOSER_HINT}
       </div>
       {voiceHoldActive && (
         <div
@@ -715,6 +773,11 @@ export default function ChatComposer({
                 ? '松开取消输入'
                 : (voicePartial || (voiceState === 'starting' || voiceState === 'connecting' ? '正在连接…' : '正在听…'))}
             </div>
+            {!voiceHoldCancel && voiceNotice && (
+              <div className="v3-voice-hold-limit-notice" aria-hidden="true">
+                {voiceNotice}
+              </div>
+            )}
             <div className="v3-voice-hold-instruction">
               {voiceHoldCancel ? '下滑继续录音' : '上滑取消'}
             </div>

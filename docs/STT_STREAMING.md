@@ -99,6 +99,27 @@ submission or server-side transcript persistence. It covers provider errors,
 WebSocket disconnects, and finalization timeouts, including the browser/PWA
 background lifecycle where the normal `final` event may not arrive.
 
+Ten seconds before the advertised session limit, the browser checks recent
+speech activity from the PCM meter and transcript events. It shows a quiet
+warning while keeping the microphone open. If the speaker has already gone
+quiet, the client waits for a short natural boundary and finishes the segment
+there. A transcript that ends with sentence punctuation can close after a
+shorter quiet period; an uncertain or unpunctuated preview uses a more
+conservative silence window. If speech continues, it keeps recording through
+the warning and stops only at the hard limit. This avoids cutting a sentence at
+an arbitrary warning point while still respecting the server's maximum
+duration. The hard-limit path is presented as a recoverable segment boundary,
+not as a lost recording. Audio activity and transcript events also recover a
+warning if a foreground timer fires late, and short quota-reduced limits show
+the warning immediately after the socket is ready.
+
+When the server has to enforce that boundary while the browser timer is
+throttled (a common PWA background behavior), all terminal provider/final
+errors carry a duration stop reason. If the transport closes without a
+terminal payload after the advertised deadline, the browser uses its local
+deadline clock as a final fallback. The composer can therefore use the same
+non-error copy and preserve the latest transcript snapshot.
+
 With `enable_nonstream` enabled for the Doubao 2.0 provider, a response can
 mark an utterance as `definite`. Its complete `result.text` is then forwarded
 as one `definite` snapshot. The browser replaces its previous confirmed
@@ -139,6 +160,9 @@ message history.
   duplicating an already stable prefix.
 - A finalization timeout, provider error, or WebSocket close preserves the
   latest recognized snapshot in the composer draft.
+- A delayed duration timer, a server duration stop reason, and a hidden-page
+  final with a pending preview all preserve the snapshot and release the
+  composer session.
 - An explicit user cancellation still discards the preview and does not insert
   a draft.
 

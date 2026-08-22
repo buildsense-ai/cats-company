@@ -3810,6 +3810,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-composer-hint.is-error {
   color: var(--cc-danger);
 }
+.v3-composer-hint.is-notice {
+  color: var(--cc-warning-text);
+}
+.v3-composer-hint.is-success {
+  color: var(--cc-success-text);
+}
 
 .v3-voice-hold-overlay {
   position: fixed;
@@ -3851,6 +3857,14 @@ html[data-theme="liquid"] .catsco-brand-mark {
   color: var(--cc-text-secondary);
   font-size: 13px;
   line-height: 20px;
+}
+
+.v3-voice-hold-limit-notice {
+  max-width: 100%;
+  color: var(--cc-warning-text);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
 }
 
 .v3-voice-hold-wave {
@@ -4899,6 +4913,12 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 
   .v3-composer-hint.is-error {
+    display: block;
+    margin-top: 4px;
+  }
+
+  .v3-composer-hint.is-notice,
+  .v3-composer-hint.is-success {
     display: block;
     margin-top: 4px;
   }
