@@ -272,6 +272,41 @@ describe('ChatComposer', () => {
     expect(sessions[1].start).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the latest recognized text in the draft when recognition times out', async () => {
+    let callbacks;
+    const onVoiceFinal = vi.fn();
+    const voiceSession = {
+      prepare: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      value: '已有草稿：',
+      onVoiceFinal,
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return voiceSession;
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onPartial('补充的长语音');
+      callbacks.onError(new Error('语音识别结束超时，请重试'), '补充的长语音');
+    });
+
+    expect(onVoiceFinal).toHaveBeenCalledWith(
+      '补充的长语音',
+      expect.objectContaining({ baseValue: '已有草稿：' }),
+    );
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('语音识别结束超时，请重试');
+  });
+
   it('begins microphone pre-roll on touch down before the long-hold threshold', async () => {
     vi.useFakeTimers();
     const voiceSession = {

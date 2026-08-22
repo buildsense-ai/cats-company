@@ -933,6 +933,163 @@ describe('StreamingSTTSession', () => {
     }
   });
 
+  it('returns the latest transcript snapshot when finalization times out', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-timeout-snapshot', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript) => errors.push({ error, transcript }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'partial', text: '已经识别的长语音内容' });
+      await session.stop();
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(session.state).toBe('error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error.message).toBe('语音识别结束超时，请重试');
+      expect(errors[0].transcript).toBe('已经识别的长语音内容');
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers a coalesced partial when the provider fails before the next paint', async () => {
+    const animationFrames = installAnimationFrameStub();
+    let socket;
+    const partials = [];
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-provider-error', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onPartial: (text) => partials.push(text),
+      onError: (error, transcript) => errors.push({ error, transcript }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'partial', text: '尚未绘制但不能丢失的内容' });
+      expect(animationFrames.size).toBe(1);
+
+      socket.receive({ type: 'error', code: 'provider_send_failed' });
+
+      expect(session.state).toBe('error');
+      expect(partials).toEqual(['尚未绘制但不能丢失的内容']);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].transcript).toBe('尚未绘制但不能丢失的内容');
+    } finally {
+      session.cancel();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('recovers the latest snapshot when the websocket disconnects', async () => {
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-provider-close', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript) => errors.push({ error, transcript }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'definite', text: '断开前已经稳定的内容' });
+      socket.close();
+
+      expect(session.state).toBe('error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error.message).toBe('语音识别连接已断开');
+      expect(errors[0].transcript).toBe('断开前已经稳定的内容');
+    } finally {
+      session.cancel();
+    }
+  });
+
+  it('ignores messages that arrive after a terminal error', async () => {
+    let socket;
+    const partials = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-terminal-message', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onPartial: (text) => partials.push(text),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'error', code: 'provider_send_failed' });
+      socket.receive({ type: 'partial', text: 'late text must be ignored' });
+
+      expect(partials).toEqual([]);
+      expect(session.state).toBe('error');
+    } finally {
+      session.cancel();
+    }
+  });
+
+  it('keeps the transcript when a hidden PWA stops and finalization times out', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-pwa-timeout', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript) => errors.push({ error, transcript }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'partial', text: 'PWA 切到后台前的完整内容' });
+
+      setDocumentVisibility('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(session.state).toBe('error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].transcript).toBe('PWA 切到后台前的完整内容');
+    } finally {
+      session.cancel();
+      setDocumentVisibility('visible');
+      vi.useRealTimers();
+    }
+  });
+
   it('maps structured websocket admission errors to actionable messages', async () => {
     let socket;
     const errors = [];

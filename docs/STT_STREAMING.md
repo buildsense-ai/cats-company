@@ -82,21 +82,30 @@ current page visibility before accepting or forwarding any PCM. No PCM sampled
 after the page becomes hidden or the audio context is suspended may be sent to
 CatsCo.
 
-Partial transcripts are presentation data only. The browser uses a latest-wins
-animation-frame update, so it performs at most one visible update per rendered
-frame without imposing an arbitrary 80 ms delay. If a final result arrives
-while a newer partial is pending, the client must publish that partial first.
-The composer must give that published partial an opportunity to render before
-clearing it for the final transcript; state batching must not make the newest
-live transcription unobservable. While a desktop composer preview exceeds its
-height cap, it follows the tail so new speech remains visible.
+Partial transcripts are presentation data until the session reaches a normal
+`final`. The browser uses a latest-wins animation-frame update, so it performs
+at most one visible update per rendered frame without imposing an arbitrary 80
+ms delay. If a final result arrives while a newer partial is pending, the client
+must publish that partial first. The composer must give that published partial
+an opportunity to render before clearing it for the final transcript; state
+batching must not make the newest live transcription unobservable. While a
+desktop composer preview exceeds its height cap, it follows the tail so new
+speech remains visible.
+
+If a session terminates with an error after any text has been recognized, the
+browser flushes the latest transcript snapshot into the composer draft before
+showing the error. This is a local, recoverable draft insertion, not a message
+submission or server-side transcript persistence. It covers provider errors,
+WebSocket disconnects, and finalization timeouts, including the browser/PWA
+background lifecycle where the normal `final` event may not arrive.
 
 With `enable_nonstream` enabled for the Doubao 2.0 provider, a response can
 mark an utterance as `definite`. Its complete `result.text` is then forwarded
 as one `definite` snapshot. The browser replaces its previous confirmed
 snapshot with that text and merges a later mutable `partial` tail for display.
-It is not a session final, and only `final` inserts text into the composer
-draft.
+It is not a session final. During a successful session, only `final` inserts
+text into the composer draft; the terminal-error recovery path above is the
+exception.
 
 Doubao can also revise punctuation or wording in a later cumulative snapshot.
 The browser replaces a snapshot that has a material common prefix with the
@@ -104,8 +113,11 @@ stable preview, rather than appending it. A clearly separate next utterance is
 still joined at a safe boundary, so short Chinese segment transitions do not
 lose their first character.
 
-The final transcript remains the only transcript inserted into the composer
-draft or persisted by later message submission.
+The normal final transcript remains the only successful transcript event. A
+recovered snapshot may also be inserted into the composer draft after a
+terminal error, so a user can review or continue it instead of losing already
+recognized speech. Only text the user subsequently submits is persisted in
+message history.
 
 ### Required browser regression coverage
 
@@ -125,6 +137,10 @@ draft or persisted by later message submission.
   snapshot, without ending the session.
 - A revised cumulative Doubao snapshot replaces the live preview without
   duplicating an already stable prefix.
+- A finalization timeout, provider error, or WebSocket close preserves the
+  latest recognized snapshot in the composer draft.
+- An explicit user cancellation still discards the preview and does not insert
+  a draft.
 
 ## Limits
 

@@ -141,6 +141,7 @@ export default function ChatComposer({
   const [voiceError, setVoiceError] = useState('');
   const voiceSessionRef = useRef(null);
   const voiceInsertionRef = useRef(null);
+  const voiceLatestTextRef = useRef('');
   const voiceTranscriptRef = useRef(null);
   const voiceHoldTimerRef = useRef(null);
   const voiceHoldGestureRef = useRef(null);
@@ -225,12 +226,14 @@ export default function ChatComposer({
     clearVoiceHoldTimer();
     voiceSessionRef.current?.cancel();
     voiceSessionRef.current = null;
+    voiceLatestTextRef.current = '';
   }, [clearVoiceHoldTimer]);
 
   useEffect(() => {
     voiceSessionRef.current?.cancel();
     voiceSessionRef.current = null;
     voiceInsertionRef.current = null;
+    voiceLatestTextRef.current = '';
     clearVoiceHoldTimer();
     voiceHoldGestureRef.current = null;
     voiceHoldTouchStartsRef.current = [];
@@ -257,6 +260,7 @@ export default function ChatComposer({
     }
     setVoiceError('');
     setVoicePartial('');
+    voiceLatestTextRef.current = '';
     const textarea = textareaRef?.current || inputRef.current;
     const baseValue = textarea ? textarea.value : String(value || '');
     const start = textarea ? textarea.selectionStart : baseValue.length;
@@ -268,7 +272,9 @@ export default function ChatComposer({
         if (voiceSessionRef.current === session) setVoiceState(state);
       },
       onPartial: (text) => {
-        if (voiceSessionRef.current === session) setVoicePartial(text);
+        if (voiceSessionRef.current !== session) return;
+        voiceLatestTextRef.current = String(text || '');
+        setVoicePartial(text);
       },
       onAudioLevel: (level) => {
         if (voiceSessionRef.current !== session) return;
@@ -279,16 +285,24 @@ export default function ChatComposer({
         const insertion = voiceInsertionRef.current;
         voiceSessionRef.current = null;
         voiceInsertionRef.current = null;
+        voiceLatestTextRef.current = '';
         voiceHoldTouchStartsRef.current = [];
         setVoiceState('idle');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
         onVoiceFinal?.(text, insertion);
       },
-      onError: (error) => {
+      onError: (error, transcript) => {
         if (voiceSessionRef.current !== session) return;
+        const insertion = voiceInsertionRef.current;
+        const recoveredText = [
+          transcript,
+          voiceLatestTextRef.current,
+          voicePartial,
+        ].map((candidate) => String(candidate || '').trim()).find(Boolean) || '';
         voiceSessionRef.current = null;
         voiceInsertionRef.current = null;
+        voiceLatestTextRef.current = '';
         const gesture = voiceHoldGestureRef.current;
         clearVoiceHoldTimer();
         voiceHoldGestureRef.current = null;
@@ -299,7 +313,12 @@ export default function ChatComposer({
         setVoiceState('error');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
-        setVoiceError(error.message || '语音识别失败');
+        setVoiceError(error?.message || '语音识别失败');
+        // Commit the last usable snapshot after releasing the session. This
+        // keeps the composer recoverable even if the parent synchronously
+        // renders a new draft or starts another voice attempt from the error
+        // state.
+        if (recoveredText) onVoiceFinal?.(recoveredText, insertion);
       },
     });
     voiceSessionRef.current = session;
@@ -333,6 +352,7 @@ export default function ChatComposer({
     const session = voiceSessionRef.current;
     voiceSessionRef.current = null;
     voiceInsertionRef.current = null;
+    voiceLatestTextRef.current = '';
     voiceHoldTouchStartsRef.current = [];
     session?.cancel();
     setVoiceState('idle');

@@ -614,6 +614,7 @@ export class StreamingSTTSession {
   }
 
   handleMessage(raw) {
+    if (this.terminal || this.finalReceived) return;
     let message;
     try {
       message = JSON.parse(raw);
@@ -676,6 +677,22 @@ export class StreamingSTTSession {
   clearPartialFrame() {
     cancelFrame(this.partialFrame);
     this.partialFrame = null;
+  }
+
+  transcriptSnapshot() {
+    // The transcript model is updated before a partial is coalesced for
+    // painting. Keep the coalesced values as a defensive fallback for custom
+    // transports and for a final frame that races with teardown.
+    const candidates = [
+      this.transcript.preview(),
+      this.pendingPartial,
+      this.lastPublishedPartial,
+    ];
+    for (const candidate of candidates) {
+      const text = String(candidate || '').trim();
+      if (text) return text;
+    }
+    return '';
   }
 
   finishWithFinal(text) {
@@ -789,10 +806,16 @@ export class StreamingSTTSession {
 
   fail(error) {
     if (this.terminal || this.finalReceived) return;
+    const transcript = this.transcriptSnapshot();
+    // Publish the last coalesced preview before tearing down the session. The
+    // composer receives the snapshot as a second argument as well, because a
+    // React state update from onPartial may still be batched with onError.
+    this.flushPartial();
     this.terminal = true;
     this.cleanup();
     this.setState('error');
-    this.onError(error instanceof Error ? error : new Error('语音识别失败'));
+    const normalized = error instanceof Error ? error : new Error('语音识别失败');
+    this.onError(normalized, transcript);
   }
 
   cleanup() {
