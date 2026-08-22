@@ -61,6 +61,7 @@ done
 
 if [[ -n "$CREDENTIAL_FILE" ]]; then
   [[ -f "$CREDENTIAL_FILE" && ! -L "$CREDENTIAL_FILE" ]] || { echo "error: credential file is missing" >&2; exit 2; }
+  [[ "$(stat -c '%a' "$CREDENTIAL_FILE" 2>/dev/null || echo 000)" == "600" ]] || { echo "error: credential file must be mode 600" >&2; exit 2; }
   read -r LOGIN_TOKEN < "$CREDENTIAL_FILE" || true
   BOT_API_KEY="$(sed -n '2p' "$CREDENTIAL_FILE")"
 fi
