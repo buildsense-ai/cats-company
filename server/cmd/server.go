@@ -590,6 +590,15 @@ func main() {
 	commercialNotifyIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "commercial_alipay_notify_ip", Limit: 3000, Window: time.Minute, Burst: 500,
 	})
+	cloudWorkerCreateUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "cloud_worker_create_user", Limit: 3, Window: 10 * time.Minute, Burst: 1,
+	})
+	cloudWorkerReadUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "cloud_worker_read_user", Limit: 120, Window: time.Minute, Burst: 10,
+	})
+	cloudWorkerActionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "cloud_worker_action_user", Limit: 20, Window: 10 * time.Minute, Burst: 4,
+	})
 
 	// HTTP routes
 	mux := http.NewServeMux()
@@ -711,9 +720,9 @@ func main() {
 	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
-	mux.HandleFunc("GET /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleList))
-	mux.HandleFunc("POST /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleCreate))
-	mux.HandleFunc("/api/cloud-workers/", jwtAuthWithDB(cloudWorkerHandler.HandleSub))
+	mux.HandleFunc("GET /api/cloud-workers", chainHTTP(cloudWorkerHandler.HandleList, jwtAuthWithDB, cloudWorkerReadUserLimit))
+	mux.HandleFunc("POST /api/cloud-workers", chainHTTP(cloudWorkerHandler.HandleCreate, jwtAuthWithDB, cloudWorkerCreateUserLimit))
+	mux.HandleFunc("/api/cloud-workers/", chainHTTP(cloudWorkerHandler.HandleSub, jwtAuthWithDB, cloudWorkerActionUserLimit))
 	mux.HandleFunc("/api/desktop-connect/session", jwtAuthWithDB(desktopConnectHandler.HandleCreateSession))
 	mux.HandleFunc("/api/desktop-connect/exchange", desktopConnectHandler.HandleExchange)
 	mux.HandleFunc("/api/desktop-connect/status", desktopConnectHandler.HandleStatus)

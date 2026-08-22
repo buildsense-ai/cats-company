@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -92,16 +93,19 @@ type CloudWorkerHandler struct {
 }
 
 const (
-	cloudWorkerStatusSnapshotTTL   = 10 * time.Second
-	cloudWorkerStatusRetryDelay    = 15 * time.Second
-	cloudWorkerStatusMaxTrustAge   = 2 * time.Minute
-	cloudWorkerImageSnapshotTTL    = time.Minute
-	cloudWorkerImageRetryDelay     = 15 * time.Second
-	cloudWorkerImageMaxTrustAge    = 10 * time.Minute
-	cloudWorkerReleaseSnapshotTTL  = time.Minute
-	cloudWorkerReleaseRetryDelay   = 15 * time.Second
-	cloudWorkerReleaseMaxTrustAge  = 10 * time.Minute
-	cloudWorkerStatusProbeTimeout  = 20 * time.Second
+	cloudWorkerStatusSnapshotTTL  = 10 * time.Second
+	cloudWorkerStatusRetryDelay   = 15 * time.Second
+	cloudWorkerStatusMaxTrustAge  = 2 * time.Minute
+	cloudWorkerImageSnapshotTTL   = time.Minute
+	cloudWorkerImageRetryDelay    = 15 * time.Second
+	cloudWorkerImageMaxTrustAge   = 10 * time.Minute
+	cloudWorkerReleaseSnapshotTTL = time.Minute
+	cloudWorkerReleaseRetryDelay  = 15 * time.Second
+	cloudWorkerReleaseMaxTrustAge = 10 * time.Minute
+	// Provider status checks may need one or more paginated ctyun calls plus a
+	// bounded SSH version probe. Keep this longer than the script's per-call
+	// timeout so a valid provider response is not discarded by the control plane.
+	cloudWorkerStatusProbeTimeout  = 2 * time.Minute
 	cloudWorkerImageProbeTimeout   = 30 * time.Second
 	cloudWorkerReleaseProbeTimeout = 30 * time.Second
 )
@@ -659,6 +663,33 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	}
 	defer h.opMu.Unlock()
 
+	// Parse and validate the request before reserving a paid credit. Invalid
+	// requests must never make a user's entitlement appear consumed/reserved.
+	if r.Body == nil {
+		r.Body = http.NoBody
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var req BotRegisterRequest
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	var extra interface{}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	// Constrain the username so the derived tenant name stays safe in URL
+	// paths and script argv (no '/', '..', whitespace, or shell metachars).
+	if !workerUsernameRe.MatchString(req.Username) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid username: only [a-z0-9_-] allowed, 2-64 chars",
+			"code":  "cloud_worker_invalid_username",
+		})
+		return
+	}
+
 	staticTotal := h.quota[uid]
 	_, creditAvailable := h.creditInfo(uid)
 	if staticTotal <= 0 && creditAvailable <= 0 {
@@ -692,21 +723,6 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation quota exhausted",
 			"code":  "cloud_worker_quota_exhausted",
-		})
-		return
-	}
-
-	var req BotRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-		return
-	}
-	// Constrain the username so the derived tenant name stays safe in URL
-	// paths and script argv (no '/', '..', whitespace, or shell metachars).
-	if !workerUsernameRe.MatchString(req.Username) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "invalid username: only [a-z0-9_-] allowed, 2-64 chars",
-			"code":  "cloud_worker_invalid_username",
 		})
 		return
 	}
@@ -844,6 +860,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // It is deliberately best-effort and idempotent; a failed destroy remains
 // visible as delete_failed for operator retry and never silently disappears.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
+	started := time.Now()
 	store, ok := h.credits.(interface {
 		ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error)
 		MarkCloudWorkerLifecyclePending(int64, time.Time) error
@@ -858,29 +875,48 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 		log.Printf("[cloud-worker] lifecycle sweep list failed: %v", err)
 		return
 	}
+	if len(items) == 0 {
+		return
+	}
+	markedPending, claimedCount, deleted, failed := 0, 0, 0, 0
 	for _, item := range items {
 		if item.State == "active" {
 			if err := store.MarkCloudWorkerLifecyclePending(item.ID, item.DeleteAfter); err != nil {
 				log.Printf("[cloud-worker] lifecycle %s archive failed: %v", item.TenantName, err)
+				failed++
+			} else {
+				markedPending++
 			}
 			continue
 		}
-		claimed, err := store.ClaimCloudWorkerLifecycleDeletion(item.ID)
-		if err != nil || !claimed {
+		claimOK, err := store.ClaimCloudWorkerLifecycleDeletion(item.ID)
+		if err != nil || !claimOK {
+			if err != nil {
+				failed++
+			}
 			continue
 		}
+		claimedCount++
 		if _, err := h.runScript(h.destroyScript, "--name", item.TenantName); err != nil {
 			log.Printf("[cloud-worker] lifecycle destroy %s failed: %v", item.TenantName, err)
 			_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, truncateWorkerOutput(err.Error()))
+			failed++
 			continue
 		}
 		if err := h.db.DeleteBot(item.WorkerUID); err != nil {
 			log.Printf("[cloud-worker] lifecycle delete bot %d failed: %v", item.WorkerUID, err)
 			_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, err.Error())
+			failed++
 			continue
 		}
-		_ = store.MarkCloudWorkerLifecycleDeleted(item.ID, "")
+		if err := store.MarkCloudWorkerLifecycleDeleted(item.ID, ""); err != nil {
+			log.Printf("[cloud-worker] lifecycle mark deleted %s failed: %v", item.TenantName, err)
+			failed++
+			continue
+		}
+		deleted++
 	}
+	log.Printf("[cloud-worker] lifecycle sweep scanned=%d pending=%d claimed=%d deleted=%d failed=%d duration=%s", len(items), markedPending, claimedCount, deleted, failed, time.Since(started).Round(time.Millisecond))
 }
 
 // HandleRollback handles POST /api/cloud-workers/{name}/rollback — swap Part A
