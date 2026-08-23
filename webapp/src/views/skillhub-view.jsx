@@ -330,6 +330,38 @@ export function normalizeViewerSkills(response) {
     public: skill?.public ?? skill?.is_public ?? false,
   })).filter((skill) => skill.skillId);
 }
+
+export function normalizeSkillVersionHistory(response, { currentVersion = '', privateReference = false } = {}) {
+  const values = Array.isArray(response) ? response : (response?.versions || []);
+  const exactCurrent = String(response?.currentVersion || currentVersion || '').trim();
+  return {
+    versions: values.map((item) => {
+      const version = String(item?.version || item?.latestVersion || item?.latest_version || '').trim();
+      const revisionNumber = Number(item?.revisionNumber || item?.revision_number || 0);
+      const authorValue = item?.author;
+      const author = String(
+        (authorValue && typeof authorValue === 'object' ? authorValue.name : authorValue)
+        || item?.publisher
+        || item?.lastChangedBy
+        || item?.last_changed_by
+        || '',
+      ).trim();
+      return {
+        source: String(item?.source || 'skillhub').trim().toLowerCase(),
+        skillId: String(item?.skillId || item?.skill_id || '').trim(),
+        version,
+        revisionNumber: Number.isSafeInteger(revisionNumber) && revisionNumber > 0 ? revisionNumber : 0,
+        displayName: String(item?.displayName || item?.display_name || item?.name || '').trim(),
+        author,
+        lastChangedAt: String(item?.lastChangedAt || item?.last_changed_at || item?.publishedAt || item?.published_at || '').trim(),
+        changeSource: String(item?.changeSource || item?.change_source || (privateReference ? '' : 'published')).trim(),
+        current: item?.current === true || Boolean(version && exactCurrent && version === exactCurrent),
+        privateReference,
+      };
+    }).filter((item) => item.version),
+    nextBeforeRevisionNumber: Number(response?.nextBeforeRevisionNumber || response?.next_before_revision_number || 0),
+  };
+}
 export function normalizeLocalSkills(response) {
   const values = Array.isArray(response) ? response : (response?.skills || []);
   return values.map((skill) => ({
@@ -1462,6 +1494,28 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     }
   };
 
+  const loadSkillHistory = useCallback(async (historyBotUID, skill, { beforeRevisionNumber = 0 } = {}) => {
+    const botUID = String(historyBotUID || '').trim();
+    const skillID = String(skill?.skillId || '').trim();
+    if (!botUID || !skillID || skill?.localOnly) return { versions: [], nextBeforeRevisionNumber: 0 };
+    const privateReference = isPrivateSkillHubReference(skillID);
+    if (privateReference) {
+      const response = await api.getAgentSkillVersions(botUID, skillID, {
+        limit: 20,
+        beforeRevision: beforeRevisionNumber,
+      });
+      return normalizeSkillVersionHistory(response, {
+        currentVersion: skill?.version,
+        privateReference: true,
+      });
+    }
+    const response = await api.getSkillHubVersions(skillID);
+    return normalizeSkillVersionHistory(response, {
+      currentVersion: skill?.version,
+      privateReference: false,
+    });
+  }, []);
+
   return <SkillHubContent
     actionNotice={actionNotice}
     activeSection={activeSection}
@@ -1494,6 +1548,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     onCopyLocalPath={copyLocalSkillsPath}
     librarySkills={librarySkills}
     onInstallSkill={installLibrarySkill}
+    onLoadSkillHistory={loadSkillHistory}
     onQueryChange={setQuery}
     onRefreshDefinition={() => loadDefinition()}
     onRefreshLocal={refreshLocalWorkspace}

@@ -11,6 +11,7 @@ const expectedGoTests = [
   'TestHandleListMyBotsIncludesFriendBotsReadOnly',
   'TestBotDefinitionViewerSkillsRespectVisibilityAndRedactDefinition',
   'TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData',
+  'TestBotDefinitionViewerSkillHistoryIsReadOnlyScopedAndMarksCurrent',
   'TestBotDefinitionSkillsUseUnifiedRevisionAndCanonicalOrder',
   'TestBotDefinitionSkillsRejectStaleRevisionAndInvalidRefs',
   'TestBotDefinitionSkillsOwnerAndRuntimeScope',
@@ -19,6 +20,7 @@ const expectedGoTests = [
   'TestSetBotSkillsVisibility',
   'TestSetBotSkillsVisibilityRejectsInvalidValueAndNonOwner',
   'TestSkillHubPrivateMetadataUsesBotCredentialsAndReturnsOnlyRequestedNames',
+  'TestSkillHubPrivateHistoryUsesBotCredentialsAndSanitizesVersions',
   'TestSkillHubProxyForwardsCatalogueQuery',
   'TestSkillHubThinToolRPCAuthorization',
 ];
