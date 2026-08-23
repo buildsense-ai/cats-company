@@ -953,4 +953,31 @@ describe('StreamingSTTSession', () => {
     expect(session.state).toBe('error');
     expect(errors).toEqual(['语音输入额度已用完，请稍后再试']);
   });
+
+  it.each([502, 503, 504])('reports gateway status copy when session admission returns HTTP %i', async (status) => {
+    const onError = vi.fn();
+    const fetchStub = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      json: vi.fn().mockResolvedValue({ error: '后端暂时无法载入' }),
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    const session = new StreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn() }),
+      onError,
+    });
+
+    try {
+      await session.start();
+
+      expect(fetchStub).toHaveBeenCalledWith('/api/stt/sessions', expect.objectContaining({ method: 'POST' }));
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+        message: '服务暂时不可用，请稍后重试',
+        status,
+        data: { error: '后端暂时无法载入' },
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

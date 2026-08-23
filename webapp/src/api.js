@@ -9,8 +9,8 @@ import {
   isCurrentAuthSession,
   isTokenExpired,
   request,
+  responseErrorMessage,
   setToken as setSessionToken,
-  statusMessage,
 } from './auth-session';
 
 export {
@@ -166,7 +166,7 @@ async function localRequest(method, path, body, options = {}) {
       data = {};
     }
     if (!response.ok) {
-      const error = new Error(data.error || statusMessage(response.status));
+      const error = new Error(responseErrorMessage(response.status, data.error));
       error.status = response.status;
       error.data = data;
       throw error;
@@ -262,16 +262,16 @@ async function readUploadResponse(response, path) {
       const error = new Error(
         response.ok
           ? 'Upload failed: invalid server response'
-          : `Upload failed with HTTP ${response.status}`,
+          : responseErrorMessage(response.status, `Upload failed with HTTP ${response.status}`),
       );
       error.status = response.status;
       throw error;
     }
   }
   if (!response.ok) {
-    const message = data.code === UPLOAD_INCOMPLETE_CODE
+    const message = response.status < 500 && data.code === UPLOAD_INCOMPLETE_CODE
       ? '上传过程中断，请重新选择该文件后重试。'
-      : (data.error || `Upload failed with HTTP ${response.status}`);
+      : responseErrorMessage(response.status, data.error || `Upload failed with HTTP ${response.status}`);
     const error = new Error(message);
     error.code = data.code || (response.status === 413 ? UPLOAD_TOO_LARGE_CODE : 'upload_failed');
     error.status = response.status;
@@ -670,8 +670,18 @@ export const api = {
       },
       body: JSON.stringify({ user_id: userId }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Request failed');
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (cause) {
+      if (res.ok) throw cause;
+    }
+    if (!res.ok) {
+      const error = new Error(responseErrorMessage(res.status, data.error || 'Request failed'));
+      error.status = res.status;
+      error.data = data;
+      throw error;
+    }
     return data;
   },
   uploadFile: async (file, type = 'file') => {

@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, Mes
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
+import { responseErrorMessage } from '../auth-session';
 import { canDragChatAttachment, clearChatAttachmentDrag, writeChatAttachmentDrag } from '../chat-attachment-drag';
 import {
   hasPlainTextTableLikeBlock,
@@ -2584,7 +2585,7 @@ export function FilePreviewPanel({
       setLoadingText(true);
       try {
         const res = await fetch(fetchableMediaURL(url));
-        if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+        if (!res.ok) throw new Error(responseErrorMessage(res.status, `HTTP Error ${res.status}`));
         if (isSpreadsheet) {
           const contentLength = Number(res.headers?.get?.('Content-Length') || res.headers?.get?.('content-length') || 0);
           if (contentLength > SPREADSHEET_PREVIEW_MAX_BYTES) {

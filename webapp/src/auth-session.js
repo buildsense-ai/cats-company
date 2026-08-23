@@ -163,6 +163,10 @@ export function statusMessage(status) {
   return '请求失败，请稍后重试';
 }
 
+export function responseErrorMessage(status, detail) {
+  return Number(status) >= 500 ? statusMessage(status) : (detail || statusMessage(status));
+}
+
 export async function request(method, path, body, options = {}) {
   const { signal, timeoutMs = 0 } = options;
   const headers = { 'Content-Type': 'application/json' };
@@ -202,7 +206,11 @@ export async function request(method, path, body, options = {}) {
       data = {};
     }
     if (!res.ok) {
-      const error = new Error(data.error || statusMessage(res.status));
+      // A 5xx response establishes that the requested service is unavailable
+      // or failed, regardless of any implementation detail it returns in the
+      // JSON body. Preserve that detail in error.data for diagnostics, but do
+      // not make it the default user-facing diagnosis.
+      const error = new Error(responseErrorMessage(res.status, data.error));
       error.status = res.status;
       error.data = data;
       throw error;

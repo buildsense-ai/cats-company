@@ -8,6 +8,7 @@ import {
 } from '../api';
 import {
   getPwaUpdateServiceWorker,
+  hasPwaRefreshPresenter,
   registerPwaServiceWorker,
   subscribeToPwaRefresh,
 } from '../pwa-registration';
@@ -57,9 +58,10 @@ export default function PwaController({
 
   useEffect(() => {
     const unsubscribe = subscribeToPwaRefresh(() => {
-      // Activate transport fixes immediately. Otherwise the new WebApp can
-      // keep running behind an older worker that still clones POST bodies.
+      // Activate transport fixes immediately unless the workspace failure
+      // screen is mounted and can present its explicit recovery action.
       Promise.resolve().then(() => {
+        if (hasPwaRefreshPresenter()) return;
         const updateServiceWorker = updateServiceWorkerRef.current || getPwaUpdateServiceWorker();
         if (updateServiceWorker) updateServiceWorker(true);
         else setNeedRefresh(true);

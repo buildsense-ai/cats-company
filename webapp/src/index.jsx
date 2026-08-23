@@ -12,7 +12,12 @@ import {
   setToken,
 } from './auth-session';
 import { FeedbackProvider } from './components/feedback-system';
-import { registerPwaServiceWorker } from './pwa-registration';
+import {
+  getPwaUpdateServiceWorker,
+  isPwaRefreshPending,
+  registerPwaServiceWorker,
+  subscribeToPwaRefresh,
+} from './pwa-registration';
 import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
 import { readStorageValue } from './utils/storage-access';
@@ -68,12 +73,74 @@ export function isWorkspaceChunkLoadError(error) {
   return WORKSPACE_CHUNK_ERROR_PATTERN.test(String(error?.message || error || ''));
 }
 
+const WORKSPACE_LOAD_FAILURE_KIND = Object.freeze({
+  OFFLINE: 'offline',
+  UPDATE_AVAILABLE: 'update_available',
+  UNAVAILABLE: 'unavailable',
+});
+
+export function workspaceLoadFailureState({
+  online = globalThis.navigator?.onLine !== false,
+  updateAvailable = false,
+} = {}) {
+  if (updateAvailable) {
+    return {
+      kind: WORKSPACE_LOAD_FAILURE_KIND.UPDATE_AVAILABLE,
+      message: '检测到新版本，立即更新以继续使用工作台。',
+      retryLabel: '立即更新',
+    };
+  }
+  if (online === false) {
+    return {
+      kind: WORKSPACE_LOAD_FAILURE_KIND.OFFLINE,
+      message: '当前无网络连接，连接网络后再试。',
+      retryLabel: '重新载入',
+    };
+  }
+  return {
+    kind: WORKSPACE_LOAD_FAILURE_KIND.UNAVAILABLE,
+    message: '工作台资源暂时无法加载，请重新载入。',
+    retryLabel: '重新载入',
+  };
+}
+
 export function WorkspaceLoadFailure({ onRetry = () => window.location.reload() }) {
+  const [online, setOnline] = useState(() => globalThis.navigator?.onLine !== false);
+  const [updateAvailable, setUpdateAvailable] = useState(isPwaRefreshPending);
+  const state = workspaceLoadFailureState({ online, updateAvailable });
+
+  useLayoutEffect(() => {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    const unsubscribe = subscribeToPwaRefresh(
+      () => setUpdateAvailable(true),
+      { presentsRefresh: true },
+    );
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      unsubscribe();
+    };
+  }, []);
+
+  const retry = () => {
+    if (state.kind === WORKSPACE_LOAD_FAILURE_KIND.UPDATE_AVAILABLE) {
+      const updateServiceWorker = getPwaUpdateServiceWorker();
+      if (updateServiceWorker) {
+        updateServiceWorker(true);
+        return;
+      }
+    }
+    onRetry();
+  };
+
   return (
     <main className="cc-workspace-loading cc-workspace-loading-error">
-      <p role="alert">工作台资源无法加载。页面版本可能已更新，也可能是网络中断。</p>
-      <button type="button" className="oc-auth-btn cc-workspace-loading-retry" onClick={onRetry}>
-        重新载入
+      <p role="alert">{state.message}</p>
+      <button type="button" className="oc-auth-btn cc-workspace-loading-retry" onClick={retry}>
+        {state.retryLabel}
       </button>
     </main>
   );

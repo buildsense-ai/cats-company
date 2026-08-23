@@ -15,7 +15,7 @@ import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
-import { describeResourceLoadError } from '../utils/request-error';
+import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
 import {
   artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
@@ -1381,7 +1381,7 @@ export default function MessagesView({
       }
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
-        if (e?.code !== 'REQUEST_ABORTED') {
+        if (e?.code !== REQUEST_ERROR_CODE.ABORTED) {
           setHistoryError(describeResourceLoadError(e, '聊天记录', {
             hasPreviousResult: Boolean(cachedHistory),
             loadedAt: cachedHistory?.loadedAt,
@@ -1484,8 +1484,8 @@ export default function MessagesView({
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
-        if (e?.code !== 'REQUEST_ABORTED') {
-          setOlderHistoryError(e?.code === 'REQUEST_TIMEOUT'
+        if (e?.code !== REQUEST_ERROR_CODE.ABORTED) {
+          setOlderHistoryError(e?.code === REQUEST_ERROR_CODE.TIMEOUT
             ? '更早的聊天记录加载超时，请重试。'
             : '更早的聊天记录加载失败。');
         }

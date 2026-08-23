@@ -1,5 +1,5 @@
 import PCM_WORKLET_URL from './stt-pcm-worklet.js?url&no-inline';
-import { getToken } from './auth-session';
+import { getToken, responseErrorMessage } from './auth-session';
 
 const MAX_BUFFERED_AUDIO_BYTES = 160_000;
 const MAX_PRE_ROLL_AUDIO_BYTES = 16_000;
@@ -266,8 +266,9 @@ async function createSTTSessionRequest() {
     payload = {};
   }
   if (!response.ok) {
-    const error = new Error(payload.error || '无法创建语音识别会话');
+    const error = new Error(responseErrorMessage(response.status, payload.error || '无法创建语音识别会话'));
     error.status = response.status;
+    error.data = payload;
     throw error;
   }
   return payload;

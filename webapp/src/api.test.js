@@ -851,6 +851,25 @@ describe('local XiaoBa SkillHub bridge', () => {
     expect(global.fetch.mock.calls[0][0]).toBe('/local-xiaoba/api/store');
   });
 
+  test.each([502, 503, 504])('uses gateway status copy for a local XiaoBa response with HTTP %i', async (status) => {
+    const previousFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      json: vi.fn().mockResolvedValue({ error: '后端暂时无法载入' }),
+    });
+
+    try {
+      await expect(apiModule.api.getLocalSkills()).rejects.toMatchObject({
+        message: '服务暂时不可用，请稍后重试',
+        status,
+        data: { error: '后端暂时无法载入' },
+      });
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+
   test('loads all files from the current conversation without an Agent scope', async () => {
     await apiModule.api.getTopicFiles('grp_80', {
       beforeId: 820,
@@ -1013,5 +1032,48 @@ describe('upload transport', () => {
       message: '上传响应中断，无法确认是否成功；请检查网络后重新选择该文件。',
     });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([502, 503, 504])('uses gateway status copy for an upload JSON response with HTTP %i', async (status) => {
+    global.fetch = vi.fn().mockResolvedValue(response(status, {
+      error: '后端服务暂时异常',
+    }));
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadFile(file, 'image')).rejects.toMatchObject({
+      message: '服务暂时不可用，请稍后重试',
+      status,
+      data: { error: '后端服务暂时异常' },
+    });
+  });
+});
+
+describe('direct remote response errors', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    sessionStorage.clear();
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+  });
+
+  test.each([502, 503, 504])('uses gateway status copy for friend acceptance with HTTP %i', async (status) => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      json: vi.fn().mockResolvedValue({ error: '后端服务暂时异常' }),
+    });
+
+    await expect(apiModule.api.acceptFriendAsBot('api-key', 42)).rejects.toMatchObject({
+      message: '服务暂时不可用，请稍后重试',
+      status,
+      data: { error: '后端服务暂时异常' },
+    });
   });
 });

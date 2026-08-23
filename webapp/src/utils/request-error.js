@@ -13,6 +13,25 @@ export const REQUEST_ERROR_CODE = Object.freeze({
   TIMEOUT: 'REQUEST_TIMEOUT',
 });
 
+const RESOURCE_LOAD_FAILURE_COPY = Object.freeze({
+  [REQUEST_FAILURE_KIND.OFFLINE]: {
+    previous: () => '当前无网络连接。',
+    initial: () => '当前无网络连接，连接网络后再试。',
+  },
+  [REQUEST_FAILURE_KIND.TIMEOUT]: {
+    previous: (resource) => `更新${resource}超时。`,
+    initial: (resource) => `获取${resource}超时，请重试。`,
+  },
+  [REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE]: {
+    previous: () => '服务暂时不可用。',
+    initial: (resource) => `服务暂时不可用，暂时无法获取${resource}。`,
+  },
+  [REQUEST_FAILURE_KIND.UNREACHABLE]: {
+    previous: () => '暂时无法连接服务。',
+    initial: (resource) => `暂时无法连接服务，无法获取${resource}。`,
+  },
+});
+
 export function requestFailureKind(error, online = globalThis.navigator?.onLine) {
   if (error?.code === REQUEST_ERROR_CODE.TIMEOUT) return REQUEST_FAILURE_KIND.TIMEOUT;
   if (error?.code === REQUEST_ERROR_CODE.NETWORK) {
@@ -37,6 +56,14 @@ function formatLoadedAt(value) {
   }).format(new Date(timestamp));
 }
 
+function resourceLoadFailureCopy(kind, resource, hasPreviousResult) {
+  const phase = hasPreviousResult ? 'previous' : 'initial';
+  const fallback = hasPreviousResult
+    ? (name) => `暂时无法更新${name}。`
+    : (name) => `暂时无法获取${name}，请重试。`;
+  return (RESOURCE_LOAD_FAILURE_COPY[kind]?.[phase] || fallback)(resource);
+}
+
 export function describeResourceLoadError(error, resource, options = {}) {
   const { hasPreviousResult = false, loadedAt = 0 } = options;
   const kind = requestFailureKind(error);
@@ -44,18 +71,7 @@ export function describeResourceLoadError(error, resource, options = {}) {
   const previousData = time
     ? `当前显示 ${time} 加载的${resource}。`
     : `当前显示上次加载的${resource}。`;
+  const failure = resourceLoadFailureCopy(kind, resource, hasPreviousResult);
 
-  if (hasPreviousResult) {
-    if (kind === REQUEST_FAILURE_KIND.OFFLINE) return `当前无网络连接。${previousData}`;
-    if (kind === REQUEST_FAILURE_KIND.TIMEOUT) return `更新${resource}超时。${previousData}`;
-    if (kind === REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE) return `服务暂时不可用。${previousData}`;
-    if (kind === REQUEST_FAILURE_KIND.UNREACHABLE) return `暂时无法连接服务。${previousData}`;
-    return `暂时无法更新${resource}。${previousData}`;
-  }
-
-  if (kind === REQUEST_FAILURE_KIND.OFFLINE) return '当前无网络连接，连接网络后再试。';
-  if (kind === REQUEST_FAILURE_KIND.TIMEOUT) return `获取${resource}超时，请重试。`;
-  if (kind === REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE) return `服务暂时不可用，暂时无法获取${resource}。`;
-  if (kind === REQUEST_FAILURE_KIND.UNREACHABLE) return `暂时无法连接服务，无法获取${resource}。`;
-  return `暂时无法获取${resource}，请重试。`;
+  return hasPreviousResult ? `${failure}${previousData}` : failure;
 }

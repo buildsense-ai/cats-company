@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   readStoredUserProfile: vi.fn(() => null),
   clearStoredUserProfile: vi.fn(() => true),
   registerPwaServiceWorker: vi.fn(),
+  getPwaUpdateServiceWorker: vi.fn(() => null),
+  isPwaRefreshPending: vi.fn(() => false),
+  subscribeToPwaRefresh: vi.fn(() => () => {}),
   pwaController: vi.fn(),
   pushCleanupController: vi.fn(),
   suspendWorkspace: false,
@@ -39,7 +42,10 @@ vi.mock('virtual:pwa-register', () => ({
 }));
 
 vi.mock('./pwa-registration', () => ({
+  getPwaUpdateServiceWorker: mocks.getPwaUpdateServiceWorker,
+  isPwaRefreshPending: mocks.isPwaRefreshPending,
   registerPwaServiceWorker: mocks.registerPwaServiceWorker,
+  subscribeToPwaRefresh: mocks.subscribeToPwaRefresh,
 }));
 
 vi.mock('./views/tinode-web', () => ({
@@ -88,10 +94,12 @@ import {
   PwaLoadErrorBoundary,
   WorkspaceLoadErrorBoundary,
   WorkspaceLoadFailure,
+  workspaceLoadFailureState,
 } from './index';
 
 let container;
 let root;
+let pwaRefreshListener;
 
 beforeEach(() => {
   mocks.getToken.mockReturnValue('');
@@ -102,10 +110,14 @@ beforeEach(() => {
   mocks.setToken.mockClear();
   mocks.clearStoredUserProfile.mockClear();
   mocks.registerPwaServiceWorker.mockClear();
+  mocks.getPwaUpdateServiceWorker.mockReset().mockReturnValue(null);
+  mocks.isPwaRefreshPending.mockReset().mockReturnValue(false);
+  mocks.subscribeToPwaRefresh.mockReset().mockReturnValue(() => {});
   mocks.pwaController.mockClear();
   mocks.pushCleanupController.mockClear();
   mocks.suspendWorkspace = false;
   mocks.workspaceError = null;
+  pwaRefreshListener = null;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -262,7 +274,7 @@ test('shows the existing workspace retry state if the post-login chunk fails', a
     });
 
     await vi.waitFor(() => {
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain('页面版本可能已更新');
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('工作台资源暂时无法加载');
     });
     expect(container.querySelector('[data-testid="auth-gateway"]')).toBeFalsy();
   } finally {
@@ -275,6 +287,29 @@ test('identifies recoverable workspace chunk failures without masking applicatio
   expect(isWorkspaceChunkLoadError(new Error('Loading chunk 42 failed.'))).toBe(true);
   expect(isWorkspaceChunkLoadError(new Error('Unable to preload CSS for /assets/tinode-web.css'))).toBe(true);
   expect(isWorkspaceChunkLoadError(new Error('Unexpected application error'))).toBe(false);
+});
+
+test('separates observed offline and version-update states from unknown workspace failures', () => {
+  expect(workspaceLoadFailureState({ online: false })).toEqual({
+    kind: 'offline',
+    message: '当前无网络连接，连接网络后再试。',
+    retryLabel: '重新载入',
+  });
+  expect(workspaceLoadFailureState({ online: true, updateAvailable: true })).toEqual({
+    kind: 'update_available',
+    message: '检测到新版本，立即更新以继续使用工作台。',
+    retryLabel: '立即更新',
+  });
+  expect(workspaceLoadFailureState({ online: false, updateAvailable: true })).toEqual({
+    kind: 'update_available',
+    message: '检测到新版本，立即更新以继续使用工作台。',
+    retryLabel: '立即更新',
+  });
+  expect(workspaceLoadFailureState({ online: true })).toEqual({
+    kind: 'unavailable',
+    message: '工作台资源暂时无法加载，请重新载入。',
+    retryLabel: '重新载入',
+  });
 });
 
 test('shows a retry action when the workspace chunk fails to load', async () => {
@@ -293,7 +328,7 @@ test('shows a retry action when the workspace chunk fails to load', async () => 
       );
     });
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('页面版本可能已更新');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('工作台资源暂时无法加载');
 
     await act(async () => {
       root.render(<WorkspaceLoadFailure onRetry={onRetry} />);
@@ -306,6 +341,36 @@ test('shows a retry action when the workspace chunk fails to load', async () => 
   } finally {
     consoleError.mockRestore();
   }
+});
+
+test('offers the update action when the service worker detects a new version', async () => {
+  const onRetry = vi.fn();
+  const updateServiceWorker = vi.fn();
+  mocks.getPwaUpdateServiceWorker.mockReturnValue(updateServiceWorker);
+  mocks.subscribeToPwaRefresh.mockImplementation((listener) => {
+    pwaRefreshListener = listener;
+    return () => {};
+  });
+
+  await act(async () => {
+    root.render(<WorkspaceLoadFailure onRetry={onRetry} />);
+  });
+
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+    '工作台资源暂时无法加载，请重新载入。',
+  );
+
+  await act(async () => pwaRefreshListener());
+
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+    '检测到新版本，立即更新以继续使用工作台。',
+  );
+  const update = Array.from(container.querySelectorAll('button'))
+    .find((button) => button.textContent === '立即更新');
+  await act(async () => update?.click());
+
+  expect(updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(onRetry).not.toHaveBeenCalled();
 });
 
 test('keeps the application mounted when the optional PWA chunk fails to load', async () => {

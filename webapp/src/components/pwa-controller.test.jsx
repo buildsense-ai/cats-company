@@ -11,6 +11,7 @@ const pwaRegistrationMocks = vi.hoisted(() => {
   return {
     state,
     getPwaUpdateServiceWorker: vi.fn(() => state.updateServiceWorker),
+    hasPwaRefreshPresenter: vi.fn(() => false),
     registerPwaServiceWorker: vi.fn(() => state.updateServiceWorker),
     subscribeToPwaRefresh: vi.fn((listener) => {
       state.refreshListener = listener;
@@ -23,6 +24,7 @@ const pwaRegistrationMocks = vi.hoisted(() => {
 
 vi.mock('../pwa-registration', () => ({
   getPwaUpdateServiceWorker: pwaRegistrationMocks.getPwaUpdateServiceWorker,
+  hasPwaRefreshPresenter: pwaRegistrationMocks.hasPwaRefreshPresenter,
   registerPwaServiceWorker: pwaRegistrationMocks.registerPwaServiceWorker,
   subscribeToPwaRefresh: pwaRegistrationMocks.subscribeToPwaRefresh,
 }));
@@ -78,6 +80,7 @@ beforeEach(() => {
   });
   api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
   pwaRegistrationMocks.state.refreshListener = null;
+  pwaRegistrationMocks.hasPwaRefreshPresenter.mockReset().mockReturnValue(false);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -279,5 +282,18 @@ test('activates a waiting service worker immediately so old upload routing canno
   });
 
   expect(pwaRegistrationMocks.state.updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(container.textContent).not.toContain('发现新版本');
+});
+
+test('defers a waiting-worker update to the active workspace failure presenter', async () => {
+  pwaRegistrationMocks.hasPwaRefreshPresenter.mockReturnValue(true);
+  renderController('user:1');
+
+  await act(async () => {
+    pwaRegistrationMocks.state.refreshListener();
+    await Promise.resolve();
+  });
+
+  expect(pwaRegistrationMocks.state.updateServiceWorker).not.toHaveBeenCalled();
   expect(container.textContent).not.toContain('发现新版本');
 });

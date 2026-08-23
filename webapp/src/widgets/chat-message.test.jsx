@@ -181,6 +181,29 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
   });
 
+  it('describes a failed preview as a temporary service problem when the media endpoint returns a gateway error', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 502 });
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={{
+            name: 'notes.txt',
+            url: '/uploads/files/notes.txt',
+            size: 128,
+            mime_type: 'text/plain',
+          }}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(container.querySelector('.v3-file-preview-state.error')?.textContent).toBe(
+      '预览加载失败：服务暂时不可用，请稍后重试',
+    );
+  });
+
   it('renders an Agent delivery artifact before text from the same message', async () => {
     await act(async () => {
       root.render(
