@@ -27,7 +27,18 @@ type BotDefinitionHandler struct {
 	// remain independent from the process-local Hub. Production wiring sets it
 	// to the Hub's bot-body liveness check.
 	promptOnlineResolver  func(botUID int64) bool
-	skillMetadataResolver func(context.Context, int64, []types.BotSkillRef) (map[string]string, error)
+	skillMetadataResolver func(context.Context, int64, []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error)
+}
+
+// BotSkillDisplayMetadata contains optional, viewer-safe presentation fields.
+// It never participates in the canonical BotDefinition or Runtime activation.
+type BotSkillDisplayMetadata struct {
+	DisplayName          string
+	RevisionNumber       int64
+	LastChangedByUserUID int64
+	LastChangedBy        string
+	LastChangedAt        string
+	ChangeSource         string
 }
 
 type botDefinitionModelPatchRequest struct {
@@ -80,7 +91,7 @@ func (h *BotDefinitionHandler) SetPromptOnlineResolver(resolver func(botUID int6
 // SetSkillMetadataResolver supplies display-only metadata for private Skill
 // references without adding presentation fields to the canonical BotDefinition.
 func (h *BotDefinitionHandler) SetSkillMetadataResolver(
-	resolver func(context.Context, int64, []types.BotSkillRef) (map[string]string, error),
+	resolver func(context.Context, int64, []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error),
 ) {
 	if h != nil {
 		h.skillMetadataResolver = resolver

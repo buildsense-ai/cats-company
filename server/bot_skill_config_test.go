@@ -92,11 +92,14 @@ func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData
 	db.records[43].Definition.Skills = []types.BotSkillRef{{
 		Source: "skillhub", SkillID: "priv_owned", Version: "v_1", ContentHash: testSkillHash,
 	}}
-	handler.SetSkillMetadataResolver(func(_ context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+	handler.SetSkillMetadataResolver(func(_ context.Context, botUID int64, skills []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error) {
 		if botUID != 43 || len(skills) != 1 || skills[0].SkillID != "priv_owned" {
 			t.Fatalf("unexpected metadata scope bot=%d skills=%+v", botUID, skills)
 		}
-		return map[string]string{botSkillMetadataKey("priv_owned", "v_1"): "cloud-html-artifact"}, nil
+		return map[string]BotSkillDisplayMetadata{botSkillMetadataKey("priv_owned", "v_1"): {
+			DisplayName: "cloud-html-artifact", RevisionNumber: 3, LastChangedBy: "lin",
+			LastChangedAt: "2026-08-22T02:03:04Z", ChangeSource: "conversation_mutation",
+		}}, nil
 	})
 
 	owner := httptest.NewRequest(http.MethodGet, "/api/bots/definition/skills?uid=43", nil)
@@ -115,11 +118,19 @@ func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData
 	if viewerRec.Code != http.StatusOK || !strings.Contains(viewerRec.Body.String(), `"displayName":"cloud-html-artifact"`) {
 		t.Fatalf("viewer status=%d body=%s", viewerRec.Code, viewerRec.Body.String())
 	}
+	for _, field := range []string{`"revisionNumber":3`, `"lastChangedBy":"lin"`, `"lastChangedAt":"2026-08-22T02:03:04Z"`, `"changeSource":"conversation_mutation"`} {
+		if !strings.Contains(viewerRec.Body.String(), field) {
+			t.Fatalf("viewer response missing safe metadata %s: %s", field, viewerRec.Body.String())
+		}
+	}
 	if strings.Contains(viewerRec.Body.String(), "contentHash") || strings.Contains(viewerRec.Body.String(), testSkillHash) {
 		t.Fatalf("viewer response leaked package identity: %s", viewerRec.Body.String())
 	}
+	if strings.Contains(viewerRec.Body.String(), "lastChangedByUserUid") {
+		t.Fatalf("viewer response leaked the raw actor uid: %s", viewerRec.Body.String())
+	}
 
-	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]string, error) {
+	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error) {
 		return nil, errors.New("temporary upstream outage")
 	})
 	fallbackRec := httptest.NewRecorder()
@@ -129,7 +140,7 @@ func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData
 	}
 
 	runtimeMetadataCalls := 0
-	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]string, error) {
+	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error) {
 		runtimeMetadataCalls++
 		return nil, nil
 	})

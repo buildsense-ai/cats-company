@@ -25,7 +25,7 @@ func TestSkillHubPrivateMetadataUsesBotCredentialsAndReturnsOnlyRequestedNames(t
 		}
 		gotReferences = body.References
 		_, _ = w.Write([]byte(`{"skills":[` +
-			`{"skillId":"priv_owned","version":"v_1","displayName":"cloud-html-artifact","contentHash":"do-not-forward"},` +
+			`{"skillId":"priv_owned","version":"v_1","displayName":"cloud-html-artifact","revisionNumber":3,"lastChangedByUserUid":7,"lastChangedAt":"2026-08-22T02:03:04Z","changeSource":"conversation_mutation","contentHash":"do-not-forward"},` +
 			`{"skillId":"priv_unrequested","version":"v_2","displayName":"ignore-me"}` +
 			`]}`))
 	}))
@@ -44,7 +44,10 @@ func TestSkillHubPrivateMetadataUsesBotCredentialsAndReturnsOnlyRequestedNames(t
 	if len(gotReferences) != 1 || gotReferences[0].SkillID != "priv_owned" {
 		t.Fatalf("references=%+v", gotReferences)
 	}
-	if len(metadata) != 1 || metadata[botSkillMetadataKey("priv_owned", "v_1")] != "cloud-html-artifact" {
+	presentation := metadata[botSkillMetadataKey("priv_owned", "v_1")]
+	if len(metadata) != 1 || presentation.DisplayName != "cloud-html-artifact" ||
+		presentation.RevisionNumber != 3 || presentation.LastChangedByUserUID != 7 ||
+		presentation.LastChangedAt != "2026-08-22T02:03:04Z" || presentation.ChangeSource != "conversation_mutation" {
 		t.Fatalf("metadata=%+v", metadata)
 	}
 }
