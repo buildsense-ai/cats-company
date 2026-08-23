@@ -494,8 +494,6 @@ export default function MessagesView({
   const pendingOlderHistoryAnchorRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const lastTimelineScrollTopRef = useRef(0);
-  const timelineTouchYRef = useRef(null);
-  const timelineTouchStartedInNestedScrollerRef = useRef(false);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -940,8 +938,6 @@ export default function MessagesView({
     questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
     lastTimelineScrollTopRef.current = 0;
-    timelineTouchYRef.current = null;
-    timelineTouchStartedInNestedScrollerRef.current = false;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
@@ -3550,38 +3546,6 @@ export default function MessagesView({
     }
   };
 
-  const handleTimelineWheel = (event) => {
-    clearPendingQuestionJump();
-    if (event.deltaY < 0 && !isNestedTimelineScroller(event.target)) {
-      stickToBottomRef.current = false;
-    }
-  };
-
-  const handleTimelineTouchStart = (event) => {
-    clearPendingQuestionJump();
-    timelineTouchYRef.current = event.touches?.[0]?.clientY ?? null;
-    timelineTouchStartedInNestedScrollerRef.current = isNestedTimelineScroller(event.target);
-  };
-
-  const handleTimelineTouchMove = (event) => {
-    const currentTouchY = event.touches?.[0]?.clientY;
-    const previousTouchY = timelineTouchYRef.current;
-    if (
-      Number.isFinite(currentTouchY)
-      && Number.isFinite(previousTouchY)
-      && currentTouchY > previousTouchY
-      && !timelineTouchStartedInNestedScrollerRef.current
-    ) {
-      stickToBottomRef.current = false;
-    }
-    timelineTouchYRef.current = Number.isFinite(currentTouchY) ? currentTouchY : null;
-  };
-
-  const handleTimelineTouchEnd = () => {
-    timelineTouchYRef.current = null;
-    timelineTouchStartedInNestedScrollerRef.current = false;
-  };
-
   const openImagePreview = useCallback((imageId, trigger, payload = null) => {
     const resolvedItem = imageGallery.find((item) => item.id === imageId)
       || imageGallery.find((item) => (
@@ -3621,11 +3585,8 @@ export default function MessagesView({
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}${conversationShareMode ? ' is-conversation-share-mode' : ''}`}
             ref={timelineRef}
             onScroll={handleTimelineScroll}
-            onWheel={handleTimelineWheel}
-            onTouchStart={handleTimelineTouchStart}
-            onTouchMove={handleTimelineTouchMove}
-            onTouchEnd={handleTimelineTouchEnd}
-            onTouchCancel={handleTimelineTouchEnd}
+            onWheel={clearPendingQuestionJump}
+            onTouchStart={clearPendingQuestionJump}
             onPointerDown={clearPendingQuestionJump}
             onDragEnter={handleDragEnter}
             onDragOver={handleDragOver}
@@ -5205,11 +5166,6 @@ function restoreTimelineReadingAnchor(timeline, anchor) {
     }
   }
   timeline.scrollTop = anchor.scrollTop + (timeline.scrollHeight - anchor.scrollHeight);
-}
-
-function isNestedTimelineScroller(target) {
-  return target instanceof Element
-    && Boolean(target.closest('.v3-working-steps, .v3-wpi-code-block pre'));
 }
 
 function streamDeltaText(content) {

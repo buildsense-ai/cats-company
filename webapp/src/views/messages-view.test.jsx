@@ -6582,6 +6582,107 @@ describe('MessagesView composer draft isolation', () => {
     expect(scrollTop).toBe(1110);
   });
 
+  it('keeps auto-follow after an upward wheel gesture cannot move a short timeline', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 500;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      Simulate.wheel(timeline, { deltaY: -56 });
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1000;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 38,
+          seq: 38,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: 'short timeline update', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1000);
+  });
+
+  it('keeps auto-follow after an upward touch gesture cannot move a short timeline', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 500;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      Simulate.touchStart(timeline, { touches: [{ clientY: 320 }] });
+      Simulate.touchMove(timeline, { touches: [{ clientY: 376 }] });
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1000;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 39,
+          seq: 39,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: 'short timeline update', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1000);
+  });
+
   it('keeps a manually up-scrolled conversation fixed during a runtime-plan update', async () => {
     await mountTopic(root, 'p2p_1_2');
     const timeline = container.querySelector('.v3-timeline');
@@ -6701,10 +6802,11 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => {
       Simulate.scroll(timeline);
       Simulate.touchStart(timeline, { touches: [{ clientY: 320 }] });
+      timeline.scrollTop = 444;
+      Simulate.scroll(timeline);
       Simulate.touchMove(timeline, { touches: [{ clientY: 376 }] });
       await Promise.resolve();
     });
-    timeline.scrollTop = 444;
 
     const scrollCallsBeforeUpdate = window.HTMLElement.prototype.scrollIntoView.mock.calls.length;
     await act(async () => {
