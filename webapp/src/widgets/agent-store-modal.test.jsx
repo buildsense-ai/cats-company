@@ -1086,6 +1086,34 @@ describe('AgentStoreModal', () => {
     expect(container.textContent).not.toContain('创建云托管员工');
   });
 
+  test('does not present an exhausted cloud right as remaining capacity', async () => {
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 895 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建新助手'));
+    await act(async () => {
+      Simulate.click(createTab);
+      await Promise.resolve();
+    });
+
+    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
+    expect(managedRadio.disabled).toBe(true);
+    expect(managedRadio.closest('label').textContent).toContain('云端虚拟员工创建权益已用完');
+    expect(managedRadio.closest('label').textContent).not.toContain('可创建 0/1');
+  });
+
   test('renders the assistant roster without waiting for cloud reconciliation', async () => {
     let resolveCloudWorkers;
     api.getMyBots.mockResolvedValue({

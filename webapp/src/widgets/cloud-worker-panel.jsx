@@ -55,6 +55,18 @@ const CLOUD_ACTION_LABELS = {
   delete: '正在销毁实例并删除员工',
 };
 
+// Do not render an exhausted quota as `0/1`: users can read that as a
+// remaining slot. The managed-hosting switch should describe the actionable
+// state in plain language.
+const cloudHostingSummary = (quota, quotaError) => {
+  if (quotaError) return '云端状态查询失败，请稍后重试';
+  if (!quota || !quota.enabled) return '云端部署当前未开放，请联系管理员开通';
+  const remaining = Number(quota.remaining);
+  return remaining > 0
+    ? `部署到云端虚拟员工（还可创建 ${remaining} 次）`
+    : '云端虚拟员工创建权益已用完';
+};
+
 /**
  * 云托管专属面板 —— 当创建助手的「部署方式」选中云托管时替换自托管表单。
  * 聚合云托管配额、创建云端虚拟员工、以及已有云托管员工的管理
@@ -159,6 +171,8 @@ export default function CloudWorkerPanel({
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端创建服务尚未配置，请联系管理员</p>
   ) : (!quota || !quota.enabled) ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端部署当前未开放，请联系管理员开通</p>
+  ) : quota.remaining <= 0 ? (
+    <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端虚拟员工创建权益已用完，暂时无法继续创建</p>
   ) : (
     <>
       <div className="cc-cloud-quota-bar"><i style={{ width: `${usedPct}%` }} /></div>
@@ -191,13 +205,7 @@ export default function CloudWorkerPanel({
             />
             <span>
               <strong>云托管</strong>
-              <small>
-                {quotaError
-                  ? '云端状态查询失败，请稍后重试'
-                  : (quota && quota.enabled
-                      ? `部署到云端虚拟员工（可创建 ${quota.remaining}/${quota.total}）`
-                      : '云端部署当前未开放，请联系管理员开通')}
-              </small>
+              <small>{cloudHostingSummary(quota, quotaError)}</small>
             </span>
           </label>
         </fieldset>
