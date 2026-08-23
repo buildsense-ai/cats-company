@@ -126,6 +126,11 @@ transcript events also recover a warning if a foreground timer fires late, and
 short quota-reduced limits show the warning immediately after the socket is
 ready.
 
+The visual countdown may refresh once per second, but the polite live region
+announces only the initial warning, a change between active and quiet speech,
+and terminal save or error states. It does not read every countdown tick as a
+separate announcement.
+
 When the server has to enforce the hard/audio boundary while the browser timer
 is throttled (a common PWA background behavior), terminal provider/final errors
 carry a boundary reason. If the transport closes without a terminal payload

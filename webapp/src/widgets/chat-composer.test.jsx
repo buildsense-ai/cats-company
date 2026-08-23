@@ -275,6 +275,64 @@ describe('ChatComposer', () => {
       .toContain('已保存到输入框，可继续录音');
   });
 
+  it('keeps the visual countdown current without announcing every second', async () => {
+    let callbacks;
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onDurationWarning({
+        remainingMs: 10_000,
+        remainingSeconds: 10,
+        hasRecentInput: true,
+      });
+    });
+
+    const hint = container.querySelector('.v3-composer-hint');
+    const liveRegion = container.querySelector('[role="status"]');
+    const activeAnnouncement = '语音输入将在约 10 秒后结束，继续说即可，内容会保存到输入框';
+    expect(hint.textContent).toContain('还剩约 10 秒');
+    expect(hint.getAttribute('aria-hidden')).toBe('true');
+    expect(liveRegion.textContent).toBe(activeAnnouncement);
+
+    await act(async () => {
+      callbacks.onDurationWarning({
+        remainingMs: 9_000,
+        remainingSeconds: 9,
+        hasRecentInput: true,
+      });
+    });
+
+    expect(hint.textContent).toContain('还剩约 9 秒');
+    expect(liveRegion.textContent).toBe(activeAnnouncement);
+
+    await act(async () => {
+      callbacks.onDurationWarning({
+        remainingMs: 8_000,
+        remainingSeconds: 8,
+        hasRecentInput: false,
+      });
+    });
+
+    expect(hint.textContent).toContain('这段快结束了');
+    expect(liveRegion.textContent)
+      .toBe('语音输入即将结束，已识别内容会保存到输入框');
+  });
+
   it('shows a calm notice for a successfully finalized idle boundary', async () => {
     let callbacks;
     await renderComposer({
