@@ -192,6 +192,29 @@ func testCommercialRelayBaselineContract(t *testing.T, db *Adapter) {
 	if summary.Entitlements[0].PlanSlug != "catsco-free" || !summary.Entitlements[0].StartsAt.Equal(anchor) {
 		t.Fatalf("free baseline entitlement mismatch: %#v", summary.Entitlements[0])
 	}
+	// A paid upgrade revokes the free baseline, but a later refund must be
+	// able to recreate it. Historical revoked rows must not make the baseline
+	// idempotency check treat the account as still having an active baseline.
+	if _, err := db.db.Exec(`
+		UPDATE commercial_entitlements
+		SET state = 'revoked'
+		WHERE uid = $1 AND source = 'free'`, freeUID); err != nil {
+		t.Fatalf("revoke free baseline entitlement: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		UPDATE commercial_quota_grants
+		SET revoked_at = CURRENT_TIMESTAMP, expires_at = CURRENT_TIMESTAMP
+		WHERE uid = $1 AND grant_type = 'free' AND revoked_at IS NULL`, freeUID); err != nil {
+		t.Fatalf("revoke free baseline grants: %v", err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(freeUID, "free", budgets, anchor)
+	if err != nil || !created {
+		t.Fatalf("recreate free relay baseline after refund: created=%v err=%v", created, err)
+	}
+	restored, err := db.GetCommercialSummary(freeUID)
+	if err != nil || restored.TotalCNY != 1600 || len(restored.Entitlements) != 1 || len(restored.Grants) != 3 {
+		t.Fatalf("unexpected restored free relay baseline summary: summary=%#v err=%v", restored, err)
+	}
 
 	legacyUID, err := db.CreateUser(&types.User{
 		Username: "commercial-legacy-baseline", Email: "commercial-legacy-baseline@example.test", DisplayName: "Legacy Baseline",
