@@ -858,7 +858,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     setLoadingCatalogue(true);
     setCatalogueError('');
     try {
-      const response = await api.searchSkillHubSkills(searchQuery);
+      const response = await api.searchSkillHubSkills(searchQuery, { searchMode: 'name' });
       if (requestID !== catalogueRequestRef.current) return;
       setCatalogue(normalizeSkillHubSkills(response));
     } catch (error) {

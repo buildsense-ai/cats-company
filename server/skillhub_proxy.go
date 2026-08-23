@@ -129,7 +129,7 @@ func (h *SkillHubProxyHandler) HandleSkills(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	query := url.Values{}
-	for _, key := range []string{"q", "category", "agent_version", "platform"} {
+	for _, key := range []string{"q", "category", "agent_version", "platform", "search_mode"} {
 		for _, value := range r.URL.Query()[key] {
 			query.Add(key, value)
 		}

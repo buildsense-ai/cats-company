@@ -653,6 +653,7 @@ export const api = {
     const params = new URLSearchParams();
     if (query) params.set('q', query);
     if (options.category) params.set('category', options.category);
+    if (options.searchMode === 'name') params.set('search_mode', 'name');
     const suffix = params.toString() ? `?${params}` : '';
     return request('GET', `/api/skillhub/skills${suffix}`);
   },
