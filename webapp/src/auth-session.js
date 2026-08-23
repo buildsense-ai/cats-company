@@ -3,6 +3,11 @@ import {
   removeStorageValue,
   writeStorageValue,
 } from './utils/storage-access';
+import {
+  REQUEST_ERROR_CODE,
+  REQUEST_FAILURE_KIND,
+  requestFailureKind,
+} from './utils/request-error';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -150,8 +155,11 @@ export function statusMessage(status) {
   if (status === 404) return '请求的功能暂时不可用';
   if (status === 409) return '当前数据已发生变化，请刷新后重试';
   if (status === 429) return '操作过于频繁，请稍后再试';
-  if ([502, 503, 504].includes(status)) return '服务暂时不可用，请稍后重试';
-  if (status >= 500) return '服务请求失败，请稍后重试';
+  const failureKind = requestFailureKind({ status });
+  if (failureKind === REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE) {
+    return '服务暂时不可用，请稍后重试';
+  }
+  if (failureKind === REQUEST_FAILURE_KIND.SERVER_ERROR) return '服务请求失败，请稍后重试';
   return '请求失败，请稍后重试';
 }
 
@@ -203,13 +211,13 @@ export async function request(method, path, body, options = {}) {
   } catch (cause) {
     if (timedOut) {
       const error = new Error('请求超时，请稍后重试');
-      error.code = 'REQUEST_TIMEOUT';
+      error.code = REQUEST_ERROR_CODE.TIMEOUT;
       error.cause = cause;
       throw error;
     }
     if (signal?.aborted || cause?.name === 'AbortError') {
       const error = new Error('请求已取消');
-      error.code = 'REQUEST_ABORTED';
+      error.code = REQUEST_ERROR_CODE.ABORTED;
       error.cause = cause;
       throw error;
     }
@@ -219,7 +227,7 @@ export async function request(method, path, body, options = {}) {
         ? '当前无网络连接，连接网络后再试'
         : '暂时无法连接服务，请稍后重试',
     );
-    error.code = 'NETWORK_ERROR';
+    error.code = REQUEST_ERROR_CODE.NETWORK;
     error.cause = cause;
     throw error;
   } finally {

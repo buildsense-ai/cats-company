@@ -1383,7 +1383,7 @@ export default function MessagesView({
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         if (e?.code !== 'REQUEST_ABORTED') {
           setHistoryError(describeResourceLoadError(e, '聊天记录', {
-            hasPreviousData: Boolean(cachedHistory?.messages?.length),
+            hasPreviousResult: Boolean(cachedHistory),
             loadedAt: cachedHistory?.loadedAt,
           }));
         }

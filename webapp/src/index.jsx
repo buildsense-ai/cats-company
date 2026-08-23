@@ -71,9 +71,9 @@ export function isWorkspaceChunkLoadError(error) {
 export function WorkspaceLoadFailure({ onRetry = () => window.location.reload() }) {
   return (
     <main className="cc-workspace-loading cc-workspace-loading-error">
-      <p role="alert">工作台加载失败，请检查网络后重试。</p>
+      <p role="alert">工作台资源无法加载。页面版本可能已更新，也可能是网络中断。</p>
       <button type="button" className="oc-auth-btn cc-workspace-loading-retry" onClick={onRetry}>
-        重新加载
+        重新载入
       </button>
     </main>
   );

@@ -42,6 +42,7 @@ registerRoute(neverCache, new NetworkOnly(), 'GET');
 // native path avoids an extra Request clone for large mobile upload bodies.
 
 const navigationHandler = new NetworkOnly({
+  networkTimeoutSeconds: 4,
   plugins: [{
     handlerDidError: async () => caches.match('/offline.html', { ignoreSearch: true }),
   }],

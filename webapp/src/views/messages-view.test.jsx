@@ -5180,6 +5180,28 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.textContent).not.toContain('后端');
   });
 
+  it('treats a previously loaded empty conversation as a cached result', async () => {
+    const unavailable = Object.assign(new Error('bad gateway'), { status: 502 });
+    api.getMessages
+      .mockResolvedValueOnce({ messages: [], has_more: false })
+      .mockResolvedValueOnce({
+        messages: [{ id: 2, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      })
+      .mockRejectedValueOnce(unavailable);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    expect(container.textContent).toContain('服务暂时不可用。当前显示');
+    expect(container.textContent).toContain('加载的聊天记录');
+    expect(container.textContent).not.toContain('暂时无法获取聊天记录');
+  });
+
   it('resumes older history loading after a cached topic refresh finishes at the top', async () => {
     const initialTopicA = deferred();
     const refreshedTopicA = deferred();

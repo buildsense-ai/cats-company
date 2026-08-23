@@ -79,6 +79,7 @@ describe('service worker API routing', () => {
       .find((route) => Array.isArray(route?.options?.denylist));
 
     expect(navigationRoute.handler.constructor.name).toBe('NetworkOnly');
+    expect(navigationRoute.handler.options.networkTimeoutSeconds).toBe(4);
     await navigationRoute.handler.options.plugins[0].handlerDidError();
     expect(caches.match).toHaveBeenCalledWith('/offline.html', { ignoreSearch: true });
   });

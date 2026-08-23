@@ -1,5 +1,6 @@
 import {
   describeResourceLoadError,
+  REQUEST_ERROR_CODE,
   REQUEST_FAILURE_KIND,
   requestFailureKind,
 } from './request-error';
@@ -12,7 +13,7 @@ describe('request failure semantics', () => {
   });
 
   test('uses observable browser connectivity for network failures', () => {
-    const error = { code: 'NETWORK_ERROR' };
+    const error = { code: REQUEST_ERROR_CODE.NETWORK };
     expect(requestFailureKind(error, false)).toBe(REQUEST_FAILURE_KIND.OFFLINE);
     expect(requestFailureKind(error, true)).toBe(REQUEST_FAILURE_KIND.UNREACHABLE);
   });
@@ -27,7 +28,7 @@ describe('request failure semantics', () => {
     const message = describeResourceLoadError(
       { status: 503 },
       '聊天记录',
-      { hasPreviousData: true, loadedAt: new Date(2026, 7, 21, 14, 32).getTime() },
+      { hasPreviousResult: true, loadedAt: new Date(2026, 7, 21, 14, 32).getTime() },
     );
 
     expect(message).toMatch(/^服务暂时不可用。当前显示 14:32 加载的聊天记录。$/);

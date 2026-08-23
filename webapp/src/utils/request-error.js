@@ -7,9 +7,15 @@ export const REQUEST_FAILURE_KIND = Object.freeze({
   REQUEST_ERROR: 'request_error',
 });
 
+export const REQUEST_ERROR_CODE = Object.freeze({
+  ABORTED: 'REQUEST_ABORTED',
+  NETWORK: 'NETWORK_ERROR',
+  TIMEOUT: 'REQUEST_TIMEOUT',
+});
+
 export function requestFailureKind(error, online = globalThis.navigator?.onLine) {
-  if (error?.code === 'REQUEST_TIMEOUT') return REQUEST_FAILURE_KIND.TIMEOUT;
-  if (error?.code === 'NETWORK_ERROR') {
+  if (error?.code === REQUEST_ERROR_CODE.TIMEOUT) return REQUEST_FAILURE_KIND.TIMEOUT;
+  if (error?.code === REQUEST_ERROR_CODE.NETWORK) {
     return online === false
       ? REQUEST_FAILURE_KIND.OFFLINE
       : REQUEST_FAILURE_KIND.UNREACHABLE;
@@ -32,14 +38,14 @@ function formatLoadedAt(value) {
 }
 
 export function describeResourceLoadError(error, resource, options = {}) {
-  const { hasPreviousData = false, loadedAt = 0 } = options;
+  const { hasPreviousResult = false, loadedAt = 0 } = options;
   const kind = requestFailureKind(error);
   const time = formatLoadedAt(loadedAt);
   const previousData = time
     ? `当前显示 ${time} 加载的${resource}。`
     : `当前显示上次加载的${resource}。`;
 
-  if (hasPreviousData) {
+  if (hasPreviousResult) {
     if (kind === REQUEST_FAILURE_KIND.OFFLINE) return `当前无网络连接。${previousData}`;
     if (kind === REQUEST_FAILURE_KIND.TIMEOUT) return `更新${resource}超时。${previousData}`;
     if (kind === REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE) return `服务暂时不可用。${previousData}`;

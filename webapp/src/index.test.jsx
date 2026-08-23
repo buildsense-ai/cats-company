@@ -262,7 +262,7 @@ test('shows the existing workspace retry state if the post-login chunk fails', a
     });
 
     await vi.waitFor(() => {
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain('工作台加载失败');
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('页面版本可能已更新');
     });
     expect(container.querySelector('[data-testid="auth-gateway"]')).toBeFalsy();
   } finally {
@@ -293,13 +293,13 @@ test('shows a retry action when the workspace chunk fails to load', async () => 
       );
     });
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('工作台加载失败');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('页面版本可能已更新');
 
     await act(async () => {
       root.render(<WorkspaceLoadFailure onRetry={onRetry} />);
     });
     const retry = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent === '重新加载');
+      .find((button) => button.textContent === '重新载入');
     await act(async () => retry?.click());
 
     expect(onRetry).toHaveBeenCalledTimes(1);
