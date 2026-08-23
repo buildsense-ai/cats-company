@@ -233,6 +233,166 @@ describe('ChatComposer', () => {
 	}));
   });
 
+  it('uses a calm limit notice and confirms the draft was preserved', async () => {
+    let callbacks;
+    const onVoiceFinal = vi.fn();
+    const voiceSession = {
+      prepare: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal,
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return voiceSession;
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onDurationWarning({ remainingMs: 10_000, hasRecentInput: true });
+    });
+
+    const hint = container.querySelector('.v3-composer-hint');
+    expect(hint.textContent).toContain('结束后会保存到输入框');
+    expect(hint.classList.contains('is-error')).toBe(false);
+
+    await act(async () => {
+      callbacks.onDurationLimit({ hadRecentInput: true, stoppedAtNaturalBoundary: false });
+      callbacks.onFinal('已保存的长语音', { reason: 'duration_limit' });
+    });
+
+    expect(onVoiceFinal).toHaveBeenCalledWith(
+      '已保存的长语音',
+      expect.objectContaining({ baseValue: '' }),
+    );
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('已保存到输入框，可继续录音');
+  });
+
+  it('keeps the visual countdown current without announcing every second', async () => {
+    let callbacks;
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onDurationWarning({
+        remainingMs: 10_000,
+        remainingSeconds: 10,
+        hasRecentInput: true,
+      });
+    });
+
+    const hint = container.querySelector('.v3-composer-hint');
+    const liveRegion = container.querySelector('[role="status"]');
+    const activeAnnouncement = '语音输入将在约 10 秒后结束，继续说即可，内容会保存到输入框';
+    expect(hint.textContent).toContain('还剩约 10 秒');
+    expect(hint.getAttribute('aria-hidden')).toBe('true');
+    expect(liveRegion.textContent).toBe(activeAnnouncement);
+
+    await act(async () => {
+      callbacks.onDurationWarning({
+        remainingMs: 9_000,
+        remainingSeconds: 9,
+        hasRecentInput: true,
+      });
+    });
+
+    expect(hint.textContent).toContain('还剩约 9 秒');
+    expect(liveRegion.textContent).toBe(activeAnnouncement);
+
+    await act(async () => {
+      callbacks.onDurationWarning({
+        remainingMs: 8_000,
+        remainingSeconds: 8,
+        hasRecentInput: false,
+      });
+    });
+
+    expect(hint.textContent).toContain('这段快结束了');
+    expect(liveRegion.textContent)
+      .toBe('语音输入即将结束，已识别内容会保存到输入框');
+  });
+
+  it('shows a calm notice for a successfully finalized idle boundary', async () => {
+    let callbacks;
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onFinal('静音前的内容', { reason: 'idle_timeout' });
+    });
+
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('已保存到输入框，可继续录音');
+    expect(container.querySelector('.v3-composer-hint')?.classList.contains('is-error')).toBe(false);
+  });
+
+  it('keeps idle-boundary finalization failures in the error state', async () => {
+    let callbacks;
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('finalizing');
+      callbacks.onError(
+        new Error('语音识别结束超时，请重试'),
+        '静音前的内容',
+        { reason: 'idle_timeout' },
+      );
+    });
+
+    const hint = container.querySelector('.v3-composer-hint');
+    expect(hint?.textContent).toContain('语音识别结束超时，请重试');
+    expect(hint?.classList.contains('is-error')).toBe(true);
+  });
+
   it('allows another voice session immediately after a terminal recognition error', async () => {
     const sessions = [];
     const callbacks = [];
@@ -270,6 +430,41 @@ describe('ChatComposer', () => {
 
     expect(createVoiceSession).toHaveBeenCalledTimes(2);
     expect(sessions[1].start).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the latest recognized text in the draft when recognition times out', async () => {
+    let callbacks;
+    const onVoiceFinal = vi.fn();
+    const voiceSession = {
+      prepare: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      value: '已有草稿：',
+      onVoiceFinal,
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return voiceSession;
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onPartial('补充的长语音');
+      callbacks.onError(new Error('语音识别结束超时，请重试'), '补充的长语音');
+    });
+
+    expect(onVoiceFinal).toHaveBeenCalledWith(
+      '补充的长语音',
+      expect.objectContaining({ baseValue: '已有草稿：' }),
+    );
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('语音识别结束超时，请重试');
   });
 
   it('begins microphone pre-roll on touch down before the long-hold threshold', async () => {

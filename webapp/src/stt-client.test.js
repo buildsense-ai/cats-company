@@ -623,6 +623,43 @@ describe('StreamingSTTSession', () => {
     }
   });
 
+  it('publishes a pending final immediately when a PWA becomes hidden', async () => {
+    const partials = [];
+    const finals = [];
+    const animationFrames = installAnimationFrameStub();
+    let socket;
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-final-hidden', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn() }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime?ticket=ticket-final-hidden');
+        return socket;
+      },
+      onPartial: (text) => partials.push(text),
+      onFinal: (text) => finals.push(text),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready' });
+      socket.receive({ type: 'partial', text: '隐藏前的最新预览' });
+      socket.receive({ type: 'final', text: '隐藏前的最终文本' });
+
+      setDocumentVisibility('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      expect(partials).toEqual(['隐藏前的最新预览']);
+      expect(finals).toEqual(['隐藏前的最终文本']);
+      expect(session.state).toBe('complete');
+      expect(animationFrames.size).toBe(0);
+    } finally {
+      session.cancel();
+      setDocumentVisibility('visible');
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('publishes an empty final so the composer can release the terminal session', async () => {
     const finals = [];
     let socket;
@@ -643,6 +680,97 @@ describe('StreamingSTTSession', () => {
 
     expect(session.state).toBe('complete');
     expect(finals).toEqual(['']);
+  });
+
+  it('marks a server hard-limit final as a recoverable duration boundary', async () => {
+    let socket;
+    const finals = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-hard-final', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_ms: 150_000 });
+    socket.receive({ type: 'final', text: '达到硬上限前的内容', stop_reason: 'audio_limit' });
+
+    expect(finals).toEqual([{
+      text: '达到硬上限前的内容',
+      details: { reason: 'duration_limit' },
+    }]);
+    session.cancel();
+  });
+
+  it('keeps an idle-timeout final as a natural, non-duration boundary', async () => {
+    let socket;
+    const finals = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-idle-final', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_ms: 150_000 });
+    socket.receive({ type: 'final', text: '静音前的内容', stop_reason: 'idle_timeout' });
+
+    expect(finals).toEqual([{
+      text: '静音前的内容',
+      details: { reason: 'idle_timeout' },
+    }]);
+    session.cancel();
+  });
+
+  it('preserves an explicit late idle final reason over the local deadline fallback', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const finals = [];
+    const limits = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-late-idle-final', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      window.clearTimeout(session.durationWarningTimer);
+      window.clearTimeout(session.durationTimer);
+      window.clearTimeout(session.durationBoundaryTimer);
+      session.durationWarningTimer = null;
+      session.durationTimer = null;
+      session.durationBoundaryTimer = null;
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      socket.receive({ type: 'final', text: '静音边界前的内容', stop_reason: 'idle_timeout' });
+
+      expect(limits).toHaveLength(0);
+      expect(finals).toEqual([{
+        text: '静音边界前的内容',
+        details: { reason: 'idle_timeout' },
+      }]);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
   });
 
   it('maps capture RMS through the VoicePi-style decibel curve', async () => {
@@ -818,7 +946,7 @@ describe('StreamingSTTSession', () => {
     expect(capture.stop).toHaveBeenCalledTimes(1);
     expect(socket.sent).toEqual([
       capturedBeforeSuspension,
-      JSON.stringify({ type: 'stop' }),
+      JSON.stringify({ type: 'stop', stop_reason: 'lifecycle_stop' }),
     ]);
     session.cancel();
   });
@@ -842,7 +970,7 @@ describe('StreamingSTTSession', () => {
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(capture.stop).toHaveBeenCalledTimes(1);
-    expect(socket.sent).toContain(JSON.stringify({ type: 'stop' }));
+    expect(socket.sent).toContain(JSON.stringify({ type: 'stop', stop_reason: 'duration_limit' }));
     session.cancel();
     vi.useRealTimers();
   });
@@ -868,7 +996,7 @@ describe('StreamingSTTSession', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(capture.stop).toHaveBeenCalledTimes(1);
-    expect(socket.sent).toContain(JSON.stringify({ type: 'stop' }));
+    expect(socket.sent).toContain(JSON.stringify({ type: 'stop', stop_reason: 'duration_limit' }));
     session.cancel();
     vi.useRealTimers();
   });
@@ -894,6 +1022,383 @@ describe('StreamingSTTSession', () => {
 
       expect(session.state).toBe('finalizing');
       expect(capture.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('warns ten seconds before the limit and reports whether speech is still active', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const warnings = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-duration-warning', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return capture;
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationWarning: (payload) => warnings.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      await vi.advanceTimersByTimeAsync(4_000);
+      emitLevel(0.02);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].remainingMs).toBe(10_000);
+      expect(warnings[0].hasRecentInput).toBe(true);
+      expect(capture.stop).not.toHaveBeenCalled();
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes the warning countdown by whole seconds without duplicate updates', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const warnings = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-duration-countdown', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return capture;
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationWarning: (payload) => warnings.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      await vi.advanceTimersByTimeAsync(4_000);
+      emitLevel(0.02);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toEqual(expect.objectContaining({
+        remainingMs: 10_000,
+        remainingSeconds: 10,
+        hasRecentInput: true,
+      }));
+
+      await vi.advanceTimersByTimeAsync(500);
+      emitLevel(0.02);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(warnings).toHaveLength(2);
+      expect(warnings[1]).toEqual(expect.objectContaining({
+        remainingMs: 9_000,
+        remainingSeconds: 9,
+        hasRecentInput: true,
+      }));
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(warnings).toHaveLength(2);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('can recover a delayed warning from an audio activity callback', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const warnings = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-delayed-warning', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return { stop: vi.fn().mockResolvedValue(undefined) };
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationWarning: (payload) => warnings.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      window.clearTimeout(session.durationWarningTimer);
+      session.durationWarningTimer = null;
+      await vi.advanceTimersByTimeAsync(7_000);
+      emitLevel(0.02);
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].remainingMs).toBe(8_000);
+      expect(warnings[0].hasRecentInput).toBe(true);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes the warning when speech resumes after a quiet reminder', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const warnings = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-warning-refresh', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return { stop: vi.fn().mockResolvedValue(undefined) };
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationWarning: (payload) => warnings.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].hasRecentInput).toBe(false);
+
+      emitLevel(0.02);
+
+      expect(warnings).toHaveLength(2);
+      expect(warnings[1].hasRecentInput).toBe(true);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('still stops a short session when the socket is not ready by its deadline', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-short-before-ready', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+    });
+
+    try {
+      await session.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+      expect(session.state).toBe('finalizing');
+      expect(socket.sent).toEqual([]);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits for a natural quiet boundary after the duration warning', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const limits = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-duration-boundary', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return capture;
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      await vi.advanceTimersByTimeAsync(4_000);
+      emitLevel(0.02);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(capture.stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+      expect(limits).toHaveLength(1);
+      expect(limits[0].hadRecentInput).toBe(false);
+      expect(limits[0].stoppedAtNaturalBoundary).toBe(true);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not end an untouched session early just because the warning window opened', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const warnings = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-duration-no-input', max_session_ms: 15_000 }),
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationWarning: (payload) => warnings.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      expect(warnings[0].hasRecentInput).toBe(false);
+      expect(capture.stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps recording through the warning while speech continues, then stops at the hard limit', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const limits = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-duration-active', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return capture;
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      for (let elapsed = 0; elapsed < 15_000; elapsed += 500) {
+        emitLevel(0.02);
+        await vi.advanceTimersByTimeAsync(500);
+      }
+
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+      expect(limits).toHaveLength(1);
+      expect(limits[0].hadRecentInput).toBe(true);
+      expect(limits[0].stoppedAtNaturalBoundary).toBe(false);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats a transport close after a missed deadline as a recoverable boundary', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const notices = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-missed-deadline', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => notices.push(payload),
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: '硬上限前的内容' });
+      window.clearTimeout(session.durationWarningTimer);
+      window.clearTimeout(session.durationTimer);
+      window.clearTimeout(session.durationBoundaryTimer);
+      session.durationWarningTimer = null;
+      session.durationTimer = null;
+      session.durationBoundaryTimer = null;
+      await vi.advanceTimersByTimeAsync(1_001);
+      socket.close();
+
+      expect(notices).toHaveLength(1);
+      expect(errors[0].details.reason).toBe('duration_limit');
+      expect(errors[0].transcript).toBe('硬上限前的内容');
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('classifies a provider final that arrives after a throttled deadline as a duration boundary', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const finals = [];
+    const limits = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-late-final', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: '截止前的内容' });
+      window.clearTimeout(session.durationWarningTimer);
+      window.clearTimeout(session.durationTimer);
+      session.durationWarningTimer = null;
+      session.durationTimer = null;
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      socket.receive({ type: 'final', text: '截止前的内容。' });
+
+      expect(limits).toHaveLength(1);
+      expect(finals).toEqual([{
+        text: '截止前的内容。',
+        details: { reason: 'duration_limit' },
+      }]);
     } finally {
       session.cancel();
       vi.useRealTimers();
@@ -933,6 +1438,256 @@ describe('StreamingSTTSession', () => {
     }
   });
 
+  it('returns the latest transcript snapshot when finalization times out', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-timeout-snapshot', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: '已经识别的长语音内容' });
+      await session.stop();
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(session.state).toBe('error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error.message).toBe('语音识别结束超时，请重试');
+      expect(errors[0].transcript).toBe('已经识别的长语音内容');
+      expect(errors[0].details.reason).toBe('user_stop');
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers a coalesced partial when the provider fails before the next paint', async () => {
+    const animationFrames = installAnimationFrameStub();
+    let socket;
+    const partials = [];
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-provider-error', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onPartial: (text) => partials.push(text),
+      onError: (error, transcript) => errors.push({ error, transcript }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'partial', text: '尚未绘制但不能丢失的内容' });
+      expect(animationFrames.size).toBe(1);
+
+      socket.receive({ type: 'error', code: 'provider_send_failed' });
+
+      expect(session.state).toBe('error');
+      expect(partials).toEqual(['尚未绘制但不能丢失的内容']);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].transcript).toBe('尚未绘制但不能丢失的内容');
+    } finally {
+      session.cancel();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('recovers the latest snapshot when the websocket disconnects', async () => {
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-provider-close', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript) => errors.push({ error, transcript }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'definite', text: '断开前已经稳定的内容' });
+      socket.close();
+
+      expect(session.state).toBe('error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error.message).toBe('语音识别连接已断开');
+      expect(errors[0].transcript).toBe('断开前已经稳定的内容');
+    } finally {
+      session.cancel();
+    }
+  });
+
+  it('ignores messages that arrive after a terminal error', async () => {
+    let socket;
+    const partials = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-terminal-message', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onPartial: (text) => partials.push(text),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      socket.receive({ type: 'error', code: 'provider_send_failed' });
+      socket.receive({ type: 'partial', text: 'late text must be ignored' });
+
+      expect(partials).toEqual([]);
+      expect(session.state).toBe('error');
+    } finally {
+      session.cancel();
+    }
+  });
+
+  it('classifies a hidden PWA finalization timeout after the deadline as a recoverable boundary', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const limits = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-pwa-timeout', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: 'PWA 切到后台前的完整内容' });
+
+      setDocumentVisibility('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(session.state).toBe('error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].transcript).toBe('PWA 切到后台前的完整内容');
+      expect(errors[0].details.reason).toBe('duration_limit');
+      expect(limits).toHaveLength(1);
+    } finally {
+      session.cancel();
+      setDocumentVisibility('visible');
+      vi.useRealTimers();
+    }
+  });
+
+  it('classifies a server lifecycle finalization timeout after the deadline as a recoverable boundary', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const limits = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-pwa-server-timeout', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: 'PWA 服务端超时前的内容' });
+      setDocumentVisibility('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      socket.receive({
+        type: 'error',
+        code: 'final_timeout',
+        stop_reason: 'lifecycle_stop',
+      });
+
+      expect(socket.sent).toContain(JSON.stringify({
+        type: 'stop',
+        stop_reason: 'lifecycle_stop',
+      }));
+      expect(limits).toHaveLength(1);
+      expect(errors[0].details.reason).toBe('duration_limit');
+      expect(errors[0].transcript).toBe('PWA 服务端超时前的内容');
+    } finally {
+      session.cancel();
+      setDocumentVisibility('visible');
+      vi.useRealTimers();
+    }
+  });
+
+  it('classifies a late lifecycle final as a duration boundary', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const finals = [];
+    const limits = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-pwa-late-final', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: '生命周期边界前的内容' });
+      setDocumentVisibility('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      socket.receive({
+        type: 'final',
+        text: '生命周期边界前的内容。',
+        stop_reason: 'lifecycle_stop',
+      });
+
+      expect(limits).toHaveLength(1);
+      expect(finals).toEqual([{
+        text: '生命周期边界前的内容。',
+        details: { reason: 'duration_limit' },
+      }]);
+    } finally {
+      session.cancel();
+      setDocumentVisibility('visible');
+      vi.useRealTimers();
+    }
+  });
+
   it('maps structured websocket admission errors to actionable messages', async () => {
     let socket;
     const errors = [];
@@ -952,5 +1707,150 @@ describe('StreamingSTTSession', () => {
 
     expect(session.state).toBe('error');
     expect(errors).toEqual(['语音输入额度已用完，请稍后再试']);
+  });
+
+  it('treats a server hard-limit timeout as a recoverable duration boundary', async () => {
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-server-hard-limit', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_ms: 150_000 });
+    socket.receive({ type: 'partial', text: '服务器硬上限前的内容' });
+    socket.receive({
+      type: 'error',
+      code: 'final_timeout',
+      stop_reason: 'hard_timeout',
+    });
+
+    expect(errors[0].details.reason).toBe('duration_limit');
+    expect(errors[0].transcript).toBe('服务器硬上限前的内容');
+    session.cancel();
+  });
+
+  it('keeps an automatic duration stop recoverable when finalization times out', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-duration-server-timeout', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: '自动分段前的内容' });
+      window.clearTimeout(session.durationWarningTimer);
+      window.clearTimeout(session.durationBoundaryTimer);
+      session.durationWarningTimer = null;
+      session.durationBoundaryTimer = null;
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      socket.receive({
+        type: 'error',
+        code: 'final_timeout',
+        stop_reason: 'duration_limit',
+      });
+
+      expect(socket.sent).toContain(JSON.stringify({
+        type: 'stop',
+        stop_reason: 'duration_limit',
+      }));
+      expect(errors[0].details.reason).toBe('duration_limit');
+      expect(errors[0].transcript).toBe('自动分段前的内容');
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps an idle-timeout provider error as an error while preserving text', async () => {
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-idle-error', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_ms: 150_000 });
+    socket.receive({ type: 'partial', text: '静音前的内容' });
+    socket.receive({
+      type: 'error',
+      code: 'final_timeout',
+      stop_reason: 'idle_timeout',
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].details.reason).toBe('idle_timeout');
+    expect(errors[0].transcript).toBe('静音前的内容');
+    session.cancel();
+  });
+
+  it('does not let a late idle-timeout error become a hard duration boundary', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const limits = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-late-idle-error', max_session_ms: 1_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationLimit: (payload) => limits.push(payload),
+      onError: (error, transcript, details) => errors.push({ error, transcript, details }),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 1_000 });
+      socket.receive({ type: 'partial', text: '静音边界前的内容' });
+      window.clearTimeout(session.durationWarningTimer);
+      window.clearTimeout(session.durationTimer);
+      window.clearTimeout(session.durationBoundaryTimer);
+      session.durationWarningTimer = null;
+      session.durationTimer = null;
+      session.durationBoundaryTimer = null;
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      socket.receive({
+        type: 'error',
+        code: 'final_timeout',
+        stop_reason: 'idle_timeout',
+      });
+
+      expect(limits).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].details.reason).toBe('idle_timeout');
+      expect(errors[0].transcript).toBe('静音边界前的内容');
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
   });
 });

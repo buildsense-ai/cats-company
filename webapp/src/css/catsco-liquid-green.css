@@ -17,6 +17,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] {
   --cc-border-strong: rgba(198, 240, 228, 0.22);
   --cc-text: #ffffff;
   --cc-text-secondary: #ffffff;
+  --cc-voice-notice: #b8d8cf;
   --cc-muted: #ffffff;
   --cc-accent: #29bc95;
   --cc-accent-hover: #219f7e;
