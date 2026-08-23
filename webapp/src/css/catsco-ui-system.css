@@ -3812,9 +3812,9 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 .v3-composer-hint.is-notice,
 .v3-composer-hint.is-success {
-  color: var(--cc-muted);
-  font-size: 11px;
-  line-height: 16px;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .v3-voice-hold-overlay {
@@ -3861,7 +3861,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .v3-voice-hold-limit-notice {
   max-width: 100%;
-  color: var(--cc-muted);
+  color: var(--cc-text-secondary);
   font-size: 12px;
   line-height: 18px;
   text-align: center;

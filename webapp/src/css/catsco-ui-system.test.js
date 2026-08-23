@@ -1490,6 +1490,20 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-composer-hint')).toContain('line-height: 18px;');
   });
 
+  it('keeps voice duration notices readable while staying visually quiet', () => {
+    const composerNoticeRule = ruleFor(
+      '.v3-composer-hint.is-notice,\n.v3-composer-hint.is-success',
+    );
+    const holdLimitNoticeRule = ruleFor('.v3-voice-hold-limit-notice');
+
+    expect(composerNoticeRule).toContain('color: var(--cc-text-secondary);');
+    expect(composerNoticeRule).toContain('font-size: 12px;');
+    expect(composerNoticeRule).toContain('line-height: 18px;');
+    expect(holdLimitNoticeRule).toContain('color: var(--cc-text-secondary);');
+    expect(holdLimitNoticeRule).toContain('font-size: 12px;');
+    expect(holdLimitNoticeRule).toContain('line-height: 18px;');
+  });
+
   it('keeps the two primary sidebar controls on one shared geometry', () => {
     const controlsRule = ruleFor('.cc-sidebar-primary,\n.cc-sidebar-search');
     const hoverRule = ruleFor(

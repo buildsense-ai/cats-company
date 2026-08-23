@@ -433,6 +433,7 @@ export class StreamingSTTSession {
     this.durationDeadlineAt = null;
     this.durationWarningSent = false;
     this.durationWarningInputState = null;
+    this.durationWarningRemainingSeconds = null;
     this.durationBoundaryQuietSince = null;
     this.durationLimitReached = false;
     this.lastVoiceAt = null;
@@ -489,6 +490,7 @@ export class StreamingSTTSession {
     this.durationDeadlineAt = Date.now() + maxMilliseconds;
     this.durationWarningSent = false;
     this.durationWarningInputState = null;
+    this.durationWarningRemainingSeconds = null;
     this.durationBoundaryQuietSince = null;
     this.durationLimitReached = previousDurationLimitReached;
     this.stopReason = previousDurationLimitReached
@@ -565,11 +567,18 @@ export class StreamingSTTSession {
 
   emitDurationWarning(remainingMs = this.durationDeadlineAt - Date.now()) {
     if (!this.durationWarningSent || !this.durationDeadlineAt) return;
+    const clampedRemainingMs = Math.max(0, remainingMs);
+    const remainingSeconds = Math.max(0, Math.ceil(clampedRemainingMs / 1000));
     const hasRecentInput = this.hasRecentSpeechActivity();
-    if (this.durationWarningInputState === hasRecentInput) return;
+    if (
+      this.durationWarningInputState === hasRecentInput
+      && this.durationWarningRemainingSeconds === remainingSeconds
+    ) return;
     this.durationWarningInputState = hasRecentInput;
+    this.durationWarningRemainingSeconds = remainingSeconds;
     this.onDurationWarning({
-      remainingMs: Math.max(0, remainingMs),
+      remainingMs: clampedRemainingMs,
+      remainingSeconds,
       hasRecentInput,
     });
   }

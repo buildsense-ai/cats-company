@@ -6,8 +6,11 @@ streams 100 ms frames to CatsCo. CatsCo forwards those frames to Volcengine and
 returns normalized `ready`, `definite`, `partial`, `final`, and `error` events.
 
 Audio and partial transcripts are memory-only. They are not written to
-`/uploads`, message history, or the database. Only the final transcript is
-inserted into the browser composer draft.
+`/uploads`, message history, or the database. During a successful session, only
+the final transcript is inserted into the browser composer draft. If a
+terminal error interrupts recognition after text has been captured, the browser
+may insert the latest snapshot locally so the user can recover it; it is not
+persisted until the user submits the draft.
 
 ## Provider
 

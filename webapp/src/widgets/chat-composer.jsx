@@ -296,13 +296,20 @@ export default function ChatComposer({
         if (voiceSessionRef.current !== session) return;
         voiceWaveLevelRef.current = level;
       },
-      onDurationWarning: ({ hasRecentInput, remainingMs } = {}) => {
+      onDurationWarning: ({ hasRecentInput, remainingMs, remainingSeconds } = {}) => {
         if (voiceSessionRef.current !== session) return;
-        const remainingSeconds = Math.max(1, Math.ceil(Number(remainingMs ?? 10_000) / 1000));
+        const parsedRemainingSeconds = Number(remainingSeconds);
+        const parsedRemainingMs = Number(remainingMs ?? 10_000);
+        const seconds = Math.max(
+          1,
+          Number.isFinite(parsedRemainingSeconds)
+            ? Math.ceil(parsedRemainingSeconds)
+            : (Number.isFinite(parsedRemainingMs) ? Math.ceil(parsedRemainingMs / 1000) : 10),
+        );
         setVoiceError('');
         setVoiceNotice(
           hasRecentInput
-            ? `还剩约 ${remainingSeconds} 秒，继续说即可，结束后会保存到输入框`
+            ? `还剩约 ${seconds} 秒，继续说即可，结束后会保存到输入框`
             : '这段快结束了，已识别内容会保存到输入框',
         );
         setVoiceNoticeTone('notice');

@@ -1065,6 +1065,59 @@ describe('StreamingSTTSession', () => {
     }
   });
 
+  it('refreshes the warning countdown by whole seconds without duplicate updates', async () => {
+    vi.useFakeTimers();
+    let socket;
+    let emitLevel;
+    const warnings = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-duration-countdown', max_session_ms: 15_000 }),
+      createCapture: vi.fn(async ({ onLevel }) => {
+        emitLevel = onLevel;
+        return capture;
+      }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onDurationWarning: (payload) => warnings.push(payload),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 15_000 });
+      await vi.advanceTimersByTimeAsync(4_000);
+      emitLevel(0.02);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toEqual(expect.objectContaining({
+        remainingMs: 10_000,
+        remainingSeconds: 10,
+        hasRecentInput: true,
+      }));
+
+      await vi.advanceTimersByTimeAsync(500);
+      emitLevel(0.02);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(warnings).toHaveLength(2);
+      expect(warnings[1]).toEqual(expect.objectContaining({
+        remainingMs: 9_000,
+        remainingSeconds: 9,
+        hasRecentInput: true,
+      }));
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(warnings).toHaveLength(2);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
   it('can recover a delayed warning from an audio activity callback', async () => {
     vi.useFakeTimers();
     let socket;
