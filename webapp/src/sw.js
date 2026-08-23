@@ -6,6 +6,7 @@ import { registerRoute, NavigationRoute } from 'workbox-routing';
 import { NetworkFirst, NetworkOnly } from 'workbox-strategies';
 
 import { sameOriginNotificationURL } from './utils/notification-url';
+import { navigationFallback } from './utils/navigation-fallback';
 import {
   cleanupNavigationCaches,
   NAVIGATION_CACHE_NAME,
@@ -50,7 +51,7 @@ const navigationHandler = new NetworkFirst({
       if (!response || response.status !== 200) return null;
       return response;
     },
-    handlerDidError: async () => caches.match('/offline.html', { ignoreSearch: true }),
+    handlerDidError: navigationFallback,
   }],
 });
 
