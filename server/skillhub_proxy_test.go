@@ -104,13 +104,13 @@ func TestSkillHubProxyForwardsCatalogueQuery(t *testing.T) {
 	defer upstream.Close()
 
 	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{Timeout: time.Second})
-	req := httptest.NewRequest(http.MethodGet, "/api/skillhub/skills?q=code%20review&category=dev", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/skillhub/skills?q=code%20review&category=dev&search_mode=name&ignored=value", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSkills(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/api/skills" || gotQuery != "category=dev&q=code+review" {
+	if gotPath != "/api/skills" || gotQuery != "category=dev&q=code+review&search_mode=name" {
 		t.Fatalf("upstream request = %s?%s", gotPath, gotQuery)
 	}
 }

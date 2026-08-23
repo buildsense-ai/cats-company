@@ -564,9 +564,9 @@ function Catalogue(props) {
       </div>
       <form className='cc-skillhub-search' role='search' onSubmit={(event) => { event.preventDefault(); onSearch(query); }}>
         <Search size={17} aria-hidden='true' />
-        <label className='cc-visually-hidden' htmlFor='cc-skillhub-search-input'>搜索能力</label>
+        <label className='cc-visually-hidden' htmlFor='cc-skillhub-search-input'>搜索能力名称</label>
         <div className='cc-skillhub-search-field'>
-          <input id='cc-skillhub-search-input' name='skillhub-query' type='search' autoComplete='off' value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder='搜索能力名称或用途…' />
+          <input id='cc-skillhub-search-input' name='skillhub-query' type='search' autoComplete='off' value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder='搜索能力名称…' />
           {query && (
             <button type='button' className='cc-skillhub-search-clear' aria-label='清除搜索内容' title='清除' onClick={() => onQueryChange('')}>
               <X size={14} aria-hidden='true' />

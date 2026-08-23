@@ -2706,5 +2706,8 @@ describe('SkillHubView', () => {
 
     expect(container.textContent).toContain('Latest result');
     expect(container.textContent).not.toContain('Stale result');
+    expect(api.searchSkillHubSkills).toHaveBeenCalledWith('first', { searchMode: 'name' });
+    expect(api.searchSkillHubSkills).toHaveBeenCalledWith('second', { searchMode: 'name' });
+    expect(form.querySelector('input').placeholder).toBe('搜索能力名称…');
   });
 });
