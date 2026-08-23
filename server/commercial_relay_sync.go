@@ -582,6 +582,19 @@ func commercialRelayBaselineForSummary(summary *types.CommercialSummary, relayUs
 			}
 			return commercialRelayBaselineProfileFree, budgets, nil
 		}
+		// Paid upgrades revoke the prior free entitlement. A later refund
+		// leaves only the immutable refund ledger entries, so use that audit
+		// signal to recreate the default free baseline before reconciling the
+		// stale shared Relay quota.
+		for _, entry := range summary.Ledger {
+			if entry != nil && strings.EqualFold(strings.TrimSpace(entry.SourceType), "refund") {
+				budgets := make(map[string]float64, len(commercialRelayFreeBudgets))
+				for model, amount := range commercialRelayFreeBudgets {
+					budgets[model] = amount
+				}
+				return commercialRelayBaselineProfileFree, budgets, nil
+			}
+		}
 	}
 	if relayUser != nil && relayUser.Limits.MonthlyBudget.MaxLimit > commercialRelayBlockedLimit {
 		return "", nil, fmt.Errorf("relay shared quota exists without a commercial baseline")
