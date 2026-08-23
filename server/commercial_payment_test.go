@@ -1130,6 +1130,19 @@ func TestCommercialRelayBaselineCoexistsWithPaidAndManualQuota(t *testing.T) {
 	}
 }
 
+func TestCommercialRelayBaselineRestoresFreeAfterRefund(t *testing.T) {
+	summary := &types.CommercialSummary{
+		Ledger: []*types.CommercialLedgerEntry{{SourceType: "refund", EntryType: "revoke"}},
+	}
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 10500, ResetDuration: "1M"},
+	}}
+	profile, budgets, err := commercialRelayBaselineForSummary(summary, relayUser)
+	if err != nil || profile != commercialRelayBaselineProfileFree || len(budgets) != len(commercialRelayFreeBudgets) {
+		t.Fatalf("refund did not restore free baseline: profile=%q budgets=%#v err=%v", profile, budgets, err)
+	}
+}
+
 func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.T) {
 	reset := "2026-08-01 08:30:00.123456789+00:00"
 	baseStore := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{}}}
