@@ -259,7 +259,7 @@ describe('ChatComposer', () => {
     });
 
     const hint = container.querySelector('.v3-composer-hint');
-    expect(hint.textContent).toContain('当前内容会自动保留');
+    expect(hint.textContent).toContain('结束后会保存到输入框');
     expect(hint.classList.contains('is-error')).toBe(false);
 
     await act(async () => {
@@ -272,7 +272,7 @@ describe('ChatComposer', () => {
       expect.objectContaining({ baseValue: '' }),
     );
     expect(container.querySelector('.v3-composer-hint')?.textContent)
-      .toContain('已保留本段语音');
+      .toContain('已保存到输入框，可继续录音');
   });
 
   it('shows a calm notice for a successfully finalized idle boundary', async () => {
@@ -299,7 +299,7 @@ describe('ChatComposer', () => {
     });
 
     expect(container.querySelector('.v3-composer-hint')?.textContent)
-      .toContain('已保留本段语音');
+      .toContain('已保存到输入框，可继续录音');
     expect(container.querySelector('.v3-composer-hint')?.classList.contains('is-error')).toBe(false);
   });
 

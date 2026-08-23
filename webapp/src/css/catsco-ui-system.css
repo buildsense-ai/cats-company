@@ -3810,11 +3810,11 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-composer-hint.is-error {
   color: var(--cc-danger);
 }
-.v3-composer-hint.is-notice {
-  color: var(--cc-warning-text);
-}
+.v3-composer-hint.is-notice,
 .v3-composer-hint.is-success {
-  color: var(--cc-success-text);
+  color: var(--cc-muted);
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .v3-voice-hold-overlay {
@@ -3861,9 +3861,9 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .v3-voice-hold-limit-notice {
   max-width: 100%;
-  color: var(--cc-warning-text);
-  font-size: 13px;
-  line-height: 20px;
+  color: var(--cc-muted);
+  font-size: 12px;
+  line-height: 18px;
   text-align: center;
 }
 

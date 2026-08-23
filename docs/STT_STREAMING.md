@@ -105,7 +105,10 @@ background lifecycle where the normal `final` event may not arrive.
 
 Ten seconds before the advertised session limit, the browser checks recent
 speech activity from the PCM meter and transcript events. It shows a quiet
-warning while keeping the microphone open. If the speaker has already gone
+inline status line in small, muted text while keeping the microphone open. The
+copy tells the user what happens next, for example that continued speech is
+still accepted and the recognized text will be saved into the input box. It is
+not an alert, toast, or interruptive prompt. If the speaker has already gone
 quiet, the client waits for a short natural boundary and finishes the segment
 there. A transcript that ends with sentence punctuation can close after a
 shorter quiet period; an uncertain or unpunctuated preview uses a more

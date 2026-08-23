@@ -11,7 +11,7 @@ const VOICE_HOLD_CANCEL_DISTANCE = 72;
 const VOICE_WAVE_RAMP_MS = 2200;
 
 function formatVoiceDurationBoundaryNotice(hasText) {
-  return hasText ? '已保留本段语音，可继续录音' : '本段语音已结束，可继续录音';
+  return hasText ? '已保存到输入框，可继续录音' : '没有识别到内容，可再次录音';
 }
 
 export function voiceWavePhaseSpeed(elapsedMs) {
@@ -302,15 +302,15 @@ export default function ChatComposer({
         setVoiceError('');
         setVoiceNotice(
           hasRecentInput
-            ? `本段语音还剩约 ${remainingSeconds} 秒，当前内容会自动保留`
-            : '本段语音即将结束，已识别内容会自动保留',
+            ? `还剩约 ${remainingSeconds} 秒，继续说即可，结束后会保存到输入框`
+            : '这段快结束了，已识别内容会保存到输入框',
         );
         setVoiceNoticeTone('notice');
       },
       onDurationLimit: () => {
         if (voiceSessionRef.current !== session) return;
         setVoiceError('');
-        setVoiceNotice('正在整理本段语音…');
+        setVoiceNotice('正在保存到输入框…');
         setVoiceNoticeTone('notice');
       },
       onFinal: (text, details = {}) => {
