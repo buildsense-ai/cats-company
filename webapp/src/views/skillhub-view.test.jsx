@@ -12,6 +12,7 @@ import SkillHubView, {
   buildCurrentAgentSkills,
   resolveLocalSkillForAgentSkill,
   normalizeViewerSkills,
+  normalizeSkillVersionHistory,
   normalizeSkillHubDevices,
   resolveAutomaticSkillHubDeviceID,
   normalizeLocalSkills,
@@ -34,11 +35,13 @@ import { FeedbackProvider } from '../components/feedback-system';
 vi.mock('../api', () => ({
   api: {
     getAgentSkills: vi.fn(),
+    getAgentSkillVersions: vi.fn(),
     getMyBots: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
     updateBotDefinitionSkills: vi.fn(),
     searchSkillHubSkills: vi.fn(),
     getSkillHubSkill: vi.fn(),
+    getSkillHubVersions: vi.fn(),
     getSkillHubVersion: vi.fn(),
     getDevices: vi.fn(),
     switchLocalBot: vi.fn(),
@@ -93,6 +96,31 @@ describe('SkillHubView', () => {
         changeSource: 'conversation_mutation',
       }],
     });
+    api.getAgentSkillVersions.mockResolvedValue({
+      botId: '43',
+      skillId: 'private/review',
+      currentVersion: 'v2',
+      versions: [{
+        source: 'skillhub',
+        skillId: 'private/review',
+        version: 'v2',
+        displayName: 'cloud-html-artifact',
+        revisionNumber: 2,
+        lastChangedBy: '修改者未记录',
+        lastChangedAt: '2026-08-22T02:03:04Z',
+        changeSource: 'conversation_mutation',
+        current: true,
+      }, {
+        source: 'skillhub',
+        skillId: 'private/review',
+        version: 'v1',
+        displayName: 'cloud-html-artifact',
+        revisionNumber: 1,
+        lastChangedBy: 'Bot 自动同步',
+        lastChangedAt: '2026-08-20T02:03:04Z',
+        changeSource: 'runtime_backup',
+      }],
+    });
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
       revision: 3,
@@ -123,6 +151,14 @@ describe('SkillHubView', () => {
         contentHash: 'd'.repeat(64),
       },
     });
+    api.getSkillHubVersions.mockResolvedValue({
+      versions: [{
+        skillId: 'tools/review',
+        latestVersion: '1.0.0',
+        author: { name: 'arrowhaken' },
+        publishedAt: '2026-08-20T02:03:04Z',
+      }],
+    });
     api.getDevices.mockResolvedValue({ devices: [] });
     api.getLocalSkills.mockResolvedValue({ skills: [] });
     api.shareLocalSkill.mockResolvedValue({});
@@ -145,6 +181,19 @@ describe('SkillHubView', () => {
     ]));
     expect(normalizeViewerSkills({ skills: [{ skillId: 'private/review', version: 'v2' }] })[0]).toMatchObject({
       skillId: 'private/review', version: 'v2',
+    });
+    expect(normalizeSkillVersionHistory({
+      currentVersion: 'v2',
+      versions: [{
+        skillId: 'private/review', version: 'v2', revisionNumber: 2,
+        lastChangedBy: 'lin', lastChangedAt: '2026-08-22T02:03:04Z',
+      }],
+      nextBeforeRevisionNumber: 2,
+    }, { privateReference: true })).toMatchObject({
+      versions: [expect.objectContaining({
+        version: 'v2', revisionNumber: 2, author: 'lin', current: true, privateReference: true,
+      })],
+      nextBeforeRevisionNumber: 2,
     });
     const merged = buildCurrentAgentSkills([], [{ name: 'draft', localSkillId: 'draft-id' }]);
     expect(resolveLocalSkillForAgentSkill(merged[0], [{ name: 'draft', localSkillId: 'draft-id' }]))
@@ -905,6 +954,8 @@ describe('SkillHubView', () => {
     expect(dialog.textContent).not.toContain('local:draft-1');
     expect(dialog.textContent).not.toContain('版本待确认');
     expect(dialog.textContent).not.toContain('发布者SkillHub');
+    expect(api.getAgentSkillVersions).not.toHaveBeenCalled();
+    expect(api.getSkillHubVersions).not.toHaveBeenCalled();
   });
 
   it('copies an added SkillHub ability without opening the platform share action', async () => {
@@ -963,6 +1014,9 @@ describe('SkillHubView', () => {
     expect(dialog).toBeTruthy();
     expect(dialog.textContent).toContain('tools/review');
     expect(dialog.textContent).toContain('v1.0.0');
+    expect(dialog.textContent).toContain('版本历史仅供查看');
+    expect(dialog.textContent).toContain('arrowhaken');
+    expect(api.getSkillHubVersions).toHaveBeenCalledWith('tools/review');
     await act(async () => {
       Simulate.click(dialog.querySelector('button[aria-label="关闭能力详情"]'));
       await Promise.resolve();
@@ -1280,6 +1334,81 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
     expect(container.querySelector('.cc-skillhub-copy-action')).toBeNull();
     expect(container.querySelector('.cc-skillhub-more-action')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="查看 cloud-html-artifact 详情"]'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(api.getAgentSkillVersions).toHaveBeenCalledWith('43', 'private/review', {
+      limit: 20,
+      beforeRevision: 0,
+    });
+    expect(dialog.textContent).toContain('版本历史');
+    expect(dialog.textContent).toContain('第 2 版');
+    expect(dialog.textContent).toContain('当前使用');
+    expect(dialog.textContent).toContain('第 1 版');
+    expect(dialog.textContent).toContain('Bot 自动同步');
+    expect(dialog.textContent).toContain('版本历史仅供查看');
+    expect(dialog.textContent).not.toContain('回退到此版本');
+  });
+
+  it('discards an open history request when the selected Agent changes', async () => {
+    const pendingHistory = deferred();
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
+        { uid: 43, display_name: 'Friend A', relation: 'friend', is_owner: false, owner_id: 98 },
+        { uid: 44, display_name: 'Friend B', relation: 'friend', is_owner: false, owner_id: 99 },
+      ],
+    });
+    api.getAgentSkills.mockImplementation(async (uid) => ({
+      botId: String(uid),
+      skills_visibility: 'owner',
+      skills: [{
+        source: 'skillhub', skillId: 'private/review', version: `v-${uid}`,
+        displayName: `review-${uid}`, revisionNumber: 1,
+      }],
+    }));
+    api.getAgentSkillVersions.mockReturnValueOnce(pendingHistory.promise);
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.change(container.querySelector('.cc-skillhub-agent-native-select'), {
+        target: { value: '43' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="查看 review-43 详情"]'));
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(api.getAgentSkillVersions).toHaveBeenCalledWith('43', 'private/review', {
+      limit: 20,
+      beforeRevision: 0,
+    });
+
+    await act(async () => {
+      Simulate.change(container.querySelector('.cc-skillhub-agent-native-select'), {
+        target: { value: '44' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeFalsy();
+    await act(async () => {
+      pendingHistory.resolve({ currentVersion: 'v-43', versions: [] });
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeFalsy();
   });
 
   it('loads a production local workspace and shares through the selected XiaoBa device', async () => {

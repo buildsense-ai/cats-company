@@ -630,6 +630,15 @@ export const api = {
     { prompt_visibility: visibility },
   ),
   getAgentSkills: (uid) => request('GET', `/api/agents/skills?uid=${encodeURIComponent(uid)}`),
+  getAgentSkillVersions: (uid, skillId, { limit = 20, beforeRevision = 0 } = {}) => {
+    const params = new URLSearchParams({
+      uid: String(uid),
+      skill_id: String(skillId),
+      limit: String(limit),
+    });
+    if (beforeRevision > 0) params.set('before_revision', String(beforeRevision));
+    return request('GET', `/api/agents/skill-versions?${params}`);
+  },
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
@@ -650,6 +659,12 @@ export const api = {
   getSkillHubSkill: (skillId, options = {}) => request(
     'GET',
     `/api/skillhub/skills/${encodeSkillHubID(skillId)}`,
+    undefined,
+    options,
+  ),
+  getSkillHubVersions: (skillId, options = {}) => request(
+    'GET',
+    `/api/skillhub/skills/${encodeSkillHubID(skillId)}/versions`,
     undefined,
     options,
   ),

@@ -175,13 +175,13 @@ function AbilityGroup({ description, label, skills, ...props }) {
         <span>{skills.length}</span>
       </div>
       <div className='cc-skillhub-added-list'>
-        {skills.map((skill) => <AddedSkillItem key={skill.skillId} skill={skill} {...props} />)}
+        {skills.map((skill) => <AddedSkillItem key={`${props.selectedBotUID}:${skill.skillId}`} skill={skill} {...props} />)}
       </div>
     </section>
   );
 }
 
-function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onCopySkill, onRemoveSkill, saving, sharingSkill, skill, skillAction }) {
+function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onCopySkill, onLoadSkillHistory, onRemoveSkill, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
   const presentation = addedSkillPresentationByID.get(skill.skillId);
   const {
     description, details, label, localDetails, privateReference,
@@ -288,6 +288,15 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
         <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前设备本地' : <>{versionLabel} · {authorLabel}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
       </div>
       <div className='cc-skillhub-added-actions'>
+        {isReadOnly && !skill.localOnly && <button
+          ref={triggerRef}
+          type='button'
+          className='subtle cc-skillhub-details-action'
+          aria-label={`查看 ${label} 详情`}
+          onClick={() => setDetailsOpen(true)}
+        >
+          查看详情
+        </button>}
         {!isReadOnly && !skill.localOnly && <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
           {copying ? '复制中…' : '复制'}
         </button>}
@@ -358,19 +367,23 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
         document.body,
       )}
       {detailsOpen && createPortal(
-        <SkillDetailsDialog details={details} label={label} localDetails={localDetails} onClose={closeDetails} privateReference={privateReference} skill={skill} />,
+        <SkillDetailsDialog details={details} historyBotUID={selectedBotUID} label={label} localDetails={localDetails} onClose={closeDetails} onLoadSkillHistory={onLoadSkillHistory} privateReference={privateReference} skill={skill} />,
         document.body,
       )}
     </article>
   );
 }
 
-function SkillDetailsDialog({ details, label, localDetails, onClose, privateReference, skill }) {
+function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClose, onLoadSkillHistory, privateReference, skill }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
   const titleId = useId();
   const descriptionId = useId();
   const localOnly = Boolean(skill?.localOnly);
+  const [history, setHistory] = useState([]);
+  const [historyCursor, setHistoryCursor] = useState(0);
+  const [historyError, setHistoryError] = useState('');
+  const [historyLoading, setHistoryLoading] = useState(!localOnly);
   const description = localOnly
     ? '该能力当前存在于这台 XiaoBa 的本地工作区，可供本地运行时使用；尚未发布到 SkillHub，也未写入 Agent 的云端能力配置。'
     : details?.description || skill?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
@@ -399,6 +412,41 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
+
+  const loadHistory = async ({ append = false, beforeRevisionNumber = 0 } = {}) => {
+    if (localOnly || typeof onLoadSkillHistory !== 'function') return;
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const result = await onLoadSkillHistory(historyBotUID, skill, { beforeRevisionNumber });
+      setHistory((current) => append ? [...current, ...(result?.versions || [])] : (result?.versions || []));
+      setHistoryCursor(Number(result?.nextBeforeRevisionNumber || 0));
+    } catch (error) {
+      setHistoryError(error?.message || '暂时无法读取版本历史。');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    if (localOnly || typeof onLoadSkillHistory !== 'function') {
+      setHistoryLoading(false);
+      return () => { active = false; };
+    }
+    setHistoryLoading(true);
+    setHistoryError('');
+    onLoadSkillHistory(historyBotUID, skill, { beforeRevisionNumber: 0 }).then((result) => {
+      if (!active) return;
+      setHistory(result?.versions || []);
+      setHistoryCursor(Number(result?.nextBeforeRevisionNumber || 0));
+    }).catch((error) => {
+      if (active) setHistoryError(error?.message || '暂时无法读取版本历史。');
+    }).finally(() => {
+      if (active) setHistoryLoading(false);
+    });
+    return () => { active = false; };
+  }, [historyBotUID, localOnly, onLoadSkillHistory, skill]);
 
   return (
     <div
@@ -431,12 +479,76 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
           <div><dt>{localOnly ? '发布状态' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
           <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前设备本地' : privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
         </dl>
+        <section className='cc-skillhub-history' aria-labelledby={`${titleId}-history`}>
+          <div className='cc-skillhub-history-heading'>
+            <div>
+              <h3 id={`${titleId}-history`}>版本历史</h3>
+              <p>{localOnly ? '本地能力发布后才会生成云端版本历史。' : '版本历史仅供查看，暂不支持回退或切换版本。'}</p>
+            </div>
+            {!localOnly && historyError && <button type='button' onClick={() => loadHistory()}>重试</button>}
+          </div>
+          {localOnly ? (
+            <p className='cc-skillhub-history-empty'>尚无云端版本记录。</p>
+          ) : historyLoading && history.length === 0 ? (
+            <p className='cc-skillhub-history-empty' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> 正在读取版本历史…</p>
+          ) : historyError && history.length === 0 ? (
+            <p className='cc-skillhub-history-error' role='alert'>{historyError}</p>
+          ) : history.length === 0 ? (
+            <p className='cc-skillhub-history-empty'>SkillHub 暂无可展示的历史版本。</p>
+          ) : (
+            <div className='cc-skillhub-history-list'>
+              {history.map((version) => (
+                <article className='cc-skillhub-history-item' key={`${version.version}-${version.revisionNumber || 0}`}>
+                  <div className='cc-skillhub-history-title'>
+                    <strong>{formatHistoryVersion(version)}</strong>
+                    {version.current && <span>当前使用</span>}
+                  </div>
+                  <p>{formatHistoryActor(version, privateReference)}{version.lastChangedAt ? ` · ${formatHistoryTime(version.lastChangedAt)}` : ''}</p>
+                  {privateReference && <code title={version.version} translate='no'>{shortPrivateVersion(version.version)}</code>}
+                </article>
+              ))}
+            </div>
+          )}
+          {historyError && history.length > 0 && <p className='cc-skillhub-history-error' role='alert'>{historyError}</p>}
+          {historyCursor > 0 && <button
+            type='button'
+            className='cc-skillhub-history-more'
+            disabled={historyLoading}
+            onClick={() => loadHistory({ append: true, beforeRevisionNumber: historyCursor })}
+          >{historyLoading ? '读取中…' : '加载更早版本'}</button>}
+        </section>
         <div className='cc-skillhub-detail-footer'>
           <button type='button' onClick={onClose}>完成</button>
         </div>
       </section>
     </div>
   );
+}
+
+function formatHistoryVersion(version) {
+  if (version?.privateReference && version.revisionNumber > 0) return `第 ${version.revisionNumber} 版`;
+  const value = String(version?.version || '').trim();
+  if (!value) return '版本待确认';
+  return value.startsWith('v') ? value : `v${value}`;
+}
+
+function formatHistoryActor(version, privateReference) {
+  if (!privateReference) return version?.author || '发布者待确认';
+  if (version?.author) return version.author;
+  return version?.changeSource === 'runtime_backup' ? 'Bot 自动同步' : '修改者未记录';
+}
+
+function formatHistoryTime(value) {
+  const timestamp = Date.parse(String(value || ''));
+  if (!Number.isFinite(timestamp)) return '时间待确认';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).format(new Date(timestamp));
+}
+
+function shortPrivateVersion(value) {
+  const version = String(value || '').trim();
+  return version.length > 18 ? `${version.slice(0, 10)}…${version.slice(-6)}` : version;
 }
 
 function Catalogue(props) {

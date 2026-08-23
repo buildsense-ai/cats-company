@@ -393,6 +393,20 @@ func main() {
 		}
 		return metadata, nil
 	})
+	botDefinitionHandler.SetSkillHistoryResolver(func(ctx context.Context, botUID int64, skillID string, limit int64, beforeRevision int64) (server.BotSkillVersionHistory, error) {
+		apiKey, err := db.GetBotAPIKey(botUID)
+		if err != nil {
+			return server.BotSkillVersionHistory{}, err
+		}
+		return skillHubProxyHandler.ResolvePrivateSkillHistory(
+			ctx,
+			strconv.FormatInt(botUID, 10),
+			apiKey,
+			skillID,
+			limit,
+			beforeRevision,
+		)
+	})
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
 	botModelConfigHandler.SetRollout(botModelCloudPublicEnabled, botModelCloudTestUIDs)
@@ -854,6 +868,7 @@ func main() {
 	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
 	mux.HandleFunc("/api/agents/prompt", jwtAuthWithDB(botDefinitionHandler.HandleViewerPrompt))
 	mux.HandleFunc("/api/agents/skills", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkills))
+	mux.HandleFunc("/api/agents/skill-versions", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkillHistory))
 	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
 	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))

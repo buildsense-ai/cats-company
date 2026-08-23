@@ -52,6 +52,47 @@ func TestSkillHubPrivateMetadataUsesBotCredentialsAndReturnsOnlyRequestedNames(t
 	}
 }
 
+func TestSkillHubPrivateHistoryUsesBotCredentialsAndSanitizesVersions(t *testing.T) {
+	var gotAuthorization string
+	var gotBotID string
+	var gotPath string
+	var gotBody privateSkillHistoryRequest
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		gotBotID = r.Header.Get("X-CatsCo-Bot-Id")
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"skillId":"priv_owned","versions":[` +
+			`{"source":"skillhub","skillId":"priv_owned","version":"v_2","displayName":"review-helper","revisionNumber":2,"lastChangedAt":"2026-08-23T02:03:04Z","changeSource":"conversation_mutation","contentHash":"do-not-forward","actorUserUid":7},` +
+			`{"source":"skillhub","skillId":"priv_other","version":"v_1","displayName":"ignore","revisionNumber":1}` +
+			`],"nextBeforeRevisionNumber":2}`))
+	}))
+	defer upstream.Close()
+
+	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{Timeout: time.Second})
+	history, err := h.ResolvePrivateSkillHistory(context.Background(), "43", "secret-bot-key", "priv_owned", 20, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != skillHubPrivateHistoryPath || gotAuthorization != "ApiKey secret-bot-key" || gotBotID != "43" {
+		t.Fatalf("request path/auth/bot = %q/%q/%q", gotPath, gotAuthorization, gotBotID)
+	}
+	if gotBody.SkillID != "priv_owned" || gotBody.Limit != 20 || gotBody.BeforeRevisionNumber != 9 {
+		t.Fatalf("request body = %+v", gotBody)
+	}
+	if history.SkillID != "priv_owned" || history.NextBeforeRevisionNumber != 2 || len(history.Versions) != 1 {
+		t.Fatalf("history = %+v", history)
+	}
+	version := history.Versions[0]
+	if version.SkillID != "priv_owned" || version.Version != "v_2" || version.DisplayName != "review-helper" ||
+		version.RevisionNumber != 2 || version.LastChangedAt != "2026-08-23T02:03:04Z" ||
+		version.ChangeSource != "conversation_mutation" || version.LastChangedBy != "" || version.Current {
+		t.Fatalf("version = %+v", version)
+	}
+}
+
 func TestSkillHubProxyForwardsCatalogueQuery(t *testing.T) {
 	var gotPath string
 	var gotQuery string

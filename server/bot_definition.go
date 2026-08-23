@@ -28,6 +28,7 @@ type BotDefinitionHandler struct {
 	// to the Hub's bot-body liveness check.
 	promptOnlineResolver  func(botUID int64) bool
 	skillMetadataResolver func(context.Context, int64, []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error)
+	skillHistoryResolver  func(context.Context, int64, string, int64, int64) (BotSkillVersionHistory, error)
 }
 
 // BotSkillDisplayMetadata contains optional, viewer-safe presentation fields.
@@ -39,6 +40,27 @@ type BotSkillDisplayMetadata struct {
 	LastChangedBy        string
 	LastChangedAt        string
 	ChangeSource         string
+}
+
+// BotSkillVersionHistory contains viewer-safe, display-only history metadata.
+// It never contains package bytes, content hashes, local paths, credentials,
+// conversation identifiers, or mutation controls.
+type BotSkillVersionHistory struct {
+	SkillID                  string
+	Versions                 []BotSkillVersionHistoryEntry
+	NextBeforeRevisionNumber int64
+}
+
+type BotSkillVersionHistoryEntry struct {
+	Source         string `json:"source"`
+	SkillID        string `json:"skillId"`
+	Version        string `json:"version"`
+	DisplayName    string `json:"displayName,omitempty"`
+	RevisionNumber int64  `json:"revisionNumber,omitempty"`
+	LastChangedBy  string `json:"lastChangedBy,omitempty"`
+	LastChangedAt  string `json:"lastChangedAt,omitempty"`
+	ChangeSource   string `json:"changeSource,omitempty"`
+	Current        bool   `json:"current,omitempty"`
 }
 
 type botDefinitionModelPatchRequest struct {
@@ -95,6 +117,16 @@ func (h *BotDefinitionHandler) SetSkillMetadataResolver(
 ) {
 	if h != nil {
 		h.skillMetadataResolver = resolver
+	}
+}
+
+// SetSkillHistoryResolver supplies read-only private Skill history. Runtime
+// activation and BotDefinition mutation deliberately do not depend on it.
+func (h *BotDefinitionHandler) SetSkillHistoryResolver(
+	resolver func(context.Context, int64, string, int64, int64) (BotSkillVersionHistory, error),
+) {
+	if h != nil {
+		h.skillHistoryResolver = resolver
 	}
 }
 
