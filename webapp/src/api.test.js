@@ -309,6 +309,24 @@ describe('WebSocket connection recovery', () => {
     });
   });
 
+  test('keeps the backoff across sockets that open and drop immediately', () => {
+    const onMessage = vi.fn();
+    api.connectWS(onMessage);
+    MockWebSocket.instances[0].open();
+    MockWebSocket.instances[0].serverClose();
+
+    vi.advanceTimersByTime(1000);
+    const retryingSocket = MockWebSocket.instances[1];
+    retryingSocket.open();
+    retryingSocket.serverClose();
+
+    expect(onMessage).toHaveBeenLastCalledWith({
+      _type: 'ws_close',
+      attempt: 2,
+      retryInMs: 2000,
+    });
+  });
+
   test('abandons a socket stuck while connecting and retries', () => {
     const onMessage = vi.fn();
     api.connectWS(onMessage);
