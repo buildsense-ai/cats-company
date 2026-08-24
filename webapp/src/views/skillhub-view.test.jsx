@@ -1635,6 +1635,65 @@ describe('SkillHubView', () => {
     expect(requestSkillHubDeviceTool).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps local Skill cards visible when publishing one Skill fails', async () => {
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        runtimeRole: 'desktop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+      if (toolName === 'skillhub.localWorkspace.get') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '42',
+          active_bot_uid: '42',
+          skills_path: 'C:\\xiaoba\\skills',
+          skills: [{
+            local_skill_id: 'short-description',
+            name: 'ocr',
+            description: '图片 OCR',
+            relative_path: 'ocr',
+            source: 'user',
+            can_share: true,
+          }],
+        };
+      }
+      if (toolName === 'skillhub.localSkill.share') {
+        throw new Error('description 校验失败');
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCustomSkills();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-skillhub-local-card button'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('description 校验失败');
+    expect(container.querySelector('.cc-skillhub-local-card')?.textContent).toContain('ocr');
+    expect(container.querySelector('.cc-skillhub-local-card button')?.disabled).toBe(false);
+  });
+
   it('retries a version share only after confirmation and sends confirm_publish', async () => {
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',

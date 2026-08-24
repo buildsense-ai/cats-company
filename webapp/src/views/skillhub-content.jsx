@@ -655,7 +655,8 @@ function CustomSkills(props) {
         <div className='cc-skillhub-alert error' role='alert'>检测到多台本地桌面 XiaoBa 同时在线。为避免修改错工作区，请关闭其他 XiaoBa 后刷新。</div>
       )}
       {localNotice && <div className='cc-skillhub-alert success' role='status'>{localNotice}</div>}
-      {localSkillsError ? <div className='cc-skillhub-alert error' role='alert'>{localSkillsError}</div> : loadingLocalSkills ? (
+      {localSkillsError && <div className='cc-skillhub-alert error' role='alert'>{localSkillsError}</div>}
+      {loadingLocalSkills ? (
         <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取本地能力' copy='正在同步当前 Agent 对应的 XiaoBa 工作区。' status />
       ) : localSkills.length === 0 ? (
         <EmptyState icon={<Wrench size={21} />} title='还没有自定义能力' copy='在 XiaoBa 中创建 Skill 后，回到这里刷新。' />
