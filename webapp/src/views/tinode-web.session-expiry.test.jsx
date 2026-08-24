@@ -41,7 +41,7 @@ vi.mock('../api', () => {
 
 vi.mock('../components/feedback-system', () => ({
   InlineFeedback: ({ children }) => <>{children}</>,
-  useFeedback: () => ({ confirm: vi.fn() }),
+  useFeedback: () => ({ confirm: vi.fn(), notify: vi.fn() }),
 }));
 
 vi.mock('../components/auth-flow-background', () => ({ default: () => null }));
