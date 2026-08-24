@@ -411,6 +411,7 @@ export default function MessagesView({
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [artifactRegistryRevision, setArtifactRegistryRevision] = useState(0);
   const [pendingArtifactRefresh, setPendingArtifactRefresh] = useState(null);
+  const [verifiedArtifactRefresh, setVerifiedArtifactRefresh] = useState(null);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -2626,11 +2627,13 @@ export default function MessagesView({
       || latestActivePreviewVersion <= activePreviewArtifactVersion
       || !latestActivePreviewURL) {
       setPendingArtifactRefresh(null);
+      setVerifiedArtifactRefresh(null);
       return;
     }
     const refreshURL = artifactURLForVersion(latestActivePreviewURL, latestActivePreviewVersion);
     if (!refreshURL) {
       setPendingArtifactRefresh(null);
+      setVerifiedArtifactRefresh(null);
       return;
     }
 
@@ -2643,6 +2646,9 @@ export default function MessagesView({
       agent_uid: activeArtifactAgentUID,
     });
     const candidateKey = artifactRefreshFileKey(candidate);
+    setVerifiedArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? current : null
+    ));
     setPendingArtifactRefresh((current) => (
       artifactRefreshFileKey(current) === candidateKey ? current : candidate
     ));
@@ -2660,40 +2666,101 @@ export default function MessagesView({
 
   const handleArtifactRefreshReady = useCallback((candidate) => {
     const candidateKey = artifactRefreshFileKey(candidate);
+    if (!candidateKey || artifactRefreshFileKey(pendingArtifactRefresh) !== candidateKey) return;
+    setVerifiedArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? current : candidate
+    ));
+  }, [pendingArtifactRefresh]);
+
+  useEffect(() => {
+    const candidate = verifiedArtifactRefresh;
+    const candidateKey = artifactRefreshFileKey(candidate);
+    if (!candidateKey || artifactRefreshFileKey(pendingArtifactRefresh) !== candidateKey) return undefined;
+
+    let cancelled = false;
     const candidateAgentUID = Number(candidate?.artifact_agent_uid || 0);
     const candidateArtifactID = String(candidate?.artifact_id || '');
     const candidateVersion = Number(candidate?.publish_version || 0);
-    const currentFocus = activeArtifactFocusRef.current;
-    const candidateFocus = artifactMessageFocusFromPreviewFile(
-      candidate,
-      topic,
-      artifactTopicGenerationRef.current,
-    );
-    if (!candidateKey
-      || !currentFocus
-      || !candidateFocus
-      || activeTopicRef.current !== topic
-      || activeArtifactAgentUIDRef.current !== candidateAgentUID
-      || currentFocus.topic !== topic
-      || currentFocus.topicGeneration !== artifactTopicGenerationRef.current
-      || candidateFocus.topicGeneration !== artifactTopicGenerationRef.current
-      || currentFocus.agentUid !== candidateAgentUID
-      || currentFocus.artifactId !== candidateArtifactID
-      || candidateVersion <= currentFocus.displayedVersion) {
+    const clearCandidate = () => {
+      if (cancelled) return;
       setPendingArtifactRefresh((current) => (
         artifactRefreshFileKey(current) === candidateKey ? null : current
       ));
-      return;
-    }
-    setPreviewFileWithFocus(candidate);
-    setPendingArtifactRefresh((current) => (
-      artifactRefreshFileKey(current) === candidateKey ? null : current
-    ));
-  }, [setPreviewFileWithFocus, topic]);
+      setVerifiedArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+    };
+    const applyWhenCurrentPageAllows = async () => {
+      const currentFocus = activeArtifactFocusRef.current;
+      const candidateFocus = artifactMessageFocusFromPreviewFile(
+        candidate,
+        topic,
+        artifactTopicGenerationRef.current,
+      );
+      if (!currentFocus
+        || !candidateFocus
+        || activeTopicRef.current !== topic
+        || activeArtifactAgentUIDRef.current !== candidateAgentUID
+        || currentFocus.topic !== topic
+        || currentFocus.topicGeneration !== artifactTopicGenerationRef.current
+        || candidateFocus.topicGeneration !== artifactTopicGenerationRef.current
+        || currentFocus.agentUid !== candidateAgentUID
+        || currentFocus.artifactId !== candidateArtifactID
+        || candidateVersion <= currentFocus.displayedVersion) {
+        clearCandidate();
+        return;
+      }
+
+      const currentBinding = activeArtifactFrameRef.current;
+      const hasCurrentBinding = artifactBindingMatchesFocus(currentBinding, currentFocus);
+      let currentPageContext = null;
+      if (hasCurrentBinding) {
+        currentPageContext = await requestArtifactPageContext(
+          currentBinding,
+          currentFocus.artifactRef,
+        );
+      }
+      if (cancelled) return;
+      const latestFocus = activeArtifactFocusRef.current;
+      if (!latestFocus
+        || latestFocus !== currentFocus
+        || (hasCurrentBinding && activeArtifactFrameRef.current !== currentBinding)
+        || activeTopicRef.current !== topic
+        || artifactTopicGenerationRef.current !== currentFocus.topicGeneration
+        || activeArtifactAgentUIDRef.current !== candidateAgentUID) {
+        clearCandidate();
+        return;
+      }
+      if (hasCurrentBinding && currentPageContext === null) return;
+      if (currentPageContext?.dirty === true) return;
+
+      setPreviewFileWithFocus(candidate);
+      setPendingArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+      setVerifiedArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+    };
+
+    void applyWhenCurrentPageAllows();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    artifactRegistryRevision,
+    pendingArtifactRefresh,
+    setPreviewFileWithFocus,
+    topic,
+    verifiedArtifactRefresh,
+  ]);
 
   const handleArtifactRefreshFailed = useCallback((candidate) => {
     const candidateKey = artifactRefreshFileKey(candidate);
     setPendingArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? null : current
+    ));
+    setVerifiedArtifactRefresh((current) => (
       artifactRefreshFileKey(current) === candidateKey ? null : current
     ));
   }, []);
