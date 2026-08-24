@@ -39,14 +39,17 @@ export default defineConfig({
         'pwa-notification-badge-96x96.png',
       ],
       manifest: {
+        id: '/',
         name: 'CatsCo',
         short_name: 'CatsCo',
+        description: '与 AI 员工协作、分派任务并接收结果。',
         lang: 'zh-CN',
         start_url: '/',
         scope: '/',
         display: 'standalone',
         theme_color: '#f8f8f8',
-        background_color: '#111827',
+        background_color: '#f8f8f8',
+        categories: ['productivity', 'business'],
         icons: [
           {
             src: '/pwa-192x192.png',
@@ -69,14 +72,8 @@ export default defineConfig({
         ],
       },
       injectManifest: {
-        // Keep the app shell available offline without downloading the lazy
-        // workspace, PDF, and media chunks during service worker install.
-        globPatterns: [
-          'index.html',
-          'assets/index-*.{js,css}',
-          'assets/workbox-window.*.js',
-          'offline.html',
-        ],
+        globPatterns: ['index.html', 'assets/**/*.{js,css}', 'offline.html', 'pwa-*.png'],
+        globIgnores: ['assets/pdf-*.js', 'assets/pdf.worker.*'],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       devOptions: {

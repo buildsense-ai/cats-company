@@ -3,30 +3,6 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-const pwaRegistrationMocks = vi.hoisted(() => {
-  const state = {
-    refreshListener: null,
-    updateServiceWorker: vi.fn(),
-  };
-  return {
-    state,
-    getPwaUpdateServiceWorker: vi.fn(() => state.updateServiceWorker),
-    registerPwaServiceWorker: vi.fn(() => state.updateServiceWorker),
-    subscribeToPwaRefresh: vi.fn((listener) => {
-      state.refreshListener = listener;
-      return () => {
-        if (state.refreshListener === listener) state.refreshListener = null;
-      };
-    }),
-  };
-});
-
-vi.mock('../pwa-registration', () => ({
-  getPwaUpdateServiceWorker: pwaRegistrationMocks.getPwaUpdateServiceWorker,
-  registerPwaServiceWorker: pwaRegistrationMocks.registerPwaServiceWorker,
-  subscribeToPwaRefresh: pwaRegistrationMocks.subscribeToPwaRefresh,
-}));
-
 vi.mock('../api', () => ({
   api: {
     getPushConfig: vi.fn(),
@@ -53,7 +29,6 @@ vi.mock('../utils/push-tab-coordination', () => ({
 
 import PwaController from './pwa-controller';
 import { api, setWSPushSubscriptionEndpoint } from '../api';
-import { registerPwaServiceWorker, subscribeToPwaRefresh } from '../pwa-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 
 let container;
@@ -77,7 +52,6 @@ beforeEach(() => {
     value: { request: vi.fn() },
   });
   api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
-  pwaRegistrationMocks.state.refreshListener = null;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -92,11 +66,13 @@ afterEach(() => {
 function renderController(pushPromptOwner, sessionRevision = 1, loggedIn = true) {
   act(() => {
     root.render(
-      <PwaController
-        loggedIn={loggedIn}
-        pushPromptOwner={pushPromptOwner}
-        sessionRevision={sessionRevision}
-      />,
+      <div className="cc-pwa-status">
+        <PwaController
+          loggedIn={loggedIn}
+          pushPromptOwner={pushPromptOwner}
+          sessionRevision={sessionRevision}
+        />
+      </div>,
     );
   });
 }
@@ -266,18 +242,4 @@ test('re-registers an active account when another tab hands off the browser subs
   act(() => listener());
 
   await vi.waitFor(() => expect(api.subscribePush).toHaveBeenCalledTimes(1));
-});
-
-test('activates a waiting service worker immediately so old upload routing cannot persist', async () => {
-  renderController('user:1');
-  expect(registerPwaServiceWorker).toHaveBeenCalledTimes(1);
-  expect(subscribeToPwaRefresh).toHaveBeenCalledTimes(1);
-
-  await act(async () => {
-    pwaRegistrationMocks.state.refreshListener();
-    await Promise.resolve();
-  });
-
-  expect(pwaRegistrationMocks.state.updateServiceWorker).toHaveBeenCalledWith(true);
-  expect(container.textContent).not.toContain('发现新版本');
 });

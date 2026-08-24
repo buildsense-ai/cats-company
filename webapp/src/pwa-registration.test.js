@@ -48,10 +48,13 @@ test('shares one PWA registration between anonymous and authenticated entry path
   unsubscribe();
 });
 
-test('activates a waiting worker when no authenticated controller is mounted', async () => {
+test('keeps a waiting worker pending until a controller can present the update', () => {
   registerPwaServiceWorker();
   mocks.registerSW.mock.calls[0][0].onNeedRefresh();
-  await Promise.resolve();
 
-  expect(mocks.updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(mocks.updateServiceWorker).not.toHaveBeenCalled();
+
+  const onRefresh = vi.fn();
+  subscribeToPwaRefresh(onRefresh);
+  expect(onRefresh).toHaveBeenCalledTimes(1);
 });
