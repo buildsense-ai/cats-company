@@ -225,6 +225,15 @@
   font-size: 12px;
 }
 
+.v3-model-reasoning-item.is-readonly {
+  cursor: default;
+  color: var(--cc-muted);
+}
+
+.v3-model-reasoning-item.is-readonly:hover {
+  background: transparent;
+}
+
 .v3-model-menu-message,
 .v3-model-menu-feedback {
   padding: 9px 10px;

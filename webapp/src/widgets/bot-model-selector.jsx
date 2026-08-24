@@ -619,17 +619,14 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                         {hasVision && (
                           <>
                             <div className="v3-model-reasoning-title">视觉</div>
-                            <button
-                              type="button"
-                              className={`v3-model-reasoning-item ${selected ? 'selected' : ''}`}
-                              role="menuitem"
+                            <div
+                              className="v3-model-reasoning-item is-readonly"
+                              role="note"
                               aria-label={`${model.label} 视觉理解`}
-                              onClick={() => !selected && saveCatalogSelection(model.id, model.default_reasoning_effort || '')}
-                              disabled={transitioning}
                             >
                               <span>视觉理解 · 图片输入自动启用</span>
-                              {selected && <Check size={14} />}
-                            </button>
+                              <Check size={14} aria-hidden="true" />
+                            </div>
                           </>
                         )}
                       </div>

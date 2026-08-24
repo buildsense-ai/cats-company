@@ -544,13 +544,8 @@ describe('LocalAssistantBar model selector', () => {
     });
   });
 
-  it('shows vision beside reasoning strength and keeps it automatic for image input', async () => {
+  it('shows vision beside reasoning strength as a read-only automatic capability', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
-    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
-      ...baseConfig,
-      status: 'pending',
-      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 3 },
-    });
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
@@ -561,10 +556,9 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.textContent).toContain('图片输入自动启用');
     const vision = [...container.querySelectorAll('.v3-model-reasoning-item')]
       .find((item) => item.textContent.includes('图片输入自动启用'));
-    await act(async () => vision.click());
-    expect(update).toHaveBeenCalledWith(43, {
-      kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high',
-    });
+    expect(vision?.getAttribute('role')).toBe('note');
+    expect(vision?.classList.contains('is-readonly')).toBe(true);
+    expect(vision?.querySelector('button')).toBeNull();
   });
 
   it('edits a cloud custom model without receiving or resending the stored API key', async () => {
