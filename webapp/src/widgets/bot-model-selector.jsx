@@ -134,7 +134,11 @@ export function describeModelConfigRequestError(error, action = '切换') {
     return '网络连接中断，模型没有切换。请检查网络后重试。';
   }
   const status = Number(error?.status);
-  const detail = String(error?.message || '');
+  const detail = [
+    error?.message,
+    error?.data?.error,
+    error?.data?.detail,
+  ].filter(Boolean).map(String).join(' ');
   if (status === 400) {
     if (/api key|required|custom model|自定义/i.test(detail)) return '请完整填写自定义模型地址、模型名称和 API Key。';
     return '该模型或推理强度暂不受支持，请刷新列表后重试。';

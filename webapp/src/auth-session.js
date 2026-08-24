@@ -3,6 +3,11 @@ import {
   removeStorageValue,
   writeStorageValue,
 } from './utils/storage-access';
+import {
+  fetchWithRequestError,
+  REQUEST_FAILURE_KIND,
+  requestFailureKind,
+} from './utils/request-error';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -150,8 +155,20 @@ export function statusMessage(status) {
   if (status === 404) return '请求的功能暂时不可用';
   if (status === 409) return '当前数据已发生变化，请刷新后重试';
   if (status === 429) return '操作过于频繁，请稍后再试';
-  if (status >= 500) return '后端服务暂时异常，请稍后重试';
+  const failureKind = requestFailureKind({ status });
+  if (failureKind === REQUEST_FAILURE_KIND.TIMEOUT) return '请求超时，请稍后重试';
+  if (failureKind === REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE) {
+    return '服务暂时不可用，请稍后重试';
+  }
+  if (failureKind === REQUEST_FAILURE_KIND.SERVER_ERROR) return '服务请求失败，请稍后重试';
   return '请求失败，请稍后重试';
+}
+
+export function responseErrorMessage(status, detail) {
+  const normalizedStatus = Number(status);
+  return normalizedStatus === 408 || normalizedStatus >= 500
+    ? statusMessage(normalizedStatus)
+    : (detail || statusMessage(normalizedStatus));
 }
 
 // Authentication requests should fail visibly instead of leaving the login
@@ -159,72 +176,36 @@ export function statusMessage(status) {
 export const AUTH_REQUEST_TIMEOUT_MS = 15_000;
 
 export async function request(method, path, body, options = {}) {
-  const { signal, timeoutMs = 0 } = options;
+  const { timeoutMs = 0, signal } = options;
   const headers = { 'Content-Type': 'application/json' };
   const authToken = options.authToken === undefined ? token : options.authToken;
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
 
-  const controller = new AbortController();
-  let timedOut = false;
-  let timeoutID = null;
-  const abortFromCaller = () => controller.abort(signal?.reason);
+  const res = await fetchWithRequestError(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    signal,
+    timeoutMs,
+  });
 
-  if (signal?.aborted) {
-    abortFromCaller();
-  } else if (signal) {
-    signal.addEventListener('abort', abortFromCaller, { once: true });
-  }
-  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-    timeoutID = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
-  }
-
-  let res;
+  let data = {};
   try {
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-
-    let data = {};
-    try {
-      data = await res.json();
-    } catch {
-      data = {};
-    }
-    if (!res.ok) {
-      const error = new Error(data.error || statusMessage(res.status));
-      error.status = res.status;
-      error.data = data;
-      throw error;
-    }
-    return data;
-  } catch (cause) {
-    if (timedOut) {
-      const error = new Error('请求超时，请稍后重试');
-      error.code = 'REQUEST_TIMEOUT';
-      error.cause = cause;
-      throw error;
-    }
-    if (signal?.aborted || cause?.name === 'AbortError') {
-      const error = new Error('请求已取消');
-      error.code = 'REQUEST_ABORTED';
-      error.cause = cause;
-      throw error;
-    }
-    if (cause?.status) throw cause;
-    const error = new Error('网络连接失败，请检查后端服务是否运行');
-    error.code = 'NETWORK_ERROR';
-    error.cause = cause;
-    throw error;
-  } finally {
-    if (timeoutID) clearTimeout(timeoutID);
-    signal?.removeEventListener('abort', abortFromCaller);
+    data = await res.json();
+  } catch {
+    data = {};
   }
+  if (!res.ok) {
+    // A 5xx response establishes that the requested service is unavailable
+    // or failed, regardless of any implementation detail it returns in the
+    // JSON body. Preserve that detail in error.data for diagnostics, but do
+    // not make it the default user-facing diagnosis.
+    const error = new Error(responseErrorMessage(res.status, data.error));
+    error.status = res.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
 }
 
 export const authApi = {

@@ -1709,6 +1709,49 @@ describe('StreamingSTTSession', () => {
     expect(errors).toEqual(['语音输入额度已用完，请稍后再试']);
   });
 
+  it.each([502, 503, 504])('reports gateway status copy when session admission returns HTTP %i', async (status) => {
+    const onError = vi.fn();
+    const fetchStub = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      json: vi.fn().mockResolvedValue({ error: '后端暂时无法载入' }),
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    const session = new StreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn() }),
+      onError,
+    });
+
+    try {
+      await session.start();
+
+      expect(fetchStub).toHaveBeenCalledWith('/api/stt/sessions', expect.objectContaining({ method: 'POST' }));
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+        message: '服务暂时不可用，请稍后重试',
+        status,
+        data: { error: '后端暂时无法载入' },
+      }), expect.any(String), expect.objectContaining({ reason: 'error' }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports a normalized network error when session admission cannot connect', async () => {
+    const onError = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const session = new StreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn() }),
+      onError,
+    });
+
+    await session.start();
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'NETWORK_ERROR',
+      message: '暂时无法连接服务，请稍后重试',
+    }), expect.any(String), expect.objectContaining({ reason: 'error' }));
+  });
+
   it('treats a server hard-limit timeout as a recoverable duration boundary', async () => {
     let socket;
     const errors = [];

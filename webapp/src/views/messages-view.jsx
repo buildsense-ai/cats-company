@@ -15,6 +15,7 @@ import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
+import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
 import {
   artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
@@ -1316,7 +1317,8 @@ export default function MessagesView({
     historyAbortControllerRef.current = controller;
     olderHistoryAbortControllerRef.current = null;
     const cacheKey = historyCacheKey(user.uid, targetTopic);
-    const hasCachedHistory = !aroundId && historyCacheRef.current.has(cacheKey);
+    const cachedHistory = !aroundId ? historyCacheRef.current.get(cacheKey) : null;
+    const hasCachedHistory = Boolean(cachedHistory);
     historyLoadingRef.current = true;
     previousScrollRef.current = null;
     pendingOlderHistoryAnchorRef.current = null;
@@ -1365,6 +1367,7 @@ export default function MessagesView({
         offset: rawMessages.length,
         nextBeforeID,
         hasMore,
+        loadedAt: Date.now(),
       });
       const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
       if (!cachedQuestionIndex) {
@@ -1381,10 +1384,11 @@ export default function MessagesView({
       }
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
-        if (e?.code !== 'REQUEST_ABORTED') {
-          setHistoryError(e?.code === 'REQUEST_TIMEOUT'
-            ? '聊天记录加载超时，请重试。'
-            : '聊天记录加载失败，请检查网络后重试。');
+        if (e?.code !== REQUEST_ERROR_CODE.ABORTED) {
+          setHistoryError(describeResourceLoadError(e, '聊天记录', {
+            hasPreviousResult: Boolean(cachedHistory),
+            loadedAt: cachedHistory?.loadedAt,
+          }));
         }
       }
     } finally {
@@ -1411,6 +1415,8 @@ export default function MessagesView({
     }
     const targetTopic = topic;
     const requestID = historyRequestRef.current;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const cachedHistory = historyCacheRef.current.get(cacheKey);
     const controller = new AbortController();
     olderHistoryAbortControllerRef.current = controller;
     pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(timelineRef.current);
@@ -1442,7 +1448,6 @@ export default function MessagesView({
         : rawMessages.length === PAGE_SIZE;
       hasMoreHistoryRef.current = hasMore;
       setHasMoreHistory(hasMore);
-      const cacheKey = historyCacheKey(user.uid, targetTopic);
       const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
       if (cachedQuestionIndex) {
         const ordinaryReachedFurther = historyOffsetRef.current >= cachedQuestionIndex.offset
@@ -1480,12 +1485,13 @@ export default function MessagesView({
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
-        pendingOlderHistoryAnchorRef.current = null;
-        if (e?.code !== 'REQUEST_ABORTED') {
-          setOlderHistoryError(e?.code === 'REQUEST_TIMEOUT'
-            ? '更早的聊天记录加载超时，请重试。'
-            : '更早的聊天记录加载失败。');
+        if (e?.code !== REQUEST_ERROR_CODE.ABORTED) {
+          setOlderHistoryError(describeResourceLoadError(e, '更早的聊天记录', {
+            hasPreviousResult: true,
+            loadedAt: cachedHistory?.loadedAt,
+          }));
         }
+        pendingOlderHistoryAnchorRef.current = null;
       }
     } finally {
       if (olderHistoryAbortControllerRef.current === controller) {
@@ -3716,7 +3722,7 @@ export default function MessagesView({
 
         {historyLoaded && historyError && messages.length > 0 && (
           <div className="v3-history-state is-compact" role="status">
-            <span>已显示上次记录，本次刷新失败。</span>
+            <span>{historyError}</span>
             <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
               <RefreshCw size={14} aria-hidden="true" />
               重试

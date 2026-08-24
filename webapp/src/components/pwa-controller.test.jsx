@@ -3,6 +3,31 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
+const pwaRegistrationMocks = vi.hoisted(() => {
+  const state = {
+    refreshListener: null,
+    updateServiceWorker: vi.fn(),
+  };
+  return {
+    state,
+    getPwaUpdateServiceWorker: vi.fn(() => state.updateServiceWorker),
+    hasPwaRefreshPresenter: vi.fn(() => false),
+    registerPwaServiceWorker: vi.fn(() => state.updateServiceWorker),
+    subscribeToPwaRefresh: vi.fn((listener) => {
+      state.refreshListener = listener;
+      return () => {
+        if (state.refreshListener === listener) state.refreshListener = null;
+      };
+    }),
+  };
+});
+
+vi.mock('../pwa-registration', () => ({
+  getPwaUpdateServiceWorker: pwaRegistrationMocks.getPwaUpdateServiceWorker,
+  hasPwaRefreshPresenter: pwaRegistrationMocks.hasPwaRefreshPresenter,
+  registerPwaServiceWorker: pwaRegistrationMocks.registerPwaServiceWorker,
+  subscribeToPwaRefresh: pwaRegistrationMocks.subscribeToPwaRefresh,
+}));
 vi.mock('../api', () => ({
   api: {
     getPushConfig: vi.fn(),
@@ -29,6 +54,7 @@ vi.mock('../utils/push-tab-coordination', () => ({
 
 import PwaController from './pwa-controller';
 import { api, setWSPushSubscriptionEndpoint } from '../api';
+import { registerPwaServiceWorker, subscribeToPwaRefresh } from '../pwa-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 
 let container;
@@ -52,6 +78,8 @@ beforeEach(() => {
     value: { request: vi.fn() },
   });
   api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
+  pwaRegistrationMocks.state.refreshListener = null;
+  pwaRegistrationMocks.hasPwaRefreshPresenter.mockReset().mockReturnValue(false);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -242,4 +270,31 @@ test('re-registers an active account when another tab hands off the browser subs
   act(() => listener());
 
   await vi.waitFor(() => expect(api.subscribePush).toHaveBeenCalledTimes(1));
+});
+
+test('activates a waiting service worker immediately so old upload routing cannot persist', async () => {
+  renderController('user:1');
+  expect(registerPwaServiceWorker).toHaveBeenCalledTimes(1);
+  expect(subscribeToPwaRefresh).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    pwaRegistrationMocks.state.refreshListener();
+    await Promise.resolve();
+  });
+
+  expect(pwaRegistrationMocks.state.updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(container.textContent).not.toContain('发现新版本');
+});
+
+test('defers a waiting-worker update to the active workspace failure presenter', async () => {
+  pwaRegistrationMocks.hasPwaRefreshPresenter.mockReturnValue(true);
+  renderController('user:1');
+
+  await act(async () => {
+    pwaRegistrationMocks.state.refreshListener();
+    await Promise.resolve();
+  });
+
+  expect(pwaRegistrationMocks.state.updateServiceWorker).not.toHaveBeenCalled();
+  expect(container.textContent).not.toContain('发现新版本');
 });

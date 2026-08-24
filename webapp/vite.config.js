@@ -72,8 +72,14 @@ export default defineConfig({
         ],
       },
       injectManifest: {
-        globPatterns: ['index.html', 'assets/**/*.{js,css}', 'offline.html', 'pwa-*.png'],
-        globIgnores: ['assets/pdf-*.js', 'assets/pdf.worker.*'],
+        // Keep only hashed entry assets and the explicit offline page in the
+        // precache. Navigation HTML must stay network-only so an old shell
+        // cannot hide a live service failure or reference stale bundles.
+        globPatterns: [
+          'assets/index-*.{js,css}',
+          'assets/workbox-window.*.js',
+          'offline.html',
+        ],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       devOptions: {

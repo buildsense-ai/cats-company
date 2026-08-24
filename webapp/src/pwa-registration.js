@@ -5,7 +5,7 @@ let refreshPending = false;
 const refreshListeners = new Set();
 
 function notifyRefreshListeners() {
-  for (const listener of refreshListeners) listener();
+  for (const { listener } of refreshListeners) listener();
 }
 
 function handleNeedRefresh() {
@@ -24,11 +24,20 @@ export function registerPwaServiceWorker() {
   return updateServiceWorker;
 }
 
-export function subscribeToPwaRefresh(listener) {
+export function subscribeToPwaRefresh(listener, { presentsRefresh = false } = {}) {
   if (typeof listener !== 'function') return () => {};
-  refreshListeners.add(listener);
+  const subscription = { listener, presentsRefresh: Boolean(presentsRefresh) };
+  refreshListeners.add(subscription);
   if (refreshPending) listener();
-  return () => refreshListeners.delete(listener);
+  return () => refreshListeners.delete(subscription);
+}
+
+export function isPwaRefreshPending() {
+  return refreshPending;
+}
+
+export function hasPwaRefreshPresenter() {
+  return Array.from(refreshListeners).some(({ presentsRefresh }) => presentsRefresh);
 }
 
 export function getPwaUpdateServiceWorker() {

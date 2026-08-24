@@ -4,6 +4,8 @@ import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, Mes
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
+import { responseErrorMessage } from '../auth-session';
+import { fetchWithRequestError } from '../utils/request-error';
 import { canDragChatAttachment, clearChatAttachmentDrag, writeChatAttachmentDrag } from '../chat-attachment-drag';
 import {
   hasPlainTextTableLikeBlock,
@@ -37,6 +39,7 @@ const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]
 const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
+const FILE_PREVIEW_TIMEOUT_MS = 15_000;
 const trustedArtifactPreviewPayloads = new WeakSet();
 
 function imageGalleryItemId(message, blockIndex, payload) {
@@ -2580,11 +2583,15 @@ export function FilePreviewPanel({
       };
     }
 
+    const controller = new AbortController();
     const load = async () => {
       setLoadingText(true);
       try {
-        const res = await fetch(fetchableMediaURL(url));
-        if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+        const res = await fetchWithRequestError(fetchableMediaURL(url), {
+          signal: controller.signal,
+          timeoutMs: FILE_PREVIEW_TIMEOUT_MS,
+        });
+        if (!res.ok) throw new Error(responseErrorMessage(res.status, `HTTP Error ${res.status}`));
         if (isSpreadsheet) {
           const contentLength = Number(res.headers?.get?.('Content-Length') || res.headers?.get?.('content-length') || 0);
           if (contentLength > SPREADSHEET_PREVIEW_MAX_BYTES) {
@@ -2609,6 +2616,7 @@ export function FilePreviewPanel({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isPdf, isRemoteArtifact, isSpreadsheet, url]);
 
