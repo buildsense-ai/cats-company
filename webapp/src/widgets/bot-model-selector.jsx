@@ -560,6 +560,8 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const efforts = model.reasoning_efforts || [];
                 const available = model.available !== false;
                 const hasReasoning = available && efforts.length > 0;
+                const hasVision = available && model.vision === true;
+                const hasOptions = hasReasoning || hasVision;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
                 const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
 
@@ -567,17 +569,17 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                   <div
                     key={model.id}
                     className="v3-model-menu-branch"
-                    onMouseEnter={() => hasReasoning && setExpandedModelID(model.id)}
-                    onMouseLeave={() => hasReasoning && setExpandedModelID((current) => current === model.id ? '' : current)}
+                    onMouseEnter={() => hasOptions && setExpandedModelID(model.id)}
+                    onMouseLeave={() => hasOptions && setExpandedModelID((current) => current === model.id ? '' : current)}
                   >
                     <button
                       type="button"
                       className={`v3-model-menu-item ${selected ? 'selected' : ''} ${available ? '' : 'unavailable'}`.trim()}
                       role="menuitem"
-                      aria-haspopup={hasReasoning ? 'menu' : undefined}
-                      aria-expanded={hasReasoning ? expandedModelID === model.id : undefined}
-                      onFocus={() => hasReasoning && setExpandedModelID(model.id)}
-                      onClick={() => hasReasoning ? setExpandedModelID(model.id) : available && saveCatalogSelection(model.id)}
+                      aria-haspopup={hasOptions ? 'menu' : undefined}
+                      aria-expanded={hasOptions ? expandedModelID === model.id : undefined}
+                      onFocus={() => hasOptions && setExpandedModelID(model.id)}
+                      onClick={() => hasOptions ? setExpandedModelID(model.id) : available && saveCatalogSelection(model.id)}
                       disabled={transitioning || !available}
                     >
                       <span>
@@ -589,27 +591,47 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                             : model.unavailable_reason || '当前套餐暂不可用'}
                         </small>
                       </span>
-                      {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}
+                      {hasOptions ? <ChevronRight size={15} /> : selected && <Check size={15} />}
                     </button>
-                    {hasReasoning && expandedModelID === model.id && (
-                      <div className="v3-model-reasoning-menu" role="menu" aria-label={`${model.label} 推理强度`}>
-                        <div className="v3-model-reasoning-title">推理强度</div>
-                        {efforts.map((effort) => {
-                          const effortSelected = selected && modelConfig?.desired?.reasoning_effort === effort;
-                          return (
+                    {hasOptions && expandedModelID === model.id && (
+                      <div className="v3-model-reasoning-menu" role="menu" aria-label={`${model.label} 模型能力`}>
+                        {hasReasoning && (
+                          <>
+                            <div className="v3-model-reasoning-title">推理强度</div>
+                            {efforts.map((effort) => {
+                              const effortSelected = selected && modelConfig?.desired?.reasoning_effort === effort;
+                              return (
+                                <button
+                                  type="button"
+                                  key={effort}
+                                  className={`v3-model-reasoning-item ${effortSelected ? 'selected' : ''}`}
+                                  role="menuitem"
+                                  onClick={() => saveCatalogSelection(model.id, effort)}
+                                  disabled={transitioning}
+                                >
+                                  <span>{reasoningEffortLabel(effort)}</span>
+                                  {effortSelected && <Check size={14} />}
+                                </button>
+                              );
+                            })}
+                          </>
+                        )}
+                        {hasVision && (
+                          <>
+                            <div className="v3-model-reasoning-title">视觉</div>
                             <button
                               type="button"
-                              key={effort}
-                              className={`v3-model-reasoning-item ${effortSelected ? 'selected' : ''}`}
+                              className={`v3-model-reasoning-item ${selected ? 'selected' : ''}`}
                               role="menuitem"
-                              onClick={() => saveCatalogSelection(model.id, effort)}
+                              aria-label={`${model.label} 视觉理解`}
+                              onClick={() => !selected && saveCatalogSelection(model.id, model.default_reasoning_effort || '')}
                               disabled={transitioning}
                             >
-                              <span>{reasoningEffortLabel(effort)}</span>
-                              {effortSelected && <Check size={14} />}
+                              <span>视觉理解 · 图片输入自动启用</span>
+                              {selected && <Check size={14} />}
                             </button>
-                          );
-                        })}
+                          </>
+                        )}
                       </div>
                     )}
                   </div>

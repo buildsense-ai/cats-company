@@ -46,11 +46,12 @@ const baseConfig = {
     {
       id: 'deepseek-v4-flash',
       label: 'DeepSeek V4 Flash',
-      description: '低额度 Flash，支持推理强度',
+      description: '低额度 Flash，支持推理强度与视觉理解',
       context_window_tokens: 1000000,
       quota: { model: 'deepseek-v4-flash', quota_configured: true, percent: 90, remaining_percent: 10, status: 'high' },
       reasoning_efforts: ['high', 'max', 'disabled'],
       default_reasoning_effort: 'high',
+      vision: true,
     },
     {
       id: 'gpt-5.6-terra',
@@ -540,6 +541,29 @@ describe('LocalAssistantBar model selector', () => {
     });
     expect(update).toHaveBeenCalledWith(43, {
       kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'xhigh',
+    });
+  });
+
+  it('shows vision beside reasoning strength and keeps it automatic for image input', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      status: 'pending',
+      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 3 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+    await act(async () => deepseek.click());
+    expect(container.textContent).toContain('推理强度');
+    expect(container.textContent).toContain('视觉');
+    expect(container.textContent).toContain('图片输入自动启用');
+    const vision = [...container.querySelectorAll('.v3-model-reasoning-item')]
+      .find((item) => item.textContent.includes('图片输入自动启用'));
+    await act(async () => vision.click());
+    expect(update).toHaveBeenCalledWith(43, {
+      kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high',
     });
   });
 
