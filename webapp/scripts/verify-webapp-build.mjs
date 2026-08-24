@@ -20,10 +20,8 @@ if (manifest.id !== '/' || manifest.scope !== '/' || manifest.display !== 'stand
   fail('manifest does not declare the required standalone app identity');
 }
 const requiredPrecacheEntries = [
-  'index.html',
   'manifest.webmanifest',
   'assets/index-',
-  'assets/tinode-web-',
   'assets/workbox-window',
   'offline.html',
 ];
@@ -32,6 +30,14 @@ for (const entry of requiredPrecacheEntries) {
   if (!serviceWorker.includes(`"url":"${entry}`)) {
     fail(`service worker does not precache ${entry}`);
   }
+}
+
+if (serviceWorker.includes('"url":"index.html')) {
+  fail('service worker unexpectedly precaches navigation HTML');
+}
+
+if (serviceWorker.includes('"url":"assets/tinode-web-')) {
+  fail('service worker unexpectedly precaches the workspace chunk');
 }
 
 for (const forbiddenEntry of ['assets/pdf-', 'assets/pdf.worker.']) {

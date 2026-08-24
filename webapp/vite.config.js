@@ -72,10 +72,14 @@ export default defineConfig({
         ],
       },
       injectManifest: {
-        // Keep the app shell and core workspace code available when an offline
-        // route must be restored; navigations themselves remain network-only.
-        globPatterns: ['index.html', 'assets/**/*.{js,css}', 'offline.html', 'pwa-*.png'],
-        globIgnores: ['assets/pdf-*.js', 'assets/pdf.worker.*'],
+        // Keep only hashed entry assets and the explicit offline page in the
+        // precache. Navigation HTML must stay network-only so an old shell
+        // cannot hide a live service failure or reference stale bundles.
+        globPatterns: [
+          'assets/index-*.{js,css}',
+          'assets/workbox-window.*.js',
+          'offline.html',
+        ],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       devOptions: {

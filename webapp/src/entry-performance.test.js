@@ -48,12 +48,12 @@ describe('entry bundle split', () => {
     expect(entrySource).not.toContain("from './api'");
   });
 
-  it('precaches the app shell and core workspace assets while excluding heavy optional chunks', () => {
-    expect(viteConfig).toContain("'index.html'");
-    expect(viteConfig).toContain("'assets/**/*.{js,css}'");
-    expect(viteConfig).toContain("globIgnores: ['assets/pdf-*.js', 'assets/pdf.worker.*']");
+  it('keeps navigation HTML out of precache while retaining hashed entry assets and offline fallback', () => {
+    expect(viteConfig).toContain("'assets/index-*.{js,css}'");
+    expect(viteConfig).toContain("'assets/workbox-window.*.js'");
     expect(viteConfig).toContain("'offline.html'");
-    expect(viteConfig).toContain("'pwa-192x192.png'");
+    expect(viteConfig).not.toContain("'index.html'");
+    expect(viteConfig).not.toContain("'assets/**/*.{js,css}'");
   });
 
   it('preserves the workspace stylesheet cascade after lazy loading', () => {

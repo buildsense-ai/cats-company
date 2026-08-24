@@ -78,7 +78,7 @@ describe('service worker API routing', () => {
     expect(denylist.some((pattern) => pattern.test('/login///'))).toBe(true);
   });
 
-  test('uses network-only navigation with a precached app-shell fallback', async () => {
+  test('uses network-only navigation with an explicit offline fallback', async () => {
     await import('./sw');
 
     const navigationRoute = registerRoute.mock.calls
@@ -88,25 +88,12 @@ describe('service worker API routing', () => {
     expect(navigationRoute.handler.constructor.name).toBe('NetworkOnly');
     expect(navigationRoute.handler.options.networkTimeoutSeconds).toBe(4);
     const plugin = navigationRoute.handler.options.plugins[0];
-    matchPrecache.mockResolvedValueOnce({ body: 'app shell' });
+    matchPrecache.mockResolvedValueOnce({ body: 'offline' });
     await expect(plugin.handlerDidError())
-      .resolves.toEqual({ body: 'app shell' });
-    expect(matchPrecache).toHaveBeenCalledWith('/index.html');
+      .resolves.toEqual({ body: 'offline' });
+    expect(matchPrecache).toHaveBeenCalledWith('/offline.html');
     expect(precacheAndRoute).toHaveBeenCalledTimes(1);
     expect(registerRoute.mock.invocationCallOrder[1])
       .toBeLessThan(precacheAndRoute.mock.invocationCallOrder[0]);
-  });
-
-  test('uses the offline page only when the app shell is unavailable', async () => {
-    await import('./sw');
-
-    const navigationRoute = registerRoute.mock.calls
-      .map(([route]) => route)
-      .find((route) => Array.isArray(route?.options?.denylist));
-    matchPrecache.mockResolvedValueOnce(undefined).mockResolvedValueOnce({ body: 'offline' });
-
-    await expect(navigationRoute.handler.options.plugins[0].handlerDidError())
-      .resolves.toEqual({ body: 'offline' });
-    expect(matchPrecache).toHaveBeenLastCalledWith('/offline.html');
   });
 });
