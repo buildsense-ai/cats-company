@@ -46,6 +46,9 @@ describe('restored green liquid theme', () => {
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-custom-model-select-options\s*\{[^}]*background-color: #222425;[^}]*color: #ffffff;/,
     );
     expect(css).toMatch(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] :is\(select, select option, select optgroup\)\s*\{[^}]*color-scheme: dark;[^}]*background-color: #222425;[^}]*color: #ffffff;/,
+    );
+    expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.cc-global-search-field input\s*\{[^}]*border: 0;[^}]*background: transparent;[^}]*box-shadow: none;/,
     );
     expect(css).toMatch(

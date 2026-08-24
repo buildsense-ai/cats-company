@@ -634,6 +634,11 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(input, textarea, sele
     inset -1px 0 0 rgba(130, 114, 217, 0.04),
     0 3px 10px rgba(0, 9, 7, 0.14);
 }
+html[data-theme="liquid"][data-liquid-variant="green"] :is(select) {
+  color-scheme: dark;
+  background-color: #222425;
+  color: #ffffff;
+}
 
 html[data-theme="liquid"][data-liquid-variant="green"] :is(
   .oc-auth-btn) {

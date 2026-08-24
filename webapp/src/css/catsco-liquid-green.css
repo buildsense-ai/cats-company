@@ -346,6 +346,14 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(input, textarea, sele
     0 3px 10px rgba(0, 9, 7, 0.14);
 }
 
+/* Native select popups do not inherit the themed control surface. Keep their
+   option list dark as well, otherwise Chromium falls back to a white menu. */
+html[data-theme="liquid"][data-liquid-variant="green"] :is(select, select option, select optgroup) {
+  color-scheme: dark;
+  background-color: #222425;
+  color: #ffffff;
+}
+
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-custom-model-select-options {
   background-color: #222425;
   color: #ffffff;
