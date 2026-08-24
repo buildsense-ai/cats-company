@@ -81,7 +81,9 @@ describe('CloudWorkerPanel', () => {
   test('blocks creation when quota is exhausted', async () => {
     await renderPanel({ quota: { enabled: true, total: 1, used: 1, remaining: 0 } });
     expect(container.querySelector('.cc-cloud-create-card input')).toBeNull();
-    expect(container.textContent).toContain('配额已用完或未开放，暂时无法继续创建。');
+    expect(container.textContent).toContain('云端虚拟员工创建权益已用完，暂时无法继续创建');
+    expect(container.textContent).toContain('云端虚拟员工创建权益已用完');
+    expect(container.textContent).not.toContain('可创建 0/1');
   });
 
   test('creates a cloud worker with the entered name', async () => {

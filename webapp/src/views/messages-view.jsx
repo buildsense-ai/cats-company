@@ -49,7 +49,7 @@ const LONG_PASTE_MULTILINE_CHAR_THRESHOLD = 2000;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
 const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
-const STICK_TO_BOTTOM_THRESHOLD = 96;
+const TIMELINE_BOTTOM_EPSILON = 1;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
@@ -412,6 +412,7 @@ export default function MessagesView({
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [artifactRegistryRevision, setArtifactRegistryRevision] = useState(0);
   const [pendingArtifactRefresh, setPendingArtifactRefresh] = useState(null);
+  const [verifiedArtifactRefresh, setVerifiedArtifactRefresh] = useState(null);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -481,7 +482,6 @@ export default function MessagesView({
     return result;
   }, [messages]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
-  const bottomRef = useRef(null);
   const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -493,7 +493,9 @@ export default function MessagesView({
   const visibleQuestionAnchorsRef = useRef(new Map());
   const messageHighlightTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
+  const pendingOlderHistoryAnchorRef = useRef(null);
   const stickToBottomRef = useRef(true);
+  const lastTimelineScrollTopRef = useRef(0);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -933,9 +935,11 @@ export default function MessagesView({
     historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     loadingOlderRef.current = false;
     questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
+    lastTimelineScrollTopRef.current = 0;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
@@ -1203,21 +1207,19 @@ export default function MessagesView({
     return () => unsub();
   }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
 
-  // Auto-scroll to bottom or restore scroll anchor depending on state
+  // Restore an older-history anchor, or follow updates while the reader
+  // remains at the latest position.
   React.useLayoutEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
     if (previousScrollRef.current) {
-      // Anchoring condition: We just prepended older history.
-      const { scrollHeight, scrollTop } = previousScrollRef.current;
-      const newScrollHeight = timeline.scrollHeight;
-      timeline.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
-      previousScrollRef.current = null; // Clear atomic lock
-      stickToBottomRef.current = isTimelineNearBottom(timeline);
+      restoreTimelineReadingAnchor(timeline, previousScrollRef.current);
+      previousScrollRef.current = null;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
     } else if (stickToBottomRef.current) {
-      // Only follow fresh messages while the user is already near the bottom.
-      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      timeline.scrollTop = timeline.scrollHeight;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
     }
   }, [messages, runtimePlan, peerTyping]);
 
@@ -1319,6 +1321,7 @@ export default function MessagesView({
     const hasCachedHistory = Boolean(cachedHistory);
     historyLoadingRef.current = true;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     setRefreshingHistory(true);
     setHistoryError('');
     setOlderHistoryError('');
@@ -1416,15 +1419,8 @@ export default function MessagesView({
     const cachedHistory = historyCacheRef.current.get(cacheKey);
     const controller = new AbortController();
     olderHistoryAbortControllerRef.current = controller;
-    
-    // Capture the absolute scroll geometry BEFORE rendering the older batch
-    if (timelineRef.current) {
-      previousScrollRef.current = {
-        scrollHeight: timelineRef.current.scrollHeight,
-        scrollTop: timelineRef.current.scrollTop,
-      };
-    }
-    
+    pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(timelineRef.current);
+
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     setOlderHistoryError('');
@@ -1440,6 +1436,10 @@ export default function MessagesView({
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
       const { visibleMessages } = normalizeHistoryMessages(rawMessages);
+      previousScrollRef.current = stickToBottomRef.current
+        ? null
+        : pendingOlderHistoryAnchorRef.current;
+      pendingOlderHistoryAnchorRef.current = null;
       setMessages((prev) => mergeMessages(visibleMessages, prev));
       historyOffsetRef.current += rawMessages.length;
       historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
@@ -1491,6 +1491,7 @@ export default function MessagesView({
             loadedAt: cachedHistory?.loadedAt,
           }));
         }
+        pendingOlderHistoryAnchorRef.current = null;
       }
     } finally {
       if (olderHistoryAbortControllerRef.current === controller) {
@@ -2632,11 +2633,13 @@ export default function MessagesView({
       || latestActivePreviewVersion <= activePreviewArtifactVersion
       || !latestActivePreviewURL) {
       setPendingArtifactRefresh(null);
+      setVerifiedArtifactRefresh(null);
       return;
     }
     const refreshURL = artifactURLForVersion(latestActivePreviewURL, latestActivePreviewVersion);
     if (!refreshURL) {
       setPendingArtifactRefresh(null);
+      setVerifiedArtifactRefresh(null);
       return;
     }
 
@@ -2649,6 +2652,9 @@ export default function MessagesView({
       agent_uid: activeArtifactAgentUID,
     });
     const candidateKey = artifactRefreshFileKey(candidate);
+    setVerifiedArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? current : null
+    ));
     setPendingArtifactRefresh((current) => (
       artifactRefreshFileKey(current) === candidateKey ? current : candidate
     ));
@@ -2666,40 +2672,101 @@ export default function MessagesView({
 
   const handleArtifactRefreshReady = useCallback((candidate) => {
     const candidateKey = artifactRefreshFileKey(candidate);
+    if (!candidateKey || artifactRefreshFileKey(pendingArtifactRefresh) !== candidateKey) return;
+    setVerifiedArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? current : candidate
+    ));
+  }, [pendingArtifactRefresh]);
+
+  useEffect(() => {
+    const candidate = verifiedArtifactRefresh;
+    const candidateKey = artifactRefreshFileKey(candidate);
+    if (!candidateKey || artifactRefreshFileKey(pendingArtifactRefresh) !== candidateKey) return undefined;
+
+    let cancelled = false;
     const candidateAgentUID = Number(candidate?.artifact_agent_uid || 0);
     const candidateArtifactID = String(candidate?.artifact_id || '');
     const candidateVersion = Number(candidate?.publish_version || 0);
-    const currentFocus = activeArtifactFocusRef.current;
-    const candidateFocus = artifactMessageFocusFromPreviewFile(
-      candidate,
-      topic,
-      artifactTopicGenerationRef.current,
-    );
-    if (!candidateKey
-      || !currentFocus
-      || !candidateFocus
-      || activeTopicRef.current !== topic
-      || activeArtifactAgentUIDRef.current !== candidateAgentUID
-      || currentFocus.topic !== topic
-      || currentFocus.topicGeneration !== artifactTopicGenerationRef.current
-      || candidateFocus.topicGeneration !== artifactTopicGenerationRef.current
-      || currentFocus.agentUid !== candidateAgentUID
-      || currentFocus.artifactId !== candidateArtifactID
-      || candidateVersion <= currentFocus.displayedVersion) {
+    const clearCandidate = () => {
+      if (cancelled) return;
       setPendingArtifactRefresh((current) => (
         artifactRefreshFileKey(current) === candidateKey ? null : current
       ));
-      return;
-    }
-    setPreviewFileWithFocus(candidate);
-    setPendingArtifactRefresh((current) => (
-      artifactRefreshFileKey(current) === candidateKey ? null : current
-    ));
-  }, [setPreviewFileWithFocus, topic]);
+      setVerifiedArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+    };
+    const applyWhenCurrentPageAllows = async () => {
+      const currentFocus = activeArtifactFocusRef.current;
+      const candidateFocus = artifactMessageFocusFromPreviewFile(
+        candidate,
+        topic,
+        artifactTopicGenerationRef.current,
+      );
+      if (!currentFocus
+        || !candidateFocus
+        || activeTopicRef.current !== topic
+        || activeArtifactAgentUIDRef.current !== candidateAgentUID
+        || currentFocus.topic !== topic
+        || currentFocus.topicGeneration !== artifactTopicGenerationRef.current
+        || candidateFocus.topicGeneration !== artifactTopicGenerationRef.current
+        || currentFocus.agentUid !== candidateAgentUID
+        || currentFocus.artifactId !== candidateArtifactID
+        || candidateVersion <= currentFocus.displayedVersion) {
+        clearCandidate();
+        return;
+      }
+
+      const currentBinding = activeArtifactFrameRef.current;
+      const hasCurrentBinding = artifactBindingMatchesFocus(currentBinding, currentFocus);
+      let currentPageContext = null;
+      if (hasCurrentBinding) {
+        currentPageContext = await requestArtifactPageContext(
+          currentBinding,
+          currentFocus.artifactRef,
+        );
+      }
+      if (cancelled) return;
+      const latestFocus = activeArtifactFocusRef.current;
+      if (!latestFocus
+        || latestFocus !== currentFocus
+        || (hasCurrentBinding && activeArtifactFrameRef.current !== currentBinding)
+        || activeTopicRef.current !== topic
+        || artifactTopicGenerationRef.current !== currentFocus.topicGeneration
+        || activeArtifactAgentUIDRef.current !== candidateAgentUID) {
+        clearCandidate();
+        return;
+      }
+      if (hasCurrentBinding && currentPageContext === null) return;
+      if (currentPageContext?.dirty === true) return;
+
+      setPreviewFileWithFocus(candidate);
+      setPendingArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+      setVerifiedArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+    };
+
+    void applyWhenCurrentPageAllows();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    artifactRegistryRevision,
+    pendingArtifactRefresh,
+    setPreviewFileWithFocus,
+    topic,
+    verifiedArtifactRefresh,
+  ]);
 
   const handleArtifactRefreshFailed = useCallback((candidate) => {
     const candidateKey = artifactRefreshFileKey(candidate);
     setPendingArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? null : current
+    ));
+    setVerifiedArtifactRefresh((current) => (
       artifactRefreshFileKey(current) === candidateKey ? null : current
     ));
   }, []);
@@ -3461,6 +3528,7 @@ export default function MessagesView({
 
     stickToBottomRef.current = false;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     const targetTopic = topic;
     const controller = new AbortController();
     questionJumpAbortControllerRef.current = controller;
@@ -3523,7 +3591,21 @@ export default function MessagesView({
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
-    stickToBottomRef.current = isTimelineNearBottom(el);
+    const currentScrollTop = el.scrollTop;
+    const previousScrollTop = lastTimelineScrollTopRef.current;
+    const movedUp = currentScrollTop < previousScrollTop;
+    const scrollPositionChanged = currentScrollTop !== previousScrollTop;
+    lastTimelineScrollTopRef.current = currentScrollTop;
+    if (movedUp && !isTimelineAtBottom(el)) {
+      stickToBottomRef.current = false;
+    } else if (isTimelineAtBottom(el)) {
+      stickToBottomRef.current = true;
+    }
+    if (scrollPositionChanged
+      && loadingOlderRef.current
+      && pendingOlderHistoryAnchorRef.current) {
+      pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(el);
+    }
     const pendingQuestionKey = pendingQuestionJumpRef.current;
     if (pendingQuestionKey) {
       setActiveQuestionKey((current) => current === pendingQuestionKey ? current : pendingQuestionKey);
@@ -3784,7 +3866,6 @@ export default function MessagesView({
               <span className="v3-peer-typing-label">{t('typing')}</span>
             </div>
           )}
-          <div ref={bottomRef} />
         </div>
       </div>
 
@@ -5126,9 +5207,38 @@ function getStreamId(message) {
   return typeof id === 'string' && id.trim() ? id.trim() : '';
 }
 
-function isTimelineNearBottom(el) {
+function isTimelineAtBottom(el) {
   if (!el) return true;
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= TIMELINE_BOTTOM_EPSILON;
+}
+
+function captureTimelineReadingAnchor(timeline) {
+  if (!timeline) return null;
+  const timelineRect = timeline.getBoundingClientRect();
+  const anchors = Array.from(timeline.querySelectorAll('[data-search-message-id]'));
+  const anchor = anchors.find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.bottom > timelineRect.top && rect.top < timelineRect.bottom;
+  }) || anchors[0];
+  return {
+    scrollHeight: timeline.scrollHeight,
+    scrollTop: timeline.scrollTop,
+    messageID: anchor?.dataset.searchMessageId || '',
+    offsetTop: anchor ? anchor.getBoundingClientRect().top - timelineRect.top : null,
+  };
+}
+
+function restoreTimelineReadingAnchor(timeline, anchor) {
+  if (anchor.messageID && Number.isFinite(anchor.offsetTop)) {
+    const target = Array.from(timeline.querySelectorAll('[data-search-message-id]'))
+      .find((element) => element.dataset.searchMessageId === anchor.messageID);
+    if (target) {
+      const offsetTop = target.getBoundingClientRect().top - timeline.getBoundingClientRect().top;
+      timeline.scrollTop += offsetTop - anchor.offsetTop;
+      return;
+    }
+  }
+  timeline.scrollTop = anchor.scrollTop + (timeline.scrollHeight - anchor.scrollHeight);
 }
 
 function streamDeltaText(content) {

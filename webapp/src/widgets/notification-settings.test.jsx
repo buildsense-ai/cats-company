@@ -28,9 +28,20 @@ vi.mock('../utils/push-tab-coordination', () => ({
   },
 }));
 
+vi.mock('../utils/pwa-install', () => ({
+  getPwaInstallState: vi.fn(() => ({
+    installed: false,
+    canPrompt: true,
+    requiresManualIOSInstall: false,
+  })),
+  promptPwaInstall: vi.fn(() => Promise.resolve('accepted')),
+  subscribePwaInstall: vi.fn(() => () => {}),
+}));
+
 import { api, setWSPushSubscriptionEndpoint } from '../api';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import NotificationSettings from './notification-settings';
+import { promptPwaInstall } from '../utils/pwa-install';
 
 describe('NotificationSettings', () => {
   let container;
@@ -115,6 +126,16 @@ describe('NotificationSettings', () => {
     expect(setWSPushSubscriptionEndpoint).toHaveBeenCalledWith('');
     expect(localStorage.getItem('cc_push_enabled_v1:user:7')).toBe('false');
     expect(container.textContent).toContain('已在当前设备关闭消息通知');
+  });
+
+  it('offers installation from a deliberate user action', async () => {
+    await renderSettings();
+    const installButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === '安装');
+
+    await act(async () => Simulate.click(installButton));
+
+    expect(promptPwaInstall).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the browser cleanup pending when the server record was removed', async () => {

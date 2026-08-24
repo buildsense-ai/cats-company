@@ -39,14 +39,17 @@ export default defineConfig({
         'pwa-notification-badge-96x96.png',
       ],
       manifest: {
+        id: '/',
         name: 'CatsCo',
         short_name: 'CatsCo',
+        description: '与 AI 员工协作、分派任务并接收结果。',
         lang: 'zh-CN',
         start_url: '/',
         scope: '/',
         display: 'standalone',
         theme_color: '#f8f8f8',
-        background_color: '#111827',
+        background_color: '#f8f8f8',
+        categories: ['productivity', 'business'],
         icons: [
           {
             src: '/pwa-192x192.png',

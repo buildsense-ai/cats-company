@@ -25,7 +25,33 @@ const (
 	sttMaxBrowserFrameBytes                = 16 * 1024
 	sttTicketType                          = "stt_ticket"
 	sttVADRMSThreshold                     = 0.008
+	sttStopReasonHardTimeout               = "hard_timeout"
+	sttStopReasonAudioLimit                = "audio_limit"
+	sttStopReasonIdleTimeout               = "idle_timeout"
+	sttStopReasonDurationLimit             = "duration_limit"
+	sttStopReasonLifecycleStop             = "lifecycle_stop"
 )
+
+func sttIsBoundaryStopReason(reason string) bool {
+	switch reason {
+	case sttStopReasonHardTimeout, sttStopReasonAudioLimit, sttStopReasonIdleTimeout, sttStopReasonDurationLimit:
+		return true
+	default:
+		return false
+	}
+}
+
+func sttShouldIncludeStopReason(reason string) bool {
+	return sttIsBoundaryStopReason(reason) || reason == sttStopReasonLifecycleStop
+}
+
+func sttTerminalErrorPayload(code, message, stopReason string) map[string]interface{} {
+	payload := map[string]interface{}{"type": "error", "code": code, "message": message}
+	if sttShouldIncludeStopReason(stopReason) {
+		payload["stop_reason"] = stopReason
+	}
+	return payload
+}
 
 type STTEventType string
 
@@ -519,7 +545,21 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 	defer hardTimer.Stop()
 	idleTimer := time.NewTimer(h.config.IdleTimeout)
 	idleTimeout := idleTimer.C
+	hardDeadlineAt := startedAt.Add(allowedDuration)
+	idleDeadlineAt := startedAt.Add(h.config.IdleTimeout)
 	defer idleTimer.Stop()
+	markElapsedDurationBoundary := func() {
+		if stopping || sttIsBoundaryStopReason(stopReason) {
+			return
+		}
+		now := time.Now()
+		switch {
+		case !now.Before(hardDeadlineAt):
+			stopReason = sttStopReasonHardTimeout
+		case !now.Before(idleDeadlineAt):
+			stopReason = sttStopReasonIdleTimeout
+		}
+	}
 
 	incoming := make(chan sttBrowserMessage, 4)
 	readerDone := make(chan struct{})
@@ -551,7 +591,7 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 		if err := upstream.Finish(); err != nil {
 			outcome = "error"
 			errorCode = "provider_finish_failed"
-			_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_finish_failed", "message": "语音识别结束失败"})
+			_ = h.writeSTTJSON(conn, sttTerminalErrorPayload("provider_finish_failed", "语音识别结束失败", stopReason))
 			return false
 		}
 		finalTimer = time.NewTimer(h.config.FinalTimeout)
@@ -566,26 +606,45 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 			}
 			switch message.messageType {
 			case websocket.BinaryMessage:
+				// A browser can have audio frames queued while the event loop is
+				// delayed (especially when a PWA is backgrounded). Classify the
+				// elapsed boundary before forwarding a late frame so it cannot
+				// refresh the idle deadline or hide the duration stop reason.
+				markElapsedDurationBoundary()
+				if sttIsBoundaryStopReason(stopReason) {
+					if !finish() {
+						return
+					}
+					continue
+				}
 				if stopping || len(message.payload) == 0 || len(message.payload) > sttMaxBrowserFrameBytes {
 					continue
 				}
 				if acceptedBytes+int64(len(message.payload)) > maxBytes {
-					stopReason = "audio_limit"
+					stopReason = sttStopReasonAudioLimit
 					if !finish() {
 						return
 					}
 					continue
 				}
 				if err := upstream.SendAudio(message.payload); err != nil {
+					markElapsedDurationBoundary()
 					outcome = "error"
 					errorCode = "provider_send_failed"
-					_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_send_failed", "message": "语音数据发送失败"})
+					_ = h.writeSTTJSON(conn, sttTerminalErrorPayload("provider_send_failed", "语音数据发送失败", stopReason))
 					return
 				}
 				if firstAcceptedAt.IsZero() {
 					firstAcceptedAt = time.Now()
 				}
 				acceptedBytes += int64(len(message.payload))
+				markElapsedDurationBoundary()
+				if sttIsBoundaryStopReason(stopReason) {
+					if !finish() {
+						return
+					}
+					continue
+				}
 				if sttPCMHasVoice(message.payload) {
 					if !idleTimer.Stop() {
 						select {
@@ -595,17 +654,31 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 					}
 					idleTimer.Reset(h.config.IdleTimeout)
 					idleTimeout = idleTimer.C
+					idleDeadlineAt = time.Now().Add(h.config.IdleTimeout)
 				}
 			case websocket.TextMessage:
 				var command struct {
-					Type string `json:"type"`
+					Type       string `json:"type"`
+					StopReason string `json:"stop_reason"`
 				}
 				if json.Unmarshal(message.payload, &command) != nil {
 					continue
 				}
 				switch command.Type {
 				case "stop":
-					stopReason = "client_stop"
+					// An explicit stop is an intentional user action. It must retain
+					// that meaning even when the browser delivers the command after
+					// the advertised deadline; the hard timer and late audio paths
+					// already classify server-enforced duration boundaries. If
+					// finalization has already started, keep its reason instead.
+					if !stopping {
+						switch command.StopReason {
+						case sttStopReasonDurationLimit, sttStopReasonLifecycleStop:
+							stopReason = command.StopReason
+						default:
+							stopReason = "client_stop"
+						}
+					}
 					if !finish() {
 						return
 					}
@@ -617,9 +690,10 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 			}
 		case event, open := <-upstream.Events():
 			if !open {
+				markElapsedDurationBoundary()
 				outcome = "error"
 				errorCode = "provider_closed"
-				_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_closed", "message": "语音识别连接已断开，请重试"})
+				_ = h.writeSTTJSON(conn, sttTerminalErrorPayload("provider_closed", "语音识别连接已断开，请重试", stopReason))
 				return
 			}
 			switch event.Type {
@@ -646,30 +720,49 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 			case STTEventFinal:
 				outcome = "success"
 				if !stopping {
-					stopReason = "provider_final"
+					markElapsedDurationBoundary()
+					if !sttIsBoundaryStopReason(stopReason) {
+						stopReason = "provider_final"
+					}
 				}
-				_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "final", "text": event.Text})
+				finalPayload := map[string]interface{}{"type": "final", "text": event.Text}
+				if sttShouldIncludeStopReason(stopReason) {
+					finalPayload["stop_reason"] = stopReason
+				}
+				_ = h.writeSTTJSON(conn, finalPayload)
 				return
 			case STTEventError:
+				markElapsedDurationBoundary()
 				outcome = "error"
 				errorCode = event.Code
-				_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": event.Code, "message": event.Message})
+				_ = h.writeSTTJSON(conn, sttTerminalErrorPayload(event.Code, event.Message, stopReason))
 				return
 			}
 		case <-hardTimer.C:
-			stopReason = "hard_timeout"
+			if stopping {
+				continue
+			}
+			stopReason = sttStopReasonHardTimeout
 			if !finish() {
 				return
 			}
 		case <-idleTimeout:
-			stopReason = "idle_timeout"
+			if stopping {
+				continue
+			}
+			stopReason = sttStopReasonIdleTimeout
 			if !finish() {
 				return
 			}
 		case <-finalTimeout:
 			outcome = "error"
 			errorCode = "final_timeout"
-			_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "final_timeout", "message": "语音识别未能及时完成，请重试"})
+			_ = h.writeSTTJSON(conn, map[string]interface{}{
+				"type":        "error",
+				"code":        "final_timeout",
+				"message":     "语音识别未能及时完成，请重试",
+				"stop_reason": stopReason,
+			})
 			return
 		}
 	}

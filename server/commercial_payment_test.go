@@ -692,6 +692,77 @@ func TestCommercialClosedOrderUsesProviderQueryFallback(t *testing.T) {
 	}
 }
 
+func TestCommercialPaymentReconciliationFulfillsRecentPendingOrder(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	store.orders["CC-RECONCILE"] = &types.CommercialOrder{
+		OrderNo: "CC-RECONCILE", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending", ExpiresAt: &expiresAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-RECONCILE", ProviderTradeNo: "ALI-RECONCILE",
+			AmountFen: 39900, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	if got := handler.ReconcileCommercialOrders(context.Background()); got != 1 {
+		t.Fatalf("reconciled count=%d, want 1", got)
+	}
+	if store.orders["CC-RECONCILE"].Status != "fulfilled" || provider.calls != 1 {
+		t.Fatalf("order=%#v provider_calls=%d", store.orders["CC-RECONCILE"], provider.calls)
+	}
+}
+
+func TestCommercialPaymentReconciliationSkipsStaleClosedOrder(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	closedAt := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	store.orders["CC-RECONCILE-STALE"] = &types.CommercialOrder{
+		OrderNo: "CC-RECONCILE-STALE", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "closed", ClosedAt: &closedAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-RECONCILE-STALE", ProviderTradeNo: "ALI-RECONCILE-STALE",
+			AmountFen: 39900, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	if got := handler.ReconcileCommercialOrders(context.Background()); got != 0 {
+		t.Fatalf("reconciled count=%d, want 0", got)
+	}
+	if store.orders["CC-RECONCILE-STALE"].Status != "closed" || provider.calls != 0 {
+		t.Fatalf("stale order=%#v provider_calls=%d", store.orders["CC-RECONCILE-STALE"], provider.calls)
+	}
+}
+
+func TestCommercialPaymentReconciliationSkipsStalePendingOrder(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	createdAt := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	store.orders["CC-RECONCILE-STALE-PENDING"] = &types.CommercialOrder{
+		OrderNo: "CC-RECONCILE-STALE-PENDING", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending", CreatedAt: createdAt, ExpiresAt: &expiresAt,
+	}
+	provider := &queryCommercialPaymentProvider{paid: true, confirmation: &types.CommercialPaymentConfirmation{
+		Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-RECONCILE-STALE-PENDING", ProviderTradeNo: "ALI-RECONCILE-STALE-PENDING",
+		AmountFen: 39900, Currency: "CNY", PaidAt: time.Now().UTC(),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	if got := handler.ReconcileCommercialOrders(context.Background()); got != 0 {
+		t.Fatalf("reconciled count=%d, want 0", got)
+	}
+	if store.orders["CC-RECONCILE-STALE-PENDING"].Status != "pending" || provider.calls != 0 {
+		t.Fatalf("stale pending order=%#v provider_calls=%d", store.orders["CC-RECONCILE-STALE-PENDING"], provider.calls)
+	}
+}
+
 func TestCommercialHistoricalOrderQuerySurvivesGrayDisable(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	closedAt := time.Now().UTC().Add(-time.Hour)
@@ -906,6 +977,33 @@ func TestCommercialRelayScopeExcludesUnpurchasedSharedAlias(t *testing.T) {
 	}
 }
 
+func TestCommercialRelayModelScopesMatchRelayAdminOverlapMerge(t *testing.T) {
+	triple := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+	pair := []string{"gpt-5.6-terra", "gpt-5.6-sol"}
+	expected := []commercialRelayModelScope{
+		{ManagedModels: []string{"deepseek-v4-flash"}, AllowedModels: []string{"deepseek-v4-flash"}},
+		{ManagedModels: triple, AllowedModels: triple},
+		{ManagedModels: pair, AllowedModels: pair},
+		{ManagedModels: []string{"MiniMax-M2.7"}, AllowedModels: []string{"MiniMax-M2.7"}},
+		{ManagedModels: []string{"MiniMax-M3"}, AllowedModels: []string{"MiniMax-M3"}},
+	}
+	// Relay Admin merges the overlapping pair into the existing triple scope.
+	actual := []commercialRelayModelScope{
+		{ManagedModels: []string{"deepseek-v4-flash"}, AllowedModels: []string{"deepseek-v4-flash"}},
+		{ManagedModels: triple, AllowedModels: triple},
+		{ManagedModels: []string{"MiniMax-M2.7"}, AllowedModels: []string{"MiniMax-M2.7"}},
+		{ManagedModels: []string{"MiniMax-M3"}, AllowedModels: []string{"MiniMax-M3"}},
+	}
+	if !commercialRelayModelScopesMatch(actual, expected) {
+		t.Fatalf("valid Relay Admin overlap merge was rejected: actual=%#v expected=%#v", actual, expected)
+	}
+
+	actual[1].AllowedModels = pair
+	if commercialRelayModelScopesMatch(actual, expected) {
+		t.Fatalf("scope narrowing was not detected: actual=%#v expected=%#v", actual, expected)
+	}
+}
+
 func TestCommercialRelayUsesAvailableCatalogAfterScopedConfigWasRemoved(t *testing.T) {
 	models := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
 	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
@@ -1100,6 +1198,19 @@ func TestCommercialRelayBaselineCoexistsWithPaidAndManualQuota(t *testing.T) {
 	paid.Entitlements = append(paid.Entitlements, &types.CommercialEntitlement{Source: "legacy", State: "active"})
 	if !commercialRelayHasBaselineEntitlement(paid) {
 		t.Fatal("active legacy baseline was not recognized")
+	}
+}
+
+func TestCommercialRelayBaselineRestoresFreeAfterRefund(t *testing.T) {
+	summary := &types.CommercialSummary{
+		Ledger: []*types.CommercialLedgerEntry{{SourceType: "refund", EntryType: "revoke"}},
+	}
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 10500, ResetDuration: "1M"},
+	}}
+	profile, budgets, err := commercialRelayBaselineForSummary(summary, relayUser)
+	if err != nil || profile != commercialRelayBaselineProfileFree || len(budgets) != len(commercialRelayFreeBudgets) {
+		t.Fatalf("refund did not restore free baseline: profile=%q budgets=%#v err=%v", profile, budgets, err)
 	}
 }
 

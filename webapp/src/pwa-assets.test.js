@@ -79,6 +79,18 @@ describe('PWA notification badge', () => {
     expect(offlineHtml).toContain('<meta name="theme-color" content="#111827" />');
   });
 
+  it('publishes a stable app identity and Apple home-screen icon', () => {
+    const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
+    const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.js'), 'utf8');
+
+    expect(indexHtml).toContain('rel="apple-touch-icon"');
+    expect(indexHtml.match(/<meta name="description"/g)).toHaveLength(1);
+    expect(indexHtml).toContain('<meta name="description" content="与 AI 员工协作、分派任务并接收结果。" />');
+    expect(viteConfig).toContain("id: '/'");
+    expect(viteConfig).toContain("description: '与 AI 员工协作、分派任务并接收结果。'");
+    expect(viteConfig).toContain("background_color: '#f8f8f8'");
+  });
+
   it('uses a transparent monochrome asset distinct from the launcher icon', () => {
     const badgePath = resolve(process.cwd(), 'public/pwa-notification-badge-96x96.png');
     const { width, height, pixels } = decodeRGBA8PNG(badgePath);

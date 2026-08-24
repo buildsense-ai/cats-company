@@ -569,13 +569,17 @@ func TestRelayCommercialEnforceAllowlistAppliesPerUser(t *testing.T) {
 	allowedRec := httptest.NewRecorder()
 	handler.HandleSummary(allowedRec, allowedReq)
 	var allowedBody struct {
-		EnforceEnabled bool `json:"enforce_enabled"`
+		EnforceEnabled bool   `json:"enforce_enabled"`
+		Note           string `json:"note"`
 	}
 	if err := json.Unmarshal(allowedRec.Body.Bytes(), &allowedBody); err != nil {
 		t.Fatalf("decode allowed summary: %v", err)
 	}
 	if !allowedBody.EnforceEnabled {
 		t.Fatalf("expected uid 38 to be enforce-enabled: %s", allowedRec.Body.String())
+	}
+	if strings.Contains(allowedBody.Note, "内测") {
+		t.Fatalf("public enforced summary must not use gray-release note: %q", allowedBody.Note)
 	}
 
 	otherReq := httptest.NewRequest(http.MethodGet, "/api/relay/commercial", nil)

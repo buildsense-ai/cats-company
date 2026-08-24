@@ -173,12 +173,18 @@ func (h *RelayCommercialHandler) HandleSummary(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load commercial summary"})
 		return
 	}
+	note := "套餐已开放；额度会在支付履约后同步到模型服务。"
+	if h.rolloutFor(uid) != "public" {
+		note = "套餐额度内测中；当前只对灰度账号开放。"
+	} else if !h.enforceFor(uid) {
+		note = "套餐已开放；当前账号尚未启用模型额度接管，请先完成 Relay 配置。"
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled":         true,
 		"rollout":         h.rolloutFor(uid),
 		"enforce_enabled": h.enforceFor(uid),
 		"summary":         publicCommercialSummary(summary),
-		"note":            "套餐额度内测中；未开启真实接管前，当前 relay 默认额度和重置周期继续保留。",
+		"note":            note,
 	})
 }
 

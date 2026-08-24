@@ -24,7 +24,6 @@ import { enqueuePushOperation } from '../utils/push-operation';
 import { registerBrowserPush } from '../utils/push-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
-import './pwa-controller.css';
 
 function readDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
@@ -52,7 +51,6 @@ export default function PwaController({
   const [pushConfig, setPushConfig] = useState(null);
   const [busy, setBusy] = useState(false);
   const [pushError, setPushError] = useState('');
-  const [needRefresh, setNeedRefresh] = useState(false);
   const [reconcileVersion, setReconcileVersion] = useState(0);
   const updateServiceWorkerRef = useRef(null);
 
@@ -64,7 +62,6 @@ export default function PwaController({
         if (hasPwaRefreshPresenter()) return;
         const updateServiceWorker = updateServiceWorkerRef.current || getPwaUpdateServiceWorker();
         if (updateServiceWorker) updateServiceWorker(true);
-        else setNeedRefresh(true);
       });
     });
     updateServiceWorkerRef.current = registerPwaServiceWorker();
@@ -255,19 +252,8 @@ export default function PwaController({
   }, [busy, pushConfig, pushPromptOwner, sessionRevision]);
 
   return (
-    <div className="cc-pwa-status" aria-live="polite">
+    <>
       {!online && <div className="cc-pwa-offline">当前离线，消息将在网络恢复后重新加载</div>}
-      {needRefresh && (
-        <div className="cc-pwa-prompt cc-pwa-prompt--compact">
-          <div className="cc-pwa-prompt-copy">
-            <strong>发现新版本</strong>
-          </div>
-          <div className="cc-pwa-prompt-actions">
-            <button type="button" onClick={() => updateServiceWorkerRef.current?.(true)}>立即更新</button>
-            <button type="button" className="secondary" onClick={() => setNeedRefresh(false)}>稍后</button>
-          </div>
-        </div>
-      )}
       {offerPush && (
         <aside className="cc-pwa-prompt cc-pwa-prompt--push" aria-label="消息通知设置">
           <span className="cc-pwa-prompt-icon" aria-hidden="true">
@@ -294,6 +280,6 @@ export default function PwaController({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

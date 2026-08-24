@@ -6,8 +6,11 @@ streams 100 ms frames to CatsCo. CatsCo forwards those frames to Volcengine and
 returns normalized `ready`, `definite`, `partial`, `final`, and `error` events.
 
 Audio and partial transcripts are memory-only. They are not written to
-`/uploads`, message history, or the database. Only the final transcript is
-inserted into the browser composer draft.
+`/uploads`, message history, or the database. During a successful session, only
+the final transcript is inserted into the browser composer draft. If a
+terminal error interrupts recognition after text has been captured, the browser
+may insert the latest snapshot locally so the user can recover it; it is not
+persisted until the user submits the draft.
 
 ## Provider
 
@@ -69,6 +72,10 @@ already captured frames. Once the connection becomes ready, it must drain those
 frames in FIFO order, send the `stop` control message, and wait for the final
 transcript using the normal server timeout. This preserves short hold-to-talk
 utterances and speech spoken immediately after recording begins.
+Automatic duration stops send `stop_reason: duration_limit`, and lifecycle
+stops send `stop_reason: lifecycle_stop`; an intentional user stop keeps the
+plain `stop` command. The server echoes these reasons on terminal events so a
+delayed finalization cannot turn a recoverable segment into a generic error.
 
 `cancel` has different semantics from `stop`. Cancellation must discard queued
 preconnect PCM and must not establish or retain a connection solely to upload
@@ -82,21 +89,68 @@ current page visibility before accepting or forwarding any PCM. No PCM sampled
 after the page becomes hidden or the audio context is suspended may be sent to
 CatsCo.
 
-Partial transcripts are presentation data only. The browser uses a latest-wins
-animation-frame update, so it performs at most one visible update per rendered
-frame without imposing an arbitrary 80 ms delay. If a final result arrives
-while a newer partial is pending, the client must publish that partial first.
-The composer must give that published partial an opportunity to render before
-clearing it for the final transcript; state batching must not make the newest
-live transcription unobservable. While a desktop composer preview exceeds its
-height cap, it follows the tail so new speech remains visible.
+Partial transcripts are presentation data until the session reaches a normal
+`final`. The browser uses a latest-wins animation-frame update, so it performs
+at most one visible update per rendered frame without imposing an arbitrary 80
+ms delay. If a final result arrives while a newer partial is pending, the client
+must publish that partial first. The composer must give that published partial
+an opportunity to render before clearing it for the final transcript; state
+batching must not make the newest live transcription unobservable. While a
+desktop composer preview exceeds its height cap, it follows the tail so new
+speech remains visible.
+
+If a session terminates with an error after any text has been recognized, the
+browser flushes the latest transcript snapshot into the composer draft before
+showing the error. This is a local, recoverable draft insertion, not a message
+submission or server-side transcript persistence. It covers provider errors,
+WebSocket disconnects, and finalization timeouts, including the browser/PWA
+background lifecycle where the normal `final` event may not arrive.
+
+Ten seconds before the advertised session limit, the browser checks recent
+speech activity from the PCM meter and transcript events. It shows a quiet
+inline status line in small, muted text while keeping the microphone open. The
+copy tells the user what happens next, for example that continued speech is
+still accepted and the recognized text will be saved into the input box. It is
+not an alert, toast, or interruptive prompt. If the speaker has already gone
+quiet, the client waits for a short natural boundary and finishes the segment
+there. A transcript that ends with sentence punctuation can close after a
+shorter quiet period; an uncertain or unpunctuated preview uses a more
+conservative silence window. If speech continues, it keeps recording through
+the warning and stops only at the hard limit. This avoids cutting a sentence at
+an arbitrary warning point while still respecting the server's maximum
+duration. The hard-limit path is presented as a recoverable segment boundary,
+not as a lost recording. An intentional idle cutoff is also a normal segment
+boundary when the provider returns a final result, so the composer can invite
+the user to continue recording without an error state. Audio activity and
+transcript events also recover a warning if a foreground timer fires late, and
+short quota-reduced limits show the warning immediately after the socket is
+ready.
+
+The visual countdown may refresh once per second, but the polite live region
+announces only the initial warning, a change between active and quiet speech,
+and terminal save or error states. It does not read every countdown tick as a
+separate announcement.
+
+When the server has to enforce the hard/audio boundary while the browser timer
+is throttled (a common PWA background behavior), terminal provider/final errors
+carry a boundary reason. If the transport closes without a terminal payload
+after the advertised deadline, the browser uses its local deadline clock as a
+final fallback. The composer can therefore use the same non-error copy and
+preserve the latest transcript snapshot. If finalization itself fails after an
+idle cutoff, the client keeps the idle reason as a real error while still
+recovering the latest transcript into the draft.
+An explicit user stop keeps its intentional-stop semantics when the control
+message arrives after the advertised deadline, provided server enforcement has
+not already begun. Once the server has started a hard/audio or idle boundary,
+that boundary reason wins.
 
 With `enable_nonstream` enabled for the Doubao 2.0 provider, a response can
 mark an utterance as `definite`. Its complete `result.text` is then forwarded
 as one `definite` snapshot. The browser replaces its previous confirmed
 snapshot with that text and merges a later mutable `partial` tail for display.
-It is not a session final, and only `final` inserts text into the composer
-draft.
+It is not a session final. During a successful session, only `final` inserts
+text into the composer draft; the terminal-error recovery path above is the
+exception.
 
 Doubao can also revise punctuation or wording in a later cumulative snapshot.
 The browser replaces a snapshot that has a material common prefix with the
@@ -104,8 +158,11 @@ stable preview, rather than appending it. A clearly separate next utterance is
 still joined at a safe boundary, so short Chinese segment transitions do not
 lose their first character.
 
-The final transcript remains the only transcript inserted into the composer
-draft or persisted by later message submission.
+The normal final transcript remains the only successful transcript event. A
+recovered snapshot may also be inserted into the composer draft after a
+terminal error, so a user can review or continue it instead of losing already
+recognized speech. Only text the user subsequently submits is persisted in
+message history.
 
 ### Required browser regression coverage
 
@@ -125,6 +182,15 @@ draft or persisted by later message submission.
   snapshot, without ending the session.
 - A revised cumulative Doubao snapshot replaces the live preview without
   duplicating an already stable prefix.
+- A finalization timeout, provider error, or WebSocket close preserves the
+  latest recognized snapshot in the composer draft.
+- A delayed duration timer, a server hard/audio boundary reason, and a
+  hidden-page final with a pending preview all preserve the snapshot and
+  release the composer session.
+- An idle-timeout final uses the calm boundary notice, while an idle-timeout
+  provider/finalization error keeps the error state and recovers the snapshot.
+- An explicit user cancellation still discards the preview and does not insert
+  a draft.
 
 ## Limits
 

@@ -55,7 +55,7 @@ func (a *Adapter) EnsureCommercialRelayBaseline(uid int64, profile string, budge
 	if err := tx.QueryRow(`
 		SELECT EXISTS(
 			SELECT 1 FROM commercial_entitlements
-			WHERE uid = $1 AND source IN ('free','legacy')
+			WHERE uid = $1 AND source IN ('free','legacy') AND state = 'active'
 		)`, uid).Scan(&baselineExists); err != nil {
 		return false, fmt.Errorf("check commercial relay baseline: %w", err)
 	}

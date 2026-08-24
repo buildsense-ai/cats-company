@@ -66,6 +66,19 @@ const cloudWorkerCreateMessage = (e) => {
   }
 };
 
+// Keep the disabled managed-hosting option honest: `0/1` looks like a
+// partially available quota even when the account has already consumed its
+// only creation right. Say what the user can do instead of exposing the
+// internal remaining/total representation.
+const cloudHostingSummary = (quota, quotaError) => {
+  if (quotaError) return '云端状态查询失败，请稍后重试';
+  if (!quota || !quota.enabled) return '云端部署当前未开放，请联系管理员开通';
+  const remaining = Number(quota.remaining);
+  return remaining > 0
+    ? `部署到云端虚拟员工（还可创建 ${remaining} 次）`
+    : '云端虚拟员工创建权益已用完';
+};
+
 const cloudWorkerActionMessage = (e, actionLabel) => {
   const code = e?.data?.code;
   if (code === 'cloud_worker_operation_busy' || e?.status === 409) {
@@ -1089,7 +1102,13 @@ export default function AgentStoreModal({
   const handleCloudCreate = async (displayName) => {
     const trimmed = displayName.trim();
     if (!trimmed) return;
-    const slug = trimmed.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 16);
+    const slug = trimmed.toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 16)
+      .replace(/-+$/g, '');
     const suffix = Math.floor(Math.random() * 9000) + 1000;
     const username = `bot-${slug || 'bot'}-${suffix}`;
     try {
@@ -1795,11 +1814,7 @@ export default function AgentStoreModal({
                     <span>
                       <strong>云托管</strong>
                       <small>
-                        {cloudQuotaError
-                          ? '云端状态查询失败，请稍后重试'
-                          : (cloudQuota && cloudQuota.enabled
-                              ? `部署到云端虚拟员工（可创建 ${cloudQuota.remaining}/${cloudQuota.total}）`
-                              : '云端部署当前未开放，请联系管理员开通')}
+                        {cloudHostingSummary(cloudQuota, cloudQuotaError)}
                       </small>
                     </span>
                   </label>

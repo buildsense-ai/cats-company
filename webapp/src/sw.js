@@ -42,6 +42,10 @@ registerRoute(neverCache, new NetworkOnly(), 'GET');
 const navigationHandler = new NetworkOnly({
   networkTimeoutSeconds: 4,
   plugins: [{
+    cacheWillUpdate: async ({ response }) => {
+      if (!response || response.status !== 200) return null;
+      return response;
+    },
     handlerDidError: navigationFallback,
   }],
 });

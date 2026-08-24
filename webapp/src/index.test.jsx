@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   isPwaRefreshPending: vi.fn(() => false),
   subscribeToPwaRefresh: vi.fn(() => () => {}),
   pwaController: vi.fn(),
+  pwaUpdateController: vi.fn(),
   pushCleanupController: vi.fn(),
   suspendWorkspace: false,
   workspaceSuspense: new Promise(() => {}),
@@ -67,6 +68,13 @@ vi.mock('./components/pwa-controller', () => ({
   },
 }));
 
+vi.mock('./components/pwa-update-controller', () => ({
+  default: () => {
+    mocks.pwaUpdateController();
+    return <div data-testid="pwa-update-controller" />;
+  },
+}));
+
 vi.mock('./components/push-cleanup-controller', () => ({
   default: () => {
     mocks.pushCleanupController();
@@ -114,6 +122,7 @@ beforeEach(() => {
   mocks.isPwaRefreshPending.mockReset().mockReturnValue(false);
   mocks.subscribeToPwaRefresh.mockReset().mockReturnValue(() => {});
   mocks.pwaController.mockClear();
+  mocks.pwaUpdateController.mockClear();
   mocks.pushCleanupController.mockClear();
   mocks.suspendWorkspace = false;
   mocks.workspaceError = null;
@@ -129,26 +138,28 @@ afterEach(async () => {
   window.history.replaceState(null, '', '/');
 });
 
-test('does not register the PWA before authentication on the anonymous app shell', async () => {
+test('registers the service worker on the anonymous app shell without mounting account features', async () => {
   window.history.replaceState(null, '', '/');
 
   await act(async () => {
     root.render(<App />);
   });
 
-  expect(mocks.registerPwaServiceWorker).not.toHaveBeenCalled();
+  expect(mocks.registerPwaServiceWorker).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('[data-testid="pwa-update-controller"]')).toBeTruthy();
+  expect(mocks.pwaUpdateController).toHaveBeenCalledTimes(1);
   expect(container.querySelector('[data-testid="pwa-controller"]')).toBeFalsy();
   expect(mocks.pwaController).not.toHaveBeenCalled();
 });
 
-test('does not register the PWA before authentication on an anonymous deep link', async () => {
+test('registers the service worker on an anonymous deep link', async () => {
   window.history.replaceState(null, '', '/e/invite-1');
 
   await act(async () => {
     root.render(<App />);
   });
 
-  expect(mocks.registerPwaServiceWorker).not.toHaveBeenCalled();
+  expect(mocks.registerPwaServiceWorker).toHaveBeenCalledTimes(1);
 });
 
 test('loads the PWA runtime for a restorable authenticated session', async () => {

@@ -27,13 +27,23 @@ type CommercialOperationsStore interface {
 type commercialOpsServiceContextKey struct{}
 
 type CommercialOpsHandler struct {
-	admin    *AccountAdminHandler
-	services AccountServiceVerifier
-	store    CommercialOperationsStore
+	admin        *AccountAdminHandler
+	services     AccountServiceVerifier
+	store        CommercialOperationsStore
+	cloudWorkers CloudWorkerAdminOverviewHandler
 }
 
 func NewCommercialOpsHandler(admin *AccountAdminHandler, services AccountServiceVerifier, store CommercialOperationsStore) *CommercialOpsHandler {
 	return &CommercialOpsHandler{admin: admin, services: services, store: store}
+}
+
+// SetCloudWorkerAdmin wires the read-only platform roster. It is deliberately
+// optional so deployments without the cloud-worker tables remain compatible;
+// the endpoint returns 503 instead of exposing a partial or public fallback.
+func (h *CommercialOpsHandler) SetCloudWorkerAdmin(handler CloudWorkerAdminOverviewHandler) {
+	if h != nil {
+		h.cloudWorkers = handler
+	}
 }
 
 func commercialOpsServiceFromRequest(r *http.Request) (AccountService, bool) {
@@ -120,6 +130,42 @@ func (h *CommercialOpsHandler) HandleInvites(w http.ResponseWriter, r *http.Requ
 
 func (h *CommercialOpsHandler) HandleGrants(w http.ResponseWriter, r *http.Request) {
 	h.forward(w, r, "grants.create", "user", h.admin.HandleCommercialGrant)
+}
+
+func (h *CommercialOpsHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r *http.Request) {
+	h.forward(w, r, "cloud_worker_credits.create", "user", h.admin.HandleCloudWorkerCredits)
+}
+
+func (h *CommercialOpsHandler) HandleCloudWorkers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if h == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial operations handler unavailable"})
+		return
+	}
+	service, ok := h.requireService(w, r, false)
+	if !ok {
+		return
+	}
+	if h.cloudWorkers == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker admin unavailable"})
+		return
+	}
+	tracked := &commercialOpsResponseWriter{ResponseWriter: w}
+	h.cloudWorkers.HandleAdminOverview(tracked, withCommercialOpsService(r, service))
+	status := tracked.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if h.store != nil {
+		if err := h.store.RecordCommercialOperatorEvent(&types.CommercialOperatorEvent{
+			Service: service.Slug, Action: "cloud_workers.read", TargetType: "cloud_worker_roster", StatusCode: status,
+		}); err != nil {
+			log.Printf("failed to record commercial operator event service=%s action=cloud_workers.read: %v", service.Slug, err)
+		}
+	}
 }
 
 func (h *CommercialOpsHandler) HandleAdjustments(w http.ResponseWriter, r *http.Request) {

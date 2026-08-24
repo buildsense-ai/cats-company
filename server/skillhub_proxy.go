@@ -22,6 +22,7 @@ const (
 	defaultSkillHubMaxResponse  int64 = 2 << 20
 	skillHubSkillsPrefix              = "/api/skills"
 	skillHubPrivateMetadataPath       = "/api/bot/private-skill-metadata"
+	skillHubPrivateHistoryPath        = "/api/bot/private-skill-history"
 )
 
 // SkillHubProxyHandler exposes the public SkillHub catalogue through CatsCo.
@@ -44,13 +45,29 @@ type privateSkillMetadataRequest struct {
 }
 
 type privateSkillMetadataReference struct {
-	SkillID     string `json:"skillId"`
-	Version     string `json:"version"`
-	DisplayName string `json:"displayName,omitempty"`
+	SkillID              string `json:"skillId"`
+	Version              string `json:"version"`
+	DisplayName          string `json:"displayName,omitempty"`
+	RevisionNumber       int64  `json:"revisionNumber,omitempty"`
+	LastChangedByUserUID int64  `json:"lastChangedByUserUid,omitempty"`
+	LastChangedAt        string `json:"lastChangedAt,omitempty"`
+	ChangeSource         string `json:"changeSource,omitempty"`
 }
 
 type privateSkillMetadataResponse struct {
 	Skills []privateSkillMetadataReference `json:"skills"`
+}
+
+type privateSkillHistoryRequest struct {
+	SkillID              string `json:"skillId"`
+	Limit                int64  `json:"limit,omitempty"`
+	BeforeRevisionNumber int64  `json:"beforeRevisionNumber,omitempty"`
+}
+
+type privateSkillHistoryResponse struct {
+	SkillID                  string                          `json:"skillId"`
+	Versions                 []privateSkillMetadataReference `json:"versions"`
+	NextBeforeRevisionNumber int64                           `json:"nextBeforeRevisionNumber,omitempty"`
 }
 
 func NewSkillHubProxyHandler(baseURL string, options SkillHubProxyOptions) *SkillHubProxyHandler {
@@ -112,7 +129,7 @@ func (h *SkillHubProxyHandler) HandleSkills(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	query := url.Values{}
-	for _, key := range []string{"q", "category", "agent_version", "platform"} {
+	for _, key := range []string{"q", "category", "agent_version", "platform", "search_mode"} {
 		for _, value := range r.URL.Query()[key] {
 			query.Add(key, value)
 		}
@@ -183,7 +200,7 @@ func (h *SkillHubProxyHandler) ResolvePrivateSkillMetadata(
 	botID string,
 	apiKey string,
 	references []types.BotSkillRef,
-) (map[string]string, error) {
+) (map[string]BotSkillDisplayMetadata, error) {
 	if h == nil || h.configError != nil || h.baseURL == nil {
 		return nil, errors.New("SkillHub is not configured")
 	}
@@ -193,7 +210,7 @@ func (h *SkillHubProxyHandler) ResolvePrivateSkillMetadata(
 		return nil, errors.New("Bot SkillHub credentials are unavailable")
 	}
 	if len(references) == 0 {
-		return map[string]string{}, nil
+		return map[string]BotSkillDisplayMetadata{}, nil
 	}
 	if len(references) > maxBotSkillRefs {
 		return nil, errors.New("too many private Skill metadata references")
@@ -245,16 +262,134 @@ func (h *SkillHubProxyHandler) ResolvePrivateSkillMetadata(
 	if err := json.Unmarshal(responseBody, &decoded); err != nil {
 		return nil, errors.New("SkillHub returned invalid private metadata")
 	}
-	metadata := make(map[string]string, len(decoded.Skills))
+	metadata := make(map[string]BotSkillDisplayMetadata, len(decoded.Skills))
 	for _, skill := range decoded.Skills {
 		key := botSkillMetadataKey(strings.TrimSpace(skill.SkillID), strings.TrimSpace(skill.Version))
 		name := strings.TrimSpace(skill.DisplayName)
 		if _, ok := requested[key]; !ok || !validBotSkillDisplayName(name) {
 			continue
 		}
-		metadata[key] = name
+		presentation := BotSkillDisplayMetadata{DisplayName: name}
+		if skill.RevisionNumber > 0 && skill.RevisionNumber <= 1_000_000_000 {
+			presentation.RevisionNumber = skill.RevisionNumber
+		}
+		if skill.LastChangedByUserUID > 0 {
+			presentation.LastChangedByUserUID = skill.LastChangedByUserUID
+		}
+		if lastChangedAt := strings.TrimSpace(skill.LastChangedAt); len(lastChangedAt) <= 64 {
+			if _, err := time.Parse(time.RFC3339Nano, lastChangedAt); err == nil {
+				presentation.LastChangedAt = lastChangedAt
+			}
+		}
+		switch skill.ChangeSource {
+		case "runtime_backup", "conversation_mutation":
+			presentation.ChangeSource = skill.ChangeSource
+		}
+		metadata[key] = presentation
 	}
 	return metadata, nil
+}
+
+// ResolvePrivateSkillHistory asks SkillHub for one Bot-private Skill's
+// immutable content revisions. It validates and rebuilds the response so
+// package identity and audit-only fields can never reach browser clients.
+func (h *SkillHubProxyHandler) ResolvePrivateSkillHistory(
+	ctx context.Context,
+	botID string,
+	apiKey string,
+	skillID string,
+	limit int64,
+	beforeRevisionNumber int64,
+) (BotSkillVersionHistory, error) {
+	result := BotSkillVersionHistory{Versions: []BotSkillVersionHistoryEntry{}}
+	if h == nil || h.configError != nil || h.baseURL == nil {
+		return result, errors.New("SkillHub is not configured")
+	}
+	botID = strings.TrimSpace(botID)
+	apiKey = strings.TrimSpace(apiKey)
+	skillID = strings.TrimSpace(skillID)
+	if botID == "" || apiKey == "" {
+		return result, errors.New("Bot SkillHub credentials are unavailable")
+	}
+	if !isPrivateBotSkillReference(skillID) || !validBotSkillID(skillID) {
+		return result, errors.New("invalid private Skill history reference")
+	}
+	if limit < 1 || limit > 50 || beforeRevisionNumber < 0 || beforeRevisionNumber > 1_000_000_000 {
+		return result, errors.New("invalid private Skill history pagination")
+	}
+	body, err := json.Marshal(privateSkillHistoryRequest{
+		SkillID: skillID, Limit: limit, BeforeRevisionNumber: beforeRevisionNumber,
+	})
+	if err != nil {
+		return result, err
+	}
+	target := *h.baseURL
+	target.Path = strings.TrimRight(target.Path, "/") + skillHubPrivateHistoryPath
+	target.RawQuery = ""
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "ApiKey "+apiKey)
+	request.Header.Set("X-CatsCo-Bot-Id", botID)
+	request.Header.Set("User-Agent", "cats-company-skillhub-private-history/1.0")
+	response, err := h.client.Do(request)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	responseBody, err := readLimited(response.Body, h.maxResponseSize)
+	if err != nil {
+		return result, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return result, fmt.Errorf("SkillHub private history request failed: %d", response.StatusCode)
+	}
+	var decoded privateSkillHistoryResponse
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return result, errors.New("SkillHub returned invalid private history")
+	}
+	if strings.TrimSpace(decoded.SkillID) != skillID {
+		return result, errors.New("SkillHub returned mismatched private history")
+	}
+	result.SkillID = skillID
+	seen := make(map[int64]struct{}, len(decoded.Versions))
+	for _, version := range decoded.Versions {
+		versionSkillID := strings.TrimSpace(version.SkillID)
+		exactVersion := strings.TrimSpace(version.Version)
+		name := strings.TrimSpace(version.DisplayName)
+		if versionSkillID != skillID || !validBotSkillRefPart(exactVersion, maxBotSkillVersionBytes) ||
+			version.RevisionNumber < 1 || version.RevisionNumber > 1_000_000_000 {
+			continue
+		}
+		if name != "" && !validBotSkillDisplayName(name) {
+			continue
+		}
+		if _, exists := seen[version.RevisionNumber]; exists {
+			continue
+		}
+		seen[version.RevisionNumber] = struct{}{}
+		entry := BotSkillVersionHistoryEntry{
+			Source: "skillhub", SkillID: skillID, Version: exactVersion,
+			DisplayName: name, RevisionNumber: version.RevisionNumber,
+		}
+		if lastChangedAt := strings.TrimSpace(version.LastChangedAt); len(lastChangedAt) <= 64 {
+			if _, parseErr := time.Parse(time.RFC3339Nano, lastChangedAt); parseErr == nil {
+				entry.LastChangedAt = lastChangedAt
+			}
+		}
+		switch version.ChangeSource {
+		case "runtime_backup", "conversation_mutation":
+			entry.ChangeSource = version.ChangeSource
+		}
+		result.Versions = append(result.Versions, entry)
+	}
+	if decoded.NextBeforeRevisionNumber > 0 && decoded.NextBeforeRevisionNumber <= 1_000_000_000 {
+		result.NextBeforeRevisionNumber = decoded.NextBeforeRevisionNumber
+	}
+	return result, nil
 }
 
 func isPrivateBotSkillReference(skillID string) bool {

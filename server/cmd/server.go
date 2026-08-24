@@ -320,6 +320,9 @@ func main() {
 	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
+	if creditAdmin, ok := db.(server.CloudWorkerCreditAdminStore); ok {
+		accountAdminHandler.SetCloudWorkerCreditAdmin(creditAdmin)
+	}
 	friendHandler := server.NewFriendHandler(db, hub)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	projectHandler := server.NewProjectHandler(db)
@@ -336,6 +339,14 @@ func main() {
 	botHandler := server.NewBotHandler(db)
 	botHandler.SetHub(hub)
 	cloudWorkerHandler := server.NewCloudWorkerHandler(db, botHandler, server.CloudWorkerConfigFromEnv())
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		cloudWorkerHandler.SweepExpiredWorkers(time.Now().UTC())
+		for range ticker.C {
+			cloudWorkerHandler.SweepExpiredWorkers(time.Now().UTC())
+		}
+	}()
 	botModelStore, _ := db.(store.BotModelConfigStore)
 	botModelConfigHandler := server.NewBotModelConfigHandler(db, botModelStore)
 	artifactRuntimeConfigHandler := server.NewArtifactRuntimeConfigHandlerFromEnv()
@@ -345,16 +356,55 @@ func main() {
 		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
-	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]server.BotSkillDisplayMetadata, error) {
 		apiKey, err := db.GetBotAPIKey(botUID)
 		if err != nil {
 			return nil, err
 		}
-		return skillHubProxyHandler.ResolvePrivateSkillMetadata(
+		metadata, err := skillHubProxyHandler.ResolvePrivateSkillMetadata(
 			ctx,
 			strconv.FormatInt(botUID, 10),
 			apiKey,
 			skills,
+		)
+		if err != nil {
+			return nil, err
+		}
+		actorNames := make(map[int64]string)
+		for key, presentation := range metadata {
+			if presentation.LastChangedByUserUID > 0 {
+				actorName, lookedUp := actorNames[presentation.LastChangedByUserUID]
+				if !lookedUp {
+					if actor, lookupErr := db.GetUser(presentation.LastChangedByUserUID); lookupErr == nil && actor != nil {
+						actorName = strings.TrimSpace(actor.Username)
+					}
+					actorNames[presentation.LastChangedByUserUID] = actorName
+				}
+				presentation.LastChangedBy = actorName
+			}
+			if presentation.LastChangedBy == "" {
+				if presentation.ChangeSource == "runtime_backup" {
+					presentation.LastChangedBy = "Bot 自动同步"
+				} else {
+					presentation.LastChangedBy = "修改者未记录"
+				}
+			}
+			metadata[key] = presentation
+		}
+		return metadata, nil
+	})
+	botDefinitionHandler.SetSkillHistoryResolver(func(ctx context.Context, botUID int64, skillID string, limit int64, beforeRevision int64) (server.BotSkillVersionHistory, error) {
+		apiKey, err := db.GetBotAPIKey(botUID)
+		if err != nil {
+			return server.BotSkillVersionHistory{}, err
+		}
+		return skillHubProxyHandler.ResolvePrivateSkillHistory(
+			ctx,
+			strconv.FormatInt(botUID, 10),
+			apiKey,
+			skillID,
+			limit,
+			beforeRevision,
 		)
 	})
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
@@ -452,6 +502,7 @@ func main() {
 		Syncer:         commercialRelaySyncer,
 	})
 	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
+	commercialOpsHandler.SetCloudWorkerAdmin(cloudWorkerHandler)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
 	paymentProviders := []server.CommercialPaymentProvider{}
 	paymentSaleChannels := map[string]bool{}
@@ -489,6 +540,7 @@ func main() {
 		SaleChannels:  paymentSaleChannels,
 		Syncer:        commercialRelaySyncer,
 	})
+	commercialPaymentHandler.StartReconciliation(commercialServiceCtx, 5*time.Minute)
 	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)
 	// usageHandler := server.NewUsageHandler(db)
 
@@ -582,6 +634,26 @@ func main() {
 	commercialNotifyIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "commercial_alipay_notify_ip", Limit: 3000, Window: time.Minute, Burst: 500,
 	})
+	cloudWorkerCreateUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "cloud_worker_create_user", Limit: 3, Window: 10 * time.Minute, Burst: 1,
+	})
+	cloudWorkerReadUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "cloud_worker_read_user", Limit: 120, Window: time.Minute, Burst: 10,
+	})
+	cloudWorkerActionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "cloud_worker_action_user", Limit: 20, Window: 10 * time.Minute, Burst: 4,
+	})
+	cloudWorkerSubtreeUserLimit := func(next http.HandlerFunc) http.HandlerFunc {
+		readLimited := cloudWorkerReadUserLimit(next)
+		actionLimited := cloudWorkerActionUserLimit(next)
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost || r.Method == http.MethodDelete {
+				actionLimited(w, r)
+				return
+			}
+			readLimited(w, r)
+		}
+	}
 
 	// HTTP routes
 	mux := http.NewServeMux()
@@ -594,12 +666,12 @@ func main() {
 
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		health := db.HealthCheck()
+		w.Header().Set("Content-Type", "application/json")
 		if health["status"] == "healthy" {
 			w.WriteHeader(http.StatusOK)
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(health)
 	})
 
@@ -617,6 +689,8 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
 	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
+	mux.HandleFunc("/api/account/commercial-ops/cloud-worker-credits", commercialOpsHandler.HandleCloudWorkerCredits)
+	mux.HandleFunc("/api/account/commercial-ops/cloud-workers", commercialOpsHandler.HandleCloudWorkers)
 	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
@@ -634,6 +708,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/plans", accountAdminHandler.HandleCommercialPlans)
 	mux.HandleFunc("/local/account-admin/commercial/invites", accountAdminHandler.HandleCommercialInvites)
 	mux.HandleFunc("/local/account-admin/commercial/grants", accountAdminHandler.HandleCommercialGrant)
+	mux.HandleFunc("/local/account-admin/commercial/cloud-worker-credits", accountAdminHandler.HandleCloudWorkerCredits)
 	mux.HandleFunc("/local/account-admin/commercial/adjustments", accountAdminHandler.HandleCommercialAdjustment)
 	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
@@ -703,9 +778,9 @@ func main() {
 	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
-	mux.HandleFunc("GET /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleList))
-	mux.HandleFunc("POST /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleCreate))
-	mux.HandleFunc("/api/cloud-workers/", jwtAuthWithDB(cloudWorkerHandler.HandleSub))
+	mux.HandleFunc("GET /api/cloud-workers", chainHTTP(cloudWorkerHandler.HandleList, jwtAuthWithDB, cloudWorkerReadUserLimit))
+	mux.HandleFunc("POST /api/cloud-workers", chainHTTP(cloudWorkerHandler.HandleCreate, jwtAuthWithDB, cloudWorkerCreateUserLimit))
+	mux.HandleFunc("/api/cloud-workers/", chainHTTP(cloudWorkerHandler.HandleSub, jwtAuthWithDB, cloudWorkerSubtreeUserLimit))
 	mux.HandleFunc("/api/desktop-connect/session", jwtAuthWithDB(desktopConnectHandler.HandleCreateSession))
 	mux.HandleFunc("/api/desktop-connect/exchange", desktopConnectHandler.HandleExchange)
 	mux.HandleFunc("/api/desktop-connect/status", desktopConnectHandler.HandleStatus)
@@ -796,6 +871,7 @@ func main() {
 	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
 	mux.HandleFunc("/api/agents/prompt", jwtAuthWithDB(botDefinitionHandler.HandleViewerPrompt))
 	mux.HandleFunc("/api/agents/skills", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkills))
+	mux.HandleFunc("/api/agents/skill-versions", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkillHistory))
 	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
 	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))

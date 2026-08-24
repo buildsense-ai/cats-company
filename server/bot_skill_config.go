@@ -36,24 +36,40 @@ type botDefinitionSkillsResponse struct {
 }
 
 type botViewerSkill struct {
-	Source      string `json:"source"`
-	SkillID     string `json:"skillId"`
-	Version     string `json:"version"`
-	DisplayName string `json:"displayName,omitempty"`
+	Source         string `json:"source"`
+	SkillID        string `json:"skillId"`
+	Version        string `json:"version"`
+	DisplayName    string `json:"displayName,omitempty"`
+	RevisionNumber int64  `json:"revisionNumber,omitempty"`
+	LastChangedBy  string `json:"lastChangedBy,omitempty"`
+	LastChangedAt  string `json:"lastChangedAt,omitempty"`
+	ChangeSource   string `json:"changeSource,omitempty"`
 }
 
 type botDefinitionSkillResponse struct {
-	Source      string `json:"source"`
-	SkillID     string `json:"skillId"`
-	Version     string `json:"version"`
-	ContentHash string `json:"contentHash"`
-	DisplayName string `json:"displayName,omitempty"`
+	Source         string `json:"source"`
+	SkillID        string `json:"skillId"`
+	Version        string `json:"version"`
+	ContentHash    string `json:"contentHash"`
+	DisplayName    string `json:"displayName,omitempty"`
+	RevisionNumber int64  `json:"revisionNumber,omitempty"`
+	LastChangedBy  string `json:"lastChangedBy,omitempty"`
+	LastChangedAt  string `json:"lastChangedAt,omitempty"`
+	ChangeSource   string `json:"changeSource,omitempty"`
 }
 
 type botViewerSkillsResponse struct {
 	BotID            string                    `json:"botId"`
 	SkillsVisibility types.BotSkillsVisibility `json:"skills_visibility"`
 	Skills           []botViewerSkill          `json:"skills"`
+}
+
+type botViewerSkillHistoryResponse struct {
+	BotID                    string                        `json:"botId"`
+	SkillID                  string                        `json:"skillId"`
+	CurrentVersion           string                        `json:"currentVersion"`
+	Versions                 []BotSkillVersionHistoryEntry `json:"versions"`
+	NextBeforeRevisionNumber int64                         `json:"nextBeforeRevisionNumber,omitempty"`
 }
 
 type botSkillAccessStore interface {
@@ -158,16 +174,133 @@ func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http
 		if strings.TrimSpace(record.Definition.BotID) != "" {
 			response.BotID = strings.TrimSpace(record.Definition.BotID)
 		}
-		metadata := h.resolveSkillDisplayNames(r, botUID, record.Definition.Skills)
+		metadata := h.resolveSkillDisplayMetadata(r, botUID, record.Definition.Skills)
 		for _, skill := range record.Definition.Skills {
+			presentation := metadata[botSkillMetadataKey(skill.SkillID, skill.Version)]
 			response.Skills = append(response.Skills, botViewerSkill{
 				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
-				DisplayName: metadata[botSkillMetadataKey(skill.SkillID, skill.Version)],
+				DisplayName: presentation.DisplayName, RevisionNumber: presentation.RevisionNumber,
+				LastChangedBy: presentation.LastChangedBy, LastChangedAt: presentation.LastChangedAt,
+				ChangeSource: presentation.ChangeSource,
 			})
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, response)
+}
+
+// HandleViewerSkillHistory exposes version metadata only for a private Skill
+// that is currently referenced by an Agent the viewer may inspect. It never
+// returns package content or enables activation/rollback.
+func (h *BotDefinitionHandler) HandleViewerSkillHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	viewerUID := UIDFromContext(r.Context())
+	if viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil || botUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+	skillID := strings.TrimSpace(r.URL.Query().Get("skill_id"))
+	if !isPrivateBotSkillReference(skillID) || !validBotSkillID(skillID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid private skill_id"})
+		return
+	}
+	limit := int64(20)
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		limit, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || limit < 1 || limit > 50 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+			return
+		}
+	}
+	var beforeRevision int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("before_revision")); raw != "" {
+		beforeRevision, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || beforeRevision < 1 || beforeRevision > 1_000_000_000 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid before_revision"})
+			return
+		}
+	}
+	access, ok := h.owners.(botSkillAccessStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill access policy is unavailable"})
+		return
+	}
+	config, err := access.GetBotConfig(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	ownerUID, err := h.owners.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
+	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
+	if !allowed {
+		allowed, err = access.AreFriends(viewerUID, botUID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})
+			return
+		}
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Agent 所有者未公开技能列表"})
+		return
+	}
+	if h == nil || h.definitions == nil || h.skillHistoryResolver == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill history is unavailable"})
+		return
+	}
+	record, err := h.loadDefinition(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot definition"})
+		return
+	}
+	var currentVersion string
+	if record != nil {
+		for _, skill := range record.Definition.Skills {
+			if strings.TrimSpace(skill.SkillID) == skillID && isPrivateBotSkillReference(skill.SkillID) {
+				currentVersion = strings.TrimSpace(skill.Version)
+				break
+			}
+		}
+	}
+	if currentVersion == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "skill history not found"})
+		return
+	}
+	history, err := h.skillHistoryResolver(r.Context(), botUID, skillID, limit, beforeRevision)
+	if err != nil {
+		log.Printf("resolve private Skill history failed bot_uid=%d skill_id=%q: %v", botUID, skillID, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "SkillHub history is unavailable"})
+		return
+	}
+	for index := range history.Versions {
+		history.Versions[index].Current = history.Versions[index].Version == currentVersion
+		if history.Versions[index].LastChangedBy == "" {
+			if history.Versions[index].ChangeSource == "runtime_backup" {
+				history.Versions[index].LastChangedBy = "Bot 自动同步"
+			} else {
+				history.Versions[index].LastChangedBy = "修改者未记录"
+			}
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, botViewerSkillHistoryResponse{
+		BotID: strconv.FormatInt(botUID, 10), SkillID: skillID,
+		CurrentVersion: currentVersion, Versions: history.Versions,
+		NextBeforeRevisionNumber: history.NextBeforeRevisionNumber,
+	})
 }
 
 // HandleRuntimeSkills is the bot API-key form of the same field-level API.
@@ -241,15 +374,18 @@ func (h *BotDefinitionHandler) writeSkills(
 		if strings.TrimSpace(record.Definition.BotID) != "" {
 			response.BotID = strings.TrimSpace(record.Definition.BotID)
 		}
-		var metadata map[string]string
+		var metadata map[string]BotSkillDisplayMetadata
 		if includeDisplayMetadata {
-			metadata = h.resolveSkillDisplayNames(r, botUID, record.Definition.Skills)
+			metadata = h.resolveSkillDisplayMetadata(r, botUID, record.Definition.Skills)
 		}
 		for _, skill := range record.Definition.Skills {
+			presentation := metadata[botSkillMetadataKey(skill.SkillID, skill.Version)]
 			response.Skills = append(response.Skills, botDefinitionSkillResponse{
 				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
 				ContentHash: skill.ContentHash,
-				DisplayName: metadata[botSkillMetadataKey(skill.SkillID, skill.Version)],
+				DisplayName: presentation.DisplayName, RevisionNumber: presentation.RevisionNumber,
+				LastChangedBy: presentation.LastChangedBy, LastChangedAt: presentation.LastChangedAt,
+				ChangeSource: presentation.ChangeSource,
 			})
 		}
 		response.Revision = record.Runtime.DesiredRevision
@@ -258,11 +394,11 @@ func (h *BotDefinitionHandler) writeSkills(
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (h *BotDefinitionHandler) resolveSkillDisplayNames(
+func (h *BotDefinitionHandler) resolveSkillDisplayMetadata(
 	r *http.Request,
 	botUID int64,
 	skills []types.BotSkillRef,
-) map[string]string {
+) map[string]BotSkillDisplayMetadata {
 	if h == nil || h.skillMetadataResolver == nil || len(skills) == 0 {
 		return nil
 	}

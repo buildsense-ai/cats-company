@@ -162,6 +162,8 @@ export function normalizeArtifactPageContext(value) {
     selected_text: value.selected_text,
     last_interaction: value.last_interaction,
     controls: value.controls,
+    dirty: value.dirty,
+    artifact_version: value.artifact_version,
   });
   if (rawSize <= 0 || rawSize > PAGE_CONTEXT_MAX_BYTES) return null;
 
@@ -180,6 +182,9 @@ export function normalizeArtifactPageContext(value) {
   if (selectedText) normalized.selected_text = selectedText;
   const interaction = normalizeInteraction(value.last_interaction);
   if (interaction) normalized.last_interaction = interaction;
+  if (typeof value.dirty === 'boolean') normalized.dirty = value.dirty;
+  const artifactVersion = positiveInteger(value.artifact_version);
+  if (artifactVersion > 0) normalized.artifact_version = artifactVersion;
 
   const controls = Array.isArray(value.controls)
     ? value.controls.slice(0, PAGE_CONTEXT_MAX_CONTROLS).map(normalizeControl).filter(Boolean)

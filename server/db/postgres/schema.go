@@ -41,6 +41,8 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialOrdersTable,
 		createCommercialOrderRequestIDsTable,
 		createCommercialPaymentEventsTable,
+		createCloudWorkerCreditsTable,
+		createCloudWorkerLifecyclesTable,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,
@@ -802,6 +804,46 @@ CREATE TABLE IF NOT EXISTS commercial_payment_events (
 );
 `
 
+const createCloudWorkerCreditsTable = `
+CREATE TABLE IF NOT EXISTS cloud_worker_credits (
+    id BIGSERIAL PRIMARY KEY,
+    uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_ref VARCHAR(128) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'available',
+    reservation_ref VARCHAR(128) NOT NULL DEFAULT '',
+    worker_uid BIGINT DEFAULT NULL,
+    expires_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reserved_at TIMESTAMPTZ DEFAULT NULL,
+    consumed_at TIMESTAMPTZ DEFAULT NULL,
+    CONSTRAINT chk_cloud_worker_credits_state CHECK (state IN ('available','reserved','consumed','revoked'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_source ON cloud_worker_credits(source_ref);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_reservation ON cloud_worker_credits(reservation_ref) WHERE reservation_ref <> '';
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_uid_state ON cloud_worker_credits(uid, state, expires_at);
+`
+
+const createCloudWorkerLifecyclesTable = `
+CREATE TABLE IF NOT EXISTS cloud_worker_lifecycles (
+    id BIGSERIAL PRIMARY KEY,
+    worker_uid BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tenant_name VARCHAR(80) NOT NULL UNIQUE,
+    package_expires_at TIMESTAMPTZ NOT NULL,
+    delete_after TIMESTAMPTZ NOT NULL,
+    state VARCHAR(24) NOT NULL DEFAULT 'active',
+    archived_at TIMESTAMPTZ DEFAULT NULL,
+    delete_started_at TIMESTAMPTZ DEFAULT NULL,
+    deleted_at TIMESTAMPTZ DEFAULT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_cloud_worker_lifecycles_state CHECK (state IN ('active','delete_pending','delete_running','delete_failed','deleted'))
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_due ON cloud_worker_lifecycles(state, delete_after);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_owner ON cloud_worker_lifecycles(owner_uid, state);
+`
+
 const createCommercialManagedRelayBudgetsTable = `
 CREATE TABLE IF NOT EXISTS commercial_managed_relay_budgets (
 	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1177,6 +1219,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_trial_once
 CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_orders_uid_request ON commercial_orders (uid, client_request_id);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_uid_created ON commercial_orders (uid, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_status_expires ON commercial_orders (status, expires_at);
+-- The payment reconciler scans only a recent status slice every few minutes;
+-- keep both OR branches indexable instead of repeatedly walking all orders.
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_reconcile_pending
+    ON commercial_orders (created_at, updated_at, id)
+    WHERE status IN ('created','pending');
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_reconcile_closed
+    ON commercial_orders (closed_at, updated_at, id)
+    WHERE status = 'closed';
 CREATE INDEX IF NOT EXISTS idx_commercial_order_request_ids_order ON commercial_order_request_ids (order_no);
 CREATE INDEX IF NOT EXISTS idx_commercial_payment_events_order ON commercial_payment_events (order_no, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_managed_relay_uid ON commercial_managed_relay_budgets (uid);

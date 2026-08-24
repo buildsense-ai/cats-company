@@ -171,6 +171,10 @@ export function responseErrorMessage(status, detail) {
     : (detail || statusMessage(normalizedStatus));
 }
 
+// Authentication requests should fail visibly instead of leaving the login
+// form in an indeterminate state when the browser loses its network path.
+export const AUTH_REQUEST_TIMEOUT_MS = 15_000;
+
 export async function request(method, path, body, options = {}) {
   const { timeoutMs = 0, signal } = options;
   const headers = { 'Content-Type': 'application/json' };
@@ -205,9 +209,34 @@ export async function request(method, path, body, options = {}) {
 }
 
 export const authApi = {
-  sendVerificationCode: (email) => request('POST', '/api/auth/send-code', { email }),
-  sendPasswordResetCode: (email) => request('POST', '/api/auth/reset-password/send-code', { email }),
-  resetPassword: (data) => request('POST', '/api/auth/reset-password', data),
-  register: (data) => request('POST', '/api/auth/register', data),
-  login: (data) => request('POST', '/api/auth/login', data),
+  sendVerificationCode: (email, options = {}) => request(
+    'POST',
+    '/api/auth/send-code',
+    { email },
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, ...options },
+  ),
+  sendPasswordResetCode: (email, options = {}) => request(
+    'POST',
+    '/api/auth/reset-password/send-code',
+    { email },
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, ...options },
+  ),
+  resetPassword: (data, options = {}) => request(
+    'POST',
+    '/api/auth/reset-password',
+    data,
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, ...options },
+  ),
+  register: (data, options = {}) => request(
+    'POST',
+    '/api/auth/register',
+    data,
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, ...options },
+  ),
+  login: (data, options = {}) => request(
+    'POST',
+    '/api/auth/login',
+    data,
+    { timeoutMs: AUTH_REQUEST_TIMEOUT_MS, ...options },
+  ),
 };

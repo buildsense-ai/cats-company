@@ -4,6 +4,7 @@ import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/noto-sans-sc/wght.css';
 import AuthGateway from './views/auth-gateway';
 import PushCleanupController from './components/push-cleanup-controller';
+import PwaUpdateController from './components/pwa-update-controller';
 import {
   getAuthRevision,
   getPushPromptOwner,
@@ -22,6 +23,7 @@ import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
 import { readStorageValue } from './utils/storage-access';
 import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
+import { startPwaInstallLifecycle } from './utils/pwa-install';
 import './css/auth-critical.css';
 
 const importWorkspace = () => import('./views/tinode-web');
@@ -38,6 +40,7 @@ const developmentWorkspacePreview = import.meta.env.DEV && (
 );
 
 applyDocumentTheme(readStorageValue(THEME_STORAGE_KEY));
+startPwaInstallLifecycle();
 
 function readBrowserLocation() {
   return {
@@ -200,6 +203,10 @@ export function App() {
   const [preserveAuthShell, setPreserveAuthShell] = useState(false);
 
   useEffect(() => {
+    registerPwaServiceWorker();
+  }, []);
+
+  useEffect(() => {
     const handleAuthChanged = (event) => {
       const loggedIn = Boolean(event.detail?.loggedIn) && hasUsableSessionToken();
       const nextAuth = {
@@ -231,15 +238,9 @@ export function App() {
   const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
     || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
   const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
-  // Keep service-worker startup off the anonymous auth shell while preserving
-  // PWA support for authenticated and standalone application entry points.
-  const shouldRegisterPwa = shouldLoadWorkspace
+  const shouldMountPwaController = auth.loggedIn
+    && shouldLoadWorkspace
     && shouldMountPwaForPathname(browserLocation.pathname);
-  useEffect(() => {
-    if (shouldRegisterPwa) registerPwaServiceWorker();
-  }, [shouldRegisterPwa]);
-
-  const mountPwa = auth.loggedIn && shouldRegisterPwa;
   const showAuthGateway = !shouldLoadWorkspace || preserveAuthShell;
   const handleWorkspaceReady = useCallback(() => {
     setPreserveAuthShell(false);
@@ -250,6 +251,20 @@ export function App() {
 
   return (
     <FeedbackProvider>
+      <div className="cc-pwa-status" aria-live="polite" aria-label="应用状态">
+        <PwaUpdateController />
+        {shouldMountPwaController && (
+          <PwaLoadErrorBoundary>
+            <Suspense fallback={null}>
+              <PwaController
+                loggedIn={auth.loggedIn}
+                pushPromptOwner={auth.pushPromptOwner}
+                sessionRevision={auth.revision}
+              />
+            </Suspense>
+          </PwaLoadErrorBoundary>
+        )}
+      </div>
       {showAuthGateway && <AuthGateway location={browserLocation} onAuthenticationIntent={preloadWorkspace} />}
       {shouldLoadWorkspace && (
         <WorkspaceLoadErrorBoundary
@@ -262,17 +277,6 @@ export function App() {
         </WorkspaceLoadErrorBoundary>
       )}
       {!auth.loggedIn && <PushCleanupController />}
-      {mountPwa && (
-        <PwaLoadErrorBoundary>
-          <Suspense fallback={null}>
-            <PwaController
-              loggedIn={auth.loggedIn}
-              pushPromptOwner={auth.pushPromptOwner}
-              sessionRevision={auth.revision}
-            />
-          </Suspense>
-        </PwaLoadErrorBoundary>
-      )}
     </FeedbackProvider>
   );
 }

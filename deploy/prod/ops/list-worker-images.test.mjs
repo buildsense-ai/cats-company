@@ -82,6 +82,7 @@ function writeCommand(bin, name, body) {
 
 function runScript(images) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-list-img-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   try {
     const bin = path.join(sandbox, "bin");
     fs.mkdirSync(bin);
@@ -103,6 +104,7 @@ function runScript(images) {
         ...process.env,
         PATH: `${extraPath}${path.delimiter}${process.env.PATH || ""}`,
         CTYUN_WORKER_REGION_ID: "region-test",
+        CTYUN_IMAGE_PROJECT_ID: "image-project-test",
         FAKE_STATE: state,
       },
     });
@@ -168,6 +170,7 @@ test("list-worker-images: pagination across two pages", () => {
 
 test("list-worker-images: API failure fails closed", () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-list-img-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   try {
     const bin = path.join(sandbox, "bin");
     fs.mkdirSync(bin);
@@ -188,6 +191,7 @@ process.stdout.write(JSON.stringify({ statusCode: "900", errorCode: "E.FAKE", me
         ...process.env,
         PATH: `${extraPath}${path.delimiter}${process.env.PATH || ""}`,
         CTYUN_WORKER_REGION_ID: "region-test",
+        CTYUN_IMAGE_PROJECT_ID: "image-project-test",
         FAKE_STATE: state,
       },
     });
@@ -195,6 +199,31 @@ process.stdout.write(JSON.stringify({ statusCode: "900", errorCode: "E.FAKE", me
     const stderr = (res.stderr || "").replace(/\r/g, "");
     assert.notEqual(res.status, 0, `expected failure:\n${stdout}\n${stderr}`);
     assert.match(stderr, /Tianyi Cloud API failed|error/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("list-worker-images: missing image project fails closed", () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-list-img-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
+  try {
+    const bin = path.join(sandbox, "bin");
+    fs.mkdirSync(bin);
+    const jqDir = process.env.CATSCO_JQ ? path.dirname(process.env.CATSCO_JQ) : "";
+    const res = spawnSync(BASH, [scriptPath], {
+      cwd: sandbox,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${jqDir}${path.delimiter}${process.env.PATH || ""}`,
+        CTYUN_WORKER_REGION_ID: "region-test",
+        CTYUN_IMAGE_PROJECT_ID: "",
+      },
+    });
+    assert.equal(res.status, 2);
+    assert.match(res.stderr || "", /CTYUN_IMAGE_PROJECT_ID is required/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }

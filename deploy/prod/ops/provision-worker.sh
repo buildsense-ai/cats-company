@@ -5,8 +5,8 @@
 # + bot 连接凭证到 /srv/catsco-agent/.env，并启用 catsco-agent.service。
 #
 # 用法：
-#   provision-worker.sh --name <tenant> --login-token <jwt> \
-#     --api-key <bot-key> [--bot-uid <uid>] [--user-uid <uid>] \
+#   provision-worker.sh --name <tenant> [--credential-file <0600-file>] \
+#     [--login-token <jwt>] [--api-key <bot-key>] [--bot-uid <uid>] [--user-uid <uid>] \
 #     [--user-name <n>] [--user-display <d>] [--image-id <id>] [--dry-run]
 #
 # 幂等：实例名 worker-<tenant> 已存在（running/active）则跳过并报告。
@@ -28,6 +28,7 @@ USER_DISPLAY=""
 IMAGE_ID=""
 BODY_ID=""
 INSTALLATION_ID=""
+CREDENTIAL_FILE=""
 DRY_RUN=0
 
 usage() {
@@ -37,6 +38,7 @@ usage() {
 while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="${2:-}"; shift 2 ;;
     --login-token) LOGIN_TOKEN="${2:-}"; shift 2 ;;
     --api-key) BOT_API_KEY="${2:-}"; shift 2 ;;
     --bot-uid) BOT_UID="${2:-}"; shift 2 ;;
@@ -51,6 +53,17 @@ while (($#)); do
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# Credentials supplied through a root-owned 0600 file never appear in the
+# process argv (/proc). The two-line format is deliberately tiny: line 1 is
+# the creator JWT and line 2 is the bot API key. Legacy argv flags remain
+# supported for operator scripts and backwards compatibility.
+if [[ -n "$CREDENTIAL_FILE" ]]; then
+  [[ -f "$CREDENTIAL_FILE" && ! -L "$CREDENTIAL_FILE" ]] || { echo "error: credential file is missing" >&2; exit 2; }
+  [[ "$(stat -c '%a' "$CREDENTIAL_FILE" 2>/dev/null || echo 000)" == "600" ]] || { echo "error: credential file must be mode 600" >&2; exit 2; }
+  read -r LOGIN_TOKEN < "$CREDENTIAL_FILE" || true
+  BOT_API_KEY="$(sed -n '2p' "$CREDENTIAL_FILE")"
+fi
 
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
@@ -68,20 +81,16 @@ if [[ "$EXT_IP" != "0" && "$EXT_IP" != "1" ]]; then
 fi
 # 计费模式（平台按月售卖，默认 month）：month = 包月 + 到期时间，ondemand = 按量
 # CTYUN_WORKER_CYCLE_COUNT：包月时长（月），默认 1
-# CTYUN_WORKER_AUTO_RENEW：1 = 创建后开自动续费（默认），0 = 不开
+# CTYUN_WORKER_AUTO_RENEW 已废弃并忽略。云托管实例严禁自动续费，
+# 到期后的冻结/释放由天翼云策略和 CatsCompany 生命周期任务处理。
 BILLING_MODE="${CTYUN_WORKER_BILLING_MODE:-month}"
 CYCLE_COUNT="${CTYUN_WORKER_CYCLE_COUNT:-1}"
-AUTO_RENEW="${CTYUN_WORKER_AUTO_RENEW:-1}"
 if [[ "$BILLING_MODE" != "month" && "$BILLING_MODE" != "ondemand" ]]; then
   echo "error: CTYUN_WORKER_BILLING_MODE must be month or ondemand" >&2
   exit 2
 fi
 if [[ ! "$CYCLE_COUNT" =~ ^[0-9]+$ || "$CYCLE_COUNT" -lt 1 || "$CYCLE_COUNT" -gt 60 ]]; then
   echo "error: CTYUN_WORKER_CYCLE_COUNT must be 1-60" >&2
-  exit 2
-fi
-if [[ "$AUTO_RENEW" != "1" && "$AUTO_RENEW" != "0" ]]; then
-  echo "error: CTYUN_WORKER_AUTO_RENEW must be 0 or 1" >&2
   exit 2
 fi
 # SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
@@ -96,7 +105,7 @@ SERVER_URL="${CATSCO_WORKER_SERVER_URL:-wss://app.catsco.cc/v0/channels}"
 
 # --- 校验 ---
 if [[ -z "$NAME" || -z "$LOGIN_TOKEN" || -z "$BOT_API_KEY" ]]; then
-  echo "error: --name, --login-token and --api-key are required" >&2
+  echo "error: --name and credentials (--credential-file or both --login-token/--api-key) are required" >&2
   usage >&2
   exit 2
 fi
@@ -345,20 +354,6 @@ for _ in $(seq 1 60); do
   sleep 10
 done
 [[ -n "$INSTANCE_IP" ]] || { echo "error: timed out waiting for instance to be running" >&2; exit 1; }
-
-# --- 5.5 自动续费（仅 month 模式） ---
-# 平台按月售卖：实例包月到期自动续费，避免员工到期停机。
-# 失败不阻塞供给（仅警告）——实例已创建，不能因续费配置失败而触发清理删除。
-if [[ "$BILLING_MODE" == "month" && "$AUTO_RENEW" == "1" ]]; then
-  instance_uuid="$(jq -r '.instanceID // ""' <<<"$inst" 2>/dev/null || true)"
-  if [[ -n "$instance_uuid" ]] && ctyun ecs UpdateEcsAutoRenewConfig \
-      --regionID "$REGION_ID" --instanceIDList "$instance_uuid" \
-      --autoRenewStatus 1 --autoRenewCycleType MONTH --autoRenewCycleCount 1 >/dev/null 2>&1; then
-    : # ok
-  else
-    echo "warning: auto-renew configuration failed for $INSTANCE_NAME (manual renew needed)" >&2
-  fi
-fi
 
 # SSH 跳板（NAT 架构）：ProxyCommand 经跳板机转发，凭据全来自环境变量
 # （不依赖容器内 ~/.ssh/config，容器重建后无需手工恢复）

@@ -28,7 +28,6 @@ vi.mock('../pwa-registration', () => ({
   registerPwaServiceWorker: pwaRegistrationMocks.registerPwaServiceWorker,
   subscribeToPwaRefresh: pwaRegistrationMocks.subscribeToPwaRefresh,
 }));
-
 vi.mock('../api', () => ({
   api: {
     getPushConfig: vi.fn(),
@@ -95,11 +94,13 @@ afterEach(() => {
 function renderController(pushPromptOwner, sessionRevision = 1, loggedIn = true) {
   act(() => {
     root.render(
-      <PwaController
-        loggedIn={loggedIn}
-        pushPromptOwner={pushPromptOwner}
-        sessionRevision={sessionRevision}
-      />,
+      <div className="cc-pwa-status">
+        <PwaController
+          loggedIn={loggedIn}
+          pushPromptOwner={pushPromptOwner}
+          sessionRevision={sessionRevision}
+        />
+      </div>,
     );
   });
 }

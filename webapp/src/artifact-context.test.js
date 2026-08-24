@@ -134,6 +134,8 @@ describe('artifact context snapshot handoff', () => {
         { type: 'checkbox', name: 'feedback', value: 'f12', checked: true },
         { type: 'password', name: 'secret', value: 'do-not-send' },
       ],
+      dirty: true,
+      artifact_version: 7,
       semantic_context: {
         view: 'customer-comparison',
         selection: ['c12', 'c18'],
@@ -147,6 +149,8 @@ describe('artifact context snapshot handoff', () => {
       observed_at: '2026-08-07T12:00:00.000Z',
       selected_text: '企业客户',
       controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
+      dirty: true,
+      artifact_version: 7,
       semantic_context: {
         filters: { region: 'east' },
         selection: ['c12', 'c18'],

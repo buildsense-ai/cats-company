@@ -189,6 +189,7 @@ services:
       CATSCO_WORKER_ARTIFACT_SECURITY_TOKEN: "${CATSCO_WORKER_ARTIFACT_SECURITY_TOKEN:-}"
       CATSCO_WORKER_ARTIFACT_CACHE_DIR: "${CATSCO_WORKER_ARTIFACT_CACHE_DIR:-/var/lib/catsco-worker/.artifacts}"
       CTYUN_WORKER_EXT_IP: "${CTYUN_WORKER_EXT_IP:-0}"
+      CTYUN_WORKER_AUTO_RENEW: "${CTYUN_WORKER_AUTO_RENEW:-0}"
       CATSCO_WORKER_HTTP_BASE_URL: "${CATSCO_WORKER_HTTP_BASE_URL:-}"
       CATSCO_WORKER_SERVER_URL: "${CATSCO_WORKER_SERVER_URL:-}"
       CATS_COMMERCIAL_TEST_PAYMENT_ENABLED: "${CATS_COMMERCIAL_TEST_PAYMENT_ENABLED:-0}"
@@ -233,7 +234,7 @@ services:
     ports:
       - "${TEST_WEB_BIND_HOST:-127.0.0.1}:${TEST_WEB_HOST_PORT:-18080}:80"
     healthcheck:
-      test: ["CMD-SHELL", "nginx -t && test -s /usr/share/nginx/html/index.html"]
+      test: ["CMD-SHELL", "nginx -t && test -s /usr/share/nginx/html/index.html && test -s /usr/share/nginx/html/manifest.webmanifest && test -s /usr/share/nginx/html/sw.js && test -s /usr/share/nginx/html/offline.html"]
       interval: 30s
       timeout: 5s
       retries: 5

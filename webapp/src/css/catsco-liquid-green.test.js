@@ -19,6 +19,8 @@ describe('restored green liquid theme', () => {
     expect(css).toContain('--cc-border-strong: rgba(198, 240, 228, 0.22);');
     expect(css).toContain('--cc-control-surface: #252829;');
     expect(css).toContain('--cc-input-surface: rgba(255, 255, 255, 0.07);');
+    expect(css).toContain('--cc-voice-notice: #b8d8cf;');
+    expect(css).not.toContain('--cc-voice-notice: #ffffff;');
     expect(css).toContain('--cc-liquid-edge: rgba(184, 229, 216, 0.12);');
     expect(css).toContain('--cc-focus-ring: #69d7b7;');
     expect(css).toMatch(
@@ -42,6 +44,9 @@ describe('restored green liquid theme', () => {
     );
     expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-custom-model-select-options\s*\{[^}]*background-color: #222425;[^}]*color: #ffffff;/,
+    );
+    expect(css).toMatch(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] :is\(select, select option, select optgroup\)\s*\{[^}]*color-scheme: dark;[^}]*background-color: #222425;[^}]*color: #ffffff;/,
     );
     expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.cc-global-search-field input\s*\{[^}]*border: 0;[^}]*background: transparent;[^}]*box-shadow: none;/,

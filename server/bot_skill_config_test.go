@@ -92,11 +92,14 @@ func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData
 	db.records[43].Definition.Skills = []types.BotSkillRef{{
 		Source: "skillhub", SkillID: "priv_owned", Version: "v_1", ContentHash: testSkillHash,
 	}}
-	handler.SetSkillMetadataResolver(func(_ context.Context, botUID int64, skills []types.BotSkillRef) (map[string]string, error) {
+	handler.SetSkillMetadataResolver(func(_ context.Context, botUID int64, skills []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error) {
 		if botUID != 43 || len(skills) != 1 || skills[0].SkillID != "priv_owned" {
 			t.Fatalf("unexpected metadata scope bot=%d skills=%+v", botUID, skills)
 		}
-		return map[string]string{botSkillMetadataKey("priv_owned", "v_1"): "cloud-html-artifact"}, nil
+		return map[string]BotSkillDisplayMetadata{botSkillMetadataKey("priv_owned", "v_1"): {
+			DisplayName: "cloud-html-artifact", RevisionNumber: 3, LastChangedBy: "lin",
+			LastChangedAt: "2026-08-22T02:03:04Z", ChangeSource: "conversation_mutation",
+		}}, nil
 	})
 
 	owner := httptest.NewRequest(http.MethodGet, "/api/bots/definition/skills?uid=43", nil)
@@ -115,11 +118,19 @@ func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData
 	if viewerRec.Code != http.StatusOK || !strings.Contains(viewerRec.Body.String(), `"displayName":"cloud-html-artifact"`) {
 		t.Fatalf("viewer status=%d body=%s", viewerRec.Code, viewerRec.Body.String())
 	}
+	for _, field := range []string{`"revisionNumber":3`, `"lastChangedBy":"lin"`, `"lastChangedAt":"2026-08-22T02:03:04Z"`, `"changeSource":"conversation_mutation"`} {
+		if !strings.Contains(viewerRec.Body.String(), field) {
+			t.Fatalf("viewer response missing safe metadata %s: %s", field, viewerRec.Body.String())
+		}
+	}
 	if strings.Contains(viewerRec.Body.String(), "contentHash") || strings.Contains(viewerRec.Body.String(), testSkillHash) {
 		t.Fatalf("viewer response leaked package identity: %s", viewerRec.Body.String())
 	}
+	if strings.Contains(viewerRec.Body.String(), "lastChangedByUserUid") {
+		t.Fatalf("viewer response leaked the raw actor uid: %s", viewerRec.Body.String())
+	}
 
-	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]string, error) {
+	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error) {
 		return nil, errors.New("temporary upstream outage")
 	})
 	fallbackRec := httptest.NewRecorder()
@@ -129,7 +140,7 @@ func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData
 	}
 
 	runtimeMetadataCalls := 0
-	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]string, error) {
+	handler.SetSkillMetadataResolver(func(context.Context, int64, []types.BotSkillRef) (map[string]BotSkillDisplayMetadata, error) {
 		runtimeMetadataCalls++
 		return nil, nil
 	})
@@ -139,6 +150,75 @@ func TestBotDefinitionSkillsResolvePrivateDisplayNamesWithoutExposingPackageData
 	handler.HandleRuntimeSkills(runtimeRec, runtime)
 	if runtimeRec.Code != http.StatusOK || runtimeMetadataCalls != 0 {
 		t.Fatalf("runtime sync must not depend on display metadata: status=%d calls=%d", runtimeRec.Code, runtimeMetadataCalls)
+	}
+}
+
+func TestBotDefinitionViewerSkillHistoryIsReadOnlyScopedAndMarksCurrent(t *testing.T) {
+	handler, db := newBotSkillDefinitionTestHandler()
+	db.records[43].Definition.Skills = []types.BotSkillRef{
+		{Source: "skillhub", SkillID: "priv_owned", Version: "v_2", ContentHash: testSkillHash},
+		{Source: "skillhub", SkillID: "catsco/public", Version: "1.0.0", ContentHash: testSkillHash},
+	}
+	db.friends[[2]int64{8, 43}] = true
+	handler.SetSkillHistoryResolver(func(_ context.Context, botUID int64, skillID string, limit int64, before int64) (BotSkillVersionHistory, error) {
+		if botUID != 43 || skillID != "priv_owned" || limit != 1 || before != 3 {
+			t.Fatalf("unexpected history scope bot=%d skill=%q limit=%d before=%d", botUID, skillID, limit, before)
+		}
+		return BotSkillVersionHistory{
+			SkillID: skillID,
+			Versions: []BotSkillVersionHistoryEntry{{
+				Source: "skillhub", SkillID: skillID, Version: "v_2", DisplayName: "review-helper",
+				RevisionNumber: 2, LastChangedAt: "2026-08-23T02:03:04Z", ChangeSource: "conversation_mutation",
+			}},
+			NextBeforeRevisionNumber: 2,
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/skill-versions?uid=43&skill_id=priv_owned&limit=1&before_revision=3", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(8)))
+	rec := httptest.NewRecorder()
+	handler.HandleViewerSkillHistory(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, expected := range []string{
+		`"botId":"43"`, `"skillId":"priv_owned"`, `"currentVersion":"v_2"`,
+		`"revisionNumber":2`, `"lastChangedBy":"修改者未记录"`, `"current":true`,
+		`"nextBeforeRevisionNumber":2`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("history response missing %s: %s", expected, body)
+		}
+	}
+	for _, forbidden := range []string{"contentHash", testSkillHash, "packagePath", "actorUserUid"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("history response leaked %q: %s", forbidden, body)
+		}
+	}
+
+	missing := httptest.NewRequest(http.MethodGet, "/api/agents/skill-versions?uid=43&skill_id=priv_missing", nil)
+	missing = missing.WithContext(context.WithValue(missing.Context(), uidKey, int64(8)))
+	missingRec := httptest.NewRecorder()
+	handler.HandleViewerSkillHistory(missingRec, missing)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("missing status=%d body=%s", missingRec.Code, missingRec.Body.String())
+	}
+
+	public := httptest.NewRequest(http.MethodGet, "/api/agents/skill-versions?uid=43&skill_id=catsco%2Fpublic", nil)
+	public = public.WithContext(context.WithValue(public.Context(), uidKey, int64(8)))
+	publicRec := httptest.NewRecorder()
+	handler.HandleViewerSkillHistory(publicRec, public)
+	if publicRec.Code != http.StatusBadRequest {
+		t.Fatalf("public status=%d body=%s", publicRec.Code, publicRec.Body.String())
+	}
+
+	stranger := httptest.NewRequest(http.MethodGet, "/api/agents/skill-versions?uid=43&skill_id=priv_owned", nil)
+	stranger = stranger.WithContext(context.WithValue(stranger.Context(), uidKey, int64(9)))
+	strangerRec := httptest.NewRecorder()
+	handler.HandleViewerSkillHistory(strangerRec, stranger)
+	if strangerRec.Code != http.StatusForbidden {
+		t.Fatalf("stranger status=%d body=%s", strangerRec.Code, strangerRec.Body.String())
 	}
 }
 

@@ -31,6 +31,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '后台任务与主动协作',
       '个人 Skill 与使用偏好持续沉淀',
       '常规响应优先级',
+      '含 1 次云托管员工创建',
+      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
     ],
   },
   'catsco-pro': {
@@ -47,6 +49,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '复杂任务优先获得更强执行能力',
       '高峰期更高响应优先级',
       '更宽松的公平使用边界',
+      '含 1 次云托管员工创建',
+      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
     ],
   },
   'catsco-trial-3d': {
@@ -197,7 +201,7 @@ function formatPriceAmountFen(value) {
 
 function commercialPlanPresentation(plan) {
   return COMMERCIAL_PLAN_PRESENTATION[plan?.slug] || {
-    kicker: '协作套餐',
+    kicker: plan?.sale_state === 'test' ? '内测套餐' : '协作套餐',
     tagline: plan?.name || '稳定协作',
     audience: `${Number(plan?.duration_days || 30)} 天有效`,
     usageLabel: '套餐用量',
@@ -757,9 +761,13 @@ export default function RelayAccessModal({ onClose }) {
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
   const hasCurrentCommercialPlans = catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
-  const salePlans = hasCurrentCommercialPlans
-    ? catalogPlans.filter(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug))
-    : catalogPlans;
+  // The backend already filters the catalog by UID and sale state. Keep all
+  // returned plans here so gray/internal plans remain visible to their
+  // allowlisted users alongside the official plans.
+  const salePlans = catalogPlans;
+  const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
+    plan => Number(plan?.duration_days || 30) === 30,
+  );
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
@@ -1274,7 +1282,7 @@ export default function RelayAccessModal({ onClose }) {
                   <span>确认购买</span>
                   <strong>{purchasePlan.name}</strong>
                   <p>{purchaseIsUpgrade
-                    ? `${formatPriceFen(purchasePlan.price_fen)}，升级后立即生效，额度按新套餐重置，不叠加。`
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
                     : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。`}</p>
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
@@ -1419,7 +1427,9 @@ export default function RelayAccessModal({ onClose }) {
                         <div className="relay-access-mini-title">
                           {hasCurrentCommercialPlans ? '选择适合你的工作强度' : '选一档，开始你的协作节奏'}
                         </div>
-                        <span>{hasCurrentCommercialPlans ? '按实际工作频率选择，套餐到期前不会自动续费。' : '按使用频率选择，套餐到期前不会自动续费。'}</span>
+                        <span>{allSalePlansAreMonthly
+                          ? '均为 30 天月套餐，到期前不会自动续费；云员工到期后有 15 天天翼云保留期。'
+                          : '内测套餐按卡片标注的有效期执行；到期前不会自动续费。'}</span>
                       </div>
                       {paymentChannels.length > 1 ? (
                         <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>
@@ -1533,7 +1543,7 @@ export default function RelayAccessModal({ onClose }) {
                       })}
                     </div>
                     {activeOfficialPlanTier === COMMERCIAL_PLAN_TIERS['catsco-personal'] && (
-                      <div className="relay-access-period-note">升级后立即切换套餐，额度按专业版重置，不与个人版叠加。</div>
+                      <div className="relay-access-period-note">升级到 Pro 后立即切换；Personal 剩余时间不顺延，Pro 有效期从支付成功时刻重新计算 30 天。</div>
                     )}
                     {paymentChannels.length === 0 && (
                       <div className="relay-access-period-note">支付通道暂未开放，当前套餐可通过邀请码发放。</div>
