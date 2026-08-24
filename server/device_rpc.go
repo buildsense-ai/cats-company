@@ -254,6 +254,7 @@ func (h *Hub) bindClientDeviceFromHi(client *Client, msg *MsgClientHi) (map[stri
 		}
 	}
 	req := RegisterUserDeviceRequest{
+		BotUID:         authenticatedDeviceBotUID(client),
 		DeviceID:       msg.Device.DeviceID,
 		DisplayName:    msg.Device.DisplayName,
 		OS:             msg.Device.OS,
@@ -275,6 +276,13 @@ func (h *Hub) bindClientDeviceFromHi(client *Client, msg *MsgClientHi) (map[stri
 		"body_id":         device.BodyID,
 		"installation_id": device.InstallationID,
 	}, true
+}
+
+func authenticatedDeviceBotUID(client *Client) int64 {
+	if client != nil && client.accountType == types.AccountBot && client.uid > 0 {
+		return client.uid
+	}
+	return 0
 }
 
 func (h *Hub) deviceOwnerUIDForClient(client *Client) int64 {

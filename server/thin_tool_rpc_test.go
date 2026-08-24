@@ -312,7 +312,7 @@ func TestThinToolRPCTargetReplacementCancelsOnlyOldRouteAndNotifiesRequester(t *
 }
 
 func TestSkillHubThinToolRPCAuthorization(t *testing.T) {
-	db := &agentTestStore{owners: map[int64]int64{42: 7, 43: 8}}
+	db := &agentTestStore{owners: map[int64]int64{42: 7, 43: 8, 44: 7}}
 	hub := NewHub(db, nil)
 	if _, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
 		DeviceID: "alice-laptop",
@@ -334,6 +334,36 @@ func TestSkillHubThinToolRPCAuthorization(t *testing.T) {
 	}
 	if err := hub.authorizeSkillHubThinToolRPC(alice, valid, 7, "alice-laptop", valid.ToolName); err != nil {
 		t.Fatalf("valid SkillHub request rejected: %v", err)
+	}
+	if _, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		BotUID:      42,
+		DeviceID:    "alice-server",
+		RuntimeRole: "server",
+		Status:      "online",
+		Capabilities: []string{
+			string(DeviceGrantSkillHubWorkspaceGet),
+			string(DeviceGrantSkillHubBotSwitch),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	serverRequest := &MsgThinToolRPC{
+		TargetOwnerUserID: "usr7",
+		TargetDeviceID:    "alice-server",
+		ToolName:          string(DeviceGrantSkillHubWorkspaceGet),
+		Payload:           map[string]interface{}{"bot_uid": "42"},
+	}
+	if err := hub.authorizeSkillHubThinToolRPC(alice, serverRequest, 7, "alice-server", serverRequest.ToolName); err != nil {
+		t.Fatalf("bound server SkillHub request rejected: %v", err)
+	}
+	serverRequest.Payload = map[string]interface{}{"bot_uid": "44"}
+	if err := hub.authorizeSkillHubThinToolRPC(alice, serverRequest, 7, "alice-server", serverRequest.ToolName); err == nil {
+		t.Fatal("server Runtime unexpectedly authorized a different owner Bot")
+	}
+	serverRequest.Payload = map[string]interface{}{"bot_uid": "42"}
+	serverRequest.ToolName = string(DeviceGrantSkillHubBotSwitch)
+	if err := hub.authorizeSkillHubThinToolRPC(alice, serverRequest, 7, "alice-server", serverRequest.ToolName); err == nil {
+		t.Fatal("server Runtime unexpectedly authorized Bot switching")
 	}
 
 	tests := []struct {
