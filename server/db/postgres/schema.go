@@ -1219,6 +1219,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_trial_once
 CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_orders_uid_request ON commercial_orders (uid, client_request_id);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_uid_created ON commercial_orders (uid, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_status_expires ON commercial_orders (status, expires_at);
+-- The payment reconciler scans only a recent status slice every few minutes;
+-- keep both OR branches indexable instead of repeatedly walking all orders.
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_reconcile_pending
+    ON commercial_orders (created_at, updated_at, id)
+    WHERE status IN ('created','pending');
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_reconcile_closed
+    ON commercial_orders (closed_at, updated_at, id)
+    WHERE status = 'closed';
 CREATE INDEX IF NOT EXISTS idx_commercial_order_request_ids_order ON commercial_order_request_ids (order_no);
 CREATE INDEX IF NOT EXISTS idx_commercial_payment_events_order ON commercial_payment_events (order_no, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_managed_relay_uid ON commercial_managed_relay_budgets (uid);

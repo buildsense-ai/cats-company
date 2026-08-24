@@ -692,6 +692,77 @@ func TestCommercialClosedOrderUsesProviderQueryFallback(t *testing.T) {
 	}
 }
 
+func TestCommercialPaymentReconciliationFulfillsRecentPendingOrder(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	store.orders["CC-RECONCILE"] = &types.CommercialOrder{
+		OrderNo: "CC-RECONCILE", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending", ExpiresAt: &expiresAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-RECONCILE", ProviderTradeNo: "ALI-RECONCILE",
+			AmountFen: 39900, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	if got := handler.ReconcileCommercialOrders(context.Background()); got != 1 {
+		t.Fatalf("reconciled count=%d, want 1", got)
+	}
+	if store.orders["CC-RECONCILE"].Status != "fulfilled" || provider.calls != 1 {
+		t.Fatalf("order=%#v provider_calls=%d", store.orders["CC-RECONCILE"], provider.calls)
+	}
+}
+
+func TestCommercialPaymentReconciliationSkipsStaleClosedOrder(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	closedAt := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	store.orders["CC-RECONCILE-STALE"] = &types.CommercialOrder{
+		OrderNo: "CC-RECONCILE-STALE", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "closed", ClosedAt: &closedAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-RECONCILE-STALE", ProviderTradeNo: "ALI-RECONCILE-STALE",
+			AmountFen: 39900, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	if got := handler.ReconcileCommercialOrders(context.Background()); got != 0 {
+		t.Fatalf("reconciled count=%d, want 0", got)
+	}
+	if store.orders["CC-RECONCILE-STALE"].Status != "closed" || provider.calls != 0 {
+		t.Fatalf("stale order=%#v provider_calls=%d", store.orders["CC-RECONCILE-STALE"], provider.calls)
+	}
+}
+
+func TestCommercialPaymentReconciliationSkipsStalePendingOrder(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	createdAt := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	store.orders["CC-RECONCILE-STALE-PENDING"] = &types.CommercialOrder{
+		OrderNo: "CC-RECONCILE-STALE-PENDING", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending", CreatedAt: createdAt, ExpiresAt: &expiresAt,
+	}
+	provider := &queryCommercialPaymentProvider{paid: true, confirmation: &types.CommercialPaymentConfirmation{
+		Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-RECONCILE-STALE-PENDING", ProviderTradeNo: "ALI-RECONCILE-STALE-PENDING",
+		AmountFen: 39900, Currency: "CNY", PaidAt: time.Now().UTC(),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	if got := handler.ReconcileCommercialOrders(context.Background()); got != 0 {
+		t.Fatalf("reconciled count=%d, want 0", got)
+	}
+	if store.orders["CC-RECONCILE-STALE-PENDING"].Status != "pending" || provider.calls != 0 {
+		t.Fatalf("stale pending order=%#v provider_calls=%d", store.orders["CC-RECONCILE-STALE-PENDING"], provider.calls)
+	}
+}
+
 func TestCommercialHistoricalOrderQuerySurvivesGrayDisable(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	closedAt := time.Now().UTC().Add(-time.Hour)

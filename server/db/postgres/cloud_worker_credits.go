@@ -164,7 +164,9 @@ func (a *Adapter) ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, gr
 		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
-		WHERE owner_uid = $1 AND state <> 'deleted'`, uid, expiresAt, graceDays)
+		-- Never move a deletion already claimed by the sweeper back to active:
+		-- the provider-side destroy is running outside this transaction.
+		WHERE owner_uid = $1 AND state IN ('active','delete_pending')`, uid, expiresAt, graceDays)
 	if err != nil {
 		return fmt.Errorf("extend cloud worker lifecycles: %w", err)
 	}
@@ -225,7 +227,11 @@ func (a *Adapter) MarkCloudWorkerLifecyclePending(id int64, deleteAfter time.Tim
 		UPDATE cloud_worker_lifecycles
 		SET state = 'delete_pending', archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
 		    delete_after = $2, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND state = 'active'`, id, deleteAfter)
+		-- The due list is a snapshot. A payment can renew the package between
+		-- ListCloudWorkerLifecycleDue and this update. Re-check the expiry under
+		-- the same row update so that stale sweeper work cannot overwrite the
+		-- renewed active state and schedule an already-paid worker for deletion.
+		WHERE id = $1 AND state = 'active' AND package_expires_at <= CURRENT_TIMESTAMP`, id, deleteAfter)
 	return err
 }
 

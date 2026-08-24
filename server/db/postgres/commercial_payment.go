@@ -373,6 +373,42 @@ func (a *Adapter) ListCommercialOrders(uid int64, limit int) ([]*types.Commercia
 	return orders, rows.Err()
 }
 
+// ListCommercialOrdersForReconciliation returns only recent orders whose
+// provider may still report a completed payment. The status/age predicate is
+// kept in SQL so the periodic reconciler does not scan the entire order table.
+func (a *Adapter) ListCommercialOrdersForReconciliation(limit int) ([]*types.CommercialOrder, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	rows, err := a.db.Query(`
+		SELECT `+commercialOrderColumns+` FROM commercial_orders
+		WHERE (
+			status IN ('created','pending')
+			AND created_at >= $1
+		) OR (
+			status = 'closed' AND closed_at >= $1
+		)
+		ORDER BY updated_at, id
+		LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list commercial orders for reconciliation: %w", err)
+	}
+	defer rows.Close()
+	orders := make([]*types.CommercialOrder, 0, limit)
+	for rows.Next() {
+		order, scanErr := scanCommercialOrder(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan commercial reconciliation order: %w", scanErr)
+		}
+		orders = append(orders, order)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read commercial reconciliation orders: %w", err)
+	}
+	return orders, nil
+}
+
 func (a *Adapter) CancelCommercialOrder(uid int64, orderNo, reason string) (*types.CommercialOrder, bool, error) {
 	orderNo = strings.TrimSpace(orderNo)
 	if uid <= 0 || orderNo == "" {
@@ -501,7 +537,11 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 			    delete_after = $2::timestamptz + INTERVAL '15 days',
 			    state = 'active', archived_at = NULL, delete_started_at = NULL,
 			    last_error = '', updated_at = CURRENT_TIMESTAMP
-			WHERE owner_uid = $1 AND state <> 'deleted'`, order.UID, expiresAt); err != nil {
+			-- A deletion already claimed by the sweeper is an external operation
+			-- in flight. Do not resurrect its row in the database while the cloud
+			-- destroy script is running; the paid order still grants a fresh
+			-- one-time creation credit for a replacement worker.
+			WHERE owner_uid = $1 AND state IN ('active','delete_pending')`, order.UID, expiresAt); err != nil {
 			return nil, false, fmt.Errorf("extend cloud worker lifecycle: %w", err)
 		}
 	}
