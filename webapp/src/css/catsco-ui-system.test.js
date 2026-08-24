@@ -1315,9 +1315,11 @@ describe('CatsCo shell styling', () => {
     expect(tabLabelRule).toContain('font-size: 14px;');
   });
 
-  it('shows the narrow-screen sidebar shadow only while the drawer is open', () => {
+  it('keeps the user-sized narrow-screen drawer and shadow behavior', () => {
     expect(css).toContain('.v3-sidebar:not(.collapsed) {\n    position: fixed;');
-    expect(css).toContain('flex-basis: min(86vw, 300px);\n    box-shadow: none;');
+    expect(css).toContain('width: var(--cc-sidebar-user-width, var(--cc-sidebar-width));\n    flex-basis: var(--cc-sidebar-user-width, var(--cc-sidebar-width));\n    box-shadow: none;');
+    expect(css).not.toContain('--cc-sidebar-width: min(86vw, 300px);');
+    expect(css).not.toContain('width: min(86vw, 300px);');
     expect(css).toContain('.v3-sidebar:not(.collapsed).open {\n    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.34);');
   });
 
