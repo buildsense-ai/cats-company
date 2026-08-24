@@ -607,6 +607,14 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if !proStartsAt.Equal(proOrder.PaidAt.UTC()) || !proExpiresAt.Equal(expectedProExpiresAt) {
 		t.Fatalf("pro entitlement did not restart from payment: starts_at=%s expires_at=%s paid_at=%s expected_expires=%s", proStartsAt.UTC().Format(time.RFC3339Nano), proExpiresAt.UTC().Format(time.RFC3339Nano), proOrder.PaidAt.UTC().Format(time.RFC3339Nano), expectedProExpiresAt.Format(time.RFC3339Nano))
 	}
+	var oldCreditState string
+	if err := db.db.QueryRow(`SELECT state FROM cloud_worker_credits WHERE uid = $1 AND source_ref = $2`, paidUID, "order:"+personalOrder.OrderNo).Scan(&oldCreditState); err != nil || oldCreditState != "revoked" {
+		t.Fatalf("superseded personal cloud-worker credit remained usable: state=%q err=%v", oldCreditState, err)
+	}
+	var availableCredits int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 1 {
+		t.Fatalf("immediate upgrade should leave exactly one available cloud-worker credit: count=%d err=%v", availableCredits, err)
+	}
 	for _, blocked := range []struct {
 		planID int64
 		want   string
