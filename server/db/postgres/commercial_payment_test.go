@@ -569,7 +569,10 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("create personal plan bonus before upgrade: %v", err)
 	}
 
-	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERPRO", "tier_pro_request", "tier-pro-event")
+	proOrder := createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERPRO", "tier_pro_request", "tier-pro-event")
+	if proOrder.PaidAt == nil {
+		t.Fatal("paid upgrade order did not retain payment timestamp")
+	}
 	summary, err := db.GetCommercialSummary(paidUID)
 	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 5275 {
 		t.Fatalf("paid upgrade did not replace personal quota: summary=%#v err=%v", summary, err)
@@ -589,8 +592,20 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("paid upgrade audit mismatch: revoked=%d ledger=%d", revokedPersonalGrants, upgradeLedger)
 	}
 	var personalState string
-	if err := db.db.QueryRow(`SELECT state FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalOrder.OrderNo).Scan(&personalState); err != nil || personalState != "revoked" {
-		t.Fatalf("personal entitlement was not revoked: state=%q err=%v", personalState, err)
+	var personalExpiresAt time.Time
+	if err := db.db.QueryRow(`SELECT state, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalOrder.OrderNo).Scan(&personalState, &personalExpiresAt); err != nil || personalState != "revoked" {
+		t.Fatalf("personal entitlement was not revoked: state=%q expires_at=%v err=%v", personalState, personalExpiresAt, err)
+	}
+	if !personalExpiresAt.Equal(proOrder.PaidAt.UTC()) {
+		t.Fatalf("personal entitlement retained time after immediate upgrade: expires_at=%s paid_at=%s", personalExpiresAt.UTC().Format(time.RFC3339Nano), proOrder.PaidAt.UTC().Format(time.RFC3339Nano))
+	}
+	var proStartsAt, proExpiresAt time.Time
+	if err := db.db.QueryRow(`SELECT starts_at, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, proOrder.OrderNo).Scan(&proStartsAt, &proExpiresAt); err != nil {
+		t.Fatalf("read pro entitlement dates: %v", err)
+	}
+	expectedProExpiresAt := proOrder.PaidAt.UTC().AddDate(0, 0, proOrder.PlanDurationDays)
+	if !proStartsAt.Equal(proOrder.PaidAt.UTC()) || !proExpiresAt.Equal(expectedProExpiresAt) {
+		t.Fatalf("pro entitlement did not restart from payment: starts_at=%s expires_at=%s paid_at=%s expected_expires=%s", proStartsAt.UTC().Format(time.RFC3339Nano), proExpiresAt.UTC().Format(time.RFC3339Nano), proOrder.PaidAt.UTC().Format(time.RFC3339Nano), expectedProExpiresAt.Format(time.RFC3339Nano))
 	}
 	for _, blocked := range []struct {
 		planID int64

@@ -541,7 +541,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
-  it('offers Personal users an immediate Pro upgrade with concise reset copy', async () => {
+  it('offers Personal users an immediate Pro upgrade with explicit reset timing', async () => {
     const plans = [
       { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
       { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
@@ -565,7 +565,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('升级后立即切换套餐，额度按专业版重置，不与个人版叠加。');
+    expect(container.textContent).toContain('升级到 Pro 后立即切换；Personal 剩余时间不顺延，Pro 有效期从支付成功时刻重新计算 30 天。');
     const rows = Array.from(container.querySelectorAll('.relay-access-plan-row'));
     const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
     const proButton = rows.find(row => row.textContent.includes('专业版'))?.querySelector('button');
@@ -575,7 +575,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(proButton?.disabled).toBe(false);
 
     await clickButton('升级至专业版');
-    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('升级后立即生效，额度按新套餐重置，不叠加。');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 30 天，额度按新套餐重置。');
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 

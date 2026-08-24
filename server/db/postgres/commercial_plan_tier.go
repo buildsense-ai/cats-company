@@ -261,7 +261,8 @@ func commercialOfficialPlanSlugsBelow(targetTier int) []string {
 func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, now time.Time) error {
 	if _, err := tx.Exec(`
 		UPDATE commercial_entitlements e
-		SET state = 'revoked'
+		SET state = 'revoked',
+		    expires_at = LEAST(COALESCE(e.expires_at, $2), $2)
 		FROM commercial_plans p
 		WHERE e.plan_id = p.id AND e.uid = $1 AND e.state = 'active'
 		  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
