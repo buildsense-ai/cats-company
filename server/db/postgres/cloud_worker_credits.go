@@ -140,7 +140,10 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 	if _, err := tx.Exec(`
 		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
 		VALUES ($1, $2, $3, $4, $5, 'active')
-		ON CONFLICT (worker_uid) DO NOTHING`,
+		ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
+		  tenant_name = EXCLUDED.tenant_name, package_expires_at = EXCLUDED.package_expires_at,
+		  delete_after = EXCLUDED.delete_after, state = 'active', archived_at = NULL,
+		  delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
 		workerUID, uid, strings.TrimSpace(tenantName), expiresAt, deleteAfter); err != nil {
 		return fmt.Errorf("register cloud worker lifecycle: %w", err)
 	}
@@ -163,10 +166,7 @@ func (a *Adapter) RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenant
 	_, err := a.db.Exec(`
 		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
 		VALUES ($1, $2, $3, $4, $5, 'active')
-		ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
-		  tenant_name = EXCLUDED.tenant_name, package_expires_at = EXCLUDED.package_expires_at,
-		  delete_after = EXCLUDED.delete_after, state = 'active', archived_at = NULL,
-		  delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
+		ON CONFLICT (worker_uid) DO NOTHING`,
 		workerUID, ownerUID, strings.TrimSpace(tenantName), packageExpiresAt, deleteAfter)
 	if err != nil {
 		return fmt.Errorf("register cloud worker lifecycle: %w", err)
