@@ -863,30 +863,30 @@ describe('CatsCo shell styling', () => {
   });
 
   it('keeps task status visible beside touch-friendly mobile actions', () => {
-    expect(css).toContain(`@media (hover: none), (pointer: coarse) {
-  .v3-chat-list {
-    --cc-sidebar-row-height: 44px;
-    --cc-sidebar-action-size: 40px;
-    --cc-sidebar-trailing-width: 84px;
-  }
-
-  .cc-chat-row-trailing .cc-chat-row-time {
-    opacity: 0;
-  }
-
-  .cc-history-item .cc-chat-row-trailing:has(> .cc-task-row-status) {
+    expect(css).toContain('@media (hover: none), (pointer: coarse) {');
+    expect(css).toContain('--cc-sidebar-row-height: 44px;');
+    expect(css).toContain('--cc-sidebar-action-size: 40px;');
+    expect(css).toContain('--cc-sidebar-trailing-width: 84px;');
+    expect(css).toContain('.cc-chat-row-trailing .cc-chat-row-time {\n    opacity: 0;');
+    expect(css).toContain(`.cc-history-batch-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.25fr);
+  }`);
+    expect(css).toContain(`.cc-history-item:not(.is-selection-mode) .cc-chat-row-trailing:has(> .cc-task-row-status) {
     flex-basis: 108px;
     width: 108px;
     min-width: 108px;
-  }
-
-  .cc-history-item .cc-chat-row-trailing > .cc-task-row-status {
+  }`);
+    expect(css).toContain(`.cc-history-item:not(.is-selection-mode) .cc-chat-row-trailing > .cc-task-row-status {
     right: calc((var(--cc-sidebar-action-size) * 2) + 4px);
     opacity: 1;
   }`);
     expect(ruleFor('.cc-history-item .cc-chat-row-trailing')).toContain(
       'width: var(--cc-sidebar-trailing-width);',
     );
+    expect(ruleFor('.cc-history-item.is-selection-mode .cc-history-selection-trailing > .cc-task-row-status'))
+      .toContain('right: 0;');
+    expect(ruleFor('.cc-history-item.is-selection-mode .cc-history-selection-trailing > .cc-task-row-status'))
+      .toContain('opacity: 1;');
   });
 
   it('uses clean filled terminal-state dots without decorative outer rings', () => {

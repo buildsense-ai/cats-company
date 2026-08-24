@@ -6,8 +6,11 @@ import SidebarResizeHandle, {
   APP_SIDEBAR_WIDTH_STORAGE_KEY,
   DEFAULT_APP_SIDEBAR_WIDTH,
   MAX_APP_SIDEBAR_WIDTH,
+  MAX_MOBILE_APP_SIDEBAR_WIDTH,
+  MOBILE_SIDEBAR_CONTENT_PEEK,
   MIN_APP_SIDEBAR_WIDTH,
   clampSidebarWidth,
+  getMobileSidebarMaxWidth,
   getSidebarMaxWidth,
   loadSidebarWidth,
   saveSidebarWidth,
@@ -78,6 +81,13 @@ describe('SidebarResizeHandle', () => {
     expect(getSidebarMaxWidth(1000)).toBe(MAX_APP_SIDEBAR_WIDTH);
     expect(getSidebarMaxWidth(2000)).toBe(MAX_APP_SIDEBAR_WIDTH);
     expect(getSidebarMaxWidth('invalid')).toBe(MAX_APP_SIDEBAR_WIDTH);
+
+    expect(getMobileSidebarMaxWidth(390)).toBe(MAX_MOBILE_APP_SIDEBAR_WIDTH);
+    expect(getMobileSidebarMaxWidth(375)).toBe(MAX_MOBILE_APP_SIDEBAR_WIDTH);
+    expect(getMobileSidebarMaxWidth(320)).toBe(320 - MOBILE_SIDEBAR_CONTENT_PEEK);
+    expect(getMobileSidebarMaxWidth(280)).toBe(MIN_APP_SIDEBAR_WIDTH);
+    expect(getMobileSidebarMaxWidth(768)).toBe(MAX_MOBILE_APP_SIDEBAR_WIDTH);
+    expect(getMobileSidebarMaxWidth('invalid')).toBe(MAX_MOBILE_APP_SIDEBAR_WIDTH);
   });
 
   it('loads and saves a clamped width in localStorage', () => {

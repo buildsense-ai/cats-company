@@ -2179,6 +2179,11 @@ html[data-theme="liquid"] .catsco-brand-mark {
   min-width: 52px;
 }
 
+.cc-history-item.is-selection-mode .cc-history-selection-trailing > .cc-task-row-status {
+  right: 0;
+  opacity: 1;
+}
+
 .cc-history-batch-bar {
   position: relative;
   z-index: 18;
@@ -2736,13 +2741,23 @@ html[data-theme="liquid"] .catsco-brand-mark {
     opacity: 0;
   }
 
-  .cc-history-item .cc-chat-row-trailing:has(> .cc-task-row-status) {
+  .cc-history-batch-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.25fr);
+  }
+
+  .cc-history-batch-action {
+    gap: 4px;
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .cc-history-item:not(.is-selection-mode) .cc-chat-row-trailing:has(> .cc-task-row-status) {
     flex-basis: 108px;
     width: 108px;
     min-width: 108px;
   }
 
-  .cc-history-item .cc-chat-row-trailing > .cc-task-row-status {
+  .cc-history-item:not(.is-selection-mode) .cc-chat-row-trailing > .cc-task-row-status {
     right: calc((var(--cc-sidebar-action-size) * 2) + 4px);
     opacity: 1;
   }
