@@ -912,7 +912,7 @@ func TestCloudWorkerHandleCreateSuccess(t *testing.T) {
 }
 
 func TestCloudWorkerHandleCreatePassesIdentity(t *testing.T) {
-	// 链路验证：HandleCreate 必须把创建者 JWT + bot/user 身份完整传给 provision
+	// 链路验证：HandleCreate 必须把 worker owner token + bot/user 身份完整传给 provision
 	// 脚本（--login-token/--api-key/--bot-uid/--user-uid/--user-name/--user-display）。
 	// require-identity fake 缺任何一项都会 exit 1 -> HandleCreate 走 502。
 	cfg := workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "require-identity")})
@@ -931,6 +931,96 @@ func TestCloudWorkerHandleCreatePassesIdentity(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
 	}
+}
+
+// writeCredentialCaptureScript records the first line of --credential-file so
+// tests can inspect the token without ever placing it in process argv.
+func writeCredentialCaptureScript(t *testing.T, tokenPath string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "capture-credential.sh")
+	body := fmt.Sprintf("#!/bin/sh\ncred=\"\"; prev=\"\"\nfor a in \"$@\"; do\n  case \"$prev\" in --credential-file) cred=\"$a\";; esac\n  prev=\"$a\"\ndone\n[ -f \"$cred\" ] || exit 1\nsed -n '1p' \"$cred\" > %q\n", tokenPath)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func assertPersistentWorkerToken(t *testing.T, tokenPath string, ownerUID int64, requestToken string) {
+	t.Helper()
+	raw, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read captured worker token: %v", err)
+	}
+	got := strings.TrimSpace(string(raw))
+	if got == "" {
+		t.Fatal("worker token is empty")
+	}
+	if got == requestToken {
+		t.Fatal("worker token must not reuse the request JWT")
+	}
+	claims, err := ParseToken(got)
+	if err != nil {
+		t.Fatalf("parse worker token: %v", err)
+	}
+	if claims.TokenType != persistentUserTokenType {
+		t.Fatalf("worker token type=%q want %q", claims.TokenType, persistentUserTokenType)
+	}
+	if claims.UID != ownerUID {
+		t.Fatalf("worker token uid=%d want %d", claims.UID, ownerUID)
+	}
+	if claims.ExpiresAt != nil {
+		t.Fatalf("persistent worker token unexpectedly expires at %v", claims.ExpiresAt)
+	}
+}
+
+func TestCloudWorkerHandleCreateUsesPersistentOwnerToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("credential capture test requires a POSIX shell")
+	}
+	tokenPath := filepath.Join(t.TempDir(), "create-token.txt")
+	capture := writeCredentialCaptureScript(t, tokenPath)
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"provision": capture})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.creatorUser = &types.User{Username: "alice", Email: "alice@example.com", DisplayName: "Alice"}
+	requestToken := "test-owner-token"
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+		"username": "bot-x", "display_name": "X",
+	})
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	rec := httptest.NewRecorder()
+	h.HandleCreate(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	assertPersistentWorkerToken(t, tokenPath, 7, requestToken)
+}
+
+func TestCloudWorkerHandleResetUsesPersistentOwnerToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("credential capture test requires a POSIX shell")
+	}
+	tokenPath := filepath.Join(t.TempDir(), "reset-token.txt")
+	capture := writeCredentialCaptureScript(t, tokenPath)
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"reset": capture})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	ts.botAPIKeys = map[int64]string{1: "worker-specific-key"}
+	ts.creatorUser = &types.User{Username: "alice", Email: "alice@example.com", DisplayName: "Alice"}
+	requestToken := "test-owner-token"
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1"})
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	assertPersistentWorkerToken(t, tokenPath, 7, requestToken)
 }
 
 func TestCloudWorkerHandleCreateInvalidUsername(t *testing.T) {

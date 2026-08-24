@@ -56,7 +56,7 @@ done
 
 # Credentials supplied through a root-owned 0600 file never appear in the
 # process argv (/proc). The two-line format is deliberately tiny: line 1 is
-# the creator JWT and line 2 is the bot API key. Legacy argv flags remain
+# the worker owner token and line 2 is the bot API key. Legacy argv flags remain
 # supported for operator scripts and backwards compatibility.
 if [[ -n "$CREDENTIAL_FILE" ]]; then
   [[ -f "$CREDENTIAL_FILE" && ! -L "$CREDENTIAL_FILE" ]] || { echo "error: credential file is missing" >&2; exit 2; }
