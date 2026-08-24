@@ -354,6 +354,14 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	if !ok {
 		return fmt.Errorf("target device is not active for the authenticated user")
 	}
+	if device.RuntimeRole == "server" {
+		if device.BotUID <= 0 || device.BotUID != botUID {
+			return fmt.Errorf("server Runtime device is not bound to the requested bot")
+		}
+		if operation == DeviceGrantSkillHubBotSwitch {
+			return fmt.Errorf("server Runtime devices cannot switch bots through SkillHub")
+		}
+	}
 	for _, capability := range device.Capabilities {
 		if capability == operation {
 			msg.TargetOwnerUserID = formatUID(client.uid)

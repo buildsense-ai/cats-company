@@ -475,6 +475,7 @@ func (s *sharedMemoryRuntimeState) registerUserDevice(ownerUID int64, req Regist
 		Source:         "catscompany",
 		OwnerUID:       ownerUID,
 		OwnerUserID:    formatUID(ownerUID),
+		BotUID:         normalizeDeviceBotUID(req.BotUID),
 		DeviceID:       deviceID,
 		DisplayName:    normalizeDeviceText(req.DisplayName),
 		OS:             normalizeDeviceOS(req.OS),

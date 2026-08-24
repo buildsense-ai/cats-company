@@ -321,6 +321,7 @@ func TestDeviceHandlerRegistersHumanAndBotOwnerDevices(t *testing.T) {
 	handler := NewDeviceHandler(store, hub)
 
 	registerReq := httptest.NewRequest(http.MethodPost, "/api/devices/register", bytes.NewBufferString(`{
+		"bot_uid": 999,
 		"device_id": "alice-laptop",
 		"display_name": "Alice Laptop",
 		"capabilities": ["read_file", "send_file"]
@@ -333,6 +334,7 @@ func TestDeviceHandlerRegistersHumanAndBotOwnerDevices(t *testing.T) {
 	}
 
 	botReq := httptest.NewRequest(http.MethodPost, "/api/devices/register", bytes.NewBufferString(`{
+		"bot_uid": 999,
 		"device_id": "bot-body-runtime",
 		"body_id": "body-main"
 	}`))
@@ -362,6 +364,12 @@ func TestDeviceHandlerRegistersHumanAndBotOwnerDevices(t *testing.T) {
 	for _, device := range out.Devices {
 		if device.OwnerUserID != "usr7" {
 			t.Fatalf("device registered to wrong owner: %#v", device)
+		}
+		if device.DeviceID == "alice-laptop" && device.BotUID != 0 {
+			t.Fatalf("human device accepted an untrusted Bot binding: %#v", device)
+		}
+		if device.DeviceID == "bot-body-runtime" && device.BotUID != 42 {
+			t.Fatalf("Bot Runtime binding = %d, want authenticated Bot 42", device.BotUID)
 		}
 	}
 }
