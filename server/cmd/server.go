@@ -502,6 +502,7 @@ func main() {
 		Syncer:         commercialRelaySyncer,
 	})
 	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
+	commercialOpsHandler.SetCloudWorkerAdmin(cloudWorkerHandler)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
 	paymentProviders := []server.CommercialPaymentProvider{}
 	paymentSaleChannels := map[string]bool{}
@@ -689,6 +690,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
 	mux.HandleFunc("/api/account/commercial-ops/cloud-worker-credits", commercialOpsHandler.HandleCloudWorkerCredits)
+	mux.HandleFunc("/api/account/commercial-ops/cloud-workers", commercialOpsHandler.HandleCloudWorkers)
 	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)

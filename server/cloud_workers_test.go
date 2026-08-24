@@ -52,6 +52,11 @@ type cloudWorkerTestStore struct {
 	botAPIKeys        map[int64]string
 	botBodyIDs        map[int64]string
 	botDefinitions    map[int64]*types.BotDefinitionRecord
+	adminRecords      []types.CloudWorkerAdminRecord
+}
+
+func (s *cloudWorkerTestStore) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord, error) {
+	return append([]types.CloudWorkerAdminRecord(nil), s.adminRecords...), nil
 }
 
 func (s *cloudWorkerTestStore) GetUser(id int64) (*types.User, error) {
