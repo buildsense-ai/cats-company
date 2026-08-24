@@ -447,6 +447,7 @@ describe('CatsCo shell styling', () => {
     );
     expect(timelineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-page-size);');
     expect(timelineRule).toContain('--cc-scrollbar-inset: 1.5px;');
+    expect(timelineRule).toContain('overscroll-behavior-y: contain;');
     expect(inlineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-inline-size);');
     expect(inlineRule).toContain('--cc-scrollbar-inset: 1.5px;');
     expect(listRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-sidebar-size);');

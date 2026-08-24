@@ -48,7 +48,7 @@ const LONG_PASTE_MULTILINE_CHAR_THRESHOLD = 2000;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
 const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
-const STICK_TO_BOTTOM_THRESHOLD = 96;
+const TIMELINE_BOTTOM_EPSILON = 1;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
@@ -481,7 +481,6 @@ export default function MessagesView({
     return result;
   }, [messages]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
-  const bottomRef = useRef(null);
   const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -493,7 +492,9 @@ export default function MessagesView({
   const visibleQuestionAnchorsRef = useRef(new Map());
   const messageHighlightTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
+  const pendingOlderHistoryAnchorRef = useRef(null);
   const stickToBottomRef = useRef(true);
+  const lastTimelineScrollTopRef = useRef(0);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -933,9 +934,11 @@ export default function MessagesView({
     historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     loadingOlderRef.current = false;
     questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
+    lastTimelineScrollTopRef.current = 0;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
@@ -1203,21 +1206,19 @@ export default function MessagesView({
     return () => unsub();
   }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
 
-  // Auto-scroll to bottom or restore scroll anchor depending on state
+  // Restore an older-history anchor, or follow updates while the reader
+  // remains at the latest position.
   React.useLayoutEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
     if (previousScrollRef.current) {
-      // Anchoring condition: We just prepended older history.
-      const { scrollHeight, scrollTop } = previousScrollRef.current;
-      const newScrollHeight = timeline.scrollHeight;
-      timeline.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
-      previousScrollRef.current = null; // Clear atomic lock
-      stickToBottomRef.current = isTimelineNearBottom(timeline);
+      restoreTimelineReadingAnchor(timeline, previousScrollRef.current);
+      previousScrollRef.current = null;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
     } else if (stickToBottomRef.current) {
-      // Only follow fresh messages while the user is already near the bottom.
-      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      timeline.scrollTop = timeline.scrollHeight;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
     }
   }, [messages, runtimePlan, peerTyping]);
 
@@ -1318,6 +1319,7 @@ export default function MessagesView({
     const hasCachedHistory = !aroundId && historyCacheRef.current.has(cacheKey);
     historyLoadingRef.current = true;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     setRefreshingHistory(true);
     setHistoryError('');
     setOlderHistoryError('');
@@ -1411,15 +1413,8 @@ export default function MessagesView({
     const requestID = historyRequestRef.current;
     const controller = new AbortController();
     olderHistoryAbortControllerRef.current = controller;
-    
-    // Capture the absolute scroll geometry BEFORE rendering the older batch
-    if (timelineRef.current) {
-      previousScrollRef.current = {
-        scrollHeight: timelineRef.current.scrollHeight,
-        scrollTop: timelineRef.current.scrollTop,
-      };
-    }
-    
+    pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(timelineRef.current);
+
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     setOlderHistoryError('');
@@ -1435,6 +1430,10 @@ export default function MessagesView({
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
       const { visibleMessages } = normalizeHistoryMessages(rawMessages);
+      previousScrollRef.current = stickToBottomRef.current
+        ? null
+        : pendingOlderHistoryAnchorRef.current;
+      pendingOlderHistoryAnchorRef.current = null;
       setMessages((prev) => mergeMessages(visibleMessages, prev));
       historyOffsetRef.current += rawMessages.length;
       historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
@@ -1481,6 +1480,7 @@ export default function MessagesView({
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
+        pendingOlderHistoryAnchorRef.current = null;
         if (e?.code !== 'REQUEST_ABORTED') {
           setOlderHistoryError(e?.code === 'REQUEST_TIMEOUT'
             ? '更早的聊天记录加载超时，请重试。'
@@ -3522,6 +3522,7 @@ export default function MessagesView({
 
     stickToBottomRef.current = false;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     const targetTopic = topic;
     const controller = new AbortController();
     questionJumpAbortControllerRef.current = controller;
@@ -3584,7 +3585,21 @@ export default function MessagesView({
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
-    stickToBottomRef.current = isTimelineNearBottom(el);
+    const currentScrollTop = el.scrollTop;
+    const previousScrollTop = lastTimelineScrollTopRef.current;
+    const movedUp = currentScrollTop < previousScrollTop;
+    const scrollPositionChanged = currentScrollTop !== previousScrollTop;
+    lastTimelineScrollTopRef.current = currentScrollTop;
+    if (movedUp && !isTimelineAtBottom(el)) {
+      stickToBottomRef.current = false;
+    } else if (isTimelineAtBottom(el)) {
+      stickToBottomRef.current = true;
+    }
+    if (scrollPositionChanged
+      && loadingOlderRef.current
+      && pendingOlderHistoryAnchorRef.current) {
+      pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(el);
+    }
     const pendingQuestionKey = pendingQuestionJumpRef.current;
     if (pendingQuestionKey) {
       setActiveQuestionKey((current) => current === pendingQuestionKey ? current : pendingQuestionKey);
@@ -3845,7 +3860,6 @@ export default function MessagesView({
               <span className="v3-peer-typing-label">{t('typing')}</span>
             </div>
           )}
-          <div ref={bottomRef} />
         </div>
       </div>
 
@@ -5187,9 +5201,38 @@ function getStreamId(message) {
   return typeof id === 'string' && id.trim() ? id.trim() : '';
 }
 
-function isTimelineNearBottom(el) {
+function isTimelineAtBottom(el) {
   if (!el) return true;
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= TIMELINE_BOTTOM_EPSILON;
+}
+
+function captureTimelineReadingAnchor(timeline) {
+  if (!timeline) return null;
+  const timelineRect = timeline.getBoundingClientRect();
+  const anchors = Array.from(timeline.querySelectorAll('[data-search-message-id]'));
+  const anchor = anchors.find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.bottom > timelineRect.top && rect.top < timelineRect.bottom;
+  }) || anchors[0];
+  return {
+    scrollHeight: timeline.scrollHeight,
+    scrollTop: timeline.scrollTop,
+    messageID: anchor?.dataset.searchMessageId || '',
+    offsetTop: anchor ? anchor.getBoundingClientRect().top - timelineRect.top : null,
+  };
+}
+
+function restoreTimelineReadingAnchor(timeline, anchor) {
+  if (anchor.messageID && Number.isFinite(anchor.offsetTop)) {
+    const target = Array.from(timeline.querySelectorAll('[data-search-message-id]'))
+      .find((element) => element.dataset.searchMessageId === anchor.messageID);
+    if (target) {
+      const offsetTop = target.getBoundingClientRect().top - timeline.getBoundingClientRect().top;
+      timeline.scrollTop += offsetTop - anchor.offsetTop;
+      return;
+    }
+  }
+  timeline.scrollTop = anchor.scrollTop + (timeline.scrollHeight - anchor.scrollHeight);
 }
 
 function streamDeltaText(content) {

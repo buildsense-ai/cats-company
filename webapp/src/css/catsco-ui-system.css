@@ -1453,6 +1453,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-timeline {
   --cc-scrollbar-size: var(--cc-scrollbar-page-size);
   --cc-scrollbar-inset: 1.5px;
+  overscroll-behavior-y: contain;
   padding: 18px 20px 140px;
   background: var(--cc-main-bg);
 }
