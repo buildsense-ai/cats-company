@@ -429,8 +429,20 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if duplicateClaim, claimedAgain, claimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); claimErr != nil || claimedAgain || duplicateClaim.Status != "refunding" {
 		t.Fatalf("active refund claim was not exclusive: order=%#v claimed=%v err=%v", duplicateClaim, claimedAgain, claimErr)
 	}
+	// commercial_orders has an updated_at trigger, so temporarily disable that
+	// test-only trigger while aging the claim; sleeping for a TTL makes this
+	// integration test timing-sensitive on slower CI runners.
+	if _, err := db.db.Exec(`ALTER TABLE commercial_orders DISABLE TRIGGER trg_commercial_orders_updated_at`); err != nil {
+		t.Fatalf("disable order timestamp trigger for recovery test: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.db.Exec(`ALTER TABLE commercial_orders ENABLE TRIGGER trg_commercial_orders_updated_at`)
+	})
 	if _, err := db.db.Exec(`UPDATE commercial_orders SET updated_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes' WHERE order_no = $1`, created.OrderNo); err != nil {
 		t.Fatalf("age refund claim for recovery test: %v", err)
+	}
+	if _, err := db.db.Exec(`ALTER TABLE commercial_orders ENABLE TRIGGER trg_commercial_orders_updated_at`); err != nil {
+		t.Fatalf("restore order timestamp trigger after recovery test setup: %v", err)
 	}
 	if reclaimed, reclaimedClaim, reclaimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); reclaimErr != nil || !reclaimedClaim || reclaimed.Status != "refunding" {
 		t.Fatalf("stale refund claim was not recoverable: order=%#v claimed=%v err=%v", reclaimed, reclaimedClaim, reclaimErr)
