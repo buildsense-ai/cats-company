@@ -92,6 +92,7 @@ export function AuthView({
   const [loginName, setLoginName] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [codeSent, setCodeSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [sentHint, setSentHint] = useState('');
@@ -122,7 +123,9 @@ export function AuthView({
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    if (submitting) return;
     setError('');
+    setSubmitting(true);
     try {
       if (mode === 'login') {
         await onLogin(username, password);
@@ -132,6 +135,8 @@ export function AuthView({
       onAuthenticationIntent?.();
     } catch (err) {
       setError(formatAuthError(err.message));
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -241,8 +246,8 @@ export function AuthView({
         </>
       )}
 
-      <button className="oc-auth-btn" type="submit">
-        {mode === 'login' ? t('login') : t('register')}
+      <button className="oc-auth-btn" type="submit" disabled={submitting} aria-busy={submitting}>
+        {submitting ? (mode === 'login' ? '登录中…' : '注册中…') : (mode === 'login' ? t('login') : t('register'))}
       </button>
       <div className="oc-auth-link">
         {mode === 'login' ? (
