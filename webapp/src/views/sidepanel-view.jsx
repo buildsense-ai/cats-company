@@ -11,7 +11,7 @@ import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus, ListChecks } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -319,6 +319,12 @@ export default function ChatListView({
   const [historyNameDraft, setHistoryNameDraft] = useState('');
   const [renamingTopicId, setRenamingTopicId] = useState('');
   const [notificationPreferenceTopicId, setNotificationPreferenceTopicId] = useState('');
+  const [historySelectionMode, setHistorySelectionMode] = useState(false);
+  const [selectedHistoryTopicIds, setSelectedHistoryTopicIds] = useState(() => new Set());
+  const [batchAction, setBatchAction] = useState('');
+  const [showBatchProjectActions, setShowBatchProjectActions] = useState(false);
+  const [showBatchNotificationActions, setShowBatchNotificationActions] = useState(false);
+  const [showBatchProjectPicker, setShowBatchProjectPicker] = useState(false);
   const [sidebarTimeNowMs, setSidebarTimeNowMs] = useState(() => Date.now());
   const [compactHistoryPanel, setCompactHistoryPanel] = useState(null);
   const [compactHistoryTooltip, setCompactHistoryTooltip] = useState(null);
@@ -343,6 +349,7 @@ export default function ChatListView({
   const previousSidebarScrollTopRef = useRef(0);
   const pendingSidebarScrollAnchorRef = useRef(null);
   const pendingSidebarRevealRef = useRef('');
+  const lastHistorySelectionTopicIdRef = useRef('');
 
   useEffect(() => {
     setCollapsed(loadCollapsedSections(user?.uid));
@@ -353,6 +360,12 @@ export default function ChatListView({
     setUnreadFriendTopicIds(new Set());
     setExpandedProjectIds(new Set());
     setScrollCollapsed({ contacts: false, projects: false });
+    setHistorySelectionMode(false);
+    setSelectedHistoryTopicIds(new Set());
+    setShowBatchProjectActions(false);
+    setShowBatchNotificationActions(false);
+    setShowBatchProjectPicker(false);
+    lastHistorySelectionTopicIdRef.current = '';
     previousSidebarScrollTopRef.current = 0;
     pendingSidebarScrollAnchorRef.current = null;
     pendingSidebarRevealRef.current = '';
@@ -360,6 +373,14 @@ export default function ChatListView({
 
   useLayoutEffect(() => {
     setScrollCollapsed({ contacts: false, projects: false });
+    if (compact) {
+      setHistorySelectionMode(false);
+      setSelectedHistoryTopicIds(new Set());
+      setShowBatchProjectActions(false);
+      setShowBatchNotificationActions(false);
+      setShowBatchProjectPicker(false);
+      lastHistorySelectionTopicIdRef.current = '';
+    }
     previousSidebarScrollTopRef.current = 0;
     pendingSidebarScrollAnchorRef.current = null;
     pendingSidebarRevealRef.current = '';
@@ -426,12 +447,14 @@ export default function ChatListView({
   }, [activeTopic, chats]);
 
   useEffect(() => {
-    if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId && !showContactActions) return undefined;
+    if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId && !showContactActions && !showBatchProjectActions && !showBatchNotificationActions) return undefined;
     const closeMenus = () => {
       setOpenFriendMenuId('');
       setOpenChatMenuKey('');
       setOpenProjectMenuId(null);
       setShowContactActions(false);
+      setShowBatchProjectActions(false);
+      setShowBatchNotificationActions(false);
     };
     const closeMenusFromOutside = (event) => {
       const target = event.target;
@@ -444,6 +467,10 @@ export default function ChatListView({
         '.cc-project-menu-trigger',
         '.cc-contact-section-menu',
         '.cc-contact-section-menu-trigger',
+        '.cc-batch-project-menu',
+        '.cc-batch-project-trigger',
+        '.cc-batch-notification-menu',
+        '.cc-batch-notification-trigger',
       ].join(','))) {
         return;
       }
@@ -461,7 +488,7 @@ export default function ChatListView({
       document.removeEventListener('pointerdown', closeMenusFromOutside);
       document.removeEventListener('keydown', closeMenusOnEscape);
     };
-  }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions]);
+  }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions, showBatchProjectActions, showBatchNotificationActions]);
 
   useLayoutEffect(() => {
     if (
@@ -1161,7 +1188,7 @@ export default function ChatListView({
 
   useEffect(() => {
     const list = sidebarListRef.current;
-    if (compact || !list) return undefined;
+    if (compact || historySelectionMode || !list) return undefined;
 
     previousSidebarScrollTopRef.current = list.scrollTop;
     const coarsePointer = window.matchMedia?.('(hover: none), (pointer: coarse)')?.matches ?? false;
@@ -1268,6 +1295,7 @@ export default function ChatListView({
   }, [
     compact,
     contactsCollapsed,
+    historySelectionMode,
     isSearching,
     openChatMenuKey,
     openFriendMenuId,
@@ -1298,6 +1326,20 @@ export default function ChatListView({
     if (String(project.name || '').toLowerCase().includes(lowerSearch)) return true;
     return (projectTasksById.get(Number(project.id)) || []).some((chat) => chat.name.toLowerCase().includes(lowerSearch));
   });
+  const projectTaskRowsById = new Map(filteredProjects.map((project) => {
+    const projectId = Number(project.id);
+    const projectNameMatches = String(project.name || '').toLowerCase().includes(lowerSearch);
+    const projectTasks = sortConversationsWithPins(
+      (projectTasksById.get(projectId) || []).filter((chat) => (
+        !isSearching || projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)
+      )),
+      pinnedTaskIds,
+    );
+    return [projectId, {
+      expanded: isSearching ? projectTasks.length > 0 : expandedProjectIds.has(projectId),
+      tasks: projectTasks,
+    }];
+  }));
 
   const taskCandidates = [
     ...filteredChats.filter((chat) => !chat.isGroup),
@@ -1384,6 +1426,84 @@ export default function ChatListView({
     isHistoryTask(chat)
     && (chat.isGroup || !hiddenHistoryIds.has(String(chat.id)))
   ))).slice(0, 12);
+  const selectableTaskChats = sortConversationsByRecent([
+    ...visibleRecentChats.filter((chat) => !chat.isGroup && isHistoryTask(chat)),
+    ...mergedGroups.filter(isHistoryTask),
+  ]);
+  const selectableTaskById = new Map(selectableTaskChats.map((chat) => [String(chat.id), chat]));
+  const taskSelectionScopeById = new Map();
+  const addTaskSelectionScope = (chat) => {
+    const topicId = String(chat?.id || '').trim();
+    const selectable = selectableTaskById.get(topicId);
+    if (!topicId || !selectable) return;
+    taskSelectionScopeById.set(topicId, selectable);
+  };
+
+  if (isSearching) {
+    conversationChats.forEach(addTaskSelectionScope);
+    filteredProjects.forEach((project) => {
+      const projectNameMatches = String(project.name || '').toLowerCase().includes(lowerSearch);
+      (projectTasksById.get(Number(project.id)) || []).forEach((chat) => {
+        if (projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)) {
+          addTaskSelectionScope(chat);
+        }
+      });
+    });
+  } else {
+    selectableTaskChats.forEach(addTaskSelectionScope);
+  }
+
+  const taskSelectionScopeChats = sortConversationsByRecent(Array.from(taskSelectionScopeById.values()));
+  const taskSelectionOrderChats = [
+    ...(isSearching || !collapsed.conversations ? conversationChats : []),
+    ...(isSearching || !projectsCollapsed
+      ? filteredProjects.flatMap((project) => {
+        const projectRows = projectTaskRowsById.get(Number(project.id));
+        return projectRows?.expanded ? projectRows.tasks : [];
+      })
+      : []),
+  ];
+  const selectedHistoryTasks = Array.from(selectedHistoryTopicIds)
+    .map((topicId) => selectableTaskById.get(String(topicId)))
+    .filter(Boolean);
+  const selectedProjectTaskCount = selectedHistoryTasks.filter((chat) => projectIdFor(chat) > 0).length;
+  const selectedMutedTasks = selectedHistoryTasks.filter((chat) => Boolean(chat.notificationsMuted));
+  const selectedUnmutedTasks = selectedHistoryTasks.filter((chat) => !chat.notificationsMuted);
+  const canDeleteSelectedHistoryTask = (chat) => (
+    !chat.isGroup || groupOwnerById.get(String(chat.groupId)) === String(user.uid)
+  );
+  const selectedDeletableTasks = selectedHistoryTasks.filter(canDeleteSelectedHistoryTask);
+  const selectedUndeletableTaskCount = selectedHistoryTasks.length - selectedDeletableTasks.length;
+  const selectionScopeFullySelected = taskSelectionScopeChats.length > 0
+    && taskSelectionScopeChats.every((chat) => selectedHistoryTopicIds.has(String(chat.id)));
+
+  useEffect(() => {
+    const validTopicIds = new Set(selectableTaskChats.map((chat) => String(chat.id)));
+    setSelectedHistoryTopicIds((previous) => {
+      const next = new Set([...previous].filter((topicId) => validTopicIds.has(String(topicId))));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [chats, groups, hiddenHistoryIds]);
+
+  useEffect(() => {
+    if (!historySelectionMode) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (batchAction) return;
+      // Let the currently open batch menu consume Escape first. The next
+      // Escape exits selection mode, matching the sidebar's other menus.
+      if (showBatchProjectActions || showBatchNotificationActions) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      event.preventDefault();
+      setHistorySelectionMode(false);
+      setSelectedHistoryTopicIds(new Set());
+      setShowBatchProjectActions(false);
+      setShowBatchNotificationActions(false);
+      lastHistorySelectionTopicIdRef.current = '';
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [batchAction, historySelectionMode, showBatchNotificationActions, showBatchProjectActions]);
 
   useEffect(() => () => {
     if (compactHistoryCloseTimerRef.current) clearTimeout(compactHistoryCloseTimerRef.current);
@@ -1909,6 +2029,276 @@ export default function ChatListView({
     }
   };
 
+  const enterHistorySelectionMode = () => {
+    if (compact) return;
+    setCollapsed((previous) => {
+      if (!previous.conversations) return previous;
+      const next = { ...previous, conversations: false };
+      saveCollapsedSections(user?.uid, next);
+      return next;
+    });
+    setOpenFriendMenuId('');
+    setOpenChatMenuKey('');
+    setOpenProjectMenuId(null);
+    setShowBatchProjectActions(false);
+    setShowBatchNotificationActions(false);
+    setHistorySelectionMode(true);
+  };
+
+  const exitHistorySelectionMode = () => {
+    if (batchAction) return;
+    setHistorySelectionMode(false);
+    setSelectedHistoryTopicIds(new Set());
+    setShowBatchProjectActions(false);
+    setShowBatchNotificationActions(false);
+    setShowBatchProjectPicker(false);
+    lastHistorySelectionTopicIdRef.current = '';
+  };
+
+  const toggleHistoryTaskSelection = (chat, event) => {
+    const topicId = String(chat?.id || '').trim();
+    if (!topicId || batchAction || !selectableTaskById.has(topicId)) return;
+
+    const previousTopicId = lastHistorySelectionTopicIdRef.current;
+    if (event?.shiftKey && previousTopicId && previousTopicId !== topicId) {
+      const scopeTopicIds = taskSelectionOrderChats.map((task) => String(task.id));
+      const start = scopeTopicIds.indexOf(previousTopicId);
+      const end = scopeTopicIds.indexOf(topicId);
+      if (start >= 0 && end >= 0) {
+        const [from, to] = start < end ? [start, end] : [end, start];
+        setSelectedHistoryTopicIds((previous) => {
+          const next = new Set(previous);
+          scopeTopicIds.slice(from, to + 1).forEach((id) => next.add(id));
+          return next;
+        });
+        lastHistorySelectionTopicIdRef.current = topicId;
+        return;
+      }
+    }
+
+    setSelectedHistoryTopicIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(topicId)) next.delete(topicId);
+      else next.add(topicId);
+      return next;
+    });
+    lastHistorySelectionTopicIdRef.current = topicId;
+  };
+
+  const toggleTaskSelectionScope = () => {
+    if (batchAction || taskSelectionScopeChats.length === 0) return;
+    setSelectedHistoryTopicIds((previous) => {
+      if (selectionScopeFullySelected) return new Set();
+      const next = new Set(previous);
+      taskSelectionScopeChats.forEach((chat) => next.add(String(chat.id)));
+      return next;
+    });
+  };
+
+  const clearCompletedBatchSelections = (topicIds) => {
+    const completed = new Set(topicIds.map((topicId) => String(topicId)));
+    if (completed.size === 0) return;
+    setSelectedHistoryTopicIds((previous) => {
+      const next = new Set([...previous].filter((topicId) => !completed.has(String(topicId))));
+      return next.size === previous.size ? previous : next;
+    });
+  };
+
+  const runHistoryBatchOperation = async ({
+    action,
+    tasks,
+    operation,
+    onCompleted,
+    onPartialFailure,
+    onSuccess,
+  }) => {
+    if (!tasks?.length || batchAction) return;
+
+    setBatchAction(action);
+    const completedTopicIds = [];
+    const failedTopicIds = [];
+    try {
+      for (const chat of tasks) {
+        try {
+          await operation(chat);
+          completedTopicIds.push(String(chat.id));
+        } catch {
+          failedTopicIds.push(String(chat.id));
+        }
+      }
+
+      if (completedTopicIds.length > 0) {
+        clearCompletedBatchSelections(completedTopicIds);
+        await onCompleted?.(completedTopicIds);
+        window.dispatchEvent(new Event('cc:data-changed'));
+      }
+
+      if (failedTopicIds.length > 0) {
+        onPartialFailure?.(failedTopicIds);
+      } else {
+        onSuccess?.(completedTopicIds);
+      }
+    } finally {
+      setBatchAction('');
+    }
+  };
+
+  const handleBatchConversationNotifications = async (muted) => {
+    const tasks = (muted ? selectedUnmutedTasks : selectedMutedTasks);
+    await runHistoryBatchOperation({
+      action: muted ? 'mute' : 'unmute',
+      tasks,
+      operation: (chat) => api.setConversationNotificationsMuted(chat.id, muted),
+      onCompleted: (completedTopicIds) => {
+        const completed = new Set(completedTopicIds);
+        setChats((previous) => previous.map((chat) => (
+          completed.has(String(chat.id)) ? { ...chat, notificationsMuted: muted } : chat
+        )));
+      },
+      onPartialFailure: (failedTopicIds) => {
+        feedback.notify({
+          tone: 'warning',
+          title: t(muted ? 'sidebar_batch_partial_mute' : 'sidebar_batch_partial_unmute'),
+          message: t('sidebar_batch_failed_retry', { count: failedTopicIds.length }),
+        });
+      },
+      onSuccess: (completedTopicIds) => {
+        feedback.notify({
+          tone: 'success',
+          message: t(
+            muted ? 'sidebar_batch_muted_success' : 'sidebar_batch_unmuted_success',
+            { count: completedTopicIds.length },
+          ),
+        });
+      },
+    });
+  };
+
+  const handleBatchAssignProject = async (project) => {
+    const projectId = Number(project?.id);
+    if (!projectId || selectedHistoryTasks.length === 0 || batchAction) return;
+
+    const tasks = selectedHistoryTasks.filter((chat) => projectIdFor(chat) !== projectId);
+    if (tasks.length === 0) {
+      feedback.notify({
+        tone: 'info',
+        message: t('sidebar_batch_already_in_project', { project: project.name }),
+      });
+      return;
+    }
+
+    await runHistoryBatchOperation({
+      action: 'project',
+      tasks,
+      operation: (chat) => api.assignProjectTopic(projectId, chat.id),
+      onCompleted: async (completedTopicIds) => {
+        expandProject(projectId);
+        await loadAll();
+        return completedTopicIds;
+      },
+      onPartialFailure: (failedTopicIds) => {
+        feedback.notify({
+          tone: 'warning',
+          title: t('sidebar_batch_partial_move'),
+          message: t('sidebar_batch_failed_retry', { count: failedTopicIds.length }),
+        });
+      },
+      onSuccess: (completedTopicIds) => {
+        setShowBatchProjectPicker(false);
+        feedback.notify({
+          tone: 'success',
+          message: t('sidebar_batch_move_success', {
+            count: completedTopicIds.length,
+            project: project.name,
+          }),
+        });
+      },
+    });
+  };
+
+  const handleBatchRemoveFromProject = async () => {
+    const tasks = selectedHistoryTasks.filter((chat) => projectIdFor(chat) > 0);
+    if (tasks.length === 0 || batchAction) return;
+
+    setShowBatchProjectActions(false);
+    await runHistoryBatchOperation({
+      action: 'project-remove',
+      tasks,
+      operation: (chat) => api.removeProjectTopic(chat.id),
+      onCompleted: () => loadAll(),
+      onPartialFailure: (failedTopicIds) => {
+        feedback.notify({
+          tone: 'warning',
+          title: t('sidebar_batch_partial_remove'),
+          message: t('sidebar_batch_failed_retry', { count: failedTopicIds.length }),
+        });
+      },
+      onSuccess: (completedTopicIds) => {
+        feedback.notify({
+          tone: 'success',
+          message: t('sidebar_batch_remove_success', { count: completedTopicIds.length }),
+        });
+      },
+    });
+  };
+
+  const handleBatchDeleteHistoryTasks = async () => {
+    if (selectedDeletableTasks.length === 0 || batchAction) return;
+
+    const localTasks = selectedDeletableTasks.filter((chat) => !chat.isGroup);
+    const groupTasks = selectedDeletableTasks.filter((chat) => chat.isGroup);
+    const messages = [];
+    if (localTasks.length > 0) {
+      messages.push(onDeleteHistoryTask
+        ? t('sidebar_batch_delete_local', { count: localTasks.length })
+        : t('sidebar_batch_remove_local', { count: localTasks.length }));
+    }
+    if (groupTasks.length > 0) {
+      messages.push(t('sidebar_batch_delete_collaboration', { count: groupTasks.length }));
+    }
+    if (selectedUndeletableTaskCount > 0) {
+      messages.push(t('sidebar_batch_delete_unauthorized', { count: selectedUndeletableTaskCount }));
+    }
+
+    const confirmed = await feedback.confirm({
+      title: t('sidebar_batch_delete_confirm_title'),
+      message: messages.join(' '),
+      confirmLabel: t('sidebar_batch_delete_confirm'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    await runHistoryBatchOperation({
+      action: 'delete',
+      tasks: selectedDeletableTasks,
+      operation: async (chat) => {
+        if (chat.isGroup) {
+          await api.disbandGroup(chat.groupId);
+        } else {
+          if (onDeleteHistoryTask) {
+            await onDeleteHistoryTask(topicPayloadForChat(chat));
+          }
+          hideHistoryTask(chat.id);
+        }
+        if (activeTopic === chat.id) onSelectTopic(null);
+      },
+      onCompleted: () => loadAll(),
+      onPartialFailure: (failedTopicIds) => {
+        feedback.notify({
+          tone: 'warning',
+          title: t('sidebar_batch_partial_delete'),
+          message: t('sidebar_batch_failed_retry', { count: failedTopicIds.length }),
+        });
+      },
+      onSuccess: (completedTopicIds) => {
+        feedback.notify({
+          tone: 'success',
+          message: t('sidebar_batch_delete_success', { count: completedTopicIds.length }),
+        });
+      },
+    });
+  };
+
   const renderConversationNotificationMenuItem = (chat) => {
     const muted = Boolean(chat.notificationsMuted);
     const label = muted ? '开启此会话通知' : '静音此会话';
@@ -1980,6 +2370,43 @@ export default function ChatListView({
       : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)
   );
 
+  const renderTaskSelectionControl = (chat) => {
+    const selected = selectedHistoryTopicIds.has(String(chat.id));
+    return (
+      <span
+        className={`cc-history-selection-control${selected ? ' is-selected' : ''}`}
+        aria-hidden="true"
+      >
+        {selected && <Check size={13} strokeWidth={2.6} aria-hidden="true" />}
+      </span>
+    );
+  };
+
+  const historyTaskSelectionRowProps = (chat, selected) => {
+    if (!historySelectionMode) return {};
+    return {
+      role: 'checkbox',
+      tabIndex: batchAction ? -1 : 0,
+      'aria-checked': selected,
+      'aria-disabled': Boolean(batchAction),
+      'aria-label': t(
+        selected ? 'sidebar_batch_deselect_task' : 'sidebar_batch_select_task',
+        { name: chat.name },
+      ),
+      onKeyDown: (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        toggleHistoryTaskSelection(chat, event);
+      },
+    };
+  };
+
+  const renderTaskLeading = (chat) => (
+    historySelectionMode
+      ? renderTaskSelectionControl(chat)
+      : renderTaskAgentIcon(chat, agentById, onlineUsers)
+  );
+
   const renderTaskControls = (chat, menuKey, { showPin = false, showTime = false } = {}) => {
     const isPinned = pinnedHistoryIds.has(String(chat.id))
       || (chat.isGroup && pinnedGroupIds.has(String(chat.id)));
@@ -1989,6 +2416,13 @@ export default function ChatListView({
     const assignedProjectId = projectIdFor(chat);
     const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
     const displayTime = displayTimeForChat(chat);
+    if (historySelectionMode) {
+      return (
+        <SidebarRowTrailing className="cc-history-selection-trailing">
+          <TaskRowStatusIndicator status={visibleStatus} time={displayTime} showTime={showTime} />
+        </SidebarRowTrailing>
+      );
+    }
     return (
       <>
         <SidebarRowTrailing
@@ -2125,16 +2559,25 @@ export default function ChatListView({
     if (taskKind === 'solo_agent' || taskKind === 'multi_agent') {
       const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
       const menuKey = `task:${chat.id}`;
+      const selected = selectedHistoryTopicIds.has(String(chat.id));
       return (
         <SidebarItemRow
           key={chat.id}
-          className="cc-history-item cc-conversation-item"
+          className={`cc-history-item cc-conversation-item${historySelectionMode ? ' is-selection-mode' : ''}${selected ? ' is-selected-for-batch' : ''}`}
           active={activeTopic === chat.id}
           data-conversation-kind="agent"
           data-task-kind={taskKind === 'multi_agent' ? 'collaboration' : 'solo'}
-          onClick={() => selectConversation(chat)}
+          data-selected={historySelectionMode ? selected : undefined}
+          {...historyTaskSelectionRowProps(chat, selected)}
+          onClick={(event) => {
+            if (historySelectionMode) {
+              toggleHistoryTaskSelection(chat, event);
+              return;
+            }
+            selectConversation(chat);
+          }}
         >
-          {renderTaskAgentIcon(chat, agentById, onlineUsers)}
+          {renderTaskLeading(chat)}
           {renderTaskCopy(chat, null, taskLabel)}
           {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
         </SidebarItemRow>
@@ -2762,9 +3205,24 @@ export default function ChatListView({
           expanded={!collapsed.conversations}
           onToggle={() => toggleCollapsed('conversations')}
           action={(
-            <button type="button" className="cc-section-add" onClick={() => openNewTaskDialog()} title="新建任务" aria-label="新建任务">
-              <Plus size={15} />
-            </button>
+            <div className="cc-history-section-actions">
+              <button
+                type="button"
+                className="cc-section-add cc-history-select-trigger"
+                onClick={historySelectionMode ? exitHistorySelectionMode : enterHistorySelectionMode}
+                title={historySelectionMode ? t('sidebar_batch_select_done') : t('sidebar_batch_empty_selection')}
+                aria-label={historySelectionMode ? t('sidebar_batch_select_done_aria') : t('sidebar_batch_select_history')}
+                aria-pressed={historySelectionMode}
+                disabled={Boolean(batchAction)}
+              >
+                {historySelectionMode ? <X size={15} /> : <ListChecks size={15} />}
+              </button>
+              {!historySelectionMode && (
+                <button type="button" className="cc-section-add" onClick={() => openNewTaskDialog()} title="新建任务" aria-label="新建任务">
+                  <Plus size={15} />
+                </button>
+              )}
+            </div>
           )}
         />
         {(isSearching || !collapsed.conversations) && (conversationChats.length === 0 && !isSearching ? (
@@ -2903,14 +3361,8 @@ export default function ChatListView({
         ) : (
           filteredProjects.map((project) => {
             const projectId = Number(project.id);
-            const projectNameMatches = String(project.name || '').toLowerCase().includes(lowerSearch);
-            const projectTasks = sortConversationsWithPins(
-              (projectTasksById.get(projectId) || []).filter((chat) => (
-                !isSearching || projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)
-              )),
-              pinnedTaskIds,
-            );
-            const expanded = isSearching ? projectTasks.length > 0 : expandedProjectIds.has(projectId);
+            const projectRows = projectTaskRowsById.get(projectId) || { expanded: false, tasks: [] };
+            const { expanded, tasks: projectTasks } = projectRows;
             return (
               <React.Fragment key={project.id}>
                 <SidebarItemRow className="cc-project-row">
@@ -2976,17 +3428,26 @@ export default function ChatListView({
                   const menuKey = `project:${chat.id}`;
                   const taskKind = conversationKind(chat);
                   const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
+                  const selected = selectedHistoryTopicIds.has(String(chat.id));
                   return (
                     <SidebarItemRow
                       key={chat.id}
-                      className="cc-history-item cc-conversation-item cc-project-task-item"
+                      className={`cc-history-item cc-conversation-item cc-project-task-item${historySelectionMode ? ' is-selection-mode' : ''}${selected ? ' is-selected-for-batch' : ''}`}
                       active={activeTopic === chat.id}
                       level={2}
                       data-task-kind={taskKind === 'multi_agent' ? 'collaboration' : 'solo'}
-                      aria-label={`打开项目任务 ${chat.name}`}
-                      onClick={() => selectConversation(chat)}
+                      aria-label={historySelectionMode ? undefined : `打开项目任务 ${chat.name}`}
+                      data-selected={historySelectionMode ? selected : undefined}
+                      {...historyTaskSelectionRowProps(chat, selected)}
+                      onClick={(event) => {
+                        if (historySelectionMode) {
+                          toggleHistoryTaskSelection(chat, event);
+                          return;
+                        }
+                        selectConversation(chat);
+                      }}
                     >
-                      {renderTaskAgentIcon(chat, agentById, onlineUsers)}
+                      {renderTaskLeading(chat)}
                       {renderTaskCopy(chat, null, taskLabel)}
                       {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
                     </SidebarItemRow>
@@ -3004,6 +3465,147 @@ export default function ChatListView({
         )}
 
       </div>}
+
+      {!compact && historySelectionMode && (
+        <section className="cc-history-batch-bar" aria-label={t('sidebar_batch_bar_label')}>
+          <div className="cc-history-batch-summary" role="status" aria-live="polite">
+            <strong>{selectedHistoryTasks.length > 0
+              ? t('sidebar_batch_selected_count', { count: selectedHistoryTasks.length })
+              : t('sidebar_batch_empty_selection')}</strong>
+            {selectedUndeletableTaskCount > 0 && (
+              <span id="cc-history-batch-permission-note" className="cc-history-batch-permission-note">
+                {t('sidebar_batch_delete_unauthorized', { count: selectedUndeletableTaskCount })}
+              </span>
+            )}
+            <button
+              type="button"
+              className="cc-history-batch-text-action"
+              aria-label={selectionScopeFullySelected
+                ? t('sidebar_batch_clear_selected_aria')
+                : (isSearching
+                  ? t('sidebar_batch_select_search_aria')
+                  : t('sidebar_batch_select_all_aria'))}
+              onClick={toggleTaskSelectionScope}
+              disabled={taskSelectionScopeChats.length === 0 || Boolean(batchAction)}
+            >
+              {selectionScopeFullySelected
+                ? t('sidebar_batch_clear')
+                : (isSearching ? t('sidebar_batch_select_search') : t('sidebar_batch_select_all'))}
+            </button>
+            <button
+              type="button"
+              className="cc-history-batch-text-action"
+              onClick={exitHistorySelectionMode}
+              disabled={Boolean(batchAction)}
+            >
+              {t('sidebar_batch_select_done')}
+            </button>
+          </div>
+          <div className="cc-history-batch-actions" role="toolbar" aria-label={t('sidebar_batch_toolbar_label')}>
+            <div className="cc-history-batch-menu-wrap">
+              <button
+                type="button"
+                className="cc-history-batch-action cc-batch-project-trigger"
+                aria-label={t('sidebar_batch_project_aria')}
+                aria-haspopup="menu"
+                aria-expanded={showBatchProjectActions}
+                disabled={selectedHistoryTasks.length === 0 || Boolean(batchAction)}
+                onClick={() => {
+                  setShowBatchNotificationActions(false);
+                  setShowBatchProjectActions((current) => !current);
+                }}
+              >
+                <FolderPlus size={15} aria-hidden="true" />
+                <span>{t('sidebar_batch_project')}</span>
+              </button>
+              {showBatchProjectActions && (
+                <div className="v3-friend-action-menu cc-batch-action-menu cc-batch-project-menu" role="menu" aria-label={t('sidebar_batch_project_aria')}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowBatchProjectActions(false);
+                      setShowBatchProjectPicker(true);
+                    }}
+                  >
+                    <FolderPlus size={14} />
+                    <span>{t('sidebar_batch_move_to_project')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={selectedProjectTaskCount === 0}
+                    onClick={handleBatchRemoveFromProject}
+                  >
+                    <X size={14} />
+                    <span>{t('sidebar_batch_remove_from_project', { count: selectedProjectTaskCount })}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="cc-history-batch-menu-wrap">
+              <button
+                type="button"
+                className="cc-history-batch-action cc-batch-notification-trigger"
+                aria-label={t('sidebar_batch_notification_aria')}
+                aria-haspopup="menu"
+                aria-expanded={showBatchNotificationActions}
+                disabled={selectedHistoryTasks.length === 0 || Boolean(batchAction)}
+                onClick={() => {
+                  setShowBatchProjectActions(false);
+                  setShowBatchNotificationActions((current) => !current);
+                }}
+              >
+                <Bell size={15} aria-hidden="true" />
+                <span>{t('sidebar_batch_notification')}</span>
+              </button>
+              {showBatchNotificationActions && (
+                <div className="v3-friend-action-menu cc-batch-action-menu cc-batch-notification-menu" role="menu" aria-label={t('sidebar_batch_notification_aria')}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={selectedUnmutedTasks.length === 0}
+                    onClick={() => {
+                      setShowBatchNotificationActions(false);
+                      handleBatchConversationNotifications(true);
+                    }}
+                  >
+                    <BellOff size={14} />
+                    <span>{t('sidebar_batch_mute', { count: selectedUnmutedTasks.length })}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={selectedMutedTasks.length === 0}
+                    onClick={() => {
+                      setShowBatchNotificationActions(false);
+                      handleBatchConversationNotifications(false);
+                    }}
+                  >
+                    <Bell size={14} />
+                    <span>{t('sidebar_batch_unmute', { count: selectedMutedTasks.length })}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className="cc-history-batch-action danger"
+              aria-label={t('sidebar_batch_delete_aria', { count: selectedDeletableTasks.length })}
+              aria-describedby={selectedUndeletableTaskCount > 0 ? 'cc-history-batch-permission-note' : undefined}
+              disabled={selectedDeletableTasks.length === 0 || Boolean(batchAction)}
+              onClick={handleBatchDeleteHistoryTasks}
+            >
+              <Trash2 size={15} aria-hidden="true" />
+              <span>{batchAction === 'delete'
+                ? t('sidebar_batch_deleting')
+                : (selectedDeletableTasks.length
+                  ? t('sidebar_batch_delete_count', { count: selectedDeletableTasks.length })
+                  : t('sidebar_batch_delete'))}</span>
+            </button>
+          </div>
+        </section>
+      )}
 
       {showNewChat && createPortal(
         <div className="name-dialog-overlay cc-new-task-overlay" onClick={closeNewTaskDialog}>
@@ -3085,6 +3687,72 @@ export default function ChatListView({
                   onClick={handleAddTasksToProject}
                 >
                   {projectActionTopicId ? '添加中…' : `添加${selectedProjectTaskIds.size ? `（${selectedProjectTaskIds.size}）` : ''}`}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {showBatchProjectPicker && createPortal(
+        <div
+          className="name-dialog-overlay cc-new-task-overlay"
+          onClick={() => {
+            if (!batchAction) setShowBatchProjectPicker(false);
+          }}
+        >
+          <section className="name-dialog cc-new-task-dialog cc-project-picker-dialog" role="dialog" aria-modal="true" aria-label={t('sidebar_batch_project_picker_aria')} onClick={(event) => event.stopPropagation()}>
+            <header className="cc-new-task-header">
+              <h3>{t('sidebar_batch_move_to_project_title')}</h3>
+              <button
+                type="button"
+                className="cc-dialog-close"
+                onClick={() => setShowBatchProjectPicker(false)}
+                aria-label={t('sidebar_batch_close_project_picker')}
+                disabled={Boolean(batchAction)}
+              >
+                <X size={18} />
+              </button>
+            </header>
+            <div className="cc-new-task-body">
+              <div className="cc-project-picker-target">
+                {t('sidebar_batch_move_selected', { count: selectedHistoryTasks.length })}
+              </div>
+              {projects.length === 0 ? (
+                <div className="cc-new-task-empty cc-project-picker-empty">
+                  <FolderPlus size={20} aria-hidden="true" />
+                  <strong>{t('sidebar_batch_no_projects')}</strong>
+                  <span>{t('sidebar_batch_create_project_hint')}</span>
+                </div>
+              ) : (
+                <div className="cc-new-task-agent-list cc-project-picker-list">
+                  {projects.map((project) => {
+                    const alreadyInProject = selectedHistoryTasks.length > 0
+                      && selectedHistoryTasks.every((chat) => projectIdFor(chat) === Number(project.id));
+                    return (
+                      <button
+                        type="button"
+                        className="cc-new-task-agent"
+                        key={project.id}
+                        disabled={selectedHistoryTasks.length === 0 || Boolean(batchAction)}
+                        onClick={() => handleBatchAssignProject(project)}
+                      >
+                        {alreadyInProject ? <Check size={17} /> : <Folder size={17} />}
+                        <span>{project.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="cc-new-task-actions cc-project-picker-actions">
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-default"
+                  disabled={Boolean(batchAction)}
+                  onClick={() => setShowBatchProjectPicker(false)}
+                >
+                  {t('sidebar_batch_cancel')}
                 </button>
               </div>
             </div>
