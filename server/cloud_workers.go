@@ -792,16 +792,32 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	// 创建者登录凭证（JWT）+ 身份信息：worker 以创建者登录态 + 新 bot 的连接凭证
-	// 启动（B4-1 供给契约：provision-worker.sh 需要 --login-token 必填 + 写
-	// localConfig 的 bot/user 身份）。JWT 从请求 Authorization 头取（context 只有 uid）。
-	creatorJWT := extractToken(r)
-	creatorName, creatorDisplay := "", ""
-	if creator, err := h.db.GetUser(uid); err == nil && creator != nil {
-		creatorName = creator.Username
-		creatorDisplay = creator.DisplayName
+	// Worker 是长期运行的无头进程，不能继承创建请求的短期会话 JWT。
+	// 根据已经通过鉴权的 owner UID 重新签发 persistent owner token；这样
+	// Web 登录的 7 天会话过期不会让已创建的 worker 失去 BotDefinition 能力。
+	// B4-1 供给契约：provision-worker.sh 需要 --credential-file，并写入
+	// localConfig 的 bot/user 身份。
+	creator, creatorErr := h.db.GetUser(uid)
+	if creatorErr != nil || creator == nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		_ = h.db.DeleteBot(result.UID)
+		log.Printf("[cloud-worker] failed to load owner identity for %s: %v", tenantName, creatorErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity", "code": "cloud_worker_create_failed"})
+		return
 	}
-	credentialFile, cleanupCredentialFile, credentialErr := writeWorkerCredentialFile(creatorJWT, result.APIKey)
+	workerToken, tokenErr := GeneratePersistentUserToken(uid, creator.Username, creator.Email)
+	if tokenErr != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		_ = h.db.DeleteBot(result.UID)
+		log.Printf("[cloud-worker] failed to sign owner token for %s: %v", tenantName, tokenErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity", "code": "cloud_worker_create_failed"})
+		return
+	}
+	credentialFile, cleanupCredentialFile, credentialErr := writeWorkerCredentialFile(workerToken, result.APIKey)
 	if credentialErr != nil {
 		if reservedCredit {
 			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
@@ -817,8 +833,8 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		"--credential-file", credentialFile,
 		"--bot-uid", strconv.FormatInt(result.UID, 10),
 		"--user-uid", strconv.FormatInt(uid, 10),
-		"--user-name", creatorName,
-		"--user-display", creatorDisplay)
+		"--user-name", creator.Username,
+		"--user-display", creator.DisplayName)
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
 		log.Printf("[cloud-worker] provision %s failed: %v; output=%s", tenantName, err, truncateWorkerOutput(provOut))
@@ -1103,8 +1119,9 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		args = append(args, "--version", body.Version)
 	}
 	if refreshIdentity {
-		loginToken := extractToken(r)
-		if loginToken == "" {
+		// Keep the endpoint's authenticated-request contract, but never reuse
+		// this session token as the worker credential below.
+		if extractToken(r) == "" {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing login token for cloud worker reset"})
 			return
 		}
@@ -1120,7 +1137,13 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load cloud worker owner"})
 			return
 		}
-		credentialFile, cleanupCredentialFile, credentialErr := writeWorkerCredentialFile(loginToken, apiKey)
+		workerToken, tokenErr := GeneratePersistentUserToken(uid, owner.Username, owner.Email)
+		if tokenErr != nil {
+			log.Printf("[cloud-worker] reset %s cannot sign owner token: %v", name, tokenErr)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity"})
+			return
+		}
+		credentialFile, cleanupCredentialFile, credentialErr := writeWorkerCredentialFile(workerToken, apiKey)
 		if credentialErr != nil {
 			log.Printf("[cloud-worker] reset %s cannot create credential file: %v", name, credentialErr)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity"})
@@ -1326,9 +1349,9 @@ func truncateWorkerOutput(out string) string {
 	return out
 }
 
-// writeWorkerCredentialFile keeps short-lived worker credentials out of
-// process argv, where they would otherwise be visible to /proc and process
-// supervisors. The caller owns the returned cleanup function.
+// writeWorkerCredentialFile keeps worker credentials out of process argv, where
+// they would otherwise be visible to /proc and process supervisors. The caller
+// owns the returned cleanup function.
 func writeWorkerCredentialFile(loginToken, apiKey string) (string, func(), error) {
 	file, err := os.CreateTemp("", "catsco-worker-credentials-*")
 	if err != nil {
