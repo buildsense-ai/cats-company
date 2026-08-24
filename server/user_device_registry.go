@@ -1136,7 +1136,7 @@ func (h *DeviceHandler) HandleDeviceByID(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	uid := UIDFromContext(r.Context())
-	user, status, msg := activeUserByID(uid, h.db.GetUser)
+	user, status, msg, _ := activeUserByID(uid, h.db.GetUser)
 	if status != 0 {
 		writeJSON(w, status, map[string]string{"error": msg})
 		return

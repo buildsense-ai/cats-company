@@ -369,7 +369,7 @@ type testPushNotificationRequest struct {
 }
 
 // HandleSubscription serves POST and DELETE for the authenticated user. Mount
-// this handler behind AuthMiddleware (JWT only); it intentionally trusts only
+// this handler behind AuthMiddlewareWithDB (JWT only); it intentionally trusts only
 // the uid established in request context and never accepts a uid in the body.
 func (s *PushNotificationService) HandleSubscription(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {

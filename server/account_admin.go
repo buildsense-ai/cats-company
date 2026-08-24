@@ -3,6 +3,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"regexp"
@@ -29,6 +30,7 @@ type AccountAdminHandler struct {
 	commercialRelaySyncer    *CommercialRelaySyncer
 	commercialEnforceEnabled bool
 	commercialEnforceUIDs    map[int64]bool
+	hub *Hub // optional; wired via SetHub so bans take effect immediately
 }
 
 // SetCloudWorkerCreditAdmin wires the operator-only manual credit grant
@@ -93,6 +95,14 @@ func (h *AccountAdminHandler) SetCommercialRelayAdmin(client *RelayAdminClient, 
 				h.commercialEnforceUIDs[uid] = true
 			}
 		}
+	}
+}
+
+// SetHub wires the live-connection registry so that disabling/deleting an account
+// immediately kicks all live WebSocket connections. Optional in tests.
+func (h *AccountAdminHandler) SetHub(hub *Hub) {
+	if h != nil {
+		h.hub = hub
 	}
 }
 
@@ -257,6 +267,11 @@ func (h *AccountAdminHandler) HandleUserState(w http.ResponseWriter, r *http.Req
 	if err := h.users.UpdateUserState(req.UID, req.State); err != nil {
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update user state"})
 		return
+	}
+	// Kick live connections when an account is disabled
+	if req.State != 0 && h.hub != nil {
+		log.Printf("account admin: kicking live connections for uid=%d", req.UID)
+		_ = h.hub.KickUser(req.UID, "account disabled by admin")
 	}
 	user.State = req.State
 	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{

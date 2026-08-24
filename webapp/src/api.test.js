@@ -26,6 +26,11 @@ class MockWebSocket {
     this.onclose?.({ code: 1006 });
   }
 
+  serverCloseWithCode(code) {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.({ code });
+  }
+
   close() {
     this.readyState = MockWebSocket.CLOSED;
     this.onclose?.({ code: 1000 });
@@ -643,6 +648,16 @@ describe('WebSocket connection recovery', () => {
 
     await rejection;
   });
+
+  test('emits ws_auth_banned when server closes with code 4403', () => {
+    const onMessage = vi.fn();
+    api.connectWS(onMessage);
+
+    MockWebSocket.instances[0].serverCloseWithCode(4403);
+
+    expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_auth_banned' });
+  });
+
 });
 
 describe('message history request controls', () => {

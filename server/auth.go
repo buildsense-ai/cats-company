@@ -144,42 +144,22 @@ func contextWithClaims(ctx context.Context, claims *JWTClaims) context.Context {
 	return ctx
 }
 
-func activeUserFromClaims(claims *JWTClaims, lookupUser func(int64) (*types.User, error)) (*types.User, int, string) {
+func activeUserFromClaims(claims *JWTClaims, lookupUser func(int64) (*types.User, error)) (*types.User, int, string, string) {
 	return activeUserByID(claims.UID, lookupUser)
 }
 
-func activeUserByID(uid int64, lookupUser func(int64) (*types.User, error)) (*types.User, int, string) {
+func activeUserByID(uid int64, lookupUser func(int64) (*types.User, error)) (*types.User, int, string, string) {
 	user, err := lookupUser(uid)
 	if err != nil {
-		return nil, http.StatusInternalServerError, "authentication service unavailable"
+		return nil, http.StatusInternalServerError, "authentication service unavailable", ""
 	}
 	if user == nil {
-		return nil, http.StatusUnauthorized, "invalid or expired token"
+		return nil, http.StatusUnauthorized, "invalid or expired token", ""
 	}
 	if user.State != 0 {
-		return nil, http.StatusForbidden, "user account is disabled"
+		return nil, http.StatusForbidden, "user account is disabled", "ACCOUNT_DISABLED"
 	}
-	return user, 0, ""
-}
-
-// AuthMiddleware extracts the JWT token and sets uid in context.
-func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tokenStr := extractToken(r)
-		if tokenStr == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
-
-		claims, err := ParseToken(tokenStr)
-		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
-			return
-		}
-
-		ctx := contextWithClaims(r.Context(), claims)
-		next(w, r.WithContext(ctx))
-	}
+	return user, 0, "", ""
 }
 
 // JWTAuthMiddlewareWithDB requires a valid, active user JWT.
@@ -197,8 +177,10 @@ func JWTAuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.Handler
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
 				return
 			}
-			if _, status, msg := activeUserFromClaims(claims, db.GetUser); status != 0 {
-				writeJSON(w, status, map[string]string{"error": msg})
+			if _, status, msg, code := activeUserFromClaims(claims, db.GetUser); status != 0 {
+				resp := map[string]interface{}{"error": msg}
+				if code != "" { resp["code"] = code }
+				writeJSON(w, status, resp)
 				return
 			}
 
@@ -208,23 +190,23 @@ func JWTAuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.Handler
 	}
 }
 
-func botAPIKeyUID(r *http.Request, db store.Store) (int64, int, string) {
+func botAPIKeyUID(r *http.Request, db store.Store) (int64, int, string, string) {
 	apiKey := extractAPIKey(r)
 	if apiKey == "" {
-		return 0, http.StatusUnauthorized, "unauthorized"
+		return 0, http.StatusUnauthorized, "unauthorized", ""
 	}
 	parsedUID, err := ParseAPIKey(apiKey)
 	if err != nil {
-		return 0, http.StatusUnauthorized, "unauthorized"
+		return 0, http.StatusUnauthorized, "unauthorized", ""
 	}
 	botUID, err := db.GetBotByAPIKey(apiKey)
 	if err != nil || botUID != parsedUID {
-		return 0, http.StatusUnauthorized, "unauthorized"
+		return 0, http.StatusUnauthorized, "unauthorized", ""
 	}
-	if _, status, msg := activeUserByID(parsedUID, db.GetUser); status != 0 {
-		return 0, status, msg
+	if _, status, msg, code := activeUserByID(parsedUID, db.GetUser); status != 0 {
+		return 0, status, msg, code
 	}
-	return parsedUID, 0, ""
+	return parsedUID, 0, "", ""
 }
 
 // BotAPIKeyMiddlewareWithDB requires an active bot API key and never accepts JWTs.
@@ -232,9 +214,11 @@ func botAPIKeyUID(r *http.Request, db store.Store) (int64, int, string) {
 func BotAPIKeyMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			uid, status, msg := botAPIKeyUID(r, db)
+			uid, status, msg, code := botAPIKeyUID(r, db)
 			if status != 0 {
-				writeJSON(w, status, map[string]string{"error": msg})
+				resp := map[string]interface{}{"error": msg}
+				if code != "" { resp["code"] = code }
+				writeJSON(w, status, resp)
 				return
 			}
 			ctx := context.WithValue(r.Context(), uidKey, uid)
@@ -253,8 +237,10 @@ func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFun
 			if tokenStr != "" {
 				claims, err := ParseToken(tokenStr)
 				if err == nil {
-					if _, status, msg := activeUserFromClaims(claims, db.GetUser); status != 0 {
-						writeJSON(w, status, map[string]string{"error": msg})
+					if _, status, msg, code := activeUserFromClaims(claims, db.GetUser); status != 0 {
+						resp := map[string]interface{}{"error": msg}
+						if code != "" { resp["code"] = code }
+						writeJSON(w, status, resp)
 						return
 					}
 					ctx := contextWithClaims(r.Context(), claims)
@@ -264,7 +250,7 @@ func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFun
 			}
 
 			// Fallback: API Key from header or query param
-			if uid, status, msg := botAPIKeyUID(r, db); status == 0 {
+			if uid, status, msg, _ := botAPIKeyUID(r, db); status == 0 {
 				ctx := context.WithValue(r.Context(), uidKey, uid)
 				next(w, r.WithContext(ctx))
 				return
@@ -289,7 +275,7 @@ func ownerClaimsFromRequest(r *http.Request, lookupUser func(int64) (*types.User
 		return nil, http.StatusUnauthorized, "invalid or expired token"
 	}
 
-	user, status, msg := activeUserFromClaims(claims, lookupUser)
+	user, status, msg, _ := activeUserFromClaims(claims, lookupUser)
 	if status != 0 {
 		return nil, status, msg
 	}
@@ -318,31 +304,6 @@ func OwnerMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFu
 	}
 }
 
-// AdminMiddleware requires a valid JWT and a username listed in OC_ADMIN_USERNAMES.
-func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tokenStr := extractToken(r)
-		if tokenStr == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
-
-		claims, err := ParseToken(tokenStr)
-		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
-			return
-		}
-
-		if !isAdminUsername(claims.Username) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
-			return
-		}
-
-		ctx := contextWithClaims(r.Context(), claims)
-		next(w, r.WithContext(ctx))
-	}
-}
-
 // AdminMiddlewareWithDB requires an active user JWT and a username listed in OC_ADMIN_USERNAMES.
 func AdminMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
@@ -359,8 +320,10 @@ func AdminMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFu
 				return
 			}
 
-			if _, status, msg := activeUserFromClaims(claims, db.GetUser); status != 0 {
-				writeJSON(w, status, map[string]string{"error": msg})
+			if _, status, msg, code := activeUserFromClaims(claims, db.GetUser); status != 0 {
+				resp := map[string]interface{}{"error": msg}
+				if code != "" { resp["code"] = code }
+				writeJSON(w, status, resp)
 				return
 			}
 

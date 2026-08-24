@@ -323,6 +323,7 @@ func main() {
 	if creditAdmin, ok := db.(server.CloudWorkerCreditAdminStore); ok {
 		accountAdminHandler.SetCloudWorkerCreditAdmin(creditAdmin)
 	}
+	accountAdminHandler.SetHub(hub)
 	friendHandler := server.NewFriendHandler(db, hub)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	projectHandler := server.NewProjectHandler(db)

@@ -578,7 +578,7 @@ func (h *DeviceConnectorHandler) HandleCreatePairing(w http.ResponseWriter, r *h
 		return
 	}
 	uid := UIDFromContext(r.Context())
-	user, status, msg := activeUserByID(uid, h.db.GetUser)
+	user, status, msg, _ := activeUserByID(uid, h.db.GetUser)
 	if status != 0 {
 		writeJSON(w, status, map[string]string{"error": msg})
 		return
@@ -819,7 +819,7 @@ func (h *DeviceConnectorHandler) verifyConnectorRequest(r *http.Request, scope s
 	if h.hub.isDeviceConnectorRevoked(claims) {
 		return nil, http.StatusForbidden, "device connector token has been revoked"
 	}
-	if _, status, msg := activeUserByID(claims.UID, h.db.GetUser); status != 0 {
+	if _, status, msg, _ := activeUserByID(claims.UID, h.db.GetUser); status != 0 {
 		return nil, status, msg
 	}
 	return claims, 0, ""

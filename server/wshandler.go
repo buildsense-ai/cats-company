@@ -73,6 +73,7 @@ type Hub struct {
 	// and skip recovery when a newer connection generation appeared, so an old
 	// timer never marks work owned by a fresh connection as stale.
 	botConnectionEpochs map[int64]uint64
+	stateCache            *userStateCache
 }
 
 type presenceEvent struct {
@@ -147,6 +148,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
 		botConnectionEpochs: make(map[int64]uint64),
+		stateCache:            newUserStateCache(30 * time.Second),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -1201,6 +1203,59 @@ func requestRemoteAddr(r *http.Request) string {
 }
 
 // handleMessage dispatches incoming client messages.
+
+// userStateCache provides a short-TTL cache of user account states so that
+// established WebSocket connections cannot be used long after a ban when the
+// ban was written by another code path or cluster node.
+type userStateCacheEntry struct {
+	state     int
+	expiresAt time.Time
+}
+
+type userStateCache struct {
+	mu      sync.Mutex
+	entries map[int64]userStateCacheEntry
+	ttl     time.Duration
+}
+
+func newUserStateCache(ttl time.Duration) *userStateCache {
+	return &userStateCache{entries: make(map[int64]userStateCacheEntry), ttl: ttl}
+}
+
+func (c *userStateCache) get(uid int64) (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[uid]
+	if !ok || time.Now().After(e.expiresAt) {
+		return 0, false
+	}
+	return e.state, true
+}
+
+func (c *userStateCache) put(uid int64, state int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[uid] = userStateCacheEntry{state: state, expiresAt: time.Now().Add(c.ttl)}
+}
+
+// clientAccountActive re-checks account state with a short TTL cache so a
+// banned account cannot keep using an established socket for longer than the
+// cache TTL even when the ban was written by another node or code path.
+func (h *Hub) clientAccountActive(client *Client) bool {
+	if client == nil || client.accountType == types.AccountBot {
+		return true // bot connections are governed by API-key/runtime-credential paths
+	}
+	if state, ok := h.stateCache.get(client.uid); ok {
+		return state == 0
+	}
+	user, err := h.db.GetUser(client.uid)
+	if err != nil || user == nil {
+		return false
+	}
+	h.stateCache.put(client.uid, user.State)
+	return user.State == 0
+}
+
 func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 	if client != nil && client.deviceConnector != nil && !deviceConnectorMessageAllowed(msg) {
 		h.SendToClient(client, &ServerMessage{
@@ -1211,6 +1266,14 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 		})
 		return
 	}
+
+	// Re-check account state for established connections (TTL-cached) so a
+	// banned account cannot keep using an existing socket.
+	if !h.clientAccountActive(client) {
+		h.kickClient(client, "account disabled")
+		return
+	}
+
 	switch {
 	case msg.Pub != nil:
 		h.handlePub(client, msg.Pub)

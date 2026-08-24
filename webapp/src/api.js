@@ -841,7 +841,7 @@ export function connectWS(onMessage, { force = false } = {}) {
     msgHandlers.forEach((handler) => handler(openMessage));
   };
 
-  conn.onclose = () => {
+  conn.onclose = (evt) => {
     if (!isCurrent()) return;
     if (wsConnectTimer) {
       clearTimeout(wsConnectTimer);
@@ -850,6 +850,14 @@ export function connectWS(onMessage, { force = false } = {}) {
     console.log('WebSocket disconnected');
     wsConnected = false;
     wsConn = null;
+
+    if (evt && evt.code === 4403) {
+      const bannedMessage = { _type: 'ws_auth_banned' };
+      onMessage(bannedMessage);
+      msgHandlers.forEach((handler) => handler(bannedMessage));
+      return; // do NOT schedule reconnect: the account itself is revoked
+    }
+
     wsReconnectAttempt += 1;
     const retryInMs = reconnectDelay(wsReconnectAttempt);
     const closeMessage = { _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs };
@@ -956,7 +964,7 @@ export function requestSkillHubDeviceTool({
     }), requestTimeoutMs);
 
     removeHandler = onWSMessage((message) => {
-      if (message?._type === 'ws_close' || message?._type === 'ws_auth_expired') {
+      if (message?._type === 'ws_close' || message?._type === 'ws_auth_expired' || message?._type === 'ws_auth_banned') {
         finish(() => {
           const error = new Error('CatsCo 实时连接已断开，请等待重连后再试。');
           error.code = 'skillhub_websocket_disconnected';
