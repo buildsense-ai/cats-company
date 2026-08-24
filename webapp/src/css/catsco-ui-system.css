@@ -5044,8 +5044,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 90;
-    width: var(--cc-sidebar-width);
-    flex-basis: var(--cc-sidebar-width);
+    width: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
+    flex-basis: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
     box-shadow: none;
   }
 
@@ -5188,8 +5188,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 @media (max-width: 768px) {
   .v3-sidebar:not(.collapsed) {
-    width: var(--cc-sidebar-width);
-    flex-basis: var(--cc-sidebar-width);
+    width: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
+    flex-basis: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
   }
 
   .v3-sidebar-resize-handle {
