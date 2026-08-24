@@ -539,6 +539,7 @@ func main() {
 		SaleChannels:  paymentSaleChannels,
 		Syncer:        commercialRelaySyncer,
 	})
+	commercialPaymentHandler.StartReconciliation(commercialServiceCtx, 5*time.Minute)
 	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)
 	// usageHandler := server.NewUsageHandler(db)
 
@@ -664,12 +665,12 @@ func main() {
 
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		health := db.HealthCheck()
+		w.Header().Set("Content-Type", "application/json")
 		if health["status"] == "healthy" {
 			w.WriteHeader(http.StatusOK)
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(health)
 	})
 

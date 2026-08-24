@@ -259,9 +259,29 @@ func commercialOfficialPlanSlugsBelow(targetTier int) []string {
 }
 
 func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, now time.Time) error {
+	// A paid tier grants one cloud-worker creation credit per order. When a
+	// lower tier is superseded by an immediate upgrade, its still-available
+	// credit must not remain usable alongside the new tier's credit. Credits
+	// already reserved by an in-flight create are left intact and will be
+	// consumed by that operation; only unclaimed credits are revoked here.
+	if _, err := tx.Exec(`
+		UPDATE cloud_worker_credits c
+		SET state = 'revoked', reservation_ref = '', reserved_at = NULL
+		WHERE c.uid = $1 AND c.state = 'available'
+		  AND c.source_ref IN (
+			SELECT 'order:' || e.source_ref
+			FROM commercial_entitlements e
+			JOIN commercial_plans p ON p.id = e.plan_id
+			WHERE e.uid = $1 AND e.source = 'order' AND e.state = 'active'
+			  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
+			  AND p.slug = $3
+		  )`, uid, now, slug); err != nil {
+		return fmt.Errorf("revoke superseded cloud worker credit: %w", err)
+	}
 	if _, err := tx.Exec(`
 		UPDATE commercial_entitlements e
-		SET state = 'revoked'
+		SET state = 'revoked',
+		    expires_at = LEAST(COALESCE(e.expires_at, $2), $2)
 		FROM commercial_plans p
 		WHERE e.plan_id = p.id AND e.uid = $1 AND e.state = 'active'
 		  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)

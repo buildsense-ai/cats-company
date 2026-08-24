@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -46,6 +47,14 @@ type CommercialPaymentStore interface {
 	FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error)
 	ClaimCommercialTrial(uid int64, planSlug string) (*types.CommercialSummary, error)
 	HasCommercialTrial(uid int64, planSlug string) (bool, error)
+}
+
+// CommercialPaymentReconciliationStore is an optional durable view used by
+// the background payment reconciler. Keeping it separate from
+// CommercialPaymentStore preserves compatibility with focused test stores and
+// non-PostgreSQL adapters that do not yet expose the indexed query.
+type CommercialPaymentReconciliationStore interface {
+	ListCommercialOrdersForReconciliation(limit int) ([]*types.CommercialOrder, error)
 }
 
 type CommercialRefundStore interface {
@@ -102,6 +111,12 @@ type CommercialPaymentHandler struct {
 	nextQueries   map[string]time.Time
 }
 
+const (
+	commercialPaymentReconciliationInterval = 5 * time.Minute
+	commercialPaymentReconciliationBatch    = 100
+	commercialPaymentReconciliationMaxAge   = 7 * 24 * time.Hour
+)
+
 type commercialPaymentChannel struct {
 	ID       string `json:"id"`
 	Label    string `json:"label"`
@@ -130,6 +145,117 @@ func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPa
 		}
 	}
 	return h
+}
+
+// StartReconciliation starts the durable payment recovery loop. Provider
+// callbacks remain the primary path, but a callback can be lost while the
+// buyer has already left the checkout page. The loop only queries recent
+// pending/closed orders and reuses the same idempotent fulfillment transaction
+// as the callback path.
+func (h *CommercialPaymentHandler) StartReconciliation(ctx context.Context, interval time.Duration) {
+	if h == nil || h.store == nil || ctx == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = commercialPaymentReconciliationInterval
+	}
+	go func() {
+		h.ReconcileCommercialOrders(ctx)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.ReconcileCommercialOrders(ctx)
+			}
+		}
+	}()
+}
+
+// ReconcileCommercialOrders performs one bounded payment recovery pass and
+// returns the number of orders that were successfully fulfilled. It is public
+// for deterministic tests and operator-triggered recovery; production startup
+// calls it through StartReconciliation.
+func (h *CommercialPaymentHandler) ReconcileCommercialOrders(ctx context.Context) int {
+	if h == nil || h.store == nil || ctx == nil {
+		return 0
+	}
+	orders, err := h.reconciliationOrders(commercialPaymentReconciliationBatch)
+	if err != nil {
+		log.Printf("commercial payment reconciliation list failed: %v", err)
+		return 0
+	}
+	now := time.Now().UTC()
+	fulfilledCount := 0
+	for _, order := range orders {
+		if ctx.Err() != nil {
+			break
+		}
+		if !commercialOrderEligibleForReconciliation(order, now) {
+			continue
+		}
+		provider := h.providers[order.Channel]
+		querier, ok := provider.(CommercialPaymentQuerier)
+		if !ok || !h.claimCommercialPaymentQuery(order.OrderNo, now) {
+			continue
+		}
+		queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		confirmation, paid, queryErr := querier.QueryPayment(queryCtx, order)
+		cancel()
+		if queryErr != nil {
+			log.Printf("commercial payment reconciliation query failed order=%s: %v", order.OrderNo, queryErr)
+			continue
+		}
+		if !paid || confirmation == nil {
+			continue
+		}
+		fulfilled, changed, fulfillErr := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+		if fulfillErr != nil || fulfilled == nil {
+			if fulfillErr != nil {
+				log.Printf("commercial payment reconciliation fulfill failed order=%s: %v", order.OrderNo, fulfillErr)
+			}
+			continue
+		}
+		h.clearCommercialPaymentQuery(order.OrderNo)
+		if changed {
+			fulfilledCount++
+			h.enqueueRelaySync(fulfilled.UID)
+		}
+	}
+	return fulfilledCount
+}
+
+func (h *CommercialPaymentHandler) reconciliationOrders(limit int) ([]*types.CommercialOrder, error) {
+	if store, ok := h.store.(CommercialPaymentReconciliationStore); ok {
+		return store.ListCommercialOrdersForReconciliation(limit)
+	}
+	// Compatibility fallback for focused adapters. PostgreSQL uses the indexed
+	// query above; older stores are still safe because the pass filters status
+	// and age before contacting the provider.
+	return h.store.ListCommercialOrders(0, limit)
+}
+
+func commercialOrderEligibleForReconciliation(order *types.CommercialOrder, now time.Time) bool {
+	if order == nil || strings.TrimSpace(order.OrderNo) == "" {
+		return false
+	}
+	switch order.Status {
+	case "created", "pending":
+		cutoff := now.Add(-commercialPaymentReconciliationMaxAge)
+		if !order.CreatedAt.IsZero() && order.CreatedAt.Before(cutoff) {
+			return false
+		}
+		if order.ExpiresAt != nil && order.ExpiresAt.Before(cutoff) {
+			return false
+		}
+		return true
+	case "closed":
+		return order.ClosedAt != nil && order.ClosedAt.After(now.Add(-commercialPaymentReconciliationMaxAge))
+	default:
+		return false
+	}
 }
 
 func copyCommercialUIDSet(value map[int64]bool) map[int64]bool {

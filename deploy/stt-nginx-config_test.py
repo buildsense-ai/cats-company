@@ -68,6 +68,14 @@ def parsed_directives(location: str) -> dict[str, list[str]]:
 
 
 class SttNginxConfigTest(unittest.TestCase):
+    def test_main_nginx_proxies_readiness_to_backend(self) -> None:
+        config = (ROOT / "deploy/nginx/nginx.conf").read_text(encoding="utf-8")
+        self.assertRegex(
+            config,
+            r"location = /ready\s*\{[^}]*proxy_pass http://api/ready;",
+            "the SPA fallback must not handle /ready",
+        )
+
     def test_common_proxy_directives_match_every_deployment(self) -> None:
         for path in CONFIGS:
             location = stt_location(path.read_text(encoding="utf-8"))

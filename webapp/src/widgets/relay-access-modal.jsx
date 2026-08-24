@@ -1282,7 +1282,7 @@ export default function RelayAccessModal({ onClose }) {
                   <span>确认购买</span>
                   <strong>{purchasePlan.name}</strong>
                   <p>{purchaseIsUpgrade
-                    ? `${formatPriceFen(purchasePlan.price_fen)}，升级后立即生效，额度按新套餐重置，不叠加。`
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
                     : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。`}</p>
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
@@ -1543,7 +1543,7 @@ export default function RelayAccessModal({ onClose }) {
                       })}
                     </div>
                     {activeOfficialPlanTier === COMMERCIAL_PLAN_TIERS['catsco-personal'] && (
-                      <div className="relay-access-period-note">升级后立即切换套餐，额度按专业版重置，不与个人版叠加。</div>
+                      <div className="relay-access-period-note">升级到 Pro 后立即切换；Personal 剩余时间不顺延，Pro 有效期从支付成功时刻重新计算 30 天。</div>
                     )}
                     {paymentChannels.length === 0 && (
                       <div className="relay-access-period-note">支付通道暂未开放，当前套餐可通过邀请码发放。</div>
