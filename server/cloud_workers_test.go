@@ -178,7 +178,7 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 			// status-worker.sh TSV：实例、状态、镜像、镜像版本、实际应用版本。
 			body = "@echo off\r\necho worker-bot-bot-a\trunning\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\t1.4.7\r\necho worker-bot-bot-b\tcreating\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\t\r\n"
 		case "slow-status":
-			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
+			body = "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep 1\" >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
 		case "require-identity":
 			// Credentials must arrive through the restricted file, never argv.
 			body = "@echo off\r\nif not \"%3\"==\"--credential-file\" exit /b 1\r\nif not exist \"%4\" exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
