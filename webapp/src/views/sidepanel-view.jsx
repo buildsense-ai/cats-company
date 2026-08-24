@@ -11,7 +11,7 @@ import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus, ListChecks } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -319,6 +319,12 @@ export default function ChatListView({
   const [historyNameDraft, setHistoryNameDraft] = useState('');
   const [renamingTopicId, setRenamingTopicId] = useState('');
   const [notificationPreferenceTopicId, setNotificationPreferenceTopicId] = useState('');
+  const [historySelectionMode, setHistorySelectionMode] = useState(false);
+  const [selectedHistoryTopicIds, setSelectedHistoryTopicIds] = useState(() => new Set());
+  const [batchAction, setBatchAction] = useState('');
+  const [showBatchProjectActions, setShowBatchProjectActions] = useState(false);
+  const [showBatchNotificationActions, setShowBatchNotificationActions] = useState(false);
+  const [showBatchProjectPicker, setShowBatchProjectPicker] = useState(false);
   const [sidebarTimeNowMs, setSidebarTimeNowMs] = useState(() => Date.now());
   const [compactHistoryPanel, setCompactHistoryPanel] = useState(null);
   const [compactHistoryTooltip, setCompactHistoryTooltip] = useState(null);
@@ -343,6 +349,7 @@ export default function ChatListView({
   const previousSidebarScrollTopRef = useRef(0);
   const pendingSidebarScrollAnchorRef = useRef(null);
   const pendingSidebarRevealRef = useRef('');
+  const lastHistorySelectionTopicIdRef = useRef('');
 
   useEffect(() => {
     setCollapsed(loadCollapsedSections(user?.uid));
@@ -353,6 +360,12 @@ export default function ChatListView({
     setUnreadFriendTopicIds(new Set());
     setExpandedProjectIds(new Set());
     setScrollCollapsed({ contacts: false, projects: false });
+    setHistorySelectionMode(false);
+    setSelectedHistoryTopicIds(new Set());
+    setShowBatchProjectActions(false);
+    setShowBatchNotificationActions(false);
+    setShowBatchProjectPicker(false);
+    lastHistorySelectionTopicIdRef.current = '';
     previousSidebarScrollTopRef.current = 0;
     pendingSidebarScrollAnchorRef.current = null;
     pendingSidebarRevealRef.current = '';
@@ -360,6 +373,14 @@ export default function ChatListView({
 
   useLayoutEffect(() => {
     setScrollCollapsed({ contacts: false, projects: false });
+    if (compact) {
+      setHistorySelectionMode(false);
+      setSelectedHistoryTopicIds(new Set());
+      setShowBatchProjectActions(false);
+      setShowBatchNotificationActions(false);
+      setShowBatchProjectPicker(false);
+      lastHistorySelectionTopicIdRef.current = '';
+    }
     previousSidebarScrollTopRef.current = 0;
     pendingSidebarScrollAnchorRef.current = null;
     pendingSidebarRevealRef.current = '';
@@ -426,12 +447,14 @@ export default function ChatListView({
   }, [activeTopic, chats]);
 
   useEffect(() => {
-    if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId && !showContactActions) return undefined;
+    if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId && !showContactActions && !showBatchProjectActions && !showBatchNotificationActions) return undefined;
     const closeMenus = () => {
       setOpenFriendMenuId('');
       setOpenChatMenuKey('');
       setOpenProjectMenuId(null);
       setShowContactActions(false);
+      setShowBatchProjectActions(false);
+      setShowBatchNotificationActions(false);
     };
     const closeMenusFromOutside = (event) => {
       const target = event.target;
@@ -444,6 +467,10 @@ export default function ChatListView({
         '.cc-project-menu-trigger',
         '.cc-contact-section-menu',
         '.cc-contact-section-menu-trigger',
+        '.cc-batch-project-menu',
+        '.cc-batch-project-trigger',
+        '.cc-batch-notification-menu',
+        '.cc-batch-notification-trigger',
       ].join(','))) {
         return;
       }
@@ -461,7 +488,7 @@ export default function ChatListView({
       document.removeEventListener('pointerdown', closeMenusFromOutside);
       document.removeEventListener('keydown', closeMenusOnEscape);
     };
-  }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions]);
+  }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions, showBatchProjectActions, showBatchNotificationActions]);
 
   useLayoutEffect(() => {
     if (
@@ -1161,7 +1188,7 @@ export default function ChatListView({
 
   useEffect(() => {
     const list = sidebarListRef.current;
-    if (compact || !list) return undefined;
+    if (compact || historySelectionMode || !list) return undefined;
 
     previousSidebarScrollTopRef.current = list.scrollTop;
     const coarsePointer = window.matchMedia?.('(hover: none), (pointer: coarse)')?.matches ?? false;
@@ -1268,6 +1295,7 @@ export default function ChatListView({
   }, [
     compact,
     contactsCollapsed,
+    historySelectionMode,
     isSearching,
     openChatMenuKey,
     openFriendMenuId,
@@ -1384,6 +1412,75 @@ export default function ChatListView({
     isHistoryTask(chat)
     && (chat.isGroup || !hiddenHistoryIds.has(String(chat.id)))
   ))).slice(0, 12);
+  const selectableTaskChats = sortConversationsByRecent([
+    ...visibleRecentChats.filter((chat) => !chat.isGroup && isHistoryTask(chat)),
+    ...mergedGroups.filter(isHistoryTask),
+  ]);
+  const selectableTaskById = new Map(selectableTaskChats.map((chat) => [String(chat.id), chat]));
+  const taskSelectionScopeById = new Map();
+  const addTaskSelectionScope = (chat) => {
+    const topicId = String(chat?.id || '').trim();
+    const selectable = selectableTaskById.get(topicId);
+    if (!topicId || !selectable) return;
+    taskSelectionScopeById.set(topicId, selectable);
+  };
+
+  if (isSearching) {
+    conversationChats.forEach(addTaskSelectionScope);
+    filteredProjects.forEach((project) => {
+      const projectNameMatches = String(project.name || '').toLowerCase().includes(lowerSearch);
+      (projectTasksById.get(Number(project.id)) || []).forEach((chat) => {
+        if (projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)) {
+          addTaskSelectionScope(chat);
+        }
+      });
+    });
+  } else {
+    selectableTaskChats.forEach(addTaskSelectionScope);
+  }
+
+  const taskSelectionScopeChats = sortConversationsByRecent(Array.from(taskSelectionScopeById.values()));
+  const selectedHistoryTasks = Array.from(selectedHistoryTopicIds)
+    .map((topicId) => selectableTaskById.get(String(topicId)))
+    .filter(Boolean);
+  const selectedProjectTaskCount = selectedHistoryTasks.filter((chat) => projectIdFor(chat) > 0).length;
+  const selectedMutedTasks = selectedHistoryTasks.filter((chat) => Boolean(chat.notificationsMuted));
+  const selectedUnmutedTasks = selectedHistoryTasks.filter((chat) => !chat.notificationsMuted);
+  const canDeleteSelectedHistoryTask = (chat) => (
+    !chat.isGroup || groupOwnerById.get(String(chat.groupId)) === String(user.uid)
+  );
+  const selectedDeletableTasks = selectedHistoryTasks.filter(canDeleteSelectedHistoryTask);
+  const selectedUndeletableTaskCount = selectedHistoryTasks.length - selectedDeletableTasks.length;
+  const selectionScopeFullySelected = taskSelectionScopeChats.length > 0
+    && taskSelectionScopeChats.every((chat) => selectedHistoryTopicIds.has(String(chat.id)));
+
+  useEffect(() => {
+    const validTopicIds = new Set(selectableTaskChats.map((chat) => String(chat.id)));
+    setSelectedHistoryTopicIds((previous) => {
+      const next = new Set([...previous].filter((topicId) => validTopicIds.has(String(topicId))));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [chats, groups, hiddenHistoryIds]);
+
+  useEffect(() => {
+    if (!historySelectionMode) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (batchAction) return;
+      // Let the currently open batch menu consume Escape first. The next
+      // Escape exits selection mode, matching the sidebar's other menus.
+      if (showBatchProjectActions || showBatchNotificationActions) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      event.preventDefault();
+      setHistorySelectionMode(false);
+      setSelectedHistoryTopicIds(new Set());
+      setShowBatchProjectActions(false);
+      setShowBatchNotificationActions(false);
+      lastHistorySelectionTopicIdRef.current = '';
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [batchAction, historySelectionMode, showBatchNotificationActions, showBatchProjectActions]);
 
   useEffect(() => () => {
     if (compactHistoryCloseTimerRef.current) clearTimeout(compactHistoryCloseTimerRef.current);
@@ -1909,6 +2006,276 @@ export default function ChatListView({
     }
   };
 
+  const enterHistorySelectionMode = () => {
+    if (compact) return;
+    setCollapsed((previous) => {
+      if (!previous.conversations) return previous;
+      const next = { ...previous, conversations: false };
+      saveCollapsedSections(user?.uid, next);
+      return next;
+    });
+    setOpenFriendMenuId('');
+    setOpenChatMenuKey('');
+    setOpenProjectMenuId(null);
+    setShowBatchProjectActions(false);
+    setShowBatchNotificationActions(false);
+    setHistorySelectionMode(true);
+  };
+
+  const exitHistorySelectionMode = () => {
+    if (batchAction) return;
+    setHistorySelectionMode(false);
+    setSelectedHistoryTopicIds(new Set());
+    setShowBatchProjectActions(false);
+    setShowBatchNotificationActions(false);
+    setShowBatchProjectPicker(false);
+    lastHistorySelectionTopicIdRef.current = '';
+  };
+
+  const toggleHistoryTaskSelection = (chat, event) => {
+    const topicId = String(chat?.id || '').trim();
+    if (!topicId || batchAction || !selectableTaskById.has(topicId)) return;
+
+    const previousTopicId = lastHistorySelectionTopicIdRef.current;
+    if (event?.shiftKey && previousTopicId && previousTopicId !== topicId) {
+      const scopeTopicIds = taskSelectionScopeChats.map((task) => String(task.id));
+      const start = scopeTopicIds.indexOf(previousTopicId);
+      const end = scopeTopicIds.indexOf(topicId);
+      if (start >= 0 && end >= 0) {
+        const [from, to] = start < end ? [start, end] : [end, start];
+        setSelectedHistoryTopicIds((previous) => {
+          const next = new Set(previous);
+          scopeTopicIds.slice(from, to + 1).forEach((id) => next.add(id));
+          return next;
+        });
+        lastHistorySelectionTopicIdRef.current = topicId;
+        return;
+      }
+    }
+
+    setSelectedHistoryTopicIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(topicId)) next.delete(topicId);
+      else next.add(topicId);
+      return next;
+    });
+    lastHistorySelectionTopicIdRef.current = topicId;
+  };
+
+  const toggleTaskSelectionScope = () => {
+    if (batchAction || taskSelectionScopeChats.length === 0) return;
+    setSelectedHistoryTopicIds((previous) => {
+      if (selectionScopeFullySelected) return new Set();
+      const next = new Set(previous);
+      taskSelectionScopeChats.forEach((chat) => next.add(String(chat.id)));
+      return next;
+    });
+  };
+
+  const clearCompletedBatchSelections = (topicIds) => {
+    const completed = new Set(topicIds.map((topicId) => String(topicId)));
+    if (completed.size === 0) return;
+    setSelectedHistoryTopicIds((previous) => {
+      const next = new Set([...previous].filter((topicId) => !completed.has(String(topicId))));
+      return next.size === previous.size ? previous : next;
+    });
+  };
+
+  const handleBatchConversationNotifications = async (muted) => {
+    const tasks = (muted ? selectedUnmutedTasks : selectedMutedTasks);
+    if (tasks.length === 0 || batchAction) return;
+
+    setBatchAction(muted ? 'mute' : 'unmute');
+    const completedTopicIds = [];
+    const failedTopicIds = [];
+    try {
+      for (const chat of tasks) {
+        try {
+          await api.setConversationNotificationsMuted(chat.id, muted);
+          completedTopicIds.push(String(chat.id));
+        } catch {
+          failedTopicIds.push(String(chat.id));
+        }
+      }
+
+      if (completedTopicIds.length > 0) {
+        const completed = new Set(completedTopicIds);
+        setChats((previous) => previous.map((chat) => (
+          completed.has(String(chat.id)) ? { ...chat, notificationsMuted: muted } : chat
+        )));
+        clearCompletedBatchSelections(completedTopicIds);
+        window.dispatchEvent(new Event('cc:data-changed'));
+      }
+
+      if (failedTopicIds.length > 0) {
+        feedback.notify({
+          tone: 'warning',
+          title: muted ? '部分任务未静音' : '部分任务未开启通知',
+          message: `${failedTopicIds.length} 个任务未完成，请重试`,
+        });
+      } else {
+        feedback.notify({
+          tone: 'success',
+          message: muted
+            ? `已静音 ${completedTopicIds.length} 个任务`
+            : `已开启 ${completedTopicIds.length} 个任务的通知`,
+        });
+      }
+    } finally {
+      setBatchAction('');
+    }
+  };
+
+  const handleBatchAssignProject = async (project) => {
+    const projectId = Number(project?.id);
+    if (!projectId || selectedHistoryTasks.length === 0 || batchAction) return;
+
+    const tasks = selectedHistoryTasks.filter((chat) => projectIdFor(chat) !== projectId);
+    if (tasks.length === 0) {
+      feedback.notify({ tone: 'info', message: `所选任务已在“${project.name}”中` });
+      return;
+    }
+
+    setBatchAction('project');
+    const completedTopicIds = [];
+    const failedTopicIds = [];
+    try {
+      for (const chat of tasks) {
+        try {
+          await api.assignProjectTopic(projectId, chat.id);
+          completedTopicIds.push(String(chat.id));
+        } catch {
+          failedTopicIds.push(String(chat.id));
+        }
+      }
+
+      if (completedTopicIds.length > 0) {
+        expandProject(projectId);
+        clearCompletedBatchSelections(completedTopicIds);
+        await loadAll();
+        window.dispatchEvent(new Event('cc:data-changed'));
+      }
+
+      if (failedTopicIds.length > 0) {
+        feedback.notify({
+          tone: 'warning',
+          title: '部分任务未移至项目',
+          message: `${failedTopicIds.length} 个任务未完成，请重试`,
+        });
+      } else {
+        setShowBatchProjectPicker(false);
+        feedback.notify({ tone: 'success', message: `已将 ${completedTopicIds.length} 个任务移至“${project.name}”` });
+      }
+    } finally {
+      setBatchAction('');
+    }
+  };
+
+  const handleBatchRemoveFromProject = async () => {
+    const tasks = selectedHistoryTasks.filter((chat) => projectIdFor(chat) > 0);
+    if (tasks.length === 0 || batchAction) return;
+
+    setShowBatchProjectActions(false);
+    setBatchAction('project-remove');
+    const completedTopicIds = [];
+    const failedTopicIds = [];
+    try {
+      for (const chat of tasks) {
+        try {
+          await api.removeProjectTopic(chat.id);
+          completedTopicIds.push(String(chat.id));
+        } catch {
+          failedTopicIds.push(String(chat.id));
+        }
+      }
+
+      if (completedTopicIds.length > 0) {
+        clearCompletedBatchSelections(completedTopicIds);
+        await loadAll();
+        window.dispatchEvent(new Event('cc:data-changed'));
+      }
+
+      if (failedTopicIds.length > 0) {
+        feedback.notify({
+          tone: 'warning',
+          title: '部分任务未移出项目',
+          message: `${failedTopicIds.length} 个任务未完成，请重试`,
+        });
+      } else {
+        feedback.notify({ tone: 'success', message: `已将 ${completedTopicIds.length} 个任务移出项目` });
+      }
+    } finally {
+      setBatchAction('');
+    }
+  };
+
+  const handleBatchDeleteHistoryTasks = async () => {
+    if (selectedDeletableTasks.length === 0 || batchAction) return;
+
+    const localTasks = selectedDeletableTasks.filter((chat) => !chat.isGroup);
+    const groupTasks = selectedDeletableTasks.filter((chat) => chat.isGroup);
+    const messages = [];
+    if (localTasks.length > 0) {
+      messages.push(onDeleteHistoryTask
+        ? `将删除 ${localTasks.length} 个任务。`
+        : `将从当前浏览器的任务列表移除 ${localTasks.length} 个任务，历史消息不会删除。`);
+    }
+    if (groupTasks.length > 0) {
+      messages.push(`将永久删除 ${groupTasks.length} 个协作任务、成员和聊天记录。`);
+    }
+    if (selectedUndeletableTaskCount > 0) {
+      messages.push(`${selectedUndeletableTaskCount} 个协作任务没有删除权限，不会受影响。`);
+    }
+
+    const confirmed = await feedback.confirm({
+      title: '删除所选任务？',
+      message: messages.join(' '),
+      confirmLabel: '删除所选任务',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    setBatchAction('delete');
+    const completedTopicIds = [];
+    const failedTopicIds = [];
+    try {
+      for (const chat of selectedDeletableTasks) {
+        try {
+          if (chat.isGroup) {
+            await api.disbandGroup(chat.groupId);
+          } else {
+            if (onDeleteHistoryTask) {
+              await onDeleteHistoryTask(topicPayloadForChat(chat));
+            }
+            hideHistoryTask(chat.id);
+          }
+          if (activeTopic === chat.id) onSelectTopic(null);
+          completedTopicIds.push(String(chat.id));
+        } catch {
+          failedTopicIds.push(String(chat.id));
+        }
+      }
+
+      if (completedTopicIds.length > 0) {
+        clearCompletedBatchSelections(completedTopicIds);
+        await loadAll();
+        window.dispatchEvent(new Event('cc:data-changed'));
+      }
+
+      if (failedTopicIds.length > 0) {
+        feedback.notify({
+          tone: 'warning',
+          title: '部分任务未删除',
+          message: `${failedTopicIds.length} 个任务未完成，请重试`,
+        });
+      } else {
+        feedback.notify({ tone: 'success', message: `已处理 ${completedTopicIds.length} 个任务` });
+      }
+    } finally {
+      setBatchAction('');
+    }
+  };
+
   const renderConversationNotificationMenuItem = (chat) => {
     const muted = Boolean(chat.notificationsMuted);
     const label = muted ? '开启此会话通知' : '静音此会话';
@@ -1980,6 +2347,32 @@ export default function ChatListView({
       : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)
   );
 
+  const renderTaskSelectionControl = (chat) => {
+    const selected = selectedHistoryTopicIds.has(String(chat.id));
+    return (
+      <button
+        type="button"
+        className={`cc-history-selection-control${selected ? ' is-selected' : ''}`}
+        role="checkbox"
+        aria-checked={selected}
+        aria-label={`${selected ? '取消选择' : '选择'}任务 ${chat.name}`}
+        disabled={Boolean(batchAction)}
+        onClick={(event) => {
+          event.stopPropagation();
+          toggleHistoryTaskSelection(chat, event);
+        }}
+      >
+        {selected && <Check size={13} strokeWidth={2.6} aria-hidden="true" />}
+      </button>
+    );
+  };
+
+  const renderTaskLeading = (chat) => (
+    historySelectionMode
+      ? renderTaskSelectionControl(chat)
+      : renderTaskAgentIcon(chat, agentById, onlineUsers)
+  );
+
   const renderTaskControls = (chat, menuKey, { showPin = false, showTime = false } = {}) => {
     const isPinned = pinnedHistoryIds.has(String(chat.id))
       || (chat.isGroup && pinnedGroupIds.has(String(chat.id)));
@@ -1989,6 +2382,13 @@ export default function ChatListView({
     const assignedProjectId = projectIdFor(chat);
     const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
     const displayTime = displayTimeForChat(chat);
+    if (historySelectionMode) {
+      return (
+        <SidebarRowTrailing className="cc-history-selection-trailing">
+          <TaskRowStatusIndicator status={visibleStatus} time={displayTime} showTime={showTime} />
+        </SidebarRowTrailing>
+      );
+    }
     return (
       <>
         <SidebarRowTrailing
@@ -2125,16 +2525,24 @@ export default function ChatListView({
     if (taskKind === 'solo_agent' || taskKind === 'multi_agent') {
       const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
       const menuKey = `task:${chat.id}`;
+      const selected = selectedHistoryTopicIds.has(String(chat.id));
       return (
         <SidebarItemRow
           key={chat.id}
-          className="cc-history-item cc-conversation-item"
+          className={`cc-history-item cc-conversation-item${historySelectionMode ? ' is-selection-mode' : ''}${selected ? ' is-selected-for-batch' : ''}`}
           active={activeTopic === chat.id}
           data-conversation-kind="agent"
           data-task-kind={taskKind === 'multi_agent' ? 'collaboration' : 'solo'}
-          onClick={() => selectConversation(chat)}
+          data-selected={historySelectionMode ? selected : undefined}
+          onClick={(event) => {
+            if (historySelectionMode) {
+              toggleHistoryTaskSelection(chat, event);
+              return;
+            }
+            selectConversation(chat);
+          }}
         >
-          {renderTaskAgentIcon(chat, agentById, onlineUsers)}
+          {renderTaskLeading(chat)}
           {renderTaskCopy(chat, null, taskLabel)}
           {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
         </SidebarItemRow>
@@ -2762,9 +3170,24 @@ export default function ChatListView({
           expanded={!collapsed.conversations}
           onToggle={() => toggleCollapsed('conversations')}
           action={(
-            <button type="button" className="cc-section-add" onClick={() => openNewTaskDialog()} title="新建任务" aria-label="新建任务">
-              <Plus size={15} />
-            </button>
+            <div className="cc-history-section-actions">
+              <button
+                type="button"
+                className="cc-section-add cc-history-select-trigger"
+                onClick={historySelectionMode ? exitHistorySelectionMode : enterHistorySelectionMode}
+                title={historySelectionMode ? '完成选择' : '选择任务'}
+                aria-label={historySelectionMode ? '完成选择任务' : '选择历史任务'}
+                aria-pressed={historySelectionMode}
+                disabled={Boolean(batchAction)}
+              >
+                {historySelectionMode ? <X size={15} /> : <ListChecks size={15} />}
+              </button>
+              {!historySelectionMode && (
+                <button type="button" className="cc-section-add" onClick={() => openNewTaskDialog()} title="新建任务" aria-label="新建任务">
+                  <Plus size={15} />
+                </button>
+              )}
+            </div>
           )}
         />
         {(isSearching || !collapsed.conversations) && (conversationChats.length === 0 && !isSearching ? (
@@ -2976,17 +3399,25 @@ export default function ChatListView({
                   const menuKey = `project:${chat.id}`;
                   const taskKind = conversationKind(chat);
                   const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
+                  const selected = selectedHistoryTopicIds.has(String(chat.id));
                   return (
                     <SidebarItemRow
                       key={chat.id}
-                      className="cc-history-item cc-conversation-item cc-project-task-item"
+                      className={`cc-history-item cc-conversation-item cc-project-task-item${historySelectionMode ? ' is-selection-mode' : ''}${selected ? ' is-selected-for-batch' : ''}`}
                       active={activeTopic === chat.id}
                       level={2}
                       data-task-kind={taskKind === 'multi_agent' ? 'collaboration' : 'solo'}
-                      aria-label={`打开项目任务 ${chat.name}`}
-                      onClick={() => selectConversation(chat)}
+                      aria-label={historySelectionMode ? `${selected ? '取消选择' : '选择'}项目任务 ${chat.name}` : `打开项目任务 ${chat.name}`}
+                      data-selected={historySelectionMode ? selected : undefined}
+                      onClick={(event) => {
+                        if (historySelectionMode) {
+                          toggleHistoryTaskSelection(chat, event);
+                          return;
+                        }
+                        selectConversation(chat);
+                      }}
                     >
-                      {renderTaskAgentIcon(chat, agentById, onlineUsers)}
+                      {renderTaskLeading(chat)}
                       {renderTaskCopy(chat, null, taskLabel)}
                       {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
                     </SidebarItemRow>
@@ -3004,6 +3435,131 @@ export default function ChatListView({
         )}
 
       </div>}
+
+      {!compact && historySelectionMode && (
+        <section className="cc-history-batch-bar" aria-label="已选择任务操作">
+          <div className="cc-history-batch-summary" role="status" aria-live="polite">
+            <strong>{selectedHistoryTasks.length > 0 ? `已选 ${selectedHistoryTasks.length} 项` : '选择任务'}</strong>
+            <button
+              type="button"
+              className="cc-history-batch-text-action"
+              aria-label={selectionScopeFullySelected
+                ? '清空已选任务'
+                : (isSearching ? '全选搜索结果任务' : '全选任务')}
+              onClick={toggleTaskSelectionScope}
+              disabled={taskSelectionScopeChats.length === 0 || Boolean(batchAction)}
+            >
+              {selectionScopeFullySelected ? '清空选择' : (isSearching ? '全选搜索结果' : '全选')}
+            </button>
+            <button
+              type="button"
+              className="cc-history-batch-text-action"
+              onClick={exitHistorySelectionMode}
+              disabled={Boolean(batchAction)}
+            >
+              完成
+            </button>
+          </div>
+          <div className="cc-history-batch-actions" role="toolbar" aria-label="批量任务操作">
+            <div className="cc-history-batch-menu-wrap">
+              <button
+                type="button"
+                className="cc-history-batch-action cc-batch-project-trigger"
+                aria-label="批量项目操作"
+                aria-haspopup="menu"
+                aria-expanded={showBatchProjectActions}
+                disabled={selectedHistoryTasks.length === 0 || Boolean(batchAction)}
+                onClick={() => {
+                  setShowBatchNotificationActions(false);
+                  setShowBatchProjectActions((current) => !current);
+                }}
+              >
+                <FolderPlus size={15} aria-hidden="true" />
+                <span>项目</span>
+              </button>
+              {showBatchProjectActions && (
+                <div className="v3-friend-action-menu cc-batch-action-menu cc-batch-project-menu" role="menu" aria-label="批量项目操作">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowBatchProjectActions(false);
+                      setShowBatchProjectPicker(true);
+                    }}
+                  >
+                    <FolderPlus size={14} />
+                    <span>移至项目…</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={selectedProjectTaskCount === 0}
+                    onClick={handleBatchRemoveFromProject}
+                  >
+                    <X size={14} />
+                    <span>移出项目（{selectedProjectTaskCount}）</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="cc-history-batch-menu-wrap">
+              <button
+                type="button"
+                className="cc-history-batch-action cc-batch-notification-trigger"
+                aria-label="批量通知操作"
+                aria-haspopup="menu"
+                aria-expanded={showBatchNotificationActions}
+                disabled={selectedHistoryTasks.length === 0 || Boolean(batchAction)}
+                onClick={() => {
+                  setShowBatchProjectActions(false);
+                  setShowBatchNotificationActions((current) => !current);
+                }}
+              >
+                <Bell size={15} aria-hidden="true" />
+                <span>通知</span>
+              </button>
+              {showBatchNotificationActions && (
+                <div className="v3-friend-action-menu cc-batch-action-menu cc-batch-notification-menu" role="menu" aria-label="批量通知操作">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={selectedUnmutedTasks.length === 0}
+                    onClick={() => {
+                      setShowBatchNotificationActions(false);
+                      handleBatchConversationNotifications(true);
+                    }}
+                  >
+                    <BellOff size={14} />
+                    <span>静音（{selectedUnmutedTasks.length}）</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={selectedMutedTasks.length === 0}
+                    onClick={() => {
+                      setShowBatchNotificationActions(false);
+                      handleBatchConversationNotifications(false);
+                    }}
+                  >
+                    <Bell size={14} />
+                    <span>取消静音（{selectedMutedTasks.length}）</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className="cc-history-batch-action danger"
+              aria-label={`删除 ${selectedDeletableTasks.length} 个可处理任务`}
+              disabled={selectedDeletableTasks.length === 0 || Boolean(batchAction)}
+              onClick={handleBatchDeleteHistoryTasks}
+            >
+              <Trash2 size={15} aria-hidden="true" />
+              <span>{batchAction === 'delete' ? '删除中…' : `删除${selectedDeletableTasks.length ? `（${selectedDeletableTasks.length}）` : ''}`}</span>
+            </button>
+          </div>
+        </section>
+      )}
 
       {showNewChat && createPortal(
         <div className="name-dialog-overlay cc-new-task-overlay" onClick={closeNewTaskDialog}>
@@ -3085,6 +3641,72 @@ export default function ChatListView({
                   onClick={handleAddTasksToProject}
                 >
                   {projectActionTopicId ? '添加中…' : `添加${selectedProjectTaskIds.size ? `（${selectedProjectTaskIds.size}）` : ''}`}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {showBatchProjectPicker && createPortal(
+        <div
+          className="name-dialog-overlay cc-new-task-overlay"
+          onClick={() => {
+            if (!batchAction) setShowBatchProjectPicker(false);
+          }}
+        >
+          <section className="name-dialog cc-new-task-dialog cc-project-picker-dialog" role="dialog" aria-modal="true" aria-label="批量选择项目" onClick={(event) => event.stopPropagation()}>
+            <header className="cc-new-task-header">
+              <h3>移至项目</h3>
+              <button
+                type="button"
+                className="cc-dialog-close"
+                onClick={() => setShowBatchProjectPicker(false)}
+                aria-label="关闭批量选择项目"
+                disabled={Boolean(batchAction)}
+              >
+                <X size={18} />
+              </button>
+            </header>
+            <div className="cc-new-task-body">
+              <div className="cc-project-picker-target">
+                将 {selectedHistoryTasks.length} 个已选任务移至项目
+              </div>
+              {projects.length === 0 ? (
+                <div className="cc-new-task-empty cc-project-picker-empty">
+                  <FolderPlus size={20} aria-hidden="true" />
+                  <strong>暂无可用项目</strong>
+                  <span>先在“项目”区新建一个项目</span>
+                </div>
+              ) : (
+                <div className="cc-new-task-agent-list cc-project-picker-list">
+                  {projects.map((project) => {
+                    const alreadyInProject = selectedHistoryTasks.length > 0
+                      && selectedHistoryTasks.every((chat) => projectIdFor(chat) === Number(project.id));
+                    return (
+                      <button
+                        type="button"
+                        className="cc-new-task-agent"
+                        key={project.id}
+                        disabled={selectedHistoryTasks.length === 0 || Boolean(batchAction)}
+                        onClick={() => handleBatchAssignProject(project)}
+                      >
+                        {alreadyInProject ? <Check size={17} /> : <Folder size={17} />}
+                        <span>{project.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="cc-new-task-actions cc-project-picker-actions">
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-default"
+                  disabled={Boolean(batchAction)}
+                  onClick={() => setShowBatchProjectPicker(false)}
+                >
+                  取消
                 </button>
               </div>
             </div>
