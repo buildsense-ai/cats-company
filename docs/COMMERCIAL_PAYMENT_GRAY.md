@@ -147,4 +147,6 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 
 内部确需额外分配创建次数时，应使用本地管理员接口 `POST /local/account-admin/commercial/cloud-worker-credits`（或同等受保护的商业运营服务接口），提交 `uid`、`count`、幂等 `source_ref` 和可选 `expires_at`；不要直接修改生产环境静态配额。
 
+商业运营后台的“云员工总览”通过 `GET /local/commercial-ops/api/cloud-workers` 读取全平台登记、生命周期、创建权益和天翼云状态。该路径只在 relay-admin 的本机路径白名单中转发；CatsCompany 端还要求本机/私网来源及 `commercial.ops.read`（或更高）service scope，不提供公网用户 JWT/API 路由。
+
 退款自动化、发票和对账单下载不在本阶段范围内；订单状态已预留 `refunding/refunded`。灰度期退款必须按订单号在账号后台核对支付宝交易号，在支付宝商家后台人工退款，再由管理员回收对应权益和 Relay 额度并留存操作记录。完成这套演练前不得开启公共销售。
