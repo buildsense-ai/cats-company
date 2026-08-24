@@ -70,6 +70,16 @@ func (s authStateTestStore) GetUser(id int64) (*types.User, error) {
 	return s.users[id], nil
 }
 
+// GetFriends and GetBotOwner keep the async presence fanout (triggered by
+// kick/disconnect) from dereferencing the nil embedded store.Store.
+func (s authStateTestStore) GetFriends(uid int64) ([]*types.User, error) {
+	return nil, nil
+}
+
+func (s authStateTestStore) GetBotOwner(botUID int64) (int64, error) {
+	return 0, errors.New("presence fanout not supported by test store")
+}
+
 func TestAuthMiddlewareWithDBReturnsServerErrorWhenUserLookupFails(t *testing.T) {
 	oldSecret := append([]byte(nil), jwtSecret...)
 	defer func() { jwtSecret = oldSecret }()

@@ -1242,11 +1242,17 @@ func (c *userStateCache) put(uid int64, state int) {
 // banned account cannot keep using an established socket for longer than the
 // cache TTL even when the ban was written by another node or code path.
 func (h *Hub) clientAccountActive(client *Client) bool {
-	if client == nil || client.accountType == types.AccountBot {
+	if client == nil {
+		return false
+	}
+	if client.accountType == types.AccountBot {
 		return true // bot connections are governed by API-key/runtime-credential paths
 	}
 	if state, ok := h.stateCache.get(client.uid); ok {
 		return state == 0
+	}
+	if h.db == nil {
+		return true // no store wired (tests/standalone); nothing to re-check
 	}
 	user, err := h.db.GetUser(client.uid)
 	if err != nil || user == nil {
