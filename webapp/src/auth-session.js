@@ -200,6 +200,9 @@ export async function request(method, path, body, options = {}) {
       const error = new Error(data.error || statusMessage(res.status));
       error.status = res.status;
       error.data = data;
+      if (res.status === 403 && data.code === 'ACCOUNT_DISABLED') {
+        setToken(null);
+      }
       throw error;
     }
     return data;

@@ -41,7 +41,7 @@ vi.mock('../api', () => {
 
 vi.mock('../components/feedback-system', () => ({
   InlineFeedback: ({ children }) => <>{children}</>,
-  useFeedback: () => ({ confirm: vi.fn() }),
+  useFeedback: () => ({ confirm: vi.fn(), notify: vi.fn() }),
 }));
 
 vi.mock('../components/auth-flow-background', () => ({ default: () => null }));
@@ -195,6 +195,22 @@ test('clears a missing-profile session when the account no longer exists', async
 
   await act(async () => {
     root.render(<TinodeWeb location={{ pathname: '/e/invite-1', search: '', hash: '' }} />);
+  });
+
+  await vi.waitFor(() => {
+    expect(mocks.setToken).toHaveBeenCalledWith(null);
+  });
+});
+
+test('clears session on ws_auth_banned and shows notification', async () => {
+  await act(async () => {
+    root.render(<TinodeWeb />);
+  });
+
+  await vi.waitFor(() => expect(mocks.wsMessage).toEqual(expect.any(Function)));
+
+  await act(async () => {
+    mocks.wsMessage({ _type: 'ws_auth_banned' });
   });
 
   await vi.waitFor(() => {

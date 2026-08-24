@@ -194,7 +194,7 @@ function findConnectedLocalAgent(agents) {
 }
 
 function isInvalidSessionError(error) {
-  return error?.status === 401 || error?.status === 403 || error?.status === 404;
+  return error?.status === 401 || (error?.status === 403 && error?.data?.code === 'ACCOUNT_DISABLED') || error?.status === 404;
 }
 
 export default function TinodeWeb({ location = window.location } = {}) {
@@ -672,8 +672,11 @@ function TinodeWebApp({ location }) {
 
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
-    if (msg._type === 'ws_auth_expired') {
+    if (msg._type === 'ws_auth_expired' || msg._type === 'ws_auth_banned') {
       clearAuthenticatedSession();
+      if (msg._type === 'ws_auth_banned') {
+        feedback.notify('账号已被停用，会话已结束');
+      }
       return;
     }
     if (msg._type === 'ws_open') {
