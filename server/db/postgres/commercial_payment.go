@@ -539,9 +539,9 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 			    last_error = '', updated_at = CURRENT_TIMESTAMP
 			-- A deletion already claimed by the sweeper is an external operation
 			-- in flight. Do not resurrect its row in the database while the cloud
-			-- destroy script is running; the paid order still grants a fresh
-			-- one-time creation credit for a replacement worker.
-			WHERE owner_uid = $1 AND state IN ('active','delete_pending')`, order.UID, expiresAt); err != nil {
+			-- destroy script is running; a delete_failed row has no active provider
+			-- operation and is safe to restore after a successful renewal.
+			WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`, order.UID, expiresAt); err != nil {
 			return nil, false, fmt.Errorf("extend cloud worker lifecycle: %w", err)
 		}
 	}

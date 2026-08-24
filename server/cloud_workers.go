@@ -155,6 +155,14 @@ type CloudWorkerCreditAdminStore interface {
 	GrantCloudWorkerCredits(uid int64, count int, sourceRef string, expiresAt *time.Time) (int, error)
 }
 
+// CloudWorkerLifecycleRegistrar lets the create path persist an immediately
+// due cleanup row when a provider instance was created but its paid credit was
+// revoked concurrently (for example by a refund). It is intentionally
+// separate from CloudWorkerCreditStore so focused test stores remain small.
+type CloudWorkerLifecycleRegistrar interface {
+	RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenantName string, packageExpiresAt time.Time, graceDays int) error
+}
+
 type CloudWorkerLifecycle = types.CloudWorkerLifecycle
 
 // Tianyi ECS monthly instances enter a provider-side frozen retention period
@@ -876,8 +884,38 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	if reservedCredit {
 		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, cloudWorkerExpiryGraceDays); err != nil {
 			log.Printf("[cloud-worker] commit credit for uid %d failed: %v", uid, err)
-			// Keep the worker record: the credit was reserved and the operation
-			// succeeded; an operator can reconcile this durable reservation.
+			// A refund can revoke a reserved credit while the provider operation is
+			// still running. In that specific case the instance must not survive a
+			// successful refund; destroy it and remove the bot record. Other commit
+			// errors are ambiguous (the transaction may have committed), so retain
+			// the bot and register an immediately-due lifecycle for reconciliation.
+			if strings.Contains(err.Error(), "reservation not found") && h.destroyScript != "" {
+				if _, destroyErr := h.runScript(h.destroyScript, "--name", tenantName); destroyErr == nil {
+					if deleteErr := h.db.DeleteBot(result.UID); deleteErr != nil {
+						log.Printf("[cloud-worker] delete bot %d after revoked-credit cleanup failed: %v", result.UID, deleteErr)
+						writeJSON(w, http.StatusBadGateway, map[string]string{
+							"error": "cloud worker was cleaned up but its account record needs reconciliation",
+							"code":  "cloud_worker_reconciliation_required",
+						})
+						return
+					}
+					writeJSON(w, http.StatusBadGateway, map[string]string{
+						"error": "cloud worker entitlement changed while provisioning; worker was cleaned up",
+						"code":  "cloud_worker_entitlement_changed",
+					})
+					return
+				}
+			}
+			if registrar, ok := h.credits.(CloudWorkerLifecycleRegistrar); ok {
+				if registerErr := registrar.RegisterCloudWorkerLifecycle(result.UID, uid, tenantName, time.Now().UTC(), 0); registerErr != nil {
+					log.Printf("[cloud-worker] failed to register commit-recovery lifecycle uid=%d worker=%d: %v", uid, result.UID, registerErr)
+				}
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "cloud worker entitlement could not be finalized; cleanup is pending",
+				"code":  "cloud_worker_provision_failed_pending_cleanup",
+			})
+			return
 		}
 	}
 
