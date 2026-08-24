@@ -4033,11 +4033,14 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(container.querySelector('[aria-label="完成选择任务"]')).toBeTruthy();
-    expect(container.querySelector('[aria-label="选择任务 Inbox Task"]')).toBeTruthy();
+    const inboxTask = container.querySelector('[aria-label="选择任务 Inbox Task"]');
+    expect(inboxTask).toBeTruthy();
+    expect(inboxTask.getAttribute('role')).toBe('checkbox');
+    expect(inboxTask.getAttribute('tabindex')).toBe('0');
     expect(onSelectTopic).not.toHaveBeenCalled();
 
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="选择任务 Inbox Task"]'));
+      Simulate.click(inboxTask);
     });
 
     expect(container.querySelector('[aria-label="取消选择任务 Inbox Task"]')?.getAttribute('aria-checked')).toBe('true');
@@ -4062,6 +4065,75 @@ describe('ChatListView sidebar sections', () => {
 
     expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 2 项');
     expect(onSelectTopic).not.toHaveBeenCalled();
+  });
+
+  it('uses the visible sidebar order for Shift range selection', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Recent project task',
+          is_group: false,
+          is_bot: true,
+          project_id: 13,
+          project_name: 'Beta',
+          last_time: '2026-07-20T08:03:00Z',
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Middle history task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-07-20T08:02:00Z',
+        },
+        {
+          id: 'p2p_7_44',
+          friend_id: 44,
+          name: 'Older project task',
+          is_group: false,
+          is_bot: true,
+          project_id: 12,
+          project_name: 'Alpha',
+          last_time: '2026-07-20T08:01:00Z',
+        },
+      ],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [
+        { id: 12, name: 'Alpha', task_count: 1 },
+        { id: 13, name: 'Beta', task_count: 1 },
+      ],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Alpha"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Beta"]'));
+    });
+
+    const alphaTask = container.querySelector('[aria-label="选择任务 Older project task"]');
+    const betaTask = container.querySelector('[aria-label="选择任务 Recent project task"]');
+    expect(alphaTask).toBeTruthy();
+    expect(betaTask).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(alphaTask);
+      Simulate.click(betaTask, { shiftKey: true });
+    });
+
+    const selectedRows = Array.from(container.querySelectorAll('.cc-history-item[data-selected="true"]'))
+      .map((row) => row.textContent);
+    expect(selectedRows.join('|')).toContain('Older project task');
+    expect(selectedRows.join('|')).toContain('Recent project task');
+    expect(selectedRows.join('|')).not.toContain('Middle history task');
+    expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 2 项');
   });
 
   it('moves selected tasks to a project and keeps only failed selections for retry', async () => {
@@ -4227,6 +4299,42 @@ describe('ChatListView sidebar sections', () => {
     expect(api.disbandGroup).not.toHaveBeenCalledWith(78);
     expect(JSON.parse(localStorage.getItem('cc_hidden_history_v1:7'))).toEqual(['p2p_7_42']);
     expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 1 项');
+  });
+
+  it('explains why deletion is unavailable for unauthorized collaboration tasks', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'grp_78',
+        group_id: 78,
+        name: 'Shared Collaboration',
+        is_group: true,
+        has_bot: true,
+        is_agent_task: true,
+      }],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [{
+        id: 78,
+        name: 'Shared Collaboration',
+        owner_id: 8,
+        kind: 'agent_task',
+        has_bot: true,
+      }],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择任务 Shared Collaboration"]'));
+    });
+
+    const deleteButton = container.querySelector('.cc-history-batch-action.danger');
+    expect(deleteButton.disabled).toBe(true);
+    expect(container.querySelector('#cc-history-batch-permission-note')?.textContent)
+      .toContain('1 个协作任务没有删除权限');
+    expect(deleteButton.getAttribute('aria-describedby')).toBe('cc-history-batch-permission-note');
   });
 
   it('uses the server-returned mute state for a contact conversation', async () => {
