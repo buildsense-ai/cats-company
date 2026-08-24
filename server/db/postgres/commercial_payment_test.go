@@ -421,7 +421,7 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 		t.Fatalf("expected purchase limit rejection, got %v", err)
 	}
 	refundRequestNo := "CCRF-" + created.OrderNo
-	const testRefundClaimTTL = 10 * time.Millisecond
+	const testRefundClaimTTL = time.Minute
 	refunding, claimed, err := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL)
 	if err != nil || !claimed || refunding.Status != "refunding" || refunding.RefundRequestNo != refundRequestNo {
 		t.Fatalf("begin commercial refund: order=%#v claimed=%v err=%v", refunding, claimed, err)
@@ -429,7 +429,9 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if duplicateClaim, claimedAgain, claimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); claimErr != nil || claimedAgain || duplicateClaim.Status != "refunding" {
 		t.Fatalf("active refund claim was not exclusive: order=%#v claimed=%v err=%v", duplicateClaim, claimedAgain, claimErr)
 	}
-	time.Sleep(25 * time.Millisecond)
+	if _, err := db.db.Exec(`UPDATE commercial_orders SET updated_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes' WHERE order_no = $1`, created.OrderNo); err != nil {
+		t.Fatalf("age refund claim for recovery test: %v", err)
+	}
 	if reclaimed, reclaimedClaim, reclaimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); reclaimErr != nil || !reclaimedClaim || reclaimed.Status != "refunding" {
 		t.Fatalf("stale refund claim was not recoverable: order=%#v claimed=%v err=%v", reclaimed, reclaimedClaim, reclaimErr)
 	}
