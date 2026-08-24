@@ -5030,10 +5030,6 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 }
 
 @media (max-width: 760px) {
-  :root {
-    --cc-sidebar-width: min(86vw, 300px);
-  }
-
   .oc-auth {
     padding: 16px;
     align-items: flex-start;
@@ -5048,8 +5044,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 90;
-    width: min(86vw, 300px);
-    flex-basis: min(86vw, 300px);
+    width: var(--cc-sidebar-width);
+    flex-basis: var(--cc-sidebar-width);
     box-shadow: none;
   }
 
@@ -5192,8 +5188,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 @media (max-width: 768px) {
   .v3-sidebar:not(.collapsed) {
-    width: min(86vw, 300px);
-    flex-basis: min(86vw, 300px);
+    width: var(--cc-sidebar-width);
+    flex-basis: var(--cc-sidebar-width);
   }
 
   .v3-sidebar-resize-handle {
