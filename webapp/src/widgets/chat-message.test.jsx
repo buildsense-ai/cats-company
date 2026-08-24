@@ -171,7 +171,10 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/report.html');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/report.html',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
     const frame = container.querySelector('iframe.v3-file-preview-frame');
     expect(frame).not.toBeNull();
@@ -201,6 +204,29 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelector('.v3-file-preview-state.error')?.textContent).toBe(
       '预览加载失败：服务暂时不可用，请稍后重试',
+    );
+  });
+
+  it('normalizes a disconnected media endpoint instead of showing the browser error', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={{
+            name: 'notes.txt',
+            url: '/uploads/files/notes.txt',
+            size: 128,
+            mime_type: 'text/plain',
+          }}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(container.querySelector('.v3-file-preview-state.error')?.textContent).toBe(
+      '预览加载失败：暂时无法连接服务，请稍后重试',
     );
   });
 
@@ -490,7 +516,10 @@ describe('ChatMessage rich file rendering', () => {
       await flushAsync(12);
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/grade.xlsx');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/grade.xlsx',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(readExcelFile).toHaveBeenCalledWith(expect.any(ArrayBuffer));
     expect(container.querySelector('.v3-spreadsheet-preview')).not.toBeNull();
     expect(container.textContent).toContain('名单');
@@ -704,7 +733,10 @@ describe('ChatMessage rich file rendering', () => {
       await flushAsync(8);
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/large.xlsx');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/large.xlsx',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(arrayBuffer).not.toHaveBeenCalled();
     expect(container.textContent).toContain('当前最多预览');
     expect(container.querySelector('.v3-spreadsheet-preview')).toBeNull();
@@ -2752,7 +2784,10 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     expect(window.open).not.toHaveBeenCalled();
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/legacy-report.html');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/legacy-report.html',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(container.querySelectorAll('.v3-file-preview-panel')).toHaveLength(1);
     expect(container.querySelector('.v3-file-preview-title h3').textContent).toBe('legacy-report.html');
   });

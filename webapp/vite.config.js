@@ -69,14 +69,10 @@ export default defineConfig({
         ],
       },
       injectManifest: {
-        // Navigation HTML always comes from the network so a cached document
-        // cannot reference an outdated application bundle. The offline page
-        // remains available when navigation cannot reach the service.
-        globPatterns: [
-          'assets/index-*.{js,css}',
-          'assets/workbox-window.*.js',
-          'offline.html',
-        ],
+        // Keep the app shell and core workspace code available when an offline
+        // route must be restored; navigations themselves remain network-only.
+        globPatterns: ['index.html', 'assets/**/*.{js,css}', 'offline.html', 'pwa-*.png'],
+        globIgnores: ['assets/pdf-*.js', 'assets/pdf.worker.*'],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       devOptions: {

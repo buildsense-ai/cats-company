@@ -4,7 +4,7 @@ import {
   writeStorageValue,
 } from './utils/storage-access';
 import {
-  REQUEST_ERROR_CODE,
+  fetchWithRequestError,
   REQUEST_FAILURE_KIND,
   requestFailureKind,
 } from './utils/request-error';
@@ -156,6 +156,7 @@ export function statusMessage(status) {
   if (status === 409) return '当前数据已发生变化，请刷新后重试';
   if (status === 429) return '操作过于频繁，请稍后再试';
   const failureKind = requestFailureKind({ status });
+  if (failureKind === REQUEST_FAILURE_KIND.TIMEOUT) return '请求超时，请稍后重试';
   if (failureKind === REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE) {
     return '服务暂时不可用，请稍后重试';
   }
@@ -164,84 +165,43 @@ export function statusMessage(status) {
 }
 
 export function responseErrorMessage(status, detail) {
-  return Number(status) >= 500 ? statusMessage(status) : (detail || statusMessage(status));
+  const normalizedStatus = Number(status);
+  return normalizedStatus === 408 || normalizedStatus >= 500
+    ? statusMessage(normalizedStatus)
+    : (detail || statusMessage(normalizedStatus));
 }
 
 export async function request(method, path, body, options = {}) {
-  const { signal, timeoutMs = 0 } = options;
+  const { timeoutMs = 0, signal } = options;
   const headers = { 'Content-Type': 'application/json' };
   const authToken = options.authToken === undefined ? token : options.authToken;
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
 
-  const controller = new AbortController();
-  let timedOut = false;
-  let timeoutID = null;
-  const abortFromCaller = () => controller.abort(signal?.reason);
+  const res = await fetchWithRequestError(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    signal,
+    timeoutMs,
+  });
 
-  if (signal?.aborted) {
-    abortFromCaller();
-  } else if (signal) {
-    signal.addEventListener('abort', abortFromCaller, { once: true });
-  }
-  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-    timeoutID = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
-  }
-
-  let res;
+  let data = {};
   try {
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-
-    let data = {};
-    try {
-      data = await res.json();
-    } catch {
-      data = {};
-    }
-    if (!res.ok) {
-      // A 5xx response establishes that the requested service is unavailable
-      // or failed, regardless of any implementation detail it returns in the
-      // JSON body. Preserve that detail in error.data for diagnostics, but do
-      // not make it the default user-facing diagnosis.
-      const error = new Error(responseErrorMessage(res.status, data.error));
-      error.status = res.status;
-      error.data = data;
-      throw error;
-    }
-    return data;
-  } catch (cause) {
-    if (timedOut) {
-      const error = new Error('请求超时，请稍后重试');
-      error.code = REQUEST_ERROR_CODE.TIMEOUT;
-      error.cause = cause;
-      throw error;
-    }
-    if (signal?.aborted || cause?.name === 'AbortError') {
-      const error = new Error('请求已取消');
-      error.code = REQUEST_ERROR_CODE.ABORTED;
-      error.cause = cause;
-      throw error;
-    }
-    if (cause?.status) throw cause;
-    const error = new Error(
-      globalThis.navigator?.onLine === false
-        ? '当前无网络连接，连接网络后再试'
-        : '暂时无法连接服务，请稍后重试',
-    );
-    error.code = REQUEST_ERROR_CODE.NETWORK;
-    error.cause = cause;
-    throw error;
-  } finally {
-    if (timeoutID) clearTimeout(timeoutID);
-    signal?.removeEventListener('abort', abortFromCaller);
+    data = await res.json();
+  } catch {
+    data = {};
   }
+  if (!res.ok) {
+    // A 5xx response establishes that the requested service is unavailable
+    // or failed, regardless of any implementation detail it returns in the
+    // JSON body. Preserve that detail in error.data for diagnostics, but do
+    // not make it the default user-facing diagnosis.
+    const error = new Error(responseErrorMessage(res.status, data.error));
+    error.status = res.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
 }
 
 export const authApi = {

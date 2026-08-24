@@ -1412,6 +1412,8 @@ export default function MessagesView({
     }
     const targetTopic = topic;
     const requestID = historyRequestRef.current;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const cachedHistory = historyCacheRef.current.get(cacheKey);
     const controller = new AbortController();
     olderHistoryAbortControllerRef.current = controller;
     
@@ -1446,7 +1448,6 @@ export default function MessagesView({
         : rawMessages.length === PAGE_SIZE;
       hasMoreHistoryRef.current = hasMore;
       setHasMoreHistory(hasMore);
-      const cacheKey = historyCacheKey(user.uid, targetTopic);
       const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
       if (cachedQuestionIndex) {
         const ordinaryReachedFurther = historyOffsetRef.current >= cachedQuestionIndex.offset
@@ -1485,9 +1486,10 @@ export default function MessagesView({
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
         if (e?.code !== REQUEST_ERROR_CODE.ABORTED) {
-          setOlderHistoryError(e?.code === REQUEST_ERROR_CODE.TIMEOUT
-            ? '更早的聊天记录加载超时，请重试。'
-            : '更早的聊天记录加载失败。');
+          setOlderHistoryError(describeResourceLoadError(e, '更早的聊天记录', {
+            hasPreviousResult: true,
+            loadedAt: cachedHistory?.loadedAt,
+          }));
         }
       }
     } finally {

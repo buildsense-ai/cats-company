@@ -1,3 +1,7 @@
+const { matchPrecache, precacheAndRoute } = vi.hoisted(() => ({
+  matchPrecache: vi.fn(),
+  precacheAndRoute: vi.fn(),
+}));
 const registerRoute = vi.fn();
 
 vi.mock('workbox-core', () => ({
@@ -6,7 +10,8 @@ vi.mock('workbox-core', () => ({
 
 vi.mock('workbox-precaching', () => ({
   cleanupOutdatedCaches: vi.fn(),
-  precacheAndRoute: vi.fn(),
+  matchPrecache,
+  precacheAndRoute,
 }));
 
 vi.mock('workbox-routing', () => ({
@@ -31,6 +36,8 @@ describe('service worker API routing', () => {
   beforeEach(() => {
     vi.resetModules();
     registerRoute.mockClear();
+    matchPrecache.mockReset();
+    precacheAndRoute.mockClear();
     vi.stubGlobal('self', {
       __WB_MANIFEST: [],
       addEventListener: vi.fn(),
@@ -71,7 +78,7 @@ describe('service worker API routing', () => {
     expect(denylist.some((pattern) => pattern.test('/login///'))).toBe(true);
   });
 
-  test('uses network-only navigation with an explicit offline fallback', async () => {
+  test('uses network-only navigation with a precached app-shell fallback', async () => {
     await import('./sw');
 
     const navigationRoute = registerRoute.mock.calls
@@ -80,7 +87,26 @@ describe('service worker API routing', () => {
 
     expect(navigationRoute.handler.constructor.name).toBe('NetworkOnly');
     expect(navigationRoute.handler.options.networkTimeoutSeconds).toBe(4);
-    await navigationRoute.handler.options.plugins[0].handlerDidError();
-    expect(caches.match).toHaveBeenCalledWith('/offline.html', { ignoreSearch: true });
+    const plugin = navigationRoute.handler.options.plugins[0];
+    matchPrecache.mockResolvedValueOnce({ body: 'app shell' });
+    await expect(plugin.handlerDidError())
+      .resolves.toEqual({ body: 'app shell' });
+    expect(matchPrecache).toHaveBeenCalledWith('/index.html');
+    expect(precacheAndRoute).toHaveBeenCalledTimes(1);
+    expect(registerRoute.mock.invocationCallOrder[1])
+      .toBeLessThan(precacheAndRoute.mock.invocationCallOrder[0]);
+  });
+
+  test('uses the offline page only when the app shell is unavailable', async () => {
+    await import('./sw');
+
+    const navigationRoute = registerRoute.mock.calls
+      .map(([route]) => route)
+      .find((route) => Array.isArray(route?.options?.denylist));
+    matchPrecache.mockResolvedValueOnce(undefined).mockResolvedValueOnce({ body: 'offline' });
+
+    await expect(navigationRoute.handler.options.plugins[0].handlerDidError())
+      .resolves.toEqual({ body: 'offline' });
+    expect(matchPrecache).toHaveBeenLastCalledWith('/offline.html');
   });
 });

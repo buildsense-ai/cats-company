@@ -6,13 +6,11 @@ import { registerRoute, NavigationRoute } from 'workbox-routing';
 import { NetworkOnly } from 'workbox-strategies';
 
 import { sameOriginNotificationURL } from './utils/notification-url';
-import {
-  cleanupNavigationCaches,
-} from './utils/navigation-cache';
+import { cleanupNavigationCaches } from './utils/navigation-cache';
+import { navigationFallback } from './utils/navigation-fallback';
 
 clientsClaim();
 cleanupOutdatedCaches();
-precacheAndRoute(self.__WB_MANIFEST);
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
@@ -44,7 +42,7 @@ registerRoute(neverCache, new NetworkOnly(), 'GET');
 const navigationHandler = new NetworkOnly({
   networkTimeoutSeconds: 4,
   plugins: [{
-    handlerDidError: async () => caches.match('/offline.html', { ignoreSearch: true }),
+    handlerDidError: navigationFallback,
   }],
 });
 
@@ -59,6 +57,12 @@ registerRoute(new NavigationRoute(navigationHandler, {
     authenticationNavigation,
   ],
 }));
+
+// Register the precache route after NavigationRoute. Workbox's precache
+// matcher also treats `/` as `index.html`; keeping navigation first preserves
+// the network-only HTML policy while still allowing navigationFallback to
+// read the installed app shell when the network fails.
+precacheAndRoute(self.__WB_MANIFEST);
 
 function notificationFromEvent(event) {
   let payload = {};

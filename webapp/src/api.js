@@ -12,6 +12,7 @@ import {
   responseErrorMessage,
   setToken as setSessionToken,
 } from './auth-session';
+import { fetchWithRequestError } from './utils/request-error';
 
 export {
   getAuthRevision,
@@ -41,6 +42,7 @@ let wsPushSubscriptionID = '';
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
+const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 
 export function toWritableBotSkillRefs(skills) {
   if (!Array.isArray(skills)) return skills;
@@ -662,13 +664,14 @@ export const api = {
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
   acceptFriendAsBot: async (apiKey, userId) => {
-    const res = await fetch(`${API_BASE}/api/friends/accept`, {
+    const res = await fetchWithRequestError(`${API_BASE}/api/friends/accept`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `ApiKey ${apiKey}`,
       },
       body: JSON.stringify({ user_id: userId }),
+      timeoutMs: DIRECT_REQUEST_TIMEOUT_MS,
     });
     let data = {};
     try {

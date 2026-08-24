@@ -4942,6 +4942,29 @@ describe('MessagesView composer draft isolation', () => {
       .some((button) => button.textContent.includes('重新加载'))).toBe(true);
   });
 
+  it('classifies a gateway failure while loading older history', async () => {
+    const latest = Array.from({ length: 50 }, (_, index) => ({
+      id: 101 + index,
+      seq_id: 101 + index,
+      topic_id: 'p2p_1_2',
+      from_uid: index % 2 === 0 ? 1 : 2,
+      type: 'text',
+      content: `latest-${index}`,
+    }));
+    const unavailable = Object.assign(new Error('bad gateway'), { status: 502 });
+    api.getMessages
+      .mockResolvedValueOnce({ messages: latest, has_more: true, next_before_id: 101 })
+      .mockRejectedValueOnce(unavailable);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises(16);
+    });
+
+    expect(container.textContent).toContain('服务暂时不可用。');
+    expect(container.textContent).not.toContain('更早的聊天记录加载失败。');
+  });
+
   it('cancels the previous topic history request when switching topics', async () => {
     const firstHistory = deferred();
     let firstOptions;

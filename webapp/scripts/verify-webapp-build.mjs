@@ -13,7 +13,9 @@ if (!existsSync(assetsRoot)) fail('missing build/assets directory');
 
 const serviceWorker = readFileSync(serviceWorkerPath, 'utf8');
 const requiredPrecacheEntries = [
+  'index.html',
   'assets/index-',
+  'assets/tinode-web-',
   'assets/workbox-window',
   'offline.html',
 ];
@@ -24,11 +26,7 @@ for (const entry of requiredPrecacheEntries) {
   }
 }
 
-if (serviceWorker.includes('"url":"index.html')) {
-  fail('service worker unexpectedly precaches navigation HTML');
-}
-
-for (const forbiddenEntry of ['tinode-web-', 'pdf-']) {
+for (const forbiddenEntry of ['pdf-', 'pdf.worker.']) {
   if (serviceWorker.includes(forbiddenEntry)) {
     fail(`service worker unexpectedly precaches ${forbiddenEntry} chunk`);
   }

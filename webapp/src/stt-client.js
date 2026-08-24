@@ -1,10 +1,11 @@
 import PCM_WORKLET_URL from './stt-pcm-worklet.js?url&no-inline';
-import { getToken, responseErrorMessage } from './auth-session';
+import { request } from './auth-session';
 
 const MAX_BUFFERED_AUDIO_BYTES = 160_000;
 const MAX_PRE_ROLL_AUDIO_BYTES = 16_000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 300;
 const FINALIZATION_TIMEOUT_MS = 5_000;
+const STT_SESSION_TIMEOUT_MS = 15_000;
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const TRANSCRIPT_BOUNDARY_PUNCTUATION = /[\s,.;:!?，。；：！？、]/u;
 const TRANSCRIPT_BOUNDARY_PUNCTUATION_GLOBAL = /[\s,.;:!?，。；：！？、]/gu;
@@ -255,23 +256,7 @@ function sttAPIBaseURL() {
 }
 
 async function createSTTSessionRequest() {
-  const headers = { 'Content-Type': 'application/json' };
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${API_BASE}/api/stt/sessions`, { method: 'POST', headers });
-  let payload = {};
-  try {
-    payload = await response.json();
-  } catch {
-    payload = {};
-  }
-  if (!response.ok) {
-    const error = new Error(responseErrorMessage(response.status, payload.error || '无法创建语音识别会话'));
-    error.status = response.status;
-    error.data = payload;
-    throw error;
-  }
-  return payload;
+  return request('POST', '/api/stt/sessions', undefined, { timeoutMs: STT_SESSION_TIMEOUT_MS });
 }
 
 export function isStreamingSTTSupported() {

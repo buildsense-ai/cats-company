@@ -721,7 +721,11 @@ describe('LocalAssistantBar model selector', () => {
       .toContain('当前套餐未包含');
     expect(describeModelConfigRequestError({ status: 503, data: { code: 'model_entitlement_unavailable' } }))
       .toContain('套餐额度暂时无法确认');
-    expect(describeModelConfigRequestError({ status: 503, message: 'custom model encryption unavailable' }))
+    expect(describeModelConfigRequestError({
+      status: 503,
+      message: '服务暂时不可用，请稍后重试',
+      data: { error: 'custom model encryption unavailable' },
+    }))
       .toContain('安全密钥存储');
     expect(describeModelApplyError('401 Unauthorized: invalid api key')).toContain('鉴权失败');
     expect(describeModelApplyError('429 quota exceeded')).toContain('额度不足');

@@ -1076,4 +1076,13 @@ describe('direct remote response errors', () => {
       data: { error: '后端服务暂时异常' },
     });
   });
+
+  test('normalizes a friend-acceptance network failure', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await expect(apiModule.api.acceptFriendAsBot('api-key', 42)).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+      message: '暂时无法连接服务，请稍后重试',
+    });
+  });
 });

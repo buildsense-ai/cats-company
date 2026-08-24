@@ -10,6 +10,7 @@ describe('request failure semantics', () => {
     expect(requestFailureKind({ status: 502 })).toBe(REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE);
     expect(requestFailureKind({ status: 503 })).toBe(REQUEST_FAILURE_KIND.SERVICE_UNAVAILABLE);
     expect(requestFailureKind({ status: 500 })).toBe(REQUEST_FAILURE_KIND.SERVER_ERROR);
+    expect(requestFailureKind({ status: 408 })).toBe(REQUEST_FAILURE_KIND.TIMEOUT);
   });
 
   test('uses observable browser connectivity for network failures', () => {
@@ -32,5 +33,11 @@ describe('request failure semantics', () => {
     );
 
     expect(message).toMatch(/^服务暂时不可用。当前显示 14:32 加载的聊天记录。$/);
+  });
+
+  test('describes a generic server failure distinctly', () => {
+    expect(describeResourceLoadError({ status: 500 }, '聊天记录')).toBe(
+      '服务请求失败，暂时无法获取聊天记录。',
+    );
   });
 });

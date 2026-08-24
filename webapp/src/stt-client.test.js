@@ -980,4 +980,20 @@ describe('StreamingSTTSession', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('reports a normalized network error when session admission cannot connect', async () => {
+    const onError = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const session = new StreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn() }),
+      onError,
+    });
+
+    await session.start();
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'NETWORK_ERROR',
+      message: '暂时无法连接服务，请稍后重试',
+    }));
+  });
 });
