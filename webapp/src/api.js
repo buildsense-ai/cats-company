@@ -30,6 +30,7 @@ const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.l
 let wsConn = null;
 let wsReconnectTimer = null;
 let wsConnectTimer = null;
+let wsStableTimer = null;
 let wsGeneration = 0;
 let wsReconnectAttempt = 0;
 let msgHandlers = [];
@@ -40,6 +41,7 @@ let wsPushSubscriptionID = '';
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
+const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 
 export function toWritableBotSkillRefs(skills) {
@@ -56,6 +58,10 @@ function currentPageVisibility() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
     ? 'hidden'
     : 'visible';
+}
+
+function isBrowserOnline() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
 function normalizePageVisibility(value) {
@@ -771,6 +777,10 @@ export function connectWS(onMessage, { force = false } = {}) {
     clearTimeout(wsConnectTimer);
     wsConnectTimer = null;
   }
+  if (wsStableTimer) {
+    clearTimeout(wsStableTimer);
+    wsStableTimer = null;
+  }
   const generation = ++wsGeneration;
   if (wsConn) {
     const staleConn = wsConn;
@@ -805,9 +815,11 @@ export function connectWS(onMessage, { force = false } = {}) {
     wsReconnectAttempt += 1;
     const retryInMs = reconnectDelay(wsReconnectAttempt);
     onMessage({ _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs });
-    wsReconnectTimer = setTimeout(() => {
-      if (wsGeneration === generation) connectWS(onMessage);
-    }, retryInMs);
+    if (isBrowserOnline()) {
+      wsReconnectTimer = setTimeout(() => {
+        if (wsGeneration === generation) connectWS(onMessage);
+      }, retryInMs);
+    }
   }, WS_CONNECT_TIMEOUT_MS);
 
   conn.onopen = () => {
@@ -821,7 +833,13 @@ export function connectWS(onMessage, { force = false } = {}) {
     }
     console.log('WebSocket connected');
     wsConnected = true;
-    wsReconnectAttempt = 0;
+    // Do not immediately reset the backoff. A socket which opens and drops
+    // again right away is still an unstable connection and should not cause
+    // a tight one-second reconnect loop. Reset after a stable open period.
+    wsStableTimer = setTimeout(() => {
+      if (isCurrent() && wsConnected) wsReconnectAttempt = 0;
+      wsStableTimer = null;
+    }, WS_STABLE_CONNECTION_MS);
     wsPageVisibility = currentPageVisibility();
     wsPageFocused = currentPageFocused();
     // Send handshake
@@ -847,6 +865,10 @@ export function connectWS(onMessage, { force = false } = {}) {
       clearTimeout(wsConnectTimer);
       wsConnectTimer = null;
     }
+    if (wsStableTimer) {
+      clearTimeout(wsStableTimer);
+      wsStableTimer = null;
+    }
     console.log('WebSocket disconnected');
     wsConnected = false;
     wsConn = null;
@@ -869,7 +891,7 @@ export function connectWS(onMessage, { force = false } = {}) {
       msgHandlers.forEach((handler) => handler(authExpiredMessage));
       return;
     }
-    if (getToken()) {
+    if (getToken() && isBrowserOnline()) {
       wsReconnectTimer = setTimeout(() => {
         if (wsGeneration === generation) {
           connectWS(onMessage);
@@ -910,6 +932,10 @@ export function disconnectWS() {
   if (wsConnectTimer) {
     clearTimeout(wsConnectTimer);
     wsConnectTimer = null;
+  }
+  if (wsStableTimer) {
+    clearTimeout(wsStableTimer);
+    wsStableTimer = null;
   }
   if (wsConn) {
     const staleConn = wsConn;

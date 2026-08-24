@@ -181,4 +181,43 @@ describe('AuthView route links', () => {
     expect(onAuthenticationIntent).not.toHaveBeenCalled();
     expect(container.textContent).toContain('密码错误，请重试');
   });
+
+  test('shows a submitting state and prevents duplicate authentication requests', async () => {
+    let resolveLogin;
+    const onLogin = vi.fn(() => new Promise((resolve) => {
+      resolveLogin = resolve;
+    }));
+
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onLogin={onLogin}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    const submitButton = container.querySelector('button[type="submit"]');
+    expect(onLogin).toHaveBeenCalledTimes(1);
+    expect(submitButton?.disabled).toBe(true);
+    expect(submitButton?.textContent).toContain('登录中');
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      resolveLogin();
+      await Promise.resolve();
+    });
+
+    expect(onLogin).toHaveBeenCalledTimes(1);
+    expect(submitButton?.disabled).toBe(false);
+  });
 });

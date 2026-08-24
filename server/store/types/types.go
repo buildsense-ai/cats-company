@@ -324,6 +324,30 @@ type CloudWorkerLifecycle struct {
 	State            string
 }
 
+// CloudWorkerAdminRecord is the read-only operator view of a cloud worker.
+// It deliberately contains no credentials or runtime secrets. Database
+// adapters expose this narrow projection to the internal commercial-ops
+// dashboard so the public user control plane does not need an admin query.
+type CloudWorkerAdminRecord struct {
+	WorkerUID          int64
+	OwnerUID           int64
+	OwnerUsername      string
+	OwnerDisplayName   string
+	Username           string
+	DisplayName        string
+	TenantName         string
+	BotState           int
+	BotEnabled         bool
+	Visibility         string
+	LifecycleState     string
+	PackageExpiresAt   *time.Time
+	DeleteAfter        *time.Time
+	LifecycleLastError string
+	CreditState        string
+	CreditSourceRef    string
+	CreditExpiresAt    *time.Time
+}
+
 // FriendStatus represents the state of a friend relationship.
 type FriendStatus string
 

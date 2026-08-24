@@ -15,6 +15,7 @@ import SkillHubView, {
   normalizeSkillVersionHistory,
   normalizeSkillHubDevices,
   resolveAutomaticSkillHubDeviceID,
+  resolveSkillHubDevicesForBot,
   normalizeLocalSkills,
   normalizeSkillHubSkills,
   isLocalSkillShared,
@@ -224,7 +225,7 @@ describe('SkillHubView', () => {
   async function openCustomSkills() {
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('本地工作区')));
+        .find((button) => button.textContent.includes('运行工作区')));
       await Promise.resolve();
     });
   }
@@ -326,6 +327,7 @@ describe('SkillHubView', () => {
       {
         deviceId: 'server-runtime',
         runtimeRole: 'server',
+        botUid: 42,
         active: true,
         routeConnected: true,
         routable: true,
@@ -333,7 +335,6 @@ describe('SkillHubView', () => {
           'skillhub.localWorkspace.get',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
-          'skillhub.localBot.switch',
         ],
       },
       {
@@ -348,7 +349,16 @@ describe('SkillHubView', () => {
           'skillhub.localBot.switch',
         ],
       },
-    ] }).map((device) => device.deviceId)).toEqual(['ready']);
+    ] }).map((device) => device.deviceId)).toEqual(['ready', 'server-runtime']);
+    expect(resolveSkillHubDevicesForBot([
+      { deviceId: 'desktop', runtimeRole: 'desktop' },
+      { deviceId: 'server-42', runtimeRole: 'server', botUid: 42 },
+      { deviceId: 'server-44', runtimeRole: 'server', botUid: 44 },
+    ], '42').map(device => device.deviceId)).toEqual(['server-42']);
+    expect(resolveSkillHubDevicesForBot([
+      { deviceId: 'desktop', runtimeRole: 'desktop' },
+      { deviceId: 'server-44', runtimeRole: 'server', botUid: 44 },
+    ], '42').map(device => device.deviceId)).toEqual(['desktop']);
     expect(resolveAutomaticSkillHubDeviceID([{ deviceId: 'device-a' }])).toBe('device-a');
     expect(resolveAutomaticSkillHubDeviceID([
       { deviceId: 'device-a' },
@@ -845,9 +855,9 @@ describe('SkillHubView', () => {
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(2);
     expect(container.querySelector('.cc-skillhub-installed')).toBeNull();
-    expect(container.textContent).toContain('本地工作区');
+    expect(container.textContent).toContain('运行工作区');
     expect(container.textContent).not.toContain('已开启');
-    expect(container.querySelector('button[aria-label="复制 tools/review"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="复制 tools/review"]')).toBeNull();
     expect(container.querySelector('button[aria-label="更多操作 tools/review"]')).toBeTruthy();
     expect(container.querySelector('button[aria-label="从当前 Agent 移除 tools/review"]')).toBeFalsy();
 
@@ -856,7 +866,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     expect(container.querySelector('#skillhub-custom-title')?.textContent).toBe('管理自定义能力');
-    expect(container.textContent).toContain('本地 Skills 目录');
+    expect(container.textContent).toContain('Skills 目录');
   });
 
   it('opens with the Agent requested by the management summary', async () => {
@@ -927,10 +937,10 @@ describe('SkillHubView', () => {
       .find((item) => item.querySelector('h3')?.textContent === 'web-search');
     expect(localItem).toBeTruthy();
     expect(container.textContent).toContain('正式能力来自 BotDefinition');
-    expect(container.textContent).toContain('当前设备本地能力');
-    expect(container.textContent).toContain('来自当前连接的 XiaoBa 工作区');
+    expect(container.textContent).toContain('当前运行工作区能力');
+    expect(container.textContent).toContain('来自当前 Agent 正在运行的 XiaoBa');
     expect(localItem.textContent).toContain('仅本地');
-    expect(localItem.textContent).toContain('尚未发布 · 当前设备本地');
+    expect(localItem.textContent).toContain('尚未发布 · 当前运行工作区');
     expect(localItem.textContent).not.toContain('版本未确认');
 
     await act(async () => {
@@ -949,41 +959,13 @@ describe('SkillHubView', () => {
     expect(dialog.textContent).toContain('本地能力');
     expect(dialog.textContent).toContain('本地能力名web-search');
     expect(dialog.textContent).toContain('发布状态尚未发布');
-    expect(dialog.textContent).toContain('存放范围当前设备本地');
+    expect(dialog.textContent).toContain('存放范围当前运行工作区');
     expect(dialog.textContent).toContain('尚未发布到 SkillHub');
     expect(dialog.textContent).not.toContain('local:draft-1');
     expect(dialog.textContent).not.toContain('版本待确认');
     expect(dialog.textContent).not.toContain('发布者SkillHub');
     expect(api.getAgentSkillVersions).not.toHaveBeenCalled();
     expect(api.getSkillHubVersions).not.toHaveBeenCalled();
-  });
-
-  it('copies an added SkillHub ability without opening the platform share action', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    const share = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-    Object.defineProperty(navigator, 'share', { configurable: true, value: share });
-    await act(async () => {
-      root.render(<SkillHubView user={{ uid: 7 }} />);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    vi.useFakeTimers();
-    await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="复制 tools/review"]'));
-      await Promise.resolve();
-    });
-
-    expect(writeText).toHaveBeenCalledWith('tools/review');
-    expect(share).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('已复制 tools/review 的 SkillHub ID');
-    await act(async () => {
-      vi.advanceTimersByTime(3000);
-    });
-    expect(container.textContent).not.toContain('已复制 tools/review 的 SkillHub ID');
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
-    Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
   });
 
   it('opens accessible details and removal actions from the more menu', async () => {
@@ -1097,6 +1079,7 @@ describe('SkillHubView', () => {
           bot_uid: '42',
           local_skill_id: 'local-draft-id',
           deleted: true,
+          backup_expires_at: '2026-09-23T00:00:00.000Z',
         };
       }
       throw new Error(`unexpected tool ${toolName}`);
@@ -1120,10 +1103,10 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     const confirmation = document.body.querySelector('[role="alertdialog"]');
-    expect(confirmation.textContent).toContain('永久删除当前 XiaoBa 工作区中的本地 Skill 文件');
+    expect(confirmation.textContent).toContain('保留 30 天备份（当前需管理员恢复）');
     await act(async () => {
       Simulate.click([...confirmation.querySelectorAll('button')]
-        .find(button => button.textContent === '删除本地能力'));
+        .find(button => button.textContent === '确认删除并备份'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1133,8 +1116,100 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localSkill.delete',
       payload: { bot_uid: '42', local_skill_id: 'local-draft-id' },
     }));
-    expect(container.textContent).toContain('已删除 local-draft 的本地 Skill');
+    expect(container.textContent).toContain('已删除 local-draft，并保留 30 天备份（当前需管理员恢复）');
     expect(container.textContent).not.toContain('Local draft ability');
+  });
+
+  it('loads and shares from the server Runtime bound to the selected owner Bot without switching', async () => {
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'server-42',
+      displayName: 'Saturday Runtime',
+      runtimeRole: 'server',
+      botUid: 42,
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localSkill.delete',
+      ],
+    }, {
+      deviceId: 'server-44',
+      displayName: 'Other Runtime',
+      runtimeRole: 'server',
+      botUid: 44,
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+      ],
+    }] });
+    requestSkillHubDeviceTool.mockImplementation(async ({ deviceId, toolName }) => {
+      expect(deviceId).toBe('server-42');
+      if (toolName === 'skillhub.localWorkspace.get') return {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        skills_path: '/srv/xiaoba/private/skills',
+        skills: [{
+          local_skill_id: 'server-local-id',
+          name: 'server-local',
+          description: 'Server local ability',
+          relative_path: 'server-local',
+          source: 'user',
+          can_share: true,
+        }],
+      };
+      if (toolName === 'skillhub.localSkill.share') return {
+        schema: 'xiaoba.skillhub.local_share.v1',
+        bot_uid: '42',
+        skill: { id: 'alice/local-demo', name: 'server-local' },
+        latest_version: '1.0.0',
+        content_hash: 'd'.repeat(64),
+      };
+      if (toolName === 'skillhub.localSkill.finalize') return {
+        schema: 'xiaoba.skillhub.local_finalize.v1',
+        bot_uid: '42',
+        skill_id: 'alice/local-demo',
+        version: '1.0.0',
+        content_hash: 'd'.repeat(64),
+        direction: 'local_to_cloud',
+      };
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCustomSkills();
+    expect(container.textContent).toContain('服务器运行工作区 · Saturday Runtime');
+    expect(container.textContent).not.toContain('/srv/xiaoba/private/skills');
+    expect([...container.querySelectorAll('button')].some(button => button.textContent.includes('复制路径'))).toBe(false);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-skillhub-local-card button'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'server-42',
+      toolName: 'skillhub.localSkill.share',
+      payload: expect.objectContaining({
+        bot_uid: '42',
+        local_skill_id: 'server-local-id',
+      }),
+    }));
+    expect(requestSkillHubDeviceTool.mock.calls.some(([call]) => (
+      call.toolName === 'skillhub.localBot.switch'
+    ))).toBe(false);
   });
 
   it('uses a matching local name when removing a private ability', async () => {
@@ -1194,6 +1269,7 @@ describe('SkillHubView', () => {
           bot_uid: '42',
           local_skill_id: 'local-1',
           deleted: true,
+          backup_expires_at: '2026-09-23T00:00:00.000Z',
         };
       }
       throw new Error(`unexpected tool ${toolName}`);
@@ -1221,11 +1297,11 @@ describe('SkillHubView', () => {
 
     const confirmation = document.body.querySelector('[role="alertdialog"]');
     expect(confirmation.textContent).toContain('删除“local-demo”的本地能力');
-    expect(confirmation.textContent).toContain('并永久删除当前 XiaoBa 工作区中的本地 Skill 文件');
+    expect(confirmation.textContent).toContain('保留 30 天备份（当前需管理员恢复）');
     expect(confirmation.textContent).not.toContain('priv_local1');
     await act(async () => {
       Simulate.click([...confirmation.querySelectorAll('button')]
-        .find((button) => button.textContent === '删除本地能力'));
+        .find((button) => button.textContent === '确认删除并备份'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1235,7 +1311,7 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localSkill.delete',
       payload: { bot_uid: '42', local_skill_id: 'local-1' },
     }));
-    expect(container.textContent).toContain('已删除 local-demo 的本地 Skill，并从 Agent“Owner Bot”移除');
+    expect(container.textContent).toContain('已删除 local-demo，并保留 30 天备份（当前需管理员恢复）；同时已从 Agent“Owner Bot”移除');
     expect(container.textContent).not.toContain('priv_local1');
   });
 
@@ -1525,14 +1601,7 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-version-note')?.textContent).toContain('仅当前 Agent 可用');
     expect(container.textContent).not.toContain('priv_local1');
 
-    const clipboardFailure = vi.fn().mockRejectedValue(new Error('clipboard unavailable'));
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboardFailure } });
-    await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="复制 local-demo"]'));
-      await Promise.resolve();
-    });
-    expect(container.textContent).toContain('请手动复制 私有能力引用：priv_local1');
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    expect(container.querySelector('button[aria-label="复制 local-demo"]')).toBeNull();
 
     await openCustomSkills();
     expect(container.querySelector('.cc-skillhub-device-picker')).toBeNull();
@@ -2431,7 +2500,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     await openCustomSkills();
-    expect(container.textContent).toContain('没有检测到支持 SkillHub 的本地桌面 XiaoBa');
+    expect(container.textContent).toContain('没有检测到支持 SkillHub 的在线 XiaoBa 运行环境');
 
     await act(async () => {
       Simulate.click(container.querySelector('.cc-skillhub-local-actions button:last-child'));
@@ -2507,7 +2576,7 @@ describe('SkillHubView', () => {
     });
 
     expect(container.querySelector('.cc-skillhub-device-picker')).toBeNull();
-    expect(container.textContent).toContain('检测到多台本地桌面 XiaoBa 同时在线');
+    expect(container.textContent).toContain('检测到多个可用的 XiaoBa 运行环境');
     expect(container.textContent).not.toContain('正在读取本地能力');
     expect(requestSkillHubDeviceTool).toHaveBeenCalledTimes(1);
   });

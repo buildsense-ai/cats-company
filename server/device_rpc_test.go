@@ -750,6 +750,30 @@ func TestHiCanBindLiveDeviceConnection(t *testing.T) {
 	}
 }
 
+func TestBotHiBindsServerDeviceToAuthenticatedBot(t *testing.T) {
+	db := &agentTestStore{owners: map[int64]int64{42: 7}}
+	hub := NewHub(db, nil)
+	client := &Client{
+		hub:         hub,
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "server-body",
+		send:        make(chan []byte, 1),
+	}
+	_, ok := hub.bindClientDeviceFromHi(client, &MsgClientHi{Device: &MsgClientHiDevice{
+		DeviceID:     "server-runtime",
+		RuntimeRole:  "server",
+		Capabilities: []string{string(DeviceGrantSkillHubWorkspaceGet)},
+	}})
+	if !ok {
+		t.Fatal("Bot Runtime device registration was rejected")
+	}
+	devices := hub.userDevices.list(7)
+	if len(devices) != 1 || devices[0].BotUID != 42 || devices[0].RuntimeRole != "server" {
+		t.Fatalf("unexpected authenticated Bot device binding: %#v", devices)
+	}
+}
+
 func newDeviceRPCTestFixture(t *testing.T, bindTarget bool) (*Hub, *Client, *Client, *Client, ScopedDeviceGrant) {
 	t.Helper()
 	hub := NewHub(nil, nil)

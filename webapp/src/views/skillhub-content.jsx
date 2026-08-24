@@ -107,7 +107,7 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSe
       </div>
       {isLocalEnabled && (
         <button type='button' className='cc-skillhub-custom-entry' onClick={() => onChangeSection('custom')}>
-          <Wrench size={14} aria-hidden='true' /> 本地工作区
+          <Wrench size={14} aria-hidden='true' /> 运行工作区
         </button>
       )}
     </nav>
@@ -117,14 +117,14 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSe
 function AddedSkills(props) {
   const {
     catalogueByID, definition, definitionReady, loadingDefinition, onChangeSection,
-    onCopySkill, onRefreshDefinition, onRemoveSkill, saving, selectedAgentName, selectedBotUID,
+    onRefreshDefinition, onRemoveSkill, saving, selectedAgentName, selectedBotUID,
     sharingSkill, skillAction, isReadOnly,
   } = props;
   const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
   const sourceExplanation = isReadOnly
     ? '这里只读展示该 Agent 已同步到 BotDefinition 的能力。该 Agent 运行环境中尚未同步的本地 Skill 不会显示。'
-    : '正式能力来自 BotDefinition；本地能力来自当前已连接的 XiaoBa 工作区。未同步的本地能力只在当前设备可见。';
+    : '正式能力来自 BotDefinition；工作区能力来自当前 Agent 正在运行的 XiaoBa。未同步能力只存在于该运行环境。';
   return (
     <section id='skillhub-added-panel' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
       <div className='cc-skillhub-content-header'>
@@ -155,8 +155,8 @@ function AddedSkills(props) {
           )}
           {localOnlySkills.length > 0 && (
             <AbilityGroup
-              label='当前设备本地能力'
-              description='来自当前连接的 XiaoBa 工作区，尚未同步到 BotDefinition。'
+              label='当前运行工作区能力'
+              description='来自当前 Agent 正在运行的 XiaoBa，尚未同步到 BotDefinition。'
               skills={localOnlySkills}
               {...props}
             />
@@ -181,12 +181,11 @@ function AbilityGroup({ description, label, skills, ...props }) {
   );
 }
 
-function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onCopySkill, onLoadSkillHistory, onRemoveSkill, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
+function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onLoadSkillHistory, onRemoveSkill, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
   const presentation = addedSkillPresentationByID.get(skill.skillId);
   const {
     description, details, label, localDetails, privateReference,
   } = presentation;
-  const copying = skillAction?.type === 'copy' && skillAction.skillId === skill.skillId;
   const removing = skillAction?.type === 'remove' && skillAction.skillId === skill.skillId;
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
@@ -285,7 +284,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
           <h3>{label}</h3><span className={`cc-skillhub-availability${skill.localOnly ? ' is-local-only' : ''}`}><Check size={12} aria-hidden='true' /> {skill.localOnly ? '仅本地' : '已启用'}</span>
         </div>
         <p>{description}</p>
-        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前设备本地' : <>{versionLabel} · {authorLabel}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
+        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前运行工作区' : <>{versionLabel} · {authorLabel}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
       </div>
       <div className='cc-skillhub-added-actions'>
         {isReadOnly && !skill.localOnly && <button
@@ -296,9 +295,6 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
           onClick={() => setDetailsOpen(true)}
         >
           查看详情
-        </button>}
-        {!isReadOnly && !skill.localOnly && <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
-          {copying ? '复制中…' : '复制'}
         </button>}
         {!isReadOnly && <button
           ref={triggerRef}
@@ -385,7 +381,7 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
   const [historyError, setHistoryError] = useState('');
   const [historyLoading, setHistoryLoading] = useState(!localOnly);
   const description = localOnly
-    ? '该能力当前存在于这台 XiaoBa 的本地工作区，可供本地运行时使用；尚未发布到 SkillHub，也未写入 Agent 的云端能力配置。'
+    ? '该能力当前存在于此 Agent 的 XiaoBa 运行工作区，可供该运行时使用；尚未发布到 SkillHub，也未写入 Agent 的云端能力配置。'
     : details?.description || skill?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
 
   useEffect(() => {
@@ -477,7 +473,7 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
         <dl className='cc-skillhub-detail-meta'>
           <div><dt>{localOnly ? '本地能力名' : privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{localOnly ? skill.localName || label : skill.skillId}</code></dd></div>
           <div><dt>{localOnly ? '发布状态' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
-          <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前设备本地' : privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
+          <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前运行工作区' : privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
         </dl>
         <section className='cc-skillhub-history' aria-labelledby={`${titleId}-history`}>
           <div className='cc-skillhub-history-heading'>
@@ -644,20 +640,20 @@ function CustomSkills(props) {
   return (
     <section className='cc-skillhub-surface cc-skillhub-custom' aria-labelledby='skillhub-custom-title'>
       <div className='cc-skillhub-custom-header'>
-        <div><span className='cc-skillhub-section-kicker'>开发者工具</span><h2 id='skillhub-custom-title'>管理自定义能力</h2><p>查看本地能力、验证内容并发布到团队。这里的操作面向 Skill 开发者。</p></div>
+        <div><span className='cc-skillhub-section-kicker'>开发者工具</span><h2 id='skillhub-custom-title'>管理自定义能力</h2><p>查看运行工作区能力、验证内容并发布到团队。这里的操作面向 Skill 开发者。</p></div>
         <button type='button' className='cc-skillhub-back' onClick={() => onChangeSection('added')}><ArrowLeft size={15} aria-hidden='true' /> 返回能力管理</button>
       </div>
       <CustomToolbar {...props} localSkillsPath={localSkillsPath} />
       {!loadingDevices && devices?.length === 0 && (
-        <div className='cc-skillhub-alert error' role='alert'>没有检测到支持 SkillHub 的本地桌面 XiaoBa，请启动或更新本机 XiaoBa 并确认 CatsCo 账号一致。</div>
+        <div className='cc-skillhub-alert error' role='alert'>没有检测到支持 SkillHub 的在线 XiaoBa 运行环境，请确认对应 XiaoBa 已启动、已更新并连接到 CatsCo。</div>
       )}
       {!loadingDevices && devices?.length > 1 && !selectedDeviceID && (
-        <div className='cc-skillhub-alert error' role='alert'>检测到多台本地桌面 XiaoBa 同时在线。为避免修改错工作区，请关闭其他 XiaoBa 后刷新。</div>
+        <div className='cc-skillhub-alert error' role='alert'>检测到多个可用的 XiaoBa 运行环境。为避免修改错工作区，请只保留一个对应运行环境在线后刷新。</div>
       )}
       {localNotice && <div className='cc-skillhub-alert success' role='status'>{localNotice}</div>}
       {localSkillsError && <div className='cc-skillhub-alert error' role='alert'>{localSkillsError}</div>}
       {loadingLocalSkills ? (
-        <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取本地能力' copy='正在同步当前 Agent 对应的 XiaoBa 工作区。' status />
+        <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取工作区能力' copy='正在同步当前 Agent 对应的 XiaoBa 运行工作区。' status />
       ) : localSkills.length === 0 ? (
         <EmptyState icon={<Wrench size={21} />} title='还没有自定义能力' copy='在 XiaoBa 中创建 Skill 后，回到这里刷新。' />
       ) : <CustomGrid {...props} />}
@@ -665,12 +661,16 @@ function CustomSkills(props) {
   );
 }
 
-function CustomToolbar({ loadingDevices, loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, saving, selectedBotUID, sharingSkill }) {
+function CustomToolbar({ devices, loadingDevices, loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, saving, selectedBotUID, selectedDeviceID, sharingSkill }) {
+  const selectedDevice = devices?.find(device => String(device?.deviceId || '') === String(selectedDeviceID || ''));
+  const isServerRuntime = selectedDevice?.runtimeRole === 'server';
   return (
     <div className='cc-skillhub-custom-toolbar'>
-      <div className='cc-skillhub-local-path'><FolderOpen size={15} aria-hidden='true' /><code>{localSkillsPath || '尚未读取本地 Skills 目录'}</code></div>
+      <div className='cc-skillhub-local-path'><FolderOpen size={15} aria-hidden='true' />{isServerRuntime
+        ? <span>{`服务器运行工作区 · ${selectedDevice?.displayName || 'XiaoBa Server'}`}</span>
+        : <code>{localSkillsPath || '尚未读取本地 Skills 目录'}</code>}</div>
       <div className='cc-skillhub-local-actions'>
-        <button type='button' onClick={onCopyLocalPath} disabled={!localSkillsPath}><Clipboard size={14} aria-hidden='true' /> 复制路径</button>
+        {!isServerRuntime && <button type='button' onClick={onCopyLocalPath} disabled={!localSkillsPath}><Clipboard size={14} aria-hidden='true' /> 复制路径</button>}
         <button type='button' onClick={onRefreshLocal} disabled={!selectedBotUID || loadingDevices || loadingLocalSkills || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingLocalSkills ? 'is-spinning' : ''} size={14} aria-hidden='true' /> {loadingLocalSkills ? '刷新中…' : '刷新'}
         </button>

@@ -52,6 +52,7 @@ type UserDevice struct {
 	Source            string                 `json:"source"`
 	OwnerUID          int64                  `json:"-"`
 	OwnerUserID       string                 `json:"ownerUserId"`
+	BotUID            int64                  `json:"botUid,omitempty"`
 	DeviceID          string                 `json:"deviceId"`
 	DisplayName       string                 `json:"displayName,omitempty"`
 	OS                string                 `json:"os"`
@@ -167,6 +168,7 @@ type deviceSelectionPreference struct {
 }
 
 type RegisterUserDeviceRequest struct {
+	BotUID         int64              `json:"bot_uid,omitempty"`
 	DeviceID       string             `json:"device_id"`
 	DisplayName    string             `json:"display_name,omitempty"`
 	OS             string             `json:"os,omitempty"`
@@ -230,6 +232,7 @@ func (r *userDeviceRegistry) register(ownerUID int64, req RegisterUserDeviceRequ
 		Source:         "catscompany",
 		OwnerUID:       ownerUID,
 		OwnerUserID:    formatUID(ownerUID),
+		BotUID:         normalizeDeviceBotUID(req.BotUID),
 		DeviceID:       deviceID,
 		DisplayName:    normalizeDeviceText(req.DisplayName),
 		OS:             normalizeDeviceOS(req.OS),
@@ -1071,6 +1074,13 @@ func (h *DeviceHandler) HandleRegisterDevice(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	// Never trust a caller-supplied Bot binding. The authenticated Bot API key
+	// is the only authority for associating a Runtime device with one Bot.
+	req.BotUID = 0
+	actorUID := UIDFromContext(r.Context())
+	if actor, err := h.db.GetUser(actorUID); err == nil && actor != nil && actor.AccountType == types.AccountBot {
+		req.BotUID = actorUID
+	}
 	device, err := h.registry().register(ownerUID, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1200,6 +1210,13 @@ func normalizeDeviceRPCStatusAgentID(value string) string {
 		return formatUID(uid)
 	}
 	return agentID
+}
+
+func normalizeDeviceBotUID(value int64) int64 {
+	if value > 0 {
+		return value
+	}
+	return 0
 }
 
 func (h *DeviceHandler) registry() *userDeviceRegistry {
