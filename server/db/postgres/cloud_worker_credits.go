@@ -70,9 +70,22 @@ func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool,
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`
-		UPDATE cloud_worker_credits
-		SET state = 'available', reservation_ref = '', reserved_at = NULL
-		WHERE uid = $1 AND state = 'reserved' AND reserved_at < CURRENT_TIMESTAMP - INTERVAL '20 minutes'`, uid); err != nil {
+		UPDATE cloud_worker_credits c
+		SET state = CASE
+			WHEN c.source_ref LIKE 'order:%'
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM commercial_entitlements e
+				WHERE e.uid = c.uid AND e.source = 'order'
+				  AND c.source_ref = 'order:' || e.source_ref
+				  AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+				  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+			 ) THEN 'revoked'
+			ELSE 'available'
+		END,
+		reservation_ref = '', reserved_at = NULL
+		WHERE c.uid = $1 AND c.state = 'reserved'
+		  AND c.reserved_at < CURRENT_TIMESTAMP - INTERVAL '20 minutes'`, uid); err != nil {
 		return false, fmt.Errorf("release stale cloud worker credit reservation: %w", err)
 	}
 	var id int64
@@ -140,14 +153,47 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 	return nil
 }
 
+// RegisterCloudWorkerLifecycle persists a cleanup handle independently of a
+// paid credit. It is used only when a provider instance was created but the
+// credit reservation disappeared concurrently (for example after a refund),
+// so the lifecycle sweeper can retry destruction instead of leaving a billed
+// orphan with no durable handle.
+func (a *Adapter) RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenantName string, packageExpiresAt time.Time, graceDays int) error {
+	if workerUID <= 0 || ownerUID <= 0 || strings.TrimSpace(tenantName) == "" || packageExpiresAt.IsZero() || graceDays < 0 || graceDays > 90 {
+		return fmt.Errorf("invalid cloud worker lifecycle registration")
+	}
+	deleteAfter := packageExpiresAt.AddDate(0, 0, graceDays)
+	_, err := a.db.Exec(`
+		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
+		VALUES ($1, $2, $3, $4, $5, 'active')
+		ON CONFLICT (worker_uid) DO NOTHING`,
+		workerUID, ownerUID, strings.TrimSpace(tenantName), packageExpiresAt, deleteAfter)
+	if err != nil {
+		return fmt.Errorf("register cloud worker lifecycle: %w", err)
+	}
+	return nil
+}
+
 func (a *Adapter) ReleaseCloudWorkerCredit(uid int64, reservation string) error {
 	if uid <= 0 || strings.TrimSpace(reservation) == "" {
 		return fmt.Errorf("invalid cloud worker credit release")
 	}
 	_, err := a.db.Exec(`
-		UPDATE cloud_worker_credits
-		SET state = 'available', reservation_ref = '', reserved_at = NULL
-		WHERE uid = $1 AND reservation_ref = $2 AND state = 'reserved'`, uid, strings.TrimSpace(reservation))
+		UPDATE cloud_worker_credits c
+		SET state = CASE
+			WHEN c.source_ref LIKE 'order:%'
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM commercial_entitlements e
+				WHERE e.uid = c.uid AND e.source = 'order'
+				  AND c.source_ref = 'order:' || e.source_ref
+				  AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+				  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+			 ) THEN 'revoked'
+			ELSE 'available'
+		END,
+		reservation_ref = '', reserved_at = NULL
+		WHERE c.uid = $1 AND c.reservation_ref = $2 AND c.state = 'reserved'`, uid, strings.TrimSpace(reservation))
 	if err != nil {
 		return fmt.Errorf("release cloud worker credit: %w", err)
 	}
@@ -165,8 +211,10 @@ func (a *Adapter) ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, gr
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
 		-- Never move a deletion already claimed by the sweeper back to active:
-		-- the provider-side destroy is running outside this transaction.
-		WHERE owner_uid = $1 AND state IN ('active','delete_pending')`, uid, expiresAt, graceDays)
+		-- the provider-side destroy is running outside this transaction. A
+		-- delete_failed row has no active provider operation and is recoverable
+		-- after a successful renewal or upgrade.
+		WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`, uid, expiresAt, graceDays)
 	if err != nil {
 		return fmt.Errorf("extend cloud worker lifecycles: %w", err)
 	}
