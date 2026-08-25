@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -18,6 +18,7 @@ import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet
 import MobilePdfPreview from './mobile-pdf-preview';
 import { artifactRefFromPreviewFile, artifactURLForVersion, requestArtifactPageContext } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
+import { sharePreviewLink } from './preview-share';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -2415,8 +2416,12 @@ export function FilePreviewPanel({
   const [remoteFrameState, setRemoteFrameState] = useState('idle');
   const [dragOffset, setDragOffset] = useState(0);
   const [isDismissing, setIsDismissing] = useState(false);
+  const [shareState, setShareState] = useState('idle');
+  const [shareNotice, setShareNotice] = useState('');
   const dragStateRef = useRef({ active: false, startY: 0, offset: 0 });
   const dismissTimerRef = useRef(null);
+  const shareResetTimerRef = useRef(null);
+  const shareRequestRef = useRef(0);
   const hasDismissedRef = useRef(false);
   const panelRef = useRef(null);
   const closeButtonRef = useRef(null);
@@ -2444,6 +2449,7 @@ export function FilePreviewPanel({
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
   const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
+  const shareType = isPdf ? 'PDF' : isHtml ? 'HTML' : '文件';
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
@@ -2588,11 +2594,18 @@ export function FilePreviewPanel({
     );
     setDragOffset(0);
     setIsDismissing(false);
+    shareRequestRef.current += 1;
+    setShareState('idle');
+    setShareNotice('');
     hasDismissedRef.current = false;
     dragStateRef.current = { active: false, startY: 0, offset: 0 };
     if (dismissTimerRef.current) {
       window.clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = null;
+    }
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
     }
     if (!file || !descriptor?.canPreview || isPdf || isImage || isRemoteArtifact) {
       setLoadingText(false);
@@ -2721,7 +2734,9 @@ export function FilePreviewPanel({
   }, [backgroundRef, preview, shouldUseSheetMode]);
 
   useEffect(() => () => {
+    shareRequestRef.current += 1;
     if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
+    if (shareResetTimerRef.current) window.clearTimeout(shareResetTimerRef.current);
   }, []);
 
   const finishDismiss = () => {
@@ -2776,6 +2791,45 @@ export function FilePreviewPanel({
     }
     dragStateRef.current.offset = 0;
     setDragOffset(0);
+  };
+
+  const handleShare = async () => {
+    if (!(isPdf || isHtml) || shareState === 'pending') return;
+    const requestID = shareRequestRef.current + 1;
+    shareRequestRef.current = requestID;
+    setShareState('pending');
+    setShareNotice('');
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
+    }
+
+    let result;
+    try {
+      result = await sharePreviewLink({ url, name: file.name || shareType });
+    } catch {
+      result = { status: 'error' };
+    }
+    if (requestID !== shareRequestRef.current) return;
+
+    if (result.status === 'cancelled' || result.status === 'shared') {
+      setShareState('idle');
+      return;
+    }
+    if (result.status === 'copied') {
+      setShareState('copied');
+      setShareNotice(`${shareType} 分享链接已复制。`);
+      shareResetTimerRef.current = window.setTimeout(() => {
+        if (requestID !== shareRequestRef.current) return;
+        shareResetTimerRef.current = null;
+        setShareState('idle');
+        setShareNotice('');
+      }, 2200);
+      return;
+    }
+
+    setShareState('error');
+    setShareNotice('暂时无法分享，请使用“在新窗口打开”后从浏览器分享。');
   };
 
   const backdropOpacity = isDismissing ? 0 : Math.max(0.35, 1 - (dragOffset / 220));
@@ -2835,6 +2889,19 @@ export function FilePreviewPanel({
             </div>
           </div>
           <div className="v3-file-preview-actions">
+            {(isPdf || isHtml) && (
+              <button
+                className={`v3-file-preview-share-action${shareState === 'copied' ? ' is-success' : ''}${shareState === 'error' ? ' is-error' : ''}`}
+                type="button"
+                aria-label={shareState === 'copied' ? `已复制 ${shareType} 分享链接` : shareState === 'error' ? `重试分享 ${shareType}` : `分享 ${shareType}`}
+                title={shareState === 'copied' ? '已复制分享链接' : shareState === 'error' ? `重试分享 ${shareType}` : `分享 ${shareType}`}
+                aria-busy={shareState === 'pending' || undefined}
+                disabled={shareState === 'pending'}
+                onClick={handleShare}
+              >
+                {shareState === 'copied' ? <CheckCircle2 size={18} /> : <Share2 size={18} />}
+              </button>
+            )}
             {!isRemoteArtifact && (
               <PwaDownloadLink href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
                 <Download size={18} />
@@ -2847,6 +2914,7 @@ export function FilePreviewPanel({
               <X size={18} />
             </button>
           </div>
+          {shareNotice && <span className="oc-visually-hidden" role="status" aria-live="polite">{shareNotice}</span>}
         </div>
         <div className="v3-file-preview-body">
           {isRemoteArtifact ? (
