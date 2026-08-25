@@ -310,6 +310,57 @@ func TestCloudArtifactHandlerListsArtifactsForAccessibleManagedAgent(t *testing.
 	}
 }
 
+func TestCloudArtifactHandlerGrantsOwnerManagementWhenUpstreamOmitsFlags(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	for _, status := range []string{"active", "deleted"} {
+		t.Run(status, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var list cloudArtifactManagementList
+				if err := json.Unmarshal([]byte(managedAgentListJSON("440", status)), &list); err != nil {
+					t.Fatalf("decode fixture: %v", err)
+				}
+				list.Artifacts[0].CanDelete = false
+				list.Artifacts[0].CanRestore = false
+				_ = json.NewEncoder(w).Encode(list)
+			}))
+			defer upstream.Close()
+
+			handler := NewCloudArtifactManagementHandler(
+				"https://example.test/artifacts-index.json",
+				upstream.URL+"/internal/artifacts",
+				token,
+				upstream.Client(),
+			)
+			handler.SetStore(managedArtifactAgentStore(8, 440, true))
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(
+				http.MethodGet,
+				"/api/agents/440/artifacts?status="+status,
+				nil,
+			).WithContext(context.WithValue(context.Background(), uidKey, int64(8)))
+			handler.HandleAgentArtifacts(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var response cloudArtifactManagementList
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.ViewerRelation != "owner" || len(response.Artifacts) != 1 {
+				t.Fatalf("response = %#v", response)
+			}
+			artifact := response.Artifacts[0]
+			if status == "active" && (!artifact.CanDelete || artifact.CanRestore) {
+				t.Fatalf("active owner permissions = delete:%v restore:%v", artifact.CanDelete, artifact.CanRestore)
+			}
+			if status == "deleted" && (artifact.CanDelete || !artifact.CanRestore) {
+				t.Fatalf("deleted owner permissions = delete:%v restore:%v", artifact.CanDelete, artifact.CanRestore)
+			}
+		})
+	}
+}
+
 func TestCloudArtifactHandlerDoesNotGuessCreatorForLegacyManagedArtifact(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

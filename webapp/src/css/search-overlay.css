@@ -80,7 +80,7 @@
 }
 
 .cc-global-search-field:focus-within {
-  border-color: color-mix(in srgb, var(--cc-accent) 22%, var(--cc-border));
+  border-color: var(--cc-border-strong);
   background: var(--cc-control-surface);
   box-shadow: none;
 }
@@ -263,7 +263,7 @@
 
 .cc-global-search-result:focus-visible {
   outline: 0;
-  box-shadow: inset 3px 0 0 var(--cc-accent);
+  box-shadow: inset 3px 0 0 var(--cc-focus-ring);
 }
 
 .cc-global-search-result:disabled { cursor: not-allowed; opacity: 0.55; }

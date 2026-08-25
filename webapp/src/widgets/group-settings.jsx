@@ -288,9 +288,15 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal oc-modal-wide oc-group-settings-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="oc-modal oc-modal-wide oc-group-settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="group-settings-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="oc-group-settings-header">
-          <h2>{t('group_settings')}</h2>
+          <h2 id="group-settings-dialog-title">{t('group_settings')}</h2>
           <button type="button" className="oc-modal-close" onClick={onClose} aria-label="关闭">
             <X size={18} strokeWidth={1.8} />
           </button>

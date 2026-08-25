@@ -188,7 +188,7 @@ export default function FeedbackModal({ onClose, user }) {
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <section className="oc-modal oc-feedback-modal" role="dialog" aria-modal="true" aria-label="意见反馈" onClick={(event) => event.stopPropagation()}>
+      <section className="oc-modal oc-feedback-modal cc-settings-secondary-surface" role="dialog" aria-modal="true" aria-label="意见反馈" onClick={(event) => event.stopPropagation()}>
         <header className="oc-modal-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
             <h3>意见反馈</h3>

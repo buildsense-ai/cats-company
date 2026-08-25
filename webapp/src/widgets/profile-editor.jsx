@@ -129,11 +129,18 @@ export default function ProfileEditor({
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal oc-profile-editor-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="oc-modal oc-profile-editor-modal cc-settings-secondary-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="profile-editor-dialog-title"
+        aria-describedby="profile-editor-dialog-description"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="oc-profile-editor-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3>设置与资料</h3>
-            <p>管理个人资料、账号安全与使用偏好。</p>
+            <h3 id="profile-editor-dialog-title">设置与资料</h3>
+            <p id="profile-editor-dialog-description">管理个人资料、账号安全与使用偏好。</p>
           </div>
           <button type="button" className="oc-profile-editor-close" onClick={onClose} aria-label="关闭">
             <X size={18} strokeWidth={1.8} />

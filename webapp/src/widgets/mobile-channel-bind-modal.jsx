@@ -218,11 +218,17 @@ export default function MobileChannelBindModal({ agentUid, agentName, groupId, t
 
   return (
     <div className="oc-modal-overlay">
-      <div className="oc-modal mobile-channel-bind-modal">
+      <div
+        className="oc-modal mobile-channel-bind-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mobile-channel-dialog-title"
+        aria-describedby="mobile-channel-dialog-description"
+      >
         <div className="mobile-channel-bind-header">
           <div>
-            <div className="oc-modal-title">移动端使用</div>
-            <div className="mobile-channel-bind-subtitle">{targetName}</div>
+            <div className="oc-modal-title" id="mobile-channel-dialog-title">移动端使用</div>
+            <div className="mobile-channel-bind-subtitle" id="mobile-channel-dialog-description">{targetName}</div>
           </div>
           <button type="button" className="v3-action-btn" onClick={onClose} aria-label="关闭">
             <X size={16} />

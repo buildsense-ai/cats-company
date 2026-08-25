@@ -22,7 +22,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] {
   --cc-accent-hover: #219f7e;
   --cc-accent-soft: rgba(41, 188, 149, 0.12);
   --cc-accent-text: #7be0c1;
-  --cc-focus-ring: #69d7b7;
+  --cc-focus-ring: #aeb2b9;
   --cc-success-text: #7be0c1;
   --cc-warning-text: #f3c76b;
   --cc-online-icon: #29bc95;
@@ -298,21 +298,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box {
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box:focus-within {
-  border-color: transparent;
-  background:
-    linear-gradient(#242627, #242627) padding-box,
-    linear-gradient(118deg,
-      rgba(21, 155, 120, 0.62) 0%,
-      rgba(90, 145, 216, 0.5) 38%,
-      rgba(130, 114, 217, 0.52) 68%,
-      rgba(225, 255, 247, 0.72) 100%) border-box;
-  box-shadow:
-    0 0 0 1px rgba(0, 10, 8, 0.3),
-    0 4px 8px rgba(0, 9, 7, 0.28),
-    inset 0 1px 1px rgba(255, 255, 255, 0.16),
-    inset 0 9px 13px -10px rgba(255, 255, 255, 0.42),
-    inset 0 -1px 1px rgba(0, 8, 6, 0.34);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-liquid-edge));
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay) {

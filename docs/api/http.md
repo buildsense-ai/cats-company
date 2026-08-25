@@ -19,10 +19,14 @@ Authorization: ApiKey <api_key>
 **POST /api/auth/register**
 ```json
 {
-  "username": "user123",
-  "password": "pass123"
+  "email": "user@example.com",
+  "password": "pass123",
+  "code": "123456",
+  "username": "user123"
 }
 ```
+
+`username` 可省略；省略时服务端会根据邮箱生成唯一内部账号标识。公开显示名称在注册登录后通过 `POST /api/me/update` 设置。
 
 **POST /api/auth/login**
 ```json

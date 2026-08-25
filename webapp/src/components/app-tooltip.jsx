@@ -28,6 +28,10 @@ function tooltipTarget(eventTarget) {
   return eventTarget.closest(TOOLTIP_SELECTOR);
 }
 
+function tooltipDisabled(target) {
+  return Boolean(target?.closest('[data-cc-tooltips="off"]'));
+}
+
 function claimTooltipLabel(target) {
   const nativeTitle = target.getAttribute('title')?.trim() || '';
   if (nativeTitle) {
@@ -50,6 +54,7 @@ export default function AppTooltip() {
   const activeTargetRef = useRef(null);
   const describedByRef = useRef(null);
   const showTimerRef = useRef(null);
+  const lastInteractionRef = useRef('keyboard');
 
   const clearShowTimer = useCallback(() => {
     if (showTimerRef.current) window.clearTimeout(showTimerRef.current);
@@ -142,10 +147,21 @@ export default function AppTooltip() {
   useEffect(() => {
     const handlePointerOver = (event) => {
       if (event.pointerType === 'touch') return;
+      lastInteractionRef.current = 'pointer';
       const target = tooltipTarget(event.target);
       if (!target || target.contains(event.relatedTarget)) return;
       claimTooltipLabel(target);
+      if (tooltipDisabled(target)) {
+        closeTooltip();
+        return;
+      }
       scheduleTooltip(target, POINTER_SHOW_DELAY_MS);
+    };
+    const handlePointerDown = (event) => {
+      lastInteractionRef.current = 'pointer';
+      const target = tooltipTarget(event.target);
+      if (target) target.dataset.ccPointerFocus = 'true';
+      closeTooltip();
     };
     const handlePointerOut = (event) => {
       const target = tooltipTarget(event.target);
@@ -155,16 +171,28 @@ export default function AppTooltip() {
     };
     const handleFocusIn = (event) => {
       const target = tooltipTarget(event.target);
-      if (target) scheduleTooltip(target, 0);
+      if (!target || lastInteractionRef.current === 'pointer') return;
+      claimTooltipLabel(target);
+      if (tooltipDisabled(target)) {
+        closeTooltip();
+        return;
+      }
+      scheduleTooltip(target, 0);
     };
     const handleFocusOut = (event) => {
-      if (activeTargetRef.current === tooltipTarget(event.target)) closeTooltip();
+      const target = tooltipTarget(event.target);
+      if (target) delete target.dataset.ccPointerFocus;
+      if (activeTargetRef.current === target) closeTooltip();
     };
     const handleKeyDown = (event) => {
+      lastInteractionRef.current = 'keyboard';
+      const activeTarget = tooltipTarget(document.activeElement);
+      if (activeTarget) delete activeTarget.dataset.ccPointerFocus;
       if (event.key === 'Escape') closeTooltip();
     };
 
     document.addEventListener('pointerover', handlePointerOver, true);
+    document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('pointerout', handlePointerOut, true);
     document.addEventListener('focusin', handleFocusIn, true);
     document.addEventListener('focusout', handleFocusOut, true);
@@ -173,6 +201,7 @@ export default function AppTooltip() {
     window.addEventListener('scroll', closeTooltip, true);
     return () => {
       document.removeEventListener('pointerover', handlePointerOver, true);
+      document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('pointerout', handlePointerOut, true);
       document.removeEventListener('focusin', handleFocusIn, true);
       document.removeEventListener('focusout', handleFocusOut, true);

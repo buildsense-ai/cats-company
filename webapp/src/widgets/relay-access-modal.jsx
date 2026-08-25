@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, BadgeCheck, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, LayoutGrid, ReceiptText, RotateCcw, Sparkles, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 
@@ -128,7 +128,7 @@ function endpointFor(config, pattern, fallbackPath) {
 function configSnippet(config, plainKey) {
   const openAIBaseURL = endpointFor(config, /openai/i, '/v1');
   const anthropicBaseURL = endpointFor(config, /anthropic/i, '/anthropic');
-  const keyLine = plainKey ? `API Key: ${plainKey}` : 'API Key: sk-...（在“我的 Key”里生成后复制）';
+  const keyLine = plainKey ? `API Key: ${plainKey}` : 'API Key: sk-…（在“我的 Key”里生成后复制）';
   return [
     'OpenAI 兼容',
     `Base URL: ${openAIBaseURL}`,
@@ -320,8 +320,11 @@ function modelServiceKeyName(name) {
 }
 
 function summarizeCommercial(summary) {
-  if (!activeEntitlements(summary).length && !(summary?.models || []).length) return '暂无已发放额度';
-  return '1 个共享额度池 · 按套餐权益统一扣减';
+  const packages = activeEntitlements(summary);
+  if (!packages.length) return '当前没有有效套餐';
+  const expiry = nearestPackageExpiry(packages);
+  const expiryText = expiry ? `${formatShortDate(expiry)} 到期` : '长期有效';
+  return `${activePackageName(packages)} · ${expiryText}`;
 }
 
 function commercialUsageTextForUser(plan, presentation) {
@@ -330,6 +333,36 @@ function commercialUsageTextForUser(plan, presentation) {
 
 function activeEntitlements(summary) {
   return (summary?.entitlements || []).filter((item) => item.state === 'active');
+}
+
+function activePackageName(packages) {
+  const names = [...new Set((packages || [])
+    .map((item) => String(item?.plan_name || item?.plan_slug || '').trim())
+    .filter(Boolean))];
+  if (!names.length) return '尚未开通套餐';
+  if (names.length === 1) return names[0];
+  return `${names[0]} 等 ${names.length} 个套餐`;
+}
+
+function commercialAccountState(commercial, packages) {
+  if ((packages || []).length > 0) return { label: '当前有效', className: 'active' };
+  if (commercial?.enabled) return { label: '尚未开通', className: 'neutral' };
+  return { label: '未开放', className: 'inactive' };
+}
+
+function handleTabListKeyDown(event) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...event.currentTarget.querySelectorAll('[role="tab"]:not(:disabled)')];
+  if (!tabs.length) return;
+  const currentIndex = tabs.indexOf(document.activeElement);
+  let nextIndex = currentIndex;
+  if (event.key === 'Home') nextIndex = 0;
+  if (event.key === 'End') nextIndex = tabs.length - 1;
+  if (event.key === 'ArrowLeft') nextIndex = (Math.max(currentIndex, 0) - 1 + tabs.length) % tabs.length;
+  if (event.key === 'ArrowRight') nextIndex = (Math.max(currentIndex, -1) + 1) % tabs.length;
+  event.preventDefault();
+  tabs[nextIndex].focus();
+  tabs[nextIndex].click();
 }
 
 function commercialEntitlementSourceLabel(source) {
@@ -473,9 +506,9 @@ function currentQuotaDisplay(summary, commercialEnabled) {
     meta: usedLabel,
     detail: remainingLabel,
     percent,
-    note: overLimit
+      note: overLimit
       ? '套餐总额度已用完，后续调用将暂停；请等待额度重置或联系管理员。'
-      : '所有套餐内模型共用总额度，并按各自倍率扣减；数据可能延迟几分钟。',
+      : '所有模型共享总额度，按模型倍率扣减，数据可能延迟。',
   };
 }
 
@@ -485,12 +518,6 @@ function nearestPackageExpiry(packages) {
     .filter((time) => Number.isFinite(time));
   if (!dates.length) return '';
   return new Date(Math.min(...dates)).toISOString();
-}
-
-function commercialRolloutLabel(commercial) {
-  if (commercial?.enforce_enabled) return '套餐已启用';
-  if (commercial?.enabled) return '内测开放';
-  return '未开放';
 }
 
 function paymentChannelLabel(channels, channel) {
@@ -520,6 +547,160 @@ function extractPlainRelayKey(data) {
   return value ? value.trim() : '';
 }
 
+function CommercialPlanCards({
+  salePlans,
+  hasCurrentCommercialPlans,
+  activeOfficialPlanTier,
+  activePackages,
+  openOrders,
+  paymentChannel,
+  paymentChannels,
+  paymentLoading,
+  onOpenOrder,
+  onSelectPlan,
+  compact = false,
+  className = '',
+}) {
+  return (
+    <div className={`relay-access-plan-list${hasCurrentCommercialPlans ? ' current-catalog' : ''}${className ? ` ${className}` : ''}`}>
+      {hasCurrentCommercialPlans && (
+        <article className="relay-access-plan-row official free">
+          <div className="relay-access-plan-heading">
+            <span className="relay-access-plan-kicker">{FREE_PLAN_PRESENTATION.kicker}</span>
+          </div>
+          <strong className="relay-access-plan-name">{FREE_PLAN_PRESENTATION.name}</strong>
+          <div className="relay-access-plan-price">
+            <span className="relay-access-plan-currency">¥</span>
+            <strong>0</strong>
+            <span>/ 月</span>
+          </div>
+          <span className="relay-access-plan-tagline">{FREE_PLAN_PRESENTATION.tagline}</span>
+          <p>{FREE_PLAN_PRESENTATION.description}</p>
+          <div className="relay-access-plan-action">
+            <button type="button" className="secondary" disabled>无需购买</button>
+          </div>
+          <div className="relay-access-plan-divider" />
+          <span className="relay-access-plan-includes">包含</span>
+          <ul className="relay-access-plan-features">
+            {FREE_PLAN_PRESENTATION.features.map(feature => (
+              <li key={feature}><Check size={14} />{feature}</li>
+            ))}
+          </ul>
+        </article>
+      )}
+      {salePlans.map((plan) => {
+        const presentation = commercialPlanPresentation(plan);
+        const planTier = commercialPlanTier(plan.slug);
+        const isActivePlan = planTier > 0
+          ? activeOfficialPlanTier === planTier
+          : activePackages.some(item => entitlementMatchesPlan(item, plan));
+        const isIncludedPlan = planTier > 0 && activeOfficialPlanTier > planTier;
+        const isUpgradePlan = planTier > activeOfficialPlanTier && activeOfficialPlanTier > 0;
+        const purchaseBlocked = isActivePlan || isIncludedPlan;
+        const pendingOrder = purchaseBlocked ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
+        return (
+          <article
+            className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}`}
+            key={plan.id}
+          >
+            <div className="relay-access-plan-heading">
+              <span className="relay-access-plan-kicker">{presentation.kicker}</span>
+              {presentation.recommended && <span className="relay-access-plan-badge">推荐</span>}
+            </div>
+            <strong className="relay-access-plan-name">{plan.name}</strong>
+            <div className="relay-access-plan-price">
+              {hasCurrentCommercialPlans && <span className="relay-access-plan-currency">¥</span>}
+              <strong>{hasCurrentCommercialPlans ? formatPriceAmountFen(plan.price_fen) : formatPriceFen(plan.price_fen)}</strong>
+              <span>{commercialPlanCycle(plan)}</span>
+            </div>
+            <span className="relay-access-plan-tagline">{presentation.tagline}</span>
+            <p>{plan.description || `${plan.duration_days} 天有效`}</p>
+            {!compact && <em>{commercialUsageTextForUser(plan, presentation)}</em>}
+            {!compact && <span className="relay-access-plan-audience">适合：{presentation.audience}</span>}
+            <div className="relay-access-plan-action">
+              <button
+                type="button"
+                onClick={() => (pendingOrder ? onOpenOrder(pendingOrder) : onSelectPlan(plan))}
+                disabled={!paymentChannel || Boolean(paymentLoading) || purchaseBlocked}
+              >
+                <CreditCard size={15} />
+                {isActivePlan
+                  ? '当前套餐'
+                  : isIncludedPlan
+                    ? '已包含'
+                    : paymentLoading === `create:${plan.id}`
+                      ? '创建中…'
+                      : paymentChannels.length === 0
+                        ? '暂未开放'
+                        : pendingOrder?.status === 'paid'
+                          ? '查看进度'
+                          : pendingOrder
+                            ? '继续支付'
+                            : isUpgradePlan
+                              ? `升级至${plan.name}`
+                              : hasCurrentCommercialPlans ? `选择${plan.name}` : '购买'}
+              </button>
+            </div>
+            {Array.isArray(presentation.features) && presentation.features.length > 0 && (
+              <>
+                <div className="relay-access-plan-divider" />
+                <span className="relay-access-plan-includes">包含</span>
+                <ul className="relay-access-plan-features">
+                  {presentation.features.map(feature => (
+                    <li key={feature}><Check size={14} />{feature}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function EnterprisePlanCard() {
+  return (
+    <section className="relay-access-enterprise-card" aria-labelledby="relay-access-enterprise-title">
+      <div className="relay-access-enterprise-intro">
+        <span>企业服务</span>
+        <h3 id="relay-access-enterprise-title">Business Start</h3>
+        <p>帮助一个团队或一个明确业务场景真正开始使用 AI 员工，不是单纯出售企业账号。</p>
+        <div className="relay-access-enterprise-price">
+          <span>¥</span>
+          <strong>4,999</strong>
+          <small>/ 月起</small>
+        </div>
+        <a href="/contact?topic=enterprise&amp;service=business-start&amp;source=pricing">
+          咨询企业落地
+          <ArrowUpRight size={16} />
+        </a>
+      </div>
+      <div className="relay-access-enterprise-scope">
+        <div>
+          <span>基础服务范围</span>
+          <h4>从环境准备到首个场景上线</h4>
+        </div>
+        <ul>
+          {[
+            '企业使用环境的基础配置、账号与运行检查',
+            '面向负责人和实际使用者的启动培训',
+            '梳理一个边界清晰、可验证的首批业务场景',
+            '初始化约定范围内的首批 Skill',
+            '上线初期反馈处理与约定范围内的小幅调整',
+          ].map(item => (
+            <li key={item}><Check size={16} />{item}</li>
+          ))}
+        </ul>
+        <div className="relay-access-enterprise-custom">
+          <strong>高级企业服务需另行咨询</strong>
+          <p>多部门流程改造、复杂系统集成、专属数据治理、私有化、安全合规、长期驻场和大规模 Skill 开发，均按范围与交付结果单独确认。</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function RelayAccessModal({ onClose }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
@@ -539,6 +720,8 @@ export default function RelayAccessModal({ onClose }) {
   const [checkoutOrder, setCheckoutOrder] = useState(null);
   const [checkoutClock, setCheckoutClock] = useState(Date.now());
   const [paymentLoading, setPaymentLoading] = useState('');
+  const [planChooserOpen, setPlanChooserOpen] = useState(false);
+  const [planChooserAudience, setPlanChooserAudience] = useState('personal');
   const [paymentPollError, setPaymentPollError] = useState('');
   const [trialLoading, setTrialLoading] = useState(false);
   const [currentUsage, setCurrentUsage] = useState(undefined);
@@ -552,6 +735,19 @@ export default function RelayAccessModal({ onClose }) {
   const purchaseSubmittingRef = useRef(false);
   const purchaseConfirmRef = useRef(null);
   const checkoutRef = useRef(null);
+  const modalRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const restoreFocusRef = useRef(null);
+
+  useEffect(() => {
+    restoreFocusRef.current = document.activeElement;
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    return () => {
+      window.clearTimeout(focusTimer);
+      const target = restoreFocusRef.current;
+      if (target instanceof HTMLElement && target.isConnected) target.focus();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -759,8 +955,7 @@ export default function RelayAccessModal({ onClose }) {
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
   const activeOfficialPlanTier = activeCommercialPlanTier(activePackages, salePlans);
-  const packageExpiry = nearestPackageExpiry(activePackages);
-  const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
+  const commercialState = commercialAccountState(commercial, activePackages);
   const currentResetInfo = usageResetInfo(currentUsage);
   const currentQuota = currentQuotaDisplay(currentUsage, commercialEnabled);
   const checkoutCountdown = commercialOrderCountdown(checkoutOrder, checkoutClock);
@@ -775,6 +970,9 @@ export default function RelayAccessModal({ onClose }) {
     { id: 'fulfilled', label: '已生效', count: fulfilledOrders.length },
     { id: 'closed', label: '退款 / 关闭', count: closedOrders.length },
   ];
+  const availableOrderFilters = orderFilters.filter((filter) => (
+    filter.id === 'all' || filter.count > 0 || filter.id === orderFilter
+  ));
   const filteredOrders = commercialOrders.filter((order) => {
     if (orderFilter === 'open') return ['created', 'pending', 'paid'].includes(order.status);
     if (orderFilter === 'fulfilled') return order.status === 'fulfilled';
@@ -930,7 +1128,7 @@ export default function RelayAccessModal({ onClose }) {
         paymentWindow.opener = null;
         try {
           paymentWindow.document.title = '正在打开支付宝';
-          paymentWindow.document.body.textContent = '正在创建订单并打开支付宝官方收银台...';
+          paymentWindow.document.body.textContent = '正在创建订单并打开支付宝官方收银台…';
         } catch {
           // The checkout still opens even when the placeholder document cannot be styled.
         }
@@ -959,6 +1157,26 @@ export default function RelayAccessModal({ onClose }) {
       else setWarning('浏览器拦截了支付宝窗口，请在订单详情中点击付款按钮。');
     }
   };
+
+  const selectCommercialPlan = (plan) => {
+    setPlanChooserOpen(false);
+    setCheckoutOrder(null);
+    setPurchasePlan(plan);
+  };
+
+  const openCommercialOrderFromChooser = (order) => {
+    setPlanChooserOpen(false);
+    openCommercialOrder(order);
+  };
+
+  useEffect(() => {
+    if (!planChooserOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setPlanChooserOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [planChooserOpen]);
 
   const cancelCommercialOrder = async () => {
     if (!checkoutOrder?.order_no || !['created', 'pending', 'failed'].includes(checkoutOrder.status)) return;
@@ -1159,101 +1377,150 @@ export default function RelayAccessModal({ onClose }) {
     };
   }, [checkoutOrder?.order_no, checkoutOrder?.status]);
 
+  const handleModalKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      if (purchasePlan) setPurchasePlan(null);
+      else if (checkoutOrder) setCheckoutOrder(null);
+      else onClose();
+      return;
+    }
+    if (event.key !== 'Tab' || !modalRef.current) return;
+    const focusable = [...modalRef.current.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), a[href], summary, [tabindex]:not([tabindex="-1"])',
+    )].filter((element) => {
+      if (element.getAttribute('aria-hidden') === 'true') return false;
+      const closedDisclosure = element.closest('details:not([open])');
+      return !closedDisclosure || element === closedDisclosure.querySelector('summary');
+    });
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal relay-access-modal" onClick={(event) => event.stopPropagation()}>
+      <div
+        ref={modalRef}
+        className="oc-modal relay-access-modal cc-settings-secondary-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="relay-access-dialog-title"
+        aria-describedby="relay-access-dialog-description"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleModalKeyDown}
+      >
         <div className="oc-modal-header relay-access-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3>套餐与权益</h3>
-            <p>查看当前用量、套餐权益与订单记录。</p>
+            <h3 id="relay-access-dialog-title">套餐与权益</h3>
+            <p id="relay-access-dialog-description">查看当前用量、套餐权益与订单记录。</p>
           </div>
-          <button type="button" onClick={onClose} aria-label="关闭">
+          <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
 
         <div className="relay-access-body">
-          {loading && <div className="oc-settings-secondary">正在读取套餐与权益...</div>}
+          {loading && (
+            <div className="oc-settings-secondary" role="status" aria-live="polite">
+              正在读取套餐与权益…
+            </div>
+          )}
           {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
           {warning && <InlineFeedback tone="warning">{warning}</InlineFeedback>}
 
           <section className="relay-access-commerce">
             <div className="relay-access-section-head">
               <div>
-                <div className="relay-access-title">套餐与账单</div>
+                <div className="relay-access-title">套餐概览</div>
                 <div className="oc-settings-secondary">
-                  {commercialEnabled
+                  {activePackages.length > 0
                     ? summarizeCommercial(commercialSummary)
+                    : commercialEnabled
+                      ? '当前没有有效套餐'
                     : '套餐兑换暂未开放；当前额度和 API Key 不受影响。'}
                 </div>
               </div>
-              <span className={`relay-access-state ${commercialEnabled ? 'active' : 'inactive'}`}>
-                {commercialRolloutLabel(commercial)}
+              <span className={`relay-access-state ${commercialState.className}`}>
+                {commercialState.label}
               </span>
             </div>
 
             <div className={`relay-access-current-quota ${currentQuota.className}`}>
               <div className="relay-access-current-quota-head">
-                <div>
+                <div className="relay-access-current-quota-heading">
                   <span>{currentQuota.title}</span>
-                  <strong>{currentQuota.model}</strong>
+                  <strong>{currentQuota.meta}</strong>
                 </div>
-                <em>{currentQuota.detail}</em>
+                <div className="relay-access-current-quota-actions">
+                  <em>{currentQuota.detail}</em>
+                  {salePlans.length > 0 && (
+                    <button
+                      type="button"
+                      className="relay-access-upgrade-button"
+                      aria-haspopup="dialog"
+                      aria-expanded={planChooserOpen}
+                      aria-controls="relay-access-plan-chooser"
+                      onClick={() => {
+                        setPlanChooserAudience('personal');
+                        setPlanChooserOpen(true);
+                      }}
+                    >
+                      升级套餐
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="relay-access-current-quota-meta">{currentQuota.meta}</div>
-              <div className="relay-access-quota-bar" aria-label={`套餐总用量 ${formatPercent(currentQuota.percent)}`}>
+              <div
+                className="relay-access-quota-bar"
+                role="progressbar"
+                aria-label="套餐总用量"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.min(100, Math.max(0, currentQuota.percent))}
+                aria-valuetext={currentQuota.meta}
+              >
                 <i style={{ width: `${Math.min(100, Math.max(0, currentQuota.percent))}%` }} />
               </div>
-              <div className="relay-access-period-note">{currentQuota.note}</div>
-            </div>
-
-            <div className="relay-access-commerce-grid">
-              <div className="relay-access-commerce-card">
-                <Sparkles size={17} />
-                <div>
-                  <strong>{commercialEnabled && currentUsage ? formatPercent(currentQuota.percent) : '待同步'}</strong>
-                  <span>本周期总用量</span>
-                </div>
-              </div>
-              <div className="relay-access-commerce-card">
-                <Gift size={17} />
-                <div>
-                  <strong>{activePackages.length > 0 ? activePackages.length : '无套餐'}</strong>
-                  <span>当前有效套餐</span>
-                </div>
-              </div>
-              <div className="relay-access-commerce-card">
-                <CalendarDays size={17} />
-                <div>
-                  <strong>{packageExpiryText}</strong>
-                  <span>套餐最近到期</span>
-                </div>
-              </div>
-              <div className="relay-access-commerce-card">
-                <RotateCcw size={17} />
-                <div>
-                  <strong>{currentResetInfo.title}</strong>
-                  <span>{currentResetInfo.detail}</span>
-                </div>
+              <div className="relay-access-current-quota-cycle">
+                <span className="relay-access-current-quota-note">{currentQuota.note}</span>
+                <span>下次重置时间：{currentResetInfo.detail.replace(/^下次\s*/, '')}</span>
               </div>
             </div>
-            <div className="relay-access-period-note">{currentResetInfo.note}</div>
 
-            <div className="relay-access-billing-tabs" role="tablist" aria-label="套餐与账单">
+            <div
+              className="relay-access-billing-tabs"
+              role="tablist"
+              aria-label="套餐信息"
+              onKeyDown={handleTabListKeyDown}
+            >
               <button
+                id="relay-access-entitlements-tab"
                 type="button"
                 role="tab"
                 aria-selected={commercialView === 'plans'}
+                aria-controls="relay-access-entitlements-panel"
+                tabIndex={commercialView === 'plans' ? 0 : -1}
                 className={commercialView === 'plans' ? 'active' : ''}
                 onClick={() => setCommercialView('plans')}
               >
-                <LayoutGrid size={15} />
-                套餐
+                <BadgeCheck size={15} />
+                当前权益
               </button>
               <button
+                id="relay-access-orders-tab"
                 type="button"
                 role="tab"
                 aria-selected={commercialView === 'orders'}
+                aria-controls="relay-access-orders-panel"
+                tabIndex={commercialView === 'orders' ? 0 : -1}
                 className={commercialView === 'orders' ? 'active' : ''}
                 onClick={() => setCommercialView('orders')}
               >
@@ -1276,7 +1543,7 @@ export default function RelayAccessModal({ onClose }) {
                   <button type="button" className="secondary" onClick={() => setPurchasePlan(null)} disabled={Boolean(paymentLoading)}>返回</button>
                   <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading)}>
                     <CreditCard size={15} />
-                    {paymentLoading === `create:${purchasePlan.id}` ? '正在打开...' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
+                    {paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
                   </button>
                 </div>
               </div>
@@ -1340,7 +1607,7 @@ export default function RelayAccessModal({ onClose }) {
                     onClick={confirmCommercialTestPayment}
                     disabled={Boolean(paymentLoading)}
                   >
-                    {paymentLoading === `confirm:${checkoutOrder.order_no}` ? '入账中...' : '完成灰度测试支付'}
+                    {paymentLoading === `confirm:${checkoutOrder.order_no}` ? '入账中…' : '完成灰度测试支付'}
                   </button>
                 )}
                 {checkoutOrder.status === 'paid' && (
@@ -1356,12 +1623,12 @@ export default function RelayAccessModal({ onClose }) {
                     {['created', 'pending', 'failed'].includes(checkoutOrder.status) && (
                       <button type="button" className="danger" onClick={cancelCommercialOrder} disabled={Boolean(paymentLoading)}>
                         <X size={14} />
-                        {paymentLoading === `cancel:${checkoutOrder.order_no}` ? '取消中...' : '取消订单'}
+                        {paymentLoading === `cancel:${checkoutOrder.order_no}` ? '取消中…' : '取消订单'}
                       </button>
                     )}
                     <button type="button" onClick={refreshCheckoutOrder} disabled={Boolean(paymentLoading)}>
                       <RotateCcw size={14} />
-                      {paymentLoading === `refresh:${checkoutOrder.order_no}` ? '刷新中...' : '刷新状态'}
+                      {paymentLoading === `refresh:${checkoutOrder.order_no}` ? '刷新中…' : '刷新状态'}
                     </button>
                   </div>
                 </div>
@@ -1369,10 +1636,14 @@ export default function RelayAccessModal({ onClose }) {
             )}
 
             {commercialView === 'plans' && (
-              <div className="relay-access-billing-panel" role="tabpanel">
+              <div
+                id="relay-access-entitlements-panel"
+                className="relay-access-billing-panel"
+                role="tabpanel"
+                aria-labelledby="relay-access-entitlements-tab"
+              >
                 {commercialEnabled && activePackages.length > 0 && (
                   <div className="relay-access-entitlement-band">
-                    <div className="relay-access-mini-title"><BadgeCheck size={15} />当前权益</div>
                     <div className="relay-access-package-list">
                       {activePackages.map((item) => (
                         <div className="relay-access-package-row" key={`${item.id || item.plan_id}-${item.source_ref || item.starts_at}`}>
@@ -1380,7 +1651,7 @@ export default function RelayAccessModal({ onClose }) {
                             <strong>{item.plan_name || item.plan_slug || '套餐'}</strong>
                             <em>{commercialEntitlementSourceLabel(item.source)} · {item.starts_at ? `${formatShortDate(item.starts_at)} 生效` : '已生效'}</em>
                           </span>
-                          <strong>{formatShortDate(item.expires_at)} 到期</strong>
+                          <strong>{item.expires_at ? `${formatShortDate(item.expires_at)} 到期` : '长期有效'}</strong>
                         </div>
                       ))}
                     </div>
@@ -1394,205 +1665,81 @@ export default function RelayAccessModal({ onClose }) {
                   </div>
                 )}
 
-                {commercialCatalog?.trial_available && (
-                  <div className="relay-access-trial-row">
-                    <div>
-                      <strong>新用户体验包</strong>
-                      <span>领取后直接生效，每个账号限一次。</span>
-                    </div>
-                    <button type="button" onClick={claimCommercialTrial} disabled={trialLoading}>
-                      {trialLoading ? '领取中...' : '领取体验包'}
-                    </button>
-                  </div>
-                )}
-
-                {salePlans.length > 0 && (
-                  <div className="relay-access-storefront">
-                    <div className="relay-access-storefront-head">
-                      <div>
-                        {hasCurrentCommercialPlans && <span className="relay-access-storefront-eyebrow">个人方案</span>}
-                        <div className="relay-access-mini-title">
-                          {hasCurrentCommercialPlans ? '选择适合你的工作强度' : '选一档，开始你的协作节奏'}
-                        </div>
-                        <span>{hasCurrentCommercialPlans ? '按实际工作频率选择，套餐到期前不会自动续费。' : '按使用频率选择，套餐到期前不会自动续费。'}</span>
-                      </div>
-                      {paymentChannels.length > 1 ? (
-                        <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>
-                          {paymentChannels.map((channel) => (
-                            <option value={channel.id} key={channel.id}>{channel.label}</option>
-                          ))}
-                        </select>
-                      ) : paymentChannels.length === 1 ? (
-                        <span className="relay-access-payment-channel">{paymentChannels[0].label}</span>
-                      ) : null}
-                    </div>
-                    <div className={`relay-access-plan-list${hasCurrentCommercialPlans ? ' current-catalog' : ''}`}>
-                      {hasCurrentCommercialPlans && (
-                        <article className="relay-access-plan-row official free">
-                          <div className="relay-access-plan-heading">
-                            <span className="relay-access-plan-kicker">{FREE_PLAN_PRESENTATION.kicker}</span>
-                          </div>
-                          <strong className="relay-access-plan-name">{FREE_PLAN_PRESENTATION.name}</strong>
-                          <div className="relay-access-plan-price">
-                            <span className="relay-access-plan-currency">¥</span>
-                            <strong>0</strong>
-                            <span>/ 月</span>
-                          </div>
-                          <span className="relay-access-plan-tagline">{FREE_PLAN_PRESENTATION.tagline}</span>
-                          <p>{FREE_PLAN_PRESENTATION.description}</p>
-                          <div className="relay-access-plan-action">
-                            <button type="button" className="secondary" disabled>无需购买</button>
-                          </div>
-                          <div className="relay-access-plan-divider" />
-                          <span className="relay-access-plan-includes">包含</span>
-                          <ul className="relay-access-plan-features">
-                            {FREE_PLAN_PRESENTATION.features.map(feature => (
-                              <li key={feature}><Check size={14} />{feature}</li>
-                            ))}
-                          </ul>
-                        </article>
-                      )}
-                      {salePlans.map((plan) => {
-                        const presentation = commercialPlanPresentation(plan);
-                        const planTier = commercialPlanTier(plan.slug);
-                        const isActivePlan = planTier > 0
-                          ? activeOfficialPlanTier === planTier
-                          : activePackages.some(item => entitlementMatchesPlan(item, plan));
-                        const isIncludedPlan = planTier > 0 && activeOfficialPlanTier > planTier;
-                        const isUpgradePlan = planTier > activeOfficialPlanTier && activeOfficialPlanTier > 0;
-                        const purchaseBlocked = isActivePlan || isIncludedPlan;
-                        const pendingOrder = purchaseBlocked ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
-                        return (
-                          <article
-                            className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}`}
-                            key={plan.id}
-                          >
-                            <div className="relay-access-plan-heading">
-                              <span className="relay-access-plan-kicker">{presentation.kicker}</span>
-                              {presentation.recommended && <span className="relay-access-plan-badge">推荐</span>}
-                            </div>
-                            <strong className="relay-access-plan-name">{plan.name}</strong>
-                            <div className="relay-access-plan-price">
-                              {hasCurrentCommercialPlans && <span className="relay-access-plan-currency">¥</span>}
-                              <strong>{hasCurrentCommercialPlans ? formatPriceAmountFen(plan.price_fen) : formatPriceFen(plan.price_fen)}</strong>
-                              <span>{commercialPlanCycle(plan)}</span>
-                            </div>
-                            <span className="relay-access-plan-tagline">{presentation.tagline}</span>
-                            <p>{plan.description || `${plan.duration_days} 天有效`}</p>
-                            <em>{commercialUsageTextForUser(plan, presentation)}</em>
-                            <span className="relay-access-plan-audience">适合：{presentation.audience}</span>
-                            <div className="relay-access-plan-action">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (pendingOrder) {
-                                    openCommercialOrder(pendingOrder);
-                                    return;
-                                  }
-                                  setCheckoutOrder(null);
-                                  setPurchasePlan(plan);
-                                }}
-                                disabled={!paymentChannel || Boolean(paymentLoading) || purchaseBlocked}
-                              >
-                                <CreditCard size={15} />
-                                {isActivePlan
-                                  ? '当前套餐'
-                                  : isIncludedPlan
-                                    ? '已包含'
-                                    : paymentLoading === `create:${plan.id}`
-                                      ? '创建中...'
-                                      : paymentChannels.length === 0
-                                        ? '暂未开放'
-                                        : pendingOrder?.status === 'paid'
-                                          ? '查看进度'
-                                          : pendingOrder
-                                            ? '继续支付'
-                                            : isUpgradePlan
-                                              ? `升级至${plan.name}`
-                                              : hasCurrentCommercialPlans ? `选择${plan.name}` : '购买'}
-                              </button>
-                            </div>
-                            {Array.isArray(presentation.features) && presentation.features.length > 0 && (
-                              <>
-                                <div className="relay-access-plan-divider" />
-                                <span className="relay-access-plan-includes">包含</span>
-                                <ul className="relay-access-plan-features">
-                                  {presentation.features.map(feature => (
-                                    <li key={feature}><Check size={14} />{feature}</li>
-                                  ))}
-                                </ul>
-                              </>
-                            )}
-                          </article>
-                        );
-                      })}
-                    </div>
-                    {activeOfficialPlanTier === COMMERCIAL_PLAN_TIERS['catsco-personal'] && (
-                      <div className="relay-access-period-note">升级后立即切换套餐，额度按专业版重置，不与个人版叠加。</div>
-                    )}
-                    {paymentChannels.length === 0 && (
-                      <div className="relay-access-period-note">支付通道暂未开放，当前套餐可通过邀请码发放。</div>
-                    )}
-                  </div>
-                )}
-
                 {commercialEnabled ? (
-                  <div className="relay-access-invite-section">
-                    <div>
-                      <strong>有邀请码？</strong>
-                      <span>兑换成功后，套餐权益会直接加入当前账号。</span>
+                  <details className="relay-access-redeem-disclosure">
+                    <summary>
+                      <span>
+                        <strong>兑换邀请码</strong>
+                        <em>已有邀请码时使用</em>
+                      </span>
+                      <span>填写</span>
+                    </summary>
+                    <div className="relay-access-invite-section">
+                      <span id="relay-access-invite-help">兑换成功后，套餐权益会直接加入当前账号。</span>
+                      <form
+                        className="relay-access-invite-form"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          redeemInvite();
+                        }}
+                      >
+                        <label className="oc-visually-hidden" htmlFor="relay-access-invite-code">邀请码</label>
+                        <input
+                          id="relay-access-invite-code"
+                          name="invite_code"
+                          value={inviteCode}
+                          onChange={(event) => setInviteCode(event.target.value)}
+                          placeholder="输入邀请码…"
+                          autoComplete="off"
+                          spellCheck={false}
+                          aria-describedby="relay-access-invite-help"
+                          disabled={inviteLoading}
+                        />
+                        <button type="submit" disabled={inviteLoading}>
+                          {inviteLoading ? '兑换中…' : copied === 'invite' ? '已兑换' : '兑换'}
+                        </button>
+                      </form>
                     </div>
-                    <div className="relay-access-invite-form">
-                      <input
-                        value={inviteCode}
-                        onChange={(event) => setInviteCode(event.target.value)}
-                        placeholder="输入邀请码"
-                        disabled={inviteLoading}
-                      />
-                      <button type="button" disabled={inviteLoading} onClick={redeemInvite}>
-                        {inviteLoading ? '兑换中...' : copied === 'invite' ? '已兑换' : '兑换'}
-                      </button>
-                    </div>
-                  </div>
+                  </details>
                 ) : (
                   <div className="relay-access-token-note">
                     <Gift size={16} />
                     <span>{commercial?.note || '套餐和邀请码仍在内部测试。当前额度、API Key 和模型调用不受影响。'}</span>
                   </div>
                 )}
-                {commercialEnabled && (
+                {commercialEnabled && !commercialEnforced && (
                   <div className="oc-settings-secondary">
-                    {commercialEnforced
-                      ? '套餐内模型共用同一额度池，并按各模型倍率扣减；切换模型后数据可能延迟几分钟。'
-                      : (commercial?.note || '当前为内测账单，购买记录不会自动改变已有模型额度。')}
+                    {commercial?.note || '当前为内测账单，购买记录不会自动改变已有模型额度。'}
                   </div>
                 )}
               </div>
             )}
 
             {commercialView === 'orders' && (
-              <div className="relay-access-billing-panel" role="tabpanel">
-                <div className="relay-access-order-summary">
-                  <div><strong>{commercialOrders.length}</strong><span>全部订单</span></div>
-                  <div><strong>{openOrders.length}</strong><span>待处理</span></div>
-                  <div><strong>{fulfilledOrders.length}</strong><span>已生效</span></div>
-                </div>
-                <div className="relay-access-order-filters" role="group" aria-label="筛选订单">
-                  {orderFilters.map((filter) => (
-                    <button
-                      type="button"
-                      key={filter.id}
-                      className={orderFilter === filter.id ? 'active' : ''}
-                      onClick={() => {
-                        setOrderFilter(filter.id);
-                        setShowAllOrders(false);
-                      }}
-                    >
-                      {filter.label}
-                      <span>{filter.count}</span>
-                    </button>
-                  ))}
-                </div>
+              <div
+                id="relay-access-orders-panel"
+                className="relay-access-billing-panel"
+                role="tabpanel"
+                aria-labelledby="relay-access-orders-tab"
+              >
+                {commercialOrders.length > 0 && availableOrderFilters.length > 1 && (
+                  <div className="relay-access-order-filters" role="group" aria-label="筛选订单">
+                    {availableOrderFilters.map((filter) => (
+                      <button
+                        type="button"
+                        key={filter.id}
+                        className={orderFilter === filter.id ? 'active' : ''}
+                        aria-pressed={orderFilter === filter.id}
+                        onClick={() => {
+                          setOrderFilter(filter.id);
+                          setShowAllOrders(false);
+                        }}
+                      >
+                        {filter.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {visibleOrders.length > 0 ? (
                   <div className="relay-access-order-list">
                     {visibleOrders.map((order) => (
@@ -1600,6 +1747,7 @@ export default function RelayAccessModal({ onClose }) {
                         type="button"
                         key={order.order_no}
                         className={checkoutOrder?.order_no === order.order_no ? 'active' : ''}
+                        aria-pressed={checkoutOrder?.order_no === order.order_no}
                         onClick={() => {
                           setPaymentPollError('');
                           setCheckoutOrder(order);
@@ -1622,9 +1770,8 @@ export default function RelayAccessModal({ onClose }) {
                   </div>
                 ) : (
                   <div className="relay-access-order-empty">
-                    <ReceiptText size={18} />
-                    <strong>{commercialOrders.length > 0 ? '没有符合筛选条件的订单' : '还没有购买记录'}</strong>
-                    <span>{commercialOrders.length > 0 ? '换一个状态看看。' : '购买套餐后，订单号、金额和状态会保存在这里。'}</span>
+                    <strong>{commercialOrders.length > 0 ? '没有符合条件的订单' : '暂无订单记录'}</strong>
+                    <span>{commercialOrders.length > 0 ? '可以切换其他状态查看。' : '购买套餐后，订单会显示在这里。'}</span>
                   </div>
                 )}
                 {filteredOrders.length > 8 && (
@@ -1636,143 +1783,268 @@ export default function RelayAccessModal({ onClose }) {
             )}
           </section>
 
-          <div className="relay-access-connect">
-            <div className="relay-access-section-head relay-access-section-head-compact">
-              <div>
-                <div className="relay-access-title">开发者接入</div>
-                <div className="oc-settings-secondary">用于第三方客户端或 CatsCo 自定义模型。</div>
-              </div>
-              {config.docs_url && (
-                <button
-                  type="button"
-                  className="relay-access-open-btn"
-                  onClick={openRelayPortal}
-                  disabled={actionLoading === 'portal'}
-                >
-                  {actionLoading === 'portal' ? '登录中...' : '打开开发者控制台'}
-                  <ExternalLink size={14} />
-                </button>
-              )}
-            </div>
-            <div className="relay-access-list">
-              {config.endpoints.map((endpoint) => (
-                <div className="relay-access-card" key={`${endpoint.protocol}:${endpoint.base_url}`}>
-                  <div className="relay-access-card-copy">
-                    <div className="relay-access-title">{protocolLabel(endpoint.protocol)}</div>
-                    <div className="relay-access-url">{endpoint.base_url}</div>
+          <div className="relay-access-developer-sections">
+            <details className="relay-access-tool-disclosure relay-access-key-disclosure" open>
+              <summary>
+                <span>
+                  <KeyRound size={17} />
+                  <span>
+                    <strong>我的 Key</strong>
+                    <em>
+                      {config.self_service_enabled
+                        ? '用于第三方客户端或 CatsCo 自定义模型'
+                        : '由管理员发放和管理访问凭证'}
+                    </em>
+                  </span>
+                </span>
+                <span className="relay-access-tool-disclosure-meta">
+                  <span className={`relay-access-state ${stateClass}`}>{stateText}</span>
+                  <span className="relay-access-tool-disclosure-label" aria-hidden="true"><ChevronDown size={16} /></span>
+                </span>
+              </summary>
+              <section className="relay-access-key-panel relay-access-tool-disclosure-content">
+                {!config.self_service_enabled && (
+                  <div className="relay-access-token-note">
+                    <KeyRound size={16} />
+                    <span>{config.key_hint}</span>
                   </div>
-                  <button
-                    type="button"
-                    className="relay-access-copy-btn"
-                    aria-label={`复制 ${protocolLabel(endpoint.protocol)} 地址`}
-                    title={`复制 ${protocolLabel(endpoint.protocol)} 地址`}
-                    onClick={() => copyText(endpoint.protocol, endpoint.base_url)}
-                  >
-                    {copied === endpoint.protocol ? <Check size={16} /> : <Copy size={16} />}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
+                )}
 
-          <section className="relay-access-key-panel">
-            <div className="relay-access-section-head">
-              <div>
-                <div className="relay-access-title">我的 Key</div>
-                <div className="oc-settings-secondary">
-                  {config.self_service_enabled
-                    ? '每个账号一把 API Key，用于第三方客户端或 CatsCo 自定义模型。'
-                    : '如需访问凭证，请联系管理员发放或重置。'}
-                </div>
-              </div>
-              <span className={`relay-access-state ${stateClass}`}>{stateText}</span>
-            </div>
+                {config.self_service_enabled && keyLoading && (
+                  <div className="oc-settings-secondary" role="status" aria-live="polite">正在读取你的 Key…</div>
+                )}
 
-            {!config.self_service_enabled && (
-              <div className="relay-access-token-note">
-                <KeyRound size={16} />
-                <span>{config.key_hint}</span>
-              </div>
-            )}
-
-            {config.self_service_enabled && keyLoading && (
-              <div className="oc-settings-secondary">正在读取你的 Key...</div>
-            )}
-
-            {config.self_service_enabled && !keyLoading && !relayKey && (
-              <div className="relay-access-empty-key">
-                <KeyRound size={18} />
-                <div>
-                  <div className="relay-access-title">还没有 API Key</div>
-                  <div className="oc-settings-secondary">生成后只显示一次明文，请立刻复制到需要使用的客户端。</div>
-                </div>
-                <button type="button" className="relay-access-primary-btn" disabled={busy} onClick={createKey}>
-                  {actionLoading === 'create' ? '生成中...' : '生成我的 Key'}
-                </button>
-              </div>
-            )}
-
-            {config.self_service_enabled && relayKey && (
-              <div className="relay-access-key-card">
-                <div className="relay-access-key-meta">
-                  <div>
-                    <span>名称</span>
-                    <strong>{modelServiceKeyName(relayKey.name)}</strong>
-                  </div>
-                  <div>
-                    <span>前缀</span>
-                    <strong>{relayKey.prefix || 'sk-...'}</strong>
-                  </div>
-                  <div>
-                    <span>更新时间</span>
-                    <strong>{formatTime(relayKey.updated_at) || '-'}</strong>
-                  </div>
-                </div>
-
-                {plainKey && (
-                  <div className="relay-access-secret-box">
-                    <AlertTriangle size={16} />
+                {config.self_service_enabled && !keyLoading && !relayKey && (
+                  <div className="relay-access-empty-key">
+                    <KeyRound size={18} />
                     <div>
-                      <div>Key 明文已显示并可复制，请只放在你信任的客户端里。</div>
-                      <code>{plainKey}</code>
+                      <div className="relay-access-title">还没有 API Key</div>
+                      <div className="oc-settings-secondary">生成后只显示一次明文，请立刻复制到需要使用的客户端。</div>
                     </div>
-                    <button type="button" onClick={() => copyText('plain-key', plainKey)}>
-                      {copied === 'plain-key' ? <Check size={15} /> : <Copy size={15} />}
-                      复制 Key
+                    <button type="button" className="relay-access-primary-btn" disabled={busy} onClick={createKey}>
+                      {actionLoading === 'create' ? '生成中…' : '生成我的 Key'}
                     </button>
                   </div>
                 )}
 
-                <div className="relay-access-key-actions">
-                  <button type="button" disabled={busy} onClick={revealKey}>
-                    <Copy size={15} />
-                    {actionLoading === 'reveal' ? '显示中...' : '显示并复制'}
-                  </button>
-                  <button type="button" disabled={busy} onClick={rotateKey}>
-                    <RotateCcw size={15} />
-                    {actionLoading === 'rotate' ? '重新生成中...' : '重新生成'}
-                  </button>
-                  <button type="button" className="danger" disabled={busy} onClick={revokeKey}>
-                    <Trash2 size={15} />
-                    {actionLoading === 'revoke' ? '撤销中...' : '撤销'}
+                {config.self_service_enabled && relayKey && (
+                  <div className="relay-access-key-card">
+                    <div className="relay-access-key-meta">
+                      <div>
+                        <span>名称</span>
+                        <strong>{modelServiceKeyName(relayKey.name)}</strong>
+                      </div>
+                      <div>
+                        <span>前缀</span>
+                        <strong>{relayKey.prefix || 'sk-…'}</strong>
+                      </div>
+                      <div>
+                        <span>更新时间</span>
+                        <strong>{formatTime(relayKey.updated_at) || '-'}</strong>
+                      </div>
+                    </div>
+
+                    {plainKey && (
+                      <div className="relay-access-secret-box">
+                        <AlertTriangle size={16} />
+                        <div>
+                          <div>Key 明文已显示并可复制，请只放在你信任的客户端里。</div>
+                          <code>{plainKey}</code>
+                        </div>
+                        <button type="button" onClick={() => copyText('plain-key', plainKey)}>
+                          {copied === 'plain-key' ? <Check size={15} /> : <Copy size={15} />}
+                          复制 Key
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="relay-access-key-actions">
+                      <button type="button" disabled={busy} onClick={revealKey}>
+                        <Copy size={15} />
+                        {actionLoading === 'reveal' ? '显示中…' : '显示并复制'}
+                      </button>
+                      <button type="button" disabled={busy} onClick={rotateKey}>
+                        <RotateCcw size={15} />
+                        {actionLoading === 'rotate' ? '重新生成中…' : '重新生成'}
+                      </button>
+                      <button type="button" className="relay-access-danger-action" disabled={busy} onClick={revokeKey}>
+                        <Trash2 size={15} />
+                        {actionLoading === 'revoke' ? '撤销中…' : '撤销'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            </details>
+
+            <details className="relay-access-tool-disclosure relay-access-connect-disclosure">
+              <summary>
+                <span>
+                  <ExternalLink size={17} />
+                  <span>
+                    <strong>开发者接入</strong>
+                    <em>接口地址与开发者控制台</em>
+                  </span>
+                </span>
+                <span className="relay-access-tool-disclosure-label" aria-hidden="true"><ChevronDown size={16} /></span>
+              </summary>
+              <div className="relay-access-connect relay-access-tool-disclosure-content">
+                {config.docs_url && (
+                  <div className="relay-access-developer-toolbar">
+                    <button
+                      type="button"
+                      className="relay-access-open-btn"
+                      onClick={openRelayPortal}
+                      disabled={actionLoading === 'portal'}
+                    >
+                      {actionLoading === 'portal' ? '登录中…' : '打开开发者控制台'}
+                      <ExternalLink size={14} />
+                    </button>
+                  </div>
+                )}
+                <div className="relay-access-list">
+                  {config.endpoints.map((endpoint) => (
+                    <div className="relay-access-card" key={`${endpoint.protocol}:${endpoint.base_url}`}>
+                      <div className="relay-access-card-copy">
+                        <div className="relay-access-title">{protocolLabel(endpoint.protocol)}</div>
+                        <div className="relay-access-url">{endpoint.base_url}</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="relay-access-copy-btn"
+                        aria-label={`复制 ${protocolLabel(endpoint.protocol)} 地址`}
+                        title={`复制 ${protocolLabel(endpoint.protocol)} 地址`}
+                        onClick={() => copyText(endpoint.protocol, endpoint.base_url)}
+                      >
+                        {copied === endpoint.protocol ? <Check size={16} /> : <Copy size={16} />}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </details>
+
+            <details className="relay-access-tool-disclosure relay-access-snippet-disclosure">
+              <summary>
+                <span>
+                  <Copy size={17} />
+                  <span>
+                    <strong>快速配置</strong>
+                    <em>复制 OpenAI 与 Anthropic 兼容配置</em>
+                  </span>
+                </span>
+                <span className="relay-access-tool-disclosure-label" aria-hidden="true"><ChevronDown size={16} /></span>
+              </summary>
+              <div className="relay-access-snippet relay-access-tool-disclosure-content">
+                <div className="relay-access-snippet-code">
+                  <pre>{snippet}</pre>
+                  <button
+                    type="button"
+                    className="relay-access-snippet-copy-button"
+                    onClick={() => copyText('snippet', snippet)}
+                    aria-label="复制快速配置"
+                  >
+                    {copied === 'snippet' ? <Check size={15} /> : <Copy size={15} />}
+                    复制
                   </button>
                 </div>
               </div>
-            )}
-          </section>
-
-          <div className="relay-access-snippet">
-            <div className="relay-access-snippet-head">
-              <span>快速配置</span>
-              <button type="button" onClick={() => copyText('snippet', snippet)} aria-label="复制快速配置" title="复制快速配置">
-                {copied === 'snippet' ? <Check size={15} /> : <Copy size={15} />}
-                复制
-              </button>
-            </div>
-            <pre>{snippet}</pre>
+            </details>
           </div>
         </div>
       </div>
+      {planChooserOpen && (
+        <div
+          className="relay-access-plan-overlay"
+          role="presentation"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (event.target === event.currentTarget) setPlanChooserOpen(false);
+          }}
+        >
+          <section
+            id="relay-access-plan-chooser"
+            className="relay-access-plan-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="升级套餐"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="relay-access-plan-modal-header">
+              <div>
+                <h3>选择适合你的套餐</h3>
+                <p>按实际工作频率选择，套餐到期前不会自动续费。</p>
+              </div>
+              <button type="button" onClick={() => setPlanChooserOpen(false)} aria-label="关闭升级套餐">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="relay-access-plan-modal-body">
+              <div
+                className="relay-access-plan-audience-tabs"
+                role="tablist"
+                aria-label="选择方案类型"
+                onKeyDown={handleTabListKeyDown}
+              >
+                <button
+                  id="relay-access-personal-plan-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={planChooserAudience === 'personal'}
+                  aria-controls="relay-access-personal-plan-panel"
+                  tabIndex={planChooserAudience === 'personal' ? 0 : -1}
+                  className={planChooserAudience === 'personal' ? 'active' : ''}
+                  onClick={() => setPlanChooserAudience('personal')}
+                >
+                  个人
+                </button>
+                <button
+                  id="relay-access-enterprise-plan-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={planChooserAudience === 'enterprise'}
+                  aria-controls="relay-access-enterprise-plan-panel"
+                  tabIndex={planChooserAudience === 'enterprise' ? 0 : -1}
+                  className={planChooserAudience === 'enterprise' ? 'active' : ''}
+                  onClick={() => setPlanChooserAudience('enterprise')}
+                >
+                  企业
+                </button>
+              </div>
+              {planChooserAudience === 'personal' ? (
+                <div
+                  id="relay-access-personal-plan-panel"
+                  role="tabpanel"
+                  aria-labelledby="relay-access-personal-plan-tab"
+                >
+                  <CommercialPlanCards
+                    salePlans={salePlans}
+                    hasCurrentCommercialPlans={hasCurrentCommercialPlans}
+                    activeOfficialPlanTier={activeOfficialPlanTier}
+                    activePackages={activePackages}
+                    openOrders={openOrders}
+                    paymentChannel={paymentChannel}
+                    paymentChannels={paymentChannels}
+                    paymentLoading={paymentLoading}
+                    onOpenOrder={openCommercialOrderFromChooser}
+                    onSelectPlan={selectCommercialPlan}
+                    compact
+                    className="relay-access-plan-list-chooser"
+                  />
+                </div>
+              ) : (
+                <div
+                  id="relay-access-enterprise-plan-panel"
+                  role="tabpanel"
+                  aria-labelledby="relay-access-enterprise-plan-tab"
+                >
+                  <EnterprisePlanCard />
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

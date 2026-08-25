@@ -80,9 +80,10 @@
 
 .cc-system-prompt-agent-picker select:focus-visible,
 .cc-system-prompt-editor textarea:focus-visible {
-  border-color: var(--cc-accent);
-  outline: 2px solid var(--cc-focus-ring);
-  outline-offset: 1px;
+  border-color: var(--cc-border-strong);
+  outline: 0;
+  outline-offset: 0;
+  box-shadow: none;
 }
 
 .cc-system-prompt-loading,

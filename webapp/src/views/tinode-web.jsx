@@ -32,6 +32,7 @@ import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import AuthFlowBackground from '../components/auth-flow-background';
+import IdentityOnboarding from '../components/identity-onboarding';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
@@ -69,6 +70,8 @@ import {
   authModeForPathname,
   authPathForMode,
   authenticationRedirectPath,
+  isNameOnboardingPathname,
+  nameOnboardingPathForNext,
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
@@ -108,7 +111,7 @@ function normalizeUserProfile(raw) {
     uid: raw.uid || raw.id,
     username,
     email: raw.email || '',
-    display_name: raw.display_name || username,
+    display_name: raw.display_name || '',
     avatar_url: raw.avatar_url || '',
     account_type: raw.account_type || 'human',
   };
@@ -822,28 +825,37 @@ function TinodeWebApp({ location }) {
     };
   }, [search, user?.uid]);
 
-  const handleLogin = async (account, password) => {
+  const authenticate = async (account, password) => {
     const res = await api.login({ account, password });
     setToken(res.token);
-    persistUser(normalizeUserProfile(res));
+    const nextUser = normalizeUserProfile(res);
+    persistUser(nextUser);
+    return nextUser;
+  };
+
+  const handleLogin = async (account, password) => {
+    await authenticate(account, password);
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
-  const handleRegister = async (email, password, loginName, code) => {
-    const username = loginName.trim();
-    if (!username) {
-      throw new Error('请输入登录名称');
-    }
-    if (username.length < 3) {
-      throw new Error('登录名称至少 3 个字符');
-    }
+  const handleRegister = async (email, password, code) => {
     await api.register({
       email,
-      username,
       password,
       code,
     });
-    await handleLogin(email, password);
+    await authenticate(email, password);
+    navigateBrowserPath(
+      nameOnboardingPathForNext(postAuthenticationPathFromSearch(search)),
+      { replace: true },
+    );
+  };
+
+  const handleIdentityComplete = async (displayName) => {
+    const nextUser = await api.updateMe(displayName, user?.avatar_url || '');
+    persistUser(normalizeUserProfile(nextUser));
+    window.dispatchEvent(new Event('cc:data-changed'));
+    navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
   const handleLogout = () => {
@@ -1028,6 +1040,15 @@ function TinodeWebApp({ location }) {
     );
   }
 
+  if (isNameOnboardingPathname(pathname)) {
+    return (
+      <IdentityOnboarding
+        initialName={user.display_name || ''}
+        onComplete={handleIdentityComplete}
+      />
+    );
+  }
+
   if (entrySceneKey) {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
@@ -1063,6 +1084,7 @@ function TinodeWebApp({ location }) {
       <div
         id="catsco-function-sidebar"
         className={`v3-sidebar${appSidebarCollapsed ? ' collapsed' : ''}${mobileSidebarOpen ? ' open' : ''}`}
+        data-cc-tooltips="off"
       >
         <div className="v3-sidebar-header">
           <div className="v3-brand-title">
@@ -1155,21 +1177,21 @@ function TinodeWebApp({ location }) {
               handleLogout();
             }}
           >
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
               <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDesktopConnectModal(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDesktopConnectModal(true); }}>
               <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
               <KeyRound size={16} style={{marginRight: 10}} /> 套餐与权益
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料
-            </div>
+            </button>
           </ProfilePopover>
         )}
 
@@ -1305,8 +1327,35 @@ function TinodeWebApp({ location }) {
 }
 
 export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin }) {
+  const barRef = useRef(null);
+
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return undefined;
+
+    const syncToastAnchor = () => {
+      const bounds = bar.getBoundingClientRect();
+      document.documentElement.style.setProperty(
+        '--cc-toast-anchor-x',
+        `${bounds.left + bounds.width / 2}px`,
+      );
+    };
+
+    syncToastAnchor();
+    const observer = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(syncToastAnchor)
+      : null;
+    observer?.observe(bar);
+    window.addEventListener('resize', syncToastAnchor);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', syncToastAnchor);
+      document.documentElement.style.removeProperty('--cc-toast-anchor-x');
+    };
+  }, []);
+
   return (
-    <header className="v3-local-assistant-bar">
+    <header ref={barRef} className="v3-local-assistant-bar">
       <div className="v3-model-select">
         <BotModelSelector
           currentModelName={currentModelName}
@@ -1435,23 +1484,20 @@ export function ProfilePopover({ compact = false, popoverRef, children, onLogout
     <div
       className={`v3-profile-popover${compact ? ' is-compact' : ''}`}
       ref={popoverRef}
+      role="menu"
+      aria-label="账号菜单"
     >
       {children}
       {onLogout && (
-        <div
+        <button
+          type="button"
           className="v3-popover-item danger"
-          role="button"
-          tabIndex={0}
+          role="menuitem"
           aria-label="退出登录"
           onClick={onLogout}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            onLogout();
-          }}
         >
           <LogOut size={16} strokeWidth={1.8} style={{ marginRight: 10 }} /> 退出登录
-        </div>
+        </button>
       )}
     </div>,
     document.body,
@@ -1508,7 +1554,6 @@ export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [loginName, setLoginName] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [codeSent, setCodeSent] = useState(false);
@@ -1546,7 +1591,7 @@ export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister
       if (mode === 'login') {
         await onLogin(username, password);
       } else {
-        await onRegister(email, password, loginName, code);
+        await onRegister(email, password, code);
       }
     } catch (err) {
       setError(formatAuthError(err.message));
@@ -1622,6 +1667,10 @@ export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister
           <input
             className="oc-auth-input"
             type="email"
+            name="email"
+            autoComplete="email"
+            spellCheck={false}
+            aria-label="邮箱地址"
             placeholder="邮箱地址"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -1629,6 +1678,11 @@ export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister
           <div className="oc-auth-code-row">
             <input
               className="oc-auth-input"
+              name="verificationCode"
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              spellCheck={false}
+              aria-label="邮箱验证码"
               placeholder="邮箱验证码"
               value={code}
               onChange={(e) => setCode(e.target.value)}
@@ -1645,16 +1699,13 @@ export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister
           {sentHint && (
             <div className="oc-auth-hint" style={{ color: '#2e8b57', fontSize: 12, marginTop: 6 }}>{sentHint}</div>
           )}
-          <input
-            className="oc-auth-input"
-            placeholder="登录名称（可用于登录）"
-            value={loginName}
-            onChange={(e) => setLoginName(e.target.value)}
-          />
           <div style={{ position: 'relative' }}>
             <input
               className="oc-auth-input"
               type={showPassword ? 'text' : 'password'}
+              name="newPassword"
+              autoComplete="new-password"
+              aria-label="设置密码"
               placeholder="设置密码（至少6位）"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

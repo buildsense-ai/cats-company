@@ -305,8 +305,14 @@ describe('CloudArtifactsPanel', () => {
 
   test('lets the Agent owner delete and restore a result', async () => {
     api.getCloudArtifacts
-      .mockResolvedValueOnce({ artifacts: [activeArtifact], viewer_relation: 'owner' })
-      .mockResolvedValueOnce({ artifacts: [deletedArtifact], viewer_relation: 'owner' });
+      .mockResolvedValueOnce({
+        artifacts: [{ ...activeArtifact, can_delete: false }],
+        viewer_relation: 'owner',
+      })
+      .mockResolvedValueOnce({
+        artifacts: [{ ...deletedArtifact, can_restore: false }],
+        viewer_relation: 'owner',
+      });
     await renderPanel();
 
     await act(async () => {
@@ -317,6 +323,7 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
     expect(api.deleteCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
+    expect(document.body.querySelector('.cc-toast')?.textContent).toContain('已下架共享成果');
 
     await act(async () => {
       container.querySelector('button[aria-label="打开回收站"]').click();
@@ -327,6 +334,9 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
     expect(api.restoreCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
+    expect([...document.body.querySelectorAll('.cc-toast')].some(
+      (toast) => toast.textContent.includes('已恢复共享成果'),
+    )).toBe(true);
   });
 
   test('keeps a friend viewer read-only', async () => {

@@ -437,7 +437,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const statusContents = (
     <>
       <span className="v3-current-model-name">{display.model}</span>
-      {headerReasoning && <span className="v3-model-reasoning-strength">强度 {headerReasoning}</span>}
+      {headerReasoning && <span className="v3-model-reasoning-strength">{headerReasoning}</span>}
       {headerQuota && <span className={`v3-model-quota ${headerTone}`.trim()}>{headerQuota}</span>}
       {canManageModel && (transitioning
         ? <Loader2 className="v3-model-switch-spinner" size={14} aria-hidden="true" />

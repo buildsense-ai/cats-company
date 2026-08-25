@@ -2,10 +2,10 @@
 
 .oc-profile-editor-modal .oc-auth-input:focus,
 .oc-profile-editor-modal .oc-auth-input:focus-visible {
-  border-color: var(--cc-border-strong) !important;
+  border-color: var(--cc-focus-border) !important;
   outline: none !important;
   outline-offset: 0 !important;
-  box-shadow: none !important;
+  box-shadow: inset 0 0 0 1px var(--cc-focus-border) !important;
 }
 
 .oc-notification-row {

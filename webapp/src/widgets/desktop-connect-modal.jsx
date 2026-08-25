@@ -201,11 +201,18 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal catsco-download-modal" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="oc-modal catsco-download-modal cc-settings-secondary-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="desktop-connect-dialog-title"
+        aria-describedby="desktop-connect-dialog-description"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3>连接本地 CatsCo 助手</h3>
-            <p>网页登录后，桌面端会自动完成同账号连接。</p>
+            <h3 id="desktop-connect-dialog-title">连接本地 CatsCo 助手</h3>
+            <p id="desktop-connect-dialog-description">网页登录后，桌面端会自动完成同账号连接。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />

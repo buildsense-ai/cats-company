@@ -154,6 +154,53 @@ func TestHandleRegisterAcceptsVerifiedEmail(t *testing.T) {
 	}
 }
 
+func TestHandleRegisterGeneratesInternalUsernameWhenOmitted(t *testing.T) {
+	db := newUserRegistrationTestStore()
+	email := "new.person@example.com"
+	code := "835109"
+	deleteVerificationCode(email, verificationPurposeRegister)
+	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposeRegister) })
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), verificationPurposeRegister)
+
+	rec := performUserRequest(t, NewUserHandler(db).HandleRegister, map[string]string{
+		"email":    email,
+		"password": "secret123",
+		"code":     code,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := db.createdUsers[0].Username; got != "new-person" {
+		t.Fatalf("generated username = %q, want %q", got, "new-person")
+	}
+	if db.createdUsers[0].DisplayName != "" {
+		t.Fatalf("display name = %q, want empty until onboarding", db.createdUsers[0].DisplayName)
+	}
+}
+
+func TestHandleRegisterDisambiguatesGeneratedUsername(t *testing.T) {
+	db := newUserRegistrationTestStore()
+	db.usersByUsername["new-person"] = &types.User{ID: 91, Username: "new-person"}
+	email := "new.person@another.example"
+	code := "920418"
+	deleteVerificationCode(email, verificationPurposeRegister)
+	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposeRegister) })
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), verificationPurposeRegister)
+
+	rec := performUserRequest(t, NewUserHandler(db).HandleRegister, map[string]string{
+		"email":    email,
+		"password": "secret123",
+		"code":     code,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	generated := db.createdUsers[0].Username
+	if generated == "new-person" || !strings.HasPrefix(generated, "new-person-") || len(generated) > 64 {
+		t.Fatalf("generated collision username = %q", generated)
+	}
+}
+
 func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
 	db := newUserRegistrationTestStore()
 	email := "relay-registration@example.com"

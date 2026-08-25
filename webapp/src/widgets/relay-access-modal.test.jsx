@@ -86,13 +86,14 @@ describe('RelayAccessModal commercial rollout', () => {
     vi.clearAllMocks();
   });
 
-  async function renderModal() {
+  async function renderModal(onClose = vi.fn()) {
     await act(async () => {
-      root.render(<RelayAccessModal onClose={vi.fn()} />);
+      root.render(<RelayAccessModal onClose={onClose} />);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
     });
+    return onClose;
   }
 
   function findButton(label) {
@@ -107,6 +108,41 @@ describe('RelayAccessModal commercial rollout', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+  }
+
+  async function openPlanChooser() {
+    await clickButton('升级套餐');
+    expect(container.querySelector('[role="dialog"][aria-label="升级套餐"]')).not.toBeNull();
+  }
+
+  async function openDeveloperAccess() {
+    const disclosure = container.querySelector('.relay-access-connect-disclosure');
+    expect(disclosure).not.toBeNull();
+    await act(async () => {
+      disclosure.querySelector('summary').click();
+      await Promise.resolve();
+    });
+    expect(disclosure.open).toBe(true);
+  }
+
+  async function openQuickConfig() {
+    const disclosure = container.querySelector('.relay-access-snippet-disclosure');
+    expect(disclosure).not.toBeNull();
+    await act(async () => {
+      disclosure.querySelector('summary').click();
+      await Promise.resolve();
+    });
+    expect(disclosure.open).toBe(true);
+  }
+
+  async function openInviteRedemption() {
+    const disclosure = container.querySelector('.relay-access-redeem-disclosure');
+    expect(disclosure).not.toBeNull();
+    await act(async () => {
+      disclosure.querySelector('summary').click();
+      await Promise.resolve();
+    });
+    expect(disclosure.open).toBe(true);
   }
 
   it('creates, displays, and copies a relay key', async () => {
@@ -153,6 +189,9 @@ describe('RelayAccessModal commercial rollout', () => {
     api.revokeRelayKey.mockResolvedValue({});
 
     await renderModal();
+    const keyActionButtons = [...container.querySelectorAll('.relay-access-key-actions button')];
+    expect(keyActionButtons).toHaveLength(3);
+    expect(keyActionButtons.every((button) => !button.classList.contains('danger'))).toBe(true);
     await clickButton('显示并复制');
     expect(api.revealRelayKey).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('sk-bf-revealed-secret');
@@ -170,10 +209,45 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('sk-bf-rotated-secret');
   });
 
+  it('shows the key first and keeps developer access and quick config independently collapsed', async () => {
+    await renderModal();
+
+    expect(container.textContent).toContain('套餐概览');
+    expect(container.querySelector('.relay-access-key-disclosure')?.open).toBe(true);
+    expect(container.querySelector('.relay-access-connect-disclosure')?.open).toBe(false);
+    expect(container.querySelector('.relay-access-snippet-disclosure')?.open).toBe(false);
+    const disclosureLabels = [...container.querySelectorAll('.relay-access-tool-disclosure-label')];
+    expect(disclosureLabels).toHaveLength(3);
+    expect(disclosureLabels.every((label) => label.textContent === '')).toBe(true);
+    expect(disclosureLabels.every((label) => label.querySelector('svg'))).toBe(true);
+    await openDeveloperAccess();
+    expect(container.querySelector('.relay-access-connect-disclosure')?.open).toBe(true);
+    expect(container.querySelector('.relay-access-snippet-disclosure')?.open).toBe(false);
+    await openQuickConfig();
+    expect(container.querySelector('.relay-access-connect-disclosure')?.open).toBe(true);
+    expect(container.querySelector('.relay-access-snippet-disclosure')?.open).toBe(true);
+    const snippetCode = container.querySelector('.relay-access-snippet-code');
+    expect(snippetCode?.children[0]?.tagName).toBe('PRE');
+    expect(snippetCode?.children[1]?.classList.contains('relay-access-snippet-copy-button')).toBe(true);
+  });
+
+  it('exposes dialog semantics and closes the main view with Escape', async () => {
+    const onClose = vi.fn();
+    await renderModal(onClose);
+
+    const dialog = container.querySelector('[role="dialog"][aria-labelledby="relay-access-dialog-title"]');
+    expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    await act(async () => {
+      dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps invite redemption hidden while commercial rollout is disabled', async () => {
     await renderModal();
 
-    expect(container.textContent).toContain('套餐与账单');
+    expect(container.textContent).toContain('套餐概览');
     expect(container.textContent).toContain('未开放');
     expect(container.textContent).toContain('当前额度和 API Key 不受影响');
     expect(container.textContent).toContain('套餐和邀请码仍在内部测试');
@@ -214,23 +288,28 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('内测开放');
-    expect(container.textContent).toContain('本周期总用量');
+    expect(container.textContent).toContain('当前有效');
     expect(container.textContent).toContain('购买记录不会自动改变已有模型额度');
-    expect(container.textContent).toContain('当前有效套餐');
-    expect(container.textContent).toContain('套餐最近到期');
-    expect(container.textContent).toContain('每月重置');
+    expect(container.textContent).toContain('教师试用包 · 7月29日 到期');
+    expect(container.querySelector('.relay-access-commerce-grid')).toBeNull();
+    expect(container.textContent).not.toContain('本周期总用量');
+    expect(container.textContent).not.toContain('套餐最近到期');
     expect(container.textContent).toContain('下次');
-    expect(container.textContent).toContain('不是自然月');
+    expect(container.textContent).toContain('下次重置时间：7月8日 11:29');
     expect(container.textContent).toContain('当前权益');
-    expect(container.textContent).toContain('1 个共享额度池 · 按套餐权益统一扣减');
     expect(container.textContent).not.toContain('2 个模型额度可用');
     expect(container.textContent).not.toContain('gpt-5.6-luna');
     expect(container.textContent).toContain('教师试用包');
-    expect(container.textContent).toContain('邀请码兑换');
-    expect(container.textContent).toContain('MiniMax-M3');
-    expect(container.textContent).not.toContain('deepseek-v4-flash');
+    expect(container.textContent).toContain('兑换邀请码');
+    const entitlementsPanel = container.querySelector('#relay-access-entitlements-panel');
+    expect(entitlementsPanel?.textContent).not.toContain('MiniMax-M3');
+    expect(entitlementsPanel?.textContent).not.toContain('deepseek-v4-flash');
     expect(container.textContent).toContain('剩余 75%');
+    expect(container.textContent).toContain('所有模型共享总额度，按模型倍率扣减，数据可能延迟。');
+    expect(container.textContent).not.toContain('所有套餐内模型共用总额度，并按各自倍率扣减；数据可能延迟几分钟。');
+    expect(container.querySelector('.relay-access-current-quota-meta')).toBeNull();
+    expect(container.querySelector('.relay-access-current-quota-cycle')?.textContent).toContain('下次重置时间：7月8日 11:29');
+    expect(container.querySelector('.relay-access-current-quota-cycle')?.textContent).not.toContain('每月重置');
     expect(api.getRelayUsage).toHaveBeenCalledWith({ scope: 'total' });
     expect(api.getRelayUsage.mock.calls.every(([options]) => options?.scope === 'total' && !options?.model)).toBe(true);
     expect(container.textContent).not.toContain('CNY');
@@ -238,6 +317,48 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('￥');
     expect(container.textContent).not.toContain('禁用套餐');
     expect(container.querySelector('.relay-access-invite-form')).not.toBeNull();
+    expect(container.querySelector('.relay-access-redeem-disclosure')?.open).toBe(false);
+    const progress = container.querySelector('[role="progressbar"][aria-label="套餐总用量"]');
+    expect(progress?.getAttribute('aria-valuenow')).toBe('25');
+    expect(progress?.getAttribute('aria-valuetext')).toBe('已用 25%');
+    const entitlementsTab = container.querySelector('#relay-access-entitlements-tab');
+    const ordersTab = container.querySelector('#relay-access-orders-tab');
+    expect(entitlementsTab?.getAttribute('aria-controls')).toBe('relay-access-entitlements-panel');
+    await act(async () => {
+      entitlementsTab.focus();
+      entitlementsTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(ordersTab?.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(ordersTab);
+    expect(container.querySelector('#relay-access-orders-panel')).not.toBeNull();
+    expect(container.querySelector('.relay-access-order-summary')).toBeNull();
+    expect(container.querySelector('.relay-access-order-filters')).toBeNull();
+    expect(container.textContent).toContain('暂无订单记录');
+    expect(container.textContent).toContain('购买套餐后，订单会显示在这里。');
+  });
+
+  it('describes a package without an expiry date as permanently valid', async () => {
+    api.getRelayCommercial.mockResolvedValue({
+      enabled: true,
+      summary: {
+        uid: 38,
+        models: [],
+        entitlements: [{
+          state: 'active',
+          plan_name: '内部保留套餐',
+          source: 'manual',
+          starts_at: '2026-07-27T00:00:00Z',
+          expires_at: null,
+        }],
+      },
+    });
+
+    await renderModal();
+
+    const packageRow = container.querySelector('.relay-access-package-row');
+    expect(packageRow?.textContent).toContain('长期有效');
+    expect(packageRow?.textContent).not.toContain('长期有效 到期');
   });
 
   it('turns an invite into its bound package instead of a separate invite product', async () => {
@@ -262,19 +383,27 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     await renderModal();
-    const input = container.querySelector('input[placeholder="输入邀请码"]');
+    await openInviteRedemption();
+    const input = container.querySelector('#relay-access-invite-code');
     expect(input).not.toBeNull();
+    expect(input.getAttribute('name')).toBe('invite_code');
+    expect(input.getAttribute('autocomplete')).toBe('off');
+    expect(input.getAttribute('aria-describedby')).toBe('relay-access-invite-help');
     await act(async () => {
       const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       valueSetter.call(input, 'PERSONAL-2026');
       input.dispatchEvent(new Event('input', { bubbles: true }));
       await Promise.resolve();
     });
-    await clickButton('兑换');
+    await act(async () => {
+      input.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(api.redeemRelayInvite).toHaveBeenCalledWith('PERSONAL-2026');
     expect(container.textContent).toContain('个人版');
-    expect(container.textContent).toContain('邀请码兑换');
+    expect(container.textContent).toContain('兑换邀请码');
     expect(container.textContent).not.toContain('邀请码套餐');
   });
 
@@ -299,10 +428,10 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(api.getRelayUsage).toHaveBeenCalledWith({ scope: 'total' });
-    expect(container.textContent).toContain('共享额度池');
     expect(container.textContent).toContain('套餐总额度');
-    expect(container.textContent).toContain('本周期总用量');
-    expect(container.textContent).toContain('套餐内模型共用同一额度池');
+    expect(container.textContent).toContain('专业版 · 9月13日 到期');
+    expect(container.textContent).not.toContain('本周期总用量');
+    expect(container.textContent).not.toContain('套餐内模型共用同一额度池');
   });
 
   it('shows explicit no-package state for enabled users without active entitlements', async () => {
@@ -318,7 +447,8 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('无套餐');
+    expect(container.textContent).toContain('尚未开通套餐');
+    expect(container.textContent).not.toContain('暂无有效期');
     expect(container.textContent).toContain('当前没有有效套餐');
   });
 
@@ -405,11 +535,13 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('选一档，开始你的协作节奏');
+    expect(container.querySelector('.relay-access-storefront')).toBeNull();
+    await openPlanChooser();
+    expect(container.textContent).toContain('选择适合你的套餐');
     expect(container.textContent).toContain('灰度标准包');
     expect(container.textContent).toContain('¥29.9');
-    expect(container.textContent).toContain('灰度测试支付');
-    expect(container.textContent).toContain('领取体验包');
+    expect(container.textContent).not.toContain('灰度测试支付');
+    expect(container.textContent).not.toContain('领取体验包');
   });
 
   it('renders the current Free, Personal and Pro catalog without exposing internal quota values', async () => {
@@ -441,8 +573,9 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     await renderModal();
+    await openPlanChooser();
 
-    expect(container.textContent).toContain('选择适合你的工作强度');
+    expect(container.textContent).toContain('选择适合你的套餐');
     expect(container.textContent).toContain('免费版');
     expect(container.textContent).toContain('个人版');
     expect(container.textContent).toContain('专业版');
@@ -450,9 +583,6 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('¥399');
     expect(container.textContent).toContain('¥799');
     expect(container.textContent).toContain('约为个人版 3 倍的任务容量');
-    expect(container.textContent).toContain('个人版用量 · 30 天有效');
-    expect(container.textContent).toContain('专业版用量 · 30 天有效');
-    expect(container.textContent).toContain('支付通道暂未开放');
     expect(container.textContent).not.toContain('200000000');
     expect(container.textContent).not.toContain('10500');
     expect(container.textContent).not.toContain('31500');
@@ -485,6 +615,7 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     await renderModal();
+    await openPlanChooser();
 
     const rows = Array.from(container.querySelectorAll('.relay-access-plan-row'));
     const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
@@ -519,8 +650,8 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     await renderModal();
+    await openPlanChooser();
 
-    expect(container.textContent).toContain('升级后立即切换套餐，额度按专业版重置，不与个人版叠加。');
     const rows = Array.from(container.querySelectorAll('.relay-access-plan-row'));
     const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
     const proButton = rows.find(row => row.textContent.includes('专业版'))?.querySelector('button');
@@ -532,6 +663,72 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('升级至专业版');
     expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('升级后立即生效，额度按新套餐重置，不叠加。');
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('opens the wide plan chooser from the quota card and keeps the purchase flow connected', async () => {
+    const plans = [
+      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
+      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
+    ];
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'alipay_page', label: '支付宝支付' }],
+      plans,
+    });
+    api.getRelayCommercial.mockResolvedValue({
+      enabled: true,
+      summary: {
+        uid: 38,
+        models: ['gpt-5.6-terra'],
+        entitlements: [{
+          plan_id: 21, plan_slug: 'catsco-personal', plan_name: '个人版', source: 'order', state: 'active',
+          starts_at: '2026-08-14T00:00:00Z', expires_at: '2026-09-13T00:00:00Z',
+        }],
+      },
+    });
+
+    await renderModal();
+
+    const planChooserButton = findButton('升级套餐');
+    expect(planChooserButton).not.toBeUndefined();
+    expect(planChooserButton.getAttribute('aria-controls')).toBe('relay-access-plan-chooser');
+    expect(planChooserButton.getAttribute('aria-expanded')).toBe('false');
+    expect(planChooserButton.querySelector('svg')).toBeNull();
+    await clickButton('升级套餐');
+
+    const chooser = container.querySelector('[role="dialog"][aria-label="升级套餐"]');
+    expect(chooser).not.toBeNull();
+    expect(chooser.id).toBe('relay-access-plan-chooser');
+    expect(planChooserButton.getAttribute('aria-expanded')).toBe('true');
+    expect(chooser.querySelectorAll('.relay-access-plan-list-chooser .relay-access-plan-row')).toHaveLength(3);
+    expect(chooser.textContent).toContain('个人企业');
+
+    const enterpriseTab = chooser.querySelector('[role="tab"][aria-selected="false"]');
+    expect(enterpriseTab?.textContent).toContain('企业');
+    await act(async () => {
+      enterpriseTab.click();
+      await Promise.resolve();
+    });
+    expect(chooser.textContent).toContain('Business Start');
+    expect(chooser.textContent).toContain('4,999');
+    expect(chooser.querySelector('.relay-access-enterprise-card')).not.toBeNull();
+
+    const personalTab = chooser.querySelector('[role="tab"][aria-selected="false"]');
+    await act(async () => {
+      personalTab.click();
+      await Promise.resolve();
+    });
+    expect(chooser.querySelectorAll('.relay-access-plan-list-chooser .relay-access-plan-row')).toHaveLength(3);
+
+    const upgradeButton = [...chooser.querySelectorAll('button')].find(button => button.textContent.includes('升级至专业版'));
+    expect(upgradeButton).not.toBeUndefined();
+    await act(async () => {
+      upgradeButton.click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="dialog"][aria-label="升级套餐"]')).toBeNull();
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('升级后立即生效，额度按新套餐重置，不叠加。');
   });
 
   it('shows a complete, filterable order history without hiding older orders', async () => {
@@ -558,11 +755,13 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(10);
 
     await clickButton('待处理');
+    expect(findButton('待处理')?.getAttribute('aria-pressed')).toBe('true');
     const pendingRows = container.querySelectorAll('.relay-access-order-list > button');
     expect(pendingRows).toHaveLength(1);
     expect(pendingRows[0].textContent).toContain('待支付套餐');
 
     await clickButton('退款 / 关闭');
+    expect(findButton('退款 / 关闭')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(2);
     expect(container.textContent).toContain('已退款套餐');
     expect(container.textContent).toContain('已关闭套餐');
@@ -603,6 +802,7 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     await renderModal();
+    await openPlanChooser();
     const purchaseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('购买'));
     await act(async () => {
       purchaseButton.click();
@@ -670,6 +870,7 @@ describe('RelayAccessModal commercial rollout', () => {
     window.open.mockReturnValue(paymentWindow);
 
     await renderModal();
+    await openPlanChooser();
     const purchaseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('购买'));
     await act(async () => {
       purchaseButton.click();
@@ -733,6 +934,7 @@ describe('RelayAccessModal commercial rollout', () => {
     window.open.mockReturnValue(null);
 
     await renderModal();
+    await openPlanChooser();
     await clickButton('购买');
     await clickButton('确认并前往支付宝');
 
@@ -765,6 +967,7 @@ describe('RelayAccessModal commercial rollout', () => {
     }));
 
     await renderModal();
+    await openPlanChooser();
     await clickButton('购买');
     const confirmButton = findButton('确认购买');
     await act(async () => {
@@ -842,6 +1045,7 @@ describe('RelayAccessModal commercial rollout', () => {
       });
 
     await renderModal();
+    await openPlanChooser();
     await clickButton('购买');
     await clickButton('确认购买');
     await act(async () => {
@@ -849,6 +1053,7 @@ describe('RelayAccessModal commercial rollout', () => {
     });
     root = createRoot(container);
     await renderModal();
+    await openPlanChooser();
     await clickButton('购买');
     await clickButton('确认购买');
 
@@ -884,6 +1089,7 @@ describe('RelayAccessModal commercial rollout', () => {
     api.createCommercialOrder.mockResolvedValue({ order: pending });
 
     await renderModal();
+    await openPlanChooser();
     await clickButton('购买');
     await clickButton('确认购买');
     await act(async () => {
@@ -892,6 +1098,7 @@ describe('RelayAccessModal commercial rollout', () => {
     root = createRoot(container);
     api.getCommercialOrders.mockRejectedValue(new Error('temporary order list failure'));
     await renderModal();
+    await openPlanChooser();
     await clickButton('购买');
     await clickButton('确认购买');
 
@@ -928,6 +1135,7 @@ describe('RelayAccessModal commercial rollout', () => {
     api.getCommercialOrders.mockResolvedValue({ orders: [pending] });
 
     await renderModal();
+    await openPlanChooser();
     expect(container.textContent).toContain('正在恢复支付宝收银台链接');
     await clickButton('继续支付');
 
@@ -970,6 +1178,7 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     await renderModal();
+    await openPlanChooser();
     await clickButton('继续支付');
 
     expect(container.textContent).toMatch(/剩余 [45]:\d{2}/);

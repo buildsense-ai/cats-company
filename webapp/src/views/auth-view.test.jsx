@@ -65,4 +65,21 @@ describe('AuthView route links', () => {
       .find((link) => link.textContent === '返回登录');
     expect(login?.getAttribute('href')).toBe('/login?next=%2Fe%2Finvite-1');
   });
+
+  test('collects only account credentials during registration', async () => {
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="register"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.querySelector('input[name="email"]')).toBeTruthy();
+    expect(container.querySelector('input[name="verificationCode"]')).toBeTruthy();
+    expect(container.querySelector('input[name="newPassword"]')).toBeTruthy();
+    expect(container.textContent).not.toContain('登录名称');
+  });
 });
