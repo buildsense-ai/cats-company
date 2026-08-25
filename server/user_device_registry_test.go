@@ -546,6 +546,81 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 	}
 }
 
+func TestBotRecipientIdentityExcludesServerRuntimeFromHumanDeviceRouting(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "chandler", DisplayName: "Chandler", AccountType: types.AccountBot},
+			43: {ID: 43, Username: "monica", DisplayName: "Monica", AccountType: types.AccountBot},
+		},
+	}
+	hub := NewHub(store, nil)
+	now := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	hub.userDevices.now = func() time.Time { return now }
+	desktop, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "alice-desktop",
+		DisplayName:  "Alice Desktop",
+		OS:           "windows",
+		RuntimeRole:  "desktop",
+		Status:       "online",
+		Capabilities: []string{"resolve_common_directory", "execute_shell"},
+	})
+	if err != nil {
+		t.Fatalf("register desktop Runtime: %v", err)
+	}
+	now = now.Add(time.Second)
+	serverRuntime, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		BotUID:       43,
+		DeviceID:     "monica-server",
+		DisplayName:  "Monica Server",
+		OS:           "linux",
+		RuntimeRole:  "server",
+		Status:       "online",
+		Capabilities: []string{"resolve_common_directory", "execute_shell"},
+	})
+	if err != nil {
+		t.Fatalf("register server Runtime: %v", err)
+	}
+	desktopClient := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	serverClient := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	recipient := &Client{uid: 42, accountType: types.AccountBot, bodyID: "chandler-body", send: make(chan []byte, 1)}
+	hub.addClient(desktopClient)
+	hub.addClient(serverClient)
+	hub.addClient(recipient)
+	hub.bindDeviceClient(7, desktop, desktopClient)
+	hub.bindDeviceClient(7, serverRuntime, serverClient)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "p2p_7_42",
+		Content: json.RawMessage(`"在我的桌面创建文件夹"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "p2p_7_42", 0, payload, 101, nil)
+	var msg ServerMessage
+	decodeQueuedServerMessage(t, recipient.send, &msg)
+	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
+	grant := firstDeviceGrantMap(t, identity)
+	if grant["deviceId"] != "alice-desktop" {
+		t.Fatalf("device grant targeted %#v, want alice-desktop", grant["deviceId"])
+	}
+	selection := deviceSelectionMap(t, identity)
+	selectedDevice, ok := selection["selectedDevice"].(map[string]interface{})
+	if !ok || selectedDevice["deviceId"] != "alice-desktop" {
+		t.Fatalf("device selection = %#v, want alice-desktop", selection)
+	}
+	runtime := metadataMapFromServerMessage(t, &msg, "xiaoba_runtime")
+	devices, ok := runtime["devices"].([]interface{})
+	if !ok || len(devices) != 1 {
+		t.Fatalf("xiaoba runtime devices = %#v, want only the desktop Runtime", runtime["devices"])
+	}
+	runtimeDevice, ok := devices[0].(map[string]interface{})
+	if !ok || runtimeDevice["deviceId"] != "alice-desktop" {
+		t.Fatalf("xiaoba runtime device = %#v, want alice-desktop", devices[0])
+	}
+}
+
 func TestXiaobaRuntimeMetadataIncludesGroupHumanReadyDevices(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{

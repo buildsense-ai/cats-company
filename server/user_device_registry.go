@@ -347,6 +347,22 @@ func (r *userDeviceRegistry) activeDevice(ownerUID int64, deviceID string) (User
 	return device, true
 }
 
+func (r *userDeviceRegistry) registeredDevice(ownerUID int64, deviceID string) (UserDevice, bool) {
+	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return UserDevice{}, false
+	}
+	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
+	if err != nil {
+		return UserDevice{}, false
+	}
+	for _, device := range r.list(ownerUID) {
+		if device.DeviceID == normalizedDeviceID {
+			return device, true
+		}
+	}
+	return UserDevice{}, false
+}
+
 func normalizeDeviceModelStatus(input *DeviceModelStatus, now time.Time) *DeviceModelStatus {
 	if input == nil {
 		return nil
