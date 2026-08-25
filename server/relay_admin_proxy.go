@@ -51,6 +51,11 @@ type relayAdminManagedBudgetStore interface {
 
 const relayAdminRewritePrefix = "/api/admin/relay"
 
+// Long-window pricing analytics can take tens of seconds on a busy relay.
+// Keep the portal proxy longer than the relay calculation so it does not turn
+// a successful internal response into a misleading "upstream unavailable".
+const relayAdminProxyTimeout = 60 * time.Second
+
 type relayAdminConfig struct {
 	relayURL    string
 	allowedUIDs []int64
@@ -87,7 +92,7 @@ func relayAdminConfigFromEnv() relayAdminConfig {
 func NewRelayAdminProxyHandler(cfg relayAdminConfig, managedBudgets ...relayAdminManagedBudgetStore) *RelayAdminProxyHandler {
 	h := &RelayAdminProxyHandler{
 		config:      cfg,
-		client:      &http.Client{Timeout: 15 * time.Second},
+		client:      &http.Client{Timeout: relayAdminProxyTimeout},
 		rateByUID:   map[int64]*fixedWindowRateLimiter{},
 		rateByIP:    map[string]*fixedWindowRateLimiter{},
 		auditLogger: nil,

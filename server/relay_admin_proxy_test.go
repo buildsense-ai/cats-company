@@ -41,6 +41,13 @@ func TestRelayAdminConfigFromEnv(t *testing.T) {
 	}
 }
 
+func TestRelayAdminProxyTimeoutCoversLongPricingWindows(t *testing.T) {
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: "http://127.0.0.1:18090"})
+	if h.client.Timeout != relayAdminProxyTimeout {
+		t.Fatalf("relay admin proxy timeout=%s, want %s", h.client.Timeout, relayAdminProxyTimeout)
+	}
+}
+
 func TestRelayAdminPathWhitelist(t *testing.T) {
 	ok := []string{
 		"/local/usage-admin",
