@@ -7575,6 +7575,23 @@ button.catsco-download-action:disabled {
   color: var(--v3-text-name);
   border-color: #55585B;
 }
+.v3-file-preview-actions a:focus-visible,
+.v3-file-preview-actions button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-primary));
+  outline-offset: 2px;
+}
+.v3-file-preview-actions button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+.v3-file-preview-share-action.is-success {
+  border-color: color-mix(in srgb, var(--v3-primary) 58%, var(--v3-border));
+  color: var(--v3-primary);
+}
+.v3-file-preview-share-action.is-error {
+  border-color: color-mix(in srgb, #fca5a5 54%, var(--v3-border));
+  color: #fca5a5;
+}
 .v3-file-preview-body {
   flex: 1;
   min-height: 0;

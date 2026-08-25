@@ -2416,6 +2416,65 @@ describe('ChatMessage rich file rendering', () => {
     expect(downloadLink.getAttribute('target')).toBe('_blank');
   });
 
+  it('keeps PDF sharing inside the preview and shares the inline URL', async () => {
+    const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: share,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 44,
+              from_uid: 2,
+              content: '[文件] report.pdf',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'report.pdf',
+                  url: '/uploads/files/report.pdf',
+                  size: 2048,
+                  mime_type: 'application/pdf',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await flushAsync();
+      });
+
+      const panel = container.querySelector('.v3-file-preview-panel');
+      const shareButton = panel.querySelector('button[aria-label="分享 PDF"]');
+      expect(shareButton).not.toBeNull();
+      expect(container.querySelector('.v3-artifact-actions button[aria-label="分享 PDF"]')).toBeNull();
+      expect(panel.querySelector('a[download]').getAttribute('href'))
+        .toBe('/uploads/files/report.pdf?download=1');
+
+      await act(async () => {
+        Simulate.click(shareButton);
+        await flushAsync();
+      });
+
+      expect(share).toHaveBeenCalledWith({
+        title: 'report.pdf',
+        url: new URL('/uploads/files/report.pdf', window.location.href).toString(),
+      });
+    } finally {
+      if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
+      else delete navigator.share;
+    }
+  });
+
   it('closes the file preview from its backdrop and the Escape key', async () => {
     const message = {
       id: 41,
