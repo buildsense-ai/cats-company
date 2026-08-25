@@ -832,6 +832,20 @@ describe('agent file requests', () => {
       expect.objectContaining({ method: 'GET' }),
     );
   });
+
+  test('includes the timestamp half of the composite file cursor', async () => {
+    await apiModule.api.getAgentFiles(440, {
+      topicId: 'grp_80',
+      beforeId: 820,
+      beforeCreatedAt: '2026-08-12T02:20:00.123456Z',
+      limit: 40,
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/agents/440/files?topic_id=grp_80&limit=40&before_id=820&before_created_at=2026-08-12T02%3A20%3A00.123456Z',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
 });
 
 describe('local XiaoBa SkillHub bridge', () => {
@@ -959,6 +973,19 @@ describe('local XiaoBa SkillHub bridge', () => {
 
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/topics/grp_80/files?limit=40&before_id=820',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  test('passes the timestamp half of the composite file cursor', async () => {
+    await apiModule.api.getTopicFiles('grp_80', {
+      beforeId: 820,
+      beforeCreatedAt: '2026-08-12T02:20:00.123456Z',
+      limit: 40,
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/topics/grp_80/files?limit=40&before_id=820&before_created_at=2026-08-12T02%3A20%3A00.123456Z',
       expect.objectContaining({ method: 'GET' }),
     );
   });

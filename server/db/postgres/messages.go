@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -240,8 +241,18 @@ func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit 
 	return scanMessages(rows, "scan latest message before")
 }
 
-// ListAgentFileMessages returns newest file- or image-bearing messages authored by one agent in one conversation.
+// ListAgentFileMessages preserves the legacy ID-only file-history API.
 func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	return a.listAgentFileMessages(agentUID, topicID, beforeID, time.Time{}, limit, true)
+}
+
+// ListAgentFileMessagesWithCursor returns newest file- or image-bearing messages
+// authored by one agent in one conversation using the optional composite cursor.
+func (a *Adapter) ListAgentFileMessagesWithCursor(agentUID int64, topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, error) {
+	return a.listAgentFileMessages(agentUID, topicID, beforeID, beforeCreatedAt, limit, false)
+}
+
+func (a *Adapter) listAgentFileMessages(agentUID int64, topicID string, beforeID int64, beforeCreatedAt time.Time, limit int, legacyIDOnly bool) ([]*types.Message, error) {
 	if topicID == "" {
 		return []*types.Message{}, nil
 	}
@@ -249,13 +260,10 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID
 		limit = 50
 	}
 	args := []interface{}{agentUID, topicID}
-	beforeClause := ""
 	nextPlaceholder := 3
-	if beforeID > 0 {
-		beforeClause = fmt.Sprintf(" AND id < $%d", nextPlaceholder)
-		args = append(args, beforeID)
-		nextPlaceholder++
-	}
+	beforeClause, beforeArgs, placeholdersUsed := fileMessageBeforeClause(beforeID, beforeCreatedAt, nextPlaceholder, legacyIDOnly)
+	args = append(args, beforeArgs...)
+	nextPlaceholder += placeholdersUsed
 	args = append(args, limit)
 	rows, err := a.db.Query(
 		fmt.Sprintf(
@@ -282,8 +290,18 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID
 	return scanMessages(rows, "scan agent file message")
 }
 
-// ListTopicFileMessages returns newest file- or image-bearing messages from all senders in one conversation.
+// ListTopicFileMessages preserves the legacy ID-only file-history API.
 func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	return a.listTopicFileMessages(topicID, beforeID, time.Time{}, limit, true)
+}
+
+// ListTopicFileMessagesWithCursor returns newest file- or image-bearing messages
+// from all senders in one conversation using the optional composite cursor.
+func (a *Adapter) ListTopicFileMessagesWithCursor(topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, error) {
+	return a.listTopicFileMessages(topicID, beforeID, beforeCreatedAt, limit, false)
+}
+
+func (a *Adapter) listTopicFileMessages(topicID string, beforeID int64, beforeCreatedAt time.Time, limit int, legacyIDOnly bool) ([]*types.Message, error) {
 	if topicID == "" {
 		return []*types.Message{}, nil
 	}
@@ -291,13 +309,10 @@ func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit in
 		limit = 50
 	}
 	args := []interface{}{topicID}
-	beforeClause := ""
 	nextPlaceholder := 2
-	if beforeID > 0 {
-		beforeClause = fmt.Sprintf(" AND id < $%d", nextPlaceholder)
-		args = append(args, beforeID)
-		nextPlaceholder++
-	}
+	beforeClause, beforeArgs, placeholdersUsed := fileMessageBeforeClause(beforeID, beforeCreatedAt, nextPlaceholder, legacyIDOnly)
+	args = append(args, beforeArgs...)
+	nextPlaceholder += placeholdersUsed
 	args = append(args, limit)
 	rows, err := a.db.Query(
 		fmt.Sprintf(
@@ -321,6 +336,31 @@ func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit in
 	}
 	defer rows.Close()
 	return scanMessages(rows, "scan topic file message")
+}
+
+func fileMessageBeforeClause(beforeID int64, beforeCreatedAt time.Time, placeholder int, legacyIDOnly bool) (string, []interface{}, int) {
+	switch {
+	case legacyIDOnly && beforeID > 0:
+		return fmt.Sprintf(" AND id < $%d", placeholder), []interface{}{beforeID}, 1
+	case beforeID > 0 && !beforeCreatedAt.IsZero():
+		return fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", placeholder, placeholder+1), []interface{}{beforeCreatedAt, beforeID}, 2
+	case beforeID > 0:
+		// Resolve the timestamp for legacy ID-only cursors so they retain the
+		// same ordering semantics as the new composite cursor. If the boundary
+		// message was deleted, fall back to the legacy ID boundary instead of
+		// turning the row comparison into UNKNOWN and returning no rows.
+		return fmt.Sprintf(` AND (
+			(created_at, id) < (SELECT before_message.created_at, before_message.id FROM messages AS before_message WHERE before_message.id = $%d)
+			OR (
+				NOT EXISTS (SELECT 1 FROM messages AS before_message WHERE before_message.id = $%d)
+				AND id < $%d
+			)
+		)`, placeholder, placeholder+1, placeholder+2), []interface{}{beforeID, beforeID, beforeID}, 3
+	case !beforeCreatedAt.IsZero():
+		return fmt.Sprintf(" AND created_at < $%d", placeholder), []interface{}{beforeCreatedAt}, 1
+	default:
+		return "", nil, 0
+	}
 }
 
 // GetLatestMessagesForTopics returns the newest persisted message for each topic.

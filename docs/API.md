@@ -168,13 +168,14 @@ REST 备用通道（推荐使用 WebSocket）。
 
 获取消息历史。
 
-#### GET /api/topics/{topicId}/files?limit={n}&before_id={messageId}
+#### GET /api/topics/{topicId}/files?limit={n}&before_id={messageId}&before_created_at={timestamp}
 
 读取当前聊天内的文件历史，结果包含该聊天中所有发送者产生的文件，不按 Agent 或发送者过滤。
 
 - 私聊仅允许双方读取。
 - 群聊仅允许当前群成员读取。
-- `before_id` 使用消息 ID 作为稳定的向前分页游标。
+- `before_id` 与 `before_created_at` 共同组成稳定的向前分页游标；两者应使用上一页返回的
+  `next_before_id` 和 `next_before_created_at`。仅提供 `before_id` 时，服务端会兼容解析该消息的时间。
 
 ```json
 {
@@ -193,7 +194,8 @@ REST 备用通道（推荐使用 WebSocket）。
     }
   ],
   "has_more": false,
-  "next_before_id": 0
+  "next_before_id": 0,
+  "next_before_created_at": ""
 }
 ```
 
