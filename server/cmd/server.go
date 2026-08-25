@@ -532,13 +532,14 @@ func main() {
 		log.Printf("Alipay sales are configured, but no uid is eligible until relay commercial enforcement is enabled")
 	}
 	commercialPaymentHandler := server.NewCommercialPaymentHandler(commercialPaymentStore, server.CommercialPaymentHandlerOptions{
-		PublicEnabled: relayCommercialPublicEnabled,
-		TestUIDs:      relayCommercialTestUIDs,
-		TestPayments:  paymentTestUIDs,
-		TrialPlanSlug: envString("CATS_COMMERCIAL_TRIAL_PLAN_SLUG"),
-		Providers:     paymentProviders,
-		SaleChannels:  paymentSaleChannels,
-		Syncer:        commercialRelaySyncer,
+		PublicEnabled:     relayCommercialPublicEnabled,
+		TestUIDs:          relayCommercialTestUIDs,
+		TestPayments:      paymentTestUIDs,
+		TrialPlanSlug:     envString("CATS_COMMERCIAL_TRIAL_PLAN_SLUG"),
+		Providers:         paymentProviders,
+		SaleChannels:      paymentSaleChannels,
+		Syncer:            commercialRelaySyncer,
+		RenewCloudWorkers: cloudWorkerHandler.RenewForOwner,
 	})
 	commercialPaymentHandler.StartReconciliation(commercialServiceCtx, 5*time.Minute)
 	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)

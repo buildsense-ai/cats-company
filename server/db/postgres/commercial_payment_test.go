@@ -568,12 +568,6 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	}
 
 	personalOrder := createAndFulfillCommercialTestOrder(t, db, paidUID, personalID, "CCTIERPERSONAL", "tier_personal_request", "tier-personal-event")
-	if _, err := db.CreateCommercialOrder(&types.CommercialOrder{
-		OrderNo: "CCTIERPERSONALREPEAT", UID: paidUID, PlanID: personalID, Channel: "test",
-		ClientRequestID: "tier_personal_repeat_request",
-	}); err == nil || !strings.Contains(err.Error(), "already active") {
-		t.Fatalf("active personal plan could be repurchased: %v", err)
-	}
 	bonusExpiry := time.Now().UTC().Add(7 * 24 * time.Hour)
 	bonus, err := db.GrantCommercialQuota(&types.CommercialQuotaGrant{
 		UID: paidUID, PlanID: personalID, GrantType: "bonus", Model: "gpt-5.6-terra",
@@ -629,12 +623,26 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 1 {
 		t.Fatalf("immediate upgrade should leave exactly one available cloud-worker credit: count=%d err=%v", availableCredits, err)
 	}
+	personalRenewal, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo: "CCTIERPROREPEAT", UID: paidUID, PlanID: proID, Channel: "test",
+		ClientRequestID: "tier_pro_repeat_request",
+	})
+	if err != nil {
+		t.Fatalf("active pro plan could not be renewed: %v", err)
+	}
+	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, personalRenewal.OrderNo, "tier_pro_repeat_confirm", "tier-pro-repeat-event")
+	var renewalStartsAt, renewalExpiresAt time.Time
+	if err := db.db.QueryRow(`SELECT starts_at, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalRenewal.OrderNo).Scan(&renewalStartsAt, &renewalExpiresAt); err != nil {
+		t.Fatalf("read pro renewal dates: %v", err)
+	}
+	if !renewalStartsAt.Equal(proExpiresAt) || !renewalExpiresAt.Equal(proExpiresAt.AddDate(0, 0, personalRenewal.PlanDurationDays)) {
+		t.Fatalf("pro renewal did not append a new period: starts=%s expires=%s previous=%s", renewalStartsAt.UTC().Format(time.RFC3339Nano), renewalExpiresAt.UTC().Format(time.RFC3339Nano), proExpiresAt.UTC().Format(time.RFC3339Nano))
+	}
 	for _, blocked := range []struct {
 		planID int64
 		want   string
 	}{
 		{personalID, "below active plan"},
-		{proID, "already active"},
 	} {
 		if _, err := db.CreateCommercialOrder(&types.CommercialOrder{
 			OrderNo: fmt.Sprintf("CCTIERBLOCKED%d", blocked.planID), UID: paidUID, PlanID: blocked.planID, Channel: "test",

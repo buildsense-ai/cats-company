@@ -40,6 +40,32 @@ func TestTruncateWorkerOutput(t *testing.T) {
 	}
 }
 
+func TestParseCloudWorkerRenewalExpiry(t *testing.T) {
+	want := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	out := "provider diagnostic\n{" + `"status":"renewed","expires_at":"` + want.Format(time.RFC3339) + `"}`
+	got, err := parseCloudWorkerRenewalExpiry(out)
+	if err != nil {
+		t.Fatalf("parse renewal expiry: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("expiry=%s want %s", got, want)
+	}
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{"missing", `{"status":"renewed"}`},
+		{"malformed", `not-json`},
+		{"past", `{"expires_at":"2020-01-01T00:00:00Z"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseCloudWorkerRenewalExpiry(tc.out); err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+}
+
 type cloudWorkerTestStore struct {
 	store.Store
 	ownerBots         []map[string]interface{}

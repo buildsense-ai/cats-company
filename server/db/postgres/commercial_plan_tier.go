@@ -109,11 +109,12 @@ func validateCommercialOfficialPlanPurchase(tx *sql.Tx, uid int64, targetSlug st
 		return err
 	}
 	switch {
-	case activeTier == targetTier:
-		return fmt.Errorf("commercial plan is already active")
 	case activeTier > targetTier:
 		return fmt.Errorf("commercial plan is below active plan")
 	default:
+		// Buying the currently active official tier is a renewal. The
+		// fulfillment transaction appends a new period after the existing
+		// expiry instead of creating an overlapping entitlement.
 		return nil
 	}
 }
@@ -176,10 +177,13 @@ func activateCommercialOfficialPlan(tx *sql.Tx, uid int64, targetSlug string, no
 		return err
 	}
 	switch {
-	case activeTier == targetTier:
-		return fmt.Errorf("commercial plan is already active")
 	case activeTier > targetTier:
 		return fmt.Errorf("commercial plan is below active plan")
+	case activeTier == targetTier:
+		// Same-tier purchases are explicit renewals. Keep the current tier's
+		// grants and entitlement intact; FulfillCommercialOrder appends the
+		// paid period after its existing expiry.
+		return nil
 	}
 	if err := revokeCommercialFreeBaseline(tx, uid, targetSlug, now); err != nil {
 		return err

@@ -507,7 +507,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(4);
   });
 
-  it('marks an active Pro plan and blocks both repeat and lower-tier purchases', async () => {
+  it('offers renewal for an active Pro plan and blocks lower-tier purchases', async () => {
     const plans = [
       { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
       { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
@@ -535,10 +535,13 @@ describe('RelayAccessModal commercial rollout', () => {
     const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
     const proButton = rows.find(row => row.textContent.includes('专业版'))?.querySelector('button');
     expect(personalButton?.textContent).toContain('已包含');
-    expect(proButton?.textContent).toContain('当前套餐');
+    expect(proButton?.textContent).toContain('续费');
     expect(personalButton?.disabled).toBe(true);
-    expect(proButton?.disabled).toBe(true);
+    expect(proButton?.disabled).toBe(false);
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
+
+    await clickButton('续费');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('续费后从当前套餐到期时间顺延 30 天');
   });
 
   it('offers Personal users an immediate Pro upgrade with explicit reset timing', async () => {
@@ -565,12 +568,12 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('升级到 Pro 后立即切换；Personal 剩余时间不顺延，Pro 有效期从支付成功时刻重新计算 30 天。');
+    expect(container.textContent).toContain('Personal 可直接续费，续费周期从当前到期时间顺延；升级到 Pro 后立即切换，Personal 剩余时间不顺延。');
     const rows = Array.from(container.querySelectorAll('.relay-access-plan-row'));
     const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
     const proButton = rows.find(row => row.textContent.includes('专业版'))?.querySelector('button');
-    expect(personalButton?.textContent).toContain('当前套餐');
-    expect(personalButton?.disabled).toBe(true);
+    expect(personalButton?.textContent).toContain('续费');
+    expect(personalButton?.disabled).toBe(false);
     expect(proButton?.textContent).toContain('升级至专业版');
     expect(proButton?.disabled).toBe(false);
 
