@@ -288,6 +288,13 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
+    const expectedResetTime = new Date('2026-07-08T03:29:30Z').toLocaleString('zh-CN', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
     expect(container.textContent).toContain('当前有效');
     expect(container.textContent).toContain('购买记录不会自动改变已有模型额度');
     expect(container.textContent).toContain('教师试用包 · 7月29日 到期');
@@ -295,7 +302,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('本周期总用量');
     expect(container.textContent).not.toContain('套餐最近到期');
     expect(container.textContent).toContain('下次');
-    expect(container.textContent).toContain('下次重置时间：7月8日 11:29');
+    expect(container.textContent).toContain(`下次重置时间：${expectedResetTime}`);
     expect(container.textContent).toContain('当前权益');
     expect(container.textContent).not.toContain('2 个模型额度可用');
     expect(container.textContent).not.toContain('gpt-5.6-luna');
@@ -308,7 +315,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('所有模型共享总额度，按模型倍率扣减，数据可能延迟。');
     expect(container.textContent).not.toContain('所有套餐内模型共用总额度，并按各自倍率扣减；数据可能延迟几分钟。');
     expect(container.querySelector('.relay-access-current-quota-meta')).toBeNull();
-    expect(container.querySelector('.relay-access-current-quota-cycle')?.textContent).toContain('下次重置时间：7月8日 11:29');
+    expect(container.querySelector('.relay-access-current-quota-cycle')?.textContent).toContain(`下次重置时间：${expectedResetTime}`);
     expect(container.querySelector('.relay-access-current-quota-cycle')?.textContent).not.toContain('每月重置');
     expect(api.getRelayUsage).toHaveBeenCalledWith({ scope: 'total' });
     expect(api.getRelayUsage.mock.calls.every(([options]) => options?.scope === 'total' && !options?.model)).toBe(true);
