@@ -81,6 +81,30 @@ type cloudWorkerTestStore struct {
 	adminRecords      []types.CloudWorkerAdminRecord
 }
 
+// quotaCreditStub lets quota presentation tests exercise the durable credit
+// branch without making the broad Store test double implement cloud-worker
+// mutation methods.
+type quotaCreditStub struct {
+	total     int
+	available int
+}
+
+func (s quotaCreditStub) CloudWorkerCreditSummary(int64) (int, int, error) {
+	return s.total, s.available, nil
+}
+func (quotaCreditStub) ReserveCloudWorkerCredit(int64, string) (bool, error) { return false, nil }
+func (quotaCreditStub) CommitCloudWorkerCredit(int64, string, int64, string, int) error {
+	return nil
+}
+func (quotaCreditStub) ReleaseCloudWorkerCredit(int64, string) error            { return nil }
+func (quotaCreditStub) ExtendCloudWorkerLifecycles(int64, time.Time, int) error { return nil }
+func (quotaCreditStub) ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error) {
+	return nil, nil
+}
+func (quotaCreditStub) MarkCloudWorkerLifecyclePending(int64, time.Time) error { return nil }
+func (quotaCreditStub) ClaimCloudWorkerLifecycleDeletion(int64) (bool, error)  { return false, nil }
+func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error    { return nil }
+
 func (s *cloudWorkerTestStore) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord, error) {
 	return append([]types.CloudWorkerAdminRecord(nil), s.adminRecords...), nil
 }
@@ -393,6 +417,24 @@ func TestParseWorkerCreateQuota(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCloudWorkerQuotaSummaryIncludesConsumedCredits(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("7=0")
+	h.credits = quotaCreditStub{total: 1, available: 0}
+	total, used, remaining := h.quotaSummary(7, 0)
+	if total != 1 || used != 1 || remaining != 0 {
+		t.Fatalf("consumed credit quota=(%d,%d,%d), want (1,1,0)", total, used, remaining)
+	}
+}
+
+func TestCloudWorkerQuotaSummaryDoesNotCountAvailableCreditAsUsed(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("7=0")
+	h.credits = quotaCreditStub{total: 1, available: 1}
+	total, used, remaining := h.quotaSummary(7, 0)
+	if total != 1 || used != 0 || remaining != 1 {
+		t.Fatalf("available credit quota=(%d,%d,%d), want (1,0,1)", total, used, remaining)
 	}
 }
 

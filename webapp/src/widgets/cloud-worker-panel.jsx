@@ -51,7 +51,7 @@ const compareVersions = (left, right) => {
 const CLOUD_ACTION_LABELS = {
   update: '正在更新应用版本，期间员工会短暂离线，请保持页面打开',
   rollback: '正在回滚应用版本，期间员工会短暂离线，请保持页面打开',
-  reset: '正在按基础镜像重建实例，所有数据会被清空，请勿关闭或重复提交',
+  reset: '正在原实例内重装基础镜像，所有数据会被清空，请勿关闭或重复提交',
   delete: '正在销毁实例并删除员工',
 };
 
@@ -412,7 +412,7 @@ export default function CloudWorkerPanel({
                     {resetConfirming === worker.tenant_name ? (
                       <div className="cc-cloud-reset-confirm">
                         <p className="cc-cloud-reset-confirm-title">
-                          <ShieldAlert size={13} /> 重置「{worker.display_name}」会使用基础镜像 {imageTarget} 重建，并清空全部数据
+                          <ShieldAlert size={13} /> 重置「{worker.display_name}」会在原实例内使用基础镜像 {imageTarget} 重装系统盘，并清空全部数据
                         </p>
                         <p className="cc-cloud-reset-confirm-warning">此操作不可撤销，员工会暂时离线。请核对镜像版本后输入验证码完成二次确认。</p>
                         <p className="cc-cloud-reset-confirm-code">
@@ -455,7 +455,7 @@ export default function CloudWorkerPanel({
                         className="oc-btn oc-btn-default"
                         onClick={() => beginReset(worker.tenant_name)}
                         disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
-                        title={!actionAvailable('reset') ? '云端重置服务尚未配置' : (imageVersions.length === 0 ? '暂无可用基础镜像，无法重置' : '重置：销毁实例并从所选镜像版本重建，所有数据丢失（需验证码）')}
+                          title={!actionAvailable('reset') ? '云端重置服务尚未配置' : (imageVersions.length === 0 ? '暂无可用基础镜像，无法重置' : '重置：在原实例内重装所选镜像，保留包月到期时间但清空所有数据（需验证码）')}
                       >
                           {actionName === 'reset' ? <><RefreshCw size={13} className="cc-spin" /> 重置中...</> : <><RefreshCw size={13} /> 重置</>}
                       </button>
@@ -497,7 +497,7 @@ export default function CloudWorkerPanel({
       )}
 
       <p className="cc-cloud-footnote">
-        <CheckCircle2 size={13} /> 更新与回滚只切换应用并保留数据；重置会按所选镜像重建并清空数据。
+        <CheckCircle2 size={13} /> 更新与回滚只切换应用并保留数据；重置会在原实例内按所选镜像重装系统盘并清空数据。
       </p>
     </div>
   );

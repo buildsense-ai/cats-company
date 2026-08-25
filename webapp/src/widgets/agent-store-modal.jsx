@@ -1284,8 +1284,8 @@ export default function AgentStoreModal({
       const confirmed = await feedback.confirm({
         title: `再次确认：重置“${bot.display_name}”？`,
         message: version
-          ? `重置会销毁该云端虚拟员工的实例并从镜像版本 ${version} 重建，所有数据将丢失且无法恢复！`
-          : '重置会销毁该云端虚拟员工的实例并从镜像重建，所有数据将丢失且无法恢复！',
+          ? `重置会在保留包月实例和到期时间的前提下，从镜像版本 ${version} 重装系统盘；所有数据将丢失且无法恢复！`
+          : '重置会在保留包月实例和到期时间的前提下，从镜像重装系统盘；所有数据将丢失且无法恢复！',
         confirmLabel: '重置并清空数据',
         tone: 'danger',
       });
