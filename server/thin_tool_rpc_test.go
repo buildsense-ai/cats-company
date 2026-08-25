@@ -393,6 +393,129 @@ func TestSkillHubThinToolRPCAuthorization(t *testing.T) {
 	}
 }
 
+func TestGenericThinToolRPCRejectsServerRuntimeTarget(t *testing.T) {
+	hub := NewHub(nil, nil)
+	now := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	hub.userDevices.now = func() time.Time { return now }
+	serverRuntime, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		BotUID:       43,
+		DeviceID:     "monica-server",
+		RuntimeRole:  "server",
+		Status:       "online",
+		Capabilities: []string{"execute_shell"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "alice-desktop",
+		RuntimeRole:  "desktop",
+		Status:       "online",
+		Capabilities: []string{"execute_shell"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requester := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 2)}
+	target := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(requester)
+	hub.addClient(target)
+	hub.bindDeviceClient(7, serverRuntime, target)
+	desktopRequest := &MsgThinToolRPC{TargetOwnerUserID: "usr7", TargetDeviceID: "alice-desktop", ToolName: "execute_shell"}
+	if err := hub.authorizeSkillHubThinToolRPC(requester, desktopRequest, 7, "alice-desktop", desktopRequest.ToolName); err != nil {
+		t.Fatalf("desktop Runtime target rejected: %v", err)
+	}
+	now = now.Add(hub.userDevices.ttl + time.Second)
+	if _, ok := hub.userDevices.activeDevice(7, serverRuntime.DeviceID); ok {
+		t.Fatal("test setup requires the server Runtime registration to be stale")
+	}
+	serverRoute, _ := hub.findDeviceRPCTarget(7, serverRuntime)
+	if !hub.routeConnected(serverRoute) {
+		t.Fatal("test setup requires the stale server Runtime route to remain connected")
+	}
+	request := &MsgThinToolRPC{
+		ID:                "generic-msg",
+		Type:              thinToolRPCTypeRequest,
+		RequestID:         "generic-request",
+		TargetOwnerUserID: "usr7",
+		TargetDeviceID:    "monica-server",
+		ToolName:          "execute_shell",
+	}
+	hub.handleThinToolRPCRequest(requester, request)
+	var denied ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &denied)
+	if denied.ThinToolRPC == nil || denied.ThinToolRPC.Error == nil {
+		t.Fatalf("denied response = %#v, want thin_tool_rpc error", denied.ThinToolRPC)
+	}
+	if denied.ThinToolRPC.Error.Code != thinToolRPCTargetIsServerCode {
+		t.Fatalf("authorization code = %q, want %q", denied.ThinToolRPC.Error.Code, thinToolRPCTargetIsServerCode)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("request ack = %#v, want 200", ack.Ctrl)
+	}
+	if drainOne(target.send) {
+		t.Fatal("denied generic request was forwarded to the stale server Runtime route")
+	}
+	if _, ok := hub.thinToolRPC.get("generic-request"); ok {
+		t.Fatal("denied generic request was left pending")
+	}
+}
+
+func TestGenericThinToolRPCRejectsUnregisteredLiveRoute(t *testing.T) {
+	hub := NewHub(nil, nil)
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "alice-desktop",
+		RuntimeRole:  "desktop",
+		Status:       "online",
+		Capabilities: []string{"execute_shell"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 2)}
+	target := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	hub.addClient(requester)
+	hub.addClient(target)
+	hub.bindDeviceClient(7, device, target)
+	hub.userDevices.unregister(7, device.DeviceID)
+	if _, ok := hub.userDevices.registeredDevice(7, device.DeviceID); ok {
+		t.Fatal("test setup requires the target device registration to be absent")
+	}
+	targetRoute, _ := hub.findDeviceRPCTarget(7, device)
+	if !hub.routeConnected(targetRoute) {
+		t.Fatal("test setup requires the unregistered target route to remain connected")
+	}
+
+	hub.handleThinToolRPCRequest(requester, &MsgThinToolRPC{
+		ID:                "unregistered-msg",
+		Type:              thinToolRPCTypeRequest,
+		RequestID:         "unregistered-request",
+		TargetOwnerUserID: "usr7",
+		TargetDeviceID:    device.DeviceID,
+		ToolName:          "execute_shell",
+	})
+	var denied ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &denied)
+	if denied.ThinToolRPC == nil || denied.ThinToolRPC.Error == nil {
+		t.Fatalf("denied response = %#v, want thin_tool_rpc error", denied.ThinToolRPC)
+	}
+	if denied.ThinToolRPC.Error.Code != thinToolRPCTargetUnavailableCode {
+		t.Fatalf("authorization code = %q, want %q", denied.ThinToolRPC.Error.Code, thinToolRPCTargetUnavailableCode)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("request ack = %#v, want 200", ack.Ctrl)
+	}
+	if drainOne(target.send) {
+		t.Fatal("denied generic request was forwarded over an unregistered live route")
+	}
+	if _, ok := hub.thinToolRPC.get("unregistered-request"); ok {
+		t.Fatal("denied generic request was left pending")
+	}
+}
+
 func TestSkillHubBotSwitchRejectsDesktopWhenBotIsRoutableOnServer(t *testing.T) {
 	db := &agentTestStore{owners: map[int64]int64{42: 7, 43: 7}}
 	hub := NewHub(db, nil)

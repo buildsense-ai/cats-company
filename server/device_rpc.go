@@ -735,9 +735,27 @@ func (h *Hub) userDeviceRouteCandidates(ownerUID int64) ([]UserDevice, []UserDev
 	if h == nil || h.userDevices == nil || ownerUID <= 0 {
 		return nil, nil
 	}
-	devices := h.userDevices.activeDevices(ownerUID)
+	devices := humanToolTargetDevices(h.userDevices.activeDevices(ownerUID))
 	routable, unavailable := h.classifyUserDevices(ownerUID, devices)
 	return routableDevices(routable), unavailableDevices(unavailable)
+}
+
+// Human-issued tool calls must target an interactive desktop Runtime. Server
+// Runtimes belong to hosted Bots and must not compete with the user's computer
+// merely because they share the same owner UID. Keep an empty RuntimeRole for
+// backward compatibility with desktop clients that predate role registration.
+func humanToolTargetDevices(devices []UserDevice) []UserDevice {
+	if len(devices) == 0 {
+		return nil
+	}
+	out := make([]UserDevice, 0, len(devices))
+	for _, device := range devices {
+		if normalizeDeviceRuntimeRole(device.RuntimeRole) == "server" {
+			continue
+		}
+		out = append(out, device)
+	}
+	return out
 }
 
 func (h *Hub) classifyUserDevices(ownerUID int64, devices []UserDevice) ([]UserDevice, []UserDevice) {
