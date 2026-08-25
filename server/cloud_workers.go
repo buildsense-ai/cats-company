@@ -334,6 +334,23 @@ func (h *CloudWorkerHandler) creditInfo(uid int64) (total, available int) {
 	return total, available
 }
 
+// quotaSummary combines the legacy static rollout quota with durable
+// one-time credits. The displayed "used" value must include consumed or
+// reserved credits as well as currently registered workers; using only
+// len(workers) makes a consumed entitlement look unused after its worker
+// record is removed or a failed provision is reconciled.
+func (h *CloudWorkerHandler) quotaSummary(uid int64, workerCount int) (total, used, remaining int) {
+	staticTotal, staticRemaining := h.quotaInfo(uid, workerCount)
+	creditTotal, creditAvailable := h.creditInfo(uid)
+	total = staticTotal + creditTotal
+	remaining = staticRemaining + creditAvailable
+	used = total - remaining
+	if used < 0 {
+		used = 0
+	}
+	return total, used, remaining
+}
+
 // HandleList handles GET /api/cloud-workers — cloud worker roster + quota.
 func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -378,16 +395,14 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	staticTotal, staticRemaining := h.quotaInfo(uid, len(workers))
-	creditTotal, creditAvailable := h.creditInfo(uid)
-	total, remaining := staticTotal+creditTotal, staticRemaining+creditAvailable
+	total, used, remaining := h.quotaSummary(uid, len(workers))
 	response := map[string]interface{}{
 		"workers":           workers,
 		"status_refreshing": statusRefreshing,
 		"quota": map[string]interface{}{
 			"enabled":   total > 0,
 			"total":     total,
-			"used":      len(workers),
+			"used":      used,
 			"remaining": remaining,
 		},
 	}
@@ -637,13 +652,13 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list cloud workers"})
 		return
 	}
-	total, remaining := h.quotaInfo(uid, len(workers))
+	total, used, remaining := h.quotaSummary(uid, len(workers))
 
 	meta := map[string]interface{}{
 		"quota": map[string]interface{}{
 			"enabled":   total > 0,
 			"total":     total,
-			"used":      len(workers),
+			"used":      used,
 			"remaining": remaining,
 		},
 		"actions": map[string]bool{
@@ -1131,8 +1146,9 @@ func (h *CloudWorkerHandler) HandleUpdate(w http.ResponseWriter, r *http.Request
 	h.handleWorkerAction(w, r, h.updateScript, "update", true, true, false)
 }
 
-// HandleReset handles POST /api/cloud-workers/{name}/reset — DESTROY the worker
-// instance and recreate from the selected image, DROPPING all worker data.
+// HandleReset handles POST /api/cloud-workers/{name}/reset — rebuilds the
+// existing worker instance in place from the selected image, DROPPING all
+// worker data while preserving the Tianyi subscription, network and expiry.
 // An optional "version" selector is forwarded to reset-worker.sh which maps it
 // to the matching image id (falling back to the latest image when omitted).
 func (h *CloudWorkerHandler) HandleReset(w http.ResponseWriter, r *http.Request) {

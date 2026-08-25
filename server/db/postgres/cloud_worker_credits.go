@@ -125,7 +125,7 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 		return fmt.Errorf("begin cloud worker credit commit: %w", err)
 	}
 	defer tx.Rollback()
-	var expiresAt time.Time
+	var expiresAt sql.NullTime
 	if err := tx.QueryRow(`
 		UPDATE cloud_worker_credits
 		SET state = 'consumed', worker_uid = $3, consumed_at = CURRENT_TIMESTAMP
@@ -136,16 +136,22 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 		}
 		return fmt.Errorf("commit cloud worker credit: %w", err)
 	}
-	deleteAfter := expiresAt.AddDate(0, 0, graceDays)
-	if _, err := tx.Exec(`
-		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
-		VALUES ($1, $2, $3, $4, $5, 'active')
-		ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
-		  tenant_name = EXCLUDED.tenant_name, package_expires_at = EXCLUDED.package_expires_at,
-		  delete_after = EXCLUDED.delete_after, state = 'active', archived_at = NULL,
-		  delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
-		workerUID, uid, strings.TrimSpace(tenantName), expiresAt, deleteAfter); err != nil {
-		return fmt.Errorf("register cloud worker lifecycle: %w", err)
+	// Operator-issued credits may intentionally have no expiry (perpetual
+	// internal grants). They still become consumed, but must not create a
+	// notional immediately-due lifecycle row; package-backed credits always
+	// carry an expiry and retain the normal cleanup schedule.
+	if expiresAt.Valid {
+		deleteAfter := expiresAt.Time.AddDate(0, 0, graceDays)
+		if _, err := tx.Exec(`
+			INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
+			VALUES ($1, $2, $3, $4, $5, 'active')
+			ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
+			  tenant_name = EXCLUDED.tenant_name, package_expires_at = EXCLUDED.package_expires_at,
+			  delete_after = EXCLUDED.delete_after, state = 'active', archived_at = NULL,
+			  delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
+			workerUID, uid, strings.TrimSpace(tenantName), expiresAt.Time, deleteAfter); err != nil {
+			return fmt.Errorf("register cloud worker lifecycle: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit cloud worker lifecycle: %w", err)

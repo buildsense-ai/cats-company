@@ -99,3 +99,29 @@ func TestReleaseCloudWorkerCreditRevokesSupersededOrderCredit(t *testing.T) {
 		t.Fatalf("unmet database expectations: %v", err)
 	}
 }
+
+func TestCommitCloudWorkerCreditAllowsPerpetualManualGrant(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("create mock database: %v", err)
+	}
+	defer sqlDB.Close()
+
+	adapter := &Adapter{db: sqlDB}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		UPDATE cloud_worker_credits
+		SET state = 'consumed', worker_uid = $3, consumed_at = CURRENT_TIMESTAMP
+		WHERE uid = $1 AND reservation_ref = $2 AND state = 'reserved'
+		RETURNING expires_at`)).
+		WithArgs(int64(784), "create-784-test", int64(928)).
+		WillReturnRows(sqlmock.NewRows([]string{"expires_at"}).AddRow(nil))
+	mock.ExpectCommit()
+
+	if err := adapter.CommitCloudWorkerCredit(784, "create-784-test", 928, "bot-bot-123-9879", 15); err != nil {
+		t.Fatalf("perpetual credit commit: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet database expectations: %v", err)
+	}
+}

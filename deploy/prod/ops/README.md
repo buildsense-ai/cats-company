@@ -11,7 +11,7 @@
 | `list-worker-releases.sh` | 列出私有 TOS 应用发布 | 更新 / 回滚版本选择 |
 | `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
 | `destroy-worker.sh` | 删实例 + key pair + 本地 state | 删除（幂等） |
-| `reset-worker.sh` | 销毁重建（丢数据） | 重置 / 重装 |
+| `reset-worker.sh` | 原实例重装（丢数据，保留包月订单/到期时间） | 重置 / 重装 |
 | `renew-worker.sh` | 延长包月或恢复退订保留期实例 | 套餐续费后的云员工续订/恢复 |
 | `deploy-worker-version.sh` | 安装指定应用版本（保数据） | 更新 / 本地版本缺失时回滚 |
 | `rollback-worker.sh` | 切换 `/opt/catsco/current`（保数据） | 版本回滚 |
