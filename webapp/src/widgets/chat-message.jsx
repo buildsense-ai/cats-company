@@ -18,7 +18,7 @@ import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet
 import MobilePdfPreview from './mobile-pdf-preview';
 import { artifactRefFromPreviewFile, requestArtifactPageContext } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
-import { sharePdfLink } from './pdf-share';
+import { sharePreviewLink } from './preview-share';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -2425,6 +2425,7 @@ export function FilePreviewPanel({
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
   const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
+  const shareType = isPdf ? 'PDF' : isHtml ? 'HTML' : '文件';
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
@@ -2768,7 +2769,7 @@ export function FilePreviewPanel({
   };
 
   const handleShare = async () => {
-    if (!isPdf || shareState === 'pending') return;
+    if (!(isPdf || isHtml) || shareState === 'pending') return;
     const requestID = shareRequestRef.current + 1;
     shareRequestRef.current = requestID;
     setShareState('pending');
@@ -2780,7 +2781,7 @@ export function FilePreviewPanel({
 
     let result;
     try {
-      result = await sharePdfLink({ url, name: file.name || 'PDF' });
+      result = await sharePreviewLink({ url, name: file.name || shareType });
     } catch {
       result = { status: 'error' };
     }
@@ -2792,7 +2793,7 @@ export function FilePreviewPanel({
     }
     if (result.status === 'copied') {
       setShareState('copied');
-      setShareNotice('PDF 分享链接已复制。');
+      setShareNotice(`${shareType} 分享链接已复制。`);
       shareResetTimerRef.current = window.setTimeout(() => {
         if (requestID !== shareRequestRef.current) return;
         shareResetTimerRef.current = null;
@@ -2803,7 +2804,7 @@ export function FilePreviewPanel({
     }
 
     setShareState('error');
-    setShareNotice('暂时无法分享，请使用“在新窗口打开”后从系统阅读器分享。');
+    setShareNotice('暂时无法分享，请使用“在新窗口打开”后从浏览器分享。');
   };
 
   const backdropOpacity = isDismissing ? 0 : Math.max(0.35, 1 - (dragOffset / 220));
@@ -2863,12 +2864,12 @@ export function FilePreviewPanel({
             </div>
           </div>
           <div className="v3-file-preview-actions">
-            {isPdf && (
+            {(isPdf || isHtml) && (
               <button
                 className={`v3-file-preview-share-action${shareState === 'copied' ? ' is-success' : ''}${shareState === 'error' ? ' is-error' : ''}`}
                 type="button"
-                aria-label={shareState === 'copied' ? '已复制 PDF 分享链接' : shareState === 'error' ? '重试分享 PDF' : '分享 PDF'}
-                title={shareState === 'copied' ? '已复制分享链接' : shareState === 'error' ? '重试分享 PDF' : '分享 PDF'}
+                aria-label={shareState === 'copied' ? `已复制 ${shareType} 分享链接` : shareState === 'error' ? `重试分享 ${shareType}` : `分享 ${shareType}`}
+                title={shareState === 'copied' ? '已复制分享链接' : shareState === 'error' ? `重试分享 ${shareType}` : `分享 ${shareType}`}
                 aria-busy={shareState === 'pending' || undefined}
                 disabled={shareState === 'pending'}
                 onClick={handleShare}

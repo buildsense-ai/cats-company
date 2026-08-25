@@ -1,14 +1,14 @@
-import { sharePdfLink } from './pdf-share';
+import { sharePreviewLink } from './preview-share';
 
-describe('sharePdfLink', () => {
-  it('shares the inline PDF URL instead of the download URL', async () => {
+describe('sharePreviewLink', () => {
+  it('shares the inline preview URL instead of the download URL', async () => {
     const share = vi.fn().mockResolvedValue(undefined);
     const navigatorLike = {
       share,
       clipboard: { writeText: vi.fn() },
     };
 
-    const result = await sharePdfLink({
+    const result = await sharePreviewLink({
       url: '/uploads/files/report.pdf',
       name: 'report.pdf',
       navigatorLike,
@@ -23,18 +23,18 @@ describe('sharePdfLink', () => {
     expect(navigatorLike.clipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it('copies the inline PDF URL when native sharing is unavailable', async () => {
+  it('copies the inline preview URL when native sharing is unavailable', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
 
-    const result = await sharePdfLink({
-      url: '/uploads/files/report.pdf?download=1',
-      name: 'report.pdf',
+    const result = await sharePreviewLink({
+      url: '/uploads/files/report.html?download=1',
+      name: 'report.html',
       navigatorLike: { clipboard: { writeText } },
     });
 
     expect(result).toMatchObject({ status: 'copied', method: 'clipboard' });
     expect(writeText).toHaveBeenCalledWith(
-      new URL('/uploads/files/report.pdf', window.location.href).toString(),
+      new URL('/uploads/files/report.html', window.location.href).toString(),
     );
   });
 
@@ -42,9 +42,9 @@ describe('sharePdfLink', () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const share = vi.fn().mockRejectedValue(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
 
-    const result = await sharePdfLink({
-      url: '/uploads/files/report.pdf',
-      name: 'report.pdf',
+    const result = await sharePreviewLink({
+      url: '/uploads/files/report.html',
+      name: 'report.html',
       navigatorLike: { share, clipboard: { writeText } },
     });
 

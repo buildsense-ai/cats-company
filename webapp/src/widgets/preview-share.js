@@ -1,4 +1,4 @@
-function shareablePdfURL(url) {
+function shareablePreviewURL(url) {
   const value = String(url || '').trim();
   if (!value) return '';
 
@@ -16,14 +16,14 @@ function shareablePdfURL(url) {
   }
 }
 
-export async function sharePdfLink({ url, name = 'PDF', navigatorLike = globalThis.navigator } = {}) {
-  const shareURL = shareablePdfURL(url);
+export async function sharePreviewLink({ url, name = '文件', navigatorLike = globalThis.navigator } = {}) {
+  const shareURL = shareablePreviewURL(url);
   if (!shareURL) return { status: 'error', reason: 'missing-url' };
 
   if (typeof navigatorLike?.share === 'function') {
     try {
       await navigatorLike.share({
-        title: name || 'PDF',
+        title: name || '文件',
         url: shareURL,
       });
       return { status: 'shared', method: 'native', url: shareURL };
@@ -45,4 +45,3 @@ export async function sharePdfLink({ url, name = 'PDF', navigatorLike = globalTh
 
   return { status: 'unsupported', url: shareURL };
 }
-

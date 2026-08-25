@@ -2475,6 +2475,65 @@ describe('ChatMessage rich file rendering', () => {
     }
   });
 
+  it('keeps HTML sharing inside the preview while preserving the download action', async () => {
+    const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: share,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 45,
+              from_uid: 2,
+              content: '[文件] report.html',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'report.html',
+                  url: '/uploads/files/report.html',
+                  size: 2048,
+                  mime_type: 'text/html',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await flushAsync();
+      });
+
+      const panel = container.querySelector('.v3-file-preview-panel');
+      const shareButton = panel.querySelector('button[aria-label="分享 HTML"]');
+      expect(shareButton).not.toBeNull();
+      expect(container.querySelector('.v3-artifact-actions button[aria-label^="分享"]')).toBeNull();
+      expect(panel.querySelector('a[download]').getAttribute('href'))
+        .toBe('/uploads/files/report.html?download=1');
+
+      await act(async () => {
+        Simulate.click(shareButton);
+        await flushAsync();
+      });
+
+      expect(share).toHaveBeenCalledWith({
+        title: 'report.html',
+        url: new URL('/uploads/files/report.html', window.location.href).toString(),
+      });
+    } finally {
+      if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
+      else delete navigator.share;
+    }
+  });
+
   it('closes the file preview from its backdrop and the Escape key', async () => {
     const message = {
       id: 41,
