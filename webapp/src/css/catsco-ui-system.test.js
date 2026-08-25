@@ -432,6 +432,16 @@ describe('CatsCo shell styling', () => {
       .toContain('outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));');
   });
 
+  it('provides a touch-sized, keyboard-visible download action in media previews', () => {
+    const downloadRule = ruleFor('.oc-rich-media-preview-download');
+
+    expect(downloadRule).toContain('width: 44px;');
+    expect(downloadRule).toContain('height: 44px;');
+    expect(downloadRule).toContain('right: 76px;');
+    expect(ruleFor('.oc-rich-media-preview-download:focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring);');
+  });
+
   it('keeps gallery navigation large, transparent, and low-contrast when unavailable', () => {
     const galleryRule = ruleIn(openchatCss, '.oc-rich-image-gallery-nav');
     const disabledRule = ruleIn(openchatCss, '.oc-rich-image-gallery-nav:disabled');
@@ -498,6 +508,7 @@ describe('CatsCo shell styling', () => {
     );
     expect(timelineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-page-size);');
     expect(timelineRule).toContain('--cc-scrollbar-inset: 1.5px;');
+    expect(timelineRule).toContain('overscroll-behavior-y: contain;');
     expect(inlineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-inline-size);');
     expect(inlineRule).toContain('--cc-scrollbar-inset: 1.5px;');
     expect(listRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-sidebar-size);');
@@ -1547,6 +1558,40 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-composer-input')).toContain('font-size: 15px;');
     expect(ruleFor('.v3-composer-input')).toContain('line-height: 22px;');
     expect(ruleFor('.v3-composer-hint')).toContain('line-height: 18px;');
+  });
+
+  it('keeps voice duration notices readable while staying visually quiet', () => {
+    const composerNoticeRule = ruleFor(
+      '.v3-composer-hint.is-notice,\n.v3-composer-hint.is-success',
+    );
+    const holdLimitNoticeRule = ruleFor('.v3-voice-hold-limit-notice');
+
+    expect(ruleFor(':root')).toContain('--cc-voice-notice: var(--cc-text-secondary);');
+    expect(ruleFor('html[data-theme="dark"]'))
+      .toContain('--cc-voice-notice: var(--cc-text-secondary);');
+    expect(ruleFor('html[data-theme="liquid"]'))
+      .toContain('--cc-voice-notice: var(--cc-text-secondary);');
+    expect(liquidGreenCss).toContain('--cc-voice-notice: #b8d8cf;');
+    expect(composerNoticeRule).toContain('color: var(--cc-voice-notice);');
+    expect(composerNoticeRule).toContain('font-size: 12px;');
+    expect(composerNoticeRule).toContain('line-height: 18px;');
+    expect(holdLimitNoticeRule).toContain('color: var(--cc-voice-notice);');
+    expect(holdLimitNoticeRule).toContain('font-size: 12px;');
+    expect(holdLimitNoticeRule).toContain('line-height: 18px;');
+  });
+
+  it('keeps the green voice notice muted without losing small-text contrast', () => {
+    const greenThemeRule = ruleIn(
+      liquidGreenCss,
+      'html[data-theme="liquid"][data-liquid-variant="green"]',
+    );
+    const voiceNotice = hexToken(greenThemeRule, '--cc-voice-notice');
+
+    expect(voiceNotice).toBe('#b8d8cf');
+    expect(voiceNotice).not.toBe('#ffffff');
+    ['#151718', '#1a1c1d', '#222425'].forEach((background) => {
+      expect(contrastRatio(voiceNotice, background)).toBeGreaterThanOrEqual(4.5);
+    });
   });
 
   it('keeps the two primary sidebar controls on one shared geometry', () => {

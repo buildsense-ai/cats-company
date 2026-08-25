@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,15 +23,55 @@ type agentFileMessageStore interface {
 	ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error)
 }
 
+type agentFileMessageCursorStore interface {
+	ListAgentFileMessagesWithCursor(agentUID int64, topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, error)
+}
+
 type topicFileMessageStore interface {
 	ListTopicFileMessages(topicID string, beforeID int64, limit int) ([]*types.Message, error)
 }
 
+type topicFileMessageCursorStore interface {
+	ListTopicFileMessagesWithCursor(topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, error)
+}
+
+func listAgentFileMessages(db interface{}, agentUID int64, topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, bool, error) {
+	if cursorStore, ok := db.(agentFileMessageCursorStore); ok {
+		messages, err := cursorStore.ListAgentFileMessagesWithCursor(agentUID, topicID, beforeID, beforeCreatedAt, limit)
+		return messages, true, err
+	}
+	// Keep focused/legacy stores working; SQL adapters take the cursor-aware
+	// path above, while older stores continue to use their ID-only contract.
+	if legacyStore, ok := db.(agentFileMessageStore); ok {
+		messages, err := legacyStore.ListAgentFileMessages(agentUID, topicID, beforeID, limit)
+		return messages, true, err
+	}
+	return nil, false, nil
+}
+
+func listTopicFileMessages(db interface{}, topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, bool, error) {
+	if cursorStore, ok := db.(topicFileMessageCursorStore); ok {
+		messages, err := cursorStore.ListTopicFileMessagesWithCursor(topicID, beforeID, beforeCreatedAt, limit)
+		return messages, true, err
+	}
+	// Keep focused/legacy stores working; SQL adapters take the cursor-aware
+	// path above, while older stores continue to use their ID-only contract.
+	if legacyStore, ok := db.(topicFileMessageStore); ok {
+		messages, err := legacyStore.ListTopicFileMessages(topicID, beforeID, limit)
+		return messages, true, err
+	}
+	return nil, false, nil
+}
+
 type agentFileRecord struct {
 	ID         string    `json:"id"`
+	Type       string    `json:"type"`
 	Name       string    `json:"name"`
 	URL        string    `json:"url"`
 	FileKey    string    `json:"file_key,omitempty"`
+	Thumbnail  string    `json:"thumbnail,omitempty"`
+	Width      int64     `json:"width,omitempty"`
+	Height     int64     `json:"height,omitempty"`
 	MimeType   string    `json:"mime_type,omitempty"`
 	Size       int64     `json:"size,omitempty"`
 	MessageID  int64     `json:"message_id"`
@@ -70,15 +111,14 @@ func (h *CloudArtifactHandler) handleAgentFiles(w http.ResponseWriter, r *http.R
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	fileDB, ok := h.db.(agentFileMessageStore)
+	limit := queryIntInRange(r, "limit", defaultAgentFilesLimit, 1, maxAgentFilesLimit)
+	beforeID := queryInt64(r, "before_id")
+	beforeCreatedAt := queryTime(r, "before_created_at")
+	messages, ok, err := listAgentFileMessages(h.db, agentUID, topicID, beforeID, beforeCreatedAt, limit+1)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "agent files unavailable"})
 		return
 	}
-
-	limit := queryIntInRange(r, "limit", defaultAgentFilesLimit, 1, maxAgentFilesLimit)
-	beforeID := queryInt64(r, "before_id")
-	messages, err := fileDB.ListAgentFileMessages(agentUID, topicID, beforeID, limit+1)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load file history"})
 		return
@@ -90,18 +130,22 @@ func (h *CloudArtifactHandler) handleAgentFiles(w http.ResponseWriter, r *http.R
 	}
 	files := agentFilesFromMessages(messages, map[string]string{topicID: topicName})
 	nextBeforeID := int64(0)
+	nextBeforeCreatedAt := ""
 	if hasMore && len(messages) > 0 {
-		nextBeforeID = messages[len(messages)-1].ID
+		lastMessage := messages[len(messages)-1]
+		nextBeforeID = lastMessage.ID
+		nextBeforeCreatedAt = formatFileCursorTime(lastMessage.CreatedAt)
 	}
 
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"agent_uid":      agentUID,
-		"topic_id":       topicID,
-		"count":          len(files),
-		"files":          files,
-		"has_more":       hasMore,
-		"next_before_id": nextBeforeID,
+		"agent_uid":              agentUID,
+		"topic_id":               topicID,
+		"count":                  len(files),
+		"files":                  files,
+		"has_more":               hasMore,
+		"next_before_id":         nextBeforeID,
+		"next_before_created_at": nextBeforeCreatedAt,
 	})
 }
 
@@ -131,15 +175,14 @@ func (h *CloudArtifactHandler) HandleTopicFiles(w http.ResponseWriter, r *http.R
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	fileDB, ok := h.db.(topicFileMessageStore)
+	limit := queryIntInRange(r, "limit", defaultAgentFilesLimit, 1, maxAgentFilesLimit)
+	beforeID := queryInt64(r, "before_id")
+	beforeCreatedAt := queryTime(r, "before_created_at")
+	messages, ok, err := listTopicFileMessages(h.db, topicID, beforeID, beforeCreatedAt, limit+1)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "conversation files unavailable"})
 		return
 	}
-
-	limit := queryIntInRange(r, "limit", defaultAgentFilesLimit, 1, maxAgentFilesLimit)
-	beforeID := queryInt64(r, "before_id")
-	messages, err := fileDB.ListTopicFileMessages(topicID, beforeID, limit+1)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load file history"})
 		return
@@ -150,17 +193,21 @@ func (h *CloudArtifactHandler) HandleTopicFiles(w http.ResponseWriter, r *http.R
 	}
 	files := agentFilesFromMessages(messages, map[string]string{topicID: topicName})
 	nextBeforeID := int64(0)
+	nextBeforeCreatedAt := ""
 	if hasMore && len(messages) > 0 {
-		nextBeforeID = messages[len(messages)-1].ID
+		lastMessage := messages[len(messages)-1]
+		nextBeforeID = lastMessage.ID
+		nextBeforeCreatedAt = formatFileCursorTime(lastMessage.CreatedAt)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"topic_id":       topicID,
-		"topic_name":     topicName,
-		"count":          len(files),
-		"files":          files,
-		"has_more":       hasMore,
-		"next_before_id": nextBeforeID,
+		"topic_id":               topicID,
+		"topic_name":             topicName,
+		"count":                  len(files),
+		"files":                  files,
+		"has_more":               hasMore,
+		"next_before_id":         nextBeforeID,
+		"next_before_created_at": nextBeforeCreatedAt,
 	})
 }
 
@@ -288,11 +335,19 @@ func agentFilesFromMessages(messages []*types.Message, topicNames map[string]str
 				continue
 			}
 			seen[key] = struct{}{}
+			attachmentType := strings.ToLower(strings.TrimSpace(attachment.Type))
+			if attachmentType != "image" {
+				attachmentType = "file"
+			}
 			files = append(files, agentFileRecord{
 				ID:         fmt.Sprintf("%d:%d", message.ID, blockIndex),
+				Type:       attachmentType,
 				Name:       firstNonEmpty(attachment.Name, channelOutboundFileNameFromURL(attachment.URL), attachment.FileKey, "文件"),
 				URL:        attachment.URL,
 				FileKey:    attachment.FileKey,
+				Thumbnail:  attachment.Thumbnail,
+				Width:      attachment.Width,
+				Height:     attachment.Height,
 				MimeType:   attachment.MimeType,
 				Size:       attachment.Size,
 				MessageID:  message.ID,
@@ -303,28 +358,51 @@ func agentFilesFromMessages(messages []*types.Message, topicNames map[string]str
 			})
 		}
 	}
+	sort.SliceStable(files, func(i, j int) bool {
+		left, right := files[i], files[j]
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.After(right.CreatedAt)
+		}
+		if left.MessageID != right.MessageID {
+			return left.MessageID > right.MessageID
+		}
+		return left.BlockIndex < right.BlockIndex
+	})
 	return files
 }
 
 func fileAttachmentsFromMessage(message *types.Message) []channelOutboundAttachment {
 	attachments := make([]channelOutboundAttachment, 0)
 	for _, block := range message.ContentBlocks {
-		if strings.ToLower(strings.TrimSpace(block.Type)) != "file" {
+		kind := strings.ToLower(strings.TrimSpace(block.Type))
+		if kind != "file" && kind != "image" {
 			continue
 		}
-		if attachment, ok := channelOutboundAttachmentFromPayloadMap("file", block.Payload); ok {
+		if attachment, ok := channelOutboundAttachmentFromPayloadMap(kind, block.Payload); ok {
 			attachments = append(attachments, attachment)
 		}
 	}
-	if len(attachments) > 0 || message.MsgType != "file" {
+	if len(attachments) > 0 || !isLegacyFileMessageType(message.MsgType) {
 		return attachments
 	}
 
 	payload := legacyFilePayload(message.Content)
-	if attachment, ok := channelOutboundAttachmentFromPayloadMap("file", payload); ok {
+	if attachment, ok := channelOutboundAttachmentFromPayloadMap(legacyFileMessageType(message), payload); ok {
 		attachments = append(attachments, attachment)
 	}
 	return attachments
+}
+
+func isLegacyFileMessageType(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "file" || value == "image"
+}
+
+func legacyFileMessageType(message *types.Message) string {
+	if message != nil && strings.EqualFold(strings.TrimSpace(message.MsgType), "image") {
+		return "image"
+	}
+	return "file"
 }
 
 func legacyFilePayload(content string) map[string]interface{} {
@@ -393,4 +471,23 @@ func queryInt64(r *http.Request, key string) int64 {
 		return 0
 	}
 	return value
+}
+
+func queryTime(r *http.Request, key string) time.Time {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func formatFileCursorTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }

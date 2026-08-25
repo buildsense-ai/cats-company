@@ -42,6 +42,29 @@
   line-height: 1.45;
 }
 
+.oc-pwa-install-row {
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  margin-top: 8px;
+}
+
+.oc-pwa-install-action {
+  min-width: 64px;
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .oc-pwa-install-row {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .oc-pwa-install-action {
+    grid-column: 2;
+    justify-self: start;
+    min-height: 44px;
+  }
+}
+
 .oc-settings-switch {
   position: relative;
   width: 40px;

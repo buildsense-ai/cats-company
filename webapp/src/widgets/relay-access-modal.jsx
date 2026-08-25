@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import {
+  readStorageValue,
+  writeStorageValue,
+} from '../utils/storage-access';
 
 const FALLBACK_CONFIG = {
   base_url: 'https://relay.catsco.cc',
@@ -27,6 +31,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '后台任务与主动协作',
       '个人 Skill 与使用偏好持续沉淀',
       '常规响应优先级',
+      '含 1 次云托管员工创建',
+      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
     ],
   },
   'catsco-pro': {
@@ -43,6 +49,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '复杂任务优先获得更强执行能力',
       '高峰期更高响应优先级',
       '更宽松的公平使用边界',
+      '含 1 次云托管员工创建',
+      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
     ],
   },
   'catsco-trial-3d': {
@@ -193,7 +201,7 @@ function formatPriceAmountFen(value) {
 
 function commercialPlanPresentation(plan) {
   return COMMERCIAL_PLAN_PRESENTATION[plan?.slug] || {
-    kicker: '协作套餐',
+    kicker: plan?.sale_state === 'test' ? '内测套餐' : '协作套餐',
     tagline: plan?.name || '稳定协作',
     audience: `${Number(plan?.duration_days || 30)} 天有效`,
     usageLabel: '套餐用量',
@@ -258,7 +266,7 @@ function commercialClientRequestIDValid(value) {
 
 function loadCommercialPaymentRequestIDs() {
   try {
-    const parsed = JSON.parse(window.sessionStorage.getItem(COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY) || '{}');
+    const parsed = JSON.parse(readStorageValue(COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY, 'sessionStorage') || '{}');
     const freshAfter = Date.now() - (30 * 60 * 1000);
     return new Map(Object.entries(parsed).flatMap(([key, value]) => {
       const id = typeof value === 'string' ? value : value?.id;
@@ -272,11 +280,12 @@ function loadCommercialPaymentRequestIDs() {
 
 function saveCommercialPaymentRequestIDs(requestIDs) {
   try {
-    window.sessionStorage.setItem(
+    writeStorageValue(
       COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY,
       JSON.stringify(Object.fromEntries(
         [...requestIDs].map(([key, id]) => [key, { id, created_at: Date.now() }]),
       )),
+      'sessionStorage',
     );
   } catch {
     // In-memory idempotency still applies when storage is unavailable.
@@ -596,7 +605,7 @@ function CommercialPlanCards({
           : activePackages.some(item => entitlementMatchesPlan(item, plan));
         const isIncludedPlan = planTier > 0 && activeOfficialPlanTier > planTier;
         const isUpgradePlan = planTier > activeOfficialPlanTier && activeOfficialPlanTier > 0;
-        const purchaseBlocked = isActivePlan || isIncludedPlan;
+        const purchaseBlocked = isIncludedPlan;
         const pendingOrder = purchaseBlocked ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
         return (
           <article
@@ -625,7 +634,7 @@ function CommercialPlanCards({
               >
                 <CreditCard size={15} />
                 {isActivePlan
-                  ? '当前套餐'
+                  ? '续费'
                   : isIncludedPlan
                     ? '已包含'
                     : paymentLoading === `create:${plan.id}`
@@ -948,9 +957,13 @@ export default function RelayAccessModal({ onClose }) {
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
   const hasCurrentCommercialPlans = catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
-  const salePlans = hasCurrentCommercialPlans
-    ? catalogPlans.filter(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug))
-    : catalogPlans;
+  // The backend already filters the catalog by UID and sale state. Keep all
+  // returned plans here so gray/internal plans remain visible to their
+  // allowlisted users alongside the official plans.
+  const salePlans = catalogPlans;
+  const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
+    plan => Number(plan?.duration_days || 30) === 30,
+  );
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
@@ -984,6 +997,9 @@ export default function RelayAccessModal({ onClose }) {
   const visibleOrders = showAllOrders ? filteredOrders : filteredOrders.slice(0, 8);
   const purchaseIsUpgrade = Boolean(
     purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) > activeOfficialPlanTier,
+  );
+  const purchaseIsRenewal = Boolean(
+    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) === activeOfficialPlanTier,
   );
 
   useEffect(() => {
@@ -1533,10 +1549,12 @@ export default function RelayAccessModal({ onClose }) {
             {purchasePlan && (
               <div ref={purchaseConfirmRef} className="relay-access-purchase-confirm" role="dialog" aria-label="确认购买套餐">
                 <div>
-                  <span>确认购买</span>
+                  <span>{purchaseIsRenewal ? '确认续费' : '确认购买'}</span>
                   <strong>{purchasePlan.name}</strong>
-                  <p>{purchaseIsUpgrade
-                    ? `${formatPriceFen(purchasePlan.price_fen)}，升级后立即生效，额度按新套餐重置，不叠加。`
+                  <p>{purchaseIsRenewal
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期时间顺延 ${Number(purchasePlan.duration_days || 30)} 天；不会自动扣款。`
+                    : purchaseIsUpgrade
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
                     : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。`}</p>
                 </div>
                 <div className="relay-access-purchase-confirm-actions">

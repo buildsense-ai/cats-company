@@ -6,7 +6,7 @@ vi.mock('../components/auth-flow-background', () => ({
   default: () => null,
 }));
 
-import { AuthView } from './tinode-web';
+import { AuthView } from './auth-gateway';
 
 describe('AuthView route links', () => {
   let container;
@@ -64,6 +64,161 @@ describe('AuthView route links', () => {
     const login = Array.from(container.querySelectorAll('a'))
       .find((link) => link.textContent === '返回登录');
     expect(login?.getAttribute('href')).toBe('/login?next=%2Fe%2Finvite-1');
+    expect(container.querySelector('input[aria-label="邮箱地址"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="邮箱验证码"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="新密码（至少6位）"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="确认新密码"]')).toBeTruthy();
+  });
+
+  test('exposes the password reveal control as a named toggle button', async () => {
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    const passwordInput = container.querySelector('input[type="password"]');
+    const toggle = container.querySelector('button[aria-label="显示密码"]');
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle?.style.width).toBe('48px');
+    expect(toggle?.style.height).toBe('48px');
+
+    await act(async () => toggle?.click());
+
+    expect(passwordInput?.getAttribute('type')).toBe('text');
+    expect(container.querySelector('button[aria-label="隐藏密码"]')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  test('provides programmatic labels and autocomplete hints for login and registration', async () => {
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.querySelector('input[aria-label="用户名"]')?.getAttribute('autocomplete')).toBe('username');
+    expect(container.querySelector('input[aria-label="密码"]')?.getAttribute('autocomplete')).toBe('current-password');
+
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="register"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.querySelector('input[aria-label="邮箱地址"]')?.getAttribute('autocomplete')).toBe('email');
+    expect(container.querySelector('input[aria-label="邮箱验证码"]')?.getAttribute('autocomplete')).toBe('one-time-code');
+    expect(container.querySelector('input[aria-label="设置密码（至少6位）"]')?.getAttribute('autocomplete')).toBe('new-password');
+  });
+
+  test('preloads the workspace only after authentication succeeds', async () => {
+    const events = [];
+    const onAuthenticationIntent = vi.fn(() => events.push('preload'));
+    const onLogin = vi.fn(async () => {
+      events.push('login-start');
+      await Promise.resolve();
+      events.push('login-success');
+    });
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onAuthenticationIntent={onAuthenticationIntent}
+          onLogin={onLogin}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('input[aria-label="用户名"]')?.focus();
+    });
+    expect(onAuthenticationIntent).not.toHaveBeenCalled();
+
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+    expect(onAuthenticationIntent).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(['login-start', 'login-success', 'preload']);
+  });
+
+  test('does not preload the workspace when authentication fails', async () => {
+    const onAuthenticationIntent = vi.fn();
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onAuthenticationIntent={onAuthenticationIntent}
+          onLogin={vi.fn().mockRejectedValue(new Error('password mismatch'))}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(onAuthenticationIntent).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('密码错误，请重试');
+  });
+
+  test('shows a submitting state and prevents duplicate authentication requests', async () => {
+    let resolveLogin;
+    const onLogin = vi.fn(() => new Promise((resolve) => {
+      resolveLogin = resolve;
+    }));
+
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onLogin={onLogin}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    const submitButton = container.querySelector('button[type="submit"]');
+    expect(onLogin).toHaveBeenCalledTimes(1);
+    expect(submitButton?.disabled).toBe(true);
+    expect(submitButton?.textContent).toContain('登录中');
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      resolveLogin();
+      await Promise.resolve();
+    });
+
+    expect(onLogin).toHaveBeenCalledTimes(1);
+    expect(submitButton?.disabled).toBe(false);
   });
 
   test('collects only account credentials during registration', async () => {

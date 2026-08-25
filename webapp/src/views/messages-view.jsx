@@ -1,29 +1,37 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
-import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
+import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import PwaDownloadLink from '../widgets/pwa-download-link';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
+import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
 import {
+  artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
+  normalizeArtifactResultDelivery,
   requestArtifactPageContext,
-  withArtifactRef,
+  requestArtifactResultApply,
+  withArtifactContextRef,
 } from '../artifact-context';
 import {
   conversationShareMessageKey,
   conversationShareText,
   downloadConversationShareImage,
   downloadConversationShareImages,
+  isMobileConversationShareBrowser,
+  openConversationShareImageForManualSave,
   renderConversationShareImage,
 } from '../utils/conversation-share-image';
 
@@ -43,7 +51,7 @@ const LONG_PASTE_MULTILINE_CHAR_THRESHOLD = 2000;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
 const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
-const STICK_TO_BOTTOM_THRESHOLD = 96;
+const TIMELINE_BOTTOM_EPSILON = 1;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
@@ -59,6 +67,7 @@ const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const ARTIFACT_REGISTRY_POLL_MS = 5000;
+const ARTIFACT_SNAPSHOT_TIMEOUT_MS = 2200;
 const DELIVERY_ARTIFACT_TYPES = new Set(['file', 'image', 'audio', 'voice']);
 
 function artifactRefreshFileKey(file) {
@@ -165,13 +174,11 @@ function clampPreviewWidth(width) {
 }
 
 function loadPreviewWidth() {
-  if (typeof window === 'undefined' || !window.localStorage) return PREVIEW_WIDTH_DEFAULT;
-  return clampPreviewWidth(Number(window.localStorage.getItem(PREVIEW_WIDTH_STORAGE_KEY)) || PREVIEW_WIDTH_DEFAULT);
+  return clampPreviewWidth(Number(readStorageValue(PREVIEW_WIDTH_STORAGE_KEY)) || PREVIEW_WIDTH_DEFAULT);
 }
 
 function savePreviewWidth(width) {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(PREVIEW_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  writeStorageValue(PREVIEW_WIDTH_STORAGE_KEY, String(Math.round(width)));
 }
 
 function resolvePhoneUploadLink(uploadUrl) {
@@ -378,6 +385,7 @@ export default function MessagesView({
   onAgentModelChange,
   onActiveAgentChange,
   cloudArtifactsRequest,
+  onCloudArtifactsRequestConsumed,
   messageLocationRequest,
   onBackToSearch,
 }) {
@@ -406,6 +414,7 @@ export default function MessagesView({
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [artifactRegistryRevision, setArtifactRegistryRevision] = useState(0);
   const [pendingArtifactRefresh, setPendingArtifactRefresh] = useState(null);
+  const [verifiedArtifactRefresh, setVerifiedArtifactRefresh] = useState(null);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -425,7 +434,9 @@ export default function MessagesView({
   const [showTutorialPicker, setShowTutorialPicker] = useState(false);
   const [selectedTutorialTask, setSelectedTutorialTask] = useState(null);
   const [tutorialTasks, setTutorialTasks] = useState(TUTORIAL_TASKS);
-  const [tutorialDismissed, setTutorialDismissed] = useState(() => localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
+  const [tutorialDismissed, setTutorialDismissed] = useState(() => (
+    readStorageValue(tutorialDismissStorageKey(user.uid, topic)) === '1'
+  ));
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
@@ -436,7 +447,7 @@ export default function MessagesView({
   const [questionIndexHasMore, setQuestionIndexHasMore] = useState(false);
   const [questionIndexLimitReached, setQuestionIndexLimitReached] = useState(false);
   const [showThinking, setShowThinking] = useState(() => {
-    const saved = localStorage.getItem('cc_show_thinking');
+    const saved = readStorageValue('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
   const [conversationShareMode, setConversationShareMode] = useState(false);
@@ -445,7 +456,9 @@ export default function MessagesView({
   const [conversationShareImages, setConversationShareImages] = useState([]);
   const [conversationSharePreviewPage, setConversationSharePreviewPage] = useState(0);
   const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
+  const [conversationShareDownloading, setConversationShareDownloading] = useState(false);
   const [conversationShareError, setConversationShareError] = useState('');
+  const [conversationShareManualSaveAvailable, setConversationShareManualSaveAvailable] = useState(false);
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
   const imageGallery = useMemo(() => {
     const result = [];
@@ -471,7 +484,6 @@ export default function MessagesView({
     return result;
   }, [messages]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
-  const bottomRef = useRef(null);
   const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -483,7 +495,9 @@ export default function MessagesView({
   const visibleQuestionAnchorsRef = useRef(new Map());
   const messageHighlightTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
+  const pendingOlderHistoryAnchorRef = useRef(null);
   const stickToBottomRef = useRef(true);
+  const lastTimelineScrollTopRef = useRef(0);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -493,6 +507,7 @@ export default function MessagesView({
   const runtimePlanClearTimer = useRef(null);
   const activeArtifactFrameRef = useRef(null);
   const activeArtifactFocusRef = useRef(null);
+  const activeArtifactSnapshotRef = useRef(null);
   const historyOffsetRef = useRef(0);
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
@@ -648,12 +663,24 @@ export default function MessagesView({
     }
   }, [sidePanelOpen, updatePreviewWidth]);
 
-  const clearActiveArtifactFocus = useCallback(() => {
-    activeArtifactFocusRef.current = null;
-    activeArtifactFrameRef.current = null;
+  const invalidateArtifactSnapshot = useCallback((snapshot = activeArtifactSnapshotRef.current) => {
+    const contextRef = String(snapshot?.contextRef || '');
+    if (!contextRef) return;
+    if (activeArtifactSnapshotRef.current?.contextRef === contextRef) {
+      activeArtifactSnapshotRef.current = null;
+    }
+    api.invalidateArtifactContextSnapshot(contextRef, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS })
+      .catch(() => {});
   }, []);
 
+  const clearActiveArtifactFocus = useCallback(() => {
+    invalidateArtifactSnapshot();
+    activeArtifactFocusRef.current = null;
+    activeArtifactFrameRef.current = null;
+  }, [invalidateArtifactSnapshot]);
+
   const setPreviewFileWithFocus = useCallback((file) => {
+    invalidateArtifactSnapshot();
     activeArtifactFocusRef.current = artifactMessageFocusFromPreviewFile(
       file,
       artifactTopicRef.current,
@@ -661,7 +688,7 @@ export default function MessagesView({
     );
     activeArtifactFrameRef.current = null;
     setPreviewFile(file);
-  }, []);
+  }, [invalidateArtifactSnapshot]);
 
   const handleRemoteArtifactFrameChange = useCallback((binding) => {
     activeArtifactFrameRef.current = artifactBindingMatchesFocus(
@@ -701,7 +728,7 @@ export default function MessagesView({
   const captureArtifactMessageContext = useCallback(async () => {
     const focus = activeArtifactFocusRef.current;
     const topicGeneration = artifactTopicGenerationRef.current;
-    const empty = { artifactRef: null, pageContext: null };
+    const empty = { contextRef: '' };
     if (!focus
       || focus.topic !== topic
       || focus.topicGeneration !== topicGeneration
@@ -710,28 +737,60 @@ export default function MessagesView({
       || focus.agentUid !== activeArtifactAgentUIDRef.current) return empty;
 
     const binding = activeArtifactFrameRef.current;
-    if (!artifactBindingMatchesFocus(binding, focus)) {
-      return activeArtifactFocusRef.current === focus
-        ? { artifactRef: focus.artifactRef, pageContext: null }
-        : empty;
+    const hasMatchingBinding = artifactBindingMatchesFocus(binding, focus);
+    let pageContext = null;
+    if (hasMatchingBinding) {
+      pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
     }
 
-    const pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
     if (activeArtifactFocusRef.current !== focus
-      || activeArtifactFrameRef.current !== binding
+      || (hasMatchingBinding && activeArtifactFrameRef.current !== binding)
       || artifactTopicRef.current !== topic
       || artifactTopicGenerationRef.current !== topicGeneration
       || activeTopicRef.current !== topic
       || activeArtifactAgentUIDRef.current !== focus.agentUid) return empty;
-    return { artifactRef: focus.artifactRef, pageContext };
-  }, [topic]);
+
+    let response;
+    try {
+      response = await api.createArtifactContextSnapshot({
+        topic_id: topic,
+        artifact_ref: focus.artifactRef,
+        ...(pageContext ? { page_context: pageContext } : {}),
+      }, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS });
+    } catch {
+      return empty;
+    }
+    const contextRef = artifactContextRefFromSnapshot(response);
+    if (!contextRef) return empty;
+    const snapshot = {
+      contextRef,
+      topic,
+      topicGeneration,
+      agentUid: focus.agentUid,
+      artifactId: focus.artifactId,
+    };
+    if (activeArtifactFocusRef.current !== focus
+      || artifactTopicRef.current !== topic
+      || artifactTopicGenerationRef.current !== topicGeneration
+      || activeTopicRef.current !== topic
+      || activeArtifactAgentUIDRef.current !== focus.agentUid) {
+      invalidateArtifactSnapshot(snapshot);
+      return empty;
+    }
+    activeArtifactSnapshotRef.current = snapshot;
+    return { contextRef };
+  }, [invalidateArtifactSnapshot, topic]);
 
   const previewAgentFile = useCallback((file) => {
     setPendingArtifactRefresh(null);
     setPreviewFileWithFocus({
+      type: file.type,
       name: file.name,
       url: file.url,
       file_key: file.file_key,
+      thumbnail: file.thumbnail,
+      width: file.width,
+      height: file.height,
       mime_type: file.mime_type,
       size: file.size,
     });
@@ -762,7 +821,7 @@ export default function MessagesView({
   }, [input, resizeComposerInput]);
 
   useEffect(() => {
-    setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
+    setTutorialDismissed(readStorageValue(tutorialDismissStorageKey(user.uid, topic)) === '1');
   }, [topic, user.uid]);
 
   useEffect(() => {
@@ -814,6 +873,7 @@ export default function MessagesView({
   }, []);
 
   useEffect(() => () => {
+    invalidateArtifactSnapshot();
     questionIndexRequestRef.current += 1;
     questionIndexAbortControllerRef.current?.abort();
     questionJumpAbortControllerRef.current?.abort();
@@ -823,7 +883,7 @@ export default function MessagesView({
     if (liveWorkingTimer.current) {
       clearTimeout(liveWorkingTimer.current);
     }
-  }, []);
+  }, [invalidateArtifactSnapshot]);
 
   // Load message history and group members when topic changes
   useEffect(() => {
@@ -835,6 +895,7 @@ export default function MessagesView({
     questionJumpAbortControllerRef.current?.abort();
     groupMembersRequestRef.current += 1;
     peerProfileRequestRef.current += 1;
+    invalidateArtifactSnapshot();
     activeTopicRef.current = topic;
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
@@ -880,9 +941,11 @@ export default function MessagesView({
     historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     loadingOlderRef.current = false;
     questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
+    lastTimelineScrollTopRef.current = 0;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
@@ -918,18 +981,25 @@ export default function MessagesView({
       questionIndexAbortControllerRef.current?.abort();
       questionJumpAbortControllerRef.current?.abort();
     };
-  }, [groupId, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
+  }, [groupId, invalidateArtifactSnapshot, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
 
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
     if (!cloudArtifactsRequest?.requestId) return;
+    if (cloudArtifactsRequest.topicId && cloudArtifactsRequest.topicId !== topic) return;
     clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
-    setCloudArtifactsTab('files');
+    setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
     setCloudArtifactsListOpen(true);
     setCloudArtifactsReturnOpen(false);
-  }, [clearActiveArtifactFocus, cloudArtifactsRequest]);
+    onCloudArtifactsRequestConsumed?.(cloudArtifactsRequest.requestId);
+  }, [
+    clearActiveArtifactFocus,
+    cloudArtifactsRequest,
+    onCloudArtifactsRequestConsumed,
+    topic,
+  ]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -1017,9 +1087,48 @@ export default function MessagesView({
     setLiveWorkingKey('');
   }, []);
 
+  const handleArtifactResultRequest = useCallback(async (value) => {
+    const delivery = normalizeArtifactResultDelivery(value);
+    if (!delivery) return;
+    const snapshot = activeArtifactSnapshotRef.current;
+    const focus = activeArtifactFocusRef.current;
+    const binding = activeArtifactFrameRef.current;
+    if (!snapshot || snapshot.contextRef !== delivery.contextRef
+      || snapshot.topic !== delivery.topicId
+      || snapshot.topicGeneration !== artifactTopicGenerationRef.current
+      || snapshot.agentUid !== delivery.agentUid
+      || snapshot.artifactId !== delivery.artifactId
+      || !focus || focus.topic !== delivery.topicId
+      || focus.topicGeneration !== artifactTopicGenerationRef.current
+      || focus.agentUid !== delivery.agentUid
+      || focus.artifactId !== delivery.artifactId
+      || focus.displayedVersion !== delivery.displayedVersion
+      || activeTopicRef.current !== delivery.topicId
+      || activeArtifactAgentUIDRef.current !== delivery.agentUid
+      || !artifactBindingMatchesFocus(binding, focus)) return;
+
+    const receipt = await requestArtifactResultApply(binding, delivery);
+    if (!receipt) return;
+    wsSendArtifactResultReceipt({
+      type: 'receipt',
+      origin_node_id: delivery.originNodeId,
+      context_ref: delivery.contextRef,
+      writeback_ref: delivery.writebackRef,
+      topic_id: delivery.topicId,
+      agent_uid: String(delivery.agentUid),
+      artifact_id: delivery.artifactId,
+      displayed_version: delivery.displayedVersion,
+      result_id: delivery.resultId,
+      receipt,
+    });
+  }, []);
+
   // Listen for incoming WebSocket messages
   useEffect(() => {
     const unsub = onWSMessage((msg) => {
+      if (msg.artifact_result) {
+        void handleArtifactResultRequest(msg.artifact_result);
+      }
       if (
         isGroup
         && groupId
@@ -1141,23 +1250,21 @@ export default function MessagesView({
     });
 
     return () => unsub();
-  }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
+  }, [clearLiveWorking, groupId, handleArtifactResultRequest, isGroup, markLiveWorking, topic, user.uid]);
 
-  // Auto-scroll to bottom or restore scroll anchor depending on state
+  // Restore an older-history anchor, or follow updates while the reader
+  // remains at the latest position.
   React.useLayoutEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
     if (previousScrollRef.current) {
-      // Anchoring condition: We just prepended older history.
-      const { scrollHeight, scrollTop } = previousScrollRef.current;
-      const newScrollHeight = timeline.scrollHeight;
-      timeline.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
-      previousScrollRef.current = null; // Clear atomic lock
-      stickToBottomRef.current = isTimelineNearBottom(timeline);
+      restoreTimelineReadingAnchor(timeline, previousScrollRef.current);
+      previousScrollRef.current = null;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
     } else if (stickToBottomRef.current) {
-      // Only follow fresh messages while the user is already near the bottom.
-      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      timeline.scrollTop = timeline.scrollHeight;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
     }
   }, [messages, runtimePlan, peerTyping]);
 
@@ -1255,9 +1362,11 @@ export default function MessagesView({
     historyAbortControllerRef.current = controller;
     olderHistoryAbortControllerRef.current = null;
     const cacheKey = historyCacheKey(user.uid, targetTopic);
-    const hasCachedHistory = !aroundId && historyCacheRef.current.has(cacheKey);
+    const cachedHistory = !aroundId ? historyCacheRef.current.get(cacheKey) : null;
+    const hasCachedHistory = Boolean(cachedHistory);
     historyLoadingRef.current = true;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     setRefreshingHistory(true);
     setHistoryError('');
     setOlderHistoryError('');
@@ -1303,6 +1412,7 @@ export default function MessagesView({
         offset: rawMessages.length,
         nextBeforeID,
         hasMore,
+        loadedAt: Date.now(),
       });
       const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
       if (!cachedQuestionIndex) {
@@ -1319,10 +1429,11 @@ export default function MessagesView({
       }
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
-        if (e?.code !== 'REQUEST_ABORTED') {
-          setHistoryError(e?.code === 'REQUEST_TIMEOUT'
-            ? '聊天记录加载超时，请重试。'
-            : '聊天记录加载失败，请检查网络后重试。');
+        if (e?.code !== REQUEST_ERROR_CODE.ABORTED) {
+          setHistoryError(describeResourceLoadError(e, '聊天记录', {
+            hasPreviousResult: Boolean(cachedHistory),
+            loadedAt: cachedHistory?.loadedAt,
+          }));
         }
       }
     } finally {
@@ -1349,17 +1460,12 @@ export default function MessagesView({
     }
     const targetTopic = topic;
     const requestID = historyRequestRef.current;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const cachedHistory = historyCacheRef.current.get(cacheKey);
     const controller = new AbortController();
     olderHistoryAbortControllerRef.current = controller;
-    
-    // Capture the absolute scroll geometry BEFORE rendering the older batch
-    if (timelineRef.current) {
-      previousScrollRef.current = {
-        scrollHeight: timelineRef.current.scrollHeight,
-        scrollTop: timelineRef.current.scrollTop,
-      };
-    }
-    
+    pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(timelineRef.current);
+
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     setOlderHistoryError('');
@@ -1375,6 +1481,10 @@ export default function MessagesView({
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
       const { visibleMessages } = normalizeHistoryMessages(rawMessages);
+      previousScrollRef.current = stickToBottomRef.current
+        ? null
+        : pendingOlderHistoryAnchorRef.current;
+      pendingOlderHistoryAnchorRef.current = null;
       setMessages((prev) => mergeMessages(visibleMessages, prev));
       historyOffsetRef.current += rawMessages.length;
       historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
@@ -1383,7 +1493,6 @@ export default function MessagesView({
         : rawMessages.length === PAGE_SIZE;
       hasMoreHistoryRef.current = hasMore;
       setHasMoreHistory(hasMore);
-      const cacheKey = historyCacheKey(user.uid, targetTopic);
       const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
       if (cachedQuestionIndex) {
         const ordinaryReachedFurther = historyOffsetRef.current >= cachedQuestionIndex.offset
@@ -1421,11 +1530,13 @@ export default function MessagesView({
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
-        if (e?.code !== 'REQUEST_ABORTED') {
-          setOlderHistoryError(e?.code === 'REQUEST_TIMEOUT'
-            ? '更早的聊天记录加载超时，请重试。'
-            : '更早的聊天记录加载失败。');
+        if (e?.code !== REQUEST_ERROR_CODE.ABORTED) {
+          setOlderHistoryError(describeResourceLoadError(e, '更早的聊天记录', {
+            hasPreviousResult: true,
+            loadedAt: cachedHistory?.loadedAt,
+          }));
         }
+        pendingOlderHistoryAnchorRef.current = null;
       }
     } finally {
       if (olderHistoryAbortControllerRef.current === controller) {
@@ -1692,13 +1803,9 @@ export default function MessagesView({
           }
         : protocolText;
       const artifactContext = switchesTopic
-        ? { artifactRef: null, pageContext: null }
+        ? { contextRef: '' }
         : await captureArtifactMessageContext();
-      const sendPayload = withArtifactRef(
-        payload,
-        artifactContext.artifactRef,
-        artifactContext.pageContext,
-      );
+      const sendPayload = withArtifactContextRef(payload, artifactContext.contextRef);
 
       updateComposerDraft(topic, '');
       updateStructuredMentionDraft(topic, []);
@@ -1829,11 +1936,7 @@ export default function MessagesView({
 
     try {
       const artifactContext = await captureArtifactMessageContext();
-      const sendPayload = withArtifactRef(
-        taskText,
-        artifactContext.artifactRef,
-        artifactContext.pageContext,
-      );
+      const sendPayload = withArtifactContextRef(taskText, artifactContext.contextRef);
       const result = await api.sendMessage(topic, sendPayload, undefined);
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
@@ -2575,11 +2678,13 @@ export default function MessagesView({
       || latestActivePreviewVersion <= activePreviewArtifactVersion
       || !latestActivePreviewURL) {
       setPendingArtifactRefresh(null);
+      setVerifiedArtifactRefresh(null);
       return;
     }
     const refreshURL = artifactURLForVersion(latestActivePreviewURL, latestActivePreviewVersion);
     if (!refreshURL) {
       setPendingArtifactRefresh(null);
+      setVerifiedArtifactRefresh(null);
       return;
     }
 
@@ -2592,6 +2697,9 @@ export default function MessagesView({
       agent_uid: activeArtifactAgentUID,
     });
     const candidateKey = artifactRefreshFileKey(candidate);
+    setVerifiedArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? current : null
+    ));
     setPendingArtifactRefresh((current) => (
       artifactRefreshFileKey(current) === candidateKey ? current : candidate
     ));
@@ -2609,40 +2717,101 @@ export default function MessagesView({
 
   const handleArtifactRefreshReady = useCallback((candidate) => {
     const candidateKey = artifactRefreshFileKey(candidate);
+    if (!candidateKey || artifactRefreshFileKey(pendingArtifactRefresh) !== candidateKey) return;
+    setVerifiedArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? current : candidate
+    ));
+  }, [pendingArtifactRefresh]);
+
+  useEffect(() => {
+    const candidate = verifiedArtifactRefresh;
+    const candidateKey = artifactRefreshFileKey(candidate);
+    if (!candidateKey || artifactRefreshFileKey(pendingArtifactRefresh) !== candidateKey) return undefined;
+
+    let cancelled = false;
     const candidateAgentUID = Number(candidate?.artifact_agent_uid || 0);
     const candidateArtifactID = String(candidate?.artifact_id || '');
     const candidateVersion = Number(candidate?.publish_version || 0);
-    const currentFocus = activeArtifactFocusRef.current;
-    const candidateFocus = artifactMessageFocusFromPreviewFile(
-      candidate,
-      topic,
-      artifactTopicGenerationRef.current,
-    );
-    if (!candidateKey
-      || !currentFocus
-      || !candidateFocus
-      || activeTopicRef.current !== topic
-      || activeArtifactAgentUIDRef.current !== candidateAgentUID
-      || currentFocus.topic !== topic
-      || currentFocus.topicGeneration !== artifactTopicGenerationRef.current
-      || candidateFocus.topicGeneration !== artifactTopicGenerationRef.current
-      || currentFocus.agentUid !== candidateAgentUID
-      || currentFocus.artifactId !== candidateArtifactID
-      || candidateVersion <= currentFocus.displayedVersion) {
+    const clearCandidate = () => {
+      if (cancelled) return;
       setPendingArtifactRefresh((current) => (
         artifactRefreshFileKey(current) === candidateKey ? null : current
       ));
-      return;
-    }
-    setPreviewFileWithFocus(candidate);
-    setPendingArtifactRefresh((current) => (
-      artifactRefreshFileKey(current) === candidateKey ? null : current
-    ));
-  }, [setPreviewFileWithFocus, topic]);
+      setVerifiedArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+    };
+    const applyWhenCurrentPageAllows = async () => {
+      const currentFocus = activeArtifactFocusRef.current;
+      const candidateFocus = artifactMessageFocusFromPreviewFile(
+        candidate,
+        topic,
+        artifactTopicGenerationRef.current,
+      );
+      if (!currentFocus
+        || !candidateFocus
+        || activeTopicRef.current !== topic
+        || activeArtifactAgentUIDRef.current !== candidateAgentUID
+        || currentFocus.topic !== topic
+        || currentFocus.topicGeneration !== artifactTopicGenerationRef.current
+        || candidateFocus.topicGeneration !== artifactTopicGenerationRef.current
+        || currentFocus.agentUid !== candidateAgentUID
+        || currentFocus.artifactId !== candidateArtifactID
+        || candidateVersion <= currentFocus.displayedVersion) {
+        clearCandidate();
+        return;
+      }
+
+      const currentBinding = activeArtifactFrameRef.current;
+      const hasCurrentBinding = artifactBindingMatchesFocus(currentBinding, currentFocus);
+      let currentPageContext = null;
+      if (hasCurrentBinding) {
+        currentPageContext = await requestArtifactPageContext(
+          currentBinding,
+          currentFocus.artifactRef,
+        );
+      }
+      if (cancelled) return;
+      const latestFocus = activeArtifactFocusRef.current;
+      if (!latestFocus
+        || latestFocus !== currentFocus
+        || (hasCurrentBinding && activeArtifactFrameRef.current !== currentBinding)
+        || activeTopicRef.current !== topic
+        || artifactTopicGenerationRef.current !== currentFocus.topicGeneration
+        || activeArtifactAgentUIDRef.current !== candidateAgentUID) {
+        clearCandidate();
+        return;
+      }
+      if (hasCurrentBinding && currentPageContext === null) return;
+      if (currentPageContext?.dirty === true) return;
+
+      setPreviewFileWithFocus(candidate);
+      setPendingArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+      setVerifiedArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+    };
+
+    void applyWhenCurrentPageAllows();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    artifactRegistryRevision,
+    pendingArtifactRefresh,
+    setPreviewFileWithFocus,
+    topic,
+    verifiedArtifactRefresh,
+  ]);
 
   const handleArtifactRefreshFailed = useCallback((candidate) => {
     const candidateKey = artifactRefreshFileKey(candidate);
     setPendingArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? null : current
+    ));
+    setVerifiedArtifactRefresh((current) => (
       artifactRefreshFileKey(current) === candidateKey ? null : current
     ));
   }, []);
@@ -3032,6 +3201,8 @@ export default function MessagesView({
     setConversationSharePreviewOpen(false);
     setConversationShareImages([]);
     setConversationSharePreviewPage(0);
+    setConversationShareDownloading(false);
+    setConversationShareManualSaveAvailable(false);
   }, []);
 
   const transitionConversationShare = useCallback(({ mode, selectedKeys = [] }) => {
@@ -3080,6 +3251,7 @@ export default function MessagesView({
     }
     setConversationShareGenerating(true);
     setConversationShareError('');
+    setConversationShareManualSaveAvailable(false);
     try {
       const root = typeof document === 'undefined' ? null : document.documentElement;
       const theme = root?.dataset.theme === 'liquid' && root.dataset.liquidVariant === 'green'
@@ -3105,6 +3277,54 @@ export default function MessagesView({
       setConversationShareGenerating(false);
     }
   }, [displayName, selectedConversationShareItems, topic, topicName]);
+
+  const saveConversationShareImages = useCallback(async ({ all = false } = {}) => {
+    if (conversationShareDownloading || !conversationSharePreviewImage) return;
+    setConversationShareDownloading(true);
+    setConversationShareError('');
+    setConversationShareManualSaveAvailable(false);
+    try {
+      let saved;
+      if (all && conversationShareImages.length > 1) {
+        saved = await downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
+      } else if (conversationShareImages.length > 1) {
+        saved = await downloadConversationShareImage(
+          conversationSharePreviewImage.dataUrl,
+          `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
+        );
+      } else {
+        saved = await downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
+      }
+      if (!saved) {
+        const canOpenCurrentImage = !all || conversationShareImages.length <= 1;
+        setConversationShareManualSaveAvailable(canOpenCurrentImage);
+        setConversationShareError(
+          all && conversationShareImages.length > 1
+            ? '无法一次保存全部图片。请使用“下载当前 PNG”逐张保存，或在系统分享菜单中选择保存。'
+            : '无法启动图片保存。请在新标签页中打开图片后，使用浏览器的保存功能。',
+        );
+      }
+    } catch {
+      setConversationShareError('无法启动图片保存。请检查浏览器的下载或弹窗权限后重试。');
+    } finally {
+      setConversationShareDownloading(false);
+    }
+  }, [
+    conversationShareDownloading,
+    conversationShareImages,
+    conversationSharePreviewImage,
+    conversationSharePreviewPage,
+  ]);
+
+  const openConversationShareImageManually = useCallback(() => {
+    if (conversationShareDownloading || !conversationSharePreviewImage) return;
+    setConversationShareError('');
+    if (openConversationShareImageForManualSave(conversationSharePreviewImage.dataUrl)) {
+      setConversationShareManualSaveAvailable(false);
+      return;
+    }
+    setConversationShareError('无法在新标签页中打开图片。请检查浏览器的弹窗权限后重试。');
+  }, [conversationShareDownloading, conversationSharePreviewImage]);
 
   useEffect(() => {
     if (!conversationShareMode) return;
@@ -3200,7 +3420,7 @@ export default function MessagesView({
   };
 
   const dismissTutorialEmptyState = () => {
-    localStorage.setItem(tutorialDismissStorageKey(user.uid, topic), '1');
+    writeStorageValue(tutorialDismissStorageKey(user.uid, topic), '1');
     setTutorialDismissed(true);
   };
 
@@ -3353,6 +3573,7 @@ export default function MessagesView({
 
     stickToBottomRef.current = false;
     previousScrollRef.current = null;
+    pendingOlderHistoryAnchorRef.current = null;
     const targetTopic = topic;
     const controller = new AbortController();
     questionJumpAbortControllerRef.current = controller;
@@ -3415,7 +3636,21 @@ export default function MessagesView({
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
-    stickToBottomRef.current = isTimelineNearBottom(el);
+    const currentScrollTop = el.scrollTop;
+    const previousScrollTop = lastTimelineScrollTopRef.current;
+    const movedUp = currentScrollTop < previousScrollTop;
+    const scrollPositionChanged = currentScrollTop !== previousScrollTop;
+    lastTimelineScrollTopRef.current = currentScrollTop;
+    if (movedUp && !isTimelineAtBottom(el)) {
+      stickToBottomRef.current = false;
+    } else if (isTimelineAtBottom(el)) {
+      stickToBottomRef.current = true;
+    }
+    if (scrollPositionChanged
+      && loadingOlderRef.current
+      && pendingOlderHistoryAnchorRef.current) {
+      pendingOlderHistoryAnchorRef.current = captureTimelineReadingAnchor(el);
+    }
     const pendingQuestionKey = pendingQuestionJumpRef.current;
     if (pendingQuestionKey) {
       setActiveQuestionKey((current) => current === pendingQuestionKey ? current : pendingQuestionKey);
@@ -3532,7 +3767,7 @@ export default function MessagesView({
 
         {historyLoaded && historyError && messages.length > 0 && (
           <div className="v3-history-state is-compact" role="status">
-            <span>已显示上次记录，本次刷新失败。</span>
+            <span>{historyError}</span>
             <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
               <RefreshCw size={14} aria-hidden="true" />
               重试
@@ -3676,7 +3911,6 @@ export default function MessagesView({
               <span className="v3-peer-typing-label">{t('typing')}</span>
             </div>
           )}
-          <div ref={bottomRef} />
         </div>
       </div>
 
@@ -4065,6 +4299,12 @@ export default function MessagesView({
                 alt={`${displayName || topicName || '对话'}的 CatsCo 分享图，第 ${conversationSharePreviewPage + 1} 张，共 ${conversationShareImages.length} 张`}
               />
             </div>
+            {conversationShareDownloading && (
+              <p className="cc-conversation-share-preview-status" role="status">正在打开图片保存…</p>
+            )}
+            {conversationShareError && (
+              <p className="cc-conversation-share-preview-status is-error" role="alert">{conversationShareError}</p>
+            )}
             <footer className="cc-conversation-share-preview-actions">
               <button type="button" className="cc-conversation-share-secondary" onClick={() => setConversationSharePreviewOpen(false)}>
                 返回选择
@@ -4073,27 +4313,34 @@ export default function MessagesView({
                 <button
                   type="button"
                   className="cc-conversation-share-secondary"
-                  onClick={() => downloadConversationShareImage(
-                    conversationSharePreviewImage.dataUrl,
-                    `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
-                  )}
+                  disabled={conversationShareDownloading}
+                  onClick={() => void saveConversationShareImages()}
                 >
-                  下载当前 PNG
+                  {conversationShareDownloading ? '正在打开…' : '下载当前 PNG'}
+                </button>
+              )}
+              {conversationShareManualSaveAvailable && (
+                <button
+                  type="button"
+                  className="cc-conversation-share-secondary"
+                  disabled={conversationShareDownloading}
+                  onClick={openConversationShareImageManually}
+                >
+                  在新标签页打开图片
                 </button>
               )}
               <button
                 type="button"
                 className="cc-conversation-share-primary"
-                onClick={() => {
-                  if (conversationShareImages.length > 1) {
-                    downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
-                  } else {
-                    downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
-                  }
-                }}
+                disabled={conversationShareDownloading}
+                onClick={() => void saveConversationShareImages({ all: conversationShareImages.length > 1 })}
               >
                 <Download size={16} aria-hidden="true" />
-                {conversationShareImages.length > 1 ? '下载全部 PNG' : '下载 PNG'}
+                {conversationShareDownloading
+                  ? '正在打开…'
+                  : (conversationShareImages.length > 1
+                    ? (isMobileConversationShareBrowser() ? '系统分享全部图片' : '下载全部图片（ZIP）')
+                    : '下载 PNG')}
               </button>
             </footer>
           </section>
@@ -5005,9 +5252,38 @@ function getStreamId(message) {
   return typeof id === 'string' && id.trim() ? id.trim() : '';
 }
 
-function isTimelineNearBottom(el) {
+function isTimelineAtBottom(el) {
   if (!el) return true;
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= TIMELINE_BOTTOM_EPSILON;
+}
+
+function captureTimelineReadingAnchor(timeline) {
+  if (!timeline) return null;
+  const timelineRect = timeline.getBoundingClientRect();
+  const anchors = Array.from(timeline.querySelectorAll('[data-search-message-id]'));
+  const anchor = anchors.find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.bottom > timelineRect.top && rect.top < timelineRect.bottom;
+  }) || anchors[0];
+  return {
+    scrollHeight: timeline.scrollHeight,
+    scrollTop: timeline.scrollTop,
+    messageID: anchor?.dataset.searchMessageId || '',
+    offsetTop: anchor ? anchor.getBoundingClientRect().top - timelineRect.top : null,
+  };
+}
+
+function restoreTimelineReadingAnchor(timeline, anchor) {
+  if (anchor.messageID && Number.isFinite(anchor.offsetTop)) {
+    const target = Array.from(timeline.querySelectorAll('[data-search-message-id]'))
+      .find((element) => element.dataset.searchMessageId === anchor.messageID);
+    if (target) {
+      const offsetTop = target.getBoundingClientRect().top - timeline.getBoundingClientRect().top;
+      timeline.scrollTop += offsetTop - anchor.offsetTop;
+      return;
+    }
+  }
+  timeline.scrollTop = anchor.scrollTop + (timeline.scrollHeight - anchor.scrollHeight);
 }
 
 function streamDeltaText(content) {
@@ -5190,6 +5466,8 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
   stateRef.current = { item, index, items, onClose, onChange, triggerRef };
   const hasPrevious = index > 0;
   const hasNext = index < items.length - 1;
+  const imageURL = resolveMediaURL(item.payload?.url || item.payload?.thumbnail);
+  const downloadURL = downloadableMediaURL(imageURL);
 
   useEffect(() => {
     closeRef.current?.focus({ preventScroll: true });
@@ -5214,7 +5492,7 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
       }
       if (event.key !== 'Tab') return;
       const focusable = Array.from(dialogRef.current?.querySelectorAll(
-        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
       ) || []);
       if (focusable.length === 0) {
         event.preventDefault();
@@ -5268,8 +5546,20 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
       >
         <X size={28} aria-hidden="true" />
       </button>
+      <PwaDownloadLink
+        aria-label={`下载图片 ${item.payload?.name || ''}`.trim()}
+        className="oc-rich-media-preview-download"
+        download={item.payload?.name || true}
+        href={downloadURL || undefined}
+        onClick={(event) => event.stopPropagation()}
+        rel="noopener noreferrer"
+        target="_blank"
+        title="下载图片"
+      >
+        <Download size={24} aria-hidden="true" />
+      </PwaDownloadLink>
       <img
-        src={resolveMediaURL(item.payload?.url || item.payload?.thumbnail)}
+        src={imageURL}
         alt={item.payload?.name ? `${item.payload.name} preview` : 'image preview'}
         className="oc-rich-image-preview-media"
         onClick={(event) => event.stopPropagation()}

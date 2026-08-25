@@ -15,6 +15,7 @@ vi.mock('../components/feedback-system', () => ({
 
 vi.mock('../widgets/chat-message', () => ({
   __esModule: true,
+  downloadableMediaURL: (url) => `${url}${url.includes('?') ? '&' : '?'}download=1`,
   default: function MockChatMessage(props) {
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
     const textBlocks = props.message?.content_blocks?.filter?.((block) => block.type === 'text') || [];
@@ -181,8 +182,10 @@ vi.mock('../utils/conversation-share-image', () => ({
     }
     return typeof message?.content === 'string' ? message.content : message?.content?.text || '';
   },
-  downloadConversationShareImage: vi.fn(),
-  downloadConversationShareImages: vi.fn(),
+  downloadConversationShareImage: vi.fn(async () => true),
+  downloadConversationShareImages: vi.fn(async () => true),
+  isMobileConversationShareBrowser: vi.fn(() => false),
+  openConversationShareImageForManualSave: vi.fn(() => true),
   renderConversationShareImage: vi.fn(async () => ({
     dataUrl: 'data:image/png;base64,catsco-share',
     width: 1080,
@@ -198,12 +201,15 @@ vi.mock('../api', () => ({
     getAgentQuota: vi.fn(),
     getGroupInfo: vi.fn(),
     createChannelIdentityMobileLink: vi.fn(),
+    createArtifactContextSnapshot: vi.fn(),
+    invalidateArtifactContextSnapshot: vi.fn(),
     sendMessage: vi.fn(),
     uploadFile: vi.fn(),
     createMobileUploadSession: vi.fn(),
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
@@ -212,6 +218,7 @@ vi.mock('../api', () => ({
   wsSendStreamCancel: vi.fn(),
   wsSendTyping: vi.fn(),
   wsSendRead: vi.fn(),
+  wsSendArtifactResultReceipt: vi.fn(),
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
   getApiBaseURL: () => window.location.origin,
@@ -228,9 +235,15 @@ import MessagesView, {
   shouldConvertPastedTextToDocument,
 } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
-import { api, onWSMessage, wsSendStreamCancel } from '../api';
+import { api, onWSMessage, wsSendArtifactResultReceipt, wsSendStreamCancel } from '../api';
 import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
-import { downloadConversationShareImage, downloadConversationShareImages, renderConversationShareImage } from '../utils/conversation-share-image';
+import {
+  downloadConversationShareImage,
+  downloadConversationShareImages,
+  isMobileConversationShareBrowser,
+  openConversationShareImageForManualSave,
+  renderConversationShareImage,
+} from '../utils/conversation-share-image';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -360,6 +373,16 @@ async function flushPromises(count = 8) {
   }
 }
 
+function dispatchFrameMessage(source, origin, data) {
+  const event = new Event('message');
+  Object.defineProperties(event, {
+    source: { value: source },
+    origin: { value: origin },
+    data: { value: data },
+  });
+  window.dispatchEvent(event);
+}
+
 describe('structured composer mention provenance', () => {
   it('does not promote hand-typed uid-like text into structured targets', () => {
     expect(collectStructuredMentionTargets('@usr42 请处理', [])).toEqual([]);
@@ -476,11 +499,17 @@ describe('ImageGalleryPreview', () => {
     expect(document.querySelector('[aria-label="上一张图片"]')?.disabled).toBe(true);
     expect(document.querySelector('[aria-label="下一张图片"]')).not.toBeNull();
     expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
+    const download = document.querySelector('a.oc-rich-media-preview-download');
+    expect(download?.getAttribute('aria-label')).toBe('下载图片 one.png');
+    expect(download?.getAttribute('href')).toBe('/uploads/images/one.png?download=1');
+    expect(download?.getAttribute('download')).toBe('one.png');
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     });
     expect(document.querySelector('.oc-rich-image-preview-media')?.getAttribute('src')).toBe('/uploads/images/two.png');
+    expect(document.querySelector('a.oc-rich-media-preview-download')?.getAttribute('href'))
+      .toBe('/uploads/images/two.png?download=1');
     expect(document.querySelector('[aria-label="上一张图片"]')).not.toBeNull();
     expect(document.querySelector('[aria-label="上一张图片"]')?.disabled).toBe(false);
     expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
@@ -527,10 +556,18 @@ describe('MessagesView composer draft isolation', () => {
     api.getAgentQuota.mockResolvedValue({ configured: false, shared: true });
     api.createChannelIdentityMobileLink.mockResolvedValue({ qr_value: 'https://app.catsco.cc/mobile-link' });
     api.getGroupInfo.mockResolvedValue({ members: [], group: null });
+    api.createArtifactContextSnapshot.mockResolvedValue({
+      contract_version: 'catsco.artifact-context-ref.v1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      expires_at: '2026-08-14T12:05:00Z',
+      revision: 1,
+    });
+    api.invalidateArtifactContextSnapshot.mockResolvedValue({ ok: true });
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
     feedbackNotify.mockReset();
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
@@ -545,6 +582,7 @@ describe('MessagesView composer draft isolation', () => {
       api_upload_url: '/api/mobile-upload/sessions/abc123/files',
     });
     api.getMobileUploadSession.mockResolvedValue({ session_id: 'abc123', files: [] });
+    isMobileConversationShareBrowser.mockReturnValue(false);
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
       wsHandler = handler;
@@ -567,6 +605,23 @@ describe('MessagesView composer draft isolation', () => {
     window.IntersectionObserver = originalIntersectionObserver;
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it('keeps the message view mountable when browser storage is blocked', async () => {
+    const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage access is blocked', 'SecurityError');
+      },
+    });
+
+    try {
+      await mountTopic(root, 'p2p_1_2');
+      expect(container.querySelector('textarea')).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+    }
   });
 
   it('loads around a search result, highlights its anchor, and returns to search', async () => {
@@ -691,7 +746,10 @@ describe('MessagesView composer draft isolation', () => {
         }));
       });
       expect(document.activeElement).toBe(downloadButton);
-      await act(async () => downloadButton.click());
+      await act(async () => {
+        downloadButton.click();
+        await flushPromises();
+      });
       expect(downloadConversationShareImage).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
       await act(async () => {
         document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -787,12 +845,96 @@ describe('MessagesView composer draft isolation', () => {
     expect(preview?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,page-two');
 
     const downloadAllButton = [...preview.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('下载全部 PNG'));
-    await act(async () => downloadAllButton.click());
+      .find((button) => button.textContent.includes('下载全部图片（ZIP）'));
+    expect(downloadAllButton?.textContent).toBe('下载全部图片（ZIP）');
+    await act(async () => {
+      downloadAllButton.click();
+      await flushPromises();
+    });
     expect(downloadConversationShareImages).toHaveBeenCalledWith([
       'data:image/png;base64,page-one',
       'data:image/png;base64,page-two',
     ]);
+  });
+
+  it('labels multi-page mobile sharing as a system share action', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 202,
+        seq_id: 202,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '两张分享图',
+      }],
+    });
+    isMobileConversationShareBrowser.mockReturnValue(true);
+    renderConversationShareImage.mockResolvedValueOnce({
+      dataUrl: 'data:image/png;base64:page-one',
+      pages: [
+        { dataUrl: 'data:image/png;base64:page-one', width: 720, height: 1200, page: 1, total: 2 },
+        { dataUrl: 'data:image/png;base64:page-two', width: 720, height: 1200, page: 2, total: 2 },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    expect([...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('系统分享全部图片'))?.textContent)
+      .toBe('系统分享全部图片');
+  });
+
+  it('shows a visible recovery message when image saving cannot start', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 301,
+        seq_id: 301,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '请保存这张分享图',
+      }],
+    });
+    downloadConversationShareImage.mockResolvedValueOnce(false);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await act(async () => container.querySelector('.mock-create-conversation-share').click());
+
+    const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
+    const generateButton = [...toolbar.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('生成分享图'));
+    await act(async () => {
+      generateButton.click();
+      await flushPromises();
+    });
+
+    const preview = document.body.querySelector('[role="dialog"][aria-labelledby="conversation-share-preview-title"]');
+    const downloadButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('下载 PNG'));
+    await act(async () => {
+      downloadButton.click();
+      await flushPromises();
+    });
+
+    expect(preview?.textContent).toContain('无法启动图片保存。请在新标签页中打开图片后，使用浏览器的保存功能。');
+    const manualSaveButton = [...preview.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('在新标签页打开图片'));
+    await act(async () => {
+      manualSaveButton.click();
+    });
+    expect(openConversationShareImageForManualSave).toHaveBeenCalledWith('data:image/png;base64,catsco-share');
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {
@@ -2607,16 +2749,20 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_440',
+      artifact_ref: {
+        contract_version: 'catsco.artifact-ref.v1',
+        id: 'lesson-game',
+        displayed_version: 2,
+        currently_visible: true,
+      },
+    }, { timeoutMs: 2200 });
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
       type: 'text',
       content: '调整这个页面',
       metadata: {
-        artifact_ref: {
-          contract_version: 'catsco.artifact-ref.v1',
-          id: 'lesson-game',
-          displayed_version: 2,
-          currently_visible: true,
-        },
+        artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
     }, undefined);
   });
@@ -3314,6 +3460,7 @@ describe('MessagesView composer draft isolation', () => {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
 
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
@@ -3332,6 +3479,69 @@ describe('MessagesView composer draft isolation', () => {
     const preview = container.querySelector('.mock-file-preview');
     expect(preview?.textContent).toContain('课堂小游戏');
     expect(preview?.getAttribute('data-url')).toBe(artifact.url);
+  });
+
+  it('consumes a cloud artifacts request after opening it once', async () => {
+    const onRequestConsumed = vi.fn();
+    let switchTopic;
+    function TopicHarness() {
+      const [currentTopic, setCurrentTopic] = React.useState('p2p_1_440');
+      const [request, setRequest] = React.useState({
+        agentUid: 440,
+        requestId: 1,
+        topicId: 'p2p_1_440',
+      });
+      switchTopic = setCurrentTopic;
+      const consumeRequest = React.useCallback((requestId) => {
+        onRequestConsumed(requestId);
+        setRequest((current) => (
+          current?.requestId === requestId ? null : current
+        ));
+      }, []);
+
+      return (
+        <MessagesView
+          topic={currentTopic}
+          topicName={currentTopic}
+          user={user}
+          isGroup={false}
+          groupId={null}
+          topicAvatarUrl=""
+          onTopicUpdated={vi.fn()}
+          cloudArtifactsRequest={request}
+          onCloudArtifactsRequestConsumed={consumeRequest}
+        />
+      );
+    }
+
+    await act(async () => {
+      root.render(<TopicHarness />);
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(onRequestConsumed).toHaveBeenCalledTimes(1);
+    expect(onRequestConsumed).toHaveBeenCalledWith(1);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="关闭云文件"]'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+
+    await act(async () => {
+      switchTopic('p2p_1_2');
+      await flushPromises();
+    });
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+
+    await act(async () => {
+      switchTopic('p2p_1_440');
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+    expect(onRequestConsumed).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes the visible exact Artifact once when its published version increases', async () => {
@@ -3412,6 +3622,301 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(api.getCloudArtifacts).toHaveBeenCalledTimes(callsAfterClose);
+    vi.useRealTimers();
+  });
+
+  it('waits to switch a verified Artifact update while the current page reports unsaved state', async () => {
+    vi.useFakeTimers();
+    const origin = 'https://artifacts.example.test';
+    let dirty = true;
+    let contextRequests = 0;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        contextRequests += 1;
+        expect(targetOrigin).toBe(origin);
+        const event = new Event('message');
+        Object.defineProperties(event, {
+          source: { value: frameWindow },
+          origin: { value: origin },
+          data: {
+            value: {
+              type: 'catsco.artifact.context.response.v1',
+              request_id: message.request_id,
+              context: {
+                contract_version: 'catsco.artifact-page-context.v1',
+                observed_at: '2026-08-21T10:00:00Z',
+                dirty,
+                artifact_version: 2,
+              },
+            },
+          },
+        });
+        window.dispatchEvent(event);
+      },
+    };
+    const versionTwo = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    let currentArtifact = versionTwo;
+    api.getCloudArtifacts.mockImplementation(async () => ({ artifacts: [currentArtifact] }));
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    currentArtifact = { ...versionTwo, publish_version: 3 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+        await flushPromises();
+      });
+    }
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+    expect(contextRequests).toBeGreaterThanOrEqual(3);
+
+    dirty = false;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('keeps one verified Artifact candidate pending while the current page context is unavailable', async () => {
+    vi.useFakeTimers();
+    const origin = 'https://artifacts.example.test';
+    let contextAvailable = false;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        if (!contextAvailable) return;
+        const event = new Event('message');
+        Object.defineProperties(event, {
+          source: { value: frameWindow },
+          origin: { value: origin },
+          data: {
+            value: {
+              type: 'catsco.artifact.context.response.v1',
+              request_id: message.request_id,
+              context: {
+                contract_version: 'catsco.artifact-page-context.v1',
+                observed_at: '2026-08-21T10:00:00Z',
+                dirty: false,
+                artifact_version: 2,
+              },
+            },
+          },
+        });
+        window.dispatchEvent(event);
+      },
+    };
+    const versionTwo = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    let currentArtifact = versionTwo;
+    api.getCloudArtifacts.mockImplementation(async () => ({ artifacts: [currentArtifact] }));
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    currentArtifact = { ...versionTwo, publish_version: 3 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
+      await vi.advanceTimersByTimeAsync(300);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST + 300);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+
+    contextAvailable = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
+    expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('switches a verified Artifact update when a valid legacy page context omits dirty', async () => {
+    vi.useFakeTimers();
+    const origin = 'https://artifacts.example.test';
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        const event = new Event('message');
+        Object.defineProperties(event, {
+          source: { value: frameWindow },
+          origin: { value: origin },
+          data: {
+            value: {
+              type: 'catsco.artifact.context.response.v1',
+              request_id: message.request_id,
+              context: {
+                contract_version: 'catsco.artifact-page-context.v1',
+                observed_at: '2026-08-21T10:00:00Z',
+                artifact_version: 2,
+              },
+            },
+          },
+        });
+        window.dispatchEvent(event);
+      },
+    };
+    const versionTwo = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    let currentArtifact = versionTwo;
+    api.getCloudArtifacts.mockImplementation(async () => ({ artifacts: [currentArtifact] }));
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    currentArtifact = { ...versionTwo, publish_version: 3 };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
     vi.useRealTimers();
   });
 
@@ -3627,7 +4132,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
   });
 
-  it('silently attaches the visible artifact reference to the next message', async () => {
+  it('stores the visible Artifact snapshot separately and attaches only its opaque ref', async () => {
     const artifact = {
       id: 'lesson-game',
       agent_uid: '440',
@@ -3680,23 +4185,145 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_440',
+      artifact_ref: {
+        contract_version: 'catsco.artifact-ref.v1',
+        id: 'lesson-game',
+        displayed_version: 2,
+        currently_visible: true,
+      },
+    }, { timeoutMs: 2200 });
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
       type: 'text',
       content: '把右边标题改短一点',
       metadata: {
-        artifact_ref: {
-          contract_version: 'catsco.artifact-ref.v1',
-          id: 'lesson-game',
-          displayed_version: 2,
-          currently_visible: true,
-        },
+        artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
     }, undefined);
     expect(container.textContent).not.toContain('lesson-game');
     expect(container.textContent).not.toContain('当前 Artifact');
   });
 
-  it('attaches the latest bounded iframe observation to the same message', async () => {
+  it('sends the ordinary message when snapshot creation fails', async () => {
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.createArtifactContextSnapshot.mockRejectedValueOnce(new Error('snapshot unavailable'));
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '正常发送');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '正常发送', undefined);
+  });
+
+  it('invalidates a snapshot that finishes after the preview has closed', async () => {
+    let finishSnapshot;
+    api.createArtifactContextSnapshot.mockImplementationOnce(() => new Promise((resolve) => {
+      finishSnapshot = resolve;
+    }));
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '不要绑定旧页面');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    expect(finishSnapshot).toEqual(expect.any(Function));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-close-preview'));
+      finishSnapshot({
+        contract_version: 'catsco.artifact-context-ref.v1',
+        context_ref: `acr_${'z'.repeat(43)}`,
+      });
+      await flushPromises();
+    });
+
+    expect(api.invalidateArtifactContextSnapshot).toHaveBeenCalledWith(
+      `acr_${'z'.repeat(43)}`,
+      { timeoutMs: 2200 },
+    );
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '不要绑定旧页面', undefined);
+  });
+
+  it('stores the latest bounded iframe observation outside the chat message', async () => {
     const origin = 'https://artifacts.example.test';
     const frameWindow = {
       postMessage(message, targetOrigin) {
@@ -3781,24 +4408,155 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_440',
+      artifact_ref: {
+        contract_version: 'catsco.artifact-ref.v1',
+        id: 'lesson-game',
+        displayed_version: 2,
+        currently_visible: true,
+      },
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: '企业客户',
+        controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
+      },
+    }, { timeoutMs: 2200 });
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
       type: 'text',
       content: '分析这些',
       metadata: {
-        artifact_ref: {
-          contract_version: 'catsco.artifact-ref.v1',
-          id: 'lesson-game',
-          displayed_version: 2,
-          currently_visible: true,
-        },
-        artifact_page_context: {
-          contract_version: 'catsco.artifact-page-context.v1',
-          observed_at: '2026-08-07T12:00:00Z',
-          selected_text: '企业客户',
-          controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
-        },
+        artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
     }, undefined);
+  });
+
+  it('routes a result only to the preview that owns the current context snapshot', async () => {
+    const origin = 'https://artifacts.example.test';
+    const resultId = `arr_${'r'.repeat(43)}`;
+    let appliedResult = null;
+    const frameWindow = {
+      postMessage(message) {
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-25T03:00:00Z',
+              semantic_context: { view: 'risk-register', state_revision: '42' },
+            },
+          }), 0);
+          return;
+        }
+        if (message.type === 'catsco.artifact.result.request.v1') {
+          appliedResult = message.result;
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.result.response.v1',
+            request_id: message.request_id,
+            receipt: {
+              contract_version: 'catsco.artifact-result-receipt.v1',
+              result_id: resultId,
+              status: 'applied',
+              receipt: { created: 1, state_revision: '43' },
+            },
+          }), 0);
+        }
+      },
+    };
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '风险台账',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 风险台账"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '把风险写进当前台账');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await flushPromises();
+    });
+
+    const request = {
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_1_440',
+      agent_uid: '440',
+      artifact_id: 'lesson-game',
+      displayed_version: 2,
+      sink_id: 'risk-items.upsert.v1',
+      result_id: resultId,
+      expected_state_revision: '42',
+      payload: { items: [{ title: '延期风险' }] },
+    };
+    await act(async () => {
+      wsHandler({ artifact_result: request });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await flushPromises();
+    });
+
+    expect(appliedResult).toEqual({
+      contract_version: 'catsco.artifact-result.v1',
+      artifact_id: 'lesson-game',
+      displayed_version: 2,
+      sink_id: 'risk-items.upsert.v1',
+      result_id: resultId,
+      expected_state_revision: '42',
+      payload: { items: [{ title: '延期风险' }] },
+    });
+    expect(wsSendArtifactResultReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'receipt',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      result_id: resultId,
+      receipt: expect.objectContaining({ status: 'applied' }),
+    }));
+
+    wsSendArtifactResultReceipt.mockClear();
+    await act(async () => {
+      wsHandler({
+        artifact_result: {
+          ...request,
+          context_ref: `acr_${'z'.repeat(43)}`,
+          result_id: `arr_${'q'.repeat(43)}`,
+        },
+      });
+      await flushPromises();
+    });
+    expect(wsSendArtifactResultReceipt).not.toHaveBeenCalled();
   });
 
   it('drops a stale Artifact reference when the preview closes during page capture', async () => {
@@ -4116,7 +4874,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined);
   });
 
-  it('finds an agent file from history and opens it in the existing file preview', async () => {
+  it('finds a conversation file from history and opens it in the existing file preview', async () => {
     const historicalFile = {
       id: '820:0',
       name: '期末学情报告.pdf',
@@ -4143,6 +4901,7 @@ describe('MessagesView composer draft isolation', () => {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]'));
       await Promise.resolve();
@@ -4164,6 +4923,7 @@ describe('MessagesView composer draft isolation', () => {
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
     expect(api.getTopicFiles).toHaveBeenCalledTimes(2);
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
   it('scopes the file panel request to the current group conversation', async () => {
@@ -4181,6 +4941,7 @@ describe('MessagesView composer draft isolation', () => {
       beforeId: 0,
       limit: 40,
     });
+    expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
 
   it('opens conversation files without an Agent and hides the results tab', async () => {
@@ -4539,7 +5300,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(container.textContent).toContain('聊天记录加载失败');
+    expect(container.textContent).toContain('暂时无法获取聊天记录');
     const retryButton = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent.includes('重新加载'));
     expect(retryButton).not.toBeNull();
@@ -4549,7 +5310,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(container.textContent).not.toContain('聊天记录加载失败');
+    expect(container.textContent).not.toContain('暂时无法获取聊天记录');
   });
 
   it('uses a stable before cursor when loading older history', async () => {
@@ -4609,9 +5370,32 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(container.textContent).toContain('聊天记录加载超时，请重试');
+    expect(container.textContent).toContain('获取聊天记录超时，请重试');
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('重新加载'))).toBe(true);
+  });
+
+  it('classifies a gateway failure while loading older history', async () => {
+    const latest = Array.from({ length: 50 }, (_, index) => ({
+      id: 101 + index,
+      seq_id: 101 + index,
+      topic_id: 'p2p_1_2',
+      from_uid: index % 2 === 0 ? 1 : 2,
+      type: 'text',
+      content: `latest-${index}`,
+    }));
+    const unavailable = Object.assign(new Error('bad gateway'), { status: 502 });
+    api.getMessages
+      .mockResolvedValueOnce({ messages: latest, has_more: true, next_before_id: 101 })
+      .mockRejectedValueOnce(unavailable);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises(16);
+    });
+
+    expect(container.textContent).toContain('服务暂时不可用。');
+    expect(container.textContent).not.toContain('更早的聊天记录加载失败。');
   });
 
   it('cancels the previous topic history request when switching topics', async () => {
@@ -4637,7 +5421,7 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(firstOptions.signal.aborted).toBe(true);
     expect(container.querySelector('[data-message-content="topic B"]')).not.toBeNull();
-    expect(container.textContent).not.toContain('聊天记录加载失败');
+    expect(container.textContent).not.toContain('暂时无法获取聊天记录');
   });
 
   it('cancels an in-flight question index request when switching topics', async () => {
@@ -4824,6 +5608,54 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('[data-message-content="fresh topic A"]')).not.toBeNull();
+  });
+
+  it('keeps cached history and identifies it when the service is unavailable', async () => {
+    const unavailable = Object.assign(new Error('bad gateway'), { status: 502 });
+    api.getMessages
+      .mockResolvedValueOnce({
+        messages: [{ id: 1, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'cached topic A' }],
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        messages: [{ id: 2, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      })
+      .mockRejectedValueOnce(unavailable);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    expect(container.querySelector('[data-message-content="cached topic A"]')).not.toBeNull();
+    expect(container.textContent).toContain('服务暂时不可用。当前显示');
+    expect(container.textContent).toContain('加载的聊天记录');
+    expect(container.textContent).not.toContain('后端');
+  });
+
+  it('treats a previously loaded empty conversation as a cached result', async () => {
+    const unavailable = Object.assign(new Error('bad gateway'), { status: 502 });
+    api.getMessages
+      .mockResolvedValueOnce({ messages: [], has_more: false })
+      .mockResolvedValueOnce({
+        messages: [{ id: 2, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      })
+      .mockRejectedValueOnce(unavailable);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => { await flushPromises(); });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { await flushPromises(); });
+
+    expect(container.textContent).toContain('服务暂时不可用。当前显示');
+    expect(container.textContent).toContain('加载的聊天记录');
+    expect(container.textContent).not.toContain('暂时无法获取聊天记录');
   });
 
   it('resumes older history loading after a cached topic refresh finishes at the top', async () => {
@@ -5932,6 +6764,610 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.textContent).not.toContain('输入');
     expect(container.querySelector('.v3-peer-typing')).toBeNull();
+  });
+
+  it('keeps the current reading position when streaming and scrolling overlap an older-history load', async () => {
+    const initialHistory = deferred();
+    const olderHistory = deferred();
+    api.getMessages
+      .mockImplementationOnce(() => initialHistory.promise)
+      .mockImplementationOnce(() => olderHistory.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => (
+        container.querySelector('[data-message-content="older message"]') ? 1100 : scrollHeight
+      ),
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+    timeline.getBoundingClientRect = vi.fn(() => ({ top: 0, bottom: 500 }));
+    const messageRectSpy = vi.spyOn(window.HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.dataset?.searchMessageId === '101') {
+          if (container.querySelector('[data-message-content="older message"]')) {
+            return { top: 180, bottom: 220 };
+          }
+          if (container.querySelector('.oc-history-load') && scrollTop >= 200) {
+            return { top: -40, bottom: 0 };
+          }
+          if (container.querySelector('.oc-history-load')) {
+            return { top: 120, bottom: 160 };
+          }
+          return { top: 100, bottom: 140 };
+        }
+        if (this.dataset?.searchMessageId === '102') {
+          if (container.querySelector('[data-message-content="older message"]')) {
+            return { top: 300, bottom: 340 };
+          }
+          if (container.querySelector('.oc-history-load') && scrollTop >= 200) {
+            return { top: 140, bottom: 180 };
+          }
+          if (container.querySelector('.oc-history-load')) {
+            return { top: 320, bottom: 360 };
+          }
+          return { top: 300, bottom: 340 };
+        }
+        return { top: 0, bottom: 0 };
+      });
+
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [
+          {
+            id: 101,
+            seq_id: 101,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            type: 'text',
+            content: 'earlier visible message',
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            type: 'text',
+            content: 'latest message',
+          },
+        ],
+        has_more: true,
+        next_before_id: 101,
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(1000);
+
+    scrollTop = 100;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1020;
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          content: 'stream update',
+          metadata: { stream_id: 'stream-before-history' },
+        },
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(100);
+
+    scrollTop = 220;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      olderHistory.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'older message',
+        }],
+        has_more: false,
+        next_before_id: 100,
+      });
+      await flushPromises();
+    });
+    messageRectSpy.mockRestore();
+    expect(scrollTop).toBe(380);
+  });
+
+  it('keeps following when the reader returns to the live edge during an older-history load', async () => {
+    const initialHistory = deferred();
+    const olderHistory = deferred();
+    api.getMessages
+      .mockImplementationOnce(() => initialHistory.promise)
+      .mockImplementationOnce(() => olderHistory.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [{
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'latest message',
+        }],
+        has_more: true,
+        next_before_id: 101,
+      });
+      await flushPromises();
+    });
+
+    scrollTop = 100;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollTop = 500;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1100;
+    await act(async () => {
+      olderHistory.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'older message',
+        }],
+        has_more: false,
+        next_before_id: 100,
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1100);
+  });
+
+  it('keeps auto-follow enabled when an inner timeline scroller receives up-scroll gestures', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 500;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    const nestedScroller = document.createElement('div');
+    nestedScroller.className = 'v3-working-steps';
+    timeline.append(nestedScroller);
+    await act(async () => {
+      nestedScroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -56 }));
+      const touchStart = new Event('touchstart', { bubbles: true });
+      Object.defineProperty(touchStart, 'touches', { value: [{ clientY: 320 }] });
+      nestedScroller.dispatchEvent(touchStart);
+      const touchMove = new Event('touchmove', { bubbles: true });
+      Object.defineProperty(touchMove, 'touches', { value: [{ clientY: 376 }] });
+      nestedScroller.dispatchEvent(touchMove);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1100;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 36,
+          seq: 36,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: 'fresh message',
+          type: 'text',
+          msg_type: 'text',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1100);
+  });
+
+  it('follows runtime-only updates while the reader remains at the bottom', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 500;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1080;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 37,
+          seq: 37,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: 'still working', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(1080);
+
+    scrollHeight = 1110;
+    await act(async () => {
+      wsHandler({
+        info: {
+          topic: 'p2p_1_2',
+          what: 'kp',
+          from: 'usr2',
+        },
+      });
+      await flushPromises();
+    });
+    expect(scrollTop).toBe(1110);
+  });
+
+  it('keeps auto-follow after an upward wheel gesture cannot move a short timeline', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 500;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      Simulate.wheel(timeline, { deltaY: -56 });
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1000;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 38,
+          seq: 38,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: 'short timeline update', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1000);
+  });
+
+  it('keeps auto-follow after an upward touch gesture cannot move a short timeline', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 500;
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      Simulate.touchStart(timeline, { touches: [{ clientY: 320 }] });
+      Simulate.touchMove(timeline, { touches: [{ clientY: 376 }] });
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1000;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 39,
+          seq: 39,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: 'short timeline update', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1000);
+  });
+
+  it('keeps a manually up-scrolled conversation fixed during a runtime-plan update', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+
+    timeline.scrollTop = 500;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    timeline.scrollTop = 444;
+    await act(async () => {
+      Simulate.wheel(timeline, { deltaY: -56 });
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    const scrollCallsBeforeUpdate = window.HTMLElement.prototype.scrollIntoView.mock.calls.length;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 28,
+          seq: 28,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: '仍在加载', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(timeline.scrollTop).toBe(444);
+    expect(window.HTMLElement.prototype.scrollIntoView)
+      .toHaveBeenCalledTimes(scrollCallsBeforeUpdate);
+  });
+
+  it('does not resume auto-follow after browser anchoring adjusts a near-bottom reader', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollHeight = 1000;
+    let scrollTop = 500;
+    Object.defineProperty(timeline, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollTop = 444;
+    await act(async () => {
+      Simulate.wheel(timeline, { deltaY: -56 });
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    // Native scroll anchoring can compensate for new content above the reader
+    // without representing an explicit request to return to the live edge.
+    scrollHeight = 1100;
+    scrollTop = 544;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+
+    scrollHeight = 1180;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 29,
+          seq: 29,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: '仍在加载', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(544);
+  });
+
+  it('stops auto-follow when a touch drag moves toward older messages', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+
+    timeline.scrollTop = 500;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      Simulate.touchStart(timeline, { touches: [{ clientY: 320 }] });
+      timeline.scrollTop = 444;
+      Simulate.scroll(timeline);
+      Simulate.touchMove(timeline, { touches: [{ clientY: 376 }] });
+      await Promise.resolve();
+    });
+
+    const scrollCallsBeforeUpdate = window.HTMLElement.prototype.scrollIntoView.mock.calls.length;
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 30,
+          seq: 30,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: '正在处理',
+          type: 'tool_use',
+          msg_type: 'tool_use',
+          metadata: { id: 'tool-30', input: { task: '加载进度' } },
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(timeline.scrollTop).toBe(444);
+    expect(window.HTMLElement.prototype.scrollIntoView)
+      .toHaveBeenCalledTimes(scrollCallsBeforeUpdate);
+  });
+
+  it('follows fresh messages within the timeline without scrolling the page', async () => {
+    const initialHistory = deferred();
+    api.getMessages.mockImplementationOnce(() => initialHistory.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    let scrollTop = 0;
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(timeline, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = value;
+      },
+    });
+
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [{
+          id: 29,
+          seq_id: 29,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: '最新回复',
+        }],
+        has_more: false,
+      });
+      await flushPromises();
+    });
+
+    expect(scrollTop).toBe(1000);
+    expect(window.HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
 
   it('hides the transient runtime plan once the same plan is persisted in working messages', async () => {

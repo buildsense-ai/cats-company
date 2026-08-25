@@ -21,6 +21,9 @@ type ClientMessage struct {
 	Friend      *MsgClientFriend `json:"friend,omitempty"`
 	DeviceRPC   *MsgDeviceRPC    `json:"device_rpc,omitempty"`
 	ThinToolRPC *MsgThinToolRPC  `json:"thin_tool_rpc,omitempty"`
+	// ArtifactResult accepts only a receipt from a connected human preview.
+	// Result submission itself uses the authenticated Bot HTTP endpoint.
+	ArtifactResult *MsgArtifactResult `json:"artifact_result,omitempty"`
 	// SkillMutationGrant is accepted only from the current authenticated Bot
 	// runtime connection. It issues authorization; it never mutates a Skill.
 	SkillMutationGrant *MsgSkillMutationGrant `json:"skill_mutation_grant,omitempty"`
@@ -38,11 +41,15 @@ type ServerMessage struct {
 	Notification       *MsgServerNotification        `json:"notification,omitempty"`
 	DeviceRPC          *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
 	ThinToolRPC        *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
+	ArtifactResult     *MsgArtifactResult            `json:"artifact_result,omitempty"`
 	SkillMutationGrant *MsgSkillMutationGrant        `json:"skill_mutation_grant,omitempty"`
 
 	// suppressPushNotification is server-only provenance. It must never be
 	// serialized to a web client or be set from client-provided metadata.
 	suppressPushNotification bool
+	// artifactContextRef is an in-memory, recipient-scoped delivery capability.
+	// It is never serialized directly and never persisted with a message.
+	artifactContextRef *artifactContextDeliveryRef
 }
 
 // --- Client messages ---
@@ -216,6 +223,26 @@ type MsgThinToolRPC struct {
 	Error             *MsgDeviceRPCError     `json:"error,omitempty"`
 	CreatedAt         int64                  `json:"created_at,omitempty"`
 	ExpiresAt         int64                  `json:"expires_at,omitempty"`
+}
+
+// MsgArtifactResult is the transient transport between CatsCo and the exact
+// browser preview that created an Artifact context snapshot. It is never a
+// chat message and is never persisted as application data.
+type MsgArtifactResult struct {
+	Type                  string          `json:"type"` // "request" or "receipt"
+	OriginNodeID          string          `json:"origin_node_id,omitempty"`
+	ActorUID              string          `json:"actor_uid,omitempty"`
+	ContextRef            string          `json:"context_ref,omitempty"`
+	WritebackRef          string          `json:"writeback_ref,omitempty"`
+	TopicID               string          `json:"topic_id,omitempty"`
+	AgentUID              string          `json:"agent_uid,omitempty"`
+	ArtifactID            string          `json:"artifact_id,omitempty"`
+	DisplayedVersion      int64           `json:"displayed_version,omitempty"`
+	SinkID                string          `json:"sink_id,omitempty"`
+	ResultID              string          `json:"result_id"`
+	ExpectedStateRevision string          `json:"expected_state_revision,omitempty"`
+	Payload               json.RawMessage `json:"payload,omitempty"`
+	Receipt               json.RawMessage `json:"receipt,omitempty"`
 }
 
 // --- Server messages ---

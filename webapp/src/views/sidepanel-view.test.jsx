@@ -271,6 +271,23 @@ describe('ChatListView sidebar sections', () => {
     expect(mouseDown.defaultPrevented).toBe(true);
   });
 
+  it('keeps the sidebar mountable when browser storage is blocked', async () => {
+    const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage access is blocked', 'SecurityError');
+      },
+    });
+
+    try {
+      await mount();
+      expect(container.querySelector('.cc-top-level-section')).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+    }
+  });
+
   it('recognizes real sticky lanes and the reachable scroll end as auto-collapse boundaries', () => {
     expect(shouldAutoCollapseSidebarSection({
       scrollTop: 260,
@@ -3975,6 +3992,349 @@ describe('ChatListView sidebar sections', () => {
     const offlineAgentTask = Array.from(container.querySelectorAll('[data-task-kind="collaboration"]'))
       .find((row) => row.textContent.includes('Multi Agent Review'));
     expect(offlineAgentTask?.querySelector('.cc-task-agent-icon.offline')?.getAttribute('title')).toBe('0/2 个 Agent 在线');
+  });
+
+  it('enters task selection mode without opening conversations and can select tasks across the sidebar', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Inbox Task',
+          is_group: false,
+          is_bot: true,
+        },
+        {
+          id: 'grp_77',
+          group_id: 77,
+          name: 'Project Task',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+          project_id: 12,
+          project_name: 'Website Launch',
+        },
+      ],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [{
+        id: 77,
+        name: 'Project Task',
+        owner_id: 7,
+        kind: 'agent_task',
+        has_bot: true,
+      }],
+    });
+    api.getProjects.mockResolvedValue({ projects: [{ id: 12, name: 'Website Launch', task_count: 1 }] });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+
+    expect(container.querySelector('[aria-label="完成选择任务"]')).toBeTruthy();
+    const inboxTask = container.querySelector('[aria-label="选择任务 Inbox Task"]');
+    expect(inboxTask).toBeTruthy();
+    expect(inboxTask.getAttribute('role')).toBe('checkbox');
+    expect(inboxTask.getAttribute('tabindex')).toBe('0');
+    expect(onSelectTopic).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Simulate.click(inboxTask);
+    });
+
+    expect(container.querySelector('[aria-label="取消选择任务 Inbox Task"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 1 项');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="批量项目操作"]'));
+    });
+    expect(container.querySelector('[role="menu"][aria-label="批量项目操作"]')).toBeTruthy();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(container.querySelector('[role="menu"][aria-label="批量项目操作"]')).toBeFalsy();
+    expect(container.querySelector('[aria-label="完成选择任务"]')).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Website Launch"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择任务 Project Task"]'));
+    });
+
+    expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 2 项');
+    expect(onSelectTopic).not.toHaveBeenCalled();
+  });
+
+  it('uses the visible sidebar order for Shift range selection', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Recent project task',
+          is_group: false,
+          is_bot: true,
+          project_id: 13,
+          project_name: 'Beta',
+          last_time: '2026-07-20T08:03:00Z',
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Middle history task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-07-20T08:02:00Z',
+        },
+        {
+          id: 'p2p_7_44',
+          friend_id: 44,
+          name: 'Older project task',
+          is_group: false,
+          is_bot: true,
+          project_id: 12,
+          project_name: 'Alpha',
+          last_time: '2026-07-20T08:01:00Z',
+        },
+      ],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [
+        { id: 12, name: 'Alpha', task_count: 1 },
+        { id: 13, name: 'Beta', task_count: 1 },
+      ],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Alpha"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Beta"]'));
+    });
+
+    const alphaTask = container.querySelector('[aria-label="选择任务 Older project task"]');
+    const betaTask = container.querySelector('[aria-label="选择任务 Recent project task"]');
+    expect(alphaTask).toBeTruthy();
+    expect(betaTask).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(alphaTask);
+      Simulate.click(betaTask, { shiftKey: true });
+    });
+
+    const selectedRows = Array.from(container.querySelectorAll('.cc-history-item[data-selected="true"]'))
+      .map((row) => row.textContent);
+    expect(selectedRows.join('|')).toContain('Older project task');
+    expect(selectedRows.join('|')).toContain('Recent project task');
+    expect(selectedRows.join('|')).not.toContain('Middle history task');
+    expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 2 项');
+  });
+
+  it('moves selected tasks to a project and keeps only failed selections for retry', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Inbox Task',
+          is_group: false,
+          is_bot: true,
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Previous Project Task',
+          is_group: false,
+          is_bot: true,
+          project_id: 5,
+          project_name: 'Previous Project',
+        },
+      ],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [
+        { id: 5, name: 'Previous Project', task_count: 1 },
+        { id: 12, name: 'Website Launch', task_count: 0 },
+      ],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="全选任务"]'));
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="批量项目操作"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="menuitem"]'));
+    });
+
+    const dialog = document.body.querySelector('[aria-label="批量选择项目"]');
+    expect(dialog).toBeTruthy();
+    const websiteLaunch = Array.from(dialog.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('Website Launch'));
+    await act(async () => {
+      Simulate.click(websiteLaunch);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.assignProjectTopic).toHaveBeenCalledWith(12, 'p2p_7_42');
+    expect(api.assignProjectTopic).toHaveBeenCalledWith(12, 'p2p_7_43');
+    expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('选择任务');
+  });
+
+  it('offers explicit mute and unmute counts for a mixed task selection', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Muted Task',
+          is_group: false,
+          is_bot: true,
+          notifications_muted: true,
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Loud Task',
+          is_group: false,
+          is_bot: true,
+          notifications_muted: false,
+        },
+      ],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="全选任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="批量通知操作"]'));
+    });
+
+    expect(container.textContent).toContain('静音（1）');
+    expect(container.textContent).toContain('取消静音（1）');
+
+    const mute = Array.from(container.querySelectorAll('[role="menuitem"]'))
+      .find((button) => button.textContent.includes('静音（1）'));
+    await act(async () => {
+      Simulate.click(mute);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.setConversationNotificationsMuted).toHaveBeenCalledWith('p2p_7_43', true);
+    expect(api.setConversationNotificationsMuted).not.toHaveBeenCalledWith('p2p_7_42', true);
+    expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 1 项');
+  });
+
+  it('reuses existing delete semantics for a mixed selected task set', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Local Task',
+          is_group: false,
+          is_bot: true,
+        },
+        {
+          id: 'grp_77',
+          group_id: 77,
+          name: 'Owned Collaboration',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+        },
+        {
+          id: 'grp_78',
+          group_id: 78,
+          name: 'Shared Collaboration',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+        },
+      ],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [
+        { id: 77, name: 'Owned Collaboration', owner_id: 7, kind: 'agent_task', has_bot: true },
+        { id: 78, name: 'Shared Collaboration', owner_id: 8, kind: 'agent_task', has_bot: true },
+      ],
+    });
+    window.confirm = vi.fn(() => true);
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="全选任务"]'));
+    });
+
+    expect(container.querySelector('[aria-label="删除 2 个可处理任务"]')).toBeTruthy();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="删除 2 个可处理任务"]'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.disbandGroup).toHaveBeenCalledWith(77);
+    expect(api.disbandGroup).not.toHaveBeenCalledWith(78);
+    expect(JSON.parse(localStorage.getItem('cc_hidden_history_v1:7'))).toEqual(['p2p_7_42']);
+    expect(container.querySelector('.cc-history-batch-summary')?.textContent).toContain('已选 1 项');
+  });
+
+  it('explains why deletion is unavailable for unauthorized collaboration tasks', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'grp_78',
+        group_id: 78,
+        name: 'Shared Collaboration',
+        is_group: true,
+        has_bot: true,
+        is_agent_task: true,
+      }],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [{
+        id: 78,
+        name: 'Shared Collaboration',
+        owner_id: 8,
+        kind: 'agent_task',
+        has_bot: true,
+      }],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="选择任务 Shared Collaboration"]'));
+    });
+
+    const deleteButton = container.querySelector('.cc-history-batch-action.danger');
+    expect(deleteButton.disabled).toBe(true);
+    expect(container.querySelector('#cc-history-batch-permission-note')?.textContent)
+      .toContain('1 个协作任务没有删除权限');
+    expect(deleteButton.getAttribute('aria-describedby')).toBe('cc-history-batch-permission-note');
   });
 
   it('uses the server-returned mute state for a contact conversation', async () => {

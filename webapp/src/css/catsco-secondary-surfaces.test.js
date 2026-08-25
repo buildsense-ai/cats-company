@@ -3,13 +3,13 @@ import { resolve } from 'node:path';
 
 const css = readFileSync(resolve(process.cwd(), 'src/css/catsco-secondary-surfaces.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
-const indexSource = readFileSync(resolve(process.cwd(), 'src/index.jsx'), 'utf8')
+const workspaceStylesSource = readFileSync(resolve(process.cwd(), 'src/views/workspace-styles.js'), 'utf8')
   .replace(/\r\n?/g, '\n');
 
 describe('secondary surface design contract', () => {
   it('loads the scoped layer after the shared settings controls', () => {
-    const settingsIndex = indexSource.indexOf("import './css/catsco-settings-controls.css';");
-    const secondaryIndex = indexSource.indexOf("import './css/catsco-secondary-surfaces.css';");
+    const settingsIndex = workspaceStylesSource.indexOf("import '../css/catsco-settings-controls.css';");
+    const secondaryIndex = workspaceStylesSource.indexOf("import '../css/catsco-secondary-surfaces.css';");
 
     expect(settingsIndex).toBeGreaterThanOrEqual(0);
     expect(secondaryIndex).toBeGreaterThan(settingsIndex);

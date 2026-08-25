@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import {
   canOpenCloudArtifacts,
   cloudArtifactNotificationToast,
+  commitPreviewSession,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
@@ -45,11 +46,12 @@ const baseConfig = {
     {
       id: 'deepseek-v4-flash',
       label: 'DeepSeek V4 Flash',
-      description: '低额度 Flash，支持推理强度',
+      description: '低额度 Flash，支持推理强度与视觉理解',
       context_window_tokens: 1000000,
       quota: { model: 'deepseek-v4-flash', quota_configured: true, percent: 90, remaining_percent: 10, status: 'high' },
       reasoning_efforts: ['high', 'max', 'disabled'],
       default_reasoning_effort: 'high',
+      vision: true,
     },
     {
       id: 'gpt-5.6-terra',
@@ -71,6 +73,27 @@ const relayState = {
 };
 
 describe('preview user identity', () => {
+  it('persists the preview profile before publishing its token', () => {
+    const calls = [];
+    const storedUser = commitPreviewSession({
+      token: 'preview-session',
+      id: 100,
+      username: 'ui-reviewer',
+    }, {
+      writeProfile: (profile) => {
+        calls.push(['profile', profile]);
+        return profile;
+      },
+      setSessionToken: (token) => calls.push(['token', token]),
+    });
+
+    expect(storedUser).toMatchObject({ uid: 100, username: 'ui-reviewer' });
+    expect(calls).toEqual([
+      ['profile', expect.objectContaining({ uid: 100, username: 'ui-reviewer' })],
+      ['token', 'preview-session'],
+    ]);
+  });
+
   it('restores the authenticated backend identity while previewing a theme', () => {
     expect(resolveInitialUser({
       themePreview: 'liquid',
@@ -140,15 +163,27 @@ describe('model reasoning menu placement', () => {
 });
 
 describe('narrow conversation top bar', () => {
-  it('prioritizes the task title when the artifact panel narrows the chat column', () => {
+  it('keeps actions visible in the mobile layout', () => {
+    expect(topbarCss).toMatch(
+      /\.v3-shell-actions\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*flex:\s*0\s+0\s+auto;/s,
+    );
+    expect(topbarCss).toMatch(
+      /@media\s*\(max-width:\s*768px\)[\s\S]*?\.v3-shell-actions\s*\{[^}]*min-width:\s*max-content;/,
+    );
+    expect(topbarCss).toMatch(
+      /@media\s*\(max-width:\s*520px\)[\s\S]*?\.v3-shell-actions\s*\{[^}]*overflow:\s*visible;/,
+    );
+  });
+
+  it('limits narrow-pane action hiding to desktop previews', () => {
     expect(topbarCss).toMatch(
       /\.v3-chat-column\s*\{[^}]*container-name:\s*catsco-chat-column;[^}]*container-type:\s*inline-size;/s,
     );
     expect(topbarCss).toMatch(
-      /@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-model-select, \.v3-shell-actions\)\s*\{[^}]*display:\s*none;/,
+      /@media\s*\(min-width:\s*769px\)[\s\S]*?@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-model-select, \.v3-shell-actions\)\s*\{[^}]*display:\s*none;/,
     );
     expect(topbarCss).toMatch(
-      /@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-shell-title, \.v3-shell-title-input\)\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/,
+      /@media\s*\(min-width:\s*769px\)[\s\S]*?@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-shell-title, \.v3-shell-title-input\)\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/,
     );
   });
 });
@@ -166,6 +201,17 @@ describe('resolveDisplayedActiveAgent', () => {
     })).toMatchObject({ uid: 407, relation: 'friend', isOwner: false });
   });
 
+  it('exposes the selected empty-task Agent before a task exists', () => {
+    const agent = resolveDisplayedActiveAgent('', null, null, {
+      uid: 440,
+      relation: 'owner',
+      display_name: 'Doubao',
+    });
+
+    expect(agent).toMatchObject({ uid: 440, relation: 'owner', isOwner: true });
+    expect(canOpenCloudArtifacts(null, agent)).toBe(true);
+  });
+
   it('uses the active conversation agent instead of a stale draft', () => {
     const activeAgent = { uid: 63, relation: 'owner', isOwner: true };
     expect(resolveDisplayedActiveAgent(
@@ -177,13 +223,14 @@ describe('resolveDisplayedActiveAgent', () => {
 });
 
 describe('cloud artifact action visibility', () => {
-  it('is available whenever the active conversation resolves to an Agent', () => {
+  it('is available for a conversation or a selected draft Agent', () => {
     const doubao = { uid: 440, cloud_artifacts_enabled: true };
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_440', isGroup: false }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, null)).toBe(true);
-    expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
+    expect(canOpenCloudArtifacts(null, doubao)).toBe(true);
+    expect(canOpenCloudArtifacts(null, null)).toBe(false);
   });
 });
 
@@ -293,14 +340,14 @@ describe('LocalAssistantBar model selector', () => {
   it('always renders the cloud button and enables it when an Agent resource handler is available', async () => {
     const onOpenCloudArtifacts = vi.fn();
     await renderBar({ onOpenCloudArtifacts });
-    const button = container.querySelector('button[aria-label="打开云文件"]');
+    const button = container.querySelector('button[aria-label="打开产物"]');
     expect(button).toBeTruthy();
     expect(button.disabled).toBe(false);
     await act(async () => button.click());
     expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
 
     await renderBar({ onOpenCloudArtifacts: undefined });
-    const unavailableButton = container.querySelector('button[aria-label="云文件，需要先进入聊天"]');
+    const unavailableButton = container.querySelector('button[aria-label="产物暂不可用"]');
     expect(unavailableButton).toBeTruthy();
     expect(unavailableButton.disabled).toBe(true);
   });
@@ -502,6 +549,23 @@ describe('LocalAssistantBar model selector', () => {
     });
   });
 
+  it('shows vision beside reasoning strength as a read-only automatic capability', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+    await act(async () => deepseek.click());
+    expect(container.textContent).toContain('推理强度');
+    expect(container.textContent).toContain('视觉');
+    expect(container.textContent).toContain('图片输入自动启用');
+    const vision = [...container.querySelectorAll('.v3-model-reasoning-item')]
+      .find((item) => item.textContent.includes('图片输入自动启用'));
+    expect(vision?.getAttribute('role')).toBe('note');
+    expect(vision?.classList.contains('is-readonly')).toBe(true);
+    expect(vision?.querySelector('button')).toBeNull();
+  });
+
   it('edits a cloud custom model without receiving or resending the stored API key', async () => {
     const customConfig = {
       ...baseConfig,
@@ -680,7 +744,11 @@ describe('LocalAssistantBar model selector', () => {
       .toContain('当前套餐未包含');
     expect(describeModelConfigRequestError({ status: 503, data: { code: 'model_entitlement_unavailable' } }))
       .toContain('套餐额度暂时无法确认');
-    expect(describeModelConfigRequestError({ status: 503, message: 'custom model encryption unavailable' }))
+    expect(describeModelConfigRequestError({
+      status: 503,
+      message: '服务暂时不可用，请稍后重试',
+      data: { error: 'custom model encryption unavailable' },
+    }))
       .toContain('安全密钥存储');
     expect(describeModelApplyError('401 Unauthorized: invalid api key')).toContain('鉴权失败');
     expect(describeModelApplyError('429 quota exceeded')).toContain('额度不足');

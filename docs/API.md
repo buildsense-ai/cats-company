@@ -175,13 +175,14 @@ REST 备用通道（推荐使用 WebSocket）。
 
 获取消息历史。
 
-#### GET /api/topics/{topicId}/files?limit={n}&before_id={messageId}
+#### GET /api/topics/{topicId}/files?limit={n}&before_id={messageId}&before_created_at={timestamp}
 
 读取当前聊天内的文件历史，结果包含该聊天中所有发送者产生的文件，不按 Agent 或发送者过滤。
 
 - 私聊仅允许双方读取。
 - 群聊仅允许当前群成员读取。
-- `before_id` 使用消息 ID 作为稳定的向前分页游标。
+- `before_id` 与 `before_created_at` 共同组成稳定的向前分页游标；两者应使用上一页返回的
+  `next_before_id` 和 `next_before_created_at`。仅提供 `before_id` 时，服务端会兼容解析该消息的时间。
 
 ```json
 {
@@ -200,7 +201,8 @@ REST 备用通道（推荐使用 WebSocket）。
     }
   ],
   "has_more": false,
-  "next_before_id": 0
+  "next_before_id": 0,
+  "next_before_created_at": ""
 }
 ```
 
@@ -364,7 +366,7 @@ Runtime 仍使用 `X-API-Key` 连接 WebSocket，并额外通过 `X-CatsCo-Runti
 
 #### GET /api/agents/skills — 读取 Agent 技能列表
 
-需要用户 JWT 鉴权。Agent 所有者和好友可读取脱敏技能元数据；`skills_visibility=public` 还允许非好友用户读取。响应只包含已经同步到 BotDefinition 的技能标识、来源、版本，以及 SkillHub 能安全解析时的可选 `displayName`。私有能力名称由服务端使用目标 Bot 的身份向 SkillHub 查询；Bot API key 不会返回浏览器。接口不返回内容哈希、Bot definition、模型、提示词、设备路径、技能源码或密钥。SkillHub 暂时不可用时，`displayName` 会省略，但技能列表仍然可读。
+需要用户 JWT 鉴权。Agent 所有者和好友可读取脱敏技能元数据；`skills_visibility=public` 还允许非好友用户读取。响应只包含已经同步到 BotDefinition 的技能标识、来源、精确版本，以及 SkillHub 能安全解析时的可选 `displayName`、只读版本序号、最近变更账号和最近变更时间。这些字段描述最近一次应用该内容版本的记录，不伪装成内容的原始作者。私有能力元数据由服务端使用目标 Bot 的身份向 SkillHub 查询；Bot API key 和原始用户 UID 不会返回浏览器。接口不返回内容哈希、Bot definition、模型、提示词、设备路径、技能源码或密钥。SkillHub 暂时不可用时，可选展示字段会省略，但技能列表仍然可读。
 
 ```json
 // Response 200
@@ -372,7 +374,16 @@ Runtime 仍使用 `X-API-Key` 连接 WebSocket，并额外通过 `X-CatsCo-Runti
   "botId": "10",
   "skills_visibility": "authorized",
   "skills": [
-    { "source": "skillhub", "skillId": "priv_example", "version": "v_1", "displayName": "example" }
+    {
+      "source": "skillhub",
+      "skillId": "priv_example",
+      "version": "v_1",
+      "displayName": "example",
+      "revisionNumber": 2,
+      "lastChangedBy": "alice",
+      "lastChangedAt": "2026-08-22T02:03:04Z",
+      "changeSource": "conversation_mutation"
+    }
   ]
 }
 ```

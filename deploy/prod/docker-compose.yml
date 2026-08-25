@@ -138,6 +138,7 @@ services:
       CATSCO_WORKER_PROVISION_SCRIPT: "${CATSCO_WORKER_PROVISION_SCRIPT:-}"
       CATSCO_WORKER_DESTROY_SCRIPT: "${CATSCO_WORKER_DESTROY_SCRIPT:-}"
       CATSCO_WORKER_RESET_SCRIPT: "${CATSCO_WORKER_RESET_SCRIPT:-}"
+      CATSCO_WORKER_RENEW_SCRIPT: "${CATSCO_WORKER_RENEW_SCRIPT:-}"
       CATSCO_WORKER_UPDATE_SCRIPT: "${CATSCO_WORKER_UPDATE_SCRIPT:-}"
       CATSCO_WORKER_ROLLBACK_SCRIPT: "${CATSCO_WORKER_ROLLBACK_SCRIPT:-}"
       CATSCO_WORKER_IMAGES_SCRIPT: "${CATSCO_WORKER_IMAGES_SCRIPT:-}"
@@ -149,13 +150,16 @@ services:
       CTYUN_SK: "${CTYUN_SK:-}"
       CTYUN_WORKER_REGION_ID: "${CTYUN_WORKER_REGION_ID:-}"
       CTYUN_WORKER_PROJECT_ID: "${CTYUN_WORKER_PROJECT_ID:-0}"
+      CTYUN_IMAGE_PROJECT_ID: "${CTYUN_IMAGE_PROJECT_ID:?CTYUN_IMAGE_PROJECT_ID is required}"
       CTYUN_WORKER_AZ_NAME: "${CTYUN_WORKER_AZ_NAME:-}"
       CTYUN_WORKER_FLAVOR_ID: "${CTYUN_WORKER_FLAVOR_ID:-}"
       CTYUN_WORKER_VPC_ID: "${CTYUN_WORKER_VPC_ID:-}"
       CTYUN_WORKER_SUBNET_ID: "${CTYUN_WORKER_SUBNET_ID:-}"
       CTYUN_WORKER_SECURITY_GROUP_ID: "${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
       CTYUN_WORKER_STATE_ROOT: "${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
-      CATSCO_WORKER_ARTIFACT_BUCKET: "${CATSCO_WORKER_ARTIFACT_BUCKET:-catsco-worker-release}"
+      # Must be explicitly set to the dedicated worker artifact bucket; never
+      # fall back to the application release bucket.
+      CATSCO_WORKER_ARTIFACT_BUCKET: "${CATSCO_WORKER_ARTIFACT_BUCKET:-}"
       CATSCO_WORKER_ARTIFACT_PREFIX: "${CATSCO_WORKER_ARTIFACT_PREFIX:-update/worker}"
       CATSCO_WORKER_ARTIFACT_REGION: "${CATSCO_WORKER_ARTIFACT_REGION:-cn-guangzhou}"
       CATSCO_WORKER_ARTIFACT_ENDPOINT: "${CATSCO_WORKER_ARTIFACT_ENDPOINT:-https://tos-cn-guangzhou.volces.com}"
@@ -166,7 +170,7 @@ services:
       CTYUN_WORKER_EXT_IP: "${CTYUN_WORKER_EXT_IP:-0}"
       CTYUN_WORKER_BILLING_MODE: "${CTYUN_WORKER_BILLING_MODE:-month}"
       CTYUN_WORKER_CYCLE_COUNT: "${CTYUN_WORKER_CYCLE_COUNT:-1}"
-      CTYUN_WORKER_AUTO_RENEW: "${CTYUN_WORKER_AUTO_RENEW:-1}"
+      CTYUN_WORKER_AUTO_RENEW: "${CTYUN_WORKER_AUTO_RENEW:-0}"
       CTYUN_JUMP_IP: "${CTYUN_JUMP_IP:-}"
       CTYUN_JUMP_PORT: "${CTYUN_JUMP_PORT:-22}"
       CTYUN_JUMP_USER: "${CTYUN_JUMP_USER:-root}"
@@ -242,7 +246,7 @@ services:
     ports:
       - "${PROD_WEB_BIND_HOST:-127.0.0.1}:${PROD_WEB_HOST_PORT:-28080}:80"
     healthcheck:
-      test: ["CMD-SHELL", "nginx -t && test -s /usr/share/nginx/html/index.html"]
+      test: ["CMD-SHELL", "nginx -t && test -s /usr/share/nginx/html/index.html && test -s /usr/share/nginx/html/manifest.webmanifest && test -s /usr/share/nginx/html/sw.js && test -s /usr/share/nginx/html/offline.html"]
       interval: 30s
       timeout: 5s
       retries: 5

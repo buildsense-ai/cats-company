@@ -25,7 +25,7 @@ func TestSkillHubPrivateMetadataUsesBotCredentialsAndReturnsOnlyRequestedNames(t
 		}
 		gotReferences = body.References
 		_, _ = w.Write([]byte(`{"skills":[` +
-			`{"skillId":"priv_owned","version":"v_1","displayName":"cloud-html-artifact","contentHash":"do-not-forward"},` +
+			`{"skillId":"priv_owned","version":"v_1","displayName":"cloud-html-artifact","revisionNumber":3,"lastChangedByUserUid":7,"lastChangedAt":"2026-08-22T02:03:04Z","changeSource":"conversation_mutation","contentHash":"do-not-forward"},` +
 			`{"skillId":"priv_unrequested","version":"v_2","displayName":"ignore-me"}` +
 			`]}`))
 	}))
@@ -44,8 +44,52 @@ func TestSkillHubPrivateMetadataUsesBotCredentialsAndReturnsOnlyRequestedNames(t
 	if len(gotReferences) != 1 || gotReferences[0].SkillID != "priv_owned" {
 		t.Fatalf("references=%+v", gotReferences)
 	}
-	if len(metadata) != 1 || metadata[botSkillMetadataKey("priv_owned", "v_1")] != "cloud-html-artifact" {
+	presentation := metadata[botSkillMetadataKey("priv_owned", "v_1")]
+	if len(metadata) != 1 || presentation.DisplayName != "cloud-html-artifact" ||
+		presentation.RevisionNumber != 3 || presentation.LastChangedByUserUID != 7 ||
+		presentation.LastChangedAt != "2026-08-22T02:03:04Z" || presentation.ChangeSource != "conversation_mutation" {
 		t.Fatalf("metadata=%+v", metadata)
+	}
+}
+
+func TestSkillHubPrivateHistoryUsesBotCredentialsAndSanitizesVersions(t *testing.T) {
+	var gotAuthorization string
+	var gotBotID string
+	var gotPath string
+	var gotBody privateSkillHistoryRequest
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		gotBotID = r.Header.Get("X-CatsCo-Bot-Id")
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"skillId":"priv_owned","versions":[` +
+			`{"source":"skillhub","skillId":"priv_owned","version":"v_2","displayName":"review-helper","revisionNumber":2,"lastChangedAt":"2026-08-23T02:03:04Z","changeSource":"conversation_mutation","contentHash":"do-not-forward","actorUserUid":7},` +
+			`{"source":"skillhub","skillId":"priv_other","version":"v_1","displayName":"ignore","revisionNumber":1}` +
+			`],"nextBeforeRevisionNumber":2}`))
+	}))
+	defer upstream.Close()
+
+	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{Timeout: time.Second})
+	history, err := h.ResolvePrivateSkillHistory(context.Background(), "43", "secret-bot-key", "priv_owned", 20, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != skillHubPrivateHistoryPath || gotAuthorization != "ApiKey secret-bot-key" || gotBotID != "43" {
+		t.Fatalf("request path/auth/bot = %q/%q/%q", gotPath, gotAuthorization, gotBotID)
+	}
+	if gotBody.SkillID != "priv_owned" || gotBody.Limit != 20 || gotBody.BeforeRevisionNumber != 9 {
+		t.Fatalf("request body = %+v", gotBody)
+	}
+	if history.SkillID != "priv_owned" || history.NextBeforeRevisionNumber != 2 || len(history.Versions) != 1 {
+		t.Fatalf("history = %+v", history)
+	}
+	version := history.Versions[0]
+	if version.SkillID != "priv_owned" || version.Version != "v_2" || version.DisplayName != "review-helper" ||
+		version.RevisionNumber != 2 || version.LastChangedAt != "2026-08-23T02:03:04Z" ||
+		version.ChangeSource != "conversation_mutation" || version.LastChangedBy != "" || version.Current {
+		t.Fatalf("version = %+v", version)
 	}
 }
 
@@ -60,13 +104,13 @@ func TestSkillHubProxyForwardsCatalogueQuery(t *testing.T) {
 	defer upstream.Close()
 
 	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{Timeout: time.Second})
-	req := httptest.NewRequest(http.MethodGet, "/api/skillhub/skills?q=code%20review&category=dev", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/skillhub/skills?q=code%20review&category=dev&search_mode=name&ignored=value", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSkills(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/api/skills" || gotQuery != "category=dev&q=code+review" {
+	if gotPath != "/api/skills" || gotQuery != "category=dev&q=code+review&search_mode=name" {
 		t.Fatalf("upstream request = %s?%s", gotPath, gotQuery)
 	}
 }

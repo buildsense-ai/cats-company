@@ -1,3 +1,5 @@
+import { removeStorageValue, writeStorageValue } from './storage-access';
+
 const CHANNEL_NAME = 'catsco-push-tabs';
 const ACTIVE_LOCK_NAME = 'catsco-push-active-tab';
 const REGISTRATION_LOCK_PREFIX = 'catsco-push-registration:';
@@ -201,12 +203,8 @@ export function createPushTabCoordinator(
     requestReconcile() {
       const reconcileID = requestID();
       channel?.postMessage({ type: 'reconcile', requestID: reconcileID });
-      try {
-        globalThis.localStorage?.setItem(PUSH_RECONCILE_STORAGE_KEY, reconcileID);
-        globalThis.localStorage?.removeItem(PUSH_RECONCILE_STORAGE_KEY);
-      } catch {
-        // BroadcastChannel remains available when storage events cannot be used.
-      }
+      writeStorageValue(PUSH_RECONCILE_STORAGE_KEY, reconcileID);
+      removeStorageValue(PUSH_RECONCILE_STORAGE_KEY);
     },
     onReconcile(listener) {
       if (typeof listener !== 'function') return () => {};

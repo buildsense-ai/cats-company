@@ -10,6 +10,16 @@ const VOICE_HOLD_DELAY_MS = 280;
 const VOICE_HOLD_CANCEL_DISTANCE = 72;
 const VOICE_WAVE_RAMP_MS = 2200;
 
+function formatVoiceDurationBoundaryNotice(hasText) {
+  return hasText ? '已保存到输入框，可继续录音' : '没有识别到内容，可再次录音';
+}
+
+function formatVoiceDurationAnnouncement(seconds, hasRecentInput) {
+  return hasRecentInput
+    ? `语音输入将在约 ${seconds} 秒后结束，继续说即可，内容会保存到输入框`
+    : '语音输入即将结束，已识别内容会保存到输入框';
+}
+
 export function voiceWavePhaseSpeed(elapsedMs) {
   const progress = Math.min(1, Math.max(0, elapsedMs / VOICE_WAVE_RAMP_MS));
   const eased = progress * progress * (3 - (2 * progress));
@@ -28,6 +38,15 @@ function voiceWavePath(level, phase, baseline) {
     `C852 ${point(6.8)} 929 ${point(7.7, 0.72)} 1000 ${point(8.5, 0.45)}`,
     'L1000 260 L0 260 Z',
   ].join(' ');
+}
+
+function findTouchAtPosition(touches, clientX, clientY, target = null) {
+  const candidates = Array.from(touches || []).filter((touch) => (
+    !target || target.contains?.(touch.target)
+  ));
+  return candidates.find((touch) => (
+    Math.hypot(touch.clientX - clientX, touch.clientY - clientY) <= 8
+  ));
 }
 
 const VoiceHoldWave = React.memo(function VoiceHoldWave({ levelRef }) {
@@ -130,17 +149,33 @@ export default function ChatComposer({
   const [voiceState, setVoiceState] = useState('idle');
   const [voicePartial, setVoicePartial] = useState('');
   const [voiceError, setVoiceError] = useState('');
+  const [voiceNotice, setVoiceNotice] = useState('');
+  const [voiceNoticeTone, setVoiceNoticeTone] = useState('notice');
+  const [voiceLiveStatus, setVoiceLiveStatus] = useState('');
   const voiceSessionRef = useRef(null);
   const voiceInsertionRef = useRef(null);
+  const voiceLatestTextRef = useRef('');
+  const voiceWarningAnnouncementKeyRef = useRef(null);
   const voiceTranscriptRef = useRef(null);
   const voiceHoldTimerRef = useRef(null);
   const voiceHoldGestureRef = useRef(null);
+  const voiceHoldTouchStartsRef = useRef([]);
+  const voiceHoldFinishRef = useRef(null);
   const suppressVoiceClickRef = useRef(false);
   const voiceWaveLevelRef = useRef(0);
   const [voiceHoldActive, setVoiceHoldActive] = useState(false);
   const [voiceHoldCancel, setVoiceHoldCancel] = useState(false);
   const showAgentPicker = agentPickerVisible && (typeof onAgentToggle === 'function' || Boolean(agentMenu));
   const anyMenuOpen = attachmentOpen || (showAgentPicker && agentOpen);
+
+  const showVoiceDurationBoundaryNotice = (hasText) => {
+    const notice = formatVoiceDurationBoundaryNotice(hasText);
+    setVoiceError('');
+    setVoiceNotice(notice);
+    setVoiceNoticeTone('success');
+    voiceWarningAnnouncementKeyRef.current = null;
+    setVoiceLiveStatus(notice);
+  };
 
   useEffect(() => {
     if (!anyMenuOpen || !onCloseMenus) return undefined;
@@ -214,20 +249,28 @@ export default function ChatComposer({
     clearVoiceHoldTimer();
     voiceSessionRef.current?.cancel();
     voiceSessionRef.current = null;
+    voiceLatestTextRef.current = '';
+    voiceWarningAnnouncementKeyRef.current = null;
   }, [clearVoiceHoldTimer]);
 
   useEffect(() => {
     voiceSessionRef.current?.cancel();
     voiceSessionRef.current = null;
     voiceInsertionRef.current = null;
+    voiceLatestTextRef.current = '';
+    voiceWarningAnnouncementKeyRef.current = null;
     clearVoiceHoldTimer();
     voiceHoldGestureRef.current = null;
+    voiceHoldTouchStartsRef.current = [];
     setVoiceHoldActive(false);
     setVoiceHoldCancel(false);
     voiceWaveLevelRef.current = 0;
     setVoiceState('idle');
     setVoicePartial('');
     setVoiceError('');
+    setVoiceNotice('');
+    setVoiceNoticeTone('notice');
+    setVoiceLiveStatus('');
   }, [clearVoiceHoldTimer, voiceSessionKey]);
 
   const voiceActive = ['starting', 'connecting', 'recording', 'finalizing'].includes(voiceState);
@@ -244,7 +287,12 @@ export default function ChatComposer({
       return null;
     }
     setVoiceError('');
+    setVoiceNotice('');
+    setVoiceNoticeTone('notice');
+    setVoiceLiveStatus('');
     setVoicePartial('');
+    voiceLatestTextRef.current = '';
+    voiceWarningAnnouncementKeyRef.current = null;
     const textarea = textareaRef?.current || inputRef.current;
     const baseValue = textarea ? textarea.value : String(value || '');
     const start = textarea ? textarea.selectionStart : baseValue.length;
@@ -256,36 +304,109 @@ export default function ChatComposer({
         if (voiceSessionRef.current === session) setVoiceState(state);
       },
       onPartial: (text) => {
-        if (voiceSessionRef.current === session) setVoicePartial(text);
+        if (voiceSessionRef.current !== session) return;
+        voiceLatestTextRef.current = String(text || '');
+        setVoicePartial(text);
       },
       onAudioLevel: (level) => {
         if (voiceSessionRef.current !== session) return;
         voiceWaveLevelRef.current = level;
       },
-      onFinal: (text) => {
+      onDurationWarning: ({ hasRecentInput, remainingMs, remainingSeconds } = {}) => {
+        if (voiceSessionRef.current !== session) return;
+        const hasRecentInputState = Boolean(hasRecentInput);
+        const parsedRemainingSeconds = Number(remainingSeconds);
+        const parsedRemainingMs = Number(remainingMs ?? 10_000);
+        const seconds = Math.max(
+          1,
+          Number.isFinite(parsedRemainingSeconds)
+            ? Math.ceil(parsedRemainingSeconds)
+            : (Number.isFinite(parsedRemainingMs) ? Math.ceil(parsedRemainingMs / 1000) : 10),
+        );
+        setVoiceError('');
+        setVoiceNotice(
+          hasRecentInputState
+            ? `还剩约 ${seconds} 秒，继续说即可，结束后会保存到输入框`
+            : '这段快结束了，已识别内容会保存到输入框',
+        );
+        setVoiceNoticeTone('notice');
+        const announcementKey = hasRecentInputState ? 'active' : 'quiet';
+        if (voiceWarningAnnouncementKeyRef.current !== announcementKey) {
+          voiceWarningAnnouncementKeyRef.current = announcementKey;
+          setVoiceLiveStatus(formatVoiceDurationAnnouncement(seconds, hasRecentInputState));
+        }
+      },
+      onDurationLimit: () => {
+        if (voiceSessionRef.current !== session) return;
+        setVoiceError('');
+        setVoiceNotice('正在保存到输入框…');
+        setVoiceNoticeTone('notice');
+        voiceWarningAnnouncementKeyRef.current = null;
+        setVoiceLiveStatus('正在保存到输入框…');
+      },
+      onFinal: (text, details = {}) => {
         if (voiceSessionRef.current !== session) return;
         const insertion = voiceInsertionRef.current;
+        const holdWasTriggered = voiceHoldGestureRef.current?.triggered;
         voiceSessionRef.current = null;
         voiceInsertionRef.current = null;
+        voiceLatestTextRef.current = '';
+        clearVoiceHoldTimer();
+        voiceHoldGestureRef.current = null;
+        voiceHoldTouchStartsRef.current = [];
+        if (holdWasTriggered) suppressVoiceClickRef.current = true;
+        setVoiceHoldActive(false);
+        setVoiceHoldCancel(false);
         setVoiceState('idle');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
+        if (details.reason === 'duration_limit' || details.reason === 'idle_timeout') {
+          showVoiceDurationBoundaryNotice(Boolean(String(text || '').trim()));
+        } else {
+          setVoiceNotice('');
+          setVoiceNoticeTone('notice');
+          voiceWarningAnnouncementKeyRef.current = null;
+          setVoiceLiveStatus('');
+        }
         onVoiceFinal?.(text, insertion);
       },
-      onError: (error) => {
+      onError: (error, transcript, details = {}) => {
         if (voiceSessionRef.current !== session) return;
+        const isDurationBoundary = details.reason === 'duration_limit';
+        const insertion = voiceInsertionRef.current;
+        const recoveredText = [
+          transcript,
+          voiceLatestTextRef.current,
+          voicePartial,
+        ].map((candidate) => String(candidate || '').trim()).find(Boolean) || '';
         voiceSessionRef.current = null;
         voiceInsertionRef.current = null;
+        voiceLatestTextRef.current = '';
         const gesture = voiceHoldGestureRef.current;
         clearVoiceHoldTimer();
         voiceHoldGestureRef.current = null;
+        voiceHoldTouchStartsRef.current = [];
         if (gesture?.triggered) suppressVoiceClickRef.current = true;
         setVoiceHoldActive(false);
         setVoiceHoldCancel(false);
-        setVoiceState('error');
+        setVoiceState(isDurationBoundary ? 'idle' : 'error');
         setVoicePartial('');
         voiceWaveLevelRef.current = 0;
-        setVoiceError(error.message || '语音识别失败');
+        if (isDurationBoundary) {
+          showVoiceDurationBoundaryNotice(Boolean(recoveredText));
+        } else {
+          setVoiceNotice('');
+          setVoiceNoticeTone('notice');
+          const errorMessage = error?.message || '语音识别失败';
+          voiceWarningAnnouncementKeyRef.current = null;
+          setVoiceError(errorMessage);
+          setVoiceLiveStatus(errorMessage);
+        }
+        // Commit the last usable snapshot after releasing the session. This
+        // keeps the composer recoverable even if the parent synchronously
+        // renders a new draft or starts another voice attempt from the error
+        // state.
+        if (recoveredText) onVoiceFinal?.(recoveredText, insertion);
       },
     });
     voiceSessionRef.current = session;
@@ -319,9 +440,15 @@ export default function ChatComposer({
     const session = voiceSessionRef.current;
     voiceSessionRef.current = null;
     voiceInsertionRef.current = null;
+    voiceLatestTextRef.current = '';
+    voiceWarningAnnouncementKeyRef.current = null;
+    voiceHoldTouchStartsRef.current = [];
     session?.cancel();
     setVoiceState('idle');
     setVoicePartial('');
+    setVoiceNotice('');
+    setVoiceNoticeTone('notice');
+    setVoiceLiveStatus('');
     voiceWaveLevelRef.current = 0;
   };
 
@@ -333,7 +460,10 @@ export default function ChatComposer({
   if (voiceState === 'starting' || voiceState === 'connecting') voiceStatusText = '正在连接语音输入…';
   if (voiceState === 'recording') voiceStatusText = '正在听…';
   if (voiceState === 'finalizing') voiceStatusText = '正在整理文字…';
-  if (voiceState === 'error') voiceStatusText = voiceError;
+  if (voiceError) voiceStatusText = voiceError;
+  else if (voiceLiveStatus) voiceStatusText = voiceLiveStatus;
+  const voiceFeedbackText = voiceError || voiceNotice;
+  const voiceFeedbackTone = voiceError ? 'is-error' : (voiceNotice ? `is-${voiceNoticeTone}` : '');
   const insertion = voiceInsertionRef.current;
   const showVoicePreview = voiceActive && insertion;
   const displayedValue = showVoicePreview
@@ -366,10 +496,18 @@ export default function ChatComposer({
 
   const finishVoiceHold = (event, cancelled = false) => {
     const gesture = voiceHoldGestureRef.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const eventPointerId = event?.pointerId;
+    if (!gesture || (eventPointerId != null && gesture.pointerId !== eventPointerId)) return;
     clearVoiceHoldTimer();
     voiceHoldGestureRef.current = null;
-    voiceButtonRef.current?.releasePointerCapture?.(event.pointerId);
+    voiceHoldTouchStartsRef.current = [];
+    // Mobile browsers can lose pointer capture before delivering the final
+    // event. A NotFoundError here must not prevent stop() from running.
+    try {
+      voiceButtonRef.current?.releasePointerCapture?.(gesture.pointerId);
+    } catch {
+      // The browser has already released capture; the gesture still ended.
+    }
     if (!gesture.triggered) {
       if (cancelled) {
         cancelVoiceInput();
@@ -380,7 +518,7 @@ export default function ChatComposer({
       return;
     }
 
-    event.preventDefault();
+    event?.preventDefault?.();
     suppressVoiceClickRef.current = true;
     setVoiceHoldActive(false);
     setVoiceHoldCancel(false);
@@ -389,13 +527,33 @@ export default function ChatComposer({
   };
 
   const handleVoicePointerDown = (event) => {
-    if ((event.pointerType !== 'touch' && event.pointerType !== 'pen') || voiceActive) return;
+    if (
+      (event.pointerType !== 'touch' && event.pointerType !== 'pen')
+      || voiceActive
+      || voiceHoldGestureRef.current
+    ) return;
     suppressVoiceClickRef.current = false;
     clearVoiceHoldTimer();
     prepareVoiceInput();
-    voiceButtonRef.current?.setPointerCapture?.(event.pointerId);
+    try {
+      voiceButtonRef.current?.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Document-level release listeners cover WebViews without capture.
+    }
+    const touch = event.pointerType === 'touch'
+      ? findTouchAtPosition(
+        voiceHoldTouchStartsRef.current,
+        event.clientX,
+        event.clientY,
+        event.currentTarget,
+      )
+      : null;
+    voiceHoldTouchStartsRef.current = [];
     voiceHoldGestureRef.current = {
       pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      touchId: touch?.identifier,
+      startX: event.clientX,
       startY: event.clientY,
       triggered: false,
       cancelled: false,
@@ -418,6 +576,58 @@ export default function ChatComposer({
     gesture.cancelled = cancelled;
     setVoiceHoldCancel(cancelled);
   };
+
+  const handleVoiceTouchStart = (event) => {
+    const touches = Array.from(event.changedTouches || []);
+    const gesture = voiceHoldGestureRef.current;
+    if (gesture?.pointerType === 'touch' && gesture.touchId == null) {
+      const touch = findTouchAtPosition(
+        touches,
+        gesture.startX,
+        gesture.startY,
+        voiceButtonRef.current,
+      );
+      if (touch) gesture.touchId = touch.identifier;
+      return;
+    }
+    if (gesture) return;
+    if (voiceActive) {
+      voiceHoldTouchStartsRef.current = [];
+      return;
+    }
+    voiceHoldTouchStartsRef.current = touches;
+  };
+
+  // Pointer capture normally routes the release back to the button. Mobile
+  // Safari/WebViews can send the release outside it, so keep a document-level
+  // fallback for actual release and cancellation events. The touch fallback
+  // verifies the touch that started this gesture before finishing it.
+  voiceHoldFinishRef.current = finishVoiceHold;
+  useEffect(() => {
+    const finishFromDocument = (event) => {
+      if (!voiceHoldGestureRef.current) return;
+      voiceHoldFinishRef.current?.(event, event.type === 'pointercancel');
+    };
+    const finishFromTouch = (event) => {
+      const gesture = voiceHoldGestureRef.current;
+      if (!gesture || gesture.pointerType !== 'touch') return;
+      const touches = Array.from(event.changedTouches || []);
+      if (gesture.touchId == null) return;
+      if (!touches.some((touch) => touch.identifier === gesture.touchId)) return;
+      voiceHoldFinishRef.current?.(event, event.type === 'touchcancel');
+    };
+
+    document.addEventListener('pointerup', finishFromDocument, true);
+    document.addEventListener('pointercancel', finishFromDocument, true);
+    document.addEventListener('touchend', finishFromTouch, true);
+    document.addEventListener('touchcancel', finishFromTouch, true);
+    return () => {
+      document.removeEventListener('pointerup', finishFromDocument, true);
+      document.removeEventListener('pointercancel', finishFromDocument, true);
+      document.removeEventListener('touchend', finishFromTouch, true);
+      document.removeEventListener('touchcancel', finishFromTouch, true);
+    };
+  }, []);
 
   return (
     <div
@@ -520,13 +730,16 @@ export default function ChatComposer({
             readOnly={showVoicePreview || textareaProps.readOnly}
             onChange={(event) => {
               if (voiceState === 'error') setVoiceError('');
+              if (voiceNotice) setVoiceNotice('');
+              voiceWarningAnnouncementKeyRef.current = null;
+              setVoiceLiveStatus('');
               resizeInput(event.currentTarget);
               onChange?.(event);
             }}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
           />
-          <span className="oc-visually-hidden" role="status" aria-live="polite">
+          <span className="oc-visually-hidden" role="status" aria-live="polite" aria-atomic="true">
             {voiceStatusText}
           </span>
 
@@ -543,6 +756,7 @@ export default function ChatComposer({
               onPointerMove={handleVoicePointerMove}
               onPointerUp={(event) => finishVoiceHold(event)}
               onPointerCancel={(event) => finishVoiceHold(event, true)}
+              onTouchStart={handleVoiceTouchStart}
               onContextMenu={(event) => {
                 if (voiceHoldGestureRef.current?.triggered) event.preventDefault();
               }}
@@ -586,8 +800,11 @@ export default function ChatComposer({
           </button>
         </div>
       </div>
-      <div className={`v3-composer-hint${voiceState === 'error' ? ' is-error' : ''}`}>
-        {voiceState === 'error' ? voiceError : CHAT_COMPOSER_HINT}
+      <div
+        className={`v3-composer-hint${voiceFeedbackTone ? ` ${voiceFeedbackTone}` : ''}`}
+        aria-hidden={voiceNotice ? 'true' : undefined}
+      >
+        {voiceFeedbackText || CHAT_COMPOSER_HINT}
       </div>
       {voiceHoldActive && (
         <div
@@ -599,6 +816,11 @@ export default function ChatComposer({
                 ? '松开取消输入'
                 : (voicePartial || (voiceState === 'starting' || voiceState === 'connecting' ? '正在连接…' : '正在听…'))}
             </div>
+            {!voiceHoldCancel && voiceNotice && (
+              <div className="v3-voice-hold-limit-notice" aria-hidden="true">
+                {voiceNotice}
+              </div>
+            )}
             <div className="v3-voice-hold-instruction">
               {voiceHoldCancel ? '下滑继续录音' : '上滑取消'}
             </div>

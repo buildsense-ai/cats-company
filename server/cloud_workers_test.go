@@ -40,6 +40,32 @@ func TestTruncateWorkerOutput(t *testing.T) {
 	}
 }
 
+func TestParseCloudWorkerRenewalExpiry(t *testing.T) {
+	want := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	out := "provider diagnostic\n{" + `"status":"renewed","expires_at":"` + want.Format(time.RFC3339) + `"}`
+	got, err := parseCloudWorkerRenewalExpiry(out)
+	if err != nil {
+		t.Fatalf("parse renewal expiry: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("expiry=%s want %s", got, want)
+	}
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{"missing", `{"status":"renewed"}`},
+		{"malformed", `not-json`},
+		{"past", `{"expires_at":"2020-01-01T00:00:00Z"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseCloudWorkerRenewalExpiry(tc.out); err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+}
+
 type cloudWorkerTestStore struct {
 	store.Store
 	ownerBots         []map[string]interface{}
@@ -52,6 +78,35 @@ type cloudWorkerTestStore struct {
 	botAPIKeys        map[int64]string
 	botBodyIDs        map[int64]string
 	botDefinitions    map[int64]*types.BotDefinitionRecord
+	adminRecords      []types.CloudWorkerAdminRecord
+}
+
+// quotaCreditStub lets quota presentation tests exercise the durable credit
+// branch without making the broad Store test double implement cloud-worker
+// mutation methods.
+type quotaCreditStub struct {
+	total     int
+	available int
+}
+
+func (s quotaCreditStub) CloudWorkerCreditSummary(int64) (int, int, error) {
+	return s.total, s.available, nil
+}
+func (quotaCreditStub) ReserveCloudWorkerCredit(int64, string) (bool, error) { return false, nil }
+func (quotaCreditStub) CommitCloudWorkerCredit(int64, string, int64, string, int) error {
+	return nil
+}
+func (quotaCreditStub) ReleaseCloudWorkerCredit(int64, string) error            { return nil }
+func (quotaCreditStub) ExtendCloudWorkerLifecycles(int64, time.Time, int) error { return nil }
+func (quotaCreditStub) ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error) {
+	return nil, nil
+}
+func (quotaCreditStub) MarkCloudWorkerLifecyclePending(int64, time.Time) error { return nil }
+func (quotaCreditStub) ClaimCloudWorkerLifecycleDeletion(int64) (bool, error)  { return false, nil }
+func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error    { return nil }
+
+func (s *cloudWorkerTestStore) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord, error) {
+	return append([]types.CloudWorkerAdminRecord(nil), s.adminRecords...), nil
 }
 
 func (s *cloudWorkerTestStore) GetUser(id int64) (*types.User, error) {
@@ -180,8 +235,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "slow-status":
 			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
 		case "require-identity":
-			// 校验 argv 含 --login-token 与 --bot-uid（弱校验：只查存在）
-			body = "@echo off\r\necho %* | findstr /C:\"--login-token\" >nul || exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
+			// Credentials must arrive through the restricted file, never argv.
+			body = "@echo off\r\nif not \"%3\"==\"--credential-file\" exit /b 1\r\nif not exist \"%4\" exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
 		default:
 			t.Fatalf("unknown behavior %q", behavior)
 		}
@@ -213,9 +268,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 	case "slow-status":
 		body = "#!/bin/sh\nsleep 1\nprintf 'worker-bot-bot-a\\trunning\\timg-slow\\tv1.4.8\\n'\n"
 	case "require-identity":
-		// 校验 argv 含非空 --login-token/--bot-uid/--user-uid/--user-name/--user-display
+		// Credentials are read from the 0600 file; identity metadata remains argv.
 		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail
-		body = "#!/bin/sh\nlogin=\"\"; bot=\"\"; user=\"\"; uname=\"\"; udisp=\"\"; prev=\"\"; for a in \"$@\"; do case \"$prev\" in --login-token) login=\"$a\";; --bot-uid) bot=\"$a\";; --user-uid) user=\"$a\";; --user-name) uname=\"$a\";; --user-display) udisp=\"$a\";; esac; prev=\"$a\"; done; [ -n \"$login\" ] && [ -n \"$bot\" ] && [ -n \"$user\" ] && [ -n \"$uname\" ] && [ -n \"$udisp\" ] || { echo \"missing identity: login=$login bot=$bot user=$user uname=$uname udisp=$udisp\" >&2; exit 1; }; echo ok\n"
+		body = "#!/bin/sh\nlogin=\"\"; key=\"\"; cred=\"\"; bot=\"\"; user=\"\"; uname=\"\"; udisp=\"\"; prev=\"\"; for a in \"$@\"; do case \"$prev\" in --credential-file) cred=\"$a\";; --bot-uid) bot=\"$a\";; --user-uid) user=\"$a\";; --user-name) uname=\"$a\";; --user-display) udisp=\"$a\";; esac; prev=\"$a\"; done; [ -f \"$cred\" ] && login=\"$(sed -n '1p' \"$cred\")\" && key=\"$(sed -n '2p' \"$cred\")\"; [ -n \"$login\" ] && [ -n \"$key\" ] && [ -n \"$bot\" ] && [ -n \"$user\" ] && [ -n \"$uname\" ] && [ -n \"$udisp\" ] || { echo \"missing identity\" >&2; exit 1; }; echo ok\n"
 	default:
 		t.Fatalf("unknown behavior %q", behavior)
 	}
@@ -362,6 +417,24 @@ func TestParseWorkerCreateQuota(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCloudWorkerQuotaSummaryIncludesConsumedCredits(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("7=0")
+	h.credits = quotaCreditStub{total: 1, available: 0}
+	total, used, remaining := h.quotaSummary(7, 0)
+	if total != 1 || used != 1 || remaining != 0 {
+		t.Fatalf("consumed credit quota=(%d,%d,%d), want (1,1,0)", total, used, remaining)
+	}
+}
+
+func TestCloudWorkerQuotaSummaryDoesNotCountAvailableCreditAsUsed(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("7=0")
+	h.credits = quotaCreditStub{total: 1, available: 1}
+	total, used, remaining := h.quotaSummary(7, 0)
+	if total != 1 || used != 0 || remaining != 1 {
+		t.Fatalf("available credit quota=(%d,%d,%d), want (1,0,1)", total, used, remaining)
 	}
 }
 
@@ -907,7 +980,7 @@ func TestCloudWorkerHandleCreateSuccess(t *testing.T) {
 }
 
 func TestCloudWorkerHandleCreatePassesIdentity(t *testing.T) {
-	// 链路验证：HandleCreate 必须把创建者 JWT + bot/user 身份完整传给 provision
+	// 链路验证：HandleCreate 必须把 worker owner token + bot/user 身份完整传给 provision
 	// 脚本（--login-token/--api-key/--bot-uid/--user-uid/--user-name/--user-display）。
 	// require-identity fake 缺任何一项都会 exit 1 -> HandleCreate 走 502。
 	cfg := workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "require-identity")})
@@ -926,6 +999,96 @@ func TestCloudWorkerHandleCreatePassesIdentity(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
 	}
+}
+
+// writeCredentialCaptureScript records the first line of --credential-file so
+// tests can inspect the token without ever placing it in process argv.
+func writeCredentialCaptureScript(t *testing.T, tokenPath string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "capture-credential.sh")
+	body := fmt.Sprintf("#!/bin/sh\ncred=\"\"; prev=\"\"\nfor a in \"$@\"; do\n  case \"$prev\" in --credential-file) cred=\"$a\";; esac\n  prev=\"$a\"\ndone\n[ -f \"$cred\" ] || exit 1\nsed -n '1p' \"$cred\" > %q\n", tokenPath)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func assertPersistentWorkerToken(t *testing.T, tokenPath string, ownerUID int64, requestToken string) {
+	t.Helper()
+	raw, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read captured worker token: %v", err)
+	}
+	got := strings.TrimSpace(string(raw))
+	if got == "" {
+		t.Fatal("worker token is empty")
+	}
+	if got == requestToken {
+		t.Fatal("worker token must not reuse the request JWT")
+	}
+	claims, err := ParseToken(got)
+	if err != nil {
+		t.Fatalf("parse worker token: %v", err)
+	}
+	if claims.TokenType != persistentUserTokenType {
+		t.Fatalf("worker token type=%q want %q", claims.TokenType, persistentUserTokenType)
+	}
+	if claims.UID != ownerUID {
+		t.Fatalf("worker token uid=%d want %d", claims.UID, ownerUID)
+	}
+	if claims.ExpiresAt != nil {
+		t.Fatalf("persistent worker token unexpectedly expires at %v", claims.ExpiresAt)
+	}
+}
+
+func TestCloudWorkerHandleCreateUsesPersistentOwnerToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("credential capture test requires a POSIX shell")
+	}
+	tokenPath := filepath.Join(t.TempDir(), "create-token.txt")
+	capture := writeCredentialCaptureScript(t, tokenPath)
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"provision": capture})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.creatorUser = &types.User{Username: "alice", Email: "alice@example.com", DisplayName: "Alice"}
+	requestToken := "test-owner-token"
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+		"username": "bot-x", "display_name": "X",
+	})
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	rec := httptest.NewRecorder()
+	h.HandleCreate(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	assertPersistentWorkerToken(t, tokenPath, 7, requestToken)
+}
+
+func TestCloudWorkerHandleResetUsesPersistentOwnerToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("credential capture test requires a POSIX shell")
+	}
+	tokenPath := filepath.Join(t.TempDir(), "reset-token.txt")
+	capture := writeCredentialCaptureScript(t, tokenPath)
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"reset": capture})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	ts.botAPIKeys = map[int64]string{1: "worker-specific-key"}
+	ts.creatorUser = &types.User{Username: "alice", Email: "alice@example.com", DisplayName: "Alice"}
+	requestToken := "test-owner-token"
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1"})
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	assertPersistentWorkerToken(t, tokenPath, 7, requestToken)
 }
 
 func TestCloudWorkerHandleCreateInvalidUsername(t *testing.T) {
@@ -1263,13 +1426,17 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 		t.Fatalf("reset argv=%q want --version v1.4.7", argv)
 	}
 	for _, expected := range []string{
-		"--login-token", "test-owner-token", "--api-key", "worker-specific-key",
-		"--bot-uid", "1", "--user-uid", "7", "--user-name", "owner-name",
+		"--credential-file", "--bot-uid", "1", "--user-uid", "7", "--user-name", "owner-name",
 		"--user-display", "Owner Display", "--body-id", "worker-body-id",
 	} {
 		if !strings.Contains(string(argv), expected) {
 			t.Fatalf("reset argv=%q missing %q", argv, expected)
 		}
+	}
+	// The credential path is intentionally ephemeral; the fake script records
+	// argv only, so verify no secret value leaked into it.
+	if strings.Contains(string(argv), "test-owner-token") || strings.Contains(string(argv), "worker-specific-key") {
+		t.Fatalf("reset argv leaked credential: %q", argv)
 	}
 }
 

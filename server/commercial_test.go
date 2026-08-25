@@ -13,6 +13,23 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+func TestValidateCommercialOfficialPaidPlanModelsRequiresAllPublicModels(t *testing.T) {
+	complete := map[string]float64{
+		"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750,
+		"gpt-5.6-terra": 1750, "gpt-5.6-sol": 1750, "gpt-5.6-luna": 1750,
+	}
+	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err != nil {
+		t.Fatalf("complete paid plan rejected: %v", err)
+	}
+	delete(complete, "gpt-5.6-luna")
+	if err := validateCommercialOfficialPaidPlanModels("catsco-pro", complete); err == nil {
+		t.Fatal("incomplete paid plan was accepted")
+	}
+	if err := validateCommercialOfficialPaidPlanModels("catsco-free", map[string]float64{}); err != nil {
+		t.Fatalf("non-official plan should not be constrained: %v", err)
+	}
+}
+
 type commercialTestStore struct {
 	nextID          int64
 	plans           []*types.CommercialPlan
@@ -552,13 +569,17 @@ func TestRelayCommercialEnforceAllowlistAppliesPerUser(t *testing.T) {
 	allowedRec := httptest.NewRecorder()
 	handler.HandleSummary(allowedRec, allowedReq)
 	var allowedBody struct {
-		EnforceEnabled bool `json:"enforce_enabled"`
+		EnforceEnabled bool   `json:"enforce_enabled"`
+		Note           string `json:"note"`
 	}
 	if err := json.Unmarshal(allowedRec.Body.Bytes(), &allowedBody); err != nil {
 		t.Fatalf("decode allowed summary: %v", err)
 	}
 	if !allowedBody.EnforceEnabled {
 		t.Fatalf("expected uid 38 to be enforce-enabled: %s", allowedRec.Body.String())
+	}
+	if strings.Contains(allowedBody.Note, "内测") {
+		t.Fatalf("public enforced summary must not use gray-release note: %q", allowedBody.Note)
 	}
 
 	otherReq := httptest.NewRequest(http.MethodGet, "/api/relay/commercial", nil)

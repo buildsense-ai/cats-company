@@ -1,114 +1,62 @@
-const API_BASE = import.meta.env.VITE_API_BASE || '';
+import {
+  API_BASE,
+  authApi,
+  getAuthRevision,
+  getPushCleanupRegistrationIDs,
+  getPushPromptOwner,
+  getPushRegistrationID,
+  getToken,
+  isCurrentAuthSession,
+  isTokenExpired,
+  request,
+  responseErrorMessage,
+  setToken as setSessionToken,
+} from './auth-session';
+import { fetchWithRequestError } from './utils/request-error';
+
+export {
+  getAuthRevision,
+  getPushCleanupRegistrationIDs,
+  getPushPromptOwner,
+  getPushRegistrationID,
+  getToken,
+  isCurrentAuthSession,
+  isTokenExpired,
+} from './auth-session';
+
 const LOCAL_XIAOBA_BASE = import.meta.env.VITE_XIAOBA_LOCAL_API || '/local-xiaoba';
 const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
-let token = localStorage.getItem('oc_token');
-const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
-const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
-// A registration ID guards server deletes. sessionStorage preserves it across
-// reloads and cross-origin returns in this browsing context. A copied storage
-// area is safe because cleanup first coordinates with active peer tabs.
-let pushRegistrationID = '';
-let pushRegistrationOwner = '';
-const newPushRegistrationID = () => {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
-};
-const decodeTokenPayload = (candidate) => {
-  try {
-    const encodedPayload = candidate?.split('.')[1];
-    if (!encodedPayload) return null;
-    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    return JSON.parse(atob(padded));
-  } catch {
-    return null;
-  }
-};
-const pushRegistrationOwnerForToken = (candidate) => {
-  const userID = decodeTokenPayload(candidate)?.userId;
-  return userID === undefined || userID === null ? null : `user:${userID}`;
-};
-
-const readPushRegistration = () => {
-  try {
-    return {
-      id: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim(),
-      owner: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim(),
-    };
-  } catch {
-    return { id: '', owner: '' };
-  }
-};
-
-const writePushRegistration = (id, owner) => {
-  try {
-    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_ID_KEY, id);
-    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
-  } catch {
-    // Memory-only registration IDs still prevent stale operations in this page.
-  }
-};
-
-const registrationIDForToken = (candidate) => {
-  const owner = pushRegistrationOwnerForToken(candidate);
-  if (!owner) return newPushRegistrationID();
-  if (pushRegistrationID && pushRegistrationOwner === owner) {
-    return pushRegistrationID;
-  }
-  const saved = readPushRegistration();
-  if (saved.owner === owner && saved.id && saved.id.length <= 64) {
-    pushRegistrationID = saved.id;
-    pushRegistrationOwner = owner;
-    return pushRegistrationID;
-  }
-  const registrationID = newPushRegistrationID();
-  pushRegistrationID = registrationID;
-  pushRegistrationOwner = owner;
-  writePushRegistration(registrationID, owner);
-  return registrationID;
-};
-
-const legacyRegistrationIDForToken = (candidate) => {
-  const owner = pushRegistrationOwnerForToken(candidate);
-  if (!owner) return '';
-  try {
-    const id = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim();
-    const legacyOwner = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim();
-    if (!id || id.length > 64 || (legacyOwner && legacyOwner !== owner)) return '';
-    return id;
-  } catch {
-    return '';
-  }
-};
-
-const clearPushRegistration = () => {
-  pushRegistrationID = '';
-  pushRegistrationOwner = '';
-  try {
-    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_ID_KEY);
-    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_OWNER_KEY);
-  } catch {
-    // The in-memory values are still cleared when storage is unavailable.
-  }
-};
-let authRevision = 0;
 let wsConn = null;
 let wsReconnectTimer = null;
 let wsConnectTimer = null;
+let wsStableTimer = null;
 let wsGeneration = 0;
 let wsReconnectAttempt = 0;
 let msgHandlers = [];
 let wsConnected = false;
+let wsArtifactPreviewSession = null;
 let topicLastSeq = {};
 let wsActiveTopic = '';
 let wsPushSubscriptionID = '';
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
+const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
+const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
+const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
+
+function normalizeArtifactPreviewSession(value) {
+  if (!value || typeof value !== 'object'
+    || value.contract_version !== ARTIFACT_PREVIEW_SESSION_CONTRACT
+    || typeof value.token !== 'string' || !value.token || value.token.length > 1024) return null;
+  return {
+    contract_version: ARTIFACT_PREVIEW_SESSION_CONTRACT,
+    token: value.token,
+  };
+}
 
 export function toWritableBotSkillRefs(skills) {
   if (!Array.isArray(skills)) return skills;
@@ -124,6 +72,10 @@ function currentPageVisibility() {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
     ? 'hidden'
     : 'visible';
+}
+
+function isBrowserOnline() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
 function normalizePageVisibility(value) {
@@ -173,51 +125,13 @@ export function requestMissedMessages(topicId) {
   }
 }
 
-export function setToken(t) {
-  token = t;
-  authRevision += 1;
-  if (t) localStorage.setItem('oc_token', t);
-  else {
-    localStorage.removeItem('oc_token');
-    clearPushRegistration();
+export function setToken(nextToken) {
+  wsArtifactPreviewSession = null;
+  if (!nextToken) {
     wsPushSubscriptionID = '';
     wsActiveTopic = '';
   }
-  window.dispatchEvent(new CustomEvent('cc:auth-changed', {
-    detail: {
-      loggedIn: Boolean(t),
-      revision: authRevision,
-    },
-  }));
-}
-
-export function getToken() {
-  return token;
-}
-
-export function getAuthRevision() {
-  return authRevision;
-}
-
-export function isCurrentAuthSession(candidate, revision) {
-  return Boolean(candidate)
-    && Number.isInteger(revision)
-    && token === candidate
-    && authRevision === revision;
-}
-
-export function getPushRegistrationID() {
-  return token ? registrationIDForToken(token) : '';
-}
-
-export function getPushCleanupRegistrationIDs() {
-  const current = getPushRegistrationID();
-  const legacy = legacyRegistrationIDForToken(token);
-  return [...new Set([current, legacy].filter(Boolean))];
-}
-
-export function getPushPromptOwner() {
-  return pushRegistrationOwnerForToken(token) || '';
+  setSessionToken(nextToken);
 }
 
 export function getWebSocketURL() {
@@ -241,87 +155,6 @@ export function resolveMediaURL(url) {
 
 export function isWSConnected() {
   return wsConnected;
-}
-
-export function isTokenExpired(candidate = token) {
-  if (!candidate) return false;
-  const payload = decodeTokenPayload(candidate);
-  if (!payload) return false;
-  try {
-    const expiresAt = Number(payload.exp);
-    return Number.isFinite(expiresAt) && Date.now() >= expiresAt * 1000;
-  } catch {
-    return false;
-  }
-}
-
-async function request(method, path, body, options = {}) {
-  const { signal, timeoutMs = 0 } = options;
-  const headers = { 'Content-Type': 'application/json' };
-  const authToken = options.authToken === undefined ? token : options.authToken;
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-
-  const controller = new AbortController();
-  let timedOut = false;
-  let timeoutID = null;
-  const abortFromCaller = () => controller.abort(signal?.reason);
-
-  if (signal?.aborted) {
-    abortFromCaller();
-  } else if (signal) {
-    signal.addEventListener('abort', abortFromCaller, { once: true });
-  }
-  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-    timeoutID = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
-  }
-
-  let res;
-  try {
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-
-    let data = {};
-    try {
-      data = await res.json();
-    } catch {
-      data = {};
-    }
-    if (!res.ok) {
-      const error = new Error(data.error || statusMessage(res.status));
-      error.status = res.status;
-      error.data = data;
-      throw error;
-    }
-    return data;
-  } catch (cause) {
-    if (timedOut) {
-      const error = new Error('请求超时，请稍后重试');
-      error.code = 'REQUEST_TIMEOUT';
-      error.cause = cause;
-      throw error;
-    }
-    if (signal?.aborted || cause?.name === 'AbortError') {
-      const error = new Error('请求已取消');
-      error.code = 'REQUEST_ABORTED';
-      error.cause = cause;
-      throw error;
-    }
-    if (cause?.status) throw cause;
-    const error = new Error('网络连接失败，请检查后端服务是否运行');
-    error.code = 'NETWORK_ERROR';
-    error.cause = cause;
-    throw error;
-  } finally {
-    if (timeoutID) clearTimeout(timeoutID);
-    signal?.removeEventListener('abort', abortFromCaller);
-  }
 }
 
 async function localRequest(method, path, body, options = {}) {
@@ -354,7 +187,7 @@ async function localRequest(method, path, body, options = {}) {
       data = {};
     }
     if (!response.ok) {
-      const error = new Error(data.error || statusMessage(response.status));
+      const error = new Error(responseErrorMessage(response.status, data.error));
       error.status = response.status;
       error.data = data;
       throw error;
@@ -399,17 +232,6 @@ async function getLocalSkillsWithFallback() {
     if (error?.status !== 404) throw error;
   }
   return localRequest('GET', '/api/skills-all');
-}
-
-function statusMessage(status) {
-  if (status === 400) return '请求内容有误，请检查后重试';
-  if (status === 401) return '登录状态已失效，请重新登录';
-  if (status === 403) return '当前账号没有执行此操作的权限';
-  if (status === 404) return '请求的功能暂时不可用';
-  if (status === 409) return '当前数据已发生变化，请刷新后重试';
-  if (status === 429) return '操作过于频繁，请稍后再试';
-  if (status >= 500) return '后端服务暂时异常，请稍后重试';
-  return '请求失败，请稍后重试';
 }
 
 const RAW_UPLOAD_QUERY = 'raw=1';
@@ -461,16 +283,16 @@ async function readUploadResponse(response, path) {
       const error = new Error(
         response.ok
           ? 'Upload failed: invalid server response'
-          : `Upload failed with HTTP ${response.status}`,
+          : responseErrorMessage(response.status, `Upload failed with HTTP ${response.status}`),
       );
       error.status = response.status;
       throw error;
     }
   }
   if (!response.ok) {
-    const message = data.code === UPLOAD_INCOMPLETE_CODE
+    const message = response.status < 500 && data.code === UPLOAD_INCOMPLETE_CODE
       ? '上传过程中断，请重新选择该文件后重试。'
-      : (data.error || `Upload failed with HTTP ${response.status}`);
+      : responseErrorMessage(response.status, data.error || `Upload failed with HTTP ${response.status}`);
     const error = new Error(message);
     error.code = data.code || (response.status === 413 ? UPLOAD_TOO_LARGE_CODE : 'upload_failed');
     error.status = response.status;
@@ -511,11 +333,7 @@ async function uploadRawFile(path, file, { authToken = '' } = {}) {
 }
 
 export const api = {
-  sendVerificationCode: (email) => request('POST', '/api/auth/send-code', { email }),
-  sendPasswordResetCode: (email) => request('POST', '/api/auth/reset-password/send-code', { email }),
-  resetPassword: (data) => request('POST', '/api/auth/reset-password', data),
-  register: (data) => request('POST', '/api/auth/register', data),
-  login: (data) => request('POST', '/api/auth/login', data),
+  ...authApi,
   getMe: () => request('GET', '/api/me'),
   createSTTSession: () => request('POST', '/api/stt/sessions'),
   getRelayAdminAccess: () => request('GET', '/api/admin/relay/access'),
@@ -527,7 +345,7 @@ export const api = {
   sendPushTest: (registrationID) => (
     request('POST', '/api/push/test', { registration_id: registrationID })
   ),
-  unsubscribePush: (endpoint, authToken = token, registrationID = getPushRegistrationID()) => {
+  unsubscribePush: (endpoint, authToken = getToken(), registrationID = getPushRegistrationID()) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
     return request('DELETE', '/api/push/subscriptions', { endpoint, registration_id: registrationID }, {
@@ -599,6 +417,25 @@ export const api = {
     if (Array.isArray(mentions) && mentions.length > 0) payload.mentions = mentions;
     return request('POST', '/api/messages/send', payload);
   },
+
+  createArtifactContextSnapshot: (snapshot, options = {}) => {
+    const previewSession = wsArtifactPreviewSession;
+    return request(
+      'POST',
+      '/api/artifact-context/snapshots',
+      {
+        ...snapshot,
+        ...(previewSession ? { preview_session: previewSession } : {}),
+      },
+      options,
+    );
+  },
+  invalidateArtifactContextSnapshot: (contextRef, options = {}) => request(
+    'DELETE',
+    '/api/artifact-context/snapshots',
+    { context_ref: contextRef },
+    options,
+  ),
 
   // REST fallback for message history
   getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
@@ -820,6 +657,15 @@ export const api = {
     { prompt_visibility: visibility },
   ),
   getAgentSkills: (uid) => request('GET', `/api/agents/skills?uid=${encodeURIComponent(uid)}`),
+  getAgentSkillVersions: (uid, skillId, { limit = 20, beforeRevision = 0 } = {}) => {
+    const params = new URLSearchParams({
+      uid: String(uid),
+      skill_id: String(skillId),
+      limit: String(limit),
+    });
+    if (beforeRevision > 0) params.set('before_revision', String(beforeRevision));
+    return request('GET', `/api/agents/skill-versions?${params}`);
+  },
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
@@ -834,12 +680,19 @@ export const api = {
     const params = new URLSearchParams();
     if (query) params.set('q', query);
     if (options.category) params.set('category', options.category);
+    if (options.searchMode === 'name') params.set('search_mode', 'name');
     const suffix = params.toString() ? `?${params}` : '';
     return request('GET', `/api/skillhub/skills${suffix}`);
   },
   getSkillHubSkill: (skillId, options = {}) => request(
     'GET',
     `/api/skillhub/skills/${encodeSkillHubID(skillId)}`,
+    undefined,
+    options,
+  ),
+  getSkillHubVersions: (skillId, options = {}) => request(
+    'GET',
+    `/api/skillhub/skills/${encodeSkillHubID(skillId)}/versions`,
     undefined,
     options,
   ),
@@ -852,20 +705,31 @@ export const api = {
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
   acceptFriendAsBot: async (apiKey, userId) => {
-    const res = await fetch(`${API_BASE}/api/friends/accept`, {
+    const res = await fetchWithRequestError(`${API_BASE}/api/friends/accept`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `ApiKey ${apiKey}`,
       },
       body: JSON.stringify({ user_id: userId }),
+      timeoutMs: DIRECT_REQUEST_TIMEOUT_MS,
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Request failed');
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (cause) {
+      if (res.ok) throw cause;
+    }
+    if (!res.ok) {
+      const error = new Error(responseErrorMessage(res.status, data.error || 'Request failed'));
+      error.status = res.status;
+      error.data = data;
+      throw error;
+    }
     return data;
   },
   uploadFile: async (file, type = 'file') => {
-    return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: token });
+    return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: getToken() });
   },
   createMobileUploadSession: async (topic) => request('POST', '/api/mobile-upload/sessions', { topic }),
   getMobileUploadSession: async (sessionId) => request('GET', `/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}`),
@@ -885,17 +749,19 @@ export const api = {
     ),
   publishCloudArtifact: (agentUid, artifact) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
-  getTopicFiles: (topicId, { beforeId = 0, limit = 40 } = {}) => {
+  getTopicFiles: (topicId, { beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {
     const params = new URLSearchParams();
     params.set('limit', String(limit));
     if (beforeId > 0) params.set('before_id', String(beforeId));
+    if (beforeCreatedAt) params.set('before_created_at', String(beforeCreatedAt));
     return request('GET', `/api/topics/${encodeURIComponent(topicId)}/files?${params.toString()}`);
   },
-  getAgentFiles: (agentUid, { topicId, beforeId = 0, limit = 40 } = {}) => {
+  getAgentFiles: (agentUid, { topicId, beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {
     const params = new URLSearchParams();
     params.set('topic_id', String(topicId || ''));
     params.set('limit', String(limit));
     if (beforeId > 0) params.set('before_id', String(beforeId));
+    if (beforeCreatedAt) params.set('before_created_at', String(beforeCreatedAt));
     return request('GET', `/api/agents/${encodeURIComponent(agentUid)}/files?${params.toString()}`);
   },
   deleteCloudArtifact: (agentUid, artifactId) =>
@@ -925,7 +791,8 @@ function reconnectDelay(attempt) {
 }
 
 export function connectWS(onMessage, { force = false } = {}) {
-  if (!token) return false;
+  const sessionToken = getToken();
+  if (!sessionToken) return false;
   if (isTokenExpired()) {
     onMessage({ _type: 'ws_auth_expired' });
     return false;
@@ -944,6 +811,10 @@ export function connectWS(onMessage, { force = false } = {}) {
     clearTimeout(wsConnectTimer);
     wsConnectTimer = null;
   }
+  if (wsStableTimer) {
+    clearTimeout(wsStableTimer);
+    wsStableTimer = null;
+  }
   const generation = ++wsGeneration;
   if (wsConn) {
     const staleConn = wsConn;
@@ -958,7 +829,8 @@ export function connectWS(onMessage, { force = false } = {}) {
     staleConn.close();
   }
   wsConnected = false;
-  const url = `${WS_URL}?token=${token}`;
+  wsArtifactPreviewSession = null;
+  const url = `${WS_URL}?token=${sessionToken}`;
   const conn = new WebSocket(url);
   wsConn = conn;
   const isCurrent = () => wsConn === conn && wsGeneration === generation;
@@ -978,9 +850,11 @@ export function connectWS(onMessage, { force = false } = {}) {
     wsReconnectAttempt += 1;
     const retryInMs = reconnectDelay(wsReconnectAttempt);
     onMessage({ _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs });
-    wsReconnectTimer = setTimeout(() => {
-      if (wsGeneration === generation) connectWS(onMessage);
-    }, retryInMs);
+    if (isBrowserOnline()) {
+      wsReconnectTimer = setTimeout(() => {
+        if (wsGeneration === generation) connectWS(onMessage);
+      }, retryInMs);
+    }
   }, WS_CONNECT_TIMEOUT_MS);
 
   conn.onopen = () => {
@@ -994,7 +868,13 @@ export function connectWS(onMessage, { force = false } = {}) {
     }
     console.log('WebSocket connected');
     wsConnected = true;
-    wsReconnectAttempt = 0;
+    // Do not immediately reset the backoff. A socket which opens and drops
+    // again right away is still an unstable connection and should not cause
+    // a tight one-second reconnect loop. Reset after a stable open period.
+    wsStableTimer = setTimeout(() => {
+      if (isCurrent() && wsConnected) wsReconnectAttempt = 0;
+      wsStableTimer = null;
+    }, WS_STABLE_CONNECTION_MS);
     wsPageVisibility = currentPageVisibility();
     wsPageFocused = currentPageFocused();
     // Send handshake
@@ -1020,8 +900,13 @@ export function connectWS(onMessage, { force = false } = {}) {
       clearTimeout(wsConnectTimer);
       wsConnectTimer = null;
     }
+    if (wsStableTimer) {
+      clearTimeout(wsStableTimer);
+      wsStableTimer = null;
+    }
     console.log('WebSocket disconnected');
     wsConnected = false;
+    wsArtifactPreviewSession = null;
     wsConn = null;
     wsReconnectAttempt += 1;
     const retryInMs = reconnectDelay(wsReconnectAttempt);
@@ -1034,7 +919,7 @@ export function connectWS(onMessage, { force = false } = {}) {
       msgHandlers.forEach((handler) => handler(authExpiredMessage));
       return;
     }
-    if (token) {
+    if (getToken() && isBrowserOnline()) {
       wsReconnectTimer = setTimeout(() => {
         if (wsGeneration === generation) {
           connectWS(onMessage);
@@ -1052,6 +937,10 @@ export function connectWS(onMessage, { force = false } = {}) {
     if (!isCurrent()) return;
     try {
       const msg = JSON.parse(evt.data);
+      const previewSession = normalizeArtifactPreviewSession(
+        msg?.ctrl?.params?.artifact_preview_session,
+      );
+      if (previewSession) wsArtifactPreviewSession = previewSession;
       onMessage(msg);
       msgHandlers.forEach((h) => h(msg));
     } catch (e) {
@@ -1076,6 +965,10 @@ export function disconnectWS() {
     clearTimeout(wsConnectTimer);
     wsConnectTimer = null;
   }
+  if (wsStableTimer) {
+    clearTimeout(wsStableTimer);
+    wsStableTimer = null;
+  }
   if (wsConn) {
     const staleConn = wsConn;
     wsConn = null;
@@ -1088,6 +981,7 @@ export function disconnectWS() {
     staleConn.close();
   }
   wsConnected = false;
+  wsArtifactPreviewSession = null;
   wsReconnectAttempt = 0;
 }
 
@@ -1257,6 +1151,10 @@ export function wsSendTyping(topicId) {
 // Send read receipt
 export function wsSendRead(topicId, seqId) {
   sendWS({ note: { topic: topicId, what: 'read', seq: seqId } });
+}
+
+export function wsSendArtifactResultReceipt(receipt) {
+  return sendWS({ artifact_result: receipt });
 }
 
 export function onWSMessage(handler) {

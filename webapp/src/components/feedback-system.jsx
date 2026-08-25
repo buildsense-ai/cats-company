@@ -101,7 +101,7 @@ export function InlineFeedback({
 
 function ToastViewport({ toasts }) {
   return (
-    <div className="cc-toast-viewport" aria-label="操作通知">
+    <div className="cc-toast-viewport" role="region" aria-label="操作通知">
       {toasts.map((toast) => (
         <div
           key={toast.id}

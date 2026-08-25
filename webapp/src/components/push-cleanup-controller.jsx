@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getToken } from '../api';
+import { getToken } from '../auth-session';
 import { canUsePush } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { retryPendingPushUnsubscribe } from '../utils/push-session-cleanup';

@@ -82,6 +82,25 @@ describe('WebSocket connection recovery', () => {
     unsubscribe();
   });
 
+  test('strips display-only Skill metadata before updating BotDefinition', () => {
+    expect(api.toWritableBotSkillRefs([{
+      source: 'skillhub',
+      skillId: 'priv_owned',
+      version: 'v_1',
+      contentHash: 'a'.repeat(64),
+      displayName: 'review-helper',
+      revisionNumber: 3,
+      lastChangedBy: 'lin',
+      lastChangedAt: '2026-08-22T02:03:04Z',
+      changeSource: 'conversation_mutation',
+    }])).toEqual([{
+      source: 'skillhub',
+      skillId: 'priv_owned',
+      version: 'v_1',
+      contentHash: 'a'.repeat(64),
+    }]);
+  });
+
   test('keeps a SkillHub device request pending after its ack and resolves its result', async () => {
     api.connectWS(vi.fn());
     const socket = MockWebSocket.instances[0];
@@ -235,6 +254,50 @@ describe('WebSocket connection recovery', () => {
     expect(JSON.parse(socket.send.mock.calls.at(-1)[0]).note.visibility).toBe('hidden');
   });
 
+  test('binds Artifact snapshots to the current WebSocket preview session only', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ context_ref: `acr_${'x'.repeat(43)}` }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    api.connectWS(vi.fn());
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.open();
+    const firstHandshake = JSON.parse(firstSocket.send.mock.calls[0][0]);
+    firstSocket.onmessage({ data: JSON.stringify({
+      ctrl: {
+        id: firstHandshake.hi.id,
+        code: 200,
+        params: {
+          artifact_preview_session: {
+            contract_version: 'catsco.artifact-preview-session.v1',
+            token: 'first-preview-session',
+          },
+        },
+      },
+    }) });
+
+    await api.api.createArtifactContextSnapshot({
+      topic_id: 'p2p_7_440',
+      artifact_ref: { id: 'lesson-game' },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      preview_session: {
+        contract_version: 'catsco.artifact-preview-session.v1',
+        token: 'first-preview-session',
+      },
+    });
+
+    api.reconnectWS(vi.fn());
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.open();
+    await api.api.createArtifactContextSnapshot({
+      topic_id: 'p2p_7_440',
+      artifact_ref: { id: 'lesson-game' },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).not.toHaveProperty('preview_session');
+  });
+
   test('derives a stable subscription identity from the push endpoint', async () => {
     const endpoint = 'https://push.example.test/subscription/browser-profile';
     const first = await api.pushSubscriptionIDForEndpoint(endpoint);
@@ -284,6 +347,24 @@ describe('WebSocket connection recovery', () => {
 
     MockWebSocket.instances[1].serverClose();
     expect(onMessage).toHaveBeenCalledWith({
+      _type: 'ws_close',
+      attempt: 2,
+      retryInMs: 2000,
+    });
+  });
+
+  test('keeps the backoff across sockets that open and drop immediately', () => {
+    const onMessage = vi.fn();
+    api.connectWS(onMessage);
+    MockWebSocket.instances[0].open();
+    MockWebSocket.instances[0].serverClose();
+
+    vi.advanceTimersByTime(1000);
+    const retryingSocket = MockWebSocket.instances[1];
+    retryingSocket.open();
+    retryingSocket.serverClose();
+
+    expect(onMessage).toHaveBeenLastCalledWith({
       _type: 'ws_close',
       attempt: 2,
       retryInMs: 2000,
@@ -751,6 +832,20 @@ describe('agent file requests', () => {
       expect.objectContaining({ method: 'GET' }),
     );
   });
+
+  test('includes the timestamp half of the composite file cursor', async () => {
+    await apiModule.api.getAgentFiles(440, {
+      topicId: 'grp_80',
+      beforeId: 820,
+      beforeCreatedAt: '2026-08-12T02:20:00.123456Z',
+      limit: 40,
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/agents/440/files?topic_id=grp_80&limit=40&before_id=820&before_created_at=2026-08-12T02%3A20%3A00.123456Z',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
 });
 
 describe('local XiaoBa SkillHub bridge', () => {
@@ -851,6 +946,25 @@ describe('local XiaoBa SkillHub bridge', () => {
     expect(global.fetch.mock.calls[0][0]).toBe('/local-xiaoba/api/store');
   });
 
+  test.each([502, 503, 504])('uses gateway status copy for a local XiaoBa response with HTTP %i', async (status) => {
+    const previousFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      json: vi.fn().mockResolvedValue({ error: '后端暂时无法载入' }),
+    });
+
+    try {
+      await expect(apiModule.api.getLocalSkills()).rejects.toMatchObject({
+        message: '服务暂时不可用，请稍后重试',
+        status,
+        data: { error: '后端暂时无法载入' },
+      });
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+
   test('loads all files from the current conversation without an Agent scope', async () => {
     await apiModule.api.getTopicFiles('grp_80', {
       beforeId: 820,
@@ -859,6 +973,19 @@ describe('local XiaoBa SkillHub bridge', () => {
 
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/topics/grp_80/files?limit=40&before_id=820',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  test('passes the timestamp half of the composite file cursor', async () => {
+    await apiModule.api.getTopicFiles('grp_80', {
+      beforeId: 820,
+      beforeCreatedAt: '2026-08-12T02:20:00.123456Z',
+      limit: 40,
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/topics/grp_80/files?limit=40&before_id=820&before_created_at=2026-08-12T02%3A20%3A00.123456Z',
       expect.objectContaining({ method: 'GET' }),
     );
   });
@@ -1013,5 +1140,57 @@ describe('upload transport', () => {
       message: '上传响应中断，无法确认是否成功；请检查网络后重新选择该文件。',
     });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([502, 503, 504])('uses gateway status copy for an upload JSON response with HTTP %i', async (status) => {
+    global.fetch = vi.fn().mockResolvedValue(response(status, {
+      error: '后端服务暂时异常',
+    }));
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadFile(file, 'image')).rejects.toMatchObject({
+      message: '服务暂时不可用，请稍后重试',
+      status,
+      data: { error: '后端服务暂时异常' },
+    });
+  });
+});
+
+describe('direct remote response errors', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    sessionStorage.clear();
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+  });
+
+  test.each([502, 503, 504])('uses gateway status copy for friend acceptance with HTTP %i', async (status) => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      json: vi.fn().mockResolvedValue({ error: '后端服务暂时异常' }),
+    });
+
+    await expect(apiModule.api.acceptFriendAsBot('api-key', 42)).rejects.toMatchObject({
+      message: '服务暂时不可用，请稍后重试',
+      status,
+      data: { error: '后端服务暂时异常' },
+    });
+  });
+
+  test('normalizes a friend-acceptance network failure', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await expect(apiModule.api.acceptFriendAsBot('api-key', 42)).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+      message: '暂时无法连接服务，请稍后重试',
+    });
   });
 });

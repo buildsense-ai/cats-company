@@ -1,9 +1,11 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
+import { responseErrorMessage } from '../auth-session';
+import { fetchWithRequestError } from '../utils/request-error';
 import { canDragChatAttachment, clearChatAttachmentDrag, writeChatAttachmentDrag } from '../chat-attachment-drag';
 import {
   hasPlainTextTableLikeBlock,
@@ -14,8 +16,9 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
-import { artifactRefFromPreviewFile, requestArtifactPageContext } from '../artifact-context';
+import { artifactRefFromPreviewFile, artifactURLForVersion, requestArtifactPageContext } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
+import { sharePreviewLink } from './preview-share';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -25,6 +28,7 @@ const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
 const HTML_FILE_EXTENSIONS = new Set(['HTML', 'HTM', 'XHTML']);
 const TEXT_FILE_EXTENSIONS = new Set(['TXT', 'JSON', 'MD', 'CSV', 'JS', 'PY', 'GO', 'HTML', 'HTM', 'CSS', 'XML']);
 const PREVIEW_FILE_EXTENSIONS = new Set(['PDF', ...TEXT_FILE_EXTENSIONS]);
+const IMAGE_FILE_EXTENSIONS = new Set(['AVIF', 'BMP', 'GIF', 'HEIC', 'JPEG', 'JPG', 'PNG', 'SVG', 'WEBP']);
 const SPREADSHEET_FILE_EXTENSIONS = new Set(['CSV', 'XLS', 'XLSX']);
 const SPREADSHEET_MIME_TYPES = new Set([
   'text/csv',
@@ -37,6 +41,7 @@ const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]
 const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
+const FILE_PREVIEW_TIMEOUT_MS = 15_000;
 const trustedArtifactPreviewPayloads = new WeakSet();
 
 function imageGalleryItemId(message, blockIndex, payload) {
@@ -1592,9 +1597,10 @@ function removeKnownArtifactURLs(text, artifacts) {
 }
 
 export function createCloudArtifactPreviewFile(artifact) {
+  const versionedURL = artifactURLForVersion(artifact.url, artifact.publish_version);
   const payload = {
     name: artifact.title || artifact.id || 'Cloud artifact',
-    url: artifact.url,
+    url: versionedURL || artifact.url,
     mime_type: 'text/html',
     artifact_id: artifact.id || artifact.artifact_id || '',
     publish_version: artifact.publish_version || null,
@@ -1634,8 +1640,8 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   const openArtifact = () => {
     if (descriptor?.canPreview) {
       previewArtifact();
-    } else if (payload.url) {
-      window.open(payload.url, '_blank', 'noopener,noreferrer');
+    } else if (artifact.url) {
+      window.open(artifact.url, '_blank', 'noopener,noreferrer');
     }
   };
   return (
@@ -1689,6 +1695,8 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
   const src = payload?.url || payload?.thumbnail;
+  const resolvedSrc = resolveMediaURL(payload?.url || src);
+  const downloadURL = downloadableMediaURL(resolvedSrc);
 
   useEffect(() => {
     if (!expanded) return undefined;
@@ -1730,11 +1738,11 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
   const galleryMode = Array.isArray(imageGallery) && imageGallery.length > 0 && typeof onOpenImage === 'function';
   const openPreview = () => {
     if (galleryMode) {
-      const matchingItem = imageGallery.find((item) => (
-        item?.id === imageId
-        || item?.payload?.url === payload?.url
-        || item?.payload?.thumbnail === payload?.thumbnail
-      ));
+      const matchingItem = imageGallery.find((item) => item?.id === imageId)
+        || imageGallery.find((item) => payload?.url && item?.payload?.url === payload.url)
+        || imageGallery.find((item) => (
+          payload?.thumbnail && item?.payload?.thumbnail === payload.thumbnail
+        ));
       onOpenImage(matchingItem?.id || imageId || '', triggerRef.current, payload);
       return;
     }
@@ -1787,8 +1795,20 @@ function ImageContent({ payload, imageGallery = null, onOpenImage, imageId = '' 
       >
         <X size={20} />
       </button>
+      <PwaDownloadLink
+        aria-label={`下载图片 ${payload.name || ''}`.trim()}
+        className="oc-rich-media-preview-download"
+        download={payload.name || true}
+        href={downloadURL || undefined}
+        onClick={(event) => event.stopPropagation()}
+        rel="noopener noreferrer"
+        target="_blank"
+        title="下载图片"
+      >
+        <Download size={20} />
+      </PwaDownloadLink>
       <img
-        src={resolveMediaURL(payload.url || src)}
+        src={resolvedSrc}
         alt={payload.name ? `${payload.name} preview` : 'image preview'}
         className="oc-rich-image-preview-media"
         onClick={(event) => event.stopPropagation()}
@@ -1869,6 +1889,16 @@ function isInlineAudioFile(payload, ext = fileExtension(payload)) {
     || (ext === 'FILE' && INLINE_AUDIO_MIME_TYPES.has(fileMimeType(payload)));
 }
 
+function isImageFile(payload, ext = fileExtension(payload)) {
+  const type = String(payload?.type || '').trim().toLowerCase();
+  const mime = fileMimeType(payload);
+  const url = String(payload?.url || '').split(/[?#]/, 1)[0];
+  return type === 'image'
+    || mime.startsWith('image/')
+    || IMAGE_FILE_EXTENSIONS.has(ext)
+    || /\/uploads\/images\//.test(url);
+}
+
 function isHtmlFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
   return HTML_FILE_EXTENSIONS.has(ext) || mime === 'text/html' || mime === 'application/xhtml+xml';
@@ -1908,12 +1938,20 @@ function isDocxFile(payload, ext = fileExtension(payload)) {
 
 function isPreviewableFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
+  if (isImageFile(payload, ext)) return true;
   if (isSpreadsheetPreviewFile(payload, ext)) return true;
   if (PREVIEW_FILE_EXTENSIONS.has(ext) || isPdfFile(payload, ext)) return true;
   return mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml';
 }
 
 function artifactMeta(payload, ext = fileExtension(payload)) {
+  if (isImageFile(payload, ext)) {
+    return {
+      label: '图片',
+      className: 'image',
+      subtitle: '图片文件',
+    };
+  }
   if (isHtmlFile(payload, ext)) {
     return {
       label: 'HTML',
@@ -1966,13 +2004,16 @@ function fetchableMediaURL(url) {
   }
 }
 
-function downloadableMediaURL(url) {
+export function downloadableMediaURL(url) {
   if (!url) return '';
   try {
     const urlObj = new URL(url, window.location.origin);
     const mediaBase = new URL(resolveMediaURL('/'), window.location.origin);
-    const uploadFilesPath = `${mediaBase.pathname.replace(/\/+$/, '')}/uploads/files/`;
-    if (urlObj.origin !== mediaBase.origin || !urlObj.pathname.startsWith(uploadFilesPath)) {
+    const uploadRootPath = `${mediaBase.pathname.replace(/\/+$/, '')}/uploads/`;
+    const isDownloadableUpload = ['files', 'images'].some(
+      (directory) => urlObj.pathname.startsWith(`${uploadRootPath}${directory}/`),
+    );
+    if (urlObj.origin !== mediaBase.origin || !isDownloadableUpload) {
       return url;
     }
     urlObj.searchParams.set('download', '1');
@@ -2019,6 +2060,7 @@ export function previewFileDescriptor(payload) {
   const ext = fileExtension(payload);
   const meta = artifactMeta(payload, ext);
   const isPdf = isPdfFile(payload, ext);
+  const isImage = isImageFile(payload, ext);
   const isHtml = isHtmlFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
   const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
@@ -2037,6 +2079,7 @@ export function previewFileDescriptor(payload) {
     ext,
     meta,
     isPdf,
+    isImage,
     isHtml,
     isMarkdown,
     isSpreadsheet,
@@ -2063,6 +2106,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const fallbackActionRef = useRef(null);
   const shouldFocusFallbackRef = useRef(false);
   const src = resolveMediaURL(payload?.url);
+  const downloadURL = downloadableMediaURL(src);
 
   useEffect(() => {
     setPlaybackFailed(false);
@@ -2177,6 +2221,18 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
           >
             <X size={20} />
           </button>
+          <PwaDownloadLink
+            aria-label={`下载视频 ${payload.name || ''}`.trim()}
+            className="oc-rich-media-preview-download"
+            download={payload.name || true}
+            href={downloadURL || undefined}
+            onClick={(event) => event.stopPropagation()}
+            rel="noopener noreferrer"
+            target="_blank"
+            title="下载视频"
+          >
+            <Download size={20} />
+          </PwaDownloadLink>
           <video
             aria-label={payload.name || '视频'}
             autoPlay
@@ -2354,13 +2410,18 @@ export function FilePreviewPanel({
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
+  const [imageError, setImageError] = useState(false);
   const [loadingText, setLoadingText] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [remoteFrameState, setRemoteFrameState] = useState('idle');
   const [dragOffset, setDragOffset] = useState(0);
   const [isDismissing, setIsDismissing] = useState(false);
+  const [shareState, setShareState] = useState('idle');
+  const [shareNotice, setShareNotice] = useState('');
   const dragStateRef = useRef({ active: false, startY: 0, offset: 0 });
   const dismissTimerRef = useRef(null);
+  const shareResetTimerRef = useRef(null);
+  const shareRequestRef = useRef(0);
   const hasDismissedRef = useRef(false);
   const panelRef = useRef(null);
   const closeButtonRef = useRef(null);
@@ -2383,10 +2444,12 @@ export function FilePreviewPanel({
   );
   const url = descriptor?.url || '';
   const isPdf = descriptor?.isPdf || false;
+  const isImage = descriptor?.isImage || false;
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
   const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
+  const shareType = isPdf ? 'PDF' : isHtml ? 'HTML' : '文件';
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
@@ -2522,6 +2585,7 @@ export function FilePreviewPanel({
     setPreview(Boolean(file));
     setTextContent(null);
     setBinaryContent(null);
+    setImageError(false);
     setPreviewError('');
     setRemoteFrameState(
       isRemoteArtifact
@@ -2530,13 +2594,20 @@ export function FilePreviewPanel({
     );
     setDragOffset(0);
     setIsDismissing(false);
+    shareRequestRef.current += 1;
+    setShareState('idle');
+    setShareNotice('');
     hasDismissedRef.current = false;
     dragStateRef.current = { active: false, startY: 0, offset: 0 };
     if (dismissTimerRef.current) {
       window.clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = null;
     }
-    if (!file || !descriptor?.canPreview || isPdf || isRemoteArtifact) {
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
+    }
+    if (!file || !descriptor?.canPreview || isPdf || isImage || isRemoteArtifact) {
       setLoadingText(false);
       return () => {
         cancelled = true;
@@ -2550,11 +2621,15 @@ export function FilePreviewPanel({
       };
     }
 
+    const controller = new AbortController();
     const load = async () => {
       setLoadingText(true);
       try {
-        const res = await fetch(fetchableMediaURL(url));
-        if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+        const res = await fetchWithRequestError(fetchableMediaURL(url), {
+          signal: controller.signal,
+          timeoutMs: FILE_PREVIEW_TIMEOUT_MS,
+        });
+        if (!res.ok) throw new Error(responseErrorMessage(res.status, `HTTP Error ${res.status}`));
         if (isSpreadsheet) {
           const contentLength = Number(res.headers?.get?.('Content-Length') || res.headers?.get?.('content-length') || 0);
           if (contentLength > SPREADSHEET_PREVIEW_MAX_BYTES) {
@@ -2579,8 +2654,9 @@ export function FilePreviewPanel({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isPdf, isRemoteArtifact, isSpreadsheet, url]);
+  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isImage, isPdf, isRemoteArtifact, isSpreadsheet, url]);
 
   useEffect(() => {
     if (!preview) return undefined;
@@ -2658,7 +2734,9 @@ export function FilePreviewPanel({
   }, [backgroundRef, preview, shouldUseSheetMode]);
 
   useEffect(() => () => {
+    shareRequestRef.current += 1;
     if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
+    if (shareResetTimerRef.current) window.clearTimeout(shareResetTimerRef.current);
   }, []);
 
   const finishDismiss = () => {
@@ -2715,6 +2793,45 @@ export function FilePreviewPanel({
     setDragOffset(0);
   };
 
+  const handleShare = async () => {
+    if (!(isPdf || isHtml) || shareState === 'pending') return;
+    const requestID = shareRequestRef.current + 1;
+    shareRequestRef.current = requestID;
+    setShareState('pending');
+    setShareNotice('');
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
+    }
+
+    let result;
+    try {
+      result = await sharePreviewLink({ url, name: file.name || shareType });
+    } catch {
+      result = { status: 'error' };
+    }
+    if (requestID !== shareRequestRef.current) return;
+
+    if (result.status === 'cancelled' || result.status === 'shared') {
+      setShareState('idle');
+      return;
+    }
+    if (result.status === 'copied') {
+      setShareState('copied');
+      setShareNotice(`${shareType} 分享链接已复制。`);
+      shareResetTimerRef.current = window.setTimeout(() => {
+        if (requestID !== shareRequestRef.current) return;
+        shareResetTimerRef.current = null;
+        setShareState('idle');
+        setShareNotice('');
+      }, 2200);
+      return;
+    }
+
+    setShareState('error');
+    setShareNotice('暂时无法分享，请使用“在新窗口打开”后从浏览器分享。');
+  };
+
   const backdropOpacity = isDismissing ? 0 : Math.max(0.35, 1 - (dragOffset / 220));
 
   if (!preview || !file) return null;
@@ -2731,7 +2848,7 @@ export function FilePreviewPanel({
       />
       <aside
         ref={panelRef}
-        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`}
+        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isImage || isPdf || isSpreadsheet ? 'wide' : ''}`}
         role={shouldUseSheetMode ? 'dialog' : undefined}
         aria-modal={shouldUseSheetMode || undefined}
         aria-label="文件预览"
@@ -2765,13 +2882,26 @@ export function FilePreviewPanel({
                 <ArrowLeft size={18} />
               </button>
             )}
-            <FileText size={18} />
+            {isImage ? <ImageIcon size={18} /> : <FileText size={18} />}
             <div>
               <h3>{file.name}</h3>
               <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
             </div>
           </div>
           <div className="v3-file-preview-actions">
+            {(isPdf || isHtml) && (
+              <button
+                className={`v3-file-preview-share-action${shareState === 'copied' ? ' is-success' : ''}${shareState === 'error' ? ' is-error' : ''}`}
+                type="button"
+                aria-label={shareState === 'copied' ? `已复制 ${shareType} 分享链接` : shareState === 'error' ? `重试分享 ${shareType}` : `分享 ${shareType}`}
+                title={shareState === 'copied' ? '已复制分享链接' : shareState === 'error' ? `重试分享 ${shareType}` : `分享 ${shareType}`}
+                aria-busy={shareState === 'pending' || undefined}
+                disabled={shareState === 'pending'}
+                onClick={handleShare}
+              >
+                {shareState === 'copied' ? <CheckCircle2 size={18} /> : <Share2 size={18} />}
+              </button>
+            )}
             {!isRemoteArtifact && (
               <PwaDownloadLink href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
                 <Download size={18} />
@@ -2784,6 +2914,7 @@ export function FilePreviewPanel({
               <X size={18} />
             </button>
           </div>
+          {shareNotice && <span className="oc-visually-hidden" role="status" aria-live="polite">{shareNotice}</span>}
         </div>
         <div className="v3-file-preview-body">
           {isRemoteArtifact ? (
@@ -2840,6 +2971,20 @@ export function FilePreviewPanel({
                 </div>
               )}
             </div>
+          ) : isImage ? (
+            imageError ? (
+              <div className="v3-file-preview-state error">
+                图片加载失败，请下载原文件查看。
+              </div>
+            ) : (
+              <div className="v3-file-preview-image">
+                <img
+                  src={url}
+                  alt={file.name || '图片预览'}
+                  onError={() => setImageError(true)}
+                />
+              </div>
+            )
           ) : isPdf ? (
             shouldUseSheetMode ? (
               <MobilePdfPreview url={fetchableMediaURL(url)} />

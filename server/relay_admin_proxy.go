@@ -51,6 +51,11 @@ type relayAdminManagedBudgetStore interface {
 
 const relayAdminRewritePrefix = "/api/admin/relay"
 
+// Long-window pricing analytics can take tens of seconds on a busy relay.
+// Keep the portal proxy longer than the relay calculation so it does not turn
+// a successful internal response into a misleading "upstream unavailable".
+const relayAdminProxyTimeout = 60 * time.Second
+
 type relayAdminConfig struct {
 	relayURL    string
 	allowedUIDs []int64
@@ -87,7 +92,7 @@ func relayAdminConfigFromEnv() relayAdminConfig {
 func NewRelayAdminProxyHandler(cfg relayAdminConfig, managedBudgets ...relayAdminManagedBudgetStore) *RelayAdminProxyHandler {
 	h := &RelayAdminProxyHandler{
 		config:      cfg,
-		client:      &http.Client{Timeout: 15 * time.Second},
+		client:      &http.Client{Timeout: relayAdminProxyTimeout},
 		rateByUID:   map[int64]*fixedWindowRateLimiter{},
 		rateByIP:    map[string]*fixedWindowRateLimiter{},
 		auditLogger: nil,
@@ -329,8 +334,8 @@ var relayAdminAllowedPrefixes = []string{
 
 var relayAdminUserKeyPath = regexp.MustCompile(`^/local/users/[0-9]+/key/(state|limits|usage-reset)/?$`)
 var relayAdminUserKeyLimitsPath = regexp.MustCompile(`^/local/users/([0-9]+)/key/limits/?$`)
-var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|plans|invites|grants|adjustments|users|orders|relay-dry-run|relay-sync))?/?$`)
-var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|adjustments|relay-sync)/?$`)
+var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers|users|orders|order-refunds|relay-dry-run|relay-sync))?/?$`)
+var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|order-refunds|relay-sync)/?$`)
 
 func relayAdminLimitsTargetUID(path string) (int64, bool) {
 	matches := relayAdminUserKeyLimitsPath.FindStringSubmatch(path)

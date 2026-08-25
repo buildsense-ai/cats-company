@@ -72,8 +72,11 @@ type sharedRuntimeState interface {
 	registerRuntimeNode(nodeID string, hub *Hub)
 	bindRuntimeRoute(route runtimeRoute, now time.Time)
 	clearRuntimeRoute(route runtimeRoute)
+	broadcastUserMessage(uid int64, msg *ServerMessage) bool
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
+	deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool
+	deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
 	setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error
 	clearMessagingClientAttention(uid int64, route runtimeRoute) error
@@ -222,6 +225,29 @@ func (s *sharedMemoryRuntimeState) bindRuntimeRoute(route runtimeRoute, now time
 func (s *sharedMemoryRuntimeState) clearRuntimeRoute(route runtimeRoute) {
 }
 
+func (s *sharedMemoryRuntimeState) broadcastUserMessage(uid int64, msg *ServerMessage) bool {
+	if s == nil || uid <= 0 || msg == nil {
+		return false
+	}
+	s.mu.Lock()
+	nodes := make([]*Hub, 0, len(s.nodes))
+	for _, hub := range s.nodes {
+		nodes = append(nodes, hub)
+	}
+	s.mu.Unlock()
+	delivered := false
+	for _, hub := range nodes {
+		if hub == nil {
+			continue
+		}
+		if len(hub.getClients(uid)) > 0 {
+			hub.SendToUser(uid, msg)
+			delivered = true
+		}
+	}
+	return delivered
+}
+
 func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool {
 	if s == nil || !route.validAt(now) {
 		return false
@@ -246,6 +272,26 @@ func (s *sharedMemoryRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *M
 		return false
 	}
 	return hub.sendThinToolRPCToLocalRoute(route, msg)
+}
+
+func (s *sharedMemoryRuntimeState) deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool {
+	if s == nil || msg == nil || !route.validAt(now) {
+		return false
+	}
+	s.mu.Lock()
+	hub := s.nodes[route.NodeID]
+	s.mu.Unlock()
+	return hub != nil && hub.sendArtifactResultToLocalRoute(route, msg)
+}
+
+func (s *sharedMemoryRuntimeState) deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool {
+	if s == nil || nodeID == "" || msg == nil {
+		return false
+	}
+	s.mu.Lock()
+	hub := s.nodes[nodeID]
+	s.mu.Unlock()
+	return hub != nil && hub.acceptArtifactResultReceipt(msg, sourceRoute)
 }
 
 func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {
@@ -451,6 +497,7 @@ func (s *sharedMemoryRuntimeState) registerUserDevice(ownerUID int64, req Regist
 		Source:         "catscompany",
 		OwnerUID:       ownerUID,
 		OwnerUserID:    formatUID(ownerUID),
+		BotUID:         normalizeDeviceBotUID(req.BotUID),
 		DeviceID:       deviceID,
 		DisplayName:    normalizeDeviceText(req.DisplayName),
 		OS:             normalizeDeviceOS(req.OS),

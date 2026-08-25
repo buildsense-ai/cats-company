@@ -173,12 +173,18 @@ func (h *RelayCommercialHandler) HandleSummary(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load commercial summary"})
 		return
 	}
+	note := "套餐已开放；额度会在支付履约后同步到模型服务。"
+	if h.rolloutFor(uid) != "public" {
+		note = "套餐额度内测中；当前只对灰度账号开放。"
+	} else if !h.enforceFor(uid) {
+		note = "套餐已开放；当前账号尚未启用模型额度接管，请先完成 Relay 配置。"
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled":         true,
 		"rollout":         h.rolloutFor(uid),
 		"enforce_enabled": h.enforceFor(uid),
 		"summary":         publicCommercialSummary(summary),
-		"note":            "套餐额度内测中；未开启真实接管前，当前 relay 默认额度和重置周期继续保留。",
+		"note":            note,
 	})
 }
 
@@ -721,6 +727,39 @@ func defaultRelayResetDuration(value string) string {
 var commercialSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$`)
 var commercialCodePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{3,63}$`)
 
+var commercialOfficialPaidModels = []string{
+	"MiniMax-M2.7",
+	"MiniMax-M3",
+	"deepseek-v4-flash",
+	"gpt-5.6-terra",
+	"gpt-5.6-sol",
+	"gpt-5.6-luna",
+}
+
+func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
+	slug = strings.TrimSpace(slug)
+	expectedTotal := 0.0
+	switch slug {
+	case "catsco-personal":
+		expectedTotal = 10500
+	case "catsco-pro":
+		expectedTotal = 31500
+	default:
+		return nil
+	}
+	total := 0.0
+	for _, model := range commercialOfficialPaidModels {
+		if budgets[model] <= 0 {
+			return fmt.Errorf("official paid plan must include model %s", model)
+		}
+		total += budgets[model]
+	}
+	if math.Abs(total-expectedTotal) > 0.000001 {
+		return fmt.Errorf("official paid plan model budgets must total %.0f", expectedTotal)
+	}
+	return nil
+}
+
 func parseCommercialBudgets(value map[string]float64) map[string]float64 {
 	out := map[string]float64{}
 	for model, amount := range value {
@@ -817,6 +856,11 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported plan state"})
 			return
 		}
+		modelBudgets := parseCommercialBudgets(req.ModelBudgets)
+		if err := validateCommercialOfficialPaidPlanModels(req.Slug, modelBudgets); err != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                req.Slug,
 			Name:                req.Name,
@@ -826,7 +870,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			SaleState:           req.SaleState,
 			PurchaseLimit:       req.PurchaseLimit,
 			MonthlyBudget:       req.MonthlyBudget,
-			ModelBudgets:        parseCommercialBudgets(req.ModelBudgets),
+			ModelBudgets:        modelBudgets,
 			InternalQuotaTokens: req.InternalQuota,
 			DurationDays:        req.DurationDays,
 			State:               req.State,

@@ -300,7 +300,12 @@ func TestGroupStreamCancelAllowsInitiatorAndTargetsOnlyTheirAgent(t *testing.T) 
 	hub.addClient(otherBot)
 	hub.groupTurns.begin(80, 42, 7, 1)
 
-	hub.handleStreamPub(initiator, streamCancelMessage("allowed", 42), "grp_80")
+	cancel := streamCancelMessage("allowed", 42)
+	cancel.Metadata[artifactContextRefMetadataKey] = "acr_private"
+	cancel.Metadata[artifactContextMetadataKey] = map[string]interface{}{"secret": true}
+	cancel.Metadata[artifactRefMetadataKey] = map[string]interface{}{"id": "private"}
+	cancel.Metadata[artifactPageContextMetadataKey] = map[string]interface{}{"selected_text": "private"}
+	hub.handleStreamPub(initiator, cancel, "grp_80")
 
 	var ack ServerMessage
 	decodeQueuedServerMessage(t, initiator.send, &ack)
@@ -318,6 +323,11 @@ func TestGroupStreamCancelAllowsInitiatorAndTargetsOnlyTheirAgent(t *testing.T) 
 		}
 		if firstMetadataInt64(received.Data.Metadata, "target_bot_uid") != 42 {
 			t.Fatalf("%s cancel metadata = %#v", name, received.Data.Metadata)
+		}
+		for _, key := range []string{artifactContextRefMetadataKey, artifactContextMetadataKey, artifactRefMetadataKey, artifactPageContextMetadataKey} {
+			if _, exists := received.Data.Metadata[key]; exists {
+				t.Fatalf("%s group cancel leaked %q: %#v", name, key, received.Data.Metadata)
+			}
 		}
 	}
 	if drainOne(otherBot.send) {

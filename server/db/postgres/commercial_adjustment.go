@@ -320,11 +320,12 @@ func commercialOperatorPlanExpiry(plan *types.CommercialPlan, now time.Time) *ti
 
 func revokeCommercialPackageState(tx *sql.Tx, uid int64, operationID, note string, now time.Time) error {
 	rows, err := tx.Query(`
-		SELECT id, model, amount_cny
-		FROM commercial_quota_grants
-		WHERE uid = $1 AND plan_id IS NOT NULL AND revoked_at IS NULL
-		  AND effective_at <= $2 AND (expires_at IS NULL OR expires_at > $2)
-		FOR UPDATE`, uid, now)
+		SELECT g.id, g.model, g.amount_cny
+		FROM commercial_quota_grants g
+		JOIN commercial_plans p ON p.id = g.plan_id
+		WHERE g.uid = $1 AND g.revoked_at IS NULL AND p.slug <> $3
+		  AND g.effective_at <= $2 AND (g.expires_at IS NULL OR g.expires_at > $2)
+		FOR UPDATE OF g`, uid, now, commercialLegacyPlanSlug)
 	if err != nil {
 		return fmt.Errorf("lock replaced commercial package grants: %w", err)
 	}
@@ -354,15 +355,17 @@ func revokeCommercialPackageState(tx *sql.Tx, uid int64, operationID, note strin
 		}
 	}
 	if _, err := tx.Exec(`
-		UPDATE commercial_quota_grants
+		UPDATE commercial_quota_grants g
 		SET revoked_at = $2, expires_at = LEAST(COALESCE(expires_at, $2), $2)
-		WHERE uid = $1 AND plan_id IS NOT NULL AND revoked_at IS NULL`, uid, now); err != nil {
+		FROM commercial_plans p
+		WHERE g.plan_id = p.id AND g.uid = $1 AND p.slug <> $3 AND g.revoked_at IS NULL`, uid, now, commercialLegacyPlanSlug); err != nil {
 		return fmt.Errorf("revoke replaced commercial package grants: %w", err)
 	}
 	if _, err := tx.Exec(`
-		UPDATE commercial_entitlements
+		UPDATE commercial_entitlements e
 		SET state = 'revoked'
-		WHERE uid = $1 AND state = 'active'`, uid); err != nil {
+		FROM commercial_plans p
+		WHERE e.plan_id = p.id AND e.uid = $1 AND e.state = 'active' AND p.slug <> $2`, uid, commercialLegacyPlanSlug); err != nil {
 		return fmt.Errorf("revoke replaced commercial entitlements: %w", err)
 	}
 	return nil

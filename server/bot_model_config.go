@@ -61,6 +61,7 @@ type botModelCatalogItem struct {
 	ContextWindowTokens    int64              `json:"context_window_tokens"`
 	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
 	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
+	Vision                 bool               `json:"vision,omitempty"`
 	Available              bool               `json:"available"`
 	UnavailableReason      string             `json:"unavailable_reason,omitempty"`
 	Quota                  *relayUsageSummary `json:"quota,omitempty"`
@@ -76,9 +77,10 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
 	},
 	{
-		ID: "deepseek-v4-flash", Label: "DeepSeek V4 Flash", Description: "低额度 Flash，支持推理强度",
+		ID: "deepseek-v4-flash", Label: "DeepSeek V4 Flash", Description: "低额度 Flash，支持推理强度与视觉理解",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
 		ReasoningEfforts: []string{"high", "max", "disabled"}, DefaultReasoningEffort: "high",
+		Vision: true,
 	},
 	{
 		ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Description: "OpenAI Responses，支持精细推理强度",

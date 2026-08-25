@@ -192,6 +192,29 @@ func testCommercialRelayBaselineContract(t *testing.T, db *Adapter) {
 	if summary.Entitlements[0].PlanSlug != "catsco-free" || !summary.Entitlements[0].StartsAt.Equal(anchor) {
 		t.Fatalf("free baseline entitlement mismatch: %#v", summary.Entitlements[0])
 	}
+	// A paid upgrade revokes the free baseline, but a later refund must be
+	// able to recreate it. Historical revoked rows must not make the baseline
+	// idempotency check treat the account as still having an active baseline.
+	if _, err := db.db.Exec(`
+		UPDATE commercial_entitlements
+		SET state = 'revoked'
+		WHERE uid = $1 AND source = 'free'`, freeUID); err != nil {
+		t.Fatalf("revoke free baseline entitlement: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		UPDATE commercial_quota_grants
+		SET revoked_at = CURRENT_TIMESTAMP, expires_at = CURRENT_TIMESTAMP
+		WHERE uid = $1 AND grant_type = 'free' AND revoked_at IS NULL`, freeUID); err != nil {
+		t.Fatalf("revoke free baseline grants: %v", err)
+	}
+	created, err = db.EnsureCommercialRelayBaseline(freeUID, "free", budgets, anchor)
+	if err != nil || !created {
+		t.Fatalf("recreate free relay baseline after refund: created=%v err=%v", created, err)
+	}
+	restored, err := db.GetCommercialSummary(freeUID)
+	if err != nil || restored.TotalCNY != 1600 || len(restored.Entitlements) != 1 || len(restored.Grants) != 3 {
+		t.Fatalf("unexpected restored free relay baseline summary: summary=%#v err=%v", restored, err)
+	}
 
 	legacyUID, err := db.CreateUser(&types.User{
 		Username: "commercial-legacy-baseline", Email: "commercial-legacy-baseline@example.test", DisplayName: "Legacy Baseline",
@@ -398,7 +421,7 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 		t.Fatalf("expected purchase limit rejection, got %v", err)
 	}
 	refundRequestNo := "CCRF-" + created.OrderNo
-	const testRefundClaimTTL = 10 * time.Millisecond
+	const testRefundClaimTTL = time.Minute
 	refunding, claimed, err := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL)
 	if err != nil || !claimed || refunding.Status != "refunding" || refunding.RefundRequestNo != refundRequestNo {
 		t.Fatalf("begin commercial refund: order=%#v claimed=%v err=%v", refunding, claimed, err)
@@ -406,7 +429,21 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if duplicateClaim, claimedAgain, claimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); claimErr != nil || claimedAgain || duplicateClaim.Status != "refunding" {
 		t.Fatalf("active refund claim was not exclusive: order=%#v claimed=%v err=%v", duplicateClaim, claimedAgain, claimErr)
 	}
-	time.Sleep(25 * time.Millisecond)
+	// commercial_orders has an updated_at trigger, so temporarily disable that
+	// test-only trigger while aging the claim; sleeping for a TTL makes this
+	// integration test timing-sensitive on slower CI runners.
+	if _, err := db.db.Exec(`ALTER TABLE commercial_orders DISABLE TRIGGER trg_commercial_orders_updated_at`); err != nil {
+		t.Fatalf("disable order timestamp trigger for recovery test: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.db.Exec(`ALTER TABLE commercial_orders ENABLE TRIGGER trg_commercial_orders_updated_at`)
+	})
+	if _, err := db.db.Exec(`UPDATE commercial_orders SET updated_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes' WHERE order_no = $1`, created.OrderNo); err != nil {
+		t.Fatalf("age refund claim for recovery test: %v", err)
+	}
+	if _, err := db.db.Exec(`ALTER TABLE commercial_orders ENABLE TRIGGER trg_commercial_orders_updated_at`); err != nil {
+		t.Fatalf("restore order timestamp trigger after recovery test setup: %v", err)
+	}
 	if reclaimed, reclaimedClaim, reclaimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); reclaimErr != nil || !reclaimedClaim || reclaimed.Status != "refunding" {
 		t.Fatalf("stale refund claim was not recoverable: order=%#v claimed=%v err=%v", reclaimed, reclaimedClaim, reclaimErr)
 	}
@@ -517,26 +554,20 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	t.Helper()
 	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"gpt-5.6-terra": 100}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750, "gpt-5.6-terra": 1750, "gpt-5.6-sol": 1750, "gpt-5.6-luna": 1750}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create personal plan: %v", err)
 	}
 	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"gpt-5.6-terra": 300}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 5250, "MiniMax-M3": 5250, "deepseek-v4-flash": 5250, "gpt-5.6-terra": 5250, "gpt-5.6-sol": 5250, "gpt-5.6-luna": 5250}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)
 	}
 
 	personalOrder := createAndFulfillCommercialTestOrder(t, db, paidUID, personalID, "CCTIERPERSONAL", "tier_personal_request", "tier-personal-event")
-	if _, err := db.CreateCommercialOrder(&types.CommercialOrder{
-		OrderNo: "CCTIERPERSONALREPEAT", UID: paidUID, PlanID: personalID, Channel: "test",
-		ClientRequestID: "tier_personal_repeat_request",
-	}); err == nil || !strings.Contains(err.Error(), "already active") {
-		t.Fatalf("active personal plan could be repurchased: %v", err)
-	}
 	bonusExpiry := time.Now().UTC().Add(7 * 24 * time.Hour)
 	bonus, err := db.GrantCommercialQuota(&types.CommercialQuotaGrant{
 		UID: paidUID, PlanID: personalID, GrantType: "bonus", Model: "gpt-5.6-terra",
@@ -546,9 +577,12 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("create personal plan bonus before upgrade: %v", err)
 	}
 
-	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERPRO", "tier_pro_request", "tier-pro-event")
+	proOrder := createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERPRO", "tier_pro_request", "tier-pro-event")
+	if proOrder.PaidAt == nil {
+		t.Fatal("paid upgrade order did not retain payment timestamp")
+	}
 	summary, err := db.GetCommercialSummary(paidUID)
-	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 325 {
+	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 5275 {
 		t.Fatalf("paid upgrade did not replace personal quota: summary=%#v err=%v", summary, err)
 	}
 	var bonusRevokedAt sql.NullTime
@@ -562,19 +596,53 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'upgrade' AND entry_type = 'revoke'`, paidUID).Scan(&upgradeLedger); err != nil {
 		t.Fatalf("count upgrade ledger entries: %v", err)
 	}
-	if revokedPersonalGrants != 1 || upgradeLedger != 1 {
+	if revokedPersonalGrants != 6 || upgradeLedger != 6 {
 		t.Fatalf("paid upgrade audit mismatch: revoked=%d ledger=%d", revokedPersonalGrants, upgradeLedger)
 	}
 	var personalState string
-	if err := db.db.QueryRow(`SELECT state FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalOrder.OrderNo).Scan(&personalState); err != nil || personalState != "revoked" {
-		t.Fatalf("personal entitlement was not revoked: state=%q err=%v", personalState, err)
+	var personalExpiresAt time.Time
+	if err := db.db.QueryRow(`SELECT state, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalOrder.OrderNo).Scan(&personalState, &personalExpiresAt); err != nil || personalState != "revoked" {
+		t.Fatalf("personal entitlement was not revoked: state=%q expires_at=%v err=%v", personalState, personalExpiresAt, err)
+	}
+	if !personalExpiresAt.Equal(proOrder.PaidAt.UTC()) {
+		t.Fatalf("personal entitlement retained time after immediate upgrade: expires_at=%s paid_at=%s", personalExpiresAt.UTC().Format(time.RFC3339Nano), proOrder.PaidAt.UTC().Format(time.RFC3339Nano))
+	}
+	var proStartsAt, proExpiresAt time.Time
+	if err := db.db.QueryRow(`SELECT starts_at, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, proOrder.OrderNo).Scan(&proStartsAt, &proExpiresAt); err != nil {
+		t.Fatalf("read pro entitlement dates: %v", err)
+	}
+	expectedProExpiresAt := proOrder.PaidAt.UTC().AddDate(0, 0, proOrder.PlanDurationDays)
+	if !proStartsAt.Equal(proOrder.PaidAt.UTC()) || !proExpiresAt.Equal(expectedProExpiresAt) {
+		t.Fatalf("pro entitlement did not restart from payment: starts_at=%s expires_at=%s paid_at=%s expected_expires=%s", proStartsAt.UTC().Format(time.RFC3339Nano), proExpiresAt.UTC().Format(time.RFC3339Nano), proOrder.PaidAt.UTC().Format(time.RFC3339Nano), expectedProExpiresAt.Format(time.RFC3339Nano))
+	}
+	var oldCreditState string
+	if err := db.db.QueryRow(`SELECT state FROM cloud_worker_credits WHERE uid = $1 AND source_ref = $2`, paidUID, "order:"+personalOrder.OrderNo).Scan(&oldCreditState); err != nil || oldCreditState != "revoked" {
+		t.Fatalf("superseded personal cloud-worker credit remained usable: state=%q err=%v", oldCreditState, err)
+	}
+	var availableCredits int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 1 {
+		t.Fatalf("immediate upgrade should leave exactly one available cloud-worker credit: count=%d err=%v", availableCredits, err)
+	}
+	personalRenewal, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo: "CCTIERPROREPEAT", UID: paidUID, PlanID: proID, Channel: "test",
+		ClientRequestID: "tier_pro_repeat_request",
+	})
+	if err != nil {
+		t.Fatalf("active pro plan could not be renewed: %v", err)
+	}
+	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, personalRenewal.OrderNo, "tier_pro_repeat_confirm", "tier-pro-repeat-event")
+	var renewalStartsAt, renewalExpiresAt time.Time
+	if err := db.db.QueryRow(`SELECT starts_at, expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalRenewal.OrderNo).Scan(&renewalStartsAt, &renewalExpiresAt); err != nil {
+		t.Fatalf("read pro renewal dates: %v", err)
+	}
+	if !renewalStartsAt.Equal(proExpiresAt) || !renewalExpiresAt.Equal(proExpiresAt.AddDate(0, 0, personalRenewal.PlanDurationDays)) {
+		t.Fatalf("pro renewal did not append a new period: starts=%s expires=%s previous=%s", renewalStartsAt.UTC().Format(time.RFC3339Nano), renewalExpiresAt.UTC().Format(time.RFC3339Nano), proExpiresAt.UTC().Format(time.RFC3339Nano))
 	}
 	for _, blocked := range []struct {
 		planID int64
 		want   string
 	}{
 		{personalID, "below active plan"},
-		{proID, "already active"},
 	} {
 		if _, err := db.CreateCommercialOrder(&types.CommercialOrder{
 			OrderNo: fmt.Sprintf("CCTIERBLOCKED%d", blocked.planID), UID: paidUID, PlanID: blocked.planID, Channel: "test",
@@ -616,7 +684,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("redeem personal invite: %v", err)
 	}
 	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
-	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 300 {
+	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 5250 {
 		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
 	}
 }

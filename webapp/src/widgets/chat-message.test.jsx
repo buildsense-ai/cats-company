@@ -58,7 +58,7 @@ vi.mock('read-excel-file/browser', () => ({
   default: vi.fn(),
 }));
 
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from './chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
 import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
@@ -171,7 +171,10 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/report.html');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/report.html',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
     const frame = container.querySelector('iframe.v3-file-preview-frame');
     expect(frame).not.toBeNull();
@@ -179,6 +182,84 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('sandbox')).toContain('allow-forms');
     expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
+  });
+
+  it('describes a failed preview as a temporary service problem when the media endpoint returns a gateway error', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 502 });
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={{
+            name: 'notes.txt',
+            url: '/uploads/files/notes.txt',
+            size: 128,
+            mime_type: 'text/plain',
+          }}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(container.querySelector('.v3-file-preview-state.error')?.textContent).toBe(
+      '预览加载失败：服务暂时不可用，请稍后重试',
+    );
+  });
+
+  it('previews an image file in the side panel without fetching it as text', async () => {
+    const image = {
+      type: 'image',
+      name: '课堂照片.jpg',
+      url: '/uploads/images/classroom.jpg',
+      mime_type: 'image/jpeg',
+      size: 2048,
+    };
+    const descriptor = previewFileDescriptor(image);
+    expect(descriptor?.isImage).toBe(true);
+    expect(descriptor?.canPreview).toBe(true);
+
+    await act(async () => {
+      root.render(<FilePreviewPanel file={image} onClose={vi.fn()} />);
+      await flushAsync();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(panel).not.toBeNull();
+    const preview = panel.querySelector('.v3-file-preview-image img');
+    expect(preview?.getAttribute('src')).toBe('/uploads/images/classroom.jpg');
+    expect(preview?.getAttribute('alt')).toBe('课堂照片.jpg');
+    expect(panel.querySelector('a[download]')?.getAttribute('href')).toBe('/uploads/images/classroom.jpg?download=1');
+
+    await act(async () => {
+      Simulate.error(preview);
+      await Promise.resolve();
+    });
+    expect(panel.textContent).toContain('图片加载失败');
+  });
+
+  it('normalizes a disconnected media endpoint instead of showing the browser error', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={{
+            name: 'notes.txt',
+            url: '/uploads/files/notes.txt',
+            size: 128,
+            mime_type: 'text/plain',
+          }}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(container.querySelector('.v3-file-preview-state.error')?.textContent).toBe(
+      '预览加载失败：暂时无法连接服务，请稍后重试',
+    );
   });
 
   it('renders an Agent delivery artifact before text from the same message', async () => {
@@ -467,7 +548,10 @@ describe('ChatMessage rich file rendering', () => {
       await flushAsync(12);
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/grade.xlsx');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/grade.xlsx',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(readExcelFile).toHaveBeenCalledWith(expect.any(ArrayBuffer));
     expect(container.querySelector('.v3-spreadsheet-preview')).not.toBeNull();
     expect(container.textContent).toContain('名单');
@@ -681,7 +765,10 @@ describe('ChatMessage rich file rendering', () => {
       await flushAsync(8);
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/large.xlsx');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/large.xlsx',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(arrayBuffer).not.toHaveBeenCalled();
     expect(container.textContent).toContain('当前最多预览');
     expect(container.querySelector('.v3-spreadsheet-preview')).toBeNull();
@@ -1074,6 +1161,7 @@ describe('ChatMessage rich file rendering', () => {
     const preview = document.body.querySelector('.oc-rich-image-preview');
     const previewImage = preview?.querySelector('.oc-rich-image-preview-media');
     const closeButton = preview?.querySelector('button.oc-rich-image-preview-close');
+    const download = preview?.querySelector('a.oc-rich-media-preview-download');
     expect(preview).not.toBeNull();
     expect(container.contains(preview)).toBe(false);
     expect(preview.getAttribute('role')).toBe('dialog');
@@ -1082,6 +1170,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(previewImage?.getAttribute('src')).toBe('/uploads/images/poster.png');
     expect(previewImage?.getAttribute('alt')).toBe('poster.png preview');
     expect(closeButton?.getAttribute('aria-label')).toBe('关闭图片预览');
+    expect(download?.getAttribute('aria-label')).toBe('下载图片 poster.png');
+    expect(download?.getAttribute('href')).toBe('/uploads/images/poster.png?download=1');
+    expect(download?.getAttribute('download')).toBe('poster.png');
     expect(document.activeElement).toBe(closeButton);
 
     await act(async () => {
@@ -1151,6 +1242,55 @@ describe('ChatMessage rich file rendering', () => {
       'stable-gallery-id',
       expect.anything(),
       expect.objectContaining({ url: '/uploads/images/fallback.png' }),
+    );
+  });
+
+  it('does not match an earlier gallery image when both thumbnails are absent', async () => {
+    const onOpenImage = vi.fn();
+    const selectedPayload = {
+      file_key: 'selected.png',
+      url: '/uploads/images/selected.png',
+      name: 'selected.png',
+    };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 2703,
+            from_uid: 1,
+            content: 'Preview selected image',
+            content_blocks: [{ type: 'image', payload: selectedPayload }],
+          }}
+          imageGallery={[
+            {
+              id: 'earlier-image-id',
+              payload: {
+                file_key: 'earlier.png',
+                url: '/uploads/images/earlier.png',
+                name: 'earlier.png',
+              },
+            },
+            { id: 'selected-image-id', payload: selectedPayload },
+          ]}
+          imageId="selected-image-id"
+          onOpenImage={onOpenImage}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.oc-rich-image-trigger'));
+      await Promise.resolve();
+    });
+
+    expect(onOpenImage).toHaveBeenCalledWith(
+      'selected-image-id',
+      expect.anything(),
+      selectedPayload,
     );
   });
 
@@ -1631,6 +1771,19 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
   });
 
+  it('constructs the first managed Artifact preview from its immutable version URL', () => {
+    const preview = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      title: '课堂小游戏',
+      url: 'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/',
+      publish_version: 2,
+      agent_uid: 440,
+    });
+    expect(preview.url).toBe(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v2/',
+    );
+  });
+
   it('renders a registry-matched Artifact URL as a card and previews the remote page in the side panel', async () => {
     const artifact = {
       id: 'lesson-game',
@@ -1639,6 +1792,7 @@ describe('ChatMessage rich file rendering', () => {
       url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
       publish_version: 2,
     };
+    const previewURL = `${artifact.url}?artifact_version=2`;
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -1668,10 +1822,10 @@ describe('ChatMessage rich file rendering', () => {
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
     const frame = panel.querySelector('iframe.v3-file-preview-frame');
-    expect(frame.getAttribute('src')).toBe(artifact.url);
+    expect(frame.getAttribute('src')).toBe(previewURL);
     expect(frame.getAttribute('sandbox')).toContain('allow-same-origin');
     expect(frame.hasAttribute('credentialless')).toBe(true);
-    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(previewURL);
     expect(container.querySelector('.v3-artifact-action[href]').getAttribute('href')).toBe(artifact.url);
     expect(panel.querySelector('.v3-remote-artifact-preview-state').textContent).toContain('正在加载');
 
@@ -1686,7 +1840,7 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
-    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(previewURL);
   });
 
   it('keeps the current Artifact visible until the hidden refresh frame answers through the page bridge', async () => {
@@ -2040,7 +2194,7 @@ describe('ChatMessage rich file rendering', () => {
 
     const panel = container.querySelector('.v3-file-preview-panel');
     const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
-    expect(externalLink?.getAttribute('href')).toBe(artifact.url);
+    expect(externalLink?.getAttribute('href')).toBe(`${artifact.url}?artifact_version=3`);
     expect(panel.querySelector('a[download]')).toBeNull();
 
     await act(async () => {
@@ -2306,6 +2460,124 @@ describe('ChatMessage rich file rendering', () => {
     expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
     expect(downloadLink.getAttribute('target')).toBe('_blank');
+  });
+
+  it('keeps PDF sharing inside the preview and shares the inline URL', async () => {
+    const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: share,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 44,
+              from_uid: 2,
+              content: '[文件] report.pdf',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'report.pdf',
+                  url: '/uploads/files/report.pdf',
+                  size: 2048,
+                  mime_type: 'application/pdf',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await flushAsync();
+      });
+
+      const panel = container.querySelector('.v3-file-preview-panel');
+      const shareButton = panel.querySelector('button[aria-label="分享 PDF"]');
+      expect(shareButton).not.toBeNull();
+      expect(container.querySelector('.v3-artifact-actions button[aria-label="分享 PDF"]')).toBeNull();
+      expect(panel.querySelector('a[download]').getAttribute('href'))
+        .toBe('/uploads/files/report.pdf?download=1');
+
+      await act(async () => {
+        Simulate.click(shareButton);
+        await flushAsync();
+      });
+
+      expect(share).toHaveBeenCalledWith({
+        title: 'report.pdf',
+        url: new URL('/uploads/files/report.pdf', window.location.href).toString(),
+      });
+    } finally {
+      if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
+      else delete navigator.share;
+    }
+  });
+
+  it('keeps HTML sharing inside the preview while preserving the download action', async () => {
+    const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: share,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 45,
+              from_uid: 2,
+              content: '[文件] report.html',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'report.html',
+                  url: '/uploads/files/report.html',
+                  size: 2048,
+                  mime_type: 'text/html',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await flushAsync();
+      });
+
+      const panel = container.querySelector('.v3-file-preview-panel');
+      const shareButton = panel.querySelector('button[aria-label="分享 HTML"]');
+      expect(shareButton).not.toBeNull();
+      expect(container.querySelector('.v3-artifact-actions button[aria-label^="分享"]')).toBeNull();
+      expect(panel.querySelector('a[download]').getAttribute('href'))
+        .toBe('/uploads/files/report.html?download=1');
+
+      await act(async () => {
+        Simulate.click(shareButton);
+        await flushAsync();
+      });
+
+      expect(share).toHaveBeenCalledWith({
+        title: 'report.html',
+        url: new URL('/uploads/files/report.html', window.location.href).toString(),
+      });
+    } finally {
+      if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
+      else delete navigator.share;
+    }
   });
 
   it('closes the file preview from its backdrop and the Escape key', async () => {
@@ -2676,7 +2948,10 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     expect(window.open).not.toHaveBeenCalled();
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/legacy-report.html');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/uploads/files/legacy-report.html',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(container.querySelectorAll('.v3-file-preview-panel')).toHaveLength(1);
     expect(container.querySelector('.v3-file-preview-title h3').textContent).toBe('legacy-report.html');
   });
@@ -2804,11 +3079,15 @@ describe('ChatMessage rich file rendering', () => {
 
     const preview = container.querySelector('video.oc-rich-video-player');
     const closeButton = container.querySelector('button.oc-rich-video-preview-close');
+    const download = container.querySelector('a.oc-rich-media-preview-download');
     expect(preview).not.toBeNull();
     expect(preview.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
     expect(preview.controls).toBe(true);
     expect(preview.autoplay).toBe(true);
     expect(preview.getAttribute('aria-label')).toBe('product-demo.mp4');
+    expect(download.getAttribute('aria-label')).toBe('下载视频 product-demo.mp4');
+    expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1');
+    expect(download.getAttribute('download')).toBe('product-demo.mp4');
     expect(container.querySelector('.oc-rich-video-preview').getAttribute('role')).toBe('dialog');
     expect(document.activeElement).toBe(closeButton);
 

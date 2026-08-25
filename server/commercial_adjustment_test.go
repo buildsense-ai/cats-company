@@ -128,3 +128,52 @@ func TestCommercialAdjustmentDoesNotReplayOlderRelayCycle(t *testing.T) {
 		t.Fatalf("older idempotent retry reset Relay usage %d times", posts)
 	}
 }
+
+func TestCommercialAdjustmentAcceptsRelaySecondPrecisionReadback(t *testing.T) {
+	requestedAt := time.Date(2026, 8, 21, 8, 14, 58, 859123000, time.UTC)
+	usageWindowStart := ""
+	posts := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/users/38/key/limits" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method == http.MethodPost {
+			posts++
+			var payload struct {
+				UsageWindowStart string `json:"usage_window_start"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			parsed, err := time.Parse(time.RFC3339Nano, payload.UsageWindowStart)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			usageWindowStart = parsed.UTC().Truncate(time.Second).Format(time.RFC3339)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"configured":         true,
+			"usage_window_start": usageWindowStart,
+			"limits":             map[string]interface{}{},
+		})
+	}))
+	defer relay.Close()
+	handler := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, newCommercialTestStore())
+	handler.SetCommercialRelayAdmin(&RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()}, true)
+
+	if err := handler.resetCommercialRelayCycle(context.Background(), 38, requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if posts != 1 {
+		t.Fatalf("Relay cycle reset posts=%d, want 1", posts)
+	}
+	if usageWindowStart != "2026-08-21T08:14:58Z" {
+		t.Fatalf("Relay did not normalize the cycle to second precision: %q", usageWindowStart)
+	}
+	if sameCommercialRelayTimestamp(usageWindowStart, requestedAt.Add(time.Second).Format(time.RFC3339Nano)) {
+		t.Fatal("timestamps in different seconds were accepted")
+	}
+}

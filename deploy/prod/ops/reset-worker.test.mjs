@@ -1,7 +1,7 @@
 // Tests for deploy/prod/ops/reset-worker.sh.
 //
-// reset = destroy + provision. Runs the real scripts through Git Bash with
-// fake ctyun-cli + fake ssh (same fakes as the provision test).
+// reset = in-place RebuildEcsInstance + identity bootstrap. Runs the real
+// script through Git Bash with fake ctyun-cli + fake ssh.
 import { test } from "node:test";
 import * as assert from "node:assert";
 import * as fs from "node:fs";
@@ -50,6 +50,21 @@ if (op === "ecs ListEcsInstances") {
   state.instances.push({ instanceName: name, instanceID: id, state: "running", floatingIP: "10.0.0." + (state.instances.length + 1) });
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: { masterResourceID: id } });
+} else if (op === "ecs StopEcsInstance") {
+  const id = val("--instanceID");
+  state.instances = (state.instances || []).map(i => i.instanceID === id
+    ? { ...i, state: "stopped", instanceStatus: "stopped" } : i);
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({ statusCode: "800", returnObj: {} });
+} else if (op === "ecs RebuildEcsInstance") {
+  const id = val("--instanceID");
+  const imageID = val("--imageID");
+  state.rebuilds = state.rebuilds || [];
+  state.rebuilds.push({ id, imageID, keyPairID: val("--keyPairID") });
+  state.instances = (state.instances || []).map(i => i.instanceID === id
+    ? { ...i, state: "running", instanceStatus: "running", image: { imageID }, imageID } : i);
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({ statusCode: "800", returnObj: { jobID: "job-rebuild-1" } });
 } else if (op === "ecs DeleteEcsInstance") {
   state.deletedInstances = state.deletedInstances || [];
   state.deletedInstances.push(val("--instanceID"));
@@ -136,23 +151,30 @@ function writeCommand(bin, name, body) {
 
 function setupSandbox(state, injectEnv) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-reset-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}');
   const bin = path.join(sandbox, "bin");
   fs.mkdirSync(bin);
   writeCommand(bin, "ctyun-cli", FAKE_CTYUN);
   writeCommand(bin, "ssh", FAKE_SSH);
   writeCommand(bin, "scp", "process.exit(0);");
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
+  writeCommand(bin, "sleep", "process.exit(0);");
   // Fake image list (TSV contract: imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status)
-  writeCommand(bin, "list-worker-images.sh", `
-process.stdout.write(
-  "img-178\\tcatsco-worker-1-4-8-f3f1f3e6\\t1.4.8\\tf3f1f3e6\\t1750000000000\\tactive\\n" +
-  "img-177\\tcatsco-worker-1-4-7-abc12345\\t1.4.7\\tabc12345\\t1750000000000\\tactive\\n"
-);
-`);
+  const fakeImages = path.join(bin, "list-worker-images.sh");
+  fs.writeFileSync(fakeImages, "#!/usr/bin/env bash\nprintf 'img-178\\tcatsco-worker-1-4-8-f3f1f3e6\\t1.4.8\\tf3f1f3e6\\t1750000000000\\tactive\\nimg-177\\tcatsco-worker-1-4-7-abc12345\\t1.4.7\\tabc12345\\t1750000000000\\tactive\\n'\n");
+  fs.chmodSync(fakeImages, 0o755);
   const stateDir = path.join(sandbox, "state");
   fs.mkdirSync(stateDir, { recursive: true });
+  if ((state?.instances || []).length > 0) {
+    const tenant = String(state.instances[0].instanceName || "").replace(/^worker-/, "");
+    const tenantDir = path.join(stateDir, tenant);
+    fs.mkdirSync(tenantDir, { recursive: true });
+    fs.writeFileSync(path.join(tenantDir, "id_rsa"), "not-a-real-key", { mode: 0o600 });
+  }
   if (injectEnv) {
-    fs.writeFileSync(path.join(stateDir, "inject.env"), injectEnv, { mode: 0o600 });
+    const tenantDir = path.join(stateDir, "bot-a");
+    fs.mkdirSync(tenantDir, { recursive: true });
+    fs.writeFileSync(path.join(tenantDir, "inject.env"), injectEnv, { mode: 0o600 });
   }
   const statePath = path.join(sandbox, "state.json");
   fs.writeFileSync(statePath, JSON.stringify(state || {}));
@@ -169,7 +191,7 @@ process.stdout.write(
     CTYUN_WORKER_SUBNET_ID: "s-test",
     CTYUN_WORKER_SECURITY_GROUP_ID: "g-test",
     // MSYS 形式（/c/...）：脚本里 bash 内建 [[ -f ]] 只认 Unix 路径
-    CTYUN_WORKER_STATE_DIR: toMsys(stateDir),
+    CTYUN_WORKER_STATE_ROOT: toMsys(stateDir),
     FAKE_STATE: statePath,
     ...extra,
   }) };
@@ -224,26 +246,27 @@ test("reset-worker: refuses without credentials and no snapshot", () => {
   assert.match(r.stderr, /--api-key and --login-token are required/);
 });
 
-test("reset-worker: dry-run destroys nothing and provisions nothing", () => {
-  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", floatingIP: "10.0.0.9" }] });
+test("reset-worker: dry-run rebuilds nothing and preserves the existing instance", () => {
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", keypairName: "worker-key-bot-a", floatingIP: "10.0.0.9" }] });
   const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--image-id", "img-1", "--dry-run"]);
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.equal((state.deletedInstances || []).length, 0, "no instance deleted in dry-run");
+  assert.equal((state.rebuilds || []).length, 0, "no rebuild in dry-run");
   assert.ok((state.instances || []).some(i => i.instanceID === "i-old"), "old instance untouched");
   assert.ok(!state.injectedEnv, "no env injected in dry-run");
   assert.ok(!state.serviceEnabled, "no service enabled in dry-run");
 });
 
-test("reset-worker: happy path destroys then reprovisions", () => {
-  const sb = setupSandbox({});
+test("reset-worker: happy path rebuilds the existing instance in place", () => {
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", keypairName: "worker-key-bot-a", floatingIP: "10.0.0.9" }], keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }] });
   const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY",
     "--bot-uid", "42", "--user-uid", "7", "--user-name", "alice", "--user-display", "Alice", "--image-id", "img-1"]);
   if (r.status !== 0) {
     const dbg = fs.readFileSync(sb.statePath, "utf8");
     assert.equal(r.status, 0, `status=${r.status}\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}\nSTATE:\n${dbg}`);
   }
-  assert.match(r.stdout, /"status":"provisioned"/);
+  assert.match(r.stdout, /"status":"reinitialized"/);
   assert.match(r.stdout, /"instance_name":"worker-bot-a"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.ok(state.injectedEnv, "env should be re-injected after reset");
@@ -251,13 +274,23 @@ test("reset-worker: happy path destroys then reprovisions", () => {
   assert.match(state.injectedEnv, /CATSCO_API_KEY=KEY/);
   assert.match(state.injectedEnv, /CATSCO_BOT_UID=42/);
   assert.equal(state.serviceEnabled, true, "service should be enabled after reset");
-  // destroy 在前：旧实例（若有）先删。本测试无旧实例 → destroy 报 not-found 不阻塞
   const inst = (state.instances || []).find(i => i.instanceName === "worker-bot-a");
-  assert.ok(inst, "reprovisioned instance should exist");
+  assert.ok(inst, "existing instance should remain");
+  assert.equal(inst.instanceID, "i-old", "reset must preserve the provider instance ID");
+  assert.equal((state.deletedInstances || []).length, 0, "reset must never unsubscribe/delete");
+  assert.equal(state.rebuilds.length, 1);
+  assert.equal(state.rebuilds[0].imageID, "img-1");
 });
 
-test("reset-worker: reprovisions an existing worker (destroy old first)", () => {
-  const old = { instanceName: "worker-bot-a", instanceID: "i-old", state: "running", floatingIP: "10.0.0.9" };
+test("reset-worker: refuses an absent instance instead of creating a replacement", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--image-id", "img-1"]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /not found; reset never creates/);
+});
+
+test("reset-worker: keeps the provider instance and keypair", () => {
+  const old = { instanceName: "worker-bot-a", instanceID: "i-old", state: "running", keypairName: "worker-key-bot-a", floatingIP: "10.0.0.9" };
   const sb = setupSandbox({
     instances: [old],
     keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }],
@@ -267,25 +300,25 @@ test("reset-worker: reprovisions an existing worker (destroy old first)", () => 
     const dbg = fs.readFileSync(sb.statePath, "utf8");
     assert.equal(r.status, 0, `status=${r.status}\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}\nSTATE:\n${dbg}`);
   }
-  assert.match(r.stdout, /"status":"provisioned"/);
+  assert.match(r.stdout, /"status":"reinitialized"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
-  assert.ok((state.deletedInstances || []).includes("i-old"), "old instance destroyed first");
-  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"], "legacy cloud keypair must be removed before reprovisioning");
-  assert.equal(state.keypairs.length, 1, "reset must leave one newly imported tenant keypair");
-  assert.notEqual(state.keypairs[0].keyPairID, "kp-legacy");
-  assert.ok(!(state.instances || []).some(i => i.instanceID === "i-old"), "old instance gone");
+  assert.equal((state.deletedInstances || []).length, 0, "reset must not destroy the instance");
+  assert.equal((state.deletedKeypairs || []).length, 0, "reset must not remove the keypair");
+  assert.equal(state.keypairs.length, 1, "reset must reuse the tenant keypair");
+  assert.equal(state.keypairs[0].keyPairID, "kp-legacy");
+  assert.ok((state.instances || []).some(i => i.instanceID === "i-old"), "same instance remains");
   assert.ok(state.injectedEnv, "env re-injected");
 });
 
 test("reset-worker: falls back to inject.env snapshot for identity", () => {
-  const sb = setupSandbox({}, SNAPSHOT);
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", keypairName: "worker-key-bot-a", floatingIP: "10.0.0.9" }], keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }] }, SNAPSHOT);
   // 不带注入参数 → 从 inject.env 快照读身份
   const r = run(sb, ["--name", "bot-a", "--image-id", "img-1"]);
   if (r.status !== 0) {
     const dbg = fs.readFileSync(sb.statePath, "utf8");
     assert.equal(r.status, 0, `status=${r.status}\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}\nSTATE:\n${dbg}`);
   }
-  assert.match(r.stdout, /"status":"provisioned"/);
+  assert.match(r.stdout, /"status":"reinitialized"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.match(state.injectedEnv, /CATSCO_USER_TOKEN=SNAPJWT/);
   assert.match(state.injectedEnv, /CATSCO_API_KEY=SNAPKEY/);
@@ -296,13 +329,13 @@ test("reset-worker: falls back to inject.env snapshot for identity", () => {
 });
 
 test("reset-worker: --version resolves the matching image id", () => {
-  const sb = setupSandbox({});
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", keypairName: "worker-key-bot-a", floatingIP: "10.0.0.9" }], keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }] });
   const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--version", "1.4.7"]);
   if (r.status !== 0) {
     const dbg = fs.readFileSync(sb.statePath, "utf8");
     assert.equal(r.status, 0, `status=${r.status}\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}\nSTATE:\n${dbg}`);
   }
-  // provision 输出里带解析出的 image_id（list TSV 里 version 1.4.7 -> img-177）
+  // reset 输出里带解析出的 image_id（list TSV 里 version 1.4.7 -> img-177）
   assert.match(r.stdout, /"image_id":"img-177"/);
 });
 

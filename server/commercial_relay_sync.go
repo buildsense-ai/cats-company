@@ -582,6 +582,19 @@ func commercialRelayBaselineForSummary(summary *types.CommercialSummary, relayUs
 			}
 			return commercialRelayBaselineProfileFree, budgets, nil
 		}
+		// Paid upgrades revoke the prior free entitlement. A later refund
+		// leaves only the immutable refund ledger entries, so use that audit
+		// signal to recreate the default free baseline before reconciling the
+		// stale shared Relay quota.
+		for _, entry := range summary.Ledger {
+			if entry != nil && strings.EqualFold(strings.TrimSpace(entry.SourceType), "refund") {
+				budgets := make(map[string]float64, len(commercialRelayFreeBudgets))
+				for model, amount := range commercialRelayFreeBudgets {
+					budgets[model] = amount
+				}
+				return commercialRelayBaselineProfileFree, budgets, nil
+			}
+		}
 	}
 	if relayUser != nil && relayUser.Limits.MonthlyBudget.MaxLimit > commercialRelayBlockedLimit {
 		return "", nil, fmt.Errorf("relay shared quota exists without a commercial baseline")
@@ -850,6 +863,8 @@ func commercialRelayModelSetKey(models []string) string {
 }
 
 func commercialRelayModelScopesMatch(actual, expected []commercialRelayModelScope) bool {
+	actual = canonicalCommercialRelayModelScopes(actual)
+	expected = canonicalCommercialRelayModelScopes(expected)
 	if len(actual) != len(expected) {
 		return false
 	}
@@ -863,6 +878,94 @@ func commercialRelayModelScopesMatch(actual, expected []commercialRelayModelScop
 		}
 	}
 	return true
+}
+
+// canonicalCommercialRelayModelScopes mirrors Relay Admin's model-scope
+// merge contract. Relay Admin merges requested scopes that share any managed
+// model into one scope, retaining non-overlapping managed/allowed models from
+// the existing scope. Comparing the raw arrays would therefore report a
+// permanent mismatch for valid overlapping provider families (for example a
+// Terra/Sol provider alongside a Terra/Sol/Luna provider).
+func canonicalCommercialRelayModelScopes(scopes []commercialRelayModelScope) []commercialRelayModelScope {
+	canonical := make([]commercialRelayModelScope, 0, len(scopes))
+	for _, scope := range scopes {
+		managed := normalizedCommercialModels(scope.ManagedModels)
+		if len(managed) == 0 {
+			continue
+		}
+		allowed := normalizedCommercialModels(scope.AllowedModels)
+		managedSet := map[string]bool{}
+		for _, model := range managed {
+			managedSet[strings.ToLower(model)] = true
+		}
+		filteredAllowed := make([]string, 0, len(allowed))
+		for _, model := range allowed {
+			if managedSet[strings.ToLower(model)] {
+				filteredAllowed = append(filteredAllowed, model)
+			}
+		}
+		update := commercialRelayModelScope{ManagedModels: managed, AllowedModels: filteredAllowed}
+		merged := false
+		for index := range canonical {
+			current := canonical[index]
+			currentManagedSet := map[string]bool{}
+			for _, model := range current.ManagedModels {
+				currentManagedSet[strings.ToLower(model)] = true
+			}
+			intersects := false
+			for _, model := range update.ManagedModels {
+				if currentManagedSet[strings.ToLower(model)] {
+					intersects = true
+					break
+				}
+			}
+			if !intersects {
+				continue
+			}
+
+			mergedManaged := append([]string(nil), update.ManagedModels...)
+			updateManagedSet := map[string]bool{}
+			for _, model := range update.ManagedModels {
+				updateManagedSet[strings.ToLower(model)] = true
+			}
+			for _, model := range current.ManagedModels {
+				if !updateManagedSet[strings.ToLower(model)] {
+					mergedManaged = append(mergedManaged, model)
+				}
+			}
+			mergedAllowed := append([]string(nil), update.AllowedModels...)
+			mergedAllowedSet := map[string]bool{}
+			for _, model := range mergedAllowed {
+				mergedAllowedSet[strings.ToLower(model)] = true
+			}
+			for _, model := range current.AllowedModels {
+				key := strings.ToLower(model)
+				if updateManagedSet[key] || mergedAllowedSet[key] {
+					continue
+				}
+				mergedAllowed = append(mergedAllowed, model)
+				mergedAllowedSet[key] = true
+			}
+			canonical[index] = commercialRelayModelScope{
+				ManagedModels: normalizedCommercialModels(mergedManaged),
+				AllowedModels: normalizedCommercialModels(mergedAllowed),
+			}
+			merged = true
+			break
+		}
+		if !merged {
+			canonical = append(canonical, update)
+		}
+	}
+	sort.Slice(canonical, func(i, j int) bool {
+		left := commercialRelayModelSetKey(canonical[i].ManagedModels)
+		right := commercialRelayModelSetKey(canonical[j].ManagedModels)
+		if left == right {
+			return commercialRelayModelSetKey(canonical[i].AllowedModels) < commercialRelayModelSetKey(canonical[j].AllowedModels)
+		}
+		return left < right
+	})
+	return canonical
 }
 
 func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) []commercialRelayModelScope {
@@ -1186,9 +1289,9 @@ func sameCommercialRelayTimestamp(left, right string) bool {
 	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
 		return strings.TrimSpace(left) == strings.TrimSpace(right)
 	}
-	leftTime, leftErr := time.Parse(time.RFC3339, strings.TrimSpace(left))
-	rightTime, rightErr := time.Parse(time.RFC3339, strings.TrimSpace(right))
-	return leftErr == nil && rightErr == nil && leftTime.Equal(rightTime)
+	leftTime, leftOK := parseCommercialRelayTime(left)
+	rightTime, rightOK := parseCommercialRelayTime(right)
+	return leftOK && rightOK && leftTime.Truncate(time.Second).Equal(rightTime.Truncate(time.Second))
 }
 
 func verifyCommercialRelaySharedPolicy(limit float64, usageWindowStart string, relayUser *commercialRelayUsageUser) error {
@@ -1216,10 +1319,32 @@ func findCommercialRelayLimit(limits []commercialRelayModelLimit, provider strin
 }
 
 func commercialManagedBudgetKey(provider string, allowedModels []string) string {
-	models := append([]string(nil), allowedModels...)
-	for i := range models {
-		models[i] = strings.TrimSpace(models[i])
+	seen := map[string]struct{}{}
+	models := make([]string, 0, len(allowedModels))
+	for _, value := range allowedModels {
+		model := commercialRelayCanonicalModelName(value)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[strings.ToLower(model)]; ok {
+			continue
+		}
+		seen[strings.ToLower(model)] = struct{}{}
+		models = append(models, model)
 	}
 	sort.Strings(models)
 	return strings.TrimSpace(provider) + "\x00" + strings.Join(models, "\x00")
+}
+
+// commercialRelayCanonicalModelName keeps provider-config budget identity
+// aligned with relay-admin.  The vision endpoint is an internal capability of
+// the public DeepSeek V4 model, so relay-admin may persist both names while
+// CatsCompany sends updates for the public name only.  Comparing raw model
+// arrays would make the post-write verification fail forever for that alias.
+func commercialRelayCanonicalModelName(value string) string {
+	model := strings.TrimSpace(value)
+	if strings.EqualFold(model, "deepseek-v4-flash-vision-exp") {
+		return "deepseek-v4-flash"
+	}
+	return model
 }

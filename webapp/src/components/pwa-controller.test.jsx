@@ -3,10 +3,31 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-vi.mock('virtual:pwa-register', () => ({
-  registerSW: vi.fn(() => vi.fn()),
-}));
+const pwaRegistrationMocks = vi.hoisted(() => {
+  const state = {
+    refreshListener: null,
+    updateServiceWorker: vi.fn(),
+  };
+  return {
+    state,
+    getPwaUpdateServiceWorker: vi.fn(() => state.updateServiceWorker),
+    hasPwaRefreshPresenter: vi.fn(() => false),
+    registerPwaServiceWorker: vi.fn(() => state.updateServiceWorker),
+    subscribeToPwaRefresh: vi.fn((listener) => {
+      state.refreshListener = listener;
+      return () => {
+        if (state.refreshListener === listener) state.refreshListener = null;
+      };
+    }),
+  };
+});
 
+vi.mock('../pwa-registration', () => ({
+  getPwaUpdateServiceWorker: pwaRegistrationMocks.getPwaUpdateServiceWorker,
+  hasPwaRefreshPresenter: pwaRegistrationMocks.hasPwaRefreshPresenter,
+  registerPwaServiceWorker: pwaRegistrationMocks.registerPwaServiceWorker,
+  subscribeToPwaRefresh: pwaRegistrationMocks.subscribeToPwaRefresh,
+}));
 vi.mock('../api', () => ({
   api: {
     getPushConfig: vi.fn(),
@@ -32,8 +53,8 @@ vi.mock('../utils/push-tab-coordination', () => ({
 }));
 
 import PwaController from './pwa-controller';
-import { registerSW } from 'virtual:pwa-register';
 import { api, setWSPushSubscriptionEndpoint } from '../api';
+import { registerPwaServiceWorker, subscribeToPwaRefresh } from '../pwa-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 
 let container;
@@ -57,6 +78,8 @@ beforeEach(() => {
     value: { request: vi.fn() },
   });
   api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
+  pwaRegistrationMocks.state.refreshListener = null;
+  pwaRegistrationMocks.hasPwaRefreshPresenter.mockReset().mockReturnValue(false);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -71,11 +94,13 @@ afterEach(() => {
 function renderController(pushPromptOwner, sessionRevision = 1, loggedIn = true) {
   act(() => {
     root.render(
-      <PwaController
-        loggedIn={loggedIn}
-        pushPromptOwner={pushPromptOwner}
-        sessionRevision={sessionRevision}
-      />,
+      <div className="cc-pwa-status">
+        <PwaController
+          loggedIn={loggedIn}
+          pushPromptOwner={pushPromptOwner}
+          sessionRevision={sessionRevision}
+        />
+      </div>,
     );
   });
 }
@@ -97,6 +122,23 @@ test('shows the push prompt again when a different account signs in', async () =
   await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:1')).toBe('true');
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:2')).toBeNull();
+});
+
+test('keeps the PWA controller mountable when browser storage is blocked', () => {
+  const originalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      throw new DOMException('Storage access is blocked', 'SecurityError');
+    },
+  });
+
+  try {
+    expect(() => renderController('user:blocked-storage')).not.toThrow();
+    expect(container.querySelector('.cc-pwa-status')).toBeTruthy();
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
+  }
 });
 
 test('registers an active tab under its push registration id', () => {
@@ -232,16 +274,27 @@ test('re-registers an active account when another tab hands off the browser subs
 
 test('activates a waiting service worker immediately so old upload routing cannot persist', async () => {
   renderController('user:1');
-  expect(registerSW).toHaveBeenCalledTimes(1);
+  expect(registerPwaServiceWorker).toHaveBeenCalledTimes(1);
+  expect(subscribeToPwaRefresh).toHaveBeenCalledTimes(1);
 
-  const registrationOptions = registerSW.mock.calls[0][0];
-  expect(registrationOptions.onOfflineReady).toBeUndefined();
-  const updateServiceWorker = registerSW.mock.results[0].value;
   await act(async () => {
-    registrationOptions.onNeedRefresh();
+    pwaRegistrationMocks.state.refreshListener();
     await Promise.resolve();
   });
 
-  expect(updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(pwaRegistrationMocks.state.updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(container.textContent).not.toContain('发现新版本');
+});
+
+test('defers a waiting-worker update to the active workspace failure presenter', async () => {
+  pwaRegistrationMocks.hasPwaRefreshPresenter.mockReturnValue(true);
+  renderController('user:1');
+
+  await act(async () => {
+    pwaRegistrationMocks.state.refreshListener();
+    await Promise.resolve();
+  });
+
+  expect(pwaRegistrationMocks.state.updateServiceWorker).not.toHaveBeenCalled();
   expect(container.textContent).not.toContain('发现新版本');
 });

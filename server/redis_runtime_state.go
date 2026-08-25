@@ -181,6 +181,20 @@ func (s *RedisRuntimeState) clearRuntimeRoute(route runtimeRoute) {
 	s.clearMatchingRuntimeRoute(s.routeKey(route), route)
 }
 
+func (s *RedisRuntimeState) broadcastUserMessage(uid int64, msg *ServerMessage) bool {
+	if s == nil || s.client == nil || uid <= 0 || msg == nil {
+		return false
+	}
+	payload, err := json.Marshal(redisUserMessageEnvelope{UID: uid, Msg: msg})
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	subscriberCount, err := s.client.Publish(ctx, s.userMessageChannel(), payload).Result()
+	return err == nil && subscriberCount > 0
+}
+
 func (s *RedisRuntimeState) clearMatchingRuntimeRoute(key string, route runtimeRoute) {
 	if s == nil || s.client == nil || key == "" || route.NodeID == "" || route.ConnectionID == "" {
 		return
@@ -241,6 +255,43 @@ func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinT
 		return false
 	}
 	return s.client.Publish(s.ctx, s.nodeInboxChannel(route.NodeID), payload).Err() == nil
+}
+
+func (s *RedisRuntimeState) deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool {
+	if s == nil || s.client == nil || msg == nil || route.NodeID == "" || route.ConnectionID == "" {
+		return false
+	}
+	if !s.routeConnected(route, now) {
+		return false
+	}
+	if hub := s.localHub(route.NodeID); hub != nil {
+		return hub.sendArtifactResultToLocalRoute(route, msg)
+	}
+	payload, err := json.Marshal(redisRuntimeEnvelope{
+		Route:          redisRouteFromRuntime(route),
+		ArtifactResult: msg,
+	})
+	if err != nil {
+		return false
+	}
+	return s.client.Publish(s.ctx, s.nodeInboxChannel(route.NodeID), payload).Err() == nil
+}
+
+func (s *RedisRuntimeState) deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool {
+	if s == nil || s.client == nil || nodeID == "" || msg == nil || !s.runtimeNodeAlive(nodeID) {
+		return false
+	}
+	if hub := s.localHub(nodeID); hub != nil {
+		return hub.acceptArtifactResultReceipt(msg, sourceRoute)
+	}
+	payload, err := json.Marshal(redisRuntimeEnvelope{
+		ArtifactResultReceipt:      msg,
+		ArtifactResultReceiptRoute: redisRouteFromRuntime(sourceRoute),
+	})
+	if err != nil {
+		return false
+	}
+	return s.client.Publish(s.ctx, s.nodeInboxChannel(nodeID), payload).Err() == nil
 }
 
 func (s *RedisRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {
@@ -529,6 +580,7 @@ func (s *RedisRuntimeState) registerUserDevice(ownerUID int64, req RegisterUserD
 		Source:         "catscompany",
 		OwnerUID:       ownerUID,
 		OwnerUserID:    formatUID(ownerUID),
+		BotUID:         normalizeDeviceBotUID(req.BotUID),
 		DeviceID:       deviceID,
 		DisplayName:    normalizeDeviceText(req.DisplayName),
 		OS:             normalizeDeviceOS(req.OS),
@@ -1150,7 +1202,7 @@ func (s *RedisRuntimeState) runRuntimeNodeHeartbeat(nodeID string) {
 }
 
 func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
-	pubsub := s.client.Subscribe(s.ctx, s.nodeInboxChannel(nodeID))
+	pubsub := s.client.Subscribe(s.ctx, s.nodeInboxChannel(nodeID), s.userMessageChannel())
 	defer pubsub.Close()
 	ch := pubsub.Channel()
 	for {
@@ -1162,6 +1214,15 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 				return
 			}
 			var envelope redisRuntimeEnvelope
+			if item.Channel == s.userMessageChannel() {
+				var userMessage redisUserMessageEnvelope
+				if err := json.Unmarshal([]byte(item.Payload), &userMessage); err == nil && userMessage.UID > 0 && userMessage.Msg != nil {
+					if hub := s.localHub(nodeID); hub != nil {
+						hub.SendToUser(userMessage.UID, userMessage.Msg)
+					}
+				}
+				continue
+			}
 			if err := json.Unmarshal([]byte(item.Payload), &envelope); err != nil {
 				continue
 			}
@@ -1173,6 +1234,15 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 				s.handleMessagingAttentionProbe(nodeID, envelope.MessagingAttentionProbe)
 				continue
 			}
+			if envelope.ArtifactResultReceipt != nil {
+				if hub := s.localHub(nodeID); hub != nil {
+					hub.acceptArtifactResultReceipt(
+						envelope.ArtifactResultReceipt,
+						envelope.ArtifactResultReceiptRoute.toRuntimeRoute(),
+					)
+				}
+				continue
+			}
 			route := envelope.Route.toRuntimeRoute()
 			if route.NodeID != nodeID || !route.validAt(time.Now()) {
 				continue
@@ -1182,6 +1252,8 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 					hub.sendDeviceRPCToLocalRoute(route, firstDeviceRPCMessage(envelope.DeviceRPC, envelope.Msg))
 				} else if envelope.ThinToolRPC != nil {
 					hub.sendThinToolRPCToLocalRoute(route, envelope.ThinToolRPC)
+				} else if envelope.ArtifactResult != nil {
+					hub.sendArtifactResultToLocalRoute(route, envelope.ArtifactResult)
 				}
 			}
 		}
@@ -1370,6 +1442,10 @@ func (s *RedisRuntimeState) nodeInboxChannel(nodeID string) string {
 	return s.key("inbox", keyPart(nodeID))
 }
 
+func (s *RedisRuntimeState) userMessageChannel() string {
+	return s.key("user_message")
+}
+
 func (s *RedisRuntimeState) routeKey(route runtimeRoute) string {
 	return s.key("route", keyPart(route.NodeID), keyPart(route.ConnectionID))
 }
@@ -1520,6 +1596,11 @@ type redisThinToolRPCEnvelope struct {
 	Msg   *MsgThinToolRPC   `json:"thin_tool_rpc"`
 }
 
+type redisUserMessageEnvelope struct {
+	UID int64          `json:"uid"`
+	Msg *ServerMessage `json:"msg"`
+}
+
 type redisMessagingAttentionProbe struct {
 	ID             string            `json:"id"`
 	ReplyNodeID    string            `json:"reply_node_id"`
@@ -1539,8 +1620,11 @@ type redisRuntimeEnvelope struct {
 	Msg                          *MsgDeviceRPC                      `json:"msg,omitempty"`
 	DeviceRPC                    *MsgDeviceRPC                      `json:"device_rpc,omitempty"`
 	ThinToolRPC                  *MsgThinToolRPC                    `json:"thin_tool_rpc,omitempty"`
+	ArtifactResult               *MsgArtifactResult                 `json:"artifact_result,omitempty"`
 	MessagingAttentionProbe      *redisMessagingAttentionProbe      `json:"messaging_attention_probe,omitempty"`
 	MessagingAttentionProbeReply *redisMessagingAttentionProbeReply `json:"messaging_attention_probe_reply,omitempty"`
+	ArtifactResultReceipt        *MsgArtifactResult                 `json:"artifact_result_receipt,omitempty"`
+	ArtifactResultReceiptRoute   redisRuntimeRoute                  `json:"artifact_result_receipt_route,omitempty"`
 }
 
 func firstDeviceRPCMessage(values ...*MsgDeviceRPC) *MsgDeviceRPC {

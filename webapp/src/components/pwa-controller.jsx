@@ -2,11 +2,16 @@ import React, {
   useCallback, useEffect, useRef, useState,
 } from 'react';
 import { Bell } from 'lucide-react';
-import { registerSW } from 'virtual:pwa-register';
 import {
   api,
   getPushRegistrationID,
 } from '../api';
+import {
+  getPwaUpdateServiceWorker,
+  hasPwaRefreshPresenter,
+  registerPwaServiceWorker,
+  subscribeToPwaRefresh,
+} from '../pwa-registration';
 import {
   canUsePush,
   pushDismissedStorageKey,
@@ -18,16 +23,16 @@ import {
 import { enqueuePushOperation } from '../utils/push-operation';
 import { registerBrowserPush } from '../utils/push-registration';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
-import './pwa-controller.css';
+import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 
 function readDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
-  return Boolean(storageKey) && localStorage.getItem(storageKey) === 'true';
+  return Boolean(storageKey) && readStorageValue(storageKey) === 'true';
 }
 
 function persistDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
-  if (storageKey) localStorage.setItem(storageKey, 'true');
+  if (storageKey) writeStorageValue(storageKey, 'true');
 }
 
 export default function PwaController({
@@ -46,25 +51,21 @@ export default function PwaController({
   const [pushConfig, setPushConfig] = useState(null);
   const [busy, setBusy] = useState(false);
   const [pushError, setPushError] = useState('');
-  const [needRefresh, setNeedRefresh] = useState(false);
   const [reconcileVersion, setReconcileVersion] = useState(0);
   const updateServiceWorkerRef = useRef(null);
 
   useEffect(() => {
-    if (updateServiceWorkerRef.current) return;
-    updateServiceWorkerRef.current = registerSW({
-      immediate: true,
-      onNeedRefresh: () => {
-        // Activate transport fixes immediately. Otherwise the new WebApp can
-        // keep running behind an older worker that still clones POST bodies.
-        Promise.resolve().then(() => {
-          const updateServiceWorker = updateServiceWorkerRef.current;
-          if (updateServiceWorker) updateServiceWorker(true);
-          else setNeedRefresh(true);
-        });
-      },
-      onRegisterError: (error) => console.warn('PWA registration failed:', error),
+    const unsubscribe = subscribeToPwaRefresh(() => {
+      // Activate transport fixes immediately unless the workspace failure
+      // screen is mounted and can present its explicit recovery action.
+      Promise.resolve().then(() => {
+        if (hasPwaRefreshPresenter()) return;
+        const updateServiceWorker = updateServiceWorkerRef.current || getPwaUpdateServiceWorker();
+        if (updateServiceWorker) updateServiceWorker(true);
+      });
     });
+    updateServiceWorkerRef.current = registerPwaServiceWorker();
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -251,19 +252,8 @@ export default function PwaController({
   }, [busy, pushConfig, pushPromptOwner, sessionRevision]);
 
   return (
-    <div className="cc-pwa-status" aria-live="polite">
+    <>
       {!online && <div className="cc-pwa-offline">当前离线，消息将在网络恢复后重新加载</div>}
-      {needRefresh && (
-        <div className="cc-pwa-prompt cc-pwa-prompt--compact">
-          <div className="cc-pwa-prompt-copy">
-            <strong>发现新版本</strong>
-          </div>
-          <div className="cc-pwa-prompt-actions">
-            <button type="button" onClick={() => updateServiceWorkerRef.current?.(true)}>立即更新</button>
-            <button type="button" className="secondary" onClick={() => setNeedRefresh(false)}>稍后</button>
-          </div>
-        </div>
-      )}
       {offerPush && (
         <aside className="cc-pwa-prompt cc-pwa-prompt--push" aria-label="消息通知设置">
           <span className="cc-pwa-prompt-icon" aria-hidden="true">
@@ -290,6 +280,6 @@ export default function PwaController({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

@@ -8,7 +8,8 @@ for cmd in tos-fetch awk timeout; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "error: missing required command: $cmd" >&2; exit 2; }
 done
 
-ARTIFACT_BUCKET="${CATSCO_WORKER_ARTIFACT_BUCKET:-catsco-worker-release}"
+ARTIFACT_BUCKET="${CATSCO_WORKER_ARTIFACT_BUCKET:-}"
+[[ -n "$ARTIFACT_BUCKET" ]] || { echo "error: CATSCO_WORKER_ARTIFACT_BUCKET must name the dedicated worker artifact bucket" >&2; exit 2; }
 ARTIFACT_PREFIX="${CATSCO_WORKER_ARTIFACT_PREFIX:-update/worker}"
 ARTIFACT_PREFIX="${ARTIFACT_PREFIX#/}"
 ARTIFACT_PREFIX="${ARTIFACT_PREFIX%/}"

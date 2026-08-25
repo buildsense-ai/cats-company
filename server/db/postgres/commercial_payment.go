@@ -373,6 +373,42 @@ func (a *Adapter) ListCommercialOrders(uid int64, limit int) ([]*types.Commercia
 	return orders, rows.Err()
 }
 
+// ListCommercialOrdersForReconciliation returns only recent orders whose
+// provider may still report a completed payment. The status/age predicate is
+// kept in SQL so the periodic reconciler does not scan the entire order table.
+func (a *Adapter) ListCommercialOrdersForReconciliation(limit int) ([]*types.CommercialOrder, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	rows, err := a.db.Query(`
+		SELECT `+commercialOrderColumns+` FROM commercial_orders
+		WHERE (
+			status IN ('created','pending')
+			AND created_at >= $1
+		) OR (
+			status = 'closed' AND closed_at >= $1
+		)
+		ORDER BY updated_at, id
+		LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list commercial orders for reconciliation: %w", err)
+	}
+	defer rows.Close()
+	orders := make([]*types.CommercialOrder, 0, limit)
+	for rows.Next() {
+		order, scanErr := scanCommercialOrder(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan commercial reconciliation order: %w", scanErr)
+		}
+		orders = append(orders, order)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read commercial reconciliation orders: %w", err)
+	}
+	return orders, nil
+}
+
 func (a *Adapter) CancelCommercialOrder(uid int64, orderNo, reason string) (*types.CommercialOrder, bool, error) {
 	orderNo = strings.TrimSpace(orderNo)
 	if uid <= 0 || orderNo == "" {
@@ -420,6 +456,34 @@ func (a *Adapter) CloseExpiredCommercialOrders(limit int) (int64, error) {
 		return 0, fmt.Errorf("read expired commercial order count: %w", err)
 	}
 	return count, nil
+}
+
+// activeCommercialOfficialPlanExpiry returns the latest expiry for the
+// currently active official tier. It is used to turn a same-plan purchase
+// into a true renewal period instead of an overlapping 30-day entitlement.
+func activeCommercialOfficialPlanExpiry(tx *sql.Tx, uid int64, slug string, now time.Time) (time.Time, bool, error) {
+	var expiresAt sql.NullTime
+	err := tx.QueryRow(`
+		SELECT e.expires_at
+		FROM commercial_entitlements e
+		JOIN commercial_plans p ON p.id = e.plan_id
+		WHERE e.uid = $1 AND e.state = 'active'
+		  AND e.starts_at <= $2
+		  AND (e.expires_at IS NULL OR e.expires_at > $2)
+		  AND p.slug = $3
+		ORDER BY e.expires_at DESC NULLS LAST, e.id DESC
+		FOR UPDATE OF e
+		LIMIT 1`, uid, now, strings.TrimSpace(slug)).Scan(&expiresAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("load active commercial renewal period: %w", err)
+	}
+	if !expiresAt.Valid {
+		return time.Time{}, true, nil
+	}
+	return expiresAt.Time, true, nil
 }
 
 func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error) {
@@ -475,18 +539,51 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if affected == 0 {
 		return nil, false, fmt.Errorf("payment event was already used")
 	}
+	// A purchase of the currently active official tier is a renewal. Start
+	// that new period at the existing entitlement expiry so early renewals do
+	// not discard paid time. Upgrades still start immediately at payment time;
+	// an expired plan has no active period and also starts immediately.
+	periodStartsAt := paidAt
+	if commercialOfficialPlanTier(order.PlanSlug) > 0 {
+		if currentExpiry, active, expiryErr := activeCommercialOfficialPlanExpiry(tx, order.UID, order.PlanSlug, paidAt); expiryErr != nil {
+			return nil, false, expiryErr
+		} else if active && currentExpiry.After(periodStartsAt) {
+			periodStartsAt = currentExpiry
+		}
+	}
 	if err := activateCommercialOfficialPlan(tx, order.UID, order.PlanSlug, paidAt); err != nil {
 		return nil, false, err
 	}
 
-	expiresAt := paidAt.AddDate(0, 0, order.PlanDurationDays)
+	expiresAt := periodStartsAt.AddDate(0, 0, order.PlanDurationDays)
 	if _, err := tx.Exec(`
 		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
-		VALUES ($1, $2, 'order', $3, 'active', $4, $5)`, order.UID, order.PlanID, order.OrderNo, paidAt, expiresAt); err != nil {
+		VALUES ($1, $2, 'order', $3, 'active', $4, $5)`, order.UID, order.PlanID, order.OrderNo, periodStartsAt, expiresAt); err != nil {
 		return nil, false, fmt.Errorf("create order entitlement: %w", err)
 	}
-	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, paidAt, expiresAt); err != nil {
+	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, periodStartsAt, expiresAt); err != nil {
 		return nil, false, err
+	}
+	if order.PlanSlug == commercialPersonalPlanSlug || order.PlanSlug == commercialProPlanSlug {
+		if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt); err != nil {
+			return nil, false, err
+		}
+		// If the user already has a cloud worker, a renewal/upgrade extends the
+		// retention window atomically with the paid entitlement. The worker is
+		// not deleted at the old expiry while a new monthly package is active.
+		if _, err := tx.Exec(`
+			UPDATE cloud_worker_lifecycles
+			SET package_expires_at = $2::timestamptz,
+			    delete_after = $2::timestamptz + INTERVAL '15 days',
+			    state = 'active', archived_at = NULL, delete_started_at = NULL,
+			    last_error = '', updated_at = CURRENT_TIMESTAMP
+			-- A deletion already claimed by the sweeper is an external operation
+			-- in flight. Do not resurrect its row in the database while the cloud
+			-- destroy script is running; a delete_failed row has no active provider
+			-- operation and is safe to restore after a successful renewal.
+			WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`, order.UID, expiresAt); err != nil {
+			return nil, false, fmt.Errorf("extend cloud worker lifecycle: %w", err)
+		}
 	}
 	fulfilled, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders
@@ -641,6 +738,12 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 		SET revoked_at = $3, expires_at = LEAST(COALESCE(expires_at, $3), $3)
 		WHERE uid = $1 AND grant_type = 'order' AND source_ref = $2 AND revoked_at IS NULL`, order.UID, order.OrderNo, refundedAt); err != nil {
 		return nil, false, fmt.Errorf("revoke refunded quota grants: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE cloud_worker_credits
+		SET state = 'revoked', reservation_ref = '', reserved_at = NULL
+		WHERE uid = $1 AND source_ref = $2 AND state IN ('available','reserved')`, order.UID, "order:"+order.OrderNo); err != nil {
+		return nil, false, fmt.Errorf("revoke refunded cloud worker credit: %w", err)
 	}
 	refunded, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders

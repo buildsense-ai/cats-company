@@ -41,9 +41,12 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialOrdersTable,
 		createCommercialOrderRequestIDsTable,
 		createCommercialPaymentEventsTable,
+		createCloudWorkerCreditsTable,
+		createCloudWorkerLifecyclesTable,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,
+		migrateCommercialPaidPlansAllModels,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
@@ -633,6 +636,109 @@ SET source_ref = substring(note FROM 8)
 WHERE grant_type = 'invite' AND source_ref = '' AND note LIKE 'invite %';
 `
 
+// Paid plans use one shared Relay pool.  This migration keeps the pool size
+// unchanged while making every public catalog model selectable, including for
+// already-active order/invite/operator grants.  The exact two-model shape in
+// the HAVING clause makes it safe to run on every application startup.
+const migrateCommercialPaidPlansAllModels = `
+UPDATE commercial_plans
+SET model_budgets = CASE slug
+    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"gpt-5.6-terra":1750,"gpt-5.6-sol":1750,"gpt-5.6-luna":1750}'::jsonb
+    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":5250,"MiniMax-M3":5250,"deepseek-v4-flash":5250,"gpt-5.6-terra":5250,"gpt-5.6-sol":5250,"gpt-5.6-luna":5250}'::jsonb
+    ELSE model_budgets
+END
+WHERE slug IN ('catsco-personal', 'catsco-pro');
+
+UPDATE commercial_orders
+SET plan_model_budgets = CASE plan_slug
+    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"gpt-5.6-terra":1750,"gpt-5.6-sol":1750,"gpt-5.6-luna":1750}'::jsonb
+    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":5250,"MiniMax-M3":5250,"deepseek-v4-flash":5250,"gpt-5.6-terra":5250,"gpt-5.6-sol":5250,"gpt-5.6-luna":5250}'::jsonb
+    ELSE plan_model_budgets
+END
+WHERE plan_slug IN ('catsco-personal', 'catsco-pro')
+  AND status IN ('created', 'pending', 'paid');
+
+DO $$
+DECLARE
+    package RECORD;
+    grant_row RECORD;
+    paid_model TEXT;
+    paid_amount NUMERIC(14,6);
+    new_grant_id BIGINT;
+BEGIN
+    FOR package IN
+        SELECT g.uid, g.plan_id, g.grant_type, g.source_ref,
+               MIN(g.effective_at) AS effective_at,
+               MAX(g.expires_at) AS expires_at,
+               MAX(g.invite_code_id) AS invite_code_id,
+               MAX(g.operator_uid) AS operator_uid,
+               p.slug AS plan_slug, p.name AS plan_name
+        FROM commercial_quota_grants g
+        JOIN commercial_plans p ON p.id = g.plan_id
+        WHERE p.slug IN ('catsco-personal', 'catsco-pro')
+          AND g.grant_type IN ('order', 'invite', 'operator_plan')
+          AND g.revoked_at IS NULL
+          AND g.effective_at <= CURRENT_TIMESTAMP
+          AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)
+          AND EXISTS (
+              SELECT 1 FROM commercial_entitlements e
+              WHERE e.uid = g.uid AND e.plan_id = g.plan_id
+                AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+                AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+                AND e.source_ref = g.source_ref
+                AND ((g.grant_type = 'operator_plan' AND e.source = 'operator')
+                     OR (g.grant_type <> 'operator_plan' AND e.source = g.grant_type))
+          )
+        GROUP BY g.uid, g.plan_id, g.grant_type, g.source_ref, p.slug, p.name
+        HAVING COUNT(*) = 2
+           AND COUNT(DISTINCT g.model) = 2
+           AND COUNT(*) FILTER (WHERE g.model IN ('gpt-5.6-terra', 'gpt-5.6-sol')) = 2
+           AND COALESCE(SUM(g.amount_cny), 0) = CASE p.slug
+               WHEN 'catsco-personal' THEN 10500
+               WHEN 'catsco-pro' THEN 31500
+           END
+    LOOP
+        FOR grant_row IN
+            SELECT id, model, amount_cny
+            FROM commercial_quota_grants
+            WHERE uid = package.uid AND plan_id = package.plan_id
+              AND grant_type = package.grant_type AND source_ref = package.source_ref
+              AND revoked_at IS NULL
+        LOOP
+            INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
+            VALUES (package.uid, grant_row.model, -grant_row.amount_cny, 'revoke',
+                    'plan_model_migration', grant_row.id,
+                    'replace paid plan two-model grant with all-model grant');
+        END LOOP;
+
+        UPDATE commercial_quota_grants
+        SET revoked_at = CURRENT_TIMESTAMP,
+            expires_at = LEAST(COALESCE(expires_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+        WHERE uid = package.uid AND plan_id = package.plan_id
+          AND grant_type = package.grant_type AND source_ref = package.source_ref
+          AND revoked_at IS NULL;
+
+        paid_amount := CASE package.plan_slug WHEN 'catsco-personal' THEN 1750 WHEN 'catsco-pro' THEN 5250 END;
+        FOREACH paid_model IN ARRAY ARRAY[
+            'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+            'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna'
+        ]
+        LOOP
+            INSERT INTO commercial_quota_grants(
+                uid, plan_id, invite_code_id, grant_type, model, amount_cny,
+                reset_duration, effective_at, expires_at, source_ref, note, operator_uid
+            ) VALUES (
+                package.uid, package.plan_id, package.invite_code_id, package.grant_type,
+                paid_model, paid_amount, '1M', package.effective_at, package.expires_at,
+                package.source_ref, 'paid plan all-model migration', package.operator_uid
+            ) RETURNING id INTO new_grant_id;
+            INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
+            VALUES (package.uid, paid_model, paid_amount, 'grant', 'plan_model_migration', new_grant_id, package.plan_name);
+        END LOOP;
+    END LOOP;
+END $$;
+`
+
 const createCommercialOrdersTable = `
 CREATE TABLE IF NOT EXISTS commercial_orders (
 	id BIGSERIAL PRIMARY KEY,
@@ -696,6 +802,46 @@ CREATE TABLE IF NOT EXISTS commercial_payment_events (
 	CONSTRAINT chk_commercial_payment_events_status CHECK (status IN ('processed','rejected','ignored')),
 	UNIQUE(channel, event_id)
 );
+`
+
+const createCloudWorkerCreditsTable = `
+CREATE TABLE IF NOT EXISTS cloud_worker_credits (
+    id BIGSERIAL PRIMARY KEY,
+    uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_ref VARCHAR(128) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'available',
+    reservation_ref VARCHAR(128) NOT NULL DEFAULT '',
+    worker_uid BIGINT DEFAULT NULL,
+    expires_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reserved_at TIMESTAMPTZ DEFAULT NULL,
+    consumed_at TIMESTAMPTZ DEFAULT NULL,
+    CONSTRAINT chk_cloud_worker_credits_state CHECK (state IN ('available','reserved','consumed','revoked'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_source ON cloud_worker_credits(source_ref);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_reservation ON cloud_worker_credits(reservation_ref) WHERE reservation_ref <> '';
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_uid_state ON cloud_worker_credits(uid, state, expires_at);
+`
+
+const createCloudWorkerLifecyclesTable = `
+CREATE TABLE IF NOT EXISTS cloud_worker_lifecycles (
+    id BIGSERIAL PRIMARY KEY,
+    worker_uid BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tenant_name VARCHAR(80) NOT NULL UNIQUE,
+    package_expires_at TIMESTAMPTZ NOT NULL,
+    delete_after TIMESTAMPTZ NOT NULL,
+    state VARCHAR(24) NOT NULL DEFAULT 'active',
+    archived_at TIMESTAMPTZ DEFAULT NULL,
+    delete_started_at TIMESTAMPTZ DEFAULT NULL,
+    deleted_at TIMESTAMPTZ DEFAULT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_cloud_worker_lifecycles_state CHECK (state IN ('active','delete_pending','delete_running','delete_failed','deleted'))
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_due ON cloud_worker_lifecycles(state, delete_after);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_owner ON cloud_worker_lifecycles(owner_uid, state);
 `
 
 const createCommercialManagedRelayBudgetsTable = `
@@ -1073,6 +1219,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_trial_once
 CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_orders_uid_request ON commercial_orders (uid, client_request_id);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_uid_created ON commercial_orders (uid, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_status_expires ON commercial_orders (status, expires_at);
+-- The payment reconciler scans only a recent status slice every few minutes;
+-- keep both OR branches indexable instead of repeatedly walking all orders.
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_reconcile_pending
+    ON commercial_orders (created_at, updated_at, id)
+    WHERE status IN ('created','pending');
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_reconcile_closed
+    ON commercial_orders (closed_at, updated_at, id)
+    WHERE status = 'closed';
 CREATE INDEX IF NOT EXISTS idx_commercial_order_request_ids_order ON commercial_order_request_ids (order_no);
 CREATE INDEX IF NOT EXISTS idx_commercial_payment_events_order ON commercial_payment_events (order_no, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_managed_relay_uid ON commercial_managed_relay_budgets (uid);

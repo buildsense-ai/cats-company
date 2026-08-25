@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -46,6 +47,14 @@ type CommercialPaymentStore interface {
 	FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error)
 	ClaimCommercialTrial(uid int64, planSlug string) (*types.CommercialSummary, error)
 	HasCommercialTrial(uid int64, planSlug string) (bool, error)
+}
+
+// CommercialPaymentReconciliationStore is an optional durable view used by
+// the background payment reconciler. Keeping it separate from
+// CommercialPaymentStore preserves compatibility with focused test stores and
+// non-PostgreSQL adapters that do not yet expose the indexed query.
+type CommercialPaymentReconciliationStore interface {
+	ListCommercialOrdersForReconciliation(limit int) ([]*types.CommercialOrder, error)
 }
 
 type CommercialRefundStore interface {
@@ -87,20 +96,31 @@ type CommercialPaymentHandlerOptions struct {
 	Providers     []CommercialPaymentProvider
 	SaleChannels  map[string]bool
 	Syncer        *CommercialRelaySyncer
+	// RenewCloudWorkers runs after an official paid plan is fulfilled. It is
+	// deliberately outside the payment transaction so provider recovery or
+	// renewal failures never roll back a confirmed payment.
+	RenewCloudWorkers func(uid int64)
 }
 
 type CommercialPaymentHandler struct {
-	store         CommercialPaymentStore
-	publicEnabled bool
-	testUIDs      map[int64]bool
-	testPayments  map[int64]bool
-	trialPlanSlug string
-	providers     map[string]CommercialPaymentProvider
-	saleChannels  map[string]bool
-	syncer        *CommercialRelaySyncer
-	queryMu       sync.Mutex
-	nextQueries   map[string]time.Time
+	store             CommercialPaymentStore
+	publicEnabled     bool
+	testUIDs          map[int64]bool
+	testPayments      map[int64]bool
+	trialPlanSlug     string
+	providers         map[string]CommercialPaymentProvider
+	saleChannels      map[string]bool
+	syncer            *CommercialRelaySyncer
+	renewCloudWorkers func(uid int64)
+	queryMu           sync.Mutex
+	nextQueries       map[string]time.Time
 }
+
+const (
+	commercialPaymentReconciliationInterval = 5 * time.Minute
+	commercialPaymentReconciliationBatch    = 100
+	commercialPaymentReconciliationMaxAge   = 7 * 24 * time.Hour
+)
 
 type commercialPaymentChannel struct {
 	ID       string `json:"id"`
@@ -110,15 +130,16 @@ type commercialPaymentChannel struct {
 
 func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPaymentHandlerOptions) *CommercialPaymentHandler {
 	h := &CommercialPaymentHandler{
-		store:         store,
-		publicEnabled: opts.PublicEnabled,
-		testUIDs:      copyCommercialUIDSet(opts.TestUIDs),
-		testPayments:  copyCommercialUIDSet(opts.TestPayments),
-		trialPlanSlug: strings.TrimSpace(opts.TrialPlanSlug),
-		providers:     map[string]CommercialPaymentProvider{},
-		saleChannels:  map[string]bool{},
-		syncer:        opts.Syncer,
-		nextQueries:   map[string]time.Time{},
+		store:             store,
+		publicEnabled:     opts.PublicEnabled,
+		testUIDs:          copyCommercialUIDSet(opts.TestUIDs),
+		testPayments:      copyCommercialUIDSet(opts.TestPayments),
+		trialPlanSlug:     strings.TrimSpace(opts.TrialPlanSlug),
+		providers:         map[string]CommercialPaymentProvider{},
+		saleChannels:      map[string]bool{},
+		syncer:            opts.Syncer,
+		renewCloudWorkers: opts.RenewCloudWorkers,
+		nextQueries:       map[string]time.Time{},
 	}
 	for _, provider := range opts.Providers {
 		if provider == nil || strings.TrimSpace(provider.Channel()) == "" {
@@ -130,6 +151,131 @@ func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPa
 		}
 	}
 	return h
+}
+
+// StartReconciliation starts the durable payment recovery loop. Provider
+// callbacks remain the primary path, but a callback can be lost while the
+// buyer has already left the checkout page. The loop only queries recent
+// pending/closed orders and reuses the same idempotent fulfillment transaction
+// as the callback path.
+func (h *CommercialPaymentHandler) StartReconciliation(ctx context.Context, interval time.Duration) {
+	if h == nil || h.store == nil || ctx == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = commercialPaymentReconciliationInterval
+	}
+	go func() {
+		h.ReconcileCommercialOrders(ctx)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.ReconcileCommercialOrders(ctx)
+			}
+		}
+	}()
+}
+
+func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error) {
+	fulfilled, changed, err := h.store.FulfillCommercialOrder(orderNo, confirmation)
+	if err != nil || !changed || fulfilled == nil || h.renewCloudWorkers == nil {
+		return fulfilled, changed, err
+	}
+	if strings.EqualFold(fulfilled.PlanSlug, "catsco-personal") || strings.EqualFold(fulfilled.PlanSlug, "catsco-pro") {
+		// Payment is already committed. Provider recovery/renewal is retried by
+		// the caller's normal operational loop if this process exits; never make
+		// an Alipay callback fail because Tianyi is temporarily unavailable.
+		go h.renewCloudWorkers(fulfilled.UID)
+	}
+	return fulfilled, changed, nil
+}
+
+// ReconcileCommercialOrders performs one bounded payment recovery pass and
+// returns the number of orders that were successfully fulfilled. It is public
+// for deterministic tests and operator-triggered recovery; production startup
+// calls it through StartReconciliation.
+func (h *CommercialPaymentHandler) ReconcileCommercialOrders(ctx context.Context) int {
+	if h == nil || h.store == nil || ctx == nil {
+		return 0
+	}
+	orders, err := h.reconciliationOrders(commercialPaymentReconciliationBatch)
+	if err != nil {
+		log.Printf("commercial payment reconciliation list failed: %v", err)
+		return 0
+	}
+	now := time.Now().UTC()
+	fulfilledCount := 0
+	for _, order := range orders {
+		if ctx.Err() != nil {
+			break
+		}
+		if !commercialOrderEligibleForReconciliation(order, now) {
+			continue
+		}
+		provider := h.providers[order.Channel]
+		querier, ok := provider.(CommercialPaymentQuerier)
+		if !ok || !h.claimCommercialPaymentQuery(order.OrderNo, now) {
+			continue
+		}
+		queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		confirmation, paid, queryErr := querier.QueryPayment(queryCtx, order)
+		cancel()
+		if queryErr != nil {
+			log.Printf("commercial payment reconciliation query failed order=%s: %v", order.OrderNo, queryErr)
+			continue
+		}
+		if !paid || confirmation == nil {
+			continue
+		}
+		fulfilled, changed, fulfillErr := h.fulfillCommercialOrder(order.OrderNo, confirmation)
+		if fulfillErr != nil || fulfilled == nil {
+			if fulfillErr != nil {
+				log.Printf("commercial payment reconciliation fulfill failed order=%s: %v", order.OrderNo, fulfillErr)
+			}
+			continue
+		}
+		h.clearCommercialPaymentQuery(order.OrderNo)
+		if changed {
+			fulfilledCount++
+			h.enqueueRelaySync(fulfilled.UID)
+		}
+	}
+	return fulfilledCount
+}
+
+func (h *CommercialPaymentHandler) reconciliationOrders(limit int) ([]*types.CommercialOrder, error) {
+	if store, ok := h.store.(CommercialPaymentReconciliationStore); ok {
+		return store.ListCommercialOrdersForReconciliation(limit)
+	}
+	// Compatibility fallback for focused adapters. PostgreSQL uses the indexed
+	// query above; older stores are still safe because the pass filters status
+	// and age before contacting the provider.
+	return h.store.ListCommercialOrders(0, limit)
+}
+
+func commercialOrderEligibleForReconciliation(order *types.CommercialOrder, now time.Time) bool {
+	if order == nil || strings.TrimSpace(order.OrderNo) == "" {
+		return false
+	}
+	switch order.Status {
+	case "created", "pending":
+		cutoff := now.Add(-commercialPaymentReconciliationMaxAge)
+		if !order.CreatedAt.IsZero() && order.CreatedAt.Before(cutoff) {
+			return false
+		}
+		if order.ExpiresAt != nil && order.ExpiresAt.Before(cutoff) {
+			return false
+		}
+		return true
+	case "closed":
+		return order.ClosedAt != nil && order.ClosedAt.After(now.Add(-commercialPaymentReconciliationMaxAge))
+	default:
+		return false
+	}
 }
 
 func copyCommercialUIDSet(value map[int64]bool) map[int64]bool {
@@ -419,7 +565,7 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrderIfPaid(ctx context.Cont
 	if err != nil || !paid || confirmation == nil {
 		return nil
 	}
-	fulfilled, changed, err := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+	fulfilled, changed, err := h.fulfillCommercialOrder(order.OrderNo, confirmation)
 	if err != nil || fulfilled == nil {
 		return nil
 	}
@@ -510,7 +656,7 @@ func (h *CommercialPaymentHandler) refreshPendingCommercialOrder(ctx context.Con
 	if order.Status != "created" && ok && h.claimCommercialPaymentQuery(order.OrderNo, time.Now().UTC()) {
 		confirmation, paid, err := querier.QueryPayment(ctx, order)
 		if err == nil && paid && confirmation != nil {
-			fulfilled, changed, fulfillErr := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+			fulfilled, changed, fulfillErr := h.fulfillCommercialOrder(order.OrderNo, confirmation)
 			if fulfillErr == nil && fulfilled != nil {
 				h.clearCommercialPaymentQuery(order.OrderNo)
 				if changed {
@@ -747,7 +893,7 @@ func (h *CommercialPaymentHandler) HandleTestConfirm(w http.ResponseWriter, r *h
 		PaidAt:          time.Now().UTC(),
 		PayloadHash:     paymentPayloadHash([]byte(order.OrderNo)),
 	}
-	fulfilled, changed, err := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+	fulfilled, changed, err := h.fulfillCommercialOrder(order.OrderNo, confirmation)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -810,7 +956,7 @@ func (h *CommercialPaymentHandler) HandleAlipayNotify(w http.ResponseWriter, r *
 		writeAlipayNotifyResponse(w, http.StatusNotFound, false)
 		return
 	}
-	fulfilled, changed, err := h.store.FulfillCommercialOrder(orderNo, confirmation)
+	fulfilled, changed, err := h.fulfillCommercialOrder(orderNo, confirmation)
 	if err != nil {
 		writeAlipayNotifyResponse(w, http.StatusConflict, false)
 		return

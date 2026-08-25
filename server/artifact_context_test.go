@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,24 +54,27 @@ func TestParseArtifactRefCandidateEnforcesExactIDLength(t *testing.T) {
 	}
 }
 
-func TestCanonicalizeArtifactMessageMetadataForP2P(t *testing.T) {
-	store := &identityMessageStore{users: map[int64]*types.User{
-		7:   {ID: 7, AccountType: types.AccountHuman},
-		440: {ID: 440, AccountType: types.AccountBot},
-	}}
+func TestExtractArtifactContextDeliveryForP2P(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, AccountType: types.AccountHuman},
+			440: {ID: 440, AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{440: 7},
+	}
 	hub := NewHub(store, nil)
-	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, agentUID int64, artifactID string) (ArtifactContextRecord, error) {
-		if agentUID != 440 || artifactID != "lesson-game" {
-			t.Fatalf("resolver arguments = agent %d artifact %q", agentUID, artifactID)
-		}
-		return ArtifactContextRecord{
-			ID:             artifactID,
-			Title:          "课堂小游戏",
-			Kind:           "html",
-			URL:            "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/",
-			PublishVersion: 3,
-		}, nil
-	}))
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+		ActorUID: 7,
+		TopicID:  "p2p_7_440",
+		AgentUID: 440,
+		Artifact: ArtifactContextRecord{
+			ID: "lesson-game", Title: "课堂小游戏", Kind: "html",
+			URL: "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
 
 	metadata := map[string]interface{}{
 		"client_note": "kept",
@@ -80,50 +82,40 @@ func TestCanonicalizeArtifactMessageMetadataForP2P(t *testing.T) {
 			"agent_uid": "999",
 			"url":       "https://attacker.invalid/",
 		},
-		artifactRefMetadataKey: map[string]interface{}{
-			"contract_version":  artifactRefContract,
-			"id":                "lesson-game",
-			"displayed_version": float64(2),
-			"currently_visible": true,
+		artifactContextRefMetadataKey: snapshot.Ref,
+		artifactRefMetadataKey:        map[string]interface{}{"id": "spoofed"},
+		artifactPageContextMetadataKey: map[string]interface{}{
+			"selected_text": "must not enter message metadata",
 		},
 	}
-	got := hub.canonicalizeArtifactMessageMetadata(context.Background(), 7, "p2p_7_440", metadata)
+	got, delivery := hub.extractArtifactContextDelivery(7, "p2p_7_440", metadata)
 	if got["client_note"] != "kept" {
 		t.Fatalf("unrelated metadata was lost: %#v", got)
 	}
-	contextValue, ok := got[artifactContextMetadataKey].(map[string]interface{})
-	if !ok {
-		t.Fatalf("artifact context = %#v, want object", got[artifactContextMetadataKey])
+	if delivery == nil || delivery.Ref != snapshot.Ref || delivery.AgentUID != 440 {
+		t.Fatalf("delivery = %#v", delivery)
 	}
-	if contextValue["agent_uid"] != "440" || contextValue["url"] == "https://attacker.invalid/" {
-		t.Fatalf("artifact context was not server-canonicalized: %#v", contextValue)
-	}
-	if contextValue["displayed_version"] != int64(2) || contextValue["latest_version"] != 3 {
-		t.Fatalf("artifact versions = %#v", contextValue)
-	}
-	if _, exists := got[artifactRefMetadataKey]; exists {
-		t.Fatalf("client artifact_ref leaked into canonical metadata: %#v", got)
+	for _, key := range []string{artifactRefMetadataKey, artifactContextMetadataKey, artifactPageContextMetadataKey, artifactContextRefMetadataKey} {
+		if _, exists := got[key]; exists {
+			t.Fatalf("Artifact metadata %q leaked into persisted metadata: %#v", key, got)
+		}
 	}
 }
 
-func TestCanonicalizeArtifactMessageMetadataFailsOpenWithoutLeakingTrustedFields(t *testing.T) {
-	store := &identityMessageStore{users: map[int64]*types.User{
-		7:   {ID: 7, AccountType: types.AccountHuman},
-		440: {ID: 440, AccountType: types.AccountBot},
-	}}
-	hub := NewHub(store, nil)
-	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(context.Context, int64, string) (ArtifactContextRecord, error) {
-		return ArtifactContextRecord{}, errors.New("artifact node unavailable")
-	}))
-
-	got := hub.canonicalizeArtifactMessageMetadata(context.Background(), 7, "p2p_7_440", map[string]interface{}{
-		"trace": "kept",
-		artifactRefMetadataKey: map[string]interface{}{
-			"contract_version":  artifactRefContract,
-			"id":                "lesson-game",
-			"currently_visible": true,
+func TestExtractArtifactContextDeliveryFailsOpenWithoutLeakingFields(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, AccountType: types.AccountHuman},
+			440: {ID: 440, AccountType: types.AccountBot},
 		},
-		artifactContextMetadataKey: map[string]interface{}{"agent_uid": "999"},
+		owners: map[int64]int64{440: 7},
+	}
+	hub := NewHub(store, nil)
+
+	got, delivery := hub.extractArtifactContextDelivery(7, "p2p_7_440", map[string]interface{}{
+		"trace":                       "kept",
+		artifactContextRefMetadataKey: "acr_" + strings.Repeat("x", 43),
+		artifactContextMetadataKey:    map[string]interface{}{"agent_uid": "999"},
 		artifactPageContextMetadataKey: map[string]interface{}{
 			"contract_version": artifactPageContextContract,
 			"observed_at":      "2026-08-07T12:00:00Z",
@@ -133,27 +125,13 @@ func TestCanonicalizeArtifactMessageMetadataFailsOpenWithoutLeakingTrustedFields
 	if !reflect.DeepEqual(got, map[string]interface{}{"trace": "kept"}) {
 		t.Fatalf("fallback metadata = %#v", got)
 	}
+	if delivery != nil {
+		t.Fatalf("unknown ref produced delivery: %#v", delivery)
+	}
 }
 
-func TestCanonicalizeArtifactMessageMetadataSanitizesPageContext(t *testing.T) {
-	store := &identityMessageStore{users: map[int64]*types.User{
-		7:   {ID: 7, AccountType: types.AccountHuman},
-		440: {ID: 440, AccountType: types.AccountBot},
-	}}
-	hub := NewHub(store, nil)
-	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, _ int64, artifactID string) (ArtifactContextRecord, error) {
-		return ArtifactContextRecord{
-			ID: artifactID, Title: "课堂小游戏", Kind: "html",
-			URL: "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/",
-		}, nil
-	}))
-
-	got := hub.canonicalizeArtifactMessageMetadata(context.Background(), 7, "p2p_7_440", map[string]interface{}{
-		artifactRefMetadataKey: map[string]interface{}{
-			"contract_version":  artifactRefContract,
-			"id":                "lesson-game",
-			"currently_visible": true,
-		},
+func TestParseArtifactPageContextCandidateSanitizesPageContext(t *testing.T) {
+	pageContext, ok := parseArtifactPageContextCandidate(map[string]interface{}{
 		artifactPageContextMetadataKey: map[string]interface{}{
 			"contract_version": artifactPageContextContract,
 			"observed_at":      "2026-08-07T12:00:00Z",
@@ -172,8 +150,9 @@ func TestCanonicalizeArtifactMessageMetadataSanitizesPageContext(t *testing.T) {
 			"local_storage": map[string]interface{}{"token": "forged"},
 		},
 	})
-	contextValue := got[artifactContextMetadataKey].(map[string]interface{})
-	pageContext := contextValue["page_context"].(map[string]interface{})
+	if !ok {
+		t.Fatal("valid bounded page context was rejected")
+	}
 	if pageContext["selected_text"] != "企业客户" {
 		t.Fatalf("selected text = %#v", pageContext["selected_text"])
 	}
@@ -195,32 +174,14 @@ func TestCanonicalizeArtifactMessageMetadataSanitizesPageContext(t *testing.T) {
 	if _, exists := pageContext["local_storage"]; exists {
 		t.Fatalf("forged storage leaked: %#v", pageContext)
 	}
-	if _, exists := got[artifactPageContextMetadataKey]; exists {
-		t.Fatalf("raw page context leaked beside canonical context: %#v", got)
-	}
 }
 
-func TestCanonicalizeArtifactMessageMetadataDropsOversizedSemanticContextOnly(t *testing.T) {
-	store := &identityMessageStore{users: map[int64]*types.User{
-		7:   {ID: 7, AccountType: types.AccountHuman},
-		440: {ID: 440, AccountType: types.AccountBot},
-	}}
-	hub := NewHub(store, nil)
-	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, _ int64, artifactID string) (ArtifactContextRecord, error) {
-		return ArtifactContextRecord{
-			ID: artifactID, Title: "Lesson game", Kind: "html",
-			URL: "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/",
-		}, nil
-	}))
-
+func TestParseArtifactPageContextCandidateDropsOversizedSemanticContextOnly(t *testing.T) {
 	oversized := make(map[string]interface{}, 20)
 	for index := 0; index < 20; index++ {
 		oversized[fmt.Sprintf("field_%02d", index)] = strings.Repeat("x", artifactSemanticContextMaxString)
 	}
-	got := hub.canonicalizeArtifactMessageMetadata(context.Background(), 7, "p2p_7_440", map[string]interface{}{
-		artifactRefMetadataKey: map[string]interface{}{
-			"contract_version": artifactRefContract, "id": "lesson-game", "currently_visible": true,
-		},
+	pageContext, ok := parseArtifactPageContextCandidate(map[string]interface{}{
 		artifactPageContextMetadataKey: map[string]interface{}{
 			"contract_version": artifactPageContextContract,
 			"observed_at":      "2026-08-07T12:00:00Z",
@@ -228,8 +189,9 @@ func TestCanonicalizeArtifactMessageMetadataDropsOversizedSemanticContextOnly(t 
 			"semantic_context": oversized,
 		},
 	})
-	contextValue := got[artifactContextMetadataKey].(map[string]interface{})
-	pageContext := contextValue["page_context"].(map[string]interface{})
+	if !ok {
+		t.Fatal("generic page context was lost")
+	}
 	if pageContext["selected_text"] != "keep this" {
 		t.Fatalf("generic observation was lost: %#v", pageContext)
 	}
@@ -317,40 +279,27 @@ func TestArtifactPageContextDropsSemanticWhenCombinedBudgetIsExceeded(t *testing
 	}
 }
 
-func TestCanonicalizeArtifactMessageMetadataDropsOversizedPageContext(t *testing.T) {
-	store := &identityMessageStore{users: map[int64]*types.User{
-		7:   {ID: 7, AccountType: types.AccountHuman},
-		440: {ID: 440, AccountType: types.AccountBot},
-	}}
-	hub := NewHub(store, nil)
-	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, _ int64, artifactID string) (ArtifactContextRecord, error) {
-		return ArtifactContextRecord{
-			ID: artifactID, Title: "课堂小游戏", Kind: "html",
-			URL: "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/",
-		}, nil
-	}))
-
-	got := hub.canonicalizeArtifactMessageMetadata(context.Background(), 7, "p2p_7_440", map[string]interface{}{
-		artifactRefMetadataKey: map[string]interface{}{
-			"contract_version": artifactRefContract, "id": "lesson-game", "currently_visible": true,
-		},
+func TestParseArtifactPageContextCandidateDropsOversizedPageContext(t *testing.T) {
+	pageContext, ok := parseArtifactPageContextCandidate(map[string]interface{}{
 		artifactPageContextMetadataKey: map[string]interface{}{
 			"contract_version": artifactPageContextContract,
 			"observed_at":      "2026-08-07T12:00:00Z",
 			"selected_text":    strings.Repeat("x", artifactPageContextMaxBytes),
 		},
 	})
-	contextValue := got[artifactContextMetadataKey].(map[string]interface{})
-	if _, exists := contextValue["page_context"]; exists {
-		t.Fatalf("oversized page context was retained: %#v", contextValue)
+	if ok || pageContext != nil {
+		t.Fatalf("oversized page context was retained: %#v", pageContext)
 	}
 }
 
-func TestCanonicalizeArtifactMessageMetadataBoundsArtifactResolution(t *testing.T) {
-	store := &identityMessageStore{users: map[int64]*types.User{
-		7:   {ID: 7, AccountType: types.AccountHuman},
-		440: {ID: 440, AccountType: types.AccountBot},
-	}}
+func TestCreateArtifactContextSnapshotBoundsArtifactResolution(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, AccountType: types.AccountHuman},
+			440: {ID: 440, AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{440: 7},
+	}
 	hub := NewHub(store, nil)
 	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(ctx context.Context, _ int64, _ string) (ArtifactContextRecord, error) {
 		deadline, ok := ctx.Deadline()
@@ -364,16 +313,16 @@ func TestCanonicalizeArtifactMessageMetadataBoundsArtifactResolution(t *testing.
 		return ArtifactContextRecord{}, context.DeadlineExceeded
 	}))
 
-	got := hub.canonicalizeArtifactMessageMetadata(context.Background(), 7, "p2p_7_440", map[string]interface{}{
-		"trace": "kept",
-		artifactRefMetadataKey: map[string]interface{}{
-			"contract_version":  artifactRefContract,
-			"id":                "lesson-game",
-			"currently_visible": true,
-		},
-	})
-	if !reflect.DeepEqual(got, map[string]interface{}{"trace": "kept"}) {
-		t.Fatalf("fallback metadata = %#v", got)
+	handler := NewArtifactContextSnapshotHandler(hub)
+	req := httptest.NewRequest(http.MethodPost, "/api/artifact-context/snapshots", strings.NewReader(`{
+		"topic_id":"p2p_7_440",
+		"artifact_ref":{"contract_version":"catsco.artifact-ref.v1","id":"lesson-game","currently_visible":true}
+	}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	recorder := httptest.NewRecorder()
+	handler.HandleUserSnapshots(recorder, req)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -400,21 +349,17 @@ func TestArtifactAgentForTopicRejectsAmbiguousGroup(t *testing.T) {
 	}
 }
 
-func TestArtifactMetadataOnlyReachesMatchingAgentAndHistoryReplay(t *testing.T) {
-	canonical := map[string]interface{}{
-		artifactContextMetadataKey: map[string]interface{}{
-			"contract_version": artifactContextContract,
-			"id":               "lesson-game",
-			"agent_uid":        "440",
-		},
-		"trace": "kept",
+func TestArtifactContextRefOnlyReachesMatchingAgentAndNeverHistory(t *testing.T) {
+	delivery := &artifactContextDeliveryRef{
+		Ref:      "acr_" + strings.Repeat("x", 43),
+		AgentUID: 440,
 	}
-	matching := artifactMetadataForRecipient(canonical, 440)
-	if _, ok := matching[artifactContextMetadataKey]; !ok {
-		t.Fatalf("matching agent lost artifact context: %#v", matching)
+	matching := withArtifactContextDeliveryRef(map[string]interface{}{"trace": "kept"}, delivery, 440)
+	if matching[artifactContextRefMetadataKey] != delivery.Ref {
+		t.Fatalf("matching agent lost delivery ref: %#v", matching)
 	}
-	other := artifactMetadataForRecipient(canonical, 441)
-	if _, ok := other[artifactContextMetadataKey]; ok || other["trace"] != "kept" {
+	other := withArtifactContextDeliveryRef(map[string]interface{}{"trace": "kept"}, delivery, 441)
+	if _, ok := other[artifactContextRefMetadataKey]; ok || other["trace"] != "kept" {
 		t.Fatalf("non-matching recipient metadata = %#v", other)
 	}
 
@@ -425,21 +370,28 @@ func TestArtifactMetadataOnlyReachesMatchingAgentAndHistoryReplay(t *testing.T) 
 	}}
 	hub := NewHub(store, nil)
 	message := &types.Message{
-		ID:        12,
-		TopicID:   "p2p_7_440",
-		FromUID:   7,
-		Content:   `"改一下右侧标题"`,
-		MsgType:   "text",
-		Metadata:  canonical,
+		ID:      12,
+		TopicID: "p2p_7_440",
+		FromUID: 7,
+		Content: `"改一下右侧标题"`,
+		MsgType: "text",
+		Metadata: map[string]interface{}{
+			"trace":                        "kept",
+			artifactContextRefMetadataKey:  delivery.Ref,
+			artifactContextMetadataKey:     map[string]interface{}{"id": "lesson-game"},
+			artifactRefMetadataKey:         map[string]interface{}{"id": "lesson-game"},
+			artifactPageContextMetadataKey: map[string]interface{}{"selected_text": "secret"},
+		},
 		CreatedAt: time.Now(),
 	}
 	matchingHistory := hub.historyMessageDataForRecipient(440, message)
-	if _, ok := matchingHistory.Metadata[artifactContextMetadataKey]; !ok {
-		t.Fatalf("matching history lost artifact context: %#v", matchingHistory.Metadata)
+	if matchingHistory.Metadata["trace"] != "kept" {
+		t.Fatalf("unrelated history metadata was lost: %#v", matchingHistory.Metadata)
 	}
-	otherHistory := hub.historyMessageDataForRecipient(441, message)
-	if _, ok := otherHistory.Metadata[artifactContextMetadataKey]; ok {
-		t.Fatalf("history leaked artifact context: %#v", otherHistory.Metadata)
+	for _, key := range []string{artifactContextRefMetadataKey, artifactContextMetadataKey, artifactRefMetadataKey, artifactPageContextMetadataKey} {
+		if _, ok := matchingHistory.Metadata[key]; ok {
+			t.Fatalf("history leaked %q: %#v", key, matchingHistory.Metadata)
+		}
 	}
 }
 

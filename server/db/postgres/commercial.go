@@ -98,6 +98,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if plan.InternalQuotaTokens < 0 {
 		return 0, fmt.Errorf("commercial plan internal quota must be non-negative")
 	}
+	if err := validateCommercialOfficialPaidPlanModels(plan.Slug, plan.ModelBudgets); err != nil {
+		return 0, err
+	}
 	budgets, err := encodeModelBudgets(plan.ModelBudgets)
 	if err != nil {
 		return 0, fmt.Errorf("encode model budgets: %w", err)

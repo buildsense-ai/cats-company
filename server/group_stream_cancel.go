@@ -233,7 +233,7 @@ func (h *Hub) fanoutGroupStreamCancel(
 		return
 	}
 	streamMetadata := make(map[string]interface{}, len(metadata)+3)
-	for key, value := range metadata {
+	for key, value := range metadataWithoutArtifactContext(metadata) {
 		streamMetadata[key] = value
 	}
 	streamMetadata["stream_id"] = streamID

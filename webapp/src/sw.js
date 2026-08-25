@@ -3,17 +3,14 @@
 import { clientsClaim } from 'workbox-core';
 import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
 import { registerRoute, NavigationRoute } from 'workbox-routing';
-import { NetworkFirst, NetworkOnly } from 'workbox-strategies';
+import { NetworkOnly } from 'workbox-strategies';
 
 import { sameOriginNotificationURL } from './utils/notification-url';
-import {
-  cleanupNavigationCaches,
-  NAVIGATION_CACHE_NAME,
-} from './utils/navigation-cache';
+import { cleanupNavigationCaches } from './utils/navigation-cache';
+import { navigationFallback } from './utils/navigation-fallback';
 
 clientsClaim();
 cleanupOutdatedCaches();
-precacheAndRoute(self.__WB_MANIFEST);
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
@@ -42,15 +39,10 @@ registerRoute(neverCache, new NetworkOnly(), 'GET');
 // stack. Non-cacheable writes do not benefit from a Workbox strategy, and the
 // native path avoids an extra Request clone for large mobile upload bodies.
 
-const navigationHandler = new NetworkFirst({
-  cacheName: NAVIGATION_CACHE_NAME,
+const navigationHandler = new NetworkOnly({
   networkTimeoutSeconds: 4,
   plugins: [{
-    cacheWillUpdate: async ({ response }) => {
-      if (!response || response.status !== 200) return null;
-      return response;
-    },
-    handlerDidError: async () => caches.match('/offline.html', { ignoreSearch: true }),
+    handlerDidError: navigationFallback,
   }],
 });
 
@@ -65,6 +57,10 @@ registerRoute(new NavigationRoute(navigationHandler, {
     authenticationNavigation,
   ],
 }));
+
+// Register the precache route after NavigationRoute. Navigation HTML is not
+// part of the manifest, so failed navigations can only use offline.html.
+precacheAndRoute(self.__WB_MANIFEST);
 
 function notificationFromEvent(event) {
   let payload = {};

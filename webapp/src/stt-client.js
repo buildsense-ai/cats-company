@@ -1,13 +1,38 @@
 import PCM_WORKLET_URL from './stt-pcm-worklet.js?url&no-inline';
+import { request } from './auth-session';
 
 const MAX_BUFFERED_AUDIO_BYTES = 160_000;
 const MAX_PRE_ROLL_AUDIO_BYTES = 16_000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 300;
 const FINALIZATION_TIMEOUT_MS = 5_000;
+const STT_SESSION_TIMEOUT_MS = 15_000;
+const DURATION_WARNING_WINDOW_MS = 10_000;
+const DURATION_ACTIVITY_WINDOW_MS = 1_500;
+const DURATION_QUIET_WINDOW_MS = 900;
+const DURATION_UNPUNCTUATED_QUIET_WINDOW_MS = 2_000;
+const DURATION_BOUNDARY_POLL_MS = 250;
+const STT_VOICE_RMS_THRESHOLD = 0.008;
+const HARD_DURATION_STOP_REASONS = new Set(['hard_timeout', 'audio_limit', 'duration_limit']);
+const RECOVERABLE_FINAL_BOUNDARY_REASONS = new Set([
+  'hard_timeout',
+  'audio_limit',
+  'duration_limit',
+  'idle_timeout',
+]);
+const STT_LIFECYCLE_STOP_REASON = 'lifecycle_stop';
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const TRANSCRIPT_BOUNDARY_PUNCTUATION = /[\s,.;:!?，。；：！？、]/u;
 const TRANSCRIPT_BOUNDARY_PUNCTUATION_GLOBAL = /[\s,.;:!?，。；：！？、]/gu;
+const TRANSCRIPT_TERMINAL_PUNCTUATION = /[.!?。！？；;]$/u;
 const CUMULATIVE_SNAPSHOT_PREFIX_CHARACTERS = 3;
+
+function isHardDurationStopReason(reason) {
+  return HARD_DURATION_STOP_REASONS.has(String(reason || ''));
+}
+
+function isRecoverableFinalBoundaryReason(reason) {
+  return RECOVERABLE_FINAL_BOUNDARY_REASONS.has(String(reason || ''));
+}
 
 function scheduleFrame(callback) {
   if (typeof globalThis.requestAnimationFrame === 'function') {
@@ -254,22 +279,7 @@ function sttAPIBaseURL() {
 }
 
 async function createSTTSessionRequest() {
-  const headers = { 'Content-Type': 'application/json' };
-  const token = globalThis.localStorage?.getItem('oc_token');
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${API_BASE}/api/stt/sessions`, { method: 'POST', headers });
-  let payload = {};
-  try {
-    payload = await response.json();
-  } catch {
-    payload = {};
-  }
-  if (!response.ok) {
-    const error = new Error(payload.error || '无法创建语音识别会话');
-    error.status = response.status;
-    throw error;
-  }
-  return payload;
+  return request('POST', '/api/stt/sessions', undefined, { timeoutMs: STT_SESSION_TIMEOUT_MS });
 }
 
 export function isStreamingSTTSupported() {
@@ -370,6 +380,8 @@ export class StreamingSTTSession {
     this.onState = options.onState || (() => {});
     this.onPartial = options.onPartial || (() => {});
     this.onAudioLevel = options.onAudioLevel || (() => {});
+    this.onDurationWarning = options.onDurationWarning || (() => {});
+    this.onDurationLimit = options.onDurationLimit || (() => {});
     this.onFinal = options.onFinal || (() => {});
     this.onError = options.onError || (() => {});
     this.socket = null;
@@ -397,20 +409,39 @@ export class StreamingSTTSession {
     this.transcript = new StreamingTranscript();
     this.partialFrame = null;
     this.finalFrame = null;
+    this.finalFallbackTimer = null;
+    this.pendingFinalFinish = null;
     this.pendingPartial = '';
     this.lastPublishedPartial = '';
     this.durationTimer = null;
+    this.durationWarningTimer = null;
+    this.durationBoundaryTimer = null;
+    this.durationDeadlineAt = null;
+    this.durationWarningSent = false;
+    this.durationWarningInputState = null;
+    this.durationWarningRemainingSeconds = null;
+    this.durationBoundaryQuietSince = null;
+    this.durationLimitReached = false;
+    this.lastVoiceAt = null;
+    this.lastTranscriptAt = null;
+    this.sawSpeechActivity = false;
+    this.stopReason = null;
     this.finalizationTimer = null;
-    this.handleVisibilityChange = () => {
-      if (!isPageHidden()) return;
+    this.handleLifecycleEnd = () => {
       this.acceptingAudio = false;
-      if (this.activated) void this.stop();
+      if (this.finalReceived) {
+        this.pendingFinalFinish?.();
+        return;
+      }
+      if (this.activated) void this.stop(STT_LIFECYCLE_STOP_REASON);
       else this.cancel();
     };
+    this.handleVisibilityChange = () => {
+      if (!isPageHidden()) return;
+      this.handleLifecycleEnd();
+    };
     this.handlePageHide = () => {
-      this.acceptingAudio = false;
-      if (this.activated) void this.stop();
-      else this.cancel();
+      this.handleLifecycleEnd();
     };
     this.lifecycleListenersInstalled = false;
   }
@@ -438,8 +469,214 @@ export class StreamingSTTSession {
     const parsed = Number(milliseconds);
     if (!Number.isFinite(parsed)) return;
     const maxMilliseconds = Math.max(1, parsed);
-    if (this.durationTimer) window.clearTimeout(this.durationTimer);
-    this.durationTimer = window.setTimeout(() => void this.stop(), maxMilliseconds);
+    const previousDurationLimitReached = this.durationLimitReached;
+    const previousStopRequested = this.stopRequested;
+    const previousStopReason = this.stopReason;
+    this.clearDurationTimers();
+    this.durationDeadlineAt = Date.now() + maxMilliseconds;
+    this.durationWarningSent = false;
+    this.durationWarningInputState = null;
+    this.durationWarningRemainingSeconds = null;
+    this.durationBoundaryQuietSince = null;
+    this.durationLimitReached = previousDurationLimitReached;
+    this.stopReason = previousDurationLimitReached
+      ? 'duration_limit'
+      : (previousStopRequested ? previousStopReason : null);
+
+    const warningDelay = Math.max(0, maxMilliseconds - DURATION_WARNING_WINDOW_MS);
+    this.durationWarningTimer = window.setTimeout(
+      () => this.handleDurationWarning(),
+      warningDelay,
+    );
+    this.durationTimer = window.setTimeout(
+      () => this.handleDurationLimitDeadline(),
+      maxMilliseconds,
+    );
+  }
+
+  clearDurationTimers() {
+    if (this.durationTimer !== null) window.clearTimeout(this.durationTimer);
+    if (this.durationWarningTimer !== null) window.clearTimeout(this.durationWarningTimer);
+    if (this.durationBoundaryTimer !== null) window.clearTimeout(this.durationBoundaryTimer);
+    this.durationTimer = null;
+    this.durationWarningTimer = null;
+    this.durationBoundaryTimer = null;
+  }
+
+  markVoiceActivity() {
+    const now = Date.now();
+    this.lastVoiceAt = now;
+    this.sawSpeechActivity = true;
+    return now;
+  }
+
+  markTranscriptActivity() {
+    this.lastTranscriptAt = Date.now();
+    this.sawSpeechActivity = true;
+  }
+
+  hasRecentSpeechActivity(now = Date.now()) {
+    const lastActivityAt = Math.max(
+      this.lastVoiceAt ?? Number.NEGATIVE_INFINITY,
+      this.lastTranscriptAt ?? Number.NEGATIVE_INFINITY,
+    );
+    return Number.isFinite(lastActivityAt)
+      && now - lastActivityAt <= DURATION_ACTIVITY_WINDOW_MS;
+  }
+
+  hasReachedDurationDeadline(now = Date.now()) {
+    return this.durationDeadlineAt !== null && now >= this.durationDeadlineAt;
+  }
+
+  hasTranscriptBoundary() {
+    return TRANSCRIPT_TERMINAL_PUNCTUATION.test(this.transcript.preview().trim());
+  }
+
+  checkDurationClock() {
+    if (this.terminal || this.finalReceived || !this.durationDeadlineAt) return;
+    const remainingMs = this.durationDeadlineAt - Date.now();
+    if (this.hasReachedDurationDeadline()) {
+      if (this.stopRequested) {
+        this.markLifecycleBoundaryIfExpired();
+      } else {
+        this.handleDurationLimitDeadline();
+      }
+      return;
+    }
+    if (this.stopRequested) return;
+    if (!this.durationWarningSent && remainingMs <= DURATION_WARNING_WINDOW_MS) {
+      this.handleDurationWarning();
+      return;
+    }
+    if (this.durationWarningSent) this.emitDurationWarning(remainingMs);
+  }
+
+  emitDurationWarning(remainingMs = this.durationDeadlineAt - Date.now()) {
+    if (!this.durationWarningSent || !this.durationDeadlineAt) return;
+    const clampedRemainingMs = Math.max(0, remainingMs);
+    const remainingSeconds = Math.max(0, Math.ceil(clampedRemainingMs / 1000));
+    const hasRecentInput = this.hasRecentSpeechActivity();
+    if (
+      this.durationWarningInputState === hasRecentInput
+      && this.durationWarningRemainingSeconds === remainingSeconds
+    ) return;
+    this.durationWarningInputState = hasRecentInput;
+    this.durationWarningRemainingSeconds = remainingSeconds;
+    this.onDurationWarning({
+      remainingMs: clampedRemainingMs,
+      remainingSeconds,
+      hasRecentInput,
+    });
+  }
+
+  handleDurationWarning() {
+    if (this.durationWarningTimer !== null) window.clearTimeout(this.durationWarningTimer);
+    this.durationWarningTimer = null;
+    if (
+      this.terminal
+      || this.stopRequested
+      || this.finalReceived
+      || !this.durationDeadlineAt
+      || this.durationWarningSent
+    ) return;
+    const remainingMs = this.durationDeadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      this.handleDurationLimitDeadline();
+      return;
+    }
+    if (!this.ready) {
+      const retryDelay = Math.min(250, remainingMs);
+      this.durationWarningTimer = window.setTimeout(() => this.handleDurationWarning(), retryDelay);
+      return;
+    }
+    this.durationWarningSent = true;
+    this.emitDurationWarning(remainingMs);
+    this.scheduleDurationBoundaryCheck();
+  }
+
+  scheduleDurationBoundaryCheck() {
+    if (
+      this.durationBoundaryTimer !== null
+      || this.terminal
+      || this.stopRequested
+      || this.finalReceived
+      || !this.durationWarningSent
+    ) return;
+    this.durationBoundaryTimer = window.setTimeout(() => {
+      this.durationBoundaryTimer = null;
+      this.checkDurationBoundary();
+    }, DURATION_BOUNDARY_POLL_MS);
+  }
+
+  checkDurationBoundary() {
+    if (this.terminal || this.stopRequested || this.finalReceived || !this.durationDeadlineAt) return;
+    const now = Date.now();
+    if (this.hasReachedDurationDeadline(now)) {
+      this.handleDurationLimitDeadline();
+      return;
+    }
+
+    this.emitDurationWarning(this.durationDeadlineAt - now);
+
+    if (this.hasRecentSpeechActivity(now)) {
+      this.durationBoundaryQuietSince = null;
+    } else if (!this.sawSpeechActivity) {
+      this.durationBoundaryQuietSince = null;
+    } else if (this.durationBoundaryQuietSince === null) {
+      this.durationBoundaryQuietSince = now;
+    } else if (
+      now - this.durationBoundaryQuietSince >= (
+        this.hasTranscriptBoundary()
+          ? DURATION_QUIET_WINDOW_MS
+          : DURATION_UNPUNCTUATED_QUIET_WINDOW_MS
+      )
+    ) {
+      this.beginDurationLimitStop({ stoppedAtNaturalBoundary: true });
+      return;
+    }
+    this.scheduleDurationBoundaryCheck();
+  }
+
+  handleDurationLimitDeadline() {
+    this.durationTimer = null;
+    if (this.terminal || this.finalReceived) return;
+    if (this.stopRequested) {
+      this.markLifecycleBoundaryIfExpired();
+      return;
+    }
+    this.beginDurationLimitStop({ stoppedAtNaturalBoundary: false });
+  }
+
+  markLifecycleBoundaryIfExpired() {
+    if (
+      this.stopReason !== STT_LIFECYCLE_STOP_REASON
+      || !this.hasReachedDurationDeadline()
+    ) return false;
+    this.recordDurationBoundary({ stoppedAtNaturalBoundary: false, reason: 'hard_timeout' });
+    return true;
+  }
+
+  recordDurationBoundary({ stoppedAtNaturalBoundary = false, reason = 'duration_limit' } = {}) {
+    if (
+      this.terminal
+      || this.finalReceived
+      || this.durationLimitReached
+      || (this.stopRequested && reason === 'duration_limit')
+    ) return false;
+    this.durationLimitReached = true;
+    this.stopReason = reason;
+    this.clearDurationTimers();
+    this.onDurationLimit({
+      hadRecentInput: this.hasRecentSpeechActivity(),
+      stoppedAtNaturalBoundary,
+    });
+    return true;
+  }
+
+  beginDurationLimitStop({ stoppedAtNaturalBoundary = false } = {}) {
+    if (this.recordDurationBoundary({ stoppedAtNaturalBoundary, reason: 'duration_limit' }) !== false) {
+      void this.stop('duration_limit');
+    }
   }
 
   applyDurationLimit(payload, fallbackMilliseconds = null) {
@@ -557,7 +794,7 @@ export class StreamingSTTSession {
     // interruption boundary from the browser's point of view, so never send
     // it to CatsCo.
     this.acceptingAudio = false;
-    if (this.activated) void this.stop();
+    if (this.activated) void this.stop(STT_LIFECYCLE_STOP_REASON);
     else this.cancel();
   }
 
@@ -600,6 +837,8 @@ export class StreamingSTTSession {
 
   publishAudioLevel(rms) {
     if (this.terminal) return;
+    if (Number(rms) >= STT_VOICE_RMS_THRESHOLD) this.markVoiceActivity();
+    this.checkDurationClock();
     this.onAudioLevel(normalizeAudioLevel(rms));
   }
 
@@ -613,6 +852,7 @@ export class StreamingSTTSession {
   }
 
   handleMessage(raw) {
+    if (this.terminal || this.finalReceived) return;
     let message;
     try {
       message = JSON.parse(raw);
@@ -623,17 +863,45 @@ export class StreamingSTTSession {
       case 'ready':
         this.ready = true;
         this.applyDurationLimit(message);
+        this.checkDurationClock();
         this.syncReadyState();
         this.drainPreconnectFrames();
         this.maybeSendStop();
         break;
       case 'partial':
+        if (message.text) this.markTranscriptActivity();
+        this.checkDurationClock();
         this.publishPartial(this.transcript.updatePartial(message.text));
         break;
       case 'definite':
+        if (message.text) this.markTranscriptActivity();
+        this.checkDurationClock();
         this.publishPartial(this.transcript.updateDefinite(message.text));
         break;
       case 'final': {
+        const previousStopReason = this.stopReason;
+        if (message.stop_reason) {
+          this.stopReason = message.stop_reason;
+          if (
+            message.stop_reason === 'client_stop'
+            && (previousStopReason === STT_LIFECYCLE_STOP_REASON || previousStopReason === 'duration_limit')
+          ) {
+            this.stopReason = previousStopReason;
+          }
+          if (isHardDurationStopReason(message.stop_reason)) {
+            this.durationLimitReached = true;
+          }
+        }
+        const shouldCheckLocalDeadline = !message.stop_reason
+          || message.stop_reason === STT_LIFECYCLE_STOP_REASON
+          || (message.stop_reason === 'client_stop'
+            && (previousStopReason === STT_LIFECYCLE_STOP_REASON || this.durationLimitReached));
+        if (shouldCheckLocalDeadline) {
+          // A throttled foreground timer may not run before the provider sends
+          // its terminal frame. Classify the local deadline when the server
+          // did not provide a more specific boundary reason.
+          this.checkDurationClock();
+        }
         this.finishWithFinal(this.transcript.finalize(message.text));
         break;
       }
@@ -677,6 +945,22 @@ export class StreamingSTTSession {
     this.partialFrame = null;
   }
 
+  transcriptSnapshot() {
+    // The transcript model is updated before a partial is coalesced for
+    // painting. Keep the coalesced values as a defensive fallback for custom
+    // transports and for a final frame that races with teardown.
+    const candidates = [
+      this.transcript.preview(),
+      this.pendingPartial,
+      this.lastPublishedPartial,
+    ];
+    for (const candidate of candidates) {
+      const text = String(candidate || '').trim();
+      if (text) return text;
+    }
+    return '';
+  }
+
   finishWithFinal(text) {
     if (this.terminal || this.finalFrame !== null) return;
     this.finalReceived = true;
@@ -688,43 +972,77 @@ export class StreamingSTTSession {
     void this.stopCapture();
     const finish = () => {
       if (this.terminal) return;
+      this.pendingFinalFinish = null;
+      if (this.finalFallbackTimer !== null) window.clearTimeout(this.finalFallbackTimer);
+      this.finalFallbackTimer = null;
+      cancelFrame(this.finalFrame);
+      this.finalFrame = null;
       this.terminal = true;
       this.cleanup();
       this.setState('complete');
       // The provider may legitimately finish with no recognized text (for
       // example, after silence). Composer uses this callback to release its
       // session reference, while its caller already ignores an empty draft.
-      this.onFinal(text);
+      const boundaryReason = isRecoverableFinalBoundaryReason(this.stopReason)
+        ? this.stopReason
+        : null;
+      const finalReason = boundaryReason
+        ? (isHardDurationStopReason(boundaryReason) ? 'duration_limit' : boundaryReason)
+        : (this.durationLimitReached ? 'duration_limit' : (this.stopReason || 'complete'));
+      this.onFinal(text, {
+        reason: finalReason,
+      });
     };
     if (!needsPreviewPaint) {
       finish();
       return;
     }
+    this.pendingFinalFinish = finish;
+    if (isPageHidden()) {
+      finish();
+      return;
+    }
     this.finalFrame = scheduleFrame(() => {
       this.finalFrame = scheduleFrame(() => {
-        this.finalFrame = null;
         finish();
       });
     });
+    this.finalFallbackTimer = window.setTimeout(() => {
+      this.finalFallbackTimer = null;
+      cancelFrame(this.finalFrame);
+      this.finalFrame = null;
+      finish();
+    }, 250);
   }
 
-  sendControl(type) {
-    if (this.socket?.readyState === 1) this.socket.send(JSON.stringify({ type }));
+  sendControl(type, payload = null) {
+    if (this.socket?.readyState !== 1) return;
+    this.socket.send(JSON.stringify(payload ? { type, ...payload } : { type }));
   }
 
   normalizeRealtimeError(message) {
+    let messageText;
     switch (message?.code) {
       case 'quota_exhausted':
-        return new Error('语音输入额度已用完，请稍后再试');
+        messageText = '语音输入额度已用完，请稍后再试';
+        break;
       case 'session_active':
-        return new Error('已有语音输入正在进行');
+        messageText = '已有语音输入正在进行';
+        break;
       case 'capacity_full':
-        return new Error('语音输入服务繁忙，请稍后再试');
+        messageText = '语音输入服务繁忙，请稍后再试';
+        break;
       case 'final_timeout':
-        return new Error('语音识别结束超时，请重试');
+        messageText = '语音识别结束超时，请重试';
+        break;
       default:
-        return new Error(message?.message || '语音识别失败');
+        messageText = message?.message || '语音识别失败';
+        break;
     }
+    const error = new Error(messageText);
+    error.code = message?.code || '';
+    error.stopReason = message?.stop_reason || '';
+    return error;
   }
 
   startFinalizationTimer() {
@@ -743,10 +1061,16 @@ export class StreamingSTTSession {
   maybeSendStop() {
     if (!this.ready || !this.sendStopRequested || !this.captureStopped || this.stopSent || this.terminal) return;
     this.stopSent = true;
-    this.sendControl('stop');
+    const stopReason = this.durationLimitReached
+      ? 'duration_limit'
+      : this.stopReason === STT_LIFECYCLE_STOP_REASON
+        ? STT_LIFECYCLE_STOP_REASON
+        : null;
+    this.sendControl('stop', stopReason ? { stop_reason: stopReason } : null);
   }
 
-  async stop() {
+  async stop(reason = 'user_stop') {
+    if (reason && this.stopReason === null) this.stopReason = reason;
     if (this.terminal || this.state === 'complete') return;
     if (this.stopRequested) return this.stopPromise;
     this.stopRequested = true;
@@ -788,18 +1112,52 @@ export class StreamingSTTSession {
 
   fail(error) {
     if (this.terminal || this.finalReceived) return;
+    const normalized = error instanceof Error ? error : new Error('语音识别失败');
+    const reportedStopReason = normalized.stopReason || '';
+    const lifecycleBoundaryAlreadyReached = reportedStopReason === STT_LIFECYCLE_STOP_REASON
+      && this.durationLimitReached;
+    const implicitClientStop = reportedStopReason === 'client_stop'
+      && (this.stopReason === STT_LIFECYCLE_STOP_REASON
+        || this.stopReason === 'duration_limit'
+        || this.durationLimitReached);
+    let serverStopReason = reportedStopReason;
+    if (lifecycleBoundaryAlreadyReached) serverStopReason = 'duration_limit';
+    else if (implicitClientStop) serverStopReason = this.stopReason;
+    const reachedServerBoundary = isHardDurationStopReason(serverStopReason);
+    const serverLifecycleStop = serverStopReason === STT_LIFECYCLE_STOP_REASON;
+    const reachedClientBoundary = this.hasReachedDurationDeadline()
+      && (!serverStopReason || serverLifecycleStop)
+      && (!this.stopRequested || this.stopReason === STT_LIFECYCLE_STOP_REASON);
+    if (reachedClientBoundary) {
+      this.recordDurationBoundary({ stoppedAtNaturalBoundary: false, reason: 'hard_timeout' });
+    }
+    const transcript = this.transcriptSnapshot();
+    // Publish the last coalesced preview before tearing down the session. The
+    // composer receives the snapshot as a second argument as well, because a
+    // React state update from onPartial may still be batched with onError.
+    this.flushPartial();
     this.terminal = true;
     this.cleanup();
     this.setState('error');
-    this.onError(error instanceof Error ? error : new Error('语音识别失败'));
+    const terminalBoundaryReached = reachedServerBoundary
+      || reachedClientBoundary
+      || (serverStopReason === STT_LIFECYCLE_STOP_REASON && this.durationLimitReached);
+    const errorReason = terminalBoundaryReached
+      ? 'duration_limit'
+      : serverStopReason || (this.durationLimitReached ? 'duration_limit' : (this.stopReason || 'error'));
+    this.onError(normalized, transcript, {
+      reason: errorReason,
+    });
   }
 
   cleanup() {
     this.clearPartialFrame();
     cancelFrame(this.finalFrame);
     this.finalFrame = null;
-    if (this.durationTimer) window.clearTimeout(this.durationTimer);
-    this.durationTimer = null;
+    if (this.finalFallbackTimer !== null) window.clearTimeout(this.finalFallbackTimer);
+    this.finalFallbackTimer = null;
+    this.pendingFinalFinish = null;
+    this.clearDurationTimers();
     this.clearFinalizationTimer();
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     globalThis.removeEventListener?.('pagehide', this.handlePageHide);
