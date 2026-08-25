@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -442,6 +443,127 @@ func TestArtifactResultSendClaimLinearizesWithPreviewInvalidation(t *testing.T) 
 		if accepted || !completed || outcome.Status != "target_mismatch" {
 			t.Fatalf("attempt %d invalidation won but outcome=%#v completed=%v accepted=%v", attempt, outcome, completed, accepted)
 		}
+	}
+}
+
+func TestArtifactWritebackGrantSharesSnapshotCurrentBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		resultByte string
+		retire     func(*Hub, artifactContextSnapshot) (string, error)
+	}{
+		{
+			name:       "replacement",
+			resultByte: "r",
+			retire: func(hub *Hub, old artifactContextSnapshot) (string, error) {
+				_, previousRef, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+					ActorUID: old.ActorUID,
+					TopicID:  old.TopicID,
+					AgentUID: old.AgentUID,
+					Artifact: ArtifactContextRecord{ID: old.Artifact.ID},
+				})
+				return previousRef, err
+			},
+		},
+		{
+			name:       "explicit invalidation",
+			resultByte: "i",
+			retire: func(hub *Hub, old artifactContextSnapshot) (string, error) {
+				if !hub.artifactContextSnapshots.invalidate(old.Ref, old.ActorUID) {
+					return "", errors.New("snapshot invalidation failed")
+				}
+				return old.Ref, nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub := newArtifactSnapshotTestHub(t)
+			old, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+				ActorUID:         7,
+				TopicID:          "p2p_7_440",
+				AgentUID:         440,
+				Artifact:         ArtifactContextRecord{ID: "lesson-game"},
+				DisplayedVersion: 2,
+				PreviewRoute:     artifactResultTestPreviewRoute(),
+			})
+			if err != nil {
+				t.Fatalf("create old snapshot: %v", err)
+			}
+			target, status, err := hub.issueArtifactWritebackIfCurrent(old.Ref, old.Revision)
+			if err != nil || status != artifactContextSnapshotActive {
+				t.Fatalf("issue old target: status=%q err=%v", status, err)
+			}
+
+			// Model the old Handler path after its final snapshot lookup has passed.
+			stale, status := hub.artifactContextSnapshots.lookup(old.Ref)
+			if status != artifactContextSnapshotActive || stale.Revision != old.Revision {
+				t.Fatalf("old current check: status=%q snapshot=%#v", status, stale)
+			}
+
+			type retireResult struct {
+				previousRef string
+				err         error
+			}
+			retired := make(chan retireResult, 1)
+			allowWritebackInvalidation := make(chan struct{})
+			done := make(chan struct{})
+			var release sync.Once
+			releaseInvalidation := func() {
+				release.Do(func() { close(allowWritebackInvalidation) })
+			}
+			go func() {
+				previousRef, retireErr := test.retire(hub, old)
+				retired <- retireResult{previousRef: previousRef, err: retireErr}
+				<-allowWritebackInvalidation
+				if retireErr == nil {
+					hub.artifactResultWritebacks.invalidateContext(previousRef)
+				}
+				close(done)
+			}()
+			defer func() {
+				releaseInvalidation()
+				<-done
+			}()
+
+			retirement := <-retired
+			if retirement.err != nil || retirement.previousRef != old.Ref {
+				t.Fatalf("retire old snapshot: previous=%q err=%v", retirement.previousRef, retirement.err)
+			}
+			if _, exists := hub.artifactResultWritebacks.target(target.Ref); !exists {
+				t.Fatal("test did not pause before writeback invalidation")
+			}
+			if _, issueStatus, issueErr := hub.issueArtifactWritebackIfCurrent(stale.Ref, stale.Revision); issueErr != nil || issueStatus == artifactContextSnapshotActive {
+				t.Fatalf("stale snapshot reissued target: status=%q err=%v", issueStatus, issueErr)
+			}
+
+			request := artifactResultSubmitRequest{
+				ContractVersion:  artifactResultContract,
+				WritebackRef:     target.Ref,
+				ArtifactID:       target.ArtifactID,
+				DisplayedVersion: target.DisplayedVersion,
+				SinkID:           "risk-items.upsert.v1",
+				ResultID:         "arr_" + strings.Repeat(test.resultByte, 43),
+				Payload:          json.RawMessage(`{"items":[]}`),
+			}
+			delivery, created, startStatus := hub.artifactResultWritebacks.startDelivery(
+				request,
+				target,
+				hashArtifactResultRequest(request, target),
+			)
+			if !created || startStatus != "" {
+				t.Fatalf("start inside delayed invalidation window: created=%v status=%q", created, startStatus)
+			}
+			if _, claimed := hub.claimArtifactResultDeliveryForSend(delivery); claimed || delivery.SendClaimed {
+				t.Fatal("stale snapshot obtained send right")
+			}
+			outcome, completed := hub.artifactResultWritebacks.outcomeFor(delivery)
+			if !completed || outcome.Status != "target_mismatch" || outcome.Code != "artifact_preview_changed" {
+				t.Fatalf("stale delivery outcome=%#v completed=%v", outcome, completed)
+			}
+
+			releaseInvalidation()
+			<-done
+		})
 	}
 }
 

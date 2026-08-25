@@ -205,6 +205,40 @@ func (s *artifactContextSnapshotStore) lookup(ref string) (artifactContextSnapsh
 	return cloneArtifactContextSnapshot(*snapshot), artifactContextSnapshotActive
 }
 
+// withCurrent runs use while ref is still the current snapshot at revision.
+// Callers may acquire artifactResultWritebackStore.mu from use; code holding
+// that mutex must never call back into the snapshot store.
+func (s *artifactContextSnapshotStore) withCurrent(
+	ref string,
+	revision uint64,
+	use func(artifactContextSnapshot),
+) artifactContextSnapshotState {
+	if s == nil || use == nil {
+		return artifactContextSnapshotUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	s.cleanupLocked(now)
+	snapshot := s.byRef[ref]
+	if snapshot == nil {
+		return artifactContextSnapshotNotFound
+	}
+	if snapshot.State != artifactContextSnapshotActive {
+		return snapshot.State
+	}
+	key := artifactContextSnapshotKey{actorUID: snapshot.ActorUID, topicID: snapshot.TopicID}
+	if s.current[key] != ref {
+		s.retireLocked(snapshot, artifactContextSnapshotReplaced, now)
+		return artifactContextSnapshotReplaced
+	}
+	if snapshot.Revision != revision {
+		return artifactContextSnapshotReplaced
+	}
+	use(cloneArtifactContextSnapshot(*snapshot))
+	return artifactContextSnapshotActive
+}
+
 func (s *artifactContextSnapshotStore) currentRef(actorUID int64, topicID string) string {
 	if s == nil || actorUID <= 0 || topicID == "" {
 		return ""
@@ -607,7 +641,12 @@ func (h *ArtifactContextSnapshotHandler) HandleBotRead(w http.ResponseWriter, r 
 	}
 	if snapshot.DisplayedVersion > 0 && snapshot.PreviewRoute.NodeID != "" &&
 		snapshot.PreviewRoute.ConnectionID != "" && h.hub.artifactResultWritebacks != nil {
-		if target, issueErr := h.hub.artifactResultWritebacks.issue(snapshot); issueErr == nil {
+		target, issueStatus, issueErr := h.hub.issueArtifactWritebackIfCurrent(snapshot.Ref, snapshot.Revision)
+		if issueStatus != artifactContextSnapshotActive {
+			writeArtifactContextLookupStatus(w, issueStatus)
+			return
+		}
+		if issueErr == nil {
 			response["writeback_target"] = map[string]interface{}{
 				"contract_version": artifactWritebackTargetContract,
 				"writeback_ref":    target.Ref,

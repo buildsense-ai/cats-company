@@ -140,6 +140,48 @@ func NewArtifactResultHandler(hub *Hub) *ArtifactResultHandler {
 	return &ArtifactResultHandler{hub: hub}
 }
 
+func (h *Hub) issueArtifactWritebackIfCurrent(
+	contextRef string,
+	snapshotRevision uint64,
+) (artifactWritebackTarget, artifactContextSnapshotState, error) {
+	if h == nil || h.artifactContextSnapshots == nil || h.artifactResultWritebacks == nil {
+		return artifactWritebackTarget{}, artifactContextSnapshotUnavailable, errors.New("Artifact writeback unavailable")
+	}
+	var target artifactWritebackTarget
+	var issueErr error
+	status := h.artifactContextSnapshots.withCurrent(
+		contextRef,
+		snapshotRevision,
+		func(snapshot artifactContextSnapshot) {
+			target, issueErr = h.artifactResultWritebacks.issue(snapshot)
+		},
+	)
+	return target, status, issueErr
+}
+
+func (h *Hub) claimArtifactResultDeliveryForSend(
+	delivery *artifactResultDeliveryState,
+) (artifactWritebackTarget, bool) {
+	if h == nil || h.artifactContextSnapshots == nil || h.artifactResultWritebacks == nil || delivery == nil {
+		return artifactWritebackTarget{}, false
+	}
+	var target artifactWritebackTarget
+	var claimed bool
+	status := h.artifactContextSnapshots.withCurrent(
+		delivery.Target.ContextRef,
+		delivery.Target.SnapshotRevision,
+		func(artifactContextSnapshot) {
+			target, claimed = h.artifactResultWritebacks.claimDeliveryForSend(delivery)
+		},
+	)
+	if status != artifactContextSnapshotActive {
+		// withCurrent has released the snapshot lock. Retire the stale ticket and
+		// complete any unclaimed delivery without reversing the lock order.
+		h.artifactResultWritebacks.invalidateContext(delivery.Target.ContextRef)
+	}
+	return target, claimed
+}
+
 func newArtifactResultOpaqueRef(prefix string) (string, error) {
 	value := make([]byte, artifactResultRandomBytes)
 	if _, err := rand.Read(value); err != nil {
@@ -514,7 +556,7 @@ func (h *ArtifactResultHandler) HandleBotResults(w http.ResponseWriter, r *http.
 	}
 
 	if created {
-		target, claimed := h.hub.artifactResultWritebacks.claimDeliveryForSend(delivery)
+		target, claimed := h.hub.claimArtifactResultDeliveryForSend(delivery)
 		if claimed {
 			message := &ServerMessage{ArtifactResult: &MsgArtifactResult{
 				Type:                  "request",
