@@ -181,7 +181,7 @@ func TestHandleRegisterGeneratesInternalUsernameWhenOmitted(t *testing.T) {
 func TestHandleRegisterDisambiguatesGeneratedUsername(t *testing.T) {
 	db := newUserRegistrationTestStore()
 	db.usersByUsername["new-person"] = &types.User{ID: 91, Username: "new-person"}
-	email := "new.person@another.example"
+	email := "new.person@another-example.com"
 	code := "920418"
 	deleteVerificationCode(email, verificationPurposeRegister)
 	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposeRegister) })
