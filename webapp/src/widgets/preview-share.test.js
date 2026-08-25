@@ -51,4 +51,19 @@ describe('sharePreviewLink', () => {
     expect(result).toMatchObject({ status: 'cancelled' });
     expect(writeText).not.toHaveBeenCalled();
   });
+
+  it('does not fall back to copying when native sharing fails', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const nativeError = Object.assign(new Error('permission denied'), { name: 'NotAllowedError' });
+    const share = vi.fn().mockRejectedValue(nativeError);
+
+    const result = await sharePreviewLink({
+      url: '/uploads/files/report.html',
+      name: 'report.html',
+      navigatorLike: { share, clipboard: { writeText } },
+    });
+
+    expect(result).toMatchObject({ status: 'error', reason: 'native-share', error: nativeError });
+    expect(writeText).not.toHaveBeenCalled();
+  });
 });

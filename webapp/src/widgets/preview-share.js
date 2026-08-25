@@ -31,6 +31,7 @@ export async function sharePreviewLink({ url, name = '文件', navigatorLike = g
       if (error?.name === 'AbortError') {
         return { status: 'cancelled', url: shareURL };
       }
+      return { status: 'error', reason: 'native-share', error, url: shareURL };
     }
   }
 
