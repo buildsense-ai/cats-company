@@ -51,6 +51,7 @@ type artifactContextSnapshot struct {
 	AgentUID         int64
 	Artifact         ArtifactContextRecord
 	DisplayedVersion int64
+	PreviewRoute     runtimeRoute
 	PageContext      map[string]interface{}
 	CreatedAt        time.Time
 	ObservedAt       string
@@ -80,9 +81,10 @@ type ArtifactContextSnapshotHandler struct {
 }
 
 type artifactContextSnapshotCreateRequest struct {
-	TopicID     string                 `json:"topic_id"`
-	ArtifactRef map[string]interface{} `json:"artifact_ref"`
-	PageContext map[string]interface{} `json:"page_context,omitempty"`
+	TopicID        string                    `json:"topic_id"`
+	ArtifactRef    map[string]interface{}    `json:"artifact_ref"`
+	PageContext    map[string]interface{}    `json:"page_context,omitempty"`
+	PreviewSession artifactPreviewSessionRef `json:"preview_session,omitempty"`
 }
 
 type artifactContextSnapshotInvalidateRequest struct {
@@ -128,9 +130,9 @@ func normalizeArtifactContextRef(value string) (string, bool) {
 	return value, true
 }
 
-func (s *artifactContextSnapshotStore) create(snapshot artifactContextSnapshot) (artifactContextSnapshot, error) {
+func (s *artifactContextSnapshotStore) create(snapshot artifactContextSnapshot) (artifactContextSnapshot, string, error) {
 	if s == nil {
-		return artifactContextSnapshot{}, errors.New("snapshot store unavailable")
+		return artifactContextSnapshot{}, "", errors.New("snapshot store unavailable")
 	}
 
 	s.mu.Lock()
@@ -141,7 +143,7 @@ func (s *artifactContextSnapshotStore) create(snapshot artifactContextSnapshot) 
 	for attempt := 0; attempt < 4; attempt++ {
 		candidate, err := newArtifactContextRef()
 		if err != nil {
-			return artifactContextSnapshot{}, err
+			return artifactContextSnapshot{}, "", err
 		}
 		if _, exists := s.byRef[candidate]; !exists {
 			ref = candidate
@@ -149,12 +151,13 @@ func (s *artifactContextSnapshotStore) create(snapshot artifactContextSnapshot) 
 		}
 	}
 	if ref == "" {
-		return artifactContextSnapshot{}, errors.New("failed to allocate unique context_ref")
+		return artifactContextSnapshot{}, "", errors.New("failed to allocate unique context_ref")
 	}
 
 	key := artifactContextSnapshotKey{actorUID: snapshot.ActorUID, topicID: snapshot.TopicID}
 	revision := uint64(1)
-	if previousRef := s.current[key]; previousRef != "" {
+	previousRef := s.current[key]
+	if previousRef != "" {
 		if previous := s.byRef[previousRef]; previous != nil {
 			revision = previous.Revision + 1
 			s.retireLocked(previous, artifactContextSnapshotReplaced, now)
@@ -162,7 +165,7 @@ func (s *artifactContextSnapshotStore) create(snapshot artifactContextSnapshot) 
 	}
 	for len(s.byRef) >= s.maxEntries {
 		if !s.evictRetiredLocked() {
-			return artifactContextSnapshot{}, errors.New("snapshot store is full")
+			return artifactContextSnapshot{}, "", errors.New("snapshot store is full")
 		}
 	}
 
@@ -176,7 +179,7 @@ func (s *artifactContextSnapshotStore) create(snapshot artifactContextSnapshot) 
 	stored := snapshot
 	s.byRef[ref] = &stored
 	s.current[key] = ref
-	return cloneArtifactContextSnapshot(stored), nil
+	return cloneArtifactContextSnapshot(stored), previousRef, nil
 }
 
 func (s *artifactContextSnapshotStore) lookup(ref string) (artifactContextSnapshot, artifactContextSnapshotState) {
@@ -446,13 +449,26 @@ func (h *ArtifactContextSnapshotHandler) handleCreate(w http.ResponseWriter, r *
 	if pageContext != nil {
 		observedAt = firstMetadataString(pageContext, "observed_at")
 	}
-	previousContextRef := h.hub.artifactContextSnapshots.currentRef(actorUID, req.TopicID)
-	snapshot, err := h.hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	previewRoute := runtimeRoute{}
+	if req.PreviewSession.Token != "" || req.PreviewSession.ContractVersion != "" {
+		if h.hub.artifactPreviewSessions == nil {
+			writeArtifactContextStatus(w, http.StatusServiceUnavailable, artifactContextSnapshotUnavailable)
+			return
+		}
+		var routeOK bool
+		previewRoute, routeOK = h.hub.artifactPreviewSessions.verify(req.PreviewSession, actorUID)
+		if !routeOK || !h.hub.artifactPreviewRouteConnected(actorUID, previewRoute) {
+			writeArtifactContextStatus(w, http.StatusConflict, artifactContextSnapshotReplaced)
+			return
+		}
+	}
+	snapshot, previousContextRef, err := h.hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID:         actorUID,
 		TopicID:          req.TopicID,
 		AgentUID:         agentUID,
 		Artifact:         record,
 		DisplayedVersion: displayedVersion,
+		PreviewRoute:     previewRoute,
 		PageContext:      pageContext,
 		ObservedAt:       observedAt,
 	})
@@ -589,7 +605,8 @@ func (h *ArtifactContextSnapshotHandler) HandleBotRead(w http.ResponseWriter, r 
 	if snapshot.PageContext != nil {
 		response["page_context"] = cloneArtifactPageContext(snapshot.PageContext)
 	}
-	if snapshot.DisplayedVersion > 0 && h.hub.artifactResultWritebacks != nil {
+	if snapshot.DisplayedVersion > 0 && snapshot.PreviewRoute.NodeID != "" &&
+		snapshot.PreviewRoute.ConnectionID != "" && h.hub.artifactResultWritebacks != nil {
 		if target, issueErr := h.hub.artifactResultWritebacks.issue(snapshot); issueErr == nil {
 			response["writeback_target"] = map[string]interface{}{
 				"contract_version": artifactWritebackTargetContract,

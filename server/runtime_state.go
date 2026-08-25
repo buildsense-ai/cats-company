@@ -75,7 +75,8 @@ type sharedRuntimeState interface {
 	broadcastUserMessage(uid int64, msg *ServerMessage) bool
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
-	deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, now time.Time) bool
+	deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool
+	deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
 	setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error
 	clearMessagingClientAttention(uid int64, route runtimeRoute) error
@@ -273,14 +274,24 @@ func (s *sharedMemoryRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *M
 	return hub.sendThinToolRPCToLocalRoute(route, msg)
 }
 
-func (s *sharedMemoryRuntimeState) deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, now time.Time) bool {
+func (s *sharedMemoryRuntimeState) deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool {
+	if s == nil || msg == nil || !route.validAt(now) {
+		return false
+	}
+	s.mu.Lock()
+	hub := s.nodes[route.NodeID]
+	s.mu.Unlock()
+	return hub != nil && hub.sendArtifactResultToLocalRoute(route, msg)
+}
+
+func (s *sharedMemoryRuntimeState) deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool {
 	if s == nil || nodeID == "" || msg == nil {
 		return false
 	}
 	s.mu.Lock()
 	hub := s.nodes[nodeID]
 	s.mu.Unlock()
-	return hub != nil && hub.acceptArtifactResultReceipt(msg)
+	return hub != nil && hub.acceptArtifactResultReceipt(msg, sourceRoute)
 }
 
 func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {

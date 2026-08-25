@@ -36,6 +36,7 @@ let wsGeneration = 0;
 let wsReconnectAttempt = 0;
 let msgHandlers = [];
 let wsConnected = false;
+let wsArtifactPreviewSession = null;
 let topicLastSeq = {};
 let wsActiveTopic = '';
 let wsPushSubscriptionID = '';
@@ -45,6 +46,17 @@ const WS_CONNECT_TIMEOUT_MS = 10000;
 const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
+const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
+
+function normalizeArtifactPreviewSession(value) {
+  if (!value || typeof value !== 'object'
+    || value.contract_version !== ARTIFACT_PREVIEW_SESSION_CONTRACT
+    || typeof value.token !== 'string' || !value.token || value.token.length > 1024) return null;
+  return {
+    contract_version: ARTIFACT_PREVIEW_SESSION_CONTRACT,
+    token: value.token,
+  };
+}
 
 export function toWritableBotSkillRefs(skills) {
   if (!Array.isArray(skills)) return skills;
@@ -114,6 +126,7 @@ export function requestMissedMessages(topicId) {
 }
 
 export function setToken(nextToken) {
+  wsArtifactPreviewSession = null;
   if (!nextToken) {
     wsPushSubscriptionID = '';
     wsActiveTopic = '';
@@ -405,12 +418,18 @@ export const api = {
     return request('POST', '/api/messages/send', payload);
   },
 
-  createArtifactContextSnapshot: (snapshot, options = {}) => request(
-    'POST',
-    '/api/artifact-context/snapshots',
-    snapshot,
-    options,
-  ),
+  createArtifactContextSnapshot: (snapshot, options = {}) => {
+    const previewSession = wsArtifactPreviewSession;
+    return request(
+      'POST',
+      '/api/artifact-context/snapshots',
+      {
+        ...snapshot,
+        ...(previewSession ? { preview_session: previewSession } : {}),
+      },
+      options,
+    );
+  },
   invalidateArtifactContextSnapshot: (contextRef, options = {}) => request(
     'DELETE',
     '/api/artifact-context/snapshots',
@@ -808,6 +827,7 @@ export function connectWS(onMessage, { force = false } = {}) {
     staleConn.close();
   }
   wsConnected = false;
+  wsArtifactPreviewSession = null;
   const url = `${WS_URL}?token=${sessionToken}`;
   const conn = new WebSocket(url);
   wsConn = conn;
@@ -884,6 +904,7 @@ export function connectWS(onMessage, { force = false } = {}) {
     }
     console.log('WebSocket disconnected');
     wsConnected = false;
+    wsArtifactPreviewSession = null;
     wsConn = null;
     wsReconnectAttempt += 1;
     const retryInMs = reconnectDelay(wsReconnectAttempt);
@@ -914,6 +935,10 @@ export function connectWS(onMessage, { force = false } = {}) {
     if (!isCurrent()) return;
     try {
       const msg = JSON.parse(evt.data);
+      const previewSession = normalizeArtifactPreviewSession(
+        msg?.ctrl?.params?.artifact_preview_session,
+      );
+      if (previewSession) wsArtifactPreviewSession = previewSession;
       onMessage(msg);
       msgHandlers.forEach((h) => h(msg));
     } catch (e) {
@@ -954,6 +979,7 @@ export function disconnectWS() {
     staleConn.close();
   }
   wsConnected = false;
+  wsArtifactPreviewSession = null;
   wsReconnectAttempt = 0;
 }
 

@@ -254,6 +254,50 @@ describe('WebSocket connection recovery', () => {
     expect(JSON.parse(socket.send.mock.calls.at(-1)[0]).note.visibility).toBe('hidden');
   });
 
+  test('binds Artifact snapshots to the current WebSocket preview session only', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ context_ref: `acr_${'x'.repeat(43)}` }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    api.connectWS(vi.fn());
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.open();
+    const firstHandshake = JSON.parse(firstSocket.send.mock.calls[0][0]);
+    firstSocket.onmessage({ data: JSON.stringify({
+      ctrl: {
+        id: firstHandshake.hi.id,
+        code: 200,
+        params: {
+          artifact_preview_session: {
+            contract_version: 'catsco.artifact-preview-session.v1',
+            token: 'first-preview-session',
+          },
+        },
+      },
+    }) });
+
+    await api.api.createArtifactContextSnapshot({
+      topic_id: 'p2p_7_440',
+      artifact_ref: { id: 'lesson-game' },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      preview_session: {
+        contract_version: 'catsco.artifact-preview-session.v1',
+        token: 'first-preview-session',
+      },
+    });
+
+    api.reconnectWS(vi.fn());
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.open();
+    await api.api.createArtifactContextSnapshot({
+      topic_id: 'p2p_7_440',
+      artifact_ref: { id: 'lesson-game' },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).not.toHaveProperty('preview_session');
+  });
+
   test('derives a stable subscription identity from the push endpoint', async () => {
     const endpoint = 'https://push.example.test/subscription/browser-profile';
     const first = await api.pushSubscriptionIDForEndpoint(endpoint);

@@ -6,11 +6,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
+
+func artifactResultTestPreviewRoute() runtimeRoute {
+	return runtimeRoute{NodeID: "preview-node", ConnectionID: "preview-connection"}
+}
 
 func readArtifactContextForWritebackTest(
 	t *testing.T,
@@ -61,7 +66,18 @@ func TestArtifactResultWritebackCompletesThroughExactPreviewReceipt(t *testing.T
 	hub := newArtifactSnapshotTestHub(t)
 	contextHandler := NewArtifactContextSnapshotHandler(hub)
 	resultHandler := NewArtifactResultHandler(hub)
-	snapshotResponse := createArtifactSnapshotForTest(t, contextHandler, "会议纪要")
+	human := &Client{
+		uid:         7,
+		accountType: types.AccountHuman,
+		send:        make(chan []byte, 2),
+	}
+	otherTab := &Client{
+		uid:         7,
+		accountType: types.AccountHuman,
+		send:        make(chan []byte, 2),
+	}
+	hub.addClient(otherTab)
+	snapshotResponse := createArtifactSnapshotForTest(t, contextHandler, "会议纪要", human)
 	contextRef, _ := snapshotResponse["context_ref"].(string)
 	readResponse := readArtifactContextForWritebackTest(t, contextHandler, contextRef)
 	target, ok := readResponse["writeback_target"].(map[string]interface{})
@@ -73,12 +89,6 @@ func TestArtifactResultWritebackCompletesThroughExactPreviewReceipt(t *testing.T
 		t.Fatalf("writeback_ref = %q", writebackRef)
 	}
 
-	human := &Client{
-		uid:         7,
-		accountType: types.AccountHuman,
-		send:        make(chan []byte, 2),
-	}
-	hub.addClient(human)
 	resultID := "arr_" + strings.Repeat("r", 43)
 	req := httptest.NewRequest(
 		http.MethodPost,
@@ -102,6 +112,11 @@ func TestArtifactResultWritebackCompletesThroughExactPreviewReceipt(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Artifact result event")
 	}
+	select {
+	case encoded := <-otherTab.send:
+		t.Fatalf("other tab received the exact-preview request: %s", encoded)
+	default:
+	}
 	if event.ArtifactResult == nil || event.ArtifactResult.ContextRef != contextRef ||
 		event.ArtifactResult.WritebackRef != writebackRef || event.ArtifactResult.ResultID != resultID ||
 		event.ArtifactResult.ArtifactID != "lesson-game" || event.ArtifactResult.DisplayedVersion != 2 {
@@ -122,6 +137,23 @@ func TestArtifactResultWritebackCompletesThroughExactPreviewReceipt(t *testing.T
 	})
 	if err != nil {
 		t.Fatalf("encode receipt: %v", err)
+	}
+	hub.handleArtifactResultReceipt(otherTab, &MsgArtifactResult{
+		Type:             "receipt",
+		OriginNodeID:     event.ArtifactResult.OriginNodeID,
+		ContextRef:       contextRef,
+		WritebackRef:     writebackRef,
+		TopicID:          "p2p_7_440",
+		AgentUID:         "440",
+		ArtifactID:       "lesson-game",
+		DisplayedVersion: 2,
+		ResultID:         resultID,
+		Receipt:          receipt,
+	})
+	select {
+	case <-done:
+		t.Fatal("other tab forged an applied receipt")
+	default:
 	}
 	hub.handleArtifactResultReceipt(human, &MsgArtifactResult{
 		Type:             "receipt",
@@ -166,6 +198,7 @@ func TestArtifactResultWritebackRejectsWrongActorReceiptThenTimesOut(t *testing.
 		Artifact:         ArtifactContextRecord{ID: "lesson-game"},
 		DisplayedVersion: 2,
 		Revision:         1,
+		PreviewRoute:     artifactResultTestPreviewRoute(),
 	}
 	target, err := store.issue(snapshot)
 	if err != nil {
@@ -184,6 +217,9 @@ func TestArtifactResultWritebackRejectsWrongActorReceiptThenTimesOut(t *testing.
 	if !created || status != "" {
 		t.Fatalf("start delivery created=%v status=%q", created, status)
 	}
+	if _, claimed := store.claimDeliveryForSend(delivery); !claimed {
+		t.Fatal("delivery was not claimed for send")
+	}
 	receipt := json.RawMessage(`{"contract_version":"catsco.artifact-result-receipt.v1","result_id":"` + request.ResultID + `","status":"applied"}`)
 	if store.completeReceipt(&MsgArtifactResult{
 		ActorUID:         "8",
@@ -194,7 +230,7 @@ func TestArtifactResultWritebackRejectsWrongActorReceiptThenTimesOut(t *testing.
 		ArtifactID:       target.ArtifactID,
 		DisplayedVersion: target.DisplayedVersion,
 		ResultID:         request.ResultID,
-	}, receipt) {
+	}, receipt, target.PreviewRoute) {
 		t.Fatal("wrong actor completed the delivery")
 	}
 	time.Sleep(15 * time.Millisecond)
@@ -216,6 +252,11 @@ func TestArtifactResultReceiptReturnsToOriginRuntimeNode(t *testing.T) {
 	shared := newSharedMemoryRuntimeState()
 	origin := NewHubWithRuntime(nil, nil, shared, "origin-node")
 	preview := NewHubWithRuntime(nil, nil, shared, "preview-node")
+	previewClient := &Client{
+		uid:          7,
+		accountType:  types.AccountHuman,
+		connectionID: "preview-connection",
+	}
 	snapshot := artifactContextSnapshot{
 		Ref:              "acr_" + strings.Repeat("c", 43),
 		ActorUID:         7,
@@ -224,6 +265,7 @@ func TestArtifactResultReceiptReturnsToOriginRuntimeNode(t *testing.T) {
 		Artifact:         ArtifactContextRecord{ID: "lesson-game"},
 		DisplayedVersion: 2,
 		Revision:         1,
+		PreviewRoute:     preview.clientRoute(previewClient),
 	}
 	target, err := origin.artifactResultWritebacks.issue(snapshot)
 	if err != nil {
@@ -246,8 +288,11 @@ func TestArtifactResultReceiptReturnsToOriginRuntimeNode(t *testing.T) {
 	if !created || status != "" {
 		t.Fatalf("start delivery created=%v status=%q", created, status)
 	}
+	if _, claimed := origin.artifactResultWritebacks.claimDeliveryForSend(delivery); !claimed {
+		t.Fatal("delivery was not claimed for send")
+	}
 	receipt := json.RawMessage(`{"contract_version":"catsco.artifact-result-receipt.v1","result_id":"` + request.ResultID + `","status":"applied"}`)
-	preview.handleArtifactResultReceipt(&Client{uid: 7, accountType: types.AccountHuman}, &MsgArtifactResult{
+	preview.handleArtifactResultReceipt(previewClient, &MsgArtifactResult{
 		Type:             "receipt",
 		OriginNodeID:     origin.nodeID,
 		ContextRef:       target.ContextRef,
@@ -270,18 +315,133 @@ func TestArtifactResultReceiptReturnsToOriginRuntimeNode(t *testing.T) {
 	}
 }
 
+func TestArtifactResultRouteTargetsOneRemoteConnection(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	origin := NewHubWithRuntime(nil, nil, shared, "origin-node")
+	preview := NewHubWithRuntime(nil, nil, shared, "preview-node")
+	intended := &Client{
+		uid:          7,
+		accountType:  types.AccountHuman,
+		connectionID: "preview-intended",
+		send:         make(chan []byte, 1),
+	}
+	other := &Client{
+		uid:          7,
+		accountType:  types.AccountHuman,
+		connectionID: "preview-other",
+		send:         make(chan []byte, 1),
+	}
+	preview.addClient(intended)
+	preview.addClient(other)
+	preview.bindClientRuntimeRoute(intended)
+	preview.bindClientRuntimeRoute(other)
+	message := &MsgArtifactResult{
+		Type:       "request",
+		ActorUID:   "7",
+		ResultID:   "arr_" + strings.Repeat("r", 43),
+		ArtifactID: "lesson-game",
+	}
+	if !origin.sendArtifactResultToRoute(preview.clientRoute(intended), message) {
+		t.Fatal("exact remote delivery failed")
+	}
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, intended.send, &delivered)
+	if delivered.ArtifactResult == nil || delivered.ArtifactResult.ResultID != message.ResultID {
+		t.Fatalf("delivered message = %#v", delivered.ArtifactResult)
+	}
+	select {
+	case encoded := <-other.send:
+		t.Fatalf("other remote connection received delivery: %s", encoded)
+	default:
+	}
+}
+
 func TestArtifactResultWritebackIsInvalidatedWhenPreviewChanges(t *testing.T) {
 	hub := newArtifactSnapshotTestHub(t)
 	contextHandler := NewArtifactContextSnapshotHandler(hub)
-	first := createArtifactSnapshotForTest(t, contextHandler, "first")
+	human := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 2)}
+	first := createArtifactSnapshotForTest(t, contextHandler, "first", human)
 	firstRef := first["context_ref"].(string)
 	read := readArtifactContextForWritebackTest(t, contextHandler, firstRef)
 	target := read["writeback_target"].(map[string]interface{})
 	writebackRef := target["writeback_ref"].(string)
 
-	createArtifactSnapshotForTest(t, contextHandler, "second")
+	createArtifactSnapshotForTest(t, contextHandler, "second", human)
 	if _, ok := hub.artifactResultWritebacks.target(writebackRef); ok {
 		t.Fatal("replaced preview retained its writeback target")
+	}
+}
+
+func TestArtifactResultSendClaimLinearizesWithPreviewInvalidation(t *testing.T) {
+	for attempt := 0; attempt < 200; attempt++ {
+		store := newArtifactResultWritebackStore(time.Minute, time.Second, 8)
+		snapshot := artifactContextSnapshot{
+			Ref:              "acr_" + strings.Repeat("c", 43),
+			ActorUID:         7,
+			TopicID:          "p2p_7_440",
+			AgentUID:         440,
+			Artifact:         ArtifactContextRecord{ID: "lesson-game"},
+			DisplayedVersion: 2,
+			Revision:         1,
+			PreviewRoute:     artifactResultTestPreviewRoute(),
+		}
+		target, err := store.issue(snapshot)
+		if err != nil {
+			t.Fatalf("attempt %d issue target: %v", attempt, err)
+		}
+		request := artifactResultSubmitRequest{
+			ContractVersion:  artifactResultContract,
+			WritebackRef:     target.Ref,
+			ArtifactID:       target.ArtifactID,
+			DisplayedVersion: target.DisplayedVersion,
+			SinkID:           "risk-items.upsert.v1",
+			ResultID:         "arr_" + strings.Repeat("r", 43),
+			Payload:          json.RawMessage(`{"items":[]}`),
+		}
+		delivery, created, status := store.startDelivery(request, target, hashArtifactResultRequest(request, target))
+		if !created || status != "" {
+			t.Fatalf("attempt %d start delivery created=%v status=%q", attempt, created, status)
+		}
+
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		var claimed bool
+		workers.Add(2)
+		go func() {
+			defer workers.Done()
+			<-start
+			_, claimed = store.claimDeliveryForSend(delivery)
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			store.invalidateContext(snapshot.Ref)
+		}()
+		close(start)
+		workers.Wait()
+
+		receipt := json.RawMessage(`{"contract_version":"catsco.artifact-result-receipt.v1","result_id":"` + request.ResultID + `","status":"applied"}`)
+		message := &MsgArtifactResult{
+			ActorUID:         "7",
+			ContextRef:       target.ContextRef,
+			WritebackRef:     target.Ref,
+			TopicID:          target.TopicID,
+			AgentUID:         "440",
+			ArtifactID:       target.ArtifactID,
+			DisplayedVersion: target.DisplayedVersion,
+			ResultID:         request.ResultID,
+		}
+		accepted := store.completeReceipt(message, receipt, target.PreviewRoute)
+		outcome, completed := store.outcomeFor(delivery)
+		if claimed {
+			if !accepted || !completed || outcome.Status != "applied" {
+				t.Fatalf("attempt %d claim won but receipt outcome=%#v completed=%v accepted=%v", attempt, outcome, completed, accepted)
+			}
+			continue
+		}
+		if accepted || !completed || outcome.Status != "target_mismatch" {
+			t.Fatalf("attempt %d invalidation won but outcome=%#v completed=%v accepted=%v", attempt, outcome, completed, accepted)
+		}
 	}
 }
 
@@ -295,6 +455,7 @@ func TestArtifactResultWritebackReusesResultIDAndRejectsConflictingPayload(t *te
 		Artifact:         ArtifactContextRecord{ID: "lesson-game"},
 		DisplayedVersion: 2,
 		Revision:         1,
+		PreviewRoute:     artifactResultTestPreviewRoute(),
 	}
 	target, err := store.issue(snapshot)
 	if err != nil {
@@ -313,6 +474,9 @@ func TestArtifactResultWritebackReusesResultIDAndRejectsConflictingPayload(t *te
 	first, created, status := store.startDelivery(request, target, hashArtifactResultRequest(request, target))
 	if !created || status != "" {
 		t.Fatalf("first delivery created=%v status=%q", created, status)
+	}
+	if _, claimed := store.claimDeliveryForSend(first); !claimed {
+		t.Fatal("delivery was not claimed for send")
 	}
 	second, created, status := store.startDelivery(request, target, hashArtifactResultRequest(request, target))
 	if created || status != "" || second != first {
@@ -339,7 +503,7 @@ func TestArtifactResultWritebackReusesResultIDAndRejectsConflictingPayload(t *te
 		ArtifactID:       target.ArtifactID,
 		DisplayedVersion: target.DisplayedVersion,
 		ResultID:         request.ResultID,
-	}, receipt) {
+	}, receipt, target.PreviewRoute) {
 		t.Fatal("valid receipt did not complete the delivery")
 	}
 	replayed, created, status := store.startDelivery(request, target, hashArtifactResultRequest(request, target))
@@ -356,11 +520,13 @@ func TestArtifactResultWritebackReturnsNotConnectedWithoutPreview(t *testing.T) 
 	hub := newArtifactSnapshotTestHub(t)
 	contextHandler := NewArtifactContextSnapshotHandler(hub)
 	resultHandler := NewArtifactResultHandler(hub)
-	snapshotResponse := createArtifactSnapshotForTest(t, contextHandler, "会议纪要")
+	human := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 2)}
+	snapshotResponse := createArtifactSnapshotForTest(t, contextHandler, "会议纪要", human)
 	contextRef := snapshotResponse["context_ref"].(string)
 	readResponse := readArtifactContextForWritebackTest(t, contextHandler, contextRef)
 	target := readResponse["writeback_target"].(map[string]interface{})
 	writebackRef := target["writeback_ref"].(string)
+	hub.removeClient(human)
 	resultID := "arr_" + strings.Repeat("o", 43)
 
 	req := httptest.NewRequest(
@@ -396,6 +562,7 @@ func TestArtifactResultWritebackRetriesUncertainDeliveryWithNewPreviewTarget(t *
 		Artifact:         ArtifactContextRecord{ID: "lesson-game"},
 		DisplayedVersion: 2,
 		Revision:         1,
+		PreviewRoute:     artifactResultTestPreviewRoute(),
 	}
 	firstTarget, err := store.issue(snapshot)
 	if err != nil {
@@ -468,6 +635,7 @@ func TestArtifactResultWritebackRejectsMalformedApplicationReceipt(t *testing.T)
 		Artifact:         ArtifactContextRecord{ID: "lesson-game"},
 		DisplayedVersion: 2,
 		Revision:         1,
+		PreviewRoute:     artifactResultTestPreviewRoute(),
 	}
 	target, err := store.issue(snapshot)
 	if err != nil {
@@ -482,8 +650,12 @@ func TestArtifactResultWritebackRejectsMalformedApplicationReceipt(t *testing.T)
 		ResultID:         "arr_" + strings.Repeat("m", 43),
 		Payload:          json.RawMessage(`{"items":[]}`),
 	}
-	if _, created, status := store.startDelivery(request, target, hashArtifactResultRequest(request, target)); !created || status != "" {
+	delivery, created, status := store.startDelivery(request, target, hashArtifactResultRequest(request, target))
+	if !created || status != "" {
 		t.Fatalf("start delivery created=%v status=%q", created, status)
+	}
+	if _, claimed := store.claimDeliveryForSend(delivery); !claimed {
+		t.Fatal("delivery was not claimed for send")
 	}
 	accepted := store.completeReceipt(&MsgArtifactResult{
 		ActorUID:         "7",
@@ -494,7 +666,7 @@ func TestArtifactResultWritebackRejectsMalformedApplicationReceipt(t *testing.T)
 		ArtifactID:       target.ArtifactID,
 		DisplayedVersion: target.DisplayedVersion,
 		ResultID:         request.ResultID,
-	}, json.RawMessage(`{"status":"applied"}`))
+	}, json.RawMessage(`{"status":"applied"}`), target.PreviewRoute)
 	if !accepted {
 		t.Fatal("malformed receipt was not converted into a terminal failure")
 	}

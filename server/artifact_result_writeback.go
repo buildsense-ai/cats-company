@@ -51,6 +51,7 @@ type artifactWritebackTarget struct {
 	ArtifactID       string
 	DisplayedVersion int64
 	SnapshotRevision uint64
+	PreviewRoute     runtimeRoute
 	CreatedAt        time.Time
 	ExpiresAt        time.Time
 }
@@ -69,15 +70,19 @@ type artifactResultDeliveryState struct {
 	Done        chan struct{}
 	Outcome     artifactResultDeliveryOutcome
 	Completed   bool
+	// SendClaimed is the linearization point between preview invalidation and delivery.
+	SendClaimed bool
 	WaitUntil   time.Time
 	RetainUntil time.Time
 	CreatedAt   time.Time
 }
 
 type artifactResultWritebackStore struct {
-	mu          sync.Mutex
-	tickets     map[string]artifactWritebackTarget
-	byContext   map[string]string
+	mu        sync.Mutex
+	tickets   map[string]artifactWritebackTarget
+	byContext map[string]string
+	// invalidated prevents a delayed Bot read from reissuing a target after replacement.
+	invalidated map[string]time.Time
 	deliveries  map[string]*artifactResultDeliveryState
 	ticketTTL   time.Duration
 	deliveryTTL time.Duration
@@ -122,6 +127,7 @@ func newArtifactResultWritebackStore(ticketTTL, deliveryTTL time.Duration, maxEn
 	return &artifactResultWritebackStore{
 		tickets:     make(map[string]artifactWritebackTarget),
 		byContext:   make(map[string]string),
+		invalidated: make(map[string]time.Time),
 		deliveries:  make(map[string]*artifactResultDeliveryState),
 		ticketTTL:   ticketTTL,
 		deliveryTTL: deliveryTTL,
@@ -144,18 +150,23 @@ func newArtifactResultOpaqueRef(prefix string) (string, error) {
 
 func (s *artifactResultWritebackStore) issue(snapshot artifactContextSnapshot) (artifactWritebackTarget, error) {
 	if s == nil || snapshot.Ref == "" || snapshot.ActorUID <= 0 || snapshot.AgentUID <= 0 ||
-		!validArtifactID(snapshot.Artifact.ID) || snapshot.DisplayedVersion <= 0 {
+		!validArtifactID(snapshot.Artifact.ID) || snapshot.DisplayedVersion <= 0 ||
+		snapshot.PreviewRoute.NodeID == "" || snapshot.PreviewRoute.ConnectionID == "" {
 		return artifactWritebackTarget{}, errors.New("invalid Artifact writeback target")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
+	if invalidUntil := s.invalidated[snapshot.Ref]; !invalidUntil.IsZero() && now.Before(invalidUntil) {
+		return artifactWritebackTarget{}, errors.New("Artifact context is no longer current")
+	}
 	if ref := s.byContext[snapshot.Ref]; ref != "" {
 		if target, ok := s.tickets[ref]; ok && now.Before(target.ExpiresAt) &&
 			target.ActorUID == snapshot.ActorUID && target.TopicID == snapshot.TopicID &&
 			target.AgentUID == snapshot.AgentUID && target.ArtifactID == snapshot.Artifact.ID &&
-			target.DisplayedVersion == snapshot.DisplayedVersion && target.SnapshotRevision == snapshot.Revision {
+			target.DisplayedVersion == snapshot.DisplayedVersion && target.SnapshotRevision == snapshot.Revision &&
+			target.PreviewRoute.matches(snapshot.PreviewRoute) {
 			return target, nil
 		}
 	}
@@ -175,6 +186,7 @@ func (s *artifactResultWritebackStore) issue(snapshot artifactContextSnapshot) (
 		ArtifactID:       snapshot.Artifact.ID,
 		DisplayedVersion: snapshot.DisplayedVersion,
 		SnapshotRevision: snapshot.Revision,
+		PreviewRoute:     snapshot.PreviewRoute,
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(s.ticketTTL),
 	}
@@ -201,11 +213,14 @@ func (s *artifactResultWritebackStore) invalidateContext(contextRef string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now().UTC()
+	s.cleanupLocked(now)
+	s.invalidated[contextRef] = now.Add(s.ticketTTL)
 	ref := s.byContext[contextRef]
 	delete(s.byContext, contextRef)
 	delete(s.tickets, ref)
 	for _, delivery := range s.deliveries {
-		if delivery.Completed || delivery.Target.ContextRef != contextRef {
+		if delivery.Completed || delivery.SendClaimed || delivery.Target.ContextRef != contextRef {
 			continue
 		}
 		s.completeLocked(delivery, artifactResultDeliveryOutcome{
@@ -213,6 +228,30 @@ func (s *artifactResultWritebackStore) invalidateContext(contextRef string) {
 			Code:   "artifact_preview_changed",
 		})
 	}
+}
+
+func (s *artifactResultWritebackStore) claimDeliveryForSend(delivery *artifactResultDeliveryState) (artifactWritebackTarget, bool) {
+	if s == nil || delivery == nil {
+		return artifactWritebackTarget{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	s.cleanupLocked(now)
+	currentDelivery := s.deliveries[delivery.ResultID]
+	if currentDelivery != delivery || delivery.Completed || delivery.SendClaimed {
+		return artifactWritebackTarget{}, false
+	}
+	currentTarget, ok := s.tickets[delivery.Target.Ref]
+	if !ok || !now.Before(currentTarget.ExpiresAt) || currentTarget != delivery.Target {
+		s.completeLocked(delivery, artifactResultDeliveryOutcome{
+			Status: "target_mismatch",
+			Code:   "artifact_preview_changed",
+		})
+		return artifactWritebackTarget{}, false
+	}
+	delivery.SendClaimed = true
+	return delivery.Target, true
 }
 
 func (s *artifactResultWritebackStore) startDelivery(
@@ -278,14 +317,14 @@ func (s *artifactResultWritebackStore) completePlatform(
 	}
 }
 
-func (s *artifactResultWritebackStore) completeReceipt(msg *MsgArtifactResult, receipt json.RawMessage) bool {
+func (s *artifactResultWritebackStore) completeReceipt(msg *MsgArtifactResult, receipt json.RawMessage, sourceRoute runtimeRoute) bool {
 	if s == nil || msg == nil {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delivery := s.deliveries[msg.ResultID]
-	if delivery == nil || delivery.Completed {
+	if delivery == nil || delivery.Completed || !delivery.SendClaimed || !delivery.Target.PreviewRoute.matches(sourceRoute) {
 		return false
 	}
 	target := delivery.Target
@@ -355,6 +394,11 @@ func (s *artifactResultWritebackStore) completeLocked(delivery *artifactResultDe
 }
 
 func (s *artifactResultWritebackStore) cleanupLocked(now time.Time) {
+	for contextRef, expiresAt := range s.invalidated {
+		if !now.Before(expiresAt) {
+			delete(s.invalidated, contextRef)
+		}
+	}
 	for ref, target := range s.tickets {
 		if now.Before(target.ExpiresAt) {
 			continue
@@ -470,35 +514,32 @@ func (h *ArtifactResultHandler) HandleBotResults(w http.ResponseWriter, r *http.
 	}
 
 	if created {
-		message := &ServerMessage{ArtifactResult: &MsgArtifactResult{
-			Type:                  "request",
-			OriginNodeID:          h.hub.nodeID,
-			ContextRef:            target.ContextRef,
-			WritebackRef:          target.Ref,
-			TopicID:               target.TopicID,
-			AgentUID:              strconv.FormatInt(target.AgentUID, 10),
-			ArtifactID:            target.ArtifactID,
-			DisplayedVersion:      target.DisplayedVersion,
-			SinkID:                request.SinkID,
-			ResultID:              request.ResultID,
-			ExpectedStateRevision: request.ExpectedStateRevision,
-			Payload:               request.Payload,
-		}}
-		delivered := false
-		if h.hub.sharedRuntime != nil {
-			delivered = h.hub.sharedRuntime.broadcastUserMessage(target.ActorUID, message)
-		}
-		if !delivered && len(h.hub.getClients(target.ActorUID)) > 0 {
-			h.hub.SendToUser(target.ActorUID, message)
-			delivered = true
-		}
-		if !delivered {
-			h.hub.artifactResultWritebacks.completePlatform(
-				delivery,
-				"not_connected",
-				"artifact_preview_not_connected",
-				"",
-			)
+		target, claimed := h.hub.artifactResultWritebacks.claimDeliveryForSend(delivery)
+		if claimed {
+			message := &ServerMessage{ArtifactResult: &MsgArtifactResult{
+				Type:                  "request",
+				OriginNodeID:          h.hub.nodeID,
+				ActorUID:              strconv.FormatInt(target.ActorUID, 10),
+				ContextRef:            target.ContextRef,
+				WritebackRef:          target.Ref,
+				TopicID:               target.TopicID,
+				AgentUID:              strconv.FormatInt(target.AgentUID, 10),
+				ArtifactID:            target.ArtifactID,
+				DisplayedVersion:      target.DisplayedVersion,
+				SinkID:                request.SinkID,
+				ResultID:              request.ResultID,
+				ExpectedStateRevision: request.ExpectedStateRevision,
+				Payload:               request.Payload,
+			}}
+			delivered := h.hub.sendArtifactResultToRoute(target.PreviewRoute, message.ArtifactResult)
+			if !delivered {
+				h.hub.artifactResultWritebacks.completePlatform(
+					delivery,
+					"not_connected",
+					"artifact_preview_not_connected",
+					"",
+				)
+			}
 		}
 	}
 
@@ -548,18 +589,43 @@ func (h *Hub) handleArtifactResultReceipt(client *Client, msg *MsgArtifactResult
 		ResultID:         msg.ResultID,
 		Receipt:          append(json.RawMessage(nil), msg.Receipt...),
 	}
+	sourceRoute := h.clientRoute(client)
 	if canonical.OriginNodeID == h.nodeID {
-		h.acceptArtifactResultReceipt(canonical)
+		h.acceptArtifactResultReceipt(canonical, sourceRoute)
 		return
 	}
 	if h.sharedRuntime != nil {
-		h.sharedRuntime.deliverArtifactResultReceipt(canonical.OriginNodeID, canonical, time.Now())
+		h.sharedRuntime.deliverArtifactResultReceipt(canonical.OriginNodeID, canonical, sourceRoute, time.Now())
 	}
 }
 
-func (h *Hub) acceptArtifactResultReceipt(msg *MsgArtifactResult) bool {
+func (h *Hub) acceptArtifactResultReceipt(msg *MsgArtifactResult, sourceRoute runtimeRoute) bool {
 	return h != nil && h.artifactResultWritebacks != nil &&
-		h.artifactResultWritebacks.completeReceipt(msg, msg.Receipt)
+		h.artifactResultWritebacks.completeReceipt(msg, msg.Receipt, sourceRoute)
+}
+
+func (h *Hub) sendArtifactResultToLocalRoute(route runtimeRoute, msg *MsgArtifactResult) bool {
+	if h == nil || msg == nil || route.ConnectionID == "" {
+		return false
+	}
+	client := h.getClientByConnectionID(route.ConnectionID)
+	actorUID, _ := strconv.ParseInt(msg.ActorUID, 10, 64)
+	if client == nil || actorUID <= 0 || client.uid != actorUID ||
+		client.accountType != types.AccountHuman || client.deviceConnector != nil {
+		return false
+	}
+	h.SendToClient(client, &ServerMessage{ArtifactResult: msg})
+	return true
+}
+
+func (h *Hub) sendArtifactResultToRoute(route runtimeRoute, msg *MsgArtifactResult) bool {
+	if h == nil || msg == nil || route.NodeID == "" || route.ConnectionID == "" {
+		return false
+	}
+	if route.NodeID == h.nodeID {
+		return h.sendArtifactResultToLocalRoute(route, msg)
+	}
+	return h.sharedRuntime != nil && h.sharedRuntime.deliverArtifactResult(route, msg, time.Now())
 }
 
 func decodeArtifactResultSubmitRequest(w http.ResponseWriter, r *http.Request) (artifactResultSubmitRequest, error) {
