@@ -749,17 +749,19 @@ export const api = {
     ),
   publishCloudArtifact: (agentUid, artifact) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
-  getTopicFiles: (topicId, { beforeId = 0, limit = 40 } = {}) => {
+  getTopicFiles: (topicId, { beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {
     const params = new URLSearchParams();
     params.set('limit', String(limit));
     if (beforeId > 0) params.set('before_id', String(beforeId));
+    if (beforeCreatedAt) params.set('before_created_at', String(beforeCreatedAt));
     return request('GET', `/api/topics/${encodeURIComponent(topicId)}/files?${params.toString()}`);
   },
-  getAgentFiles: (agentUid, { topicId, beforeId = 0, limit = 40 } = {}) => {
+  getAgentFiles: (agentUid, { topicId, beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {
     const params = new URLSearchParams();
     params.set('topic_id', String(topicId || ''));
     params.set('limit', String(limit));
     if (beforeId > 0) params.set('before_id', String(beforeId));
+    if (beforeCreatedAt) params.set('before_created_at', String(beforeCreatedAt));
     return request('GET', `/api/agents/${encodeURIComponent(agentUid)}/files?${params.toString()}`);
   },
   deleteCloudArtifact: (agentUid, artifactId) =>

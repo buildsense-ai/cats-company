@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -18,15 +20,17 @@ type agentFileTestStore struct {
 	queriedAgentUID  int64
 	queriedTopicID   string
 	queriedBeforeID  int64
+	queriedBeforeAt  time.Time
 	queriedLimit     int
 	fileMessageCalls int
 }
 
-func (s *agentFileTestStore) ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+func (s *agentFileTestStore) ListAgentFileMessagesWithCursor(agentUID int64, topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, error) {
 	s.fileMessageCalls++
 	s.queriedAgentUID = agentUID
 	s.queriedTopicID = topicID
 	s.queriedBeforeID = beforeID
+	s.queriedBeforeAt = beforeCreatedAt
 	s.queriedLimit = limit
 	result := make([]*types.Message, 0, limit)
 	for _, message := range s.messages {
@@ -36,34 +40,57 @@ func (s *agentFileTestStore) ListAgentFileMessages(agentUID int64, topicID strin
 		if message.TopicID != topicID {
 			continue
 		}
-		if beforeID > 0 && message.ID >= beforeID {
+		if beforeCreatedAt.IsZero() {
+			if beforeID > 0 && message.ID >= beforeID {
+				continue
+			}
+		} else if message.CreatedAt.After(beforeCreatedAt) ||
+			(message.CreatedAt.Equal(beforeCreatedAt) && message.ID >= beforeID) {
 			continue
 		}
 		result = append(result, message)
-		if len(result) >= limit {
-			break
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
 		}
+		return result[i].ID > result[j].ID
+	})
+	if len(result) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }
 
-func (s *agentFileTestStore) ListTopicFileMessages(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+func (s *agentFileTestStore) ListTopicFileMessagesWithCursor(topicID string, beforeID int64, beforeCreatedAt time.Time, limit int) ([]*types.Message, error) {
 	s.fileMessageCalls++
 	s.queriedTopicID = topicID
 	s.queriedBeforeID = beforeID
+	s.queriedBeforeAt = beforeCreatedAt
 	s.queriedLimit = limit
 	result := make([]*types.Message, 0, limit)
 	for _, message := range s.messages {
 		if message == nil || message.TopicID != topicID {
 			continue
 		}
-		if beforeID > 0 && message.ID >= beforeID {
+		if beforeCreatedAt.IsZero() {
+			if beforeID > 0 && message.ID >= beforeID {
+				continue
+			}
+		} else if message.CreatedAt.After(beforeCreatedAt) ||
+			(message.CreatedAt.Equal(beforeCreatedAt) && message.ID >= beforeID) {
 			continue
 		}
 		result = append(result, message)
-		if len(result) >= limit {
-			break
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
 		}
+		return result[i].ID > result[j].ID
+	})
+	if len(result) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }
@@ -220,21 +247,24 @@ func TestAgentFilesUsesStableMessageCursor(t *testing.T) {
 		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_7_440&limit=2"),
 	)
 	var firstPage struct {
-		Files        []agentFileRecord `json:"files"`
-		HasMore      bool              `json:"has_more"`
-		NextBeforeID int64             `json:"next_before_id"`
+		Files             []agentFileRecord `json:"files"`
+		HasMore           bool              `json:"has_more"`
+		NextBeforeID      int64             `json:"next_before_id"`
+		NextBeforeCreated string            `json:"next_before_created_at"`
 	}
 	if err := json.Unmarshal(first.Body.Bytes(), &firstPage); err != nil {
 		t.Fatalf("decode first page: %v", err)
 	}
-	if first.Code != http.StatusOK || !firstPage.HasMore || firstPage.NextBeforeID != 11 || len(firstPage.Files) != 2 {
+	wantCursorTime := time.Unix(11, 0).UTC().Format(time.RFC3339Nano)
+	if first.Code != http.StatusOK || !firstPage.HasMore || firstPage.NextBeforeID != 11 ||
+		firstPage.NextBeforeCreated != wantCursorTime || len(firstPage.Files) != 2 {
 		t.Fatalf("first page status=%d body=%s", first.Code, first.Body.String())
 	}
 
 	second := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		second,
-		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_7_440&limit=2&before_id=11"),
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_7_440&limit=2&before_id=11&before_created_at="+url.QueryEscape(wantCursorTime)),
 	)
 	var secondPage struct {
 		Files   []agentFileRecord `json:"files"`
@@ -246,8 +276,8 @@ func TestAgentFilesUsesStableMessageCursor(t *testing.T) {
 	if second.Code != http.StatusOK || secondPage.HasMore || len(secondPage.Files) != 2 {
 		t.Fatalf("second page status=%d body=%s", second.Code, second.Body.String())
 	}
-	if fileStore.queriedBeforeID != 11 {
-		t.Fatalf("before id = %d", fileStore.queriedBeforeID)
+	if fileStore.queriedBeforeID != 11 || !fileStore.queriedBeforeAt.Equal(time.Unix(11, 0)) {
+		t.Fatalf("cursor = %d/%s", fileStore.queriedBeforeID, fileStore.queriedBeforeAt)
 	}
 }
 
@@ -465,6 +495,77 @@ func TestTopicFilesIncludesImagesAndSortsByCreatedAt(t *testing.T) {
 	image := response.Files[2]
 	if image.Name != "较早照片.jpg" || image.Type != "image" || image.Thumbnail != "/uploads/images/older-thumb.jpg" || image.Width != 1200 || image.Height != 800 {
 		t.Fatalf("image metadata = %+v", image)
+	}
+}
+
+func TestTopicFilesCursorFollowsCreatedAtAndMessageID(t *testing.T) {
+	base := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	fileStore := newAgentFileTestStore(7, 440)
+	fileStore.groupMembers = map[string]bool{groupMemberKey(80, 7): true}
+	fileStore.groupsByUser[7] = []*types.Group{{ID: 80, Name: "教研组", Kind: types.GroupKindStandard}}
+	fileStore.messages = []*types.Message{
+		{
+			ID: 100, TopicID: "grp_80", FromUID: 7, CreatedAt: base,
+			ContentBlocks: []types.ContentBlock{{
+				Type:    "file",
+				Payload: map[string]interface{}{"name": "第二页.pdf", "url": "/uploads/files/second.pdf"},
+			}},
+		},
+		{
+			ID: 99, TopicID: "grp_80", FromUID: 440, CreatedAt: base.Add(time.Minute),
+			ContentBlocks: []types.ContentBlock{{
+				Type:    "file",
+				Payload: map[string]interface{}{"name": "第一页.pdf", "url": "/uploads/files/first.pdf"},
+			}},
+		},
+		{
+			ID: 98, TopicID: "grp_80", FromUID: 7, CreatedAt: base.Add(-time.Minute),
+			ContentBlocks: []types.ContentBlock{{
+				Type:    "file",
+				Payload: map[string]interface{}{"name": "第三页.pdf", "url": "/uploads/files/third.pdf"},
+			}},
+		},
+	}
+
+	handler := NewCloudArtifactHandler("https://example.test/artifacts-index.json", nil)
+	handler.SetStore(fileStore)
+
+	first := httptest.NewRecorder()
+	handler.HandleTopicFiles(first, authenticatedArtifactRequestPath(http.MethodGet, "/api/topics/grp_80/files?limit=1"))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
+	}
+	var firstPage struct {
+		Files             []agentFileRecord `json:"files"`
+		HasMore           bool              `json:"has_more"`
+		NextBeforeID      int64             `json:"next_before_id"`
+		NextBeforeCreated string            `json:"next_before_created_at"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &firstPage); err != nil {
+		t.Fatalf("decode first page: %v", err)
+	}
+	wantCursorTime := base.Add(time.Minute).UTC().Format(time.RFC3339Nano)
+	if len(firstPage.Files) != 1 || firstPage.Files[0].Name != "第一页.pdf" ||
+		!firstPage.HasMore || firstPage.NextBeforeID != 99 || firstPage.NextBeforeCreated != wantCursorTime {
+		t.Fatalf("first page = %+v, want cursor %d/%s", firstPage, 99, wantCursorTime)
+	}
+
+	second := httptest.NewRecorder()
+	handler.HandleTopicFiles(second, authenticatedArtifactRequestPath(
+		http.MethodGet,
+		"/api/topics/grp_80/files?limit=1&before_id=99&before_created_at="+url.QueryEscape(wantCursorTime),
+	))
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body = %s", second.Code, second.Body.String())
+	}
+	var secondPage struct {
+		Files []agentFileRecord `json:"files"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &secondPage); err != nil {
+		t.Fatalf("decode second page: %v", err)
+	}
+	if len(secondPage.Files) != 1 || secondPage.Files[0].Name != "第二页.pdf" {
+		t.Fatalf("second page = %+v, want the older timestamp despite larger ID", secondPage.Files)
 	}
 }
 

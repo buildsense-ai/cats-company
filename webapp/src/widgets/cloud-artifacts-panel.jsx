@@ -151,7 +151,7 @@ export default function CloudArtifactsPanel({
   const [files, setFiles] = useState([]);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
-  const [fileCursor, setFileCursor] = useState(0);
+  const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -168,7 +168,7 @@ export default function CloudArtifactsPanel({
     onTabChange?.(nextTab);
   };
 
-  const loadContent = useCallback(async ({ append = false, beforeId = 0 } = {}) => {
+  const loadContent = useCallback(async ({ append = false, beforeId = 0, beforeCreatedAt = '' } = {}) => {
     const requestID = requestSequenceRef.current + 1;
     requestSequenceRef.current = requestID;
     const isCurrentRequest = () => requestSequenceRef.current === requestID;
@@ -179,16 +179,21 @@ export default function CloudArtifactsPanel({
         if (!topicId) {
           if (!isCurrentRequest()) return;
           setFiles([]);
-          setFileCursor(0);
+          setFileCursor({ beforeId: 0, beforeCreatedAt: '' });
           setFileHasMore(false);
           setError('进入会话后才能查看历史文件');
           return;
         }
-        const result = await api.getTopicFiles(topicId, { beforeId, limit: 40 });
+        const fileRequest = { beforeId, limit: 40 };
+        if (beforeCreatedAt) fileRequest.beforeCreatedAt = beforeCreatedAt;
+        const result = await api.getTopicFiles(topicId, fileRequest);
         if (!isCurrentRequest()) return;
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
         setFiles((current) => sortFilesByTime(append ? [...current, ...nextFiles] : nextFiles));
-        setFileCursor(Number(result?.next_before_id || 0));
+        setFileCursor({
+          beforeId: Number(result?.next_before_id || 0),
+          beforeCreatedAt: String(result?.next_before_created_at || ''),
+        });
         setFileHasMore(Boolean(result?.has_more));
         return;
       }
@@ -210,7 +215,7 @@ export default function CloudArtifactsPanel({
     setFiles([]);
     setViewerRelation('');
     setCanPublish(false);
-    setFileCursor(0);
+    setFileCursor({ beforeId: 0, beforeCreatedAt: '' });
     setFileHasMore(false);
     loadContent();
     return () => {
@@ -480,7 +485,7 @@ export default function CloudArtifactsPanel({
                   type="button"
                   className="cloud-artifacts-load-more"
                   disabled={loading}
-                  onClick={() => loadContent({ append: true, beforeId: fileCursor })}
+                  onClick={() => loadContent({ append: true, ...fileCursor })}
                 >
                   {loading ? '正在加载...' : '加载更多'}
                 </button>

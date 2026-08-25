@@ -287,7 +287,12 @@ describe('CloudArtifactsPanel', () => {
 
   test('loads older conversation files with the stable cursor', async () => {
     api.getTopicFiles
-      .mockResolvedValueOnce({ files: [historicalFile], has_more: true, next_before_id: 820 })
+      .mockResolvedValueOnce({
+        files: [historicalFile],
+        has_more: true,
+        next_before_id: 820,
+        next_before_created_at: historicalFile.created_at,
+      })
       .mockResolvedValueOnce({
         files: [{ ...historicalFile, id: '700:0', message_id: 700, name: '复习清单.docx' }],
         has_more: false,
@@ -304,6 +309,7 @@ describe('CloudArtifactsPanel', () => {
 
     expect(api.getTopicFiles).toHaveBeenLastCalledWith('p2p_7_440', {
       beforeId: 820,
+      beforeCreatedAt: historicalFile.created_at,
       limit: 40,
     });
     expect(api.getAgentFiles).not.toHaveBeenCalled();

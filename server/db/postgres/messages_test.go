@@ -71,7 +71,9 @@ func TestMessageHistoryReadsMetadataAndLegacyNull(t *testing.T) {
 		{"messages", []driver.Value{"topic", 10, 2}, func(a *Adapter) ([]*types.Message, error) { return a.GetMessages("topic", 10, 2) }},
 		{"latest", []driver.Value{"topic", 10, 2}, func(a *Adapter) ([]*types.Message, error) { return a.GetLatestMessages("topic", 10, 2) }},
 		{"before", []driver.Value{"topic", int64(20), 10}, func(a *Adapter) ([]*types.Message, error) { return a.GetLatestMessagesBefore("topic", 20, 10) }},
-		{"agent files", []driver.Value{int64(7), "topic", 10}, func(a *Adapter) ([]*types.Message, error) { return a.ListAgentFileMessages(7, "topic", 0, 10) }},
+		{"agent files", []driver.Value{int64(7), "topic", int64(14), 10}, func(a *Adapter) ([]*types.Message, error) {
+			return a.ListAgentFileMessages(7, "topic", 14, 10)
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -113,11 +115,12 @@ func TestListTopicFileMessagesReadsMetadata(t *testing.T) {
 			int64(14), "grp_1686", int64(7), "", "file", createdAt,
 			[]byte(`[{"type":"file","payload":{"name":"example.pdf"}}]`), "code", "user", []byte(`{"source_channel":"web"}`),
 		)
-	mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM messages.*WHERE topic_id =`).
-		WithArgs("grp_1686", 41).
+	beforeCreatedAt := createdAt.Add(time.Hour)
+	mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM messages.*WHERE topic_id =.*\(created_at, id\) < \(\$2, \$3\)`).
+		WithArgs("grp_1686", beforeCreatedAt, int64(14), 41).
 		WillReturnRows(rows)
 
-	messages, err := (&Adapter{db: db}).ListTopicFileMessages("grp_1686", 0, 41)
+	messages, err := (&Adapter{db: db}).ListTopicFileMessagesWithCursor("grp_1686", 14, beforeCreatedAt, 41)
 	if err != nil {
 		t.Fatalf("list topic file messages: %v", err)
 	}
@@ -126,6 +129,57 @@ func TestListTopicFileMessagesReadsMetadata(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestFileMessageBeforeClausePreservesLegacyAndHandlesMissingCursors(t *testing.T) {
+	beforeCreatedAt := time.Date(2026, time.August, 15, 1, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		beforeID         int64
+		beforeAt         time.Time
+		legacyIDOnly     bool
+		wantClause       string
+		wantArguments    []interface{}
+		wantPlaceholders int
+	}{
+		{
+			name:             "legacy ID",
+			beforeID:         14,
+			legacyIDOnly:     true,
+			wantClause:       "id < $3",
+			wantArguments:    []interface{}{int64(14)},
+			wantPlaceholders: 1,
+		},
+		{
+			name:             "missing ID-only cursor",
+			beforeID:         14,
+			wantClause:       "NOT EXISTS",
+			wantArguments:    []interface{}{int64(14), int64(14), int64(14)},
+			wantPlaceholders: 3,
+		},
+		{
+			name:             "composite cursor",
+			beforeID:         14,
+			beforeAt:         beforeCreatedAt,
+			wantClause:       "(created_at, id) < ($3, $4)",
+			wantArguments:    []interface{}{beforeCreatedAt, int64(14)},
+			wantPlaceholders: 2,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clause, args, placeholders := fileMessageBeforeClause(test.beforeID, test.beforeAt, 3, test.legacyIDOnly)
+			if !strings.Contains(clause, test.wantClause) {
+				t.Fatalf("clause = %q, want %q", clause, test.wantClause)
+			}
+			if !reflect.DeepEqual(args, test.wantArguments) {
+				t.Fatalf("args = %#v, want %#v", args, test.wantArguments)
+			}
+			if placeholders != test.wantPlaceholders {
+				t.Fatalf("placeholders = %d, want %d", placeholders, test.wantPlaceholders)
+			}
+		})
 	}
 }
 
