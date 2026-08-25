@@ -100,19 +100,64 @@ function skillHubWorkspaceTimeoutError() {
 }
 
 export function normalizeSkillHubDevices(response) {
+  return normalizeActiveRoutableSkillHubDevices(response).filter((device) => (
+    Array.isArray(device?.capabilities)
+    && (device.runtimeRole === 'desktop'
+      ? SKILLHUB_DESKTOP_CAPABILITIES
+      : SKILLHUB_WORKSPACE_CAPABILITIES
+    ).every((capability) => device.capabilities.includes(capability))
+  ));
+}
+
+export function normalizeActiveRoutableSkillHubDevices(response) {
   const devices = Array.isArray(response) ? response : (response?.devices || []);
   return devices.filter((device) => (
     (device?.runtimeRole === 'desktop' || device?.runtimeRole === 'server')
     && device?.active === true
     && device?.routeConnected === true
     && device?.routable === true
-    && Array.isArray(device?.capabilities)
-    && (device.runtimeRole === 'desktop'
-      ? SKILLHUB_DESKTOP_CAPABILITIES
-      : SKILLHUB_WORKSPACE_CAPABILITIES
-    ).every((capability) => device.capabilities.includes(capability))
     && (device.runtimeRole !== 'server' || Number(device?.botUid || 0) > 0)
   ));
+}
+
+function supportsSkillHubWorkspace(device) {
+  return Array.isArray(device?.capabilities)
+    && SKILLHUB_WORKSPACE_CAPABILITIES.every(
+      (capability) => device.capabilities.includes(capability),
+    );
+}
+
+function supportsSkillHubDesktop(device) {
+  return Array.isArray(device?.capabilities)
+    && SKILLHUB_DESKTOP_CAPABILITIES.every(
+      (capability) => device.capabilities.includes(capability),
+    );
+}
+
+export function resolveSkillHubRuntimeRouteForBot(response, botUID) {
+  const activeRoutable = normalizeActiveRoutableSkillHubDevices(response);
+  const requestedBotUID = String(botUID || '').trim();
+  const exactServers = activeRoutable.filter((device) => (
+    device.runtimeRole === 'server'
+    && String(device.botUid || '') === requestedBotUID
+  ));
+  if (exactServers.length > 0) {
+    const capableServers = exactServers.filter(supportsSkillHubWorkspace);
+    if (capableServers.length > 0) {
+      return { kind: 'server-ready', devices: capableServers, blockedServers: [] };
+    }
+    // A matching server is authoritative even when it predates the remote
+    // SkillHub tools. Falling back to a desktop would switch that unrelated
+    // Runtime to the server Bot and can disrupt both running instances.
+    return { kind: 'server-upgrade-required', devices: [], blockedServers: exactServers };
+  }
+  return {
+    kind: 'desktop-fallback',
+    devices: activeRoutable.filter((device) => (
+      device.runtimeRole === 'desktop' && supportsSkillHubDesktop(device)
+    )),
+    blockedServers: [],
+  };
 }
 
 export function resolveSkillHubDevicesForBot(devices, botUID) {
@@ -672,6 +717,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const [devices, setDevices] = useState([]);
   const [selectedDeviceID, setSelectedDeviceID] = useState('');
   const [loadingDevices, setLoadingDevices] = useState(true);
+  const [runtimeRouteError, setRuntimeRouteError] = useState('');
   const selectedBotUIDRef = useRef('');
   const selectedDeviceIDRef = useRef('');
   const devicesRef = useRef([]);
@@ -759,11 +805,22 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const loadDevices = useCallback(async (options = {}) => {
     setLoadingDevices(true);
     try {
-      const allCapable = normalizeSkillHubDevices(await api.getDevices());
-      const capable = resolveSkillHubDevicesForBot(
-        allCapable,
+      const route = resolveSkillHubRuntimeRouteForBot(
+        await api.getDevices(),
         selectedBotUIDRef.current,
       );
+      const capable = route.devices;
+      if (route.kind === 'server-upgrade-required') {
+        requestedBotSwitchRef.current = '';
+        localRequestRef.current += 1;
+        setLocalSkills([]);
+        setLocalSkillsPath('');
+        setLocalNotice('');
+        setLocalSkillsError('');
+        setRuntimeRouteError('当前 Agent 已在服务器运行，但该服务器 XiaoBa 版本尚不支持远程 SkillHub 工作区。为避免切换本地 XiaoBa，已停止操作；请升级服务器 XiaoBa 后刷新。');
+      } else {
+        setRuntimeRouteError('');
+      }
       const next = resolveAutomaticSkillHubDeviceID(capable);
       devicesRef.current = capable;
       setDevices(capable);
@@ -781,6 +838,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setSelectedDeviceID(next);
       return capable;
     } catch (error) {
+      setRuntimeRouteError('');
       devicesRef.current = [];
       setDevices([]);
       selectedDeviceIDRef.current = '';
@@ -1046,7 +1104,9 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       if (!isCurrentRequest()) return;
       setLocalSkills([]);
       setLocalSkillsPath('');
-      setLocalSkillsError(error?.message || '无法连接 XiaoBa 运行环境，请确认对应 XiaoBa 在线并已更新到最新版本。');
+      setLocalSkillsError(error?.code === 'BOT_ACTIVE_ON_SERVER_RUNTIME'
+        ? '当前 Agent 已在服务器运行，已停止切换本地 XiaoBa。请刷新页面；若服务器版本较旧，请升级后重试。'
+        : error?.message || '无法连接 XiaoBa 运行环境，请确认对应 XiaoBa 在线并已更新到最新版本。');
     } finally {
       if (isCurrentRequest()) setLoadingLocalSkills(false);
     }
@@ -1081,6 +1141,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       devicesRef.current = [];
       setDevices([]);
       setSelectedDeviceID('');
+      setRuntimeRouteError('');
       setLoadingDevices(false);
       return;
     }
@@ -1559,6 +1620,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     localSkills={localSkills}
     localSkillsError={localSkillsError}
     localSkillsPath={localSkillsPath}
+    runtimeRouteError={runtimeRouteError}
     onChangeSection={setActiveSection}
     onCopyLocalPath={copyLocalSkillsPath}
     librarySkills={librarySkills}
@@ -1578,6 +1640,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       selectedDeviceIDRef.current = '';
       setDevices([]);
       setSelectedDeviceID('');
+      setRuntimeRouteError('');
       requestedBotSwitchRef.current = nextBotUID;
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;

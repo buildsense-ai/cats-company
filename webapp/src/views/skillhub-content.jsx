@@ -9,7 +9,7 @@ import CustomSelect from '../widgets/custom-select';
 
 export default function SkillHubContent(props) {
   const {
-    actionNotice, activeSection, definition, definitionError, isLocalEnabled,
+    actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
     isReadOnly, loadingDefinition, onChangeSection, saving, selectedAgentName, selectedAgentRelation, skillAction,
   } = props;
   return (
@@ -24,6 +24,7 @@ export default function SkillHubContent(props) {
           <AgentContext {...props} />
         </header>
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
+        {runtimeRouteError && <div className='cc-skillhub-alert error' role='alert'>{runtimeRouteError}</div>}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
         {activeSection === 'custom' ? <CustomSkills {...props} /> : (
           <>
@@ -636,7 +637,7 @@ function formatAddedSkillVersion(skill, privateReference) {
 }
 
 function CustomSkills(props) {
-  const { devices, localSkills, localSkillsError, loadingDevices, loadingLocalSkills, localNotice, localSkillsPath, onChangeSection, selectedDeviceID } = props;
+  const { devices, localSkills, localSkillsError, loadingDevices, loadingLocalSkills, localNotice, localSkillsPath, onChangeSection, runtimeRouteError, selectedDeviceID } = props;
   return (
     <section className='cc-skillhub-surface cc-skillhub-custom' aria-labelledby='skillhub-custom-title'>
       <div className='cc-skillhub-custom-header'>
@@ -644,7 +645,7 @@ function CustomSkills(props) {
         <button type='button' className='cc-skillhub-back' onClick={() => onChangeSection('added')}><ArrowLeft size={15} aria-hidden='true' /> 返回能力管理</button>
       </div>
       <CustomToolbar {...props} localSkillsPath={localSkillsPath} />
-      {!loadingDevices && devices?.length === 0 && (
+      {!loadingDevices && devices?.length === 0 && !runtimeRouteError && (
         <div className='cc-skillhub-alert error' role='alert'>没有检测到支持 SkillHub 的在线 XiaoBa 运行环境，请确认对应 XiaoBa 已启动、已更新并连接到 CatsCo。</div>
       )}
       {!loadingDevices && devices?.length > 1 && !selectedDeviceID && (
