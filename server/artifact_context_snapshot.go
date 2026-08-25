@@ -202,6 +202,16 @@ func (s *artifactContextSnapshotStore) lookup(ref string) (artifactContextSnapsh
 	return cloneArtifactContextSnapshot(*snapshot), artifactContextSnapshotActive
 }
 
+func (s *artifactContextSnapshotStore) currentRef(actorUID int64, topicID string) string {
+	if s == nil || actorUID <= 0 || topicID == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked(s.now().UTC())
+	return s.current[artifactContextSnapshotKey{actorUID: actorUID, topicID: topicID}]
+}
+
 func (s *artifactContextSnapshotStore) delivery(ref string, actorUID int64, topicID string, currentAgentUID int64) (*artifactContextDeliveryRef, artifactContextSnapshotState) {
 	snapshot, status := s.lookup(ref)
 	if status != artifactContextSnapshotActive {
@@ -436,6 +446,7 @@ func (h *ArtifactContextSnapshotHandler) handleCreate(w http.ResponseWriter, r *
 	if pageContext != nil {
 		observedAt = firstMetadataString(pageContext, "observed_at")
 	}
+	previousContextRef := h.hub.artifactContextSnapshots.currentRef(actorUID, req.TopicID)
 	snapshot, err := h.hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID:         actorUID,
 		TopicID:          req.TopicID,
@@ -448,6 +459,9 @@ func (h *ArtifactContextSnapshotHandler) handleCreate(w http.ResponseWriter, r *
 	if err != nil {
 		writeArtifactContextStatus(w, http.StatusServiceUnavailable, artifactContextSnapshotUnavailable)
 		return
+	}
+	if previousContextRef != "" && previousContextRef != snapshot.Ref && h.hub.artifactResultWritebacks != nil {
+		h.hub.artifactResultWritebacks.invalidateContext(previousContextRef)
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"contract_version": artifactContextRefContract,
@@ -475,6 +489,9 @@ func (h *ArtifactContextSnapshotHandler) handleInvalidate(w http.ResponseWriter,
 		return
 	}
 	h.hub.artifactContextSnapshots.invalidate(ref, actorUID)
+	if h.hub.artifactResultWritebacks != nil {
+		h.hub.artifactResultWritebacks.invalidateContext(ref)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -571,6 +588,15 @@ func (h *ArtifactContextSnapshotHandler) HandleBotRead(w http.ResponseWriter, r 
 	}
 	if snapshot.PageContext != nil {
 		response["page_context"] = cloneArtifactPageContext(snapshot.PageContext)
+	}
+	if snapshot.DisplayedVersion > 0 && h.hub.artifactResultWritebacks != nil {
+		if target, issueErr := h.hub.artifactResultWritebacks.issue(snapshot); issueErr == nil {
+			response["writeback_target"] = map[string]interface{}{
+				"contract_version": artifactWritebackTargetContract,
+				"writeback_ref":    target.Ref,
+				"expires_at":       target.ExpiresAt.Format(time.RFC3339Nano),
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, response)
 }

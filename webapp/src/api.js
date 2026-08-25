@@ -1125,6 +1125,10 @@ export function wsSendRead(topicId, seqId) {
   sendWS({ note: { topic: topicId, what: 'read', seq: seqId } });
 }
 
+export function wsSendArtifactResultReceipt(receipt) {
+  return sendWS({ artifact_result: receipt });
+}
+
 export function onWSMessage(handler) {
   msgHandlers.push(handler);
   return () => {
