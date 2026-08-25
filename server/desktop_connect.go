@@ -209,6 +209,9 @@ func randomDesktopConnectCode() string {
 }
 
 func desktopConnectBaseURLs(r *http.Request) (string, string) {
+	if requestOrigin := trustedPublicRequestOrigin(r); requestOrigin == "https://app.catsco.cn" {
+		return requestOrigin, desktopConnectWSURLFromHTTPBase(requestOrigin)
+	}
 	if httpBaseURL, wsURL := configuredDesktopConnectBaseURLs(); httpBaseURL != "" && wsURL != "" {
 		return httpBaseURL, wsURL
 	}
@@ -235,6 +238,28 @@ func desktopConnectBaseURLs(r *http.Request) (string, string) {
 		wsProto = "wss"
 	}
 	return httpBaseURL, wsProto + "://" + host + "/v0/channels"
+}
+
+func trustedPublicRequestOrigin(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	if proto != "https" || (host != "app.catsco.cc" && host != "app.catsco.cn") {
+		return ""
+	}
+	return "https://" + host
 }
 
 func configuredDesktopConnectBaseURLs() (string, string) {

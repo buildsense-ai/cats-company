@@ -110,3 +110,16 @@ func TestDesktopConnectConfiguredBaseURLsUseExplicitWebSocketURL(t *testing.T) {
 		t.Fatalf("wsURL=%q", wsURL)
 	}
 }
+
+func TestDesktopConnectUsesRequestCnOriginForMigrationEntrypoint(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.catsco.cc")
+	t.Setenv("CATSCO_PUBLIC_WS_URL", "wss://app.catsco.cc/v0/channels")
+	req := httptest.NewRequest(http.MethodPost, "https://app.catsco.cn/api/desktop-connect/session", nil)
+	req.Host = "app.catsco.cn"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "app.catsco.cn")
+	httpBaseURL, wsURL := desktopConnectBaseURLs(req)
+	if httpBaseURL != "https://app.catsco.cn" || wsURL != "wss://app.catsco.cn/v0/channels" {
+		t.Fatalf("request origin was not preserved: http=%q ws=%q", httpBaseURL, wsURL)
+	}
+}
