@@ -1319,10 +1319,32 @@ func findCommercialRelayLimit(limits []commercialRelayModelLimit, provider strin
 }
 
 func commercialManagedBudgetKey(provider string, allowedModels []string) string {
-	models := append([]string(nil), allowedModels...)
-	for i := range models {
-		models[i] = strings.TrimSpace(models[i])
+	seen := map[string]struct{}{}
+	models := make([]string, 0, len(allowedModels))
+	for _, value := range allowedModels {
+		model := commercialRelayCanonicalModelName(value)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[strings.ToLower(model)]; ok {
+			continue
+		}
+		seen[strings.ToLower(model)] = struct{}{}
+		models = append(models, model)
 	}
 	sort.Strings(models)
 	return strings.TrimSpace(provider) + "\x00" + strings.Join(models, "\x00")
+}
+
+// commercialRelayCanonicalModelName keeps provider-config budget identity
+// aligned with relay-admin.  The vision endpoint is an internal capability of
+// the public DeepSeek V4 model, so relay-admin may persist both names while
+// CatsCompany sends updates for the public name only.  Comparing raw model
+// arrays would make the post-write verification fail forever for that alias.
+func commercialRelayCanonicalModelName(value string) string {
+	model := strings.TrimSpace(value)
+	if strings.EqualFold(model, "deepseek-v4-flash-vision-exp") {
+		return "deepseek-v4-flash"
+	}
+	return model
 }
