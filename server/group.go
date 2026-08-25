@@ -573,6 +573,9 @@ func (h *GroupHandler) HandleLeaveGroup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// The removed member is no longer returned by GetGroupMembers, so send the
+	// authoritative lifecycle event directly before notifying those who remain.
+	h.notifyGroupUserIDs([]int64{uid}, req.GroupID, "group_access_revoked")
 	h.notifyGroupEvent(req.GroupID, "member_left", map[string]interface{}{
 		"group_id": req.GroupID,
 		"user_id":  uid,
@@ -619,6 +622,9 @@ func (h *GroupHandler) HandleKickMember(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// The kicked member must be told to terminate its local Topic runtime. The
+	// existing member_kicked event remains scoped to current members.
+	h.notifyGroupUserIDs([]int64{req.UserID}, req.GroupID, "group_access_revoked")
 	h.notifyGroupEvent(req.GroupID, "member_kicked", map[string]interface{}{
 		"group_id": req.GroupID,
 		"user_id":  req.UserID,

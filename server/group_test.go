@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,6 +58,155 @@ func TestGetGroupInfoReportsMembershipLookupFailureAsServerError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "failed to verify group membership") {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+type groupLifecycleConversationStore struct {
+	*channelAgentTestStore
+}
+
+func (s *groupLifecycleConversationStore) GetLatestMessagesForTopics([]string) (map[string]*types.Message, error) {
+	return map[string]*types.Message{}, nil
+}
+
+func (s *groupLifecycleConversationStore) GetConversationTaskStatuses([]string) (map[string]*types.ConversationTaskStatus, error) {
+	return map[string]*types.ConversationTaskStatus{}, nil
+}
+
+func (s *groupLifecycleConversationStore) ListMutedConversationTopics(context.Context, int64, []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+func (s *groupLifecycleConversationStore) ListProjectTopics(int64) ([]*types.ProjectTopic, error) {
+	return nil, nil
+}
+
+func TestKickMemberSendsAuthoritativeAccessRevokedOnlyToRemovedUser(t *testing.T) {
+	db := &groupLifecycleConversationStore{channelAgentTestStore: newChannelAgentTestStore()}
+	for _, uid := range []int64{7, 8, 42, 99} {
+		db.users[uid] = &types.User{ID: uid, Username: fmt.Sprintf("user-%d", uid), AccountType: types.AccountHuman}
+	}
+	groupID, _ := db.CreateGroup("Lifecycle", 7)
+	_ = db.AddGroupMember(groupID, 8, "member")
+	_ = db.AddGroupMember(groupID, 42, "member")
+
+	hub := NewHub(db, nil)
+	clients := map[int64]*Client{}
+	for _, uid := range []int64{7, 8, 42, 99} {
+		clients[uid] = &Client{uid: uid, send: make(chan []byte, 4)}
+		hub.addClient(clients[uid])
+	}
+	handler := NewGroupHandler(db, hub)
+	req := httptest.NewRequest(http.MethodPost, "/api/groups/kick", bytes.NewBufferString(`{"group_id":1,"user_id":42}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleKickMember(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertPresenceWhat(t, clients[42].send, "group_access_revoked", "grp_1")
+	assertPresenceWhat(t, clients[7].send, "member_kicked", "grp_1")
+	assertPresenceWhat(t, clients[8].send, "member_kicked", "grp_1")
+	if drainOne(clients[42].send) {
+		t.Fatal("removed user received a remaining-member event")
+	}
+	if drainOne(clients[99].send) {
+		t.Fatal("outsider received a group lifecycle event")
+	}
+	if member, _ := db.IsGroupMember(groupID, 42); member {
+		t.Fatal("removed member still appears in authoritative membership")
+	}
+
+	// Even if the realtime presence is lost, the reconnect reconciliation API
+	// is authoritative and must no longer expose the removed group.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	listReq = listReq.WithContext(context.WithValue(listReq.Context(), uidKey, int64(42)))
+	listRec := httptest.NewRecorder()
+	NewConversationHandler(db, hub).HandleList(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("conversation list status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var body struct {
+		Conversations []*types.ConversationSummary `json:"conversations"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode conversation list: %v", err)
+	}
+	for _, conversation := range body.Conversations {
+		if conversation.ID == "grp_1" {
+			t.Fatal("removed group remained visible through GET /api/conversations")
+		}
+	}
+}
+
+func TestLeaveGroupSendsAccessRevokedToLeaverAndMemberLeftToRemainingUsers(t *testing.T) {
+	db := newChannelAgentTestStore()
+	for _, uid := range []int64{7, 8, 99} {
+		db.users[uid] = &types.User{ID: uid, Username: fmt.Sprintf("user-%d", uid), AccountType: types.AccountHuman}
+	}
+	groupID, _ := db.CreateGroup("Lifecycle", 7)
+	_ = db.AddGroupMember(groupID, 8, "member")
+	hub := NewHub(db, nil)
+	owner := &Client{uid: 7, send: make(chan []byte, 4)}
+	leaver := &Client{uid: 8, send: make(chan []byte, 4)}
+	outsider := &Client{uid: 99, send: make(chan []byte, 4)}
+	hub.addClient(owner)
+	hub.addClient(leaver)
+	hub.addClient(outsider)
+	handler := NewGroupHandler(db, hub)
+	req := httptest.NewRequest(http.MethodPost, "/api/groups/leave", bytes.NewBufferString(`{"group_id":1}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(8)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleLeaveGroup(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertPresenceWhat(t, leaver.send, "group_access_revoked", "grp_1")
+	assertPresenceWhat(t, owner.send, "member_left", "grp_1")
+	if drainOne(outsider.send) {
+		t.Fatal("outsider received a group lifecycle event")
+	}
+	if member, _ := db.IsGroupMember(groupID, 8); member {
+		t.Fatal("leaver still appears in authoritative membership")
+	}
+}
+
+func TestDisbandGroupUsesPreDeleteMembershipSnapshot(t *testing.T) {
+	db := newChannelAgentTestStore()
+	for _, uid := range []int64{7, 8} {
+		db.users[uid] = &types.User{ID: uid, Username: fmt.Sprintf("user-%d", uid), AccountType: types.AccountHuman}
+	}
+	_, _ = db.CreateGroup("Lifecycle", 7)
+	_ = db.AddGroupMember(1, 8, "member")
+	hub := NewHub(db, nil)
+	owner := &Client{uid: 7, send: make(chan []byte, 4)}
+	member := &Client{uid: 8, send: make(chan []byte, 4)}
+	hub.addClient(owner)
+	hub.addClient(member)
+	handler := NewGroupHandler(db, hub)
+	req := httptest.NewRequest(http.MethodPost, "/api/groups/disband", bytes.NewBufferString(`{"group_id":1}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleDisbandGroup(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertPresenceWhat(t, owner.send, "group_disbanded", "grp_1")
+	assertPresenceWhat(t, member.send, "group_disbanded", "grp_1")
+}
+
+func assertPresenceWhat(t *testing.T, queue <-chan []byte, what, topic string) {
+	t.Helper()
+	var message ServerMessage
+	decodeQueuedServerMessage(t, queue, &message)
+	if message.Pres == nil || message.Pres.What != what || message.Pres.Topic != topic || message.Pres.Src != topic {
+		t.Fatalf("presence=%#v want what=%s topic=%s", message.Pres, what, topic)
 	}
 }
 
