@@ -14,6 +14,7 @@ import SkillHubView, {
   normalizeViewerSkills,
   normalizeSkillVersionHistory,
   normalizeSkillHubDevices,
+  resolveSkillHubRuntimeRouteForBot,
   resolveAutomaticSkillHubDeviceID,
   resolveSkillHubDevicesForBot,
   normalizeLocalSkills,
@@ -359,6 +360,66 @@ describe('SkillHubView', () => {
       { deviceId: 'desktop', runtimeRole: 'desktop' },
       { deviceId: 'server-44', runtimeRole: 'server', botUid: 44 },
     ], '42').map(device => device.deviceId)).toEqual(['desktop']);
+    const oldServerRoute = resolveSkillHubRuntimeRouteForBot({ devices: [{
+      deviceId: 'desktop',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }, {
+      deviceId: 'old-server-42',
+      runtimeRole: 'server',
+      botUid: 42,
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: ['read_file'],
+    }] }, '42');
+    expect(oldServerRoute.kind).toBe('server-upgrade-required');
+    expect(oldServerRoute.devices).toEqual([]);
+    expect(oldServerRoute.blockedServers.map(device => device.deviceId)).toEqual(['old-server-42']);
+    expect(resolveSkillHubRuntimeRouteForBot({ devices: [{
+      ...oldServerRoute.blockedServers[0], botUid: 44,
+    }, {
+      deviceId: 'desktop',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] }, '42')).toMatchObject({
+      kind: 'desktop-fallback',
+      devices: [expect.objectContaining({ deviceId: 'desktop' })],
+    });
+    expect(resolveSkillHubRuntimeRouteForBot({ devices: [{
+      ...oldServerRoute.blockedServers[0], routable: false,
+    }, {
+      deviceId: 'desktop',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] }, '42')).toMatchObject({
+      kind: 'desktop-fallback',
+      devices: [expect.objectContaining({ deviceId: 'desktop' })],
+    });
     expect(resolveAutomaticSkillHubDeviceID([{ deviceId: 'device-a' }])).toBe('device-a');
     expect(resolveAutomaticSkillHubDeviceID([
       { deviceId: 'device-a' },
@@ -1210,6 +1271,146 @@ describe('SkillHubView', () => {
     expect(requestSkillHubDeviceTool.mock.calls.some(([call]) => (
       call.toolName === 'skillhub.localBot.switch'
     ))).toBe(false);
+  });
+
+  it('blocks desktop fallback when the selected Bot runs on an older server Runtime', async () => {
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Chandler', relation: 'owner' },
+        { id: 44, display_name: 'Monica', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid),
+      revision: 1,
+      skills: [],
+    }));
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'desktop-7',
+      displayName: 'Alice Desktop',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }, {
+      deviceId: 'old-server-42',
+      displayName: 'Old Monica Runtime',
+      runtimeRole: 'server',
+      botUid: 44,
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: ['read_file'],
+    }] });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '42') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '42',
+          active_bot_uid: '42',
+          skills_path: 'C:\\xiaoba\\chandler\\skills',
+          skills: [],
+        };
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    await openCustomSkills();
+    const picker = container.querySelector('.cc-skillhub-bot-picker select');
+    await act(async () => {
+      picker.value = '44';
+      Simulate.change(picker);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain('当前 Agent 已在服务器运行');
+    expect(container.textContent).toContain('已停止操作');
+    expect(container.textContent).not.toContain('没有检测到支持 SkillHub 的在线 XiaoBa 运行环境');
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localBot.switch',
+      payload: expect.objectContaining({ bot_uid: '44' }),
+    }));
+  });
+
+  it('explains a server-side Bot switch safety rejection without retrying', async () => {
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Chandler', relation: 'owner' },
+        { id: 44, display_name: 'Monica', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid),
+      revision: 1,
+      skills: [],
+    }));
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'desktop-7',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '42') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '42',
+          active_bot_uid: '42',
+          skills_path: 'C:\\xiaoba\\chandler\\skills',
+          skills: [],
+        };
+      }
+      if (toolName === 'skillhub.localBot.switch' && payload.bot_uid === '44') {
+        throw Object.assign(new Error('desktop switch was not performed'), {
+          code: 'BOT_ACTIVE_ON_SERVER_RUNTIME',
+        });
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCustomSkills();
+    const picker = container.querySelector('.cc-skillhub-bot-picker select');
+    await act(async () => {
+      picker.value = '44';
+      Simulate.change(picker);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain('已停止切换本地 XiaoBa');
+    const monicaSwitches = requestSkillHubDeviceTool.mock.calls.filter(([request]) => (
+      request.toolName === 'skillhub.localBot.switch'
+      && request.payload.bot_uid === '44'
+    ));
+    expect(monicaSwitches).toHaveLength(1);
   });
 
   it('uses a matching local name when removing a private ability', async () => {

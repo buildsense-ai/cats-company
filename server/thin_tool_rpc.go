@@ -20,7 +20,27 @@ const (
 	maxThinToolRPCRequestIDLength     = 128
 	maxThinToolRPCPendingPerRequester = 64
 	maxThinToolRPCPendingPerDevice    = 32
+	thinToolRPCBotActiveOnServerCode  = "BOT_ACTIVE_ON_SERVER_RUNTIME"
 )
+
+type thinToolRPCAuthorizationError struct {
+	code    string
+	message string
+}
+
+func (e *thinToolRPCAuthorizationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
+func thinToolRPCAuthorizationErrorCode(err error) string {
+	if typed, ok := err.(*thinToolRPCAuthorizationError); ok && strings.TrimSpace(typed.code) != "" {
+		return typed.code
+	}
+	return "permission_denied"
+}
 
 type thinToolRPCPending struct {
 	requestID      string
@@ -195,8 +215,9 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 		return
 	}
 	if err := h.authorizeSkillHubThinToolRPC(client, msg, ownerUID, deviceID, toolName); err != nil {
-		log.Printf("[thin_tool_rpc] skillhub request denied: request_id=%s requester_uid=%s target_owner=%s target_device=%s tool=%s reason=%s", requestID, formatUID(clientUID(client)), formatUID(ownerUID), deviceID, toolName, err.Error())
-		h.sendThinToolRPCResultToRequester(client, requestID, msg, "permission_denied", err.Error())
+		code := thinToolRPCAuthorizationErrorCode(err)
+		log.Printf("[thin_tool_rpc] skillhub request denied: request_id=%s requester_uid=%s target_owner=%s target_device=%s tool=%s code=%s reason=%s", requestID, formatUID(clientUID(client)), formatUID(ownerUID), deviceID, toolName, code, err.Error())
+		h.sendThinToolRPCResultToRequester(client, requestID, msg, code, err.Error())
 		h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
 		return
 	}
@@ -362,6 +383,14 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 			return fmt.Errorf("server Runtime devices cannot switch bots through SkillHub")
 		}
 	}
+	if operation == DeviceGrantSkillHubBotSwitch && device.RuntimeRole == "desktop" {
+		if h.hasRoutableServerRuntimeForBot(client.uid, botUID, device.DeviceID) {
+			return &thinToolRPCAuthorizationError{
+				code:    thinToolRPCBotActiveOnServerCode,
+				message: "target bot is already active on a server Runtime; desktop switch was not performed",
+			}
+		}
+	}
 	for _, capability := range device.Capabilities {
 		if capability == operation {
 			msg.TargetOwnerUserID = formatUID(client.uid)
@@ -369,6 +398,24 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		}
 	}
 	return fmt.Errorf("target device does not support %s", toolName)
+}
+
+func (h *Hub) hasRoutableServerRuntimeForBot(ownerUID int64, botUID int64, excludedDeviceID string) bool {
+	if h == nil || h.userDevices == nil || ownerUID <= 0 || botUID <= 0 {
+		return false
+	}
+	devices, _ := h.classifyUserDevices(ownerUID, h.userDevices.activeDevices(ownerUID))
+	for _, device := range devices {
+		if device.RuntimeRole == "server" &&
+			device.BotUID == botUID &&
+			device.Active &&
+			device.RouteConnected &&
+			device.Routable &&
+			device.DeviceID != excludedDeviceID {
+			return true
+		}
+	}
+	return false
 }
 
 func isSkillHubThinToolOperation(operation DeviceGrantOperation) bool {

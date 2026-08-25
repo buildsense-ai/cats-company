@@ -393,6 +393,97 @@ func TestSkillHubThinToolRPCAuthorization(t *testing.T) {
 	}
 }
 
+func TestSkillHubBotSwitchRejectsDesktopWhenBotIsRoutableOnServer(t *testing.T) {
+	db := &agentTestStore{owners: map[int64]int64{42: 7, 43: 7}}
+	hub := NewHub(db, nil)
+	desktop, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "alice-desktop",
+		RuntimeRole:  "desktop",
+		Status:       "online",
+		Capabilities: []string{string(DeviceGrantSkillHubBotSwitch)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverRuntime, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		BotUID:       42,
+		DeviceID:     "monica-server",
+		RuntimeRole:  "server",
+		Status:       "online",
+		Capabilities: []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherServerRuntime, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		BotUID:       43,
+		DeviceID:     "other-server",
+		RuntimeRole:  "server",
+		Status:       "online",
+		Capabilities: []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+	desktopTarget := &Client{uid: 77, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	serverTarget := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	otherServerTarget := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	hub.addClient(requester)
+	hub.addClient(desktopTarget)
+	hub.addClient(serverTarget)
+	hub.addClient(otherServerTarget)
+	hub.bindDeviceClient(7, desktop, desktopTarget)
+	hub.bindDeviceClient(7, otherServerRuntime, otherServerTarget)
+
+	allowedBeforeMatchingServerRoute := &MsgThinToolRPC{
+		TargetOwnerUserID: "usr7",
+		TargetDeviceID:    "alice-desktop",
+		ToolName:          string(DeviceGrantSkillHubBotSwitch),
+		Payload:           map[string]interface{}{"bot_uid": "42"},
+	}
+	if err := hub.authorizeSkillHubThinToolRPC(
+		requester,
+		allowedBeforeMatchingServerRoute,
+		7,
+		"alice-desktop",
+		allowedBeforeMatchingServerRoute.ToolName,
+	); err != nil {
+		t.Fatalf("other-Bot and unroutable matching servers blocked desktop switch: %v", err)
+	}
+	hub.bindDeviceClient(7, serverRuntime, serverTarget)
+
+	hub.handleThinToolRPCRequest(requester, &MsgThinToolRPC{
+		ID:                "switch-msg",
+		Type:              thinToolRPCTypeRequest,
+		RequestID:         "switch-request",
+		TargetOwnerUserID: "usr7",
+		TargetDeviceID:    "alice-desktop",
+		ToolName:          string(DeviceGrantSkillHubBotSwitch),
+		Payload:           map[string]interface{}{"bot_uid": "42"},
+	})
+
+	var denied ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &denied)
+	if denied.ThinToolRPC == nil || denied.ThinToolRPC.Error == nil {
+		t.Fatalf("denied response = %#v, want thin_tool_rpc error", denied.ThinToolRPC)
+	}
+	if denied.ThinToolRPC.Error.Code != thinToolRPCBotActiveOnServerCode {
+		t.Fatalf("denied code = %q, want %q", denied.ThinToolRPC.Error.Code, thinToolRPCBotActiveOnServerCode)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("request ack = %#v, want 200", ack.Ctrl)
+	}
+	if _, ok := hub.thinToolRPC.get("switch-request"); ok {
+		t.Fatal("denied desktop switch was left pending")
+	}
+	if drainOne(desktopTarget.send) {
+		t.Fatal("denied desktop switch was forwarded to the desktop Runtime")
+	}
+}
+
 func TestParseThinToolRPCBotUIDRejectsNonIntegerNumbers(t *testing.T) {
 	tests := []struct {
 		name     string
