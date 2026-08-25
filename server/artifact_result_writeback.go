@@ -260,13 +260,16 @@ func artifactResultApplicationTerminal(status string) bool {
 	return status == "applied" || status == "rejected" || status == "failed"
 }
 
-func (s *artifactResultWritebackStore) completePlatform(resultID, status, code, message string) {
-	if s == nil {
+func (s *artifactResultWritebackStore) completePlatform(
+	delivery *artifactResultDeliveryState,
+	status, code, message string,
+) {
+	if s == nil || delivery == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if delivery := s.deliveries[resultID]; delivery != nil && !delivery.Completed {
+	if !delivery.Completed {
 		s.completeLocked(delivery, artifactResultDeliveryOutcome{
 			Status:  status,
 			Code:    code,
@@ -491,7 +494,7 @@ func (h *ArtifactResultHandler) HandleBotResults(w http.ResponseWriter, r *http.
 		}
 		if !delivered {
 			h.hub.artifactResultWritebacks.completePlatform(
-				request.ResultID,
+				delivery,
 				"not_connected",
 				"artifact_preview_not_connected",
 				"",
@@ -505,7 +508,7 @@ func (h *ArtifactResultHandler) HandleBotResults(w http.ResponseWriter, r *http.
 	case <-delivery.Done:
 	case <-wait.C:
 		h.hub.artifactResultWritebacks.completePlatform(
-			request.ResultID,
+			delivery,
 			"delivery_timeout",
 			"artifact_result_delivery_timeout",
 			"",

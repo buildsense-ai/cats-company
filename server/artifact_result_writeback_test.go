@@ -419,7 +419,7 @@ func TestArtifactResultWritebackRetriesUncertainDeliveryWithNewPreviewTarget(t *
 	if !created || status != "" {
 		t.Fatalf("first delivery created=%v status=%q", created, status)
 	}
-	store.completePlatform(request.ResultID, "delivery_timeout", "artifact_result_delivery_timeout", "")
+	store.completePlatform(first, "delivery_timeout", "artifact_result_delivery_timeout", "")
 	select {
 	case <-first.Done:
 	default:
@@ -451,6 +451,10 @@ func TestArtifactResultWritebackRetriesUncertainDeliveryWithNewPreviewTarget(t *
 	}
 	if outcome, ok := store.outcomeFor(second); ok {
 		t.Fatalf("new attempt unexpectedly inherited the old outcome: %#v", outcome)
+	}
+	store.completePlatform(first, "delivery_timeout", "artifact_result_delivery_timeout", "")
+	if outcome, ok := store.outcomeFor(second); ok {
+		t.Fatalf("late completion from the old attempt ended the retry: %#v", outcome)
 	}
 }
 
