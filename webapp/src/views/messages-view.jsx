@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
-import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
+import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
@@ -20,7 +20,9 @@ import {
   artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
+  normalizeArtifactResultDelivery,
   requestArtifactPageContext,
+  requestArtifactResultApply,
   withArtifactContextRef,
 } from '../artifact-context';
 import {
@@ -1081,9 +1083,48 @@ export default function MessagesView({
     setLiveWorkingKey('');
   }, []);
 
+  const handleArtifactResultRequest = useCallback(async (value) => {
+    const delivery = normalizeArtifactResultDelivery(value);
+    if (!delivery) return;
+    const snapshot = activeArtifactSnapshotRef.current;
+    const focus = activeArtifactFocusRef.current;
+    const binding = activeArtifactFrameRef.current;
+    if (!snapshot || snapshot.contextRef !== delivery.contextRef
+      || snapshot.topic !== delivery.topicId
+      || snapshot.topicGeneration !== artifactTopicGenerationRef.current
+      || snapshot.agentUid !== delivery.agentUid
+      || snapshot.artifactId !== delivery.artifactId
+      || !focus || focus.topic !== delivery.topicId
+      || focus.topicGeneration !== artifactTopicGenerationRef.current
+      || focus.agentUid !== delivery.agentUid
+      || focus.artifactId !== delivery.artifactId
+      || focus.displayedVersion !== delivery.displayedVersion
+      || activeTopicRef.current !== delivery.topicId
+      || activeArtifactAgentUIDRef.current !== delivery.agentUid
+      || !artifactBindingMatchesFocus(binding, focus)) return;
+
+    const receipt = await requestArtifactResultApply(binding, delivery);
+    if (!receipt) return;
+    wsSendArtifactResultReceipt({
+      type: 'receipt',
+      origin_node_id: delivery.originNodeId,
+      context_ref: delivery.contextRef,
+      writeback_ref: delivery.writebackRef,
+      topic_id: delivery.topicId,
+      agent_uid: String(delivery.agentUid),
+      artifact_id: delivery.artifactId,
+      displayed_version: delivery.displayedVersion,
+      result_id: delivery.resultId,
+      receipt,
+    });
+  }, []);
+
   // Listen for incoming WebSocket messages
   useEffect(() => {
     const unsub = onWSMessage((msg) => {
+      if (msg.artifact_result) {
+        void handleArtifactResultRequest(msg.artifact_result);
+      }
       if (
         isGroup
         && groupId
@@ -1205,7 +1246,7 @@ export default function MessagesView({
     });
 
     return () => unsub();
-  }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
+  }, [clearLiveWorking, groupId, handleArtifactResultRequest, isGroup, markLiveWorking, topic, user.uid]);
 
   // Restore an older-history anchor, or follow updates while the reader
   // remains at the latest position.

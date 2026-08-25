@@ -56,10 +56,12 @@ type Hub struct {
 	thinToolRPC              *thinToolRPCRouter
 	botRuntimeCredentials    *botRuntimeCredentialSigner
 	skillMutationGrants      *skillMutationGrantSigner
+	artifactPreviewSessions  *artifactPreviewSessionSigner
 	channelOut               *ChannelOutboundDispatcher
 	groupTurns               *groupAgentTurnTracker
 	artifactContextResolver  ArtifactContextResolver
 	artifactContextSnapshots *artifactContextSnapshotStore
+	artifactResultWritebacks *artifactResultWritebackStore
 	push                     *PushNotificationService
 	agentPush                *agentPushTurnCoordinator
 	taskGrace                time.Duration
@@ -116,32 +118,39 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	}
 	runtimeCredentialSigner, _ := newBotRuntimeCredentialSigner(jwtSecret, time.Now)
 	grantSigner, _ := newSkillMutationGrantSigner(jwtSecret, time.Now)
+	previewSessionSigner, _ := newArtifactPreviewSessionSigner(jwtSecret)
 	hub := &Hub{
-		clients:               make(map[int64]map[*Client]struct{}),
-		clientsByConn:         make(map[string]*Client),
-		register:              make(chan *Client, 256),
-		unregister:            make(chan *Client, 256),
-		presence:              make(chan presenceEvent, 256),
-		db:                    db,
-		rateLimiter:           rl,
-		botStats:              NewBotStats(),
-		botConvo:              botConvoTracker{counters: make(map[string]*botConvoCount)},
-		nodeID:                nodeID,
-		sharedRuntime:         shared,
-		bodyLeases:            newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:           newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
-		deviceAudit:           newDeviceAuditLog(),
-		deviceRevokes:         newDeviceConnectorRevocationList(),
-		deviceClients:         make(map[int64]map[string]*Client),
-		deviceRPC:             newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
-		thinToolRPC:           newThinToolRPCRouter(defaultThinToolRPCTTL),
-		botRuntimeCredentials: runtimeCredentialSigner,
-		skillMutationGrants:   grantSigner,
-		groupTurns:            newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		clients:                 make(map[int64]map[*Client]struct{}),
+		clientsByConn:           make(map[string]*Client),
+		register:                make(chan *Client, 256),
+		unregister:              make(chan *Client, 256),
+		presence:                make(chan presenceEvent, 256),
+		db:                      db,
+		rateLimiter:             rl,
+		botStats:                NewBotStats(),
+		botConvo:                botConvoTracker{counters: make(map[string]*botConvoCount)},
+		nodeID:                  nodeID,
+		sharedRuntime:           shared,
+		bodyLeases:              newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		userDevices:             newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		deviceAudit:             newDeviceAuditLog(),
+		deviceRevokes:           newDeviceConnectorRevocationList(),
+		deviceClients:           make(map[int64]map[string]*Client),
+		deviceRPC:               newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
+		thinToolRPC:             newThinToolRPCRouter(defaultThinToolRPCTTL),
+		botRuntimeCredentials:   runtimeCredentialSigner,
+		skillMutationGrants:     grantSigner,
+		artifactPreviewSessions: previewSessionSigner,
+		groupTurns:              newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 		artifactContextSnapshots: newArtifactContextSnapshotStore(
 			artifactContextSnapshotTTLDefault,
 			artifactContextTombstoneTTLDefault,
 			artifactContextSnapshotMaxEntries,
+		),
+		artifactResultWritebacks: newArtifactResultWritebackStore(
+			artifactWritebackTTLDefault,
+			artifactResultDeliveryTTLDefault,
+			artifactResultStoreMaxEntries,
 		),
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
@@ -1226,6 +1235,8 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 		h.handleDeviceRPC(client, msg.DeviceRPC)
 	case msg.ThinToolRPC != nil:
 		h.handleThinToolRPC(client, msg.ThinToolRPC)
+	case msg.ArtifactResult != nil:
+		h.handleArtifactResultReceipt(client, msg.ArtifactResult)
 	case msg.SkillMutationGrant != nil:
 		h.handleSkillMutationGrant(client, msg.SkillMutationGrant)
 	}
@@ -1235,7 +1246,7 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 	if msg == nil {
 		return false
 	}
-	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil || msg.SkillMutationGrant != nil {
+	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil || msg.ArtifactResult != nil || msg.SkillMutationGrant != nil {
 		return false
 	}
 	actions := 0
@@ -1276,13 +1287,20 @@ func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
 		})
 		return
 	}
+	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc"}
 	params := map[string]interface{}{
-		"ver":      "0.1.0",
-		"build":    "catscompany",
-		"features": []string{"client_msg_id", "device_rpc", "thin_tool_rpc"},
-		"uid":      formatUID(client.uid),
-		"name":     displayName,
+		"ver":   "0.1.0",
+		"build": "catscompany",
+		"uid":   formatUID(client.uid),
+		"name":  displayName,
 	}
+	if client.accountType == types.AccountHuman && client.deviceConnector == nil && h.artifactPreviewSessions != nil {
+		if session, err := h.artifactPreviewSessions.issue(client.uid, h.clientRoute(client)); err == nil {
+			params["artifact_preview_session"] = session
+			features = append(features, "artifact_result_precise_delivery")
+		}
+	}
+	params["features"] = features
 	if client.accountType == types.AccountBot && client.bodyID != "" {
 		params["body_lease"] = h.BotBodyStatus(client.uid)
 	}

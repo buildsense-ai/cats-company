@@ -63,7 +63,7 @@ func TestExtractArtifactContextDeliveryForP2P(t *testing.T) {
 		owners: map[int64]int64{440: 7},
 	}
 	hub := NewHub(store, nil)
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7,
 		TopicID:  "p2p_7_440",
 		AgentUID: 440,

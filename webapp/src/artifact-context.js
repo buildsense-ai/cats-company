@@ -3,9 +3,17 @@ export const ARTIFACT_CONTEXT_REF_CONTRACT = 'catsco.artifact-context-ref.v1';
 export const ARTIFACT_PAGE_CONTEXT_CONTRACT = 'catsco.artifact-page-context.v1';
 export const ARTIFACT_CONTEXT_REQUEST_TYPE = 'catsco.artifact.context.request.v1';
 export const ARTIFACT_CONTEXT_RESPONSE_TYPE = 'catsco.artifact.context.response.v1';
+export const ARTIFACT_RESULT_CONTRACT = 'catsco.artifact-result.v1';
+export const ARTIFACT_RESULT_RECEIPT_CONTRACT = 'catsco.artifact-result-receipt.v1';
+export const ARTIFACT_RESULT_REQUEST_TYPE = 'catsco.artifact.result.request.v1';
+export const ARTIFACT_RESULT_RESPONSE_TYPE = 'catsco.artifact.result.response.v1';
 
 const ARTIFACT_ID_PATTERN = /^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$/;
 const ARTIFACT_CONTEXT_REF_PATTERN = /^acr_[A-Za-z0-9_-]{43}$/;
+const ARTIFACT_WRITEBACK_REF_PATTERN = /^awr_[A-Za-z0-9_-]{43}$/;
+const ARTIFACT_RESULT_ID_PATTERN = /^arr_[A-Za-z0-9_-]{43}$/;
+const ARTIFACT_RESULT_SINK_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9]\d*$/;
+const ARTIFACT_RUNTIME_NODE_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const ARTIFACT_ID_MAX_LENGTH = 64;
 const PAGE_CONTEXT_TIMEOUT_MS = 250;
 const PAGE_CONTEXT_MAX_BYTES = 16 * 1024;
@@ -30,6 +38,9 @@ const PAGE_CONTEXT_CONTROL_TYPES = new Set([
   'range',
   'textarea',
 ]);
+const ARTIFACT_RESULT_MAX_BYTES = 64 * 1024;
+const ARTIFACT_RESULT_RECEIPT_MAX_BYTES = 8 * 1024;
+const ARTIFACT_RESULT_TIMEOUT_MS = 17_000;
 
 function positiveInteger(value) {
   const parsed = Number(value);
@@ -74,6 +85,15 @@ export function artifactURLForVersion(value, version) {
   try {
     const parsed = new URL(String(value || '').trim());
     if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    const versionedPath = parsed.pathname.replace(
+      /(\/artifacts\/[^/]+\/)(?:latest|v[1-9]\d*)(?=\/|$)/,
+      `$1v${publishVersion}`,
+    );
+    if (versionedPath !== parsed.pathname) {
+      parsed.pathname = versionedPath;
+      parsed.searchParams.delete('artifact_version');
+      return parsed.toString();
+    }
     parsed.searchParams.set('artifact_version', String(publishVersion));
     return parsed.toString();
   } catch {
@@ -149,6 +169,181 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
       finish(null);
     }
   });
+}
+
+export function normalizeArtifactResultDelivery(value) {
+  if (!semanticPlainObject(value) || value.type !== 'request') return null;
+  const contextRef = String(value.context_ref || '');
+  const writebackRef = String(value.writeback_ref || '');
+  const resultId = String(value.result_id || '');
+  const sinkId = String(value.sink_id || '');
+  const artifactId = String(value.artifact_id || '');
+  const originNodeId = String(value.origin_node_id || '');
+  const topicId = String(value.topic_id || '').trim();
+  const agentUid = positiveInteger(value.agent_uid);
+  const displayedVersion = positiveInteger(value.displayed_version);
+  if (!ARTIFACT_RUNTIME_NODE_PATTERN.test(originNodeId)
+    || !ARTIFACT_CONTEXT_REF_PATTERN.test(contextRef)
+    || !ARTIFACT_WRITEBACK_REF_PATTERN.test(writebackRef)
+    || !ARTIFACT_RESULT_ID_PATTERN.test(resultId)
+    || !ARTIFACT_RESULT_SINK_ID_PATTERN.test(sinkId)
+    || !ARTIFACT_ID_PATTERN.test(artifactId)
+    || !topicId || topicId.length > 512 || agentUid <= 0 || displayedVersion <= 0) return null;
+  const expectedRevision = optionalArtifactResultRevision(value.expected_state_revision);
+  if (expectedRevision === false) return null;
+  const payload = cloneBoundedArtifactResultJSON(value.payload, ARTIFACT_RESULT_MAX_BYTES);
+  if (payload === INVALID_SEMANTIC_VALUE) return null;
+  return {
+    type: 'request',
+    originNodeId,
+    contextRef,
+    writebackRef,
+    topicId,
+    agentUid,
+    artifactId,
+    displayedVersion,
+    sinkId,
+    resultId,
+    expectedStateRevision: expectedRevision || '',
+    payload,
+  };
+}
+
+export async function requestArtifactResultApply(binding, delivery, timeoutMs = ARTIFACT_RESULT_TIMEOUT_MS) {
+  const normalized = delivery?.resultId ? delivery : normalizeArtifactResultDelivery(delivery);
+  const frame = binding?.frame;
+  const contentWindow = frame?.contentWindow;
+  if (!normalized || !contentWindow?.postMessage
+    || binding?.artifactId !== normalized.artifactId
+    || Number(binding?.agentUid || 0) !== normalized.agentUid) return null;
+
+  let targetOrigin;
+  try {
+    targetOrigin = new URL(binding.url).origin;
+  } catch {
+    return null;
+  }
+  const requestId = artifactContextRequestId();
+  const boundedTimeout = Number.isFinite(timeoutMs)
+    ? Math.max(100, Math.min(20_000, Math.round(timeoutMs)))
+    : ARTIFACT_RESULT_TIMEOUT_MS;
+  const result = {
+    contract_version: ARTIFACT_RESULT_CONTRACT,
+    artifact_id: normalized.artifactId,
+    displayed_version: normalized.displayedVersion,
+    sink_id: normalized.sinkId,
+    result_id: normalized.resultId,
+    payload: normalized.payload,
+  };
+  if (normalized.expectedStateRevision) {
+    result.expected_state_revision = normalized.expectedStateRevision;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (receipt) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', handleMessage);
+      window.clearTimeout(timer);
+      resolve(receipt);
+    };
+    const handleMessage = (event) => {
+      if (event.source !== contentWindow || event.origin !== targetOrigin) return;
+      if (event.data?.type !== ARTIFACT_RESULT_RESPONSE_TYPE || event.data?.request_id !== requestId) return;
+      finish(normalizeArtifactResultReceipt(event.data.receipt, normalized.resultId)
+        || artifactResultFailureReceipt(normalized.resultId, 'invalid_receipt'));
+    };
+    const timer = window.setTimeout(() => finish(null), boundedTimeout);
+    window.addEventListener('message', handleMessage);
+    try {
+      contentWindow.postMessage({
+        type: ARTIFACT_RESULT_REQUEST_TYPE,
+        request_id: requestId,
+        result,
+      }, targetOrigin);
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+export function normalizeArtifactResultReceipt(value, expectedResultId) {
+  if (!semanticPlainObject(value)
+    || value.contract_version !== ARTIFACT_RESULT_RECEIPT_CONTRACT
+    || value.result_id !== expectedResultId
+    || !ARTIFACT_RESULT_ID_PATTERN.test(String(value.result_id || ''))
+    || !new Set(['applied', 'rejected', 'failed']).has(value.status)) return null;
+  const code = value.code === undefined ? '' : String(value.code);
+  const message = value.message === undefined ? '' : String(value.message);
+  if ((code && !/^[a-z][a-z0-9_]{0,63}$/.test(code))
+    || (message && (message !== message.trim() || message.length > 2000 || /[\0\r\n]/.test(message)))) return null;
+  let receipt;
+  if (value.receipt !== undefined) {
+    receipt = cloneBoundedArtifactResultJSON(value.receipt, ARTIFACT_RESULT_RECEIPT_MAX_BYTES, 2048);
+    if (receipt === INVALID_SEMANTIC_VALUE) return null;
+  }
+  const normalized = {
+    contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+    result_id: expectedResultId,
+    status: value.status,
+  };
+  if (code) normalized.code = code;
+  if (message) normalized.message = message;
+  if (receipt !== undefined) normalized.receipt = receipt;
+  return jsonSize(normalized) <= ARTIFACT_RESULT_RECEIPT_MAX_BYTES ? normalized : null;
+}
+
+function artifactResultFailureReceipt(resultId, code) {
+  return {
+    contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+    result_id: resultId,
+    status: 'failed',
+    code,
+  };
+}
+
+function optionalArtifactResultRevision(value) {
+  if (value === undefined || value === null || value === '') return '';
+  return typeof value === 'string' && value === value.trim() && value.length <= 128
+    && !/[\0\r\n]/.test(value) ? value : false;
+}
+
+function cloneBoundedArtifactResultJSON(value, maxBytes, maxVisits = 16_384) {
+  const visits = { remaining: maxVisits };
+  const clone = cloneArtifactResultJSON(value, 0, visits);
+  return clone !== INVALID_SEMANTIC_VALUE && jsonSize(clone) <= maxBytes
+    ? clone
+    : INVALID_SEMANTIC_VALUE;
+}
+
+function cloneArtifactResultJSON(value, depth, visits) {
+  if (depth > 12 || visits.remaining <= 0) return INVALID_SEMANTIC_VALUE;
+  visits.remaining -= 1;
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : INVALID_SEMANTIC_VALUE;
+  if (typeof value === 'string') return value.length <= 16_384 ? value : INVALID_SEMANTIC_VALUE;
+  if (Array.isArray(value)) {
+    if (value.length > 1000) return INVALID_SEMANTIC_VALUE;
+    const result = [];
+    for (const item of value) {
+      const child = cloneArtifactResultJSON(item, depth + 1, visits);
+      if (child === INVALID_SEMANTIC_VALUE) return INVALID_SEMANTIC_VALUE;
+      result.push(child);
+    }
+    return result;
+  }
+  if (!semanticPlainObject(value)) return INVALID_SEMANTIC_VALUE;
+  const keys = Object.keys(value);
+  if (keys.length > 256) return INVALID_SEMANTIC_VALUE;
+  const result = {};
+  for (const key of keys.sort()) {
+    if (key.length > 128 || UNSAFE_SEMANTIC_KEYS.has(key)) return INVALID_SEMANTIC_VALUE;
+    const child = cloneArtifactResultJSON(value[key], depth + 1, visits);
+    if (child === INVALID_SEMANTIC_VALUE) return INVALID_SEMANTIC_VALUE;
+    result[key] = child;
+  }
+  return result;
 }
 
 export function normalizeArtifactPageContext(value) {

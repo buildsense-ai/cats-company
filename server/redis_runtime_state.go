@@ -257,6 +257,43 @@ func (s *RedisRuntimeState) deliverThinToolRPC(route runtimeRoute, msg *MsgThinT
 	return s.client.Publish(s.ctx, s.nodeInboxChannel(route.NodeID), payload).Err() == nil
 }
 
+func (s *RedisRuntimeState) deliverArtifactResult(route runtimeRoute, msg *MsgArtifactResult, now time.Time) bool {
+	if s == nil || s.client == nil || msg == nil || route.NodeID == "" || route.ConnectionID == "" {
+		return false
+	}
+	if !s.routeConnected(route, now) {
+		return false
+	}
+	if hub := s.localHub(route.NodeID); hub != nil {
+		return hub.sendArtifactResultToLocalRoute(route, msg)
+	}
+	payload, err := json.Marshal(redisRuntimeEnvelope{
+		Route:          redisRouteFromRuntime(route),
+		ArtifactResult: msg,
+	})
+	if err != nil {
+		return false
+	}
+	return s.client.Publish(s.ctx, s.nodeInboxChannel(route.NodeID), payload).Err() == nil
+}
+
+func (s *RedisRuntimeState) deliverArtifactResultReceipt(nodeID string, msg *MsgArtifactResult, sourceRoute runtimeRoute, now time.Time) bool {
+	if s == nil || s.client == nil || nodeID == "" || msg == nil || !s.runtimeNodeAlive(nodeID) {
+		return false
+	}
+	if hub := s.localHub(nodeID); hub != nil {
+		return hub.acceptArtifactResultReceipt(msg, sourceRoute)
+	}
+	payload, err := json.Marshal(redisRuntimeEnvelope{
+		ArtifactResultReceipt:      msg,
+		ArtifactResultReceiptRoute: redisRouteFromRuntime(sourceRoute),
+	})
+	if err != nil {
+		return false
+	}
+	return s.client.Publish(s.ctx, s.nodeInboxChannel(nodeID), payload).Err() == nil
+}
+
 func (s *RedisRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {
 	if s == nil || s.client == nil || !route.validAt(now) {
 		return false
@@ -1197,6 +1234,15 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 				s.handleMessagingAttentionProbe(nodeID, envelope.MessagingAttentionProbe)
 				continue
 			}
+			if envelope.ArtifactResultReceipt != nil {
+				if hub := s.localHub(nodeID); hub != nil {
+					hub.acceptArtifactResultReceipt(
+						envelope.ArtifactResultReceipt,
+						envelope.ArtifactResultReceiptRoute.toRuntimeRoute(),
+					)
+				}
+				continue
+			}
 			route := envelope.Route.toRuntimeRoute()
 			if route.NodeID != nodeID || !route.validAt(time.Now()) {
 				continue
@@ -1206,6 +1252,8 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 					hub.sendDeviceRPCToLocalRoute(route, firstDeviceRPCMessage(envelope.DeviceRPC, envelope.Msg))
 				} else if envelope.ThinToolRPC != nil {
 					hub.sendThinToolRPCToLocalRoute(route, envelope.ThinToolRPC)
+				} else if envelope.ArtifactResult != nil {
+					hub.sendArtifactResultToLocalRoute(route, envelope.ArtifactResult)
 				}
 			}
 		}
@@ -1572,8 +1620,11 @@ type redisRuntimeEnvelope struct {
 	Msg                          *MsgDeviceRPC                      `json:"msg,omitempty"`
 	DeviceRPC                    *MsgDeviceRPC                      `json:"device_rpc,omitempty"`
 	ThinToolRPC                  *MsgThinToolRPC                    `json:"thin_tool_rpc,omitempty"`
+	ArtifactResult               *MsgArtifactResult                 `json:"artifact_result,omitempty"`
 	MessagingAttentionProbe      *redisMessagingAttentionProbe      `json:"messaging_attention_probe,omitempty"`
 	MessagingAttentionProbeReply *redisMessagingAttentionProbeReply `json:"messaging_attention_probe_reply,omitempty"`
+	ArtifactResultReceipt        *MsgArtifactResult                 `json:"artifact_result_receipt,omitempty"`
+	ArtifactResultReceiptRoute   redisRuntimeRoute                  `json:"artifact_result_receipt_route,omitempty"`
 }
 
 func firstDeviceRPCMessage(values ...*MsgDeviceRPC) *MsgDeviceRPC {

@@ -1739,6 +1739,19 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
   });
 
+  it('constructs the first managed Artifact preview from its immutable version URL', () => {
+    const preview = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      title: '课堂小游戏',
+      url: 'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/',
+      publish_version: 2,
+      agent_uid: 440,
+    });
+    expect(preview.url).toBe(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v2/',
+    );
+  });
+
   it('renders a registry-matched Artifact URL as a card and previews the remote page in the side panel', async () => {
     const artifact = {
       id: 'lesson-game',
@@ -1747,6 +1760,7 @@ describe('ChatMessage rich file rendering', () => {
       url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
       publish_version: 2,
     };
+    const previewURL = `${artifact.url}?artifact_version=2`;
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -1776,10 +1790,10 @@ describe('ChatMessage rich file rendering', () => {
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
     const frame = panel.querySelector('iframe.v3-file-preview-frame');
-    expect(frame.getAttribute('src')).toBe(artifact.url);
+    expect(frame.getAttribute('src')).toBe(previewURL);
     expect(frame.getAttribute('sandbox')).toContain('allow-same-origin');
     expect(frame.hasAttribute('credentialless')).toBe(true);
-    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(previewURL);
     expect(container.querySelector('.v3-artifact-action[href]').getAttribute('href')).toBe(artifact.url);
     expect(panel.querySelector('.v3-remote-artifact-preview-state').textContent).toContain('正在加载');
 
@@ -1794,7 +1808,7 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
-    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(previewURL);
   });
 
   it('keeps the current Artifact visible until the hidden refresh frame answers through the page bridge', async () => {
@@ -2148,7 +2162,7 @@ describe('ChatMessage rich file rendering', () => {
 
     const panel = container.querySelector('.v3-file-preview-panel');
     const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
-    expect(externalLink?.getAttribute('href')).toBe(artifact.url);
+    expect(externalLink?.getAttribute('href')).toBe(`${artifact.url}?artifact_version=3`);
     expect(panel.querySelector('a[download]')).toBeNull();
 
     await act(async () => {
