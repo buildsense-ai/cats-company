@@ -74,13 +74,23 @@ describe('artifact context snapshot handoff', () => {
     expect(artifactRefFromPreviewFile({ ...file, artifact_agent_uid: undefined }, 440)).toBeNull();
   });
 
-  it('adds a cache-busting version without changing the Artifact path', () => {
+  it('loads managed Artifacts from an immutable version path', () => {
     expect(artifactURLForVersion(
       'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/?view=compact',
       3,
     )).toBe(
-      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/?view=compact&artifact_version=3',
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v3/?view=compact',
     );
+    expect(artifactURLForVersion(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v2/?artifact_version=2',
+      3,
+    )).toBe(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v3/',
+    );
+    expect(artifactURLForVersion(
+      'https://example.test/custom/latest/',
+      3,
+    )).toBe('https://example.test/custom/latest/?artifact_version=3');
     expect(artifactURLForVersion('file:///tmp/lesson-game/index.html', 3)).toBe('');
     expect(artifactURLForVersion('https://example.test/latest/', 0)).toBe('');
   });
@@ -395,7 +405,7 @@ describe('artifact context snapshot handoff', () => {
     });
   });
 
-  it('rejects malformed result routes and reports a bridge timeout without claiming success', async () => {
+  it('rejects malformed result routes and keeps a bridge timeout non-terminal', async () => {
     expect(normalizeArtifactResultDelivery({
       type: 'request',
       origin_node_id: 'node-1',
@@ -429,7 +439,6 @@ describe('artifact context snapshot handoff', () => {
       agentUid: 440,
       url: 'https://example.test/artifacts/risk-register/latest/',
     }, delivery, 1);
-    expect(receipt.status).toBe('failed');
-    expect(receipt.code).toBe('preview_bridge_timeout');
+    expect(receipt).toBeNull();
   });
 });

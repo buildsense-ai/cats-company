@@ -85,6 +85,15 @@ export function artifactURLForVersion(value, version) {
   try {
     const parsed = new URL(String(value || '').trim());
     if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    const versionedPath = parsed.pathname.replace(
+      /(\/artifacts\/[^/]+\/)(?:latest|v[1-9]\d*)(?=\/|$)/,
+      `$1v${publishVersion}`,
+    );
+    if (versionedPath !== parsed.pathname) {
+      parsed.pathname = versionedPath;
+      parsed.searchParams.delete('artifact_version');
+      return parsed.toString();
+    }
     parsed.searchParams.set('artifact_version', String(publishVersion));
     return parsed.toString();
   } catch {
@@ -245,9 +254,7 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
       finish(normalizeArtifactResultReceipt(event.data.receipt, normalized.resultId)
         || artifactResultFailureReceipt(normalized.resultId, 'invalid_receipt'));
     };
-    const timer = window.setTimeout(() => finish(
-      artifactResultFailureReceipt(normalized.resultId, 'preview_bridge_timeout')
-    ), boundedTimeout);
+    const timer = window.setTimeout(() => finish(null), boundedTimeout);
     window.addEventListener('message', handleMessage);
     try {
       contentWindow.postMessage({
@@ -256,7 +263,7 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
         result,
       }, targetOrigin);
     } catch {
-      finish(artifactResultFailureReceipt(normalized.resultId, 'preview_bridge_unavailable'));
+      finish(null);
     }
   });
 }

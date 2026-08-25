@@ -16,7 +16,7 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
-import { artifactRefFromPreviewFile, requestArtifactPageContext } from '../artifact-context';
+import { artifactRefFromPreviewFile, artifactURLForVersion, requestArtifactPageContext } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
@@ -1595,9 +1595,10 @@ function removeKnownArtifactURLs(text, artifacts) {
 }
 
 export function createCloudArtifactPreviewFile(artifact) {
+  const versionedURL = artifactURLForVersion(artifact.url, artifact.publish_version);
   const payload = {
     name: artifact.title || artifact.id || 'Cloud artifact',
-    url: artifact.url,
+    url: versionedURL || artifact.url,
     mime_type: 'text/html',
     artifact_id: artifact.id || artifact.artifact_id || '',
     publish_version: artifact.publish_version || null,
@@ -1637,8 +1638,8 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   const openArtifact = () => {
     if (descriptor?.canPreview) {
       previewArtifact();
-    } else if (payload.url) {
-      window.open(payload.url, '_blank', 'noopener,noreferrer');
+    } else if (artifact.url) {
+      window.open(artifact.url, '_blank', 'noopener,noreferrer');
     }
   };
   return (
