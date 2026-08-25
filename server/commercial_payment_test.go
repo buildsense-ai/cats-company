@@ -1495,6 +1495,14 @@ func TestCommercialRelayDryRunRecognizesSharedProviderBudget(t *testing.T) {
 	}
 }
 
+func TestCommercialManagedBudgetKeyCanonicalizesDeepSeekVisionAlias(t *testing.T) {
+	public := commercialManagedBudgetKey("deepseek-anthropic", []string{"deepseek-v4-flash"})
+	withVision := commercialManagedBudgetKey("deepseek-anthropic", []string{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"})
+	if public != withVision {
+		t.Fatalf("deepseek public/vision provider configs must share budget identity: public=%q withVision=%q", public, withVision)
+	}
+}
+
 func TestTruncateUTF8DoesNotSplitRune(t *testing.T) {
 	value := truncateUTF8Bytes("CatsCo 教师套餐", 10)
 	if !strings.HasPrefix("CatsCo 教师套餐", value) || len(value) > 10 {

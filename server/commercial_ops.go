@@ -27,10 +27,13 @@ type CommercialOperationsStore interface {
 type commercialOpsServiceContextKey struct{}
 
 type CommercialOpsHandler struct {
-	admin        *AccountAdminHandler
-	services     AccountServiceVerifier
-	store        CommercialOperationsStore
-	cloudWorkers CloudWorkerAdminOverviewHandler
+	admin                  *AccountAdminHandler
+	services               AccountServiceVerifier
+	store                  CommercialOperationsStore
+	cloudWorkers           CloudWorkerAdminOverviewHandler
+	cloudWorkerProvisioner interface {
+		HandleAdminProvision(http.ResponseWriter, *http.Request)
+	}
 }
 
 func NewCommercialOpsHandler(admin *AccountAdminHandler, services AccountServiceVerifier, store CommercialOperationsStore) *CommercialOpsHandler {
@@ -43,6 +46,11 @@ func NewCommercialOpsHandler(admin *AccountAdminHandler, services AccountService
 func (h *CommercialOpsHandler) SetCloudWorkerAdmin(handler CloudWorkerAdminOverviewHandler) {
 	if h != nil {
 		h.cloudWorkers = handler
+		if provisioner, ok := handler.(interface {
+			HandleAdminProvision(http.ResponseWriter, *http.Request)
+		}); ok {
+			h.cloudWorkerProvisioner = provisioner
+		}
 	}
 }
 
@@ -134,6 +142,38 @@ func (h *CommercialOpsHandler) HandleGrants(w http.ResponseWriter, r *http.Reque
 
 func (h *CommercialOpsHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r *http.Request) {
 	h.forward(w, r, "cloud_worker_credits.create", "user", h.admin.HandleCloudWorkerCredits)
+}
+
+// HandleCloudWorkerProvision is an internal-only write action.  The service
+// scope and local-source checks happen here; the cloud-worker handler then
+// grants a missing credit and reuses the normal owner create path.
+func (h *CommercialOpsHandler) HandleCloudWorkerProvision(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.cloudWorkerProvisioner == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker provisioner unavailable"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	service, ok := h.requireService(w, r, true)
+	if !ok {
+		return
+	}
+	targetRef := commercialOpsTargetRef(r)
+	tracked := &commercialOpsResponseWriter{ResponseWriter: w}
+	h.cloudWorkerProvisioner.HandleAdminProvision(tracked, withCommercialOpsService(r, service))
+	if h.store != nil {
+		status := tracked.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if err := h.store.RecordCommercialOperatorEvent(&types.CommercialOperatorEvent{
+			Service: service.Slug, Action: "cloud_worker.provision", TargetType: "cloud_worker", TargetRef: targetRef, StatusCode: status,
+		}); err != nil {
+			log.Printf("failed to record commercial operator event service=%s action=cloud_worker.provision: %v", service.Slug, err)
+		}
+	}
 }
 
 func (h *CommercialOpsHandler) HandleCloudWorkers(w http.ResponseWriter, r *http.Request) {

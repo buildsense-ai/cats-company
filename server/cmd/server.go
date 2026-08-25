@@ -691,6 +691,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
 	mux.HandleFunc("/api/account/commercial-ops/cloud-worker-credits", commercialOpsHandler.HandleCloudWorkerCredits)
+	mux.HandleFunc("/api/account/commercial-ops/cloud-worker-provision", commercialOpsHandler.HandleCloudWorkerProvision)
 	mux.HandleFunc("/api/account/commercial-ops/cloud-workers", commercialOpsHandler.HandleCloudWorkers)
 	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
