@@ -218,6 +218,7 @@ vi.mock('../api', () => ({
   wsSendStreamCancel: vi.fn(),
   wsSendTyping: vi.fn(),
   wsSendRead: vi.fn(),
+  wsSendArtifactResultReceipt: vi.fn(),
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
   getApiBaseURL: () => window.location.origin,
@@ -234,7 +235,7 @@ import MessagesView, {
   shouldConvertPastedTextToDocument,
 } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
-import { api, onWSMessage, wsSendStreamCancel } from '../api';
+import { api, onWSMessage, wsSendArtifactResultReceipt, wsSendStreamCancel } from '../api';
 import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
 import {
   downloadConversationShareImage,
@@ -370,6 +371,16 @@ async function flushPromises(count = 8) {
   for (let index = 0; index < count; index += 1) {
     await Promise.resolve();
   }
+}
+
+function dispatchFrameMessage(source, origin, data) {
+  const event = new Event('message');
+  Object.defineProperties(event, {
+    source: { value: source },
+    origin: { value: origin },
+    data: { value: data },
+  });
+  window.dispatchEvent(event);
 }
 
 describe('structured composer mention provenance', () => {
@@ -4419,6 +4430,133 @@ describe('MessagesView composer draft isolation', () => {
         artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
     }, undefined);
+  });
+
+  it('routes a result only to the preview that owns the current context snapshot', async () => {
+    const origin = 'https://artifacts.example.test';
+    const resultId = `arr_${'r'.repeat(43)}`;
+    let appliedResult = null;
+    const frameWindow = {
+      postMessage(message) {
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-25T03:00:00Z',
+              semantic_context: { view: 'risk-register', state_revision: '42' },
+            },
+          }), 0);
+          return;
+        }
+        if (message.type === 'catsco.artifact.result.request.v1') {
+          appliedResult = message.result;
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.result.response.v1',
+            request_id: message.request_id,
+            receipt: {
+              contract_version: 'catsco.artifact-result-receipt.v1',
+              result_id: resultId,
+              status: 'applied',
+              receipt: { created: 1, state_revision: '43' },
+            },
+          }), 0);
+        }
+      },
+    };
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '风险台账',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 风险台账"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '把风险写进当前台账');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await flushPromises();
+    });
+
+    const request = {
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_1_440',
+      agent_uid: '440',
+      artifact_id: 'lesson-game',
+      displayed_version: 2,
+      sink_id: 'risk-items.upsert.v1',
+      result_id: resultId,
+      expected_state_revision: '42',
+      payload: { items: [{ title: '延期风险' }] },
+    };
+    await act(async () => {
+      wsHandler({ artifact_result: request });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await flushPromises();
+    });
+
+    expect(appliedResult).toEqual({
+      contract_version: 'catsco.artifact-result.v1',
+      artifact_id: 'lesson-game',
+      displayed_version: 2,
+      sink_id: 'risk-items.upsert.v1',
+      result_id: resultId,
+      expected_state_revision: '42',
+      payload: { items: [{ title: '延期风险' }] },
+    });
+    expect(wsSendArtifactResultReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'receipt',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      result_id: resultId,
+      receipt: expect.objectContaining({ status: 'applied' }),
+    }));
+
+    wsSendArtifactResultReceipt.mockClear();
+    await act(async () => {
+      wsHandler({
+        artifact_result: {
+          ...request,
+          context_ref: `acr_${'z'.repeat(43)}`,
+          result_id: `arr_${'q'.repeat(43)}`,
+        },
+      });
+      await flushPromises();
+    });
+    expect(wsSendArtifactResultReceipt).not.toHaveBeenCalled();
   });
 
   it('drops a stale Artifact reference when the preview closes during page capture', async () => {

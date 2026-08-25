@@ -15,12 +15,15 @@ type channelOutboundMessage struct {
 }
 
 type channelOutboundAttachment struct {
-	Type     string
-	Name     string
-	URL      string
-	FileKey  string
-	Size     int64
-	MimeType string
+	Type      string
+	Name      string
+	URL       string
+	FileKey   string
+	Thumbnail string
+	Width     int64
+	Height    int64
+	Size      int64
+	MimeType  string
 }
 
 func isInternalChannelOutboundPayload(payload *normalizedMessagePayload) bool {
@@ -162,12 +165,15 @@ func channelOutboundAttachmentFromPayloadMap(kind string, payload map[string]int
 		return channelOutboundAttachment{}, false
 	}
 	attachment := channelOutboundAttachment{
-		Type:     kind,
-		Name:     channelOutboundMapString(payload, "name", "file_name", "filename", "title"),
-		URL:      channelOutboundMapString(payload, "url", "download_url", "file_url", "image_url"),
-		FileKey:  channelOutboundMapString(payload, "file_key", "fileKey"),
-		Size:     channelOutboundMapInt64(payload, "size", "file_size", "fileSize"),
-		MimeType: channelOutboundMapString(payload, "mime_type", "mimeType", "content_type", "contentType"),
+		Type:      kind,
+		Name:      channelOutboundMapString(payload, "name", "file_name", "filename", "title"),
+		URL:       channelOutboundMapString(payload, "url", "download_url", "file_url", "image_url"),
+		FileKey:   channelOutboundMapString(payload, "file_key", "fileKey"),
+		Thumbnail: channelOutboundMapString(payload, "thumbnail", "thumbnail_url", "thumbnailUrl"),
+		Width:     channelOutboundMapInt64(payload, "width"),
+		Height:    channelOutboundMapInt64(payload, "height"),
+		Size:      channelOutboundMapInt64(payload, "size", "file_size", "fileSize"),
+		MimeType:  channelOutboundMapString(payload, "mime_type", "mimeType", "content_type", "contentType"),
 	}
 	if attachment.Type != "image" {
 		attachment.Type = "file"

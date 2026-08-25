@@ -84,7 +84,7 @@ func newArtifactSnapshotTestHub(t *testing.T) *Hub {
 	return hub
 }
 
-func createArtifactSnapshotForTest(t *testing.T, handler *ArtifactContextSnapshotHandler, selectedText string) map[string]interface{} {
+func createArtifactSnapshotForTest(t *testing.T, handler *ArtifactContextSnapshotHandler, selectedText string, previewClients ...*Client) map[string]interface{} {
 	t.Helper()
 	body := map[string]interface{}{
 		"topic_id": "p2p_7_440",
@@ -108,6 +108,18 @@ func createArtifactSnapshotForTest(t *testing.T, handler *ArtifactContextSnapsho
 			},
 			"local_storage": map[string]interface{}{"token": "forged"},
 		},
+	}
+	if len(previewClients) > 0 && previewClients[0] != nil {
+		preview := previewClients[0]
+		handler.hub.ensureClientRuntimeRoute(preview)
+		if handler.hub.getClientByConnectionID(preview.connectionID) != preview {
+			handler.hub.addClient(preview)
+		}
+		session, err := handler.hub.artifactPreviewSessions.issue(preview.uid, handler.hub.clientRoute(preview))
+		if err != nil {
+			t.Fatalf("issue preview session: %v", err)
+		}
+		body["preview_session"] = session
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -173,6 +185,9 @@ func TestArtifactContextSnapshotCreateReadAndTrustBoundary(t *testing.T) {
 	if response["contract_version"] != artifactContextSnapshotContract || response["status"] != "ok" {
 		t.Fatalf("response contract = %#v", response)
 	}
+	if _, exists := response["writeback_target"]; exists {
+		t.Fatalf("snapshot without a preview session received writeback capability: %#v", response)
+	}
 	if strings.Contains(recorder.Body.String(), ref) {
 		t.Fatal("read response echoed the bearer context_ref")
 	}
@@ -207,7 +222,7 @@ func TestArtifactContextSnapshotReadKeepsSemanticTrustOptional(t *testing.T) {
 	hub := newArtifactSnapshotTestHub(t)
 	handler := NewArtifactContextSnapshotHandler(hub)
 	observedAt := "2026-08-14T01:02:03Z"
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7,
 		TopicID:  "p2p_7_440",
 		AgentUID: 440,
@@ -307,7 +322,7 @@ func TestArtifactContextBotReadReportsRetiredSnapshotStatus(t *testing.T) {
 			clock := time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC)
 			hub.artifactContextSnapshots = newArtifactContextSnapshotStore(time.Minute, time.Minute, 16)
 			hub.artifactContextSnapshots.now = func() time.Time { return clock }
-			snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+			snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 				ActorUID: 7, TopicID: "p2p_7_440", AgentUID: 440,
 				Artifact: ArtifactContextRecord{ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"},
 			})
@@ -318,7 +333,7 @@ func TestArtifactContextBotReadReportsRetiredSnapshotStatus(t *testing.T) {
 			case artifactContextSnapshotExpired:
 				clock = clock.Add(time.Minute + time.Nanosecond)
 			case artifactContextSnapshotReplaced:
-				if _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{ActorUID: 7, TopicID: "p2p_7_440", AgentUID: 440}); err != nil {
+				if _, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{ActorUID: 7, TopicID: "p2p_7_440", AgentUID: 440}); err != nil {
 					t.Fatalf("replace snapshot: %v", err)
 				}
 			case artifactContextSnapshotInvalidated:
@@ -347,7 +362,7 @@ func TestArtifactContextRefIsNotPersistedAndIsRecipientScoped(t *testing.T) {
 	}
 	db := &artifactMetadataCaptureStore{identityMessageStore: base}
 	hub := NewHub(db, nil)
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7,
 		TopicID:  "p2p_7_440",
 		AgentUID: 440,
@@ -421,7 +436,7 @@ func TestArtifactContextRefGroupFanoutFiltersEveryRecipient(t *testing.T) {
 	other := &Client{uid: 8, accountType: types.AccountHuman, send: make(chan []byte, 1)}
 	hub.addClient(target)
 	hub.addClient(other)
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7, TopicID: "grp_80", AgentUID: 42,
 		Artifact: ArtifactContextRecord{ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"},
 	})
@@ -499,7 +514,7 @@ func TestArtifactContextRefRecipientRevalidationRejectsRetiredSnapshot(t *testin
 		{
 			name: "replaced",
 			retire: func(t *testing.T, hub *Hub, snapshot artifactContextSnapshot, _ *time.Time) {
-				if _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+				if _, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 					ActorUID: snapshot.ActorUID, TopicID: snapshot.TopicID, AgentUID: snapshot.AgentUID,
 					Artifact: ArtifactContextRecord{ID: "replacement", Title: "Replacement", Kind: "html", URL: "https://example.test/replacement/latest/"},
 				}); err != nil {
@@ -517,7 +532,7 @@ func TestArtifactContextRefRecipientRevalidationRejectsRetiredSnapshot(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
 			hub := newHub(&now)
-			snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+			snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 				ActorUID: 7, TopicID: "p2p_7_42", AgentUID: 42,
 				Artifact: ArtifactContextRecord{ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"},
 			})
@@ -559,7 +574,7 @@ func TestArtifactContextRefRESTIngressDeliversWithoutPersisting(t *testing.T) {
 	hub := NewHub(db, nil)
 	bot := &Client{uid: 440, accountType: types.AccountBot, send: make(chan []byte, 2)}
 	hub.addClient(bot)
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7,
 		TopicID:  "p2p_7_440",
 		AgentUID: 440,
@@ -615,7 +630,7 @@ func TestArtifactContextRefWebSocketIngressDeliversWithoutPersisting(t *testing.
 	bot := &Client{uid: 440, accountType: types.AccountBot, send: make(chan []byte, 2)}
 	hub.addClient(human)
 	hub.addClient(bot)
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7,
 		TopicID:  "p2p_7_440",
 		AgentUID: 440,
@@ -676,7 +691,7 @@ func TestArtifactContextRefGroupIngressScopesRESTAndWebSocketDelivery(t *testing
 			bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 2)}
 			hub.addClient(observer)
 			hub.addClient(bot)
-			snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+			snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 				ActorUID: 7, TopicID: "grp_80", AgentUID: 42,
 				Artifact: ArtifactContextRecord{ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"},
 			})
@@ -745,15 +760,15 @@ func TestArtifactContextRefGroupIngressScopesRESTAndWebSocketDelivery(t *testing
 
 func TestArtifactContextSnapshotStoreDoesNotEvictActiveEntriesAtCapacity(t *testing.T) {
 	store := newArtifactContextSnapshotStore(time.Minute, time.Minute, 2)
-	first, err := store.create(artifactContextSnapshot{ActorUID: 7, TopicID: "p2p_7_42", AgentUID: 42})
+	first, _, err := store.create(artifactContextSnapshot{ActorUID: 7, TopicID: "p2p_7_42", AgentUID: 42})
 	if err != nil {
 		t.Fatalf("create first snapshot: %v", err)
 	}
-	second, err := store.create(artifactContextSnapshot{ActorUID: 8, TopicID: "p2p_8_43", AgentUID: 43})
+	second, _, err := store.create(artifactContextSnapshot{ActorUID: 8, TopicID: "p2p_8_43", AgentUID: 43})
 	if err != nil {
 		t.Fatalf("create second snapshot: %v", err)
 	}
-	if _, err := store.create(artifactContextSnapshot{ActorUID: 9, TopicID: "p2p_9_44", AgentUID: 44}); err == nil {
+	if _, _, err := store.create(artifactContextSnapshot{ActorUID: 9, TopicID: "p2p_9_44", AgentUID: 44}); err == nil {
 		t.Fatal("full store accepted a third active snapshot")
 	}
 	for name, ref := range map[string]string{"first": first.Ref, "second": second.Ref} {
@@ -762,12 +777,15 @@ func TestArtifactContextSnapshotStoreDoesNotEvictActiveEntriesAtCapacity(t *test
 		}
 	}
 
-	replacement, err := store.create(artifactContextSnapshot{ActorUID: 7, TopicID: "p2p_7_42", AgentUID: 42})
+	replacement, replacedRef, err := store.create(artifactContextSnapshot{ActorUID: 7, TopicID: "p2p_7_42", AgentUID: 42})
 	if err != nil {
 		t.Fatalf("replace snapshot at capacity: %v", err)
 	}
 	if replacement.Revision != 2 {
 		t.Fatalf("replacement revision = %d, want 2", replacement.Revision)
+	}
+	if replacedRef != first.Ref {
+		t.Fatalf("replacement reported previous ref %q, want %q", replacedRef, first.Ref)
 	}
 	for name, ref := range map[string]string{"replacement": replacement.Ref, "unrelated": second.Ref} {
 		if _, status := store.lookup(ref); status != artifactContextSnapshotActive {
@@ -785,7 +803,7 @@ func TestArtifactContextSnapshotStoreConcurrentLifecycle(t *testing.T) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			snapshot, err := store.create(artifactContextSnapshot{
+			snapshot, _, err := store.create(artifactContextSnapshot{
 				ActorUID: int64(index + 1),
 				TopicID:  "topic-" + strconv.Itoa(index),
 				AgentUID: int64(index + 1000),
@@ -807,6 +825,88 @@ func TestArtifactContextSnapshotStoreConcurrentLifecycle(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+func TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback(t *testing.T) {
+	snapshots := newArtifactContextSnapshotStore(time.Minute, time.Minute, 128)
+	writebacks := newArtifactResultWritebackStore(time.Minute, time.Second, 128)
+	const count = 32
+	targets := make(chan artifactWritebackTarget, count)
+	errs := make(chan error, count)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for index := 0; index < count; index++ {
+		index := index
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			snapshot, previousRef, err := snapshots.create(artifactContextSnapshot{
+				ActorUID:         7,
+				TopicID:          "p2p_7_440",
+				AgentUID:         440,
+				Artifact:         ArtifactContextRecord{ID: "lesson-game"},
+				DisplayedVersion: 2,
+				PreviewRoute: runtimeRoute{
+					NodeID:       "preview-node",
+					ConnectionID: fmt.Sprintf("preview-%02d", index),
+				},
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			target, issueErr := writebacks.issue(snapshot)
+			if issueErr == nil {
+				targets <- target
+			}
+			if previousRef != "" {
+				writebacks.invalidateContext(previousRef)
+			}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(targets)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	currentRef := snapshots.currentRef(7, "p2p_7_440")
+	if currentRef == "" {
+		t.Fatal("concurrent creates left no current snapshot")
+	}
+	foundCurrent := false
+	index := 0
+	for target := range targets {
+		request := artifactResultSubmitRequest{
+			ContractVersion:  artifactResultContract,
+			WritebackRef:     target.Ref,
+			ArtifactID:       target.ArtifactID,
+			DisplayedVersion: target.DisplayedVersion,
+			SinkID:           "risk-items.upsert.v1",
+			ResultID:         "arr_" + strings.Repeat("r", 39) + fmt.Sprintf("%04d", index),
+			Payload:          json.RawMessage(`{"items":[]}`),
+		}
+		delivery, created, status := writebacks.startDelivery(
+			request,
+			target,
+			hashArtifactResultRequest(request, target),
+		)
+		if target.ContextRef == currentRef {
+			foundCurrent = true
+			if delivery == nil || !created || status != "" {
+				t.Fatalf("current target could not submit: delivery=%#v created=%v status=%q", delivery, created, status)
+			}
+		} else if delivery != nil || created || status != "expired" {
+			t.Fatalf("stale target context=%s remained submittable: delivery=%#v created=%v status=%q", target.ContextRef, delivery, created, status)
+		}
+		index++
+	}
+	if !foundCurrent {
+		t.Fatal("final current snapshot never received a writeback target")
 	}
 }
 
@@ -850,7 +950,7 @@ func TestArtifactContextBotReadRejectsRevokedP2PAccess(t *testing.T) {
 	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, _ int64, artifactID string) (ArtifactContextRecord, error) {
 		return ArtifactContextRecord{ID: artifactID, Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"}, nil
 	}))
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7, TopicID: "p2p_7_440", AgentUID: 440,
 		Artifact: ArtifactContextRecord{ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"},
 	})
@@ -902,7 +1002,7 @@ func TestArtifactContextSnapshotAndReadRequireCurrentGroupMembership(t *testing.
 		{GroupID: 80, UserID: 7},
 		{GroupID: 80, UserID: 42, IsBot: true},
 	}
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7, TopicID: "grp_80", AgentUID: 42,
 		Artifact: ArtifactContextRecord{ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"},
 	})
@@ -944,7 +1044,7 @@ func TestArtifactContextRefAndBotReadRejectReplacedGroupAgent(t *testing.T) {
 		}
 		return ArtifactContextRecord{ID: artifactID, Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"}, nil
 	}))
-	snapshot, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
+	snapshot, _, err := hub.artifactContextSnapshots.create(artifactContextSnapshot{
 		ActorUID: 7, TopicID: "grp_80", AgentUID: 42,
 		Artifact: ArtifactContextRecord{ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/latest/"},
 	})

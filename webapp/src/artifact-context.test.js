@@ -4,11 +4,15 @@ import {
   ARTIFACT_CONTEXT_RESPONSE_TYPE,
   ARTIFACT_PAGE_CONTEXT_CONTRACT,
   ARTIFACT_REF_CONTRACT,
+  ARTIFACT_RESULT_RECEIPT_CONTRACT,
+  ARTIFACT_RESULT_RESPONSE_TYPE,
   artifactContextRefFromSnapshot,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
   normalizeArtifactPageContext,
+  normalizeArtifactResultDelivery,
   requestArtifactPageContext,
+  requestArtifactResultApply,
   withArtifactContextRef,
 } from './artifact-context';
 
@@ -70,13 +74,23 @@ describe('artifact context snapshot handoff', () => {
     expect(artifactRefFromPreviewFile({ ...file, artifact_agent_uid: undefined }, 440)).toBeNull();
   });
 
-  it('adds a cache-busting version without changing the Artifact path', () => {
+  it('loads managed Artifacts from an immutable version path', () => {
     expect(artifactURLForVersion(
       'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/?view=compact',
       3,
     )).toBe(
-      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/?view=compact&artifact_version=3',
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v3/?view=compact',
     );
+    expect(artifactURLForVersion(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v2/?artifact_version=2',
+      3,
+    )).toBe(
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v3/',
+    );
+    expect(artifactURLForVersion(
+      'https://example.test/custom/latest/',
+      3,
+    )).toBe('https://example.test/custom/latest/?artifact_version=3');
     expect(artifactURLForVersion('file:///tmp/lesson-game/index.html', 3)).toBe('');
     expect(artifactURLForVersion('https://example.test/latest/', 0)).toBe('');
   });
@@ -329,5 +343,102 @@ describe('artifact context snapshot handoff', () => {
       currently_visible: true,
     }, 1);
     expect(result).toBeNull();
+  });
+
+  it('normalizes a bounded result delivery and excludes routing secrets from the iframe call', async () => {
+    const delivery = normalizeArtifactResultDelivery({
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      context_ref: `acr_${'c'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_7_440',
+      agent_uid: '440',
+      artifact_id: 'risk-register',
+      displayed_version: 3,
+      sink_id: 'risk-items.upsert.v1',
+      result_id: `arr_${'r'.repeat(43)}`,
+      expected_state_revision: '42',
+      payload: { items: [{ title: '延期风险' }] },
+    });
+    expect(delivery?.artifactId).toBe('risk-register');
+
+    const origin = 'https://agent-440.artifacts.catsco.fun:19991';
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        expect(message.result.writeback_ref).toBeUndefined();
+        expect(message.result.context_ref).toBeUndefined();
+        expect(message.result.payload.items[0].title).toBe('延期风险');
+        window.setTimeout(() => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: frameWindow },
+            origin: { value: origin },
+            data: {
+              value: {
+                type: ARTIFACT_RESULT_RESPONSE_TYPE,
+                request_id: message.request_id,
+                receipt: {
+                  contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+                  result_id: delivery.resultId,
+                  status: 'applied',
+                  receipt: { created: 1, state_revision: '43' },
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        }, 0);
+      },
+    };
+    const receipt = await requestArtifactResultApply({
+      frame: { contentWindow: frameWindow },
+      artifactId: 'risk-register',
+      agentUid: 440,
+      url: `${origin}/artifacts/risk-register/latest/?artifact_version=3`,
+    }, delivery, 50);
+    expect(receipt).toEqual({
+      contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+      result_id: delivery.resultId,
+      status: 'applied',
+      receipt: { created: 1, state_revision: '43' },
+    });
+  });
+
+  it('rejects malformed result routes and keeps a bridge timeout non-terminal', async () => {
+    expect(normalizeArtifactResultDelivery({
+      type: 'request',
+      origin_node_id: 'node-1',
+      context_ref: `acr_${'c'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_7_440',
+      agent_uid: '440',
+      artifact_id: 'risk-register',
+      displayed_version: 3,
+      sink_id: 'unversioned-sink',
+      result_id: `arr_${'r'.repeat(43)}`,
+      payload: {},
+    })).toBeNull();
+
+    const delivery = normalizeArtifactResultDelivery({
+      type: 'request',
+      origin_node_id: 'node-1',
+      context_ref: `acr_${'c'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_7_440',
+      agent_uid: '440',
+      artifact_id: 'risk-register',
+      displayed_version: 3,
+      sink_id: 'risk-items.upsert.v1',
+      result_id: `arr_${'r'.repeat(43)}`,
+      payload: {},
+    });
+    const receipt = await requestArtifactResultApply({
+      frame: { contentWindow: { postMessage() {} } },
+      artifactId: 'risk-register',
+      agentUid: 440,
+      url: 'https://example.test/artifacts/risk-register/latest/',
+    }, delivery, 1);
+    expect(receipt).toBeNull();
   });
 });

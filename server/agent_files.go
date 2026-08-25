@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,9 +29,13 @@ type topicFileMessageStore interface {
 
 type agentFileRecord struct {
 	ID         string    `json:"id"`
+	Type       string    `json:"type"`
 	Name       string    `json:"name"`
 	URL        string    `json:"url"`
 	FileKey    string    `json:"file_key,omitempty"`
+	Thumbnail  string    `json:"thumbnail,omitempty"`
+	Width      int64     `json:"width,omitempty"`
+	Height     int64     `json:"height,omitempty"`
 	MimeType   string    `json:"mime_type,omitempty"`
 	Size       int64     `json:"size,omitempty"`
 	MessageID  int64     `json:"message_id"`
@@ -288,11 +293,19 @@ func agentFilesFromMessages(messages []*types.Message, topicNames map[string]str
 				continue
 			}
 			seen[key] = struct{}{}
+			attachmentType := strings.ToLower(strings.TrimSpace(attachment.Type))
+			if attachmentType != "image" {
+				attachmentType = "file"
+			}
 			files = append(files, agentFileRecord{
 				ID:         fmt.Sprintf("%d:%d", message.ID, blockIndex),
+				Type:       attachmentType,
 				Name:       firstNonEmpty(attachment.Name, channelOutboundFileNameFromURL(attachment.URL), attachment.FileKey, "文件"),
 				URL:        attachment.URL,
 				FileKey:    attachment.FileKey,
+				Thumbnail:  attachment.Thumbnail,
+				Width:      attachment.Width,
+				Height:     attachment.Height,
 				MimeType:   attachment.MimeType,
 				Size:       attachment.Size,
 				MessageID:  message.ID,
@@ -303,28 +316,51 @@ func agentFilesFromMessages(messages []*types.Message, topicNames map[string]str
 			})
 		}
 	}
+	sort.SliceStable(files, func(i, j int) bool {
+		left, right := files[i], files[j]
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.After(right.CreatedAt)
+		}
+		if left.MessageID != right.MessageID {
+			return left.MessageID > right.MessageID
+		}
+		return left.BlockIndex < right.BlockIndex
+	})
 	return files
 }
 
 func fileAttachmentsFromMessage(message *types.Message) []channelOutboundAttachment {
 	attachments := make([]channelOutboundAttachment, 0)
 	for _, block := range message.ContentBlocks {
-		if strings.ToLower(strings.TrimSpace(block.Type)) != "file" {
+		kind := strings.ToLower(strings.TrimSpace(block.Type))
+		if kind != "file" && kind != "image" {
 			continue
 		}
-		if attachment, ok := channelOutboundAttachmentFromPayloadMap("file", block.Payload); ok {
+		if attachment, ok := channelOutboundAttachmentFromPayloadMap(kind, block.Payload); ok {
 			attachments = append(attachments, attachment)
 		}
 	}
-	if len(attachments) > 0 || message.MsgType != "file" {
+	if len(attachments) > 0 || !isLegacyFileMessageType(message.MsgType) {
 		return attachments
 	}
 
 	payload := legacyFilePayload(message.Content)
-	if attachment, ok := channelOutboundAttachmentFromPayloadMap("file", payload); ok {
+	if attachment, ok := channelOutboundAttachmentFromPayloadMap(legacyFileMessageType(message), payload); ok {
 		attachments = append(attachments, attachment)
 	}
 	return attachments
+}
+
+func isLegacyFileMessageType(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "file" || value == "image"
+}
+
+func legacyFileMessageType(message *types.Message) string {
+	if message != nil && strings.EqualFold(strings.TrimSpace(message.MsgType), "image") {
+		return "image"
+	}
+	return "file"
 }
 
 func legacyFilePayload(content string) map[string]interface{} {

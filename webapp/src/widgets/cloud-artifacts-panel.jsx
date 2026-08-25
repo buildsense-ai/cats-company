@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FileCode2,
   FileText,
+  Image as ImageIcon,
   RefreshCw,
   RotateCcw,
   Upload,
@@ -78,6 +79,23 @@ function fileExtension(file) {
   return extension ? extension.toUpperCase() : '文件';
 }
 
+const IMAGE_FILE_EXTENSIONS = new Set(['AVIF', 'BMP', 'GIF', 'HEIC', 'JPEG', 'JPG', 'PNG', 'SVG', 'WEBP']);
+
+function isImageFile(file) {
+  const type = String(file?.type || '').trim().toLowerCase();
+  const mime = String(file?.mime_type || file?.mime || file?.content_type || '')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase();
+  const name = String(file?.name || file?.url || '').split(/[?#]/, 1)[0];
+  const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toUpperCase() : '';
+  const url = String(file?.url || '').split(/[?#]/, 1)[0];
+  return type === 'image'
+    || mime.startsWith('image/')
+    || IMAGE_FILE_EXTENSIONS.has(extension)
+    || /\/uploads\/images\//.test(url);
+}
+
 function formatFileSize(bytes) {
   const size = Number(bytes || 0);
   if (size <= 0) return '';
@@ -87,13 +105,28 @@ function formatFileSize(bytes) {
 }
 
 function fileMeta(file) {
-  const items = [{ key: 'type', value: fileExtension(file) }];
+  const items = [{ key: 'type', value: isImageFile(file) ? '图片' : fileExtension(file) }];
   const size = formatFileSize(file.size);
   if (size) items.push({ key: 'size', value: size });
   if (file.topic_name) items.push({ key: 'source', value: file.topic_name });
   const time = formatUpdatedAt(file.created_at);
   if (time) items.push({ key: 'time', value: time });
   return items;
+}
+
+function fileTimestamp(file) {
+  const value = Date.parse(String(file?.created_at || ''));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function sortFilesByTime(files) {
+  return [...files].sort((left, right) => {
+    const timeDelta = fileTimestamp(right) - fileTimestamp(left);
+    if (timeDelta !== 0) return timeDelta;
+    const messageDelta = Number(right?.message_id || 0) - Number(left?.message_id || 0);
+    if (messageDelta !== 0) return messageDelta;
+    return Number(left?.block_index || 0) - Number(right?.block_index || 0);
+  });
 }
 
 export default function CloudArtifactsPanel({
@@ -154,7 +187,7 @@ export default function CloudArtifactsPanel({
         const result = await api.getTopicFiles(topicId, { beforeId, limit: 40 });
         if (!isCurrentRequest()) return;
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
-        setFiles((current) => append ? [...current, ...nextFiles] : nextFiles);
+        setFiles((current) => sortFilesByTime(append ? [...current, ...nextFiles] : nextFiles));
         setFileCursor(Number(result?.next_before_id || 0));
         setFileHasMore(Boolean(result?.has_more));
         return;
@@ -579,11 +612,23 @@ function ArtifactSummary({ artifact }) {
   );
 }
 
-function FileSummary({ file }) {
+function FileSummary({ file, thumbnailURL = '' }) {
+  const image = isImageFile(file);
   return (
     <>
-      <span className="cloud-artifact-kind-icon file" aria-hidden="true">
-        <FileText size={18} />
+      <span className={'cloud-artifact-kind-icon file' + (image ? ' image' : '')} aria-hidden="true">
+        {image && <ImageIcon className="cloud-file-image-fallback" size={18} />}
+        {image && thumbnailURL ? (
+          <img
+            src={thumbnailURL}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            onError={(event) => {
+              event.currentTarget.style.visibility = 'hidden';
+            }}
+          />
+        ) : !image ? <FileText size={18} /> : null}
       </span>
       <div className="cloud-artifact-copy">
         <h4>{file.name}</h4>
@@ -600,6 +645,14 @@ function FileSummary({ file }) {
 function HistoricalFileItem({ file, onPreviewFile }) {
   const descriptor = previewFileDescriptor(file);
   const canPreview = Boolean(descriptor?.canPreview);
+  const image = isImageFile(file);
+  const itemLabel = image ? '图片' : '文件';
+  const thumbnailDescriptor = image
+    ? previewFileDescriptor({ ...file, url: file.thumbnail || file.url })
+    : null;
+  const thumbnailURL = thumbnailDescriptor?.canPreview
+    ? thumbnailDescriptor.url
+    : '';
   const openURL = descriptor?.url || file.url || '';
   const downloadURL = descriptor?.downloadURL || openURL;
 
@@ -610,9 +663,9 @@ function HistoricalFileItem({ file, onPreviewFile }) {
           type="button"
           className="cloud-artifact-main"
           onClick={() => onPreviewFile?.(file)}
-          aria-label={'预览文件 ' + file.name}
+          aria-label={'预览' + itemLabel + ' ' + file.name}
         >
-          <FileSummary file={file} />
+          <FileSummary file={file} thumbnailURL={thumbnailURL} />
           <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
         </button>
       ) : (
@@ -623,7 +676,7 @@ function HistoricalFileItem({ file, onPreviewFile }) {
           rel="noopener noreferrer"
           aria-label={'在新窗口打开 ' + file.name}
         >
-          <FileSummary file={file} />
+          <FileSummary file={file} thumbnailURL={thumbnailURL} />
           <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
         </a>
       )}

@@ -240,7 +240,7 @@ func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit 
 	return scanMessages(rows, "scan latest message before")
 }
 
-// ListAgentFileMessages returns newest file-bearing messages authored by one agent in one conversation.
+// ListAgentFileMessages returns newest file- or image-bearing messages authored by one agent in one conversation.
 func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error) {
 	if topicID == "" {
 		return []*types.Message{}, nil
@@ -263,8 +263,12 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID
 			 FROM messages
 			 WHERE from_uid = $1
 			   AND topic_id = $2
-			   AND (msg_type = 'file' OR content_blocks @> '[{"type":"file"}]'::jsonb)%s
-			 ORDER BY id DESC
+			   AND (
+			     msg_type IN ('file', 'image')
+			     OR content_blocks @> '[{"type":"file"}]'::jsonb
+			     OR content_blocks @> '[{"type":"image"}]'::jsonb
+			   )%s
+			 ORDER BY created_at DESC, id DESC
 			 LIMIT $%d`,
 			beforeClause,
 			nextPlaceholder,
@@ -278,7 +282,7 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID
 	return scanMessages(rows, "scan agent file message")
 }
 
-// ListTopicFileMessages returns newest file-bearing messages from all senders in one conversation.
+// ListTopicFileMessages returns newest file- or image-bearing messages from all senders in one conversation.
 func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
 	if topicID == "" {
 		return []*types.Message{}, nil
@@ -300,8 +304,12 @@ func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit in
 			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
 			 FROM messages
 			 WHERE topic_id = $1
-			   AND (msg_type = 'file' OR content_blocks @> '[{"type":"file"}]'::jsonb)%s
-			 ORDER BY id DESC
+			   AND (
+			     msg_type IN ('file', 'image')
+			     OR content_blocks @> '[{"type":"file"}]'::jsonb
+			     OR content_blocks @> '[{"type":"image"}]'::jsonb
+			   )%s
+			 ORDER BY created_at DESC, id DESC
 			 LIMIT $%d`,
 			beforeClause,
 			nextPlaceholder,
