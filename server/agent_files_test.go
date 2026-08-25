@@ -409,6 +409,65 @@ func TestTopicFilesListsGroupFilesFromMembers(t *testing.T) {
 	}
 }
 
+func TestTopicFilesIncludesImagesAndSortsByCreatedAt(t *testing.T) {
+	base := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	fileStore := newAgentFileTestStore(7, 440)
+	fileStore.titles = map[string]string{"p2p_7_440": "图片资料"}
+	fileStore.messages = []*types.Message{
+		{
+			ID: 21, TopicID: "p2p_7_440", FromUID: 7, CreatedAt: base,
+			ContentBlocks: []types.ContentBlock{{
+				Type: "image",
+				Payload: map[string]interface{}{
+					"name": "较早照片.jpg", "url": "/uploads/images/older.jpg",
+					"thumbnail": "/uploads/images/older-thumb.jpg", "mime_type": "image/jpeg",
+					"width": float64(1200), "height": float64(800),
+				},
+			}},
+		},
+		{
+			ID: 23, TopicID: "p2p_7_440", FromUID: 440, CreatedAt: base.Add(2 * time.Hour),
+			MsgType: "image",
+			Content: `{"type":"image","payload":{"name":"最新照片.png","url":"/uploads/images/latest.png","mime_type":"image/png"}}`,
+		},
+		{
+			ID: 22, TopicID: "p2p_7_440", FromUID: 7, CreatedAt: base.Add(time.Hour),
+			ContentBlocks: []types.ContentBlock{{
+				Type:    "file",
+				Payload: map[string]interface{}{"name": "中间报告.pdf", "url": "/uploads/files/report.pdf"},
+			}},
+		},
+	}
+
+	handler := NewCloudArtifactHandler("https://example.test/artifacts-index.json", nil)
+	handler.SetStore(fileStore)
+	rec := httptest.NewRecorder()
+	handler.HandleTopicFiles(rec, authenticatedArtifactRequestPath(http.MethodGet, "/api/topics/p2p_7_440/files?limit=20"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Files []agentFileRecord `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Files) != 3 {
+		t.Fatalf("files = %+v, want 3 records", response.Files)
+	}
+	if response.Files[0].Name != "最新照片.png" || response.Files[0].Type != "image" {
+		t.Fatalf("newest file = %+v", response.Files[0])
+	}
+	if response.Files[1].Name != "中间报告.pdf" || response.Files[1].Type != "file" {
+		t.Fatalf("middle file = %+v", response.Files[1])
+	}
+	image := response.Files[2]
+	if image.Name != "较早照片.jpg" || image.Type != "image" || image.Thumbnail != "/uploads/images/older-thumb.jpg" || image.Width != 1200 || image.Height != 800 {
+		t.Fatalf("image metadata = %+v", image)
+	}
+}
+
 func TestTopicFilesRejectsConversationOutsider(t *testing.T) {
 	fileStore := newAgentFileTestStore(7, 440)
 	handler := NewCloudArtifactHandler("https://example.test/artifacts-index.json", nil)

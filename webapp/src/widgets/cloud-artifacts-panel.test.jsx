@@ -57,6 +57,20 @@ const historicalFile = {
   created_at: '2026-07-29T02:20:00.000Z',
 };
 
+const historicalImage = {
+  id: '821:0',
+  type: 'image',
+  name: '课堂照片.jpg',
+  url: '/uploads/images/classroom.jpg',
+  thumbnail: '/uploads/images/classroom-thumb.jpg',
+  mime_type: 'image/jpeg',
+  size: 182341,
+  message_id: 821,
+  topic_id: 'p2p_7_440',
+  topic_name: '期末材料',
+  created_at: '2026-07-29T03:20:00.000Z',
+};
+
 function TestPanel({ initialTab = 'active', topicId = 'p2p_7_440', agentUid = 440, onPreviewArtifact, onPreviewFile }) {
   const [tab, setTab] = React.useState(initialTab);
   return (
@@ -294,6 +308,32 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(container.textContent).toContain('复习清单.docx');
+  });
+
+  test('shows images with thumbnails and keeps files sorted newest first', async () => {
+    const olderFile = {
+      ...historicalFile,
+      id: '819:0',
+      name: '较早报告.pdf',
+      created_at: '2026-07-29T01:20:00.000Z',
+    };
+    api.getTopicFiles.mockResolvedValueOnce({
+      files: [olderFile, historicalFile, historicalImage],
+      has_more: false,
+      next_before_id: 0,
+    });
+    await renderPanel({ initialTab: 'files' });
+
+    const names = [...container.querySelectorAll('.cloud-file-item h4')].map((node) => node.textContent);
+    expect(names).toEqual(['课堂照片.jpg', '期末学情报告.pdf', '较早报告.pdf']);
+    expect(container.querySelector('.cloud-file-item img')?.getAttribute('src'))
+      .toBe('/uploads/images/classroom-thumb.jpg');
+    expect(container.querySelector('.cloud-file-item .cloud-file-meta-type')?.textContent).toBe('图片');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="预览图片 课堂照片.jpg"]').click();
+    });
+    expect(onPreviewFile).toHaveBeenCalledWith(historicalImage);
   });
 
   test('previews and copies an active result', async () => {
