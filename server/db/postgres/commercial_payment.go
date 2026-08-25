@@ -458,6 +458,34 @@ func (a *Adapter) CloseExpiredCommercialOrders(limit int) (int64, error) {
 	return count, nil
 }
 
+// activeCommercialOfficialPlanExpiry returns the latest expiry for the
+// currently active official tier. It is used to turn a same-plan purchase
+// into a true renewal period instead of an overlapping 30-day entitlement.
+func activeCommercialOfficialPlanExpiry(tx *sql.Tx, uid int64, slug string, now time.Time) (time.Time, bool, error) {
+	var expiresAt sql.NullTime
+	err := tx.QueryRow(`
+		SELECT e.expires_at
+		FROM commercial_entitlements e
+		JOIN commercial_plans p ON p.id = e.plan_id
+		WHERE e.uid = $1 AND e.state = 'active'
+		  AND e.starts_at <= $2
+		  AND (e.expires_at IS NULL OR e.expires_at > $2)
+		  AND p.slug = $3
+		ORDER BY e.expires_at DESC NULLS LAST, e.id DESC
+		FOR UPDATE OF e
+		LIMIT 1`, uid, now, strings.TrimSpace(slug)).Scan(&expiresAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("load active commercial renewal period: %w", err)
+	}
+	if !expiresAt.Valid {
+		return time.Time{}, true, nil
+	}
+	return expiresAt.Time, true, nil
+}
+
 func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error) {
 	if confirmation == nil || strings.TrimSpace(confirmation.EventID) == "" {
 		return nil, false, fmt.Errorf("invalid payment confirmation")
@@ -511,17 +539,29 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if affected == 0 {
 		return nil, false, fmt.Errorf("payment event was already used")
 	}
+	// A purchase of the currently active official tier is a renewal. Start
+	// that new period at the existing entitlement expiry so early renewals do
+	// not discard paid time. Upgrades still start immediately at payment time;
+	// an expired plan has no active period and also starts immediately.
+	periodStartsAt := paidAt
+	if commercialOfficialPlanTier(order.PlanSlug) > 0 {
+		if currentExpiry, active, expiryErr := activeCommercialOfficialPlanExpiry(tx, order.UID, order.PlanSlug, paidAt); expiryErr != nil {
+			return nil, false, expiryErr
+		} else if active && currentExpiry.After(periodStartsAt) {
+			periodStartsAt = currentExpiry
+		}
+	}
 	if err := activateCommercialOfficialPlan(tx, order.UID, order.PlanSlug, paidAt); err != nil {
 		return nil, false, err
 	}
 
-	expiresAt := paidAt.AddDate(0, 0, order.PlanDurationDays)
+	expiresAt := periodStartsAt.AddDate(0, 0, order.PlanDurationDays)
 	if _, err := tx.Exec(`
 		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
-		VALUES ($1, $2, 'order', $3, 'active', $4, $5)`, order.UID, order.PlanID, order.OrderNo, paidAt, expiresAt); err != nil {
+		VALUES ($1, $2, 'order', $3, 'active', $4, $5)`, order.UID, order.PlanID, order.OrderNo, periodStartsAt, expiresAt); err != nil {
 		return nil, false, fmt.Errorf("create order entitlement: %w", err)
 	}
-	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, paidAt, expiresAt); err != nil {
+	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, periodStartsAt, expiresAt); err != nil {
 		return nil, false, err
 	}
 	if order.PlanSlug == commercialPersonalPlanSlug || order.PlanSlug == commercialProPlanSlug {

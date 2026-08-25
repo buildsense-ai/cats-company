@@ -49,6 +49,7 @@ type CloudWorkerHandler struct {
 	// Executable scripts invoked for heavy cloud operations (empty = disabled).
 	provisionScript string
 	resetScript     string
+	renewScript     string
 	updateScript    string
 	rollbackScript  string
 	destroyScript   string
@@ -125,6 +126,7 @@ type CloudWorkerConfig struct {
 	CreateQuota     string // CATSCO_WORKER_CREATE_QUOTA "<uid>=<n>;<uid>=<n>" — unset means 0 (disabled)
 	ProvisionScript string // CATSCO_WORKER_PROVISION_SCRIPT
 	ResetScript     string // CATSCO_WORKER_RESET_SCRIPT
+	RenewScript     string // CATSCO_WORKER_RENEW_SCRIPT
 	UpdateScript    string // CATSCO_WORKER_UPDATE_SCRIPT
 	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
 	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
@@ -145,6 +147,14 @@ type CloudWorkerCreditStore interface {
 	MarkCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error
 	ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error)
 	MarkCloudWorkerLifecycleDeleted(id int64, errText string) error
+}
+
+// CloudWorkerLifecycleExtender is the per-instance form used when the
+// provider returns an authoritative expiry for a renewal. Keeping this
+// optional preserves compatibility with focused/test stores that only expose
+// the older owner-wide extension method.
+type CloudWorkerLifecycleExtender interface {
+	ExtendCloudWorkerLifecycle(id int64, expiresAt time.Time, graceDays int) error
 }
 
 // CloudWorkerCreditAdminStore is the narrow operator-only surface for
@@ -176,6 +186,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		CreateQuota:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
 		ProvisionScript: strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
 		ResetScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
+		RenewScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
 		UpdateScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
 		RollbackScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
 		DestroyScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
@@ -193,6 +204,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		quota:           parseWorkerCreateQuota(cfg.CreateQuota),
 		provisionScript: cfg.ProvisionScript,
 		resetScript:     cfg.ResetScript,
+		renewScript:     cfg.RenewScript,
 		updateScript:    cfg.UpdateScript,
 		rollbackScript:  cfg.RollbackScript,
 		destroyScript:   cfg.DestroyScript,
@@ -636,6 +648,7 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 		},
 		"actions": map[string]bool{
 			"create":   h.provisionScript != "",
+			"renew":    h.renewScript != "",
 			"update":   h.updateScript != "",
 			"rollback": h.rollbackScript != "",
 			"reset":    h.resetScript != "",
@@ -661,6 +674,92 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	writeJSON(w, http.StatusOK, meta)
+}
+
+// RenewForOwner extends or recovers all provider instances attached to an
+// owner's paid cloud-worker lifecycles. It is called only after a commercial
+// payment has committed; the provider script is idempotent for active workers
+// and uses Tianyi's recovery API for unsubscribed retention-state instances.
+func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
+	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
+		return
+	}
+	lifecycleStore, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+	})
+	if !ok {
+		log.Printf("[cloud-worker] renewal store unavailable uid=%d", uid)
+		return
+	}
+	lifecycles, err := lifecycleStore.ListCloudWorkerLifecycles(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] list renewal lifecycles uid=%d failed: %v", uid, err)
+		return
+	}
+	for _, lifecycle := range lifecycles {
+		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName)
+		if err != nil {
+			log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+			continue
+		}
+		if expiresAt, parseErr := parseCloudWorkerRenewalExpiry(out); parseErr != nil {
+			// The provider operation already succeeded. Do not turn a missing
+			// informational field into a second charge or a false failure, but
+			// leave an auditable warning so operators can reconcile the date.
+			log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d succeeded but returned no valid expires_at: %v; lifecycle date unchanged", lifecycle.TenantName, uid, parseErr)
+		} else {
+			var extendErr error
+			if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
+				extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
+			} else {
+				extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
+			}
+			if extendErr != nil {
+				log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
+			}
+		}
+		log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d completed", lifecycle.TenantName, uid)
+	}
+	h.requestCloudStatusRefresh(true)
+}
+
+// parseCloudWorkerRenewalExpiry extracts the provider's final monthly expiry
+// from the JSON emitted by renew-worker.sh. Scripts normally emit one JSON
+// line, but scanning from the end tolerates harmless diagnostics before it.
+func parseCloudWorkerRenewalExpiry(output string) (time.Time, error) {
+	var lastErr error
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var result struct {
+			ExpiresAt string `json:"expires_at"`
+		}
+		if err := json.Unmarshal([]byte(line), &result); err != nil {
+			lastErr = err
+			continue
+		}
+		if strings.TrimSpace(result.ExpiresAt) == "" {
+			return time.Time{}, fmt.Errorf("provider response omitted expires_at")
+		}
+		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(result.ExpiresAt))
+		if err != nil {
+			return time.Time{}, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
+		}
+		if !expiresAt.After(time.Now().UTC()) {
+			return time.Time{}, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
+		}
+		return expiresAt.UTC(), nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("provider response was empty")
+	}
+	return time.Time{}, fmt.Errorf("provider response did not contain renewal JSON: %w", lastErr)
 }
 
 // HandleCreate handles POST /api/cloud-workers — create a cloud worker within

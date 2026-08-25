@@ -96,19 +96,24 @@ type CommercialPaymentHandlerOptions struct {
 	Providers     []CommercialPaymentProvider
 	SaleChannels  map[string]bool
 	Syncer        *CommercialRelaySyncer
+	// RenewCloudWorkers runs after an official paid plan is fulfilled. It is
+	// deliberately outside the payment transaction so provider recovery or
+	// renewal failures never roll back a confirmed payment.
+	RenewCloudWorkers func(uid int64)
 }
 
 type CommercialPaymentHandler struct {
-	store         CommercialPaymentStore
-	publicEnabled bool
-	testUIDs      map[int64]bool
-	testPayments  map[int64]bool
-	trialPlanSlug string
-	providers     map[string]CommercialPaymentProvider
-	saleChannels  map[string]bool
-	syncer        *CommercialRelaySyncer
-	queryMu       sync.Mutex
-	nextQueries   map[string]time.Time
+	store             CommercialPaymentStore
+	publicEnabled     bool
+	testUIDs          map[int64]bool
+	testPayments      map[int64]bool
+	trialPlanSlug     string
+	providers         map[string]CommercialPaymentProvider
+	saleChannels      map[string]bool
+	syncer            *CommercialRelaySyncer
+	renewCloudWorkers func(uid int64)
+	queryMu           sync.Mutex
+	nextQueries       map[string]time.Time
 }
 
 const (
@@ -125,15 +130,16 @@ type commercialPaymentChannel struct {
 
 func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPaymentHandlerOptions) *CommercialPaymentHandler {
 	h := &CommercialPaymentHandler{
-		store:         store,
-		publicEnabled: opts.PublicEnabled,
-		testUIDs:      copyCommercialUIDSet(opts.TestUIDs),
-		testPayments:  copyCommercialUIDSet(opts.TestPayments),
-		trialPlanSlug: strings.TrimSpace(opts.TrialPlanSlug),
-		providers:     map[string]CommercialPaymentProvider{},
-		saleChannels:  map[string]bool{},
-		syncer:        opts.Syncer,
-		nextQueries:   map[string]time.Time{},
+		store:             store,
+		publicEnabled:     opts.PublicEnabled,
+		testUIDs:          copyCommercialUIDSet(opts.TestUIDs),
+		testPayments:      copyCommercialUIDSet(opts.TestPayments),
+		trialPlanSlug:     strings.TrimSpace(opts.TrialPlanSlug),
+		providers:         map[string]CommercialPaymentProvider{},
+		saleChannels:      map[string]bool{},
+		syncer:            opts.Syncer,
+		renewCloudWorkers: opts.RenewCloudWorkers,
+		nextQueries:       map[string]time.Time{},
 	}
 	for _, provider := range opts.Providers {
 		if provider == nil || strings.TrimSpace(provider.Channel()) == "" {
@@ -174,6 +180,20 @@ func (h *CommercialPaymentHandler) StartReconciliation(ctx context.Context, inte
 	}()
 }
 
+func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error) {
+	fulfilled, changed, err := h.store.FulfillCommercialOrder(orderNo, confirmation)
+	if err != nil || !changed || fulfilled == nil || h.renewCloudWorkers == nil {
+		return fulfilled, changed, err
+	}
+	if strings.EqualFold(fulfilled.PlanSlug, "catsco-personal") || strings.EqualFold(fulfilled.PlanSlug, "catsco-pro") {
+		// Payment is already committed. Provider recovery/renewal is retried by
+		// the caller's normal operational loop if this process exits; never make
+		// an Alipay callback fail because Tianyi is temporarily unavailable.
+		go h.renewCloudWorkers(fulfilled.UID)
+	}
+	return fulfilled, changed, nil
+}
+
 // ReconcileCommercialOrders performs one bounded payment recovery pass and
 // returns the number of orders that were successfully fulfilled. It is public
 // for deterministic tests and operator-triggered recovery; production startup
@@ -211,7 +231,7 @@ func (h *CommercialPaymentHandler) ReconcileCommercialOrders(ctx context.Context
 		if !paid || confirmation == nil {
 			continue
 		}
-		fulfilled, changed, fulfillErr := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+		fulfilled, changed, fulfillErr := h.fulfillCommercialOrder(order.OrderNo, confirmation)
 		if fulfillErr != nil || fulfilled == nil {
 			if fulfillErr != nil {
 				log.Printf("commercial payment reconciliation fulfill failed order=%s: %v", order.OrderNo, fulfillErr)
@@ -545,7 +565,7 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrderIfPaid(ctx context.Cont
 	if err != nil || !paid || confirmation == nil {
 		return nil
 	}
-	fulfilled, changed, err := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+	fulfilled, changed, err := h.fulfillCommercialOrder(order.OrderNo, confirmation)
 	if err != nil || fulfilled == nil {
 		return nil
 	}
@@ -636,7 +656,7 @@ func (h *CommercialPaymentHandler) refreshPendingCommercialOrder(ctx context.Con
 	if order.Status != "created" && ok && h.claimCommercialPaymentQuery(order.OrderNo, time.Now().UTC()) {
 		confirmation, paid, err := querier.QueryPayment(ctx, order)
 		if err == nil && paid && confirmation != nil {
-			fulfilled, changed, fulfillErr := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+			fulfilled, changed, fulfillErr := h.fulfillCommercialOrder(order.OrderNo, confirmation)
 			if fulfillErr == nil && fulfilled != nil {
 				h.clearCommercialPaymentQuery(order.OrderNo)
 				if changed {
@@ -873,7 +893,7 @@ func (h *CommercialPaymentHandler) HandleTestConfirm(w http.ResponseWriter, r *h
 		PaidAt:          time.Now().UTC(),
 		PayloadHash:     paymentPayloadHash([]byte(order.OrderNo)),
 	}
-	fulfilled, changed, err := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+	fulfilled, changed, err := h.fulfillCommercialOrder(order.OrderNo, confirmation)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -936,7 +956,7 @@ func (h *CommercialPaymentHandler) HandleAlipayNotify(w http.ResponseWriter, r *
 		writeAlipayNotifyResponse(w, http.StatusNotFound, false)
 		return
 	}
-	fulfilled, changed, err := h.store.FulfillCommercialOrder(orderNo, confirmation)
+	fulfilled, changed, err := h.fulfillCommercialOrder(orderNo, confirmation)
 	if err != nil {
 		writeAlipayNotifyResponse(w, http.StatusConflict, false)
 		return

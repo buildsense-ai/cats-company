@@ -221,6 +221,26 @@ func (a *Adapter) ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, gr
 	return nil
 }
 
+// ExtendCloudWorkerLifecycle updates one provider instance after a renewal.
+// Per-instance updates keep owners with workers created on different dates
+// from accidentally inheriting another worker's provider expiry.
+func (a *Adapter) ExtendCloudWorkerLifecycle(id int64, expiresAt time.Time, graceDays int) error {
+	if id <= 0 || expiresAt.IsZero() || graceDays < 0 || graceDays > 90 {
+		return fmt.Errorf("invalid cloud worker lifecycle extension")
+	}
+	_, err := a.db.Exec(`
+		UPDATE cloud_worker_lifecycles
+		SET package_expires_at = $2::timestamptz,
+		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
+		    state = 'active', archived_at = NULL, delete_started_at = NULL,
+		    last_error = '', updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND state IN ('active','delete_pending','delete_failed')`, id, expiresAt, graceDays)
+	if err != nil {
+		return fmt.Errorf("extend cloud worker lifecycle: %w", err)
+	}
+	return nil
+}
+
 func (a *Adapter) ListCloudWorkerLifecycles(uid int64) ([]types.CloudWorkerLifecycle, error) {
 	rows, err := a.db.Query(`
 		SELECT id, worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state
