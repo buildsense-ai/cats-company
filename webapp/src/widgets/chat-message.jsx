@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -27,6 +27,7 @@ const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
 const HTML_FILE_EXTENSIONS = new Set(['HTML', 'HTM', 'XHTML']);
 const TEXT_FILE_EXTENSIONS = new Set(['TXT', 'JSON', 'MD', 'CSV', 'JS', 'PY', 'GO', 'HTML', 'HTM', 'CSS', 'XML']);
 const PREVIEW_FILE_EXTENSIONS = new Set(['PDF', ...TEXT_FILE_EXTENSIONS]);
+const IMAGE_FILE_EXTENSIONS = new Set(['AVIF', 'BMP', 'GIF', 'HEIC', 'JPEG', 'JPG', 'PNG', 'SVG', 'WEBP']);
 const SPREADSHEET_FILE_EXTENSIONS = new Set(['CSV', 'XLS', 'XLSX']);
 const SPREADSHEET_MIME_TYPES = new Set([
   'text/csv',
@@ -1886,6 +1887,16 @@ function isInlineAudioFile(payload, ext = fileExtension(payload)) {
     || (ext === 'FILE' && INLINE_AUDIO_MIME_TYPES.has(fileMimeType(payload)));
 }
 
+function isImageFile(payload, ext = fileExtension(payload)) {
+  const type = String(payload?.type || '').trim().toLowerCase();
+  const mime = fileMimeType(payload);
+  const url = String(payload?.url || '').split(/[?#]/, 1)[0];
+  return type === 'image'
+    || mime.startsWith('image/')
+    || IMAGE_FILE_EXTENSIONS.has(ext)
+    || /\/uploads\/images\//.test(url);
+}
+
 function isHtmlFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
   return HTML_FILE_EXTENSIONS.has(ext) || mime === 'text/html' || mime === 'application/xhtml+xml';
@@ -1925,12 +1936,20 @@ function isDocxFile(payload, ext = fileExtension(payload)) {
 
 function isPreviewableFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
+  if (isImageFile(payload, ext)) return true;
   if (isSpreadsheetPreviewFile(payload, ext)) return true;
   if (PREVIEW_FILE_EXTENSIONS.has(ext) || isPdfFile(payload, ext)) return true;
   return mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml';
 }
 
 function artifactMeta(payload, ext = fileExtension(payload)) {
+  if (isImageFile(payload, ext)) {
+    return {
+      label: '图片',
+      className: 'image',
+      subtitle: '图片文件',
+    };
+  }
   if (isHtmlFile(payload, ext)) {
     return {
       label: 'HTML',
@@ -2039,6 +2058,7 @@ export function previewFileDescriptor(payload) {
   const ext = fileExtension(payload);
   const meta = artifactMeta(payload, ext);
   const isPdf = isPdfFile(payload, ext);
+  const isImage = isImageFile(payload, ext);
   const isHtml = isHtmlFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
   const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
@@ -2057,6 +2077,7 @@ export function previewFileDescriptor(payload) {
     ext,
     meta,
     isPdf,
+    isImage,
     isHtml,
     isMarkdown,
     isSpreadsheet,
@@ -2387,6 +2408,7 @@ export function FilePreviewPanel({
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
+  const [imageError, setImageError] = useState(false);
   const [loadingText, setLoadingText] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [remoteFrameState, setRemoteFrameState] = useState('idle');
@@ -2416,6 +2438,7 @@ export function FilePreviewPanel({
   );
   const url = descriptor?.url || '';
   const isPdf = descriptor?.isPdf || false;
+  const isImage = descriptor?.isImage || false;
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
@@ -2555,6 +2578,7 @@ export function FilePreviewPanel({
     setPreview(Boolean(file));
     setTextContent(null);
     setBinaryContent(null);
+    setImageError(false);
     setPreviewError('');
     setRemoteFrameState(
       isRemoteArtifact
@@ -2569,7 +2593,7 @@ export function FilePreviewPanel({
       window.clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = null;
     }
-    if (!file || !descriptor?.canPreview || isPdf || isRemoteArtifact) {
+    if (!file || !descriptor?.canPreview || isPdf || isImage || isRemoteArtifact) {
       setLoadingText(false);
       return () => {
         cancelled = true;
@@ -2618,7 +2642,7 @@ export function FilePreviewPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isPdf, isRemoteArtifact, isSpreadsheet, url]);
+  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isImage, isPdf, isRemoteArtifact, isSpreadsheet, url]);
 
   useEffect(() => {
     if (!preview) return undefined;
@@ -2769,7 +2793,7 @@ export function FilePreviewPanel({
       />
       <aside
         ref={panelRef}
-        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`}
+        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isImage || isPdf || isSpreadsheet ? 'wide' : ''}`}
         role={shouldUseSheetMode ? 'dialog' : undefined}
         aria-modal={shouldUseSheetMode || undefined}
         aria-label="文件预览"
@@ -2803,7 +2827,7 @@ export function FilePreviewPanel({
                 <ArrowLeft size={18} />
               </button>
             )}
-            <FileText size={18} />
+            {isImage ? <ImageIcon size={18} /> : <FileText size={18} />}
             <div>
               <h3>{file.name}</h3>
               <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
@@ -2878,6 +2902,20 @@ export function FilePreviewPanel({
                 </div>
               )}
             </div>
+          ) : isImage ? (
+            imageError ? (
+              <div className="v3-file-preview-state error">
+                图片加载失败，请下载原文件查看。
+              </div>
+            ) : (
+              <div className="v3-file-preview-image">
+                <img
+                  src={url}
+                  alt={file.name || '图片预览'}
+                  onError={() => setImageError(true)}
+                />
+              </div>
+            )
           ) : isPdf ? (
             shouldUseSheetMode ? (
               <MobilePdfPreview url={fetchableMediaURL(url)} />

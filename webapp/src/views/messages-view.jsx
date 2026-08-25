@@ -782,9 +782,13 @@ export default function MessagesView({
   const previewAgentFile = useCallback((file) => {
     setPendingArtifactRefresh(null);
     setPreviewFileWithFocus({
+      type: file.type,
       name: file.name,
       url: file.url,
       file_key: file.file_key,
+      thumbnail: file.thumbnail,
+      width: file.width,
+      height: file.height,
       mime_type: file.mime_type,
       size: file.size,
     });

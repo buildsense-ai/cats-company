@@ -1610,6 +1610,27 @@ body {
   stroke-width: 1.8;
 }
 
+.cloud-artifact-kind-icon.file.image {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.cloud-artifact-kind-icon.file.image img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cloud-artifact-kind-icon.file.image .cloud-file-image-fallback {
+  color: var(--v3-text-muted);
+}
+
 .cloud-artifact-item:hover .cloud-artifact-kind-icon,
 .cloud-artifact-item:focus-within .cloud-artifact-kind-icon {
   color: var(--v3-text-main);
@@ -7581,6 +7602,28 @@ button.catsco-download-action:disabled {
   padding: 0;
   overflow: hidden;
   background: var(--v3-bg-app);
+}
+.v3-file-preview-image {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px;
+  background: var(--v3-bg-app);
+}
+.v3-file-preview-image img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.22);
 }
 .v3-file-preview-frame {
   width: 100%;

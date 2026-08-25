@@ -58,7 +58,7 @@ vi.mock('read-excel-file/browser', () => ({
   default: vi.fn(),
 }));
 
-import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from './chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel, previewFileDescriptor } from './chat-message';
 import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
@@ -205,6 +205,38 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-file-preview-state.error')?.textContent).toBe(
       '预览加载失败：服务暂时不可用，请稍后重试',
     );
+  });
+
+  it('previews an image file in the side panel without fetching it as text', async () => {
+    const image = {
+      type: 'image',
+      name: '课堂照片.jpg',
+      url: '/uploads/images/classroom.jpg',
+      mime_type: 'image/jpeg',
+      size: 2048,
+    };
+    const descriptor = previewFileDescriptor(image);
+    expect(descriptor?.isImage).toBe(true);
+    expect(descriptor?.canPreview).toBe(true);
+
+    await act(async () => {
+      root.render(<FilePreviewPanel file={image} onClose={vi.fn()} />);
+      await flushAsync();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(panel).not.toBeNull();
+    const preview = panel.querySelector('.v3-file-preview-image img');
+    expect(preview?.getAttribute('src')).toBe('/uploads/images/classroom.jpg');
+    expect(preview?.getAttribute('alt')).toBe('课堂照片.jpg');
+    expect(panel.querySelector('a[download]')?.getAttribute('href')).toBe('/uploads/images/classroom.jpg?download=1');
+
+    await act(async () => {
+      Simulate.error(preview);
+      await Promise.resolve();
+    });
+    expect(panel.textContent).toContain('图片加载失败');
   });
 
   it('normalizes a disconnected media endpoint instead of showing the browser error', async () => {
