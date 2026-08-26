@@ -11,6 +11,7 @@ import {
   authModeForPathname,
   authPathForMode,
   authenticationRedirectPath,
+  nameOnboardingPathForNext,
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
@@ -48,7 +49,7 @@ function formatAuthError(message) {
   return message || '操作失败，请稍后再试';
 }
 
-function PasswordField({ autoComplete, placeholder, value, onChange }) {
+function PasswordField({ autoComplete, name, placeholder, value, onChange }) {
   const [showPassword, setShowPassword] = useState(false);
   const toggleLabel = showPassword ? '隐藏密码' : '显示密码';
 
@@ -57,6 +58,7 @@ function PasswordField({ autoComplete, placeholder, value, onChange }) {
       <input
         className="oc-auth-input"
         type={showPassword ? 'text' : 'password'}
+        name={name}
         placeholder={placeholder}
         aria-label={placeholder}
         autoComplete={autoComplete}
@@ -89,7 +91,6 @@ export function AuthView({
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [loginName, setLoginName] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -130,7 +131,7 @@ export function AuthView({
       if (mode === 'login') {
         await onLogin(username, password);
       } else {
-        await onRegister(email, password, loginName, code);
+        await onRegister(email, password, code);
       }
       onAuthenticationIntent?.();
     } catch (err) {
@@ -202,18 +203,23 @@ export function AuthView({
           <input
             className="oc-auth-input"
             type="email"
+            name="email"
             placeholder="邮箱地址"
             aria-label="邮箱地址"
             autoComplete="email"
+            spellCheck={false}
             value={email}
             onChange={(event) => setEmail(event.target.value)}
           />
           <div className="oc-auth-code-row">
             <input
               className="oc-auth-input"
+              name="verificationCode"
               placeholder="邮箱验证码"
               aria-label="邮箱验证码"
               autoComplete="one-time-code"
+              inputMode="numeric"
+              spellCheck={false}
               value={code}
               onChange={(event) => setCode(event.target.value)}
             />
@@ -229,16 +235,9 @@ export function AuthView({
           {sentHint && (
             <div className="oc-auth-hint" style={{ color: '#2e8b57', fontSize: 12, marginTop: 6 }}>{sentHint}</div>
           )}
-          <input
-            className="oc-auth-input"
-            placeholder="登录名称（可用于登录）"
-            aria-label="登录名称（可用于登录）"
-            autoComplete="username"
-            value={loginName}
-            onChange={(event) => setLoginName(event.target.value)}
-          />
           <PasswordField
             autoComplete="new-password"
+            name="newPassword"
             placeholder="设置密码（至少6位）"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
@@ -290,7 +289,7 @@ export default function AuthGateway({
     navigateBrowserPath(authPathForMode(nextMode, postAuthenticationPathFromSearch(search)));
   };
 
-  const handleLogin = async (account, password) => {
+  const establishSession = async (account, password) => {
     const response = await authApi.login({ account, password });
     const profile = normalizeUserProfile(response);
     if (!response?.token || !profile) {
@@ -304,15 +303,21 @@ export default function AuthGateway({
       // Keep the authenticated session in memory when browser storage is unavailable.
     }
     setToken(response.token);
+    return profile;
+  };
+
+  const handleLogin = async (account, password) => {
+    await establishSession(account, password);
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
-  const handleRegister = async (email, password, loginName, code) => {
-    const username = loginName.trim();
-    if (!username) throw new Error('请输入登录名称');
-    if (username.length < 3) throw new Error('登录名称至少 3 个字符');
-    await authApi.register({ email, username, password, code });
-    await handleLogin(email, password);
+  const handleRegister = async (email, password, code) => {
+    await authApi.register({ email, password, code });
+    await establishSession(email, password);
+    navigateBrowserPath(
+      nameOnboardingPathForNext(postAuthenticationPathFromSearch(search)),
+      { replace: true },
+    );
   };
 
   return (

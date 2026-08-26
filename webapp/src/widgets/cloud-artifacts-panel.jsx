@@ -523,7 +523,7 @@ export default function CloudArtifactsPanel({
                         >
                           <Copy size={17} />
                         </button>
-                        {artifact.can_delete && (
+                        {(isOwner || artifact.can_delete) && (
                           <button
                             type="button"
                             className="danger"
@@ -537,7 +537,7 @@ export default function CloudArtifactsPanel({
                         )}
                       </>
                     )}
-                    {tab === 'deleted' && artifact.can_restore && (
+                    {tab === 'deleted' && (isOwner || artifact.can_restore) && (
                       <button
                         type="button"
                         onClick={() => restoreArtifact(artifact)}

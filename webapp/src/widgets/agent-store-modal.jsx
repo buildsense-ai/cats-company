@@ -2846,12 +2846,21 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
 
   return (
     <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1200 }}>
-      <div className="oc-modal" onClick={e => e.stopPropagation()} style={{ width: 520, maxWidth: '94vw' }}>
+      <div
+        className="oc-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="agent-entry-dialog-title"
+        onClick={e => e.stopPropagation()}
+        style={{ width: 520, maxWidth: '94vw' }}
+      >
         <div className="oc-modal-header" style={{ padding: '18px 22px', borderBottom: '1px solid var(--v3-border)' }}>
-          <h3 style={{ margin: 0, fontSize: 17, color: 'var(--v3-text-name)', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <QrCode size={18} /> {bot.display_name} 入口码
+          <h3 id="agent-entry-dialog-title" style={{ margin: 0, fontSize: 17, color: 'var(--v3-text-name)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <QrCode size={18} aria-hidden="true" /> {bot.display_name} 入口码
           </h3>
-          <button className="oc-btn-default" style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent' }} onClick={onClose}>×</button>
+          <button type="button" className="oc-btn-default" aria-label="关闭" style={{ width: 32, height: 32, padding: 0, border: 'none', background: 'transparent' }} onClick={onClose}>
+            <X size={18} strokeWidth={1.8} aria-hidden="true" />
+          </button>
         </div>
 
         <div className="oc-modal-body" style={{ padding: 22 }}>

@@ -254,11 +254,18 @@ export default function CatsCoDownloadModal({ onClose }) {
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal catsco-download-modal" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="oc-modal catsco-download-modal cc-settings-secondary-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="catsco-download-dialog-title"
+        aria-describedby="catsco-download-dialog-description"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3>CatsCo 本机设备</h3>
-            <p>当前版本 v{releaseVersion(desktopRelease)}</p>
+            <h3 id="catsco-download-dialog-title">CatsCo 本机设备</h3>
+            <p id="catsco-download-dialog-description">当前版本 v{releaseVersion(desktopRelease)}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />

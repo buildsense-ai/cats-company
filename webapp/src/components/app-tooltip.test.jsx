@@ -45,6 +45,9 @@ describe('AppTooltip', () => {
         <>
           <button type="button" title="任务操作" aria-describedby="existing-help">...</button>
           <button type="button" title="刷新" aria-label="刷新" />
+          <div data-cc-tooltips="off">
+            <button type="button" title="SkillHub" aria-label="打开 SkillHub" />
+          </div>
           <AppTooltip />
         </>,
       );
@@ -116,6 +119,31 @@ describe('AppTooltip', () => {
     expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe('任务操作');
   });
 
+  it('dismisses the tooltip on pointer press without suppressing later keyboard focus', async () => {
+    const button = container.querySelector('button');
+    button.getBoundingClientRect = () => ({
+      left: 200, right: 240, top: 200, bottom: 240, width: 40, height: 40,
+    });
+
+    dispatchPointer(button, 'pointerover');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(320);
+    });
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe('任务操作');
+
+    await act(async () => {
+      dispatchPointer(button, 'pointerdown');
+      button.focus();
+    });
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+    expect(button.dataset.ccPointerFocus).toBe('true');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(button.dataset.ccPointerFocus).toBeUndefined();
+  });
+
   it('flips below buttons near the viewport top', async () => {
     const button = container.querySelectorAll('button')[1];
     button.getBoundingClientRect = () => ({
@@ -151,6 +179,25 @@ describe('AppTooltip', () => {
     });
 
     expect(button.getAttribute('title')).toBe('任务操作');
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  it('suppresses tooltip text inside regions that opt out while keeping the accessible name', async () => {
+    const button = container.querySelector('[data-cc-tooltips="off"] button');
+
+    dispatchPointer(button, 'pointerover');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(button.hasAttribute('title')).toBe(false);
+    expect(button.getAttribute('aria-label')).toBe('打开 SkillHub');
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+      button.focus();
+    });
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   });
 });

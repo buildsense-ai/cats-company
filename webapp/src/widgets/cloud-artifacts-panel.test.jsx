@@ -359,8 +359,14 @@ describe('CloudArtifactsPanel', () => {
 
   test('lets the Agent owner delete and restore a result', async () => {
     api.getCloudArtifacts
-      .mockResolvedValueOnce({ artifacts: [activeArtifact], viewer_relation: 'owner' })
-      .mockResolvedValueOnce({ artifacts: [deletedArtifact], viewer_relation: 'owner' });
+      .mockResolvedValueOnce({
+        artifacts: [{ ...activeArtifact, can_delete: false }],
+        viewer_relation: 'owner',
+      })
+      .mockResolvedValueOnce({
+        artifacts: [{ ...deletedArtifact, can_restore: false }],
+        viewer_relation: 'owner',
+      });
     await renderPanel();
 
     await act(async () => {

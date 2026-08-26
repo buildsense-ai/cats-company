@@ -220,4 +220,21 @@ describe('AuthView route links', () => {
     expect(onLogin).toHaveBeenCalledTimes(1);
     expect(submitButton?.disabled).toBe(false);
   });
+
+  test('collects only account credentials during registration', async () => {
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="register"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.querySelector('input[name="email"]')).toBeTruthy();
+    expect(container.querySelector('input[name="verificationCode"]')).toBeTruthy();
+    expect(container.querySelector('input[name="newPassword"]')).toBeTruthy();
+    expect(container.textContent).not.toContain('登录名称');
+  });
 });

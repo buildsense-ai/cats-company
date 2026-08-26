@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,67 @@ import (
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+func registrationUsernameBase(email string) string {
+	local := strings.ToLower(strings.SplitN(strings.TrimSpace(email), "@", 2)[0])
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range local {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if valid {
+			builder.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	base := strings.Trim(builder.String(), "-_")
+	if len(base) < 3 {
+		base = "user-" + base
+	}
+	if len(base) > 54 {
+		base = strings.TrimRight(base[:54], "-_")
+	}
+	if len(base) < 3 {
+		return "user"
+	}
+	return base
+}
+
+func resolveRegistrationUsername(db store.Store, requestedUsername, email string) (string, error) {
+	requestedUsername = strings.TrimSpace(requestedUsername)
+	if requestedUsername != "" {
+		existing, err := db.GetUserByUsername(requestedUsername)
+		if err != nil {
+			return "", err
+		}
+		if existing != nil {
+			return "", errors.New("username taken")
+		}
+		return requestedUsername, nil
+	}
+
+	base := registrationUsernameBase(email)
+	for attempt := 0; attempt < 16; attempt++ {
+		candidate := base
+		if attempt > 0 {
+			digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", strings.ToLower(email), attempt)))
+			candidate = fmt.Sprintf("%s-%x", base, digest[:4])
+			if len(candidate) > 64 {
+				candidate = fmt.Sprintf("%s-%x", strings.TrimRight(base[:55], "-_"), digest[:4])
+			}
+		}
+		existing, err := db.GetUserByUsername(candidate)
+		if err != nil {
+			return "", err
+		}
+		if existing == nil {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("username generation exhausted")
+}
 
 // UserHandler handles user-related API requests.
 type UserHandler struct {
@@ -273,14 +335,7 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email := req.Email
-	username := email
-	if req.Username != "" {
-		username = req.Username
-	} else if atIndex := strings.IndexRune(email, '@'); atIndex > 0 {
-		username = email[:atIndex]
-	}
-
-	if len(username) < 3 {
+	if req.Username != "" && len(req.Username) < 3 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars"})
 		return
 	}
@@ -295,13 +350,13 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existingUsername, err := h.db.GetUserByUsername(username)
+	username, err := resolveRegistrationUsername(h.db, req.Username, email)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
-		return
-	}
-	if existingUsername != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "username taken"})
+		if err.Error() == "username taken" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "username taken"})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		}
 		return
 	}
 

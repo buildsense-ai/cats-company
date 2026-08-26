@@ -690,7 +690,7 @@
 
 .v3-relay-admin-resize-handle:hover::after,
 .v3-relay-admin-resize-handle:focus-visible::after {
-  background: var(--v3-primary, #d4a853);
+  background: var(--cc-focus-ring, var(--cc-muted));
 }
 
 .v3-relay-admin-resize-handle:focus-visible {
@@ -843,7 +843,7 @@
 
 .v3-local-assistant-status:focus-visible,
 .v3-action-btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--cc-accent) 72%, transparent);
+  outline: 2px solid var(--cc-focus-ring);
   outline-offset: 2px;
 }
 

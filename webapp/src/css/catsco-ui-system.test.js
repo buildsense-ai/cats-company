@@ -115,6 +115,20 @@ describe('CatsCo shell styling', () => {
     expect(arrowRule).toContain('background: var(--cc-tooltip-bg);');
   });
 
+  it('defines the shared neutral secondary action state ramp', () => {
+    const root = ruleFor(':root');
+    expect(root).toContain('--cc-secondary-action-bg: color-mix(in srgb, var(--cc-text) 10%, var(--cc-panel));');
+    expect(root).toContain('--cc-secondary-action-bg-hover: color-mix(in srgb, var(--cc-text) 16%, var(--cc-panel));');
+    expect(root).toContain('--cc-secondary-action-bg-active: color-mix(in srgb, var(--cc-text) 21%, var(--cc-panel));');
+    expect(root).toContain('--cc-secondary-action-text: color-mix(in srgb, var(--cc-text) 86%, var(--cc-panel));');
+  });
+
+  it('uses one slightly deeper backdrop across secondary dialogs', () => {
+    expect(ruleFor(':root')).toContain('--cc-modal-backdrop: rgba(0, 0, 0, 0.72);');
+    expect(ruleFor('.name-dialog-overlay,\n.oc-modal-overlay'))
+      .toContain('background: var(--cc-modal-backdrop);');
+  });
+
   it('keeps global search selection and focus surfaces chromatically neutral', () => {
     const tabsRule = ruleIn(searchOverlayCss, '.cc-global-search-tabs');
     const activeScopeRule = ruleIn(searchOverlayCss, '.cc-global-search-tabs button.active');
@@ -160,11 +174,11 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor(':root')).toContain('--cc-input-surface: var(--cc-code);');
     expect(ruleFor(':root')).toContain('--cc-helper-text: color-mix(in srgb, var(--cc-text) 58%, transparent);');
     expect(ruleFor(':root')).toContain('--cc-placeholder: color-mix(in srgb, var(--cc-text) 46%, transparent);');
-    expect(ruleFor(':root')).toContain('--cc-focus-ring: #147c65;');
+    expect(ruleFor(':root')).toContain('--cc-focus-ring: #656a73;');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-border: #2d2d2f;');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-border-strong: #3a3a3d;');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-control-surface: #2c2c2f;');
-    expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-focus-ring: #69d7b7;');
+    expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-focus-ring: #aeb2b9;');
     expect(ruleFor('html[data-theme="liquid"]'))
       .toContain('--cc-border: rgba(73, 86, 168, 0.1);');
     expect(ruleFor('html[data-theme="liquid"]'))
@@ -173,7 +187,54 @@ describe('CatsCo shell styling', () => {
       .toContain('--cc-control-surface: rgba(224, 230, 255, 0.68);');
     expect(ruleFor('html[data-theme="liquid"]'))
       .toContain('--cc-input-surface: rgba(255, 255, 255, 0.78);');
-    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-focus-ring: #5662d9;');
+    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-focus-ring: #697185;');
+  });
+
+  it('keeps focus framing neutral and the package scroller flush with the modal edge', () => {
+    expect(ruleIn(openchatCss, ':focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));');
+    expect(ruleIn(openchatCss, '.relay-access-invite-form input:focus'))
+      .toContain('border-color: color-mix(in srgb, var(--v3-text-main) 56%, var(--v3-border));');
+    expect(ruleIn(openchatCss, '.relay-access-invite-form input:focus')).toContain('outline: 0;');
+    expect(ruleIn(openchatCss, '.relay-access-invite-form input:focus')).toContain('box-shadow: none;');
+
+    const relayBodyRule = ruleIn(openchatCss, '.relay-access-body');
+    expect(relayBodyRule).toContain('width: calc(100% + 48px);');
+    expect(relayBodyRule).toContain('margin-right: -24px;');
+    expect(relayBodyRule).toContain('margin-left: -24px;');
+    expect(relayBodyRule).toContain('padding: 18px 44px 22px;');
+  });
+
+  it('emphasizes the current package with neutral surface hierarchy instead of an accent outline', () => {
+    const packageRowRule = ruleIn(
+      openchatCss,
+      '.relay-access-entitlement-band .relay-access-package-row',
+    );
+    const packageNameRule = ruleIn(
+      openchatCss,
+      '.relay-access-entitlement-band .relay-access-package-row > span strong',
+    );
+    const packageStatusRule = ruleIn(
+      openchatCss,
+      '.relay-access-entitlement-band .relay-access-package-row > strong:last-child',
+    );
+
+    expect(packageRowRule).toContain('border: 0;');
+    expect(packageRowRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 6%, transparent);');
+    expect(packageNameRule).toContain('font-size: 14px;');
+    expect(packageNameRule).toContain('font-weight: 700;');
+    expect(packageStatusRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 9%, transparent);');
+    expect(packageStatusRule).toContain('font-weight: 700;');
+  });
+
+  it('uses a quiet expanded state for sidebar action buttons while preserving keyboard focus', () => {
+    expect(ruleFor(".v3-chat-item-action[aria-expanded='true']"))
+      .toContain('background: var(--cc-pressed);');
+    expect(ruleFor(".v3-chat-item-action[aria-expanded='true']"))
+      .toContain('opacity: 1;');
+    expect(css).toMatch(/button\[data-cc-pointer-focus='true'\]:focus-visible,[\s\S]*?outline: none;/);
+    expect(ruleFor('button:focus-visible,\n[tabindex]:focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring);');
   });
 
   it('uses the optimized formal brand asset wherever the shared mark is rendered', () => {
@@ -307,7 +368,7 @@ describe('CatsCo shell styling', () => {
     expect(toastRule).toContain('color: var(--cc-tooltip-text);');
     expect(toastRule).not.toContain('var(--cc-accent)');
     expect(copyRule).toContain('text-align: center;');
-    expect(ruleFor('.cc-toast-copy span')).toContain('font-weight: 600;');
+    expect(ruleFor('.cc-toast-copy span')).toContain('font-weight: var(--cc-font-weight-semibold);');
     expect(css).not.toContain('.cc-toast-close');
   });
 
@@ -368,7 +429,7 @@ describe('CatsCo shell styling', () => {
     expect(imageRule).toContain('object-fit: contain;');
     expect(ruleIn(openchatCss, '.oc-rich-image-trigger')).toContain('cursor: zoom-in;');
     expect(ruleIn(openchatCss, '.oc-rich-image-trigger:focus-visible'))
-      .toContain('outline: 2px solid var(--v3-primary);');
+      .toContain('outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));');
   });
 
   it('provides a touch-sized, keyboard-visible download action in media previews', () => {
@@ -673,7 +734,7 @@ describe('CatsCo shell styling', () => {
     expect(activeIndexRule).not.toContain('var(--v3-primary)');
   });
 
-  it('keeps the light liquid composer legible with restrained focus depth', () => {
+  it('keeps the light liquid composer legible with a single neutral focus border', () => {
     const composerRule = ruleFor('html[data-theme="liquid"] .v3-composer-box');
     const composerFocusRule = ruleFor('html[data-theme="liquid"] .v3-composer-box:focus-within');
     const composerInputRule = ruleFor('html[data-theme="liquid"] .v3-composer-input');
@@ -682,13 +743,10 @@ describe('CatsCo shell styling', () => {
     expect(composerRule).toContain('0 0 0 1px rgba(73, 86, 168, 0.05)');
     expect(composerRule).toContain('0 4px 12px rgba(79, 91, 148, 0.12)');
     expect(composerRule).toContain('inset 0 8px 12px -10px rgba(255, 255, 255, 0.96)');
-    expect(composerFocusRule).toContain('linear-gradient(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.9)) padding-box');
-    expect(composerFocusRule).toContain('rgba(108, 137, 232, 0.54) 38%');
-    expect(composerFocusRule).toContain('rgba(117, 72, 207, 0.56) 68%');
-    expect(composerFocusRule).toContain('border-box;');
-    expect(composerFocusRule).toContain('0 0 0 1px rgba(73, 86, 168, 0.08)');
-    expect(composerFocusRule).toContain('inset 0 9px 13px -10px rgba(255, 255, 255, 0.96)');
-    expect(composerFocusRule).toContain('transform: translateY(-1px);');
+    expect(composerFocusRule).toContain('border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-liquid-edge));');
+    expect(composerFocusRule).not.toContain('linear-gradient');
+    expect(composerFocusRule).not.toContain('box-shadow');
+    expect(composerFocusRule).not.toContain('transform');
     expect(composerInputRule).toContain('background: transparent;');
     expect(composerInputRule).toContain('box-shadow: none;');
   });
@@ -1264,8 +1322,9 @@ describe('CatsCo shell styling', () => {
     expect(nameRule).toContain('border-radius: var(--cc-radius-sm);');
     expect(displayRule).toContain('background: transparent;');
     expect(displayRule).toContain('cursor: text;');
+    expect(focusRule).toContain('border-color: var(--cc-border-strong);');
     expect(focusRule).toContain('outline: 0;');
-    expect(focusRule).toContain('box-shadow: inset 0 0 0 1px');
+    expect(focusRule).toContain('box-shadow: none;');
     expect(ruleFor('.oc-group-name-input + .oc-group-member-count')).toContain('padding-left: 4px;');
   });
 
@@ -1432,6 +1491,16 @@ describe('CatsCo shell styling', () => {
     expect(compactRule).toContain('left: calc(var(--cc-sidebar-collapsed) + 8px);');
     expect(compactRule).toContain('bottom: 12px;');
     expect(compactRule).toContain('width: min(220px, calc(100vw - var(--cc-sidebar-collapsed) - 20px));');
+  });
+
+  it('gives profile menu hover a clear neutral surface contrast', () => {
+    const hoverRule = ruleFor('.v3-profile-popover .v3-popover-item:hover,\n.v3-profile-popover .v3-popover-item:focus-visible');
+    const activeRule = ruleFor('.v3-profile-popover .v3-popover-item:active');
+
+    expect(hoverRule).toContain('background: color-mix(in srgb, var(--cc-text) 10%, transparent);');
+    expect(hoverRule).toContain('color: var(--cc-text);');
+    expect(hoverRule).not.toContain('border');
+    expect(activeRule).toContain('background: color-mix(in srgb, var(--cc-text) 14%, transparent);');
   });
 
   it('tightens feedback upload copy and separates profile theme text', () => {
@@ -1837,7 +1906,7 @@ describe('CatsCo shell styling', () => {
 
     expect(focusRule).toContain('border-color: var(--cc-border-strong);');
     expect(focusRule).toContain('outline: 0;');
-    expect(focusRule).toContain('box-shadow: 0 0 0 3px var(--cc-accent-soft);');
+    expect(focusRule).toContain('box-shadow: none;');
     expect(focusRule).not.toContain('border-color: var(--cc-focus-ring);');
   });
 

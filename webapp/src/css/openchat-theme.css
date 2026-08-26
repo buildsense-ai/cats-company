@@ -304,7 +304,7 @@ body {
 }
 
 .oc-input-bar textarea:focus {
-  border-color: var(--oc-green);
+  border-color: var(--cc-border-strong, var(--v3-border));
 }
 
 .oc-input-action {
@@ -841,8 +841,8 @@ body {
 }
 
 .oc-auth-input:focus {
-  border-color: var(--oc-green);
-  box-shadow: 0 0 0 3px rgba(212, 168, 83, 0.1);
+  border-color: var(--cc-border-strong, var(--v3-border));
+  box-shadow: none;
 }
 
 .oc-auth-input::placeholder {
@@ -1406,7 +1406,7 @@ body {
 .cloud-artifact-actions a:focus-visible,
 .cloud-artifacts-status button:focus-visible,
 .cloud-artifacts-load-more:focus-visible {
-  outline: 2px solid var(--v3-accent, #30b775);
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
   outline-offset: 2px;
 }
 
@@ -2768,8 +2768,8 @@ body {
 }
 
 .v3-composer-box:focus-within {
-  border-color: #55585B;
-  box-shadow: 0 0 0 1px #55585B;
+  border-color: color-mix(in srgb, var(--v3-text-main) 58%, var(--v3-border));
+  box-shadow: none;
 }
 
 .v3-composer.is-drag-active .v3-composer-box {
@@ -3037,7 +3037,7 @@ body {
 }
 
 :focus-visible {
-  outline: 2px solid var(--v3-primary);
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -3325,8 +3325,12 @@ button.catsco-download-action:disabled {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  box-sizing: border-box;
+  width: calc(100% + 48px);
   min-height: 0;
-  padding: 18px 20px 22px;
+  margin-right: -24px;
+  margin-left: -24px;
+  padding: 18px 44px 22px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -3399,6 +3403,140 @@ button.catsco-download-action:disabled {
   padding: 12px;
 }
 
+.relay-access-developer-sections {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid color-mix(in srgb, var(--v3-border) 72%, transparent);
+}
+
+.relay-access-tool-disclosure + .relay-access-tool-disclosure {
+  border-top: 1px solid color-mix(in srgb, var(--v3-border) 72%, transparent);
+}
+
+.relay-access-tool-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 0 4px;
+  color: var(--v3-text-muted);
+  cursor: pointer;
+  list-style: none;
+  transition: color 160ms ease;
+}
+
+.relay-access-tool-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.relay-access-tool-disclosure > summary:hover {
+  color: var(--v3-text-main);
+}
+
+.relay-access-tool-disclosure > summary:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: 2px;
+}
+
+.relay-access-tool-disclosure > summary > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.relay-access-tool-disclosure > summary > span:first-child > span {
+  min-width: 0;
+}
+
+.relay-access-tool-disclosure > summary svg {
+  flex: 0 0 auto;
+  color: var(--v3-text-muted);
+}
+
+.relay-access-tool-disclosure > summary strong,
+.relay-access-tool-disclosure > summary em {
+  display: block;
+}
+
+.relay-access-tool-disclosure > summary strong {
+  color: var(--v3-text-name);
+  font-size: 13px;
+}
+
+.relay-access-tool-disclosure > summary em {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-access-tool-disclosure-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.relay-access-tool-disclosure-label {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--v3-text-muted);
+  pointer-events: none;
+}
+
+.relay-access-tool-disclosure-label svg {
+  transition: transform 160ms ease;
+}
+
+.relay-access-tool-disclosure[open] .relay-access-tool-disclosure-label svg {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .relay-access-tool-disclosure-label svg {
+    transition: none;
+  }
+}
+
+.relay-access-tool-disclosure-content {
+  display: grid;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--v3-border) 72%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 0;
+}
+
+.relay-access-connect.relay-access-tool-disclosure-content,
+.relay-access-key-panel.relay-access-tool-disclosure-content,
+.relay-access-snippet.relay-access-tool-disclosure-content {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--v3-border) 72%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 0;
+}
+
+.relay-access-developer-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.relay-access-snippet.relay-access-tool-disclosure-content {
+  padding-top: 6px;
+  padding-bottom: 0;
+}
+
 .relay-access-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 36px;
@@ -3428,16 +3566,18 @@ button.catsco-download-action:disabled {
 
 .relay-access-copy-btn,
 .relay-access-open-btn,
-.relay-access-snippet-head button {
+.relay-access-snippet-copy-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border: 1px solid var(--v3-border);
+  border: 0;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--v3-text-main) 4%, transparent);
   color: var(--v3-text-name);
   cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
 .relay-access-copy-btn {
@@ -3459,9 +3599,15 @@ button.catsco-download-action:disabled {
 
 .relay-access-copy-btn:hover,
 .relay-access-open-btn:hover,
-.relay-access-snippet-head button:hover {
-  border-color: rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.08);
+.relay-access-snippet-copy-button:hover {
+  background: color-mix(in srgb, var(--v3-text-main) 9%, transparent);
+  color: var(--v3-text-name);
+}
+
+.relay-access-copy-btn:active,
+.relay-access-open-btn:active,
+.relay-access-snippet-copy-button:active {
+  background: color-mix(in srgb, var(--v3-text-main) 14%, transparent);
 }
 
 .relay-access-token-note {
@@ -3490,37 +3636,12 @@ button.catsco-download-action:disabled {
   padding: 14px;
 }
 
-.relay-access-commerce-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.relay-access-commerce-card {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--v3-border);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.1);
-}
-
-.relay-access-commerce-card svg {
-  flex: 0 0 auto;
-  color: var(--v3-accent);
-  margin-top: 2px;
-}
-
-.relay-access-commerce-card strong,
 .relay-access-budget-list strong {
   display: block;
   color: var(--v3-text-name);
   font-size: 14px;
 }
 
-.relay-access-commerce-card span,
 .relay-access-budget-list span {
   display: block;
   margin-top: 3px;
@@ -3531,9 +3652,9 @@ button.catsco-download-action:disabled {
 .relay-access-current-quota {
   display: grid;
   gap: 8px;
-  padding: 12px;
+  padding: 13px 16px 11px;
   border: 1px solid var(--v3-border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: rgba(0, 0, 0, 0.1);
 }
 
@@ -3560,39 +3681,602 @@ button.catsco-download-action:disabled {
 
 .relay-access-current-quota-head {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
 }
 
-.relay-access-current-quota-head span,
-.relay-access-current-quota-meta {
-  color: var(--v3-text-muted);
-  font-size: 12px;
+.relay-access-current-quota-heading {
+  min-width: 0;
 }
 
-.relay-access-current-quota-head strong {
+.relay-access-current-quota-heading span {
+  color: var(--v3-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.relay-access-current-quota-heading strong {
   display: block;
-  margin-top: 3px;
+  margin-top: 5px;
   color: var(--v3-text-name);
-  font-size: 16px;
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 
-.relay-access-current-quota-head em {
+.relay-access-current-quota-actions {
+  display: flex;
   flex: 0 0 auto;
-  max-width: 46%;
-  color: var(--v3-text-name);
-  font-size: 13px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  max-width: 52%;
+}
+
+.relay-access-current-quota-actions em {
+  flex: 0 0 auto;
+  max-width: none;
+  color: var(--v3-accent);
+  font-size: 14px;
   font-style: normal;
-  font-weight: 700;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
   text-align: right;
   overflow-wrap: anywhere;
 }
 
+.relay-access-current-quota-cycle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--v3-border) 72%, transparent);
+  color: var(--v3-text-muted);
+  font-size: 11px;
+}
+
+.relay-access-current-quota-note {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.relay-access-upgrade-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--v3-text-name) 10%, transparent);
+  color: var(--v3-text-name);
+  padding: 0 13px;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.relay-access-upgrade-button:hover {
+  background: color-mix(in srgb, var(--v3-text-name) 16%, transparent);
+}
+
+.relay-access-upgrade-button:active {
+  background: color-mix(in srgb, var(--v3-text-name) 22%, transparent);
+}
+
+.relay-access-upgrade-button:focus-visible,
+.relay-access-plan-modal-header > button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: 2px;
+}
+
+.relay-access-plan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(5px);
+}
+
+.relay-access-plan-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid var(--v3-border);
+  border-radius: 12px;
+  background: var(--v3-panel);
+  color: var(--v3-text-main);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
+}
+
+.relay-access-plan-modal-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 24px 17px;
+  border-bottom: 1px solid var(--v3-border);
+}
+
+.relay-access-plan-modal-header > div {
+  min-width: 0;
+}
+
+.relay-access-plan-modal-header span {
+  color: var(--v3-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.relay-access-plan-modal-header h3 {
+  margin: 4px 0 0;
+  color: var(--v3-text-name);
+  font-size: 23px;
+  line-height: 1.25;
+}
+
+.relay-access-plan-modal-header p {
+  margin: 6px 0 0;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.relay-access-plan-modal-header > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--v3-text-muted);
+  cursor: pointer;
+}
+
+.relay-access-plan-modal-header > button:hover {
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
+  color: var(--v3-text-name);
+}
+
+.relay-access-plan-modal-body {
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 18px 24px 24px;
+}
+
+.relay-access-plan-audience-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(110px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 0;
+  border-radius: 12px;
+  background: #202020;
+  box-sizing: border-box;
+  width: max-content;
+  margin: 0 auto;
+}
+
+.relay-access-plan-audience-tabs > button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #9b9b97;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.relay-access-plan-audience-tabs > button:hover:not(.active) {
+  background: #292929;
+  color: #d9d9d6;
+}
+
+.relay-access-plan-audience-tabs > button.active {
+  border: 0;
+  background: #343434;
+  color: #f4f4f2;
+}
+
+.relay-access-plan-audience-tabs > button:active {
+  background: #3b3b3b;
+  color: #fff;
+}
+
+.relay-access-plan-audience-tabs > button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: 2px;
+}
+
+.relay-access-plan-list.current-catalog.relay-access-plan-list-chooser {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official {
+  min-height: 530px;
+  padding: 30px;
+  border: 1px solid #393939;
+  border-top: 1px solid #393939;
+  border-radius: 22px;
+  background: #202020;
+  color: #f4f4f2;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.2);
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-kicker {
+  color: #9b9b97;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-name,
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-price > strong,
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-currency,
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-tagline {
+  color: #f4f4f2;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-name {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.18;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-price > strong {
+  font-size: 50px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-tagline {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official p {
+  min-height: 58px;
+  margin-top: 9px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official p,
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-includes,
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-features {
+  color: #9b9b97;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-features li {
+  color: #ddddda;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-action button {
+  min-height: 40px;
+  border: 1px solid #515151;
+  border-radius: 11px;
+  background: transparent;
+  color: #f4f4f2;
+  box-shadow: none;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro {
+  border-color: #515151;
+  border-top-color: #515151;
+  background: #242424;
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.28);
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro .relay-access-plan-kicker,
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro .relay-access-plan-badge {
+  color: #45b19b;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro .relay-access-plan-badge {
+  border-color: #45b19b;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro .relay-access-plan-action button {
+  border-color: #45b19b;
+  background: #45b19b;
+  color: #fff;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official.free .relay-access-plan-action button {
+  opacity: 1;
+  color: #f4f4f2;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official:hover,
+.relay-access-plan-list-chooser .relay-access-plan-row.official:active,
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro:hover,
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro:active {
+  transform: none;
+  background: #202020;
+  border-color: #616161;
+  border-top-color: #616161;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.3);
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro:hover,
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro:active {
+  background: #242424;
+  border-color: #45b19b;
+  border-top-color: #45b19b;
+  box-shadow: 0 24px 62px rgba(0, 0, 0, 0.34);
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-action button:hover,
+.relay-access-plan-list-chooser .relay-access-plan-row.official .relay-access-plan-action button:active {
+  transform: none;
+  filter: none;
+  background: rgba(69, 177, 155, 0.984);
+  border-color: #45b09a;
+  color: #fff;
+}
+
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro .relay-access-plan-action button:hover,
+.relay-access-plan-list-chooser .relay-access-plan-row.official.pro .relay-access-plan-action button:active {
+  background: #2e7b6b;
+  border-color: #2e7b6b;
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+
+.relay-access-enterprise-card {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
+  gap: 28px;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 16px;
+  padding: 30px;
+  border: 1px solid #393939;
+  border-radius: 20px;
+  background: #202020;
+  color: #f4f4f2;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+}
+
+.relay-access-enterprise-intro,
+.relay-access-enterprise-scope {
+  min-width: 0;
+}
+
+.relay-access-enterprise-intro {
+  margin: -30px 0 -30px -30px;
+  padding: 52px;
+  border-radius: 20px 0 0 20px;
+  background: #45b19b;
+  color: #fff;
+}
+
+.relay-access-enterprise-intro > span,
+.relay-access-enterprise-scope > div > span {
+  color: #9b9b97;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.relay-access-enterprise-intro > span {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.relay-access-enterprise-intro h3 {
+  margin: 10px 0 0;
+  color: #fff;
+  font-size: 32px;
+  line-height: 1.15;
+}
+
+.relay-access-enterprise-intro > p {
+  margin: 14px 0 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.relay-access-enterprise-price {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 22px;
+  color: #fff;
+}
+
+.relay-access-enterprise-price strong {
+  font-size: 48px;
+  line-height: 1;
+}
+
+.relay-access-enterprise-price small {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+}
+
+.relay-access-enterprise-intro > a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  margin-top: 22px;
+  padding: 0 15px;
+  border: 1px solid #fff;
+  border-radius: 11px;
+  background: #f4f4f2;
+  color: #102823;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.relay-access-enterprise-intro > a:hover,
+.relay-access-enterprise-intro > a:active {
+  background: #f4f4f2;
+  color: #102823;
+  filter: none;
+}
+
+.relay-access-enterprise-intro:hover,
+.relay-access-enterprise-intro:active {
+  background: #45b19b;
+}
+
+.relay-access-enterprise-scope {
+  padding-left: 28px;
+  border-left: 1px solid #393939;
+}
+
+.relay-access-enterprise-scope h4 {
+  margin: 8px 0 0;
+  color: #f4f4f2;
+  font-size: 19px;
+}
+
+.relay-access-enterprise-scope ul {
+  display: grid;
+  gap: 10px;
+  margin: 22px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.relay-access-enterprise-scope li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #ddddda;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.relay-access-enterprise-scope li svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: #45b19b;
+}
+
+.relay-access-enterprise-custom {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid #393939;
+}
+
+.relay-access-enterprise-custom strong {
+  color: #f4f4f2;
+  font-size: 13px;
+}
+
+.relay-access-enterprise-custom p {
+  margin: 7px 0 0;
+  color: #9b9b97;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 820px) {
+  .relay-access-plan-overlay {
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .relay-access-plan-modal {
+    width: 100%;
+    height: calc(100vh - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .relay-access-plan-modal-header,
+  .relay-access-plan-modal-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .relay-access-plan-list.current-catalog.relay-access-plan-list-chooser {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .relay-access-plan-list-chooser .relay-access-plan-row.official,
+  .relay-access-plan-list-chooser .relay-access-plan-row.official.pro {
+    grid-column: auto;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .relay-access-current-quota-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-access-current-quota-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: none;
+  }
+
+  .relay-access-current-quota-cycle {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .relay-access-plan-audience-tabs {
+    width: 100%;
+  }
+
+  .relay-access-enterprise-card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+    padding: 22px;
+  }
+
+  .relay-access-enterprise-scope {
+    padding-left: 0;
+    padding-top: 22px;
+    border-top: 1px solid #393939;
+    border-left: 0;
+  }
+
+  .relay-access-enterprise-intro {
+    margin: -22px -22px 0;
+    border-radius: 20px 20px 0 0;
+    padding: 28px 22px;
+  }
+}
+
 .relay-access-quota-bar {
-  height: 8px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
@@ -3602,11 +4286,15 @@ button.catsco-download-action:disabled {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--v3-primary), #d6a84f);
+  background: var(--v3-primary);
+}
+
+.relay-access-current-quota.warning .relay-access-quota-bar i {
+  background: var(--cc-warning-text);
 }
 
 .relay-access-current-quota.danger .relay-access-quota-bar i {
-  background: linear-gradient(90deg, #ff6b6b, #d6a84f);
+  background: var(--cc-danger);
 }
 
 .relay-access-budget-list {
@@ -3723,19 +4411,36 @@ button.catsco-download-action:disabled {
   justify-content: center;
   gap: 6px;
   min-height: 36px;
-  border: 1px solid var(--v3-primary);
+  border: 0;
   border-radius: 8px;
   background: var(--v3-primary);
   color: #071a14;
   padding: 0 13px;
   font-weight: 700;
   cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
 .relay-access-purchase-confirm-actions > button.secondary {
-  border-color: var(--v3-border);
-  background: transparent;
+  background: color-mix(in srgb, var(--v3-text-main) 5%, transparent);
   color: var(--v3-text-main);
+}
+
+.relay-access-purchase-confirm-actions > button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--v3-primary) 82%, transparent);
+}
+
+.relay-access-purchase-confirm-actions > button.secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--v3-text-main) 10%, transparent);
+}
+
+.relay-access-purchase-confirm-actions > button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--v3-primary) 68%, transparent);
+}
+
+.relay-access-purchase-confirm-actions > button.secondary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--v3-text-main) 14%, transparent);
 }
 
 .relay-access-purchase-confirm-actions > button:disabled {
@@ -3822,7 +4527,7 @@ button.catsco-download-action:disabled {
   justify-content: center;
   gap: 6px;
   min-height: 34px;
-  border: 1px solid rgba(52, 199, 89, 0.3);
+  border: 0;
   border-radius: 8px;
   background: rgba(52, 199, 89, 0.12);
   color: var(--v3-accent);
@@ -4208,9 +4913,9 @@ button.catsco-download-action:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: min(100%, 360px);
   padding: 3px;
-  border: 1px solid var(--v3-border);
+  border: 0;
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.12);
+  background: color-mix(in srgb, var(--v3-text-main) 4%, transparent);
 }
 
 .relay-access-billing-tabs > button {
@@ -4228,16 +4933,27 @@ button.catsco-download-action:disabled {
   font-weight: 700;
   white-space: nowrap;
   cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.relay-access-billing-tabs > button:hover:not(.active) {
+  background: color-mix(in srgb, var(--v3-text-main) 7%, transparent);
+  color: var(--v3-text-main);
 }
 
 .relay-access-billing-tabs > button.active {
-  background: var(--v3-panel);
+  background: color-mix(in srgb, var(--v3-text-main) 11%, transparent);
   color: var(--v3-text-name);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: none;
 }
 
-.relay-access-billing-tabs > button > span,
-.relay-access-order-filters button > span {
+.relay-access-billing-tabs > button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: 2px;
+}
+
+.relay-access-billing-tabs > button > span {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4288,6 +5004,34 @@ button.catsco-download-action:disabled {
   font-style: normal;
 }
 
+.relay-access-entitlement-band .relay-access-package-row {
+  min-height: 58px;
+  padding: 11px 13px;
+  border: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--v3-text-main) 6%, transparent);
+}
+
+.relay-access-entitlement-band .relay-access-package-row > span {
+  min-width: 0;
+}
+
+.relay-access-entitlement-band .relay-access-package-row > span strong {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.relay-access-entitlement-band .relay-access-package-row > strong:last-child {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--v3-text-main) 9%, transparent);
+  color: var(--v3-text-name);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .relay-access-storefront {
   border: 0;
   background: transparent;
@@ -4323,7 +5067,11 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-checkout-order-no > button:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
+}
+
+.relay-access-checkout-order-no > button:active {
+  background: color-mix(in srgb, var(--v3-text-main) 13%, transparent);
 }
 
 .relay-access-checkout-meta {
@@ -4393,11 +5141,22 @@ button.catsco-download-action:disabled {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border: 1px solid var(--v3-border);
+  border: 0;
   border-radius: 7px;
   background: transparent;
   color: var(--v3-text-muted);
   cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.relay-access-checkout-head-actions > button:hover {
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
+  color: var(--v3-text-name);
+}
+
+.relay-access-checkout-head-actions > button:active {
+  background: color-mix(in srgb, var(--v3-text-main) 13%, transparent);
 }
 
 .relay-access-payment-success.pending {
@@ -4448,7 +5207,11 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-checkout-actions > div > button:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--v3-text-main) 7%, transparent);
+}
+
+.relay-access-checkout-actions > div > button:active {
+  background: color-mix(in srgb, var(--v3-text-main) 12%, transparent);
 }
 
 .relay-access-checkout-actions > div > button.danger {
@@ -4461,7 +5224,11 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-checkout-actions > button:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--v3-text-main) 7%, transparent);
+}
+
+.relay-access-checkout-actions > button:active {
+  background: color-mix(in srgb, var(--v3-text-main) 12%, transparent);
 }
 
 .relay-access-checkout-actions > button:disabled {
@@ -4471,68 +5238,82 @@ button.catsco-download-action:disabled {
 
 .relay-access-invite-section {
   display: grid;
-  grid-template-columns: minmax(150px, 0.45fr) minmax(260px, 1fr);
+  grid-template-columns: minmax(180px, 0.55fr) minmax(260px, 1fr);
   align-items: center;
   gap: 16px;
   padding: 12px;
-  border-top: 1px solid var(--v3-border);
-  border-bottom: 1px solid var(--v3-border);
+  border-top: 1px solid color-mix(in srgb, var(--v3-border) 72%, transparent);
 }
 
-.relay-access-invite-section > div:first-child strong,
-.relay-access-invite-section > div:first-child span {
-  display: block;
-}
-
-.relay-access-invite-section > div:first-child strong {
-  color: var(--v3-text-name);
-  font-size: 13px;
-}
-
-.relay-access-invite-section > div:first-child span {
-  margin-top: 3px;
+.relay-access-invite-section > span {
   color: var(--v3-text-muted);
   font-size: 11px;
   line-height: 1.5;
 }
 
-.relay-access-order-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.relay-access-redeem-disclosure {
   overflow: hidden;
-  border: 1px solid var(--v3-border);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.08);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--v3-text-main) 3%, transparent);
 }
 
-.relay-access-order-summary > div {
-  padding: 12px;
-  border-right: 1px solid var(--v3-border);
+.relay-access-redeem-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  padding: 0 12px;
+  color: var(--v3-text-main);
+  cursor: pointer;
+  list-style: none;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
-.relay-access-order-summary > div:last-child {
-  border-right: 0;
+.relay-access-redeem-disclosure > summary::-webkit-details-marker {
+  display: none;
 }
 
-.relay-access-order-summary strong,
-.relay-access-order-summary span {
-  display: block;
+.relay-access-redeem-disclosure > summary:hover {
+  background: color-mix(in srgb, var(--v3-text-main) 5%, transparent);
 }
 
-.relay-access-order-summary strong {
+.relay-access-redeem-disclosure[open] > summary {
+  background: color-mix(in srgb, var(--v3-text-main) 4%, transparent);
+}
+
+.relay-access-redeem-disclosure > summary:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: -2px;
+}
+
+.relay-access-redeem-disclosure > summary > span:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.relay-access-redeem-disclosure > summary strong {
   color: var(--v3-text-name);
-  font-size: 17px;
+  font-size: 13px;
 }
 
-.relay-access-order-summary span {
-  margin-top: 3px;
+.relay-access-redeem-disclosure > summary em,
+.relay-access-redeem-disclosure > summary > span:last-child {
   color: var(--v3-text-muted);
   font-size: 11px;
+  font-style: normal;
+}
+
+.relay-access-redeem-disclosure > summary > span:last-child {
+  flex: 0 0 auto;
+  font-weight: 600;
 }
 
 .relay-access-order-filters {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -4545,21 +5326,30 @@ button.catsco-download-action:disabled {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 6px;
   min-height: 30px;
-  border: 1px solid var(--v3-border);
-  border-radius: 7px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--v3-text-muted);
-  padding: 0 9px;
-  font-size: 11px;
+  padding: 0 8px;
+  font-size: 12px;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 .relay-access-order-filters button.active {
-  border-color: color-mix(in srgb, var(--v3-primary) 35%, transparent);
-  background: color-mix(in srgb, var(--v3-primary) 9%, transparent);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
   color: var(--v3-text-name);
+}
+
+.relay-access-order-filters button:hover:not(.active) {
+  background: color-mix(in srgb, var(--v3-text-main) 5%, transparent);
+  color: var(--v3-text-main);
+}
+
+.relay-access-order-filters button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: 2px;
 }
 
 .relay-access-order-list {
@@ -4603,23 +5393,24 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-order-empty {
-  display: grid;
-  justify-items: center;
-  gap: 5px;
-  padding: 34px 16px;
-  border: 1px dashed var(--v3-border);
-  border-radius: 8px;
+  padding: 16px 2px 4px;
+  border-top: 1px solid var(--v3-border);
   color: var(--v3-text-muted);
-  text-align: center;
+  text-align: left;
 }
 
 .relay-access-order-empty strong {
+  display: block;
   color: var(--v3-text-name);
   font-size: 13px;
+  font-weight: 600;
 }
 
 .relay-access-order-empty span {
-  font-size: 11px;
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .relay-access-order-more {
@@ -4660,18 +5451,36 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-invite-form input:focus {
-  border-color: color-mix(in srgb, var(--v3-primary) 38%, transparent);
+  border-color: color-mix(in srgb, var(--v3-text-main) 56%, var(--v3-border));
+  outline: 0;
+  box-shadow: none;
 }
 
 .relay-access-invite-form button {
   min-height: 38px;
-  border: 1px solid color-mix(in srgb, var(--v3-primary) 28%, transparent);
+  border: 0;
   border-radius: 8px;
   background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
   color: var(--v3-accent);
   cursor: pointer;
   padding: 0 14px;
   font-weight: 700;
+  touch-action: manipulation;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.relay-access-invite-form button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--v3-primary) 18%, transparent);
+  color: var(--v3-text-name);
+}
+
+.relay-access-invite-form button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--v3-primary) 24%, transparent);
+}
+
+.relay-access-invite-form button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: 2px;
 }
 
 .relay-access-invite-form button:disabled {
@@ -4711,6 +5520,12 @@ button.catsco-download-action:disabled {
   background: rgba(255, 159, 10, 0.1);
 }
 
+.relay-access-state.neutral {
+  border-color: var(--v3-border);
+  color: var(--v3-text-muted);
+  background: color-mix(in srgb, var(--v3-text-main) 4%, transparent);
+}
+
 .relay-access-empty-key {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
@@ -4730,7 +5545,7 @@ button.catsco-download-action:disabled {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border: 1px solid color-mix(in srgb, var(--v3-primary) 28%, transparent);
+  border: 0;
   border-radius: 8px;
   background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
   color: var(--v3-accent);
@@ -4738,12 +5553,20 @@ button.catsco-download-action:disabled {
   min-height: 34px;
   padding: 0 12px;
   font-weight: 700;
+  touch-action: manipulation;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
 .relay-access-primary-btn:hover,
 .relay-access-key-actions button:hover,
 .relay-access-secret-box button:hover {
   background: color-mix(in srgb, var(--v3-primary) 18%, transparent);
+}
+
+.relay-access-primary-btn:active,
+.relay-access-key-actions button:active,
+.relay-access-secret-box button:active {
+  background: color-mix(in srgb, var(--v3-primary) 24%, transparent);
 }
 
 .relay-access-primary-btn:disabled,
@@ -4819,14 +5642,17 @@ button.catsco-download-action:disabled {
   gap: 10px;
 }
 
-.relay-access-key-actions button.danger {
-  border-color: rgba(255, 87, 87, 0.3);
-  color: #ff8585;
-  background: rgba(255, 87, 87, 0.1);
+.relay-access-key-actions button {
+  color: var(--v3-text-name);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
 }
 
-.relay-access-key-actions button.danger:hover {
-  background: rgba(255, 87, 87, 0.16);
+.relay-access-key-actions button:hover {
+  background: color-mix(in srgb, var(--v3-text-main) 13%, transparent);
+}
+
+.relay-access-key-actions button:active {
+  background: color-mix(in srgb, var(--v3-text-main) 18%, transparent);
 }
 
 .relay-access-snippet {
@@ -4834,29 +5660,42 @@ button.catsco-download-action:disabled {
   flex-shrink: 0;
 }
 
-.relay-access-snippet-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--v3-border);
-  color: var(--v3-text-name);
-  font-weight: 700;
-  font-size: 13px;
+.relay-access-snippet-code {
+  position: relative;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.14);
 }
 
-.relay-access-snippet-head button {
-  min-height: 30px;
-  padding: 0 10px;
+.relay-access-snippet-copy-button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  min-height: 32px;
+  padding: 0 11px;
   font-size: 12px;
+}
+
+/* Package controls use surface contrast instead of persistent outlines. */
+.relay-access-copy-btn:focus-visible,
+.relay-access-open-btn:focus-visible,
+.relay-access-snippet-copy-button:focus-visible,
+.relay-access-purchase-confirm-actions > button:focus-visible,
+.relay-access-plan-list-chooser .relay-access-plan-action button:focus-visible,
+.relay-access-checkout-order-no > button:focus-visible,
+.relay-access-checkout-head-actions > button:focus-visible,
+.relay-access-checkout-actions button:focus-visible,
+.relay-access-primary-btn:focus-visible,
+.relay-access-key-actions button:focus-visible,
+.relay-access-secret-box button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
+  outline-offset: 2px;
 }
 
 .relay-access-snippet pre {
   margin: 0;
-  padding: 12px;
+  padding: 12px 12px 52px;
   color: var(--v3-text-main);
-  background: rgba(0, 0, 0, 0.14);
+  background: transparent;
   overflow: auto;
   max-height: min(190px, 26vh);
   font-size: 12px;
@@ -4959,8 +5798,9 @@ button.catsco-download-action:disabled {
     grid-template-columns: 1fr;
   }
 
-  .relay-access-commerce-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .relay-access-redeem-disclosure > summary > span:first-child {
+    display: grid;
+    gap: 2px;
   }
 
   .relay-access-trial-row,
@@ -5220,7 +6060,7 @@ button.catsco-download-action:disabled {
 }
 
 .oc-rich-image-trigger:focus-visible {
-  outline: 2px solid var(--v3-primary);
+  outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));
   outline-offset: 3px;
 }
 
@@ -6150,7 +6990,7 @@ button.catsco-download-action:disabled {
 
 .oc-form-group input:focus {
   outline: none;
-  border-color: var(--oc-green);
+  border-color: var(--cc-border-strong, var(--v3-border));
 }
 
 /* Button styles */
@@ -7520,7 +8360,7 @@ button.catsco-download-action:disabled {
 }
 .v3-preview-resize-handle:hover::after,
 .v3-preview-resize-handle:focus-visible::after {
-  background: var(--v3-primary);
+  background: var(--cc-focus-ring, var(--v3-text-muted));
 }
 .v3-preview-resize-handle:focus-visible {
   outline: none;
@@ -7938,81 +8778,93 @@ button.catsco-download-action:disabled {
  * ========================================================== */
 
 .oc-modal {
-  background: var(--v3-bg-sidebar) !important;
-  border: 1px solid var(--v3-border) !important;
+  background: var(--cc-panel) !important;
+  border: 1px solid var(--cc-border) !important;
   box-shadow: 0 24px 48px rgba(0,0,0,0.4) !important;
-  color: var(--v3-text-name) !important;
-  border-radius: 12px !important;
+  color: var(--cc-text) !important;
+  border-radius: var(--cc-radius-lg) !important;
 }
 
 .oc-modal-title {
-  color: #fff !important;
-  border-bottom: 1px solid var(--v3-border) !important;
+  color: var(--cc-text) !important;
+  border-bottom: 1px solid var(--cc-border) !important;
   padding-bottom: 16px !important;
   margin-bottom: 20px !important;
   font-size: 16px !important;
 }
 
 .oc-auth-input, .oc-input {
-  background: var(--v3-bg-app) !important;
-  border: 1px solid var(--v3-border) !important;
-  color: var(--v3-text-main) !important;
+  background: var(--cc-input-surface) !important;
+  border: 1px solid var(--cc-border) !important;
+  color: var(--cc-text) !important;
   border-radius: 6px !important;
 }
 
 .oc-auth-input:focus, .oc-input:focus {
-  border-color: #55585B !important;
+  border-color: var(--cc-focus-border) !important;
   outline: none !important;
-  box-shadow: 0 0 0 1px #55585B !important;
+  box-shadow: inset 0 0 0 1px var(--cc-focus-border) !important;
 }
 
 .oc-btn-default {
-  background: rgba(255,255,255,0.05) !important;
-  border: 1px solid var(--v3-border) !important;
-  color: var(--v3-text-main) !important;
+  background: var(--cc-control-surface) !important;
+  border: 0 !important;
+  color: var(--cc-text-secondary) !important;
 }
 
 .oc-btn-default:hover {
-  background: rgba(255,255,255,0.1) !important;
+  background: var(--cc-hover) !important;
+  color: var(--cc-text) !important;
+}
+
+.oc-btn-default:active {
+  background: var(--cc-pressed) !important;
 }
 
 .oc-btn-primary {
-  background: var(--v3-primary) !important;
+  background: var(--cc-accent) !important;
   border: none !important;
   color: #fff !important;
 }
 
 .oc-btn-primary:hover {
-  background: var(--v3-primary-hover) !important;
+  background: var(--cc-accent-hover) !important;
 }
 
 /* Fix Profile Checkbox Label Text Color */
 .oc-modal label span {
-  color: var(--v3-text-muted) !important;
+  color: var(--cc-muted) !important;
   font-size: 13px;
 }
 
 /* --- V3 Global Settings/Group Form Overrides --- */
-.oc-settings-list-item, .oc-settings-list-button {
-  background: rgba(255,255,255,0.02) !important;
-  border: 1px solid var(--v3-border) !important;
-  color: var(--v3-text-name) !important;
+.oc-settings-list-item {
+  background: var(--cc-panel-raised) !important;
+  border: 1px solid var(--cc-border) !important;
+  color: var(--cc-text) !important;
+}
+
+.oc-settings-list-button {
+  background: var(--cc-control-surface) !important;
+  border: 0 !important;
+  color: var(--cc-text-secondary) !important;
 }
 
 .oc-settings-list-button:hover {
-  background: rgba(255,255,255,0.08) !important;
+  background: var(--cc-hover) !important;
+  color: var(--cc-text) !important;
 }
 
 .oc-settings-section-title, .oc-settings-secondary, .oc-settings-empty {
-  color: var(--v3-text-muted) !important;
+  color: var(--cc-muted) !important;
 }
 
 .oc-settings-check {
-  color: var(--v3-primary) !important;
+  color: var(--cc-accent-text) !important;
 }
 
 .oc-settings-empty {
-  border-color: var(--v3-border) !important;
+  border-color: var(--cc-border) !important;
 }
 
 /* --- V3 Composer Popovers (Reply & Mention) --- */
