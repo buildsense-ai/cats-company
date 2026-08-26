@@ -1164,8 +1164,17 @@ export default function AgentStoreModal({
       const code = result?.code || '';
       if (code) {
         setGeneratedInviteCodes((previous) => ({ ...previous, [botId]: code }));
-        await navigator.clipboard.writeText(code).catch(() => {});
-        feedback.notify({ tone: 'success', message: `邀请码 ${code} 已生成并复制` });
+        let copied = false;
+        try {
+          await navigator.clipboard.writeText(code);
+          copied = true;
+        } catch {
+          // The code remains visible on the card when clipboard access is unavailable.
+        }
+        feedback.notify({
+          tone: 'success',
+          message: copied ? `邀请码 ${code} 已生成并复制` : `邀请码 ${code} 已生成，请手动复制`,
+        });
       }
     } catch (e) {
       setError(e.message || '邀请码生成失败');
