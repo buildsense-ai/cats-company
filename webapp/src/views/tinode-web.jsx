@@ -30,6 +30,7 @@ import RelayAccessModal from '../widgets/relay-access-modal';
 import GroupSettings from '../widgets/group-settings';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
+import IdentityOnboarding from '../components/identity-onboarding';
 import { useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
@@ -75,7 +76,9 @@ import {
 } from '../utils/storage-access';
 import {
   authenticationRedirectPath,
+  isNameOnboardingPathname,
   navigateBrowserPath,
+  postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
 import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import './workspace-styles';
@@ -268,6 +271,12 @@ function TinodeWebApp({ location }) {
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    if (params.get('open') === 'relay') setShowRelayModal(true);
+    if (params.get('open') === 'download') setShowDownloadModal(true);
+  }, [search]);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
@@ -920,6 +929,13 @@ function TinodeWebApp({ location }) {
     };
   }, [search, user?.uid]);
 
+  const handleIdentityComplete = async (displayName) => {
+    const nextUser = await api.updateMe(displayName, user?.avatar_url || '');
+    persistUser(normalizeUserProfile(nextUser));
+    window.dispatchEvent(new Event('cc:data-changed'));
+    navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
+  };
+
   const handleLogout = () => {
     clearAuthenticatedSession();
   };
@@ -1105,6 +1121,15 @@ function TinodeWebApp({ location }) {
     return null;
   }
 
+  if (isNameOnboardingPathname(pathname)) {
+    return (
+      <IdentityOnboarding
+        initialName={user.display_name || ''}
+        onComplete={handleIdentityComplete}
+      />
+    );
+  }
+
   if (entrySceneKey) {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
@@ -1140,6 +1165,7 @@ function TinodeWebApp({ location }) {
       <div
         id="catsco-function-sidebar"
         className={`v3-sidebar${appSidebarCollapsed ? ' collapsed' : ''}${mobileSidebarOpen ? ' open' : ''}`}
+        data-cc-tooltips="off"
       >
         <div className="v3-sidebar-header">
           <div className="v3-brand-title">
@@ -1233,21 +1259,21 @@ function TinodeWebApp({ location }) {
               handleLogout();
             }}
           >
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
               <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDesktopConnectModal(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDesktopConnectModal(true); }}>
               <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
               <KeyRound size={16} style={{marginRight: 10}} /> 套餐与权益
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
+            </button>
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料
-            </div>
+            </button>
           </ProfilePopover>
         )}
 
@@ -1372,7 +1398,10 @@ function TinodeWebApp({ location }) {
       )}
 
       {showRelayModal && (
-        <RelayAccessModal onClose={() => setShowRelayModal(false)} />
+        <RelayAccessModal
+          initialPlanSlug={new URLSearchParams(search).get('plan') || ''}
+          onClose={() => setShowRelayModal(false)}
+        />
       )}
 
       {managedGroup?.groupId && (
@@ -1561,23 +1590,20 @@ export function ProfilePopover({ compact = false, popoverRef, children, onLogout
     <div
       className={`v3-profile-popover${compact ? ' is-compact' : ''}`}
       ref={popoverRef}
+      role="menu"
+      aria-label="账号菜单"
     >
       {children}
       {onLogout && (
-        <div
+        <button
+          type="button"
           className="v3-popover-item danger"
-          role="button"
-          tabIndex={0}
+          role="menuitem"
           aria-label="退出登录"
           onClick={onLogout}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            onLogout();
-          }}
         >
           <LogOut size={16} strokeWidth={1.8} style={{ marginRight: 10 }} /> 退出登录
-        </div>
+        </button>
       )}
     </div>,
     document.body,

@@ -228,6 +228,8 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
 		"/register/",
 		"/reset-password",
 		"/reset-password/",
+		"/onboarding/name",
+		"/onboarding/name/",
 	} {
 		mux.HandleFunc(path, serveSPAIndex)
 	}

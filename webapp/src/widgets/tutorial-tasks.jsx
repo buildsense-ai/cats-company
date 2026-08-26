@@ -72,11 +72,18 @@ export function TutorialTaskPicker({ tasks = TUTORIAL_TASKS, onClose, onSelectTa
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal catsco-download-modal cc-tutorial-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="oc-modal-header catsco-download-header">
-          <div>
-            <h3>选择示例任务</h3>
-            <p>选择一个任务，下载示例文件，然后把准备好的任务说明填入输入栏。</p>
+      <div
+        className="oc-modal catsco-download-modal cc-tutorial-modal cc-settings-secondary-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tutorial-picker-dialog-title"
+        aria-describedby="tutorial-picker-dialog-description"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
+          <div className="cc-settings-secondary-header-copy">
+            <h3 id="tutorial-picker-dialog-title">选择示例任务</h3>
+            <p id="tutorial-picker-dialog-description">选择一个任务，下载示例文件，然后把准备好的任务说明填入输入栏。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />
@@ -107,11 +114,18 @@ export function TutorialTaskModal({
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal catsco-download-modal cc-tutorial-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="oc-modal-header catsco-download-header">
-          <div>
-            <h3>{normalizedTask.title}</h3>
-            {normalizedTask.intro && <p>{normalizedTask.intro}</p>}
+      <div
+        className="oc-modal catsco-download-modal cc-tutorial-modal cc-settings-secondary-surface"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tutorial-detail-dialog-title"
+        aria-describedby={normalizedTask.intro ? 'tutorial-detail-dialog-description' : undefined}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
+          <div className="cc-settings-secondary-header-copy">
+            <h3 id="tutorial-detail-dialog-title">{normalizedTask.title}</h3>
+            {normalizedTask.intro && <p id="tutorial-detail-dialog-description">{normalizedTask.intro}</p>}
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />

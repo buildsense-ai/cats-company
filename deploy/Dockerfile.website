@@ -1,0 +1,23 @@
+FROM node:24-alpine3.24 AS website-build
+
+WORKDIR /app
+
+RUN corepack enable pnpm
+COPY website/package.json website/pnpm-lock.yaml website/pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=catscompany-website-pnpm,target=/root/.local/share/pnpm/store,sharing=locked \
+    pnpm install --frozen-lockfile
+
+# Keep the large, hand-managed public media tree out of the OCI image.  The
+# source is still present in the repository for local development and for the
+# one-time server-side media upload, but deploys only carry the application
+# code and generated assets.
+COPY website/index.html ./index.html
+COPY website/src ./src
+COPY website/vite.config.ts website/tsconfig.json website/tsconfig.app.json website/tsconfig.node.json website/postcss.config.js website/tailwind.config.ts ./
+ARG VITE_APP_BASE_URL=https://app.catsco.cc
+ENV VITE_APP_BASE_URL=${VITE_APP_BASE_URL}
+RUN pnpm run build
+
+FROM nginx:1.27-alpine
+COPY deploy/website-nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=website-build /app/dist /usr/share/nginx/html

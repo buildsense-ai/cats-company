@@ -12,13 +12,24 @@ const proxy = {
   },
   '/api/stt/realtime': {
     target: backendTarget,
+    changeOrigin: true,
     ws: true,
   },
-  '/api': backendTarget,
-  '/local': backendTarget,
-  '/uploads': backendTarget,
+  '/api': {
+    target: backendTarget,
+    changeOrigin: true,
+  },
+  '/local': {
+    target: backendTarget,
+    changeOrigin: true,
+  },
+  '/uploads': {
+    target: backendTarget,
+    changeOrigin: true,
+  },
   '/v0': {
     target: backendTarget,
+    changeOrigin: true,
     ws: true,
   },
 };

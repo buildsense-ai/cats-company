@@ -26,6 +26,11 @@
   --cc-history-hover-border: rgba(17, 24, 39, 0.06);
   --cc-control-surface: #f2f2f4;
   --cc-input-surface: var(--cc-code);
+  /* Neutral secondary actions: quiet at rest, progressively clearer on intent. */
+  --cc-secondary-action-bg: color-mix(in srgb, var(--cc-text) 10%, var(--cc-panel));
+  --cc-secondary-action-bg-hover: color-mix(in srgb, var(--cc-text) 16%, var(--cc-panel));
+  --cc-secondary-action-bg-active: color-mix(in srgb, var(--cc-text) 21%, var(--cc-panel));
+  --cc-secondary-action-text: color-mix(in srgb, var(--cc-text) 86%, var(--cc-panel));
   --cc-border: #ececef;
   --cc-border-strong: #dedee2;
   --cc-text: #1f1f1f;
@@ -38,7 +43,8 @@
   --cc-accent-hover: #219f7e;
   --cc-accent-soft: rgba(41, 188, 149, 0.16);
   --cc-accent-text: #147c65;
-  --cc-focus-ring: #147c65;
+  --cc-focus-ring: #656a73;
+  --cc-focus-border: color-mix(in srgb, var(--cc-text) 58%, var(--cc-border));
   --cc-success-text: #13765e;
   --cc-warning-text: #7a5200;
   --cc-danger-text: #b42318;
@@ -55,6 +61,7 @@
   --cc-tooltip-bg: #3b3b3e;
   --cc-tooltip-text: #ececec;
   --cc-tooltip-border: rgba(236, 236, 236, 0.06);
+  --cc-modal-backdrop: rgba(0, 0, 0, 0.72);
   --cc-task-hover: #f5f5f6;
   --cc-task-selected: #e7e7e9;
   --cc-radius-sm: 6px;
@@ -120,7 +127,7 @@ html[data-theme="dark"] {
   --cc-voice-notice: var(--cc-text-secondary);
   --cc-muted: #9a9aa0;
   --cc-accent-text: #7be0c1;
-  --cc-focus-ring: #69d7b7;
+  --cc-focus-ring: #aeb2b9;
   --cc-success-text: #7be0c1;
   --cc-warning-text: #f3c76b;
   --cc-danger-text: #ff8a80;
@@ -161,7 +168,7 @@ html[data-theme="liquid"] {
   --cc-accent-hover: #4652c5;
   --cc-accent-soft: rgba(86, 98, 217, 0.12);
   --cc-accent-text: #4652c5;
-  --cc-focus-ring: #5662d9;
+  --cc-focus-ring: #697185;
   --cc-success-text: #147c65;
   --cc-warning-text: #7a5200;
   --cc-danger-text: #b42318;
@@ -335,12 +342,23 @@ button,
 }
 
 button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--cc-focus-ring);
   outline-offset: 2px;
+}
+
+button[data-cc-pointer-focus='true']:focus-visible,
+[tabindex][data-cc-pointer-focus='true']:focus-visible {
+  outline: none;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  border-color: var(--cc-border-strong);
+  outline: 0;
+  outline-offset: 0;
+  box-shadow: none;
 }
 
 button:disabled,
@@ -426,7 +444,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .oc-auth-input:focus {
   border-color: var(--cc-border-strong);
-  box-shadow: 0 0 0 3px var(--cc-accent-soft);
+  box-shadow: none;
 }
 
 .oc-auth-btn {
@@ -892,11 +910,17 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .v3-profile-popover .v3-popover-item {
   color: var(--cc-text-secondary);
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.v3-profile-popover .v3-popover-item:hover {
-  background: var(--cc-hover);
+.v3-profile-popover .v3-popover-item:hover,
+.v3-profile-popover .v3-popover-item:focus-visible {
+  background: color-mix(in srgb, var(--cc-text) 10%, transparent);
   color: var(--cc-text);
+}
+
+.v3-profile-popover .v3-popover-item:active {
+  background: color-mix(in srgb, var(--cc-text) 14%, transparent);
 }
 
 .v3-profile-popover.is-compact {
@@ -1313,7 +1337,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .cc-question-navigator-item:focus-visible {
   border-radius: 999px;
-  outline: 2px solid color-mix(in srgb, var(--v3-primary) 58%, transparent);
+  outline: 2px solid var(--cc-focus-ring);
   outline-offset: -2px;
 }
 
@@ -1387,7 +1411,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .cc-question-list-item:focus-visible {
   outline: none;
   background: color-mix(in srgb, var(--v3-primary) 9%, transparent);
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--v3-primary) 48%, transparent);
+  box-shadow: inset 0 0 0 2px var(--cc-focus-ring);
 }
 
 .cc-question-list-item.is-active {
@@ -2513,8 +2537,9 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-history-rename-form input:focus {
+  border-color: var(--cc-border-strong);
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cc-accent) 18%, transparent);
+  box-shadow: none;
 }
 
 .cc-history-rename-form button {
@@ -3058,7 +3083,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   }
 
   .v3-mobile-pdf-viewport:focus-visible {
-    outline: 2px solid var(--v3-primary);
+    outline: 2px solid var(--cc-focus-ring);
     outline-offset: -2px;
   }
 
@@ -3169,6 +3194,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-chat-item-delete:hover:not(:disabled) {
   background: var(--cc-pressed);
   color: var(--cc-text);
+}
+
+.v3-chat-item-action[aria-expanded='true'] {
+  background: var(--cc-pressed);
+  color: var(--cc-text);
+  opacity: 1;
 }
 
 .v3-chat-item-action.is-pinned {
@@ -3808,8 +3839,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-composer-box:focus-within {
-  border-color: var(--cc-border-strong);
-  box-shadow: none;
+  border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-border));
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
 }
 
 .v3-composer-box.is-agent-reply-active {
@@ -4329,7 +4360,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 /* Shared overlays and panels */
 .name-dialog-overlay,
 .oc-modal-overlay {
-  background: rgba(0, 0, 0, 0.66);
+  background: var(--cc-modal-backdrop);
   backdrop-filter: blur(3px);
 }
 
@@ -4471,14 +4502,14 @@ html[data-theme="liquid"] .catsco-brand-mark {
   display: block;
   color: inherit;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: var(--cc-font-weight-semibold);
   line-height: 1.4;
 }
 
 .cc-toast-copy span {
   display: block;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: var(--cc-font-weight-semibold);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -6450,10 +6481,10 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 .oc-group-summary .oc-group-name-input:focus,
 .oc-group-summary .oc-group-name-input:focus-visible {
-  border-color: color-mix(in srgb, var(--cc-accent) 34%, var(--cc-border-strong));
+  border-color: var(--cc-border-strong);
   outline: 0;
   background: var(--cc-hover);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-accent) 10%, transparent);
+  box-shadow: none;
 }
 
 .oc-group-member-count {
@@ -8072,7 +8103,7 @@ html[data-theme="liquid"] :is(
 
 .cc-agent-prompt-editor-field textarea:focus-visible {
   border-color: var(--cc-border-strong);
-  box-shadow: 0 0 0 1px var(--cc-border-strong);
+  box-shadow: none;
 }
 
 .cc-agent-prompt-editor-field > p {
@@ -8276,7 +8307,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-hub-create:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cc-accent) 28%, transparent);
+  box-shadow: 0 0 0 2px var(--cc-focus-ring);
 }
 
 .cc-agent-card-action {
@@ -8416,7 +8447,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-agent-basic-card textarea:focus-visible {
   border-color: var(--cc-border-strong);
   outline: 0;
-  box-shadow: 0 0 0 3px var(--cc-accent-soft);
+  box-shadow: none;
 }
 
 .cc-agent-basic-card em {
@@ -9730,7 +9761,7 @@ html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(.settings-panel, .o
   .oc-settings-list-button,
   button[aria-label="关闭"]
 ):not(:disabled):hover {
-  background: var(--cc-selected) !important;
+  background: var(--cc-secondary-action-bg-hover) !important;
   color: var(--cc-text) !important;
 }
 
@@ -9748,7 +9779,7 @@ html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(.settings-panel, .o
   .oc-settings-list-button,
   button[aria-label="关闭"]
 ):not(:disabled):active {
-  background: var(--cc-pressed) !important;
+  background: var(--cc-secondary-action-bg-active) !important;
 }
 
 html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(
@@ -10134,21 +10165,7 @@ html[data-theme="liquid"] .v3-composer-box {
 }
 
 html[data-theme="liquid"] .v3-composer-box:focus-within {
-  border-color: transparent;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.9)) padding-box,
-    linear-gradient(118deg,
-      rgba(86, 98, 217, 0.64) 0%,
-      rgba(108, 137, 232, 0.54) 38%,
-      rgba(117, 72, 207, 0.56) 68%,
-      rgba(236, 231, 255, 0.82) 100%) border-box;
-  box-shadow:
-    0 0 0 1px rgba(73, 86, 168, 0.08),
-    0 6px 16px rgba(79, 91, 148, 0.15),
-    inset 0 1px 1px rgba(255, 255, 255, 0.98),
-    inset 0 9px 13px -10px rgba(255, 255, 255, 0.96),
-    inset 0 -1px 1px rgba(73, 86, 168, 0.11);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-liquid-edge));
 }
 
 html[data-theme="liquid"] :is(.name-dialog-overlay, .oc-modal-overlay) {
@@ -10769,7 +10786,7 @@ html[data-theme="liquid"] :is(
 }
 
 .v3-message .oc-rich-video-trigger:focus-visible {
-  outline: 2px solid var(--cc-accent);
+  outline: 2px solid var(--cc-focus-ring);
   outline-offset: 3px;
 }
 

@@ -4,6 +4,8 @@ const AUTH_PATHS = Object.freeze({
   reset: '/reset-password',
 });
 
+export const NAME_ONBOARDING_PATH = '/onboarding/name';
+
 const AUTHENTICATION_PATHNAMES = new Set(Object.values(AUTH_PATHS));
 const NON_APPLICATION_PREFIXES = ['/api', '/v1', '/local', '/uploads'];
 const ROUTE_ORIGIN = 'https://app.catsco.invalid';
@@ -57,6 +59,17 @@ function isAuthenticationPathOrChild(pathname) {
 
 export function shouldMountPwaForPathname(pathname) {
   return !isAuthenticationPathname(pathname);
+}
+
+export function isNameOnboardingPathname(pathname) {
+  return normalizedPathname(pathname) === NAME_ONBOARDING_PATH;
+}
+
+export function nameOnboardingPathForNext(nextPath = '') {
+  const next = safePostAuthenticationPath(nextPath);
+  return next === '/'
+    ? NAME_ONBOARDING_PATH
+    : `${NAME_ONBOARDING_PATH}?next=${encodeURIComponent(next)}`;
 }
 
 export function authPathForMode(mode, nextPath = '') {

@@ -2,12 +2,23 @@ import {
   authModeForPathname,
   authPathForMode,
   authenticationRedirectPath,
+  isNameOnboardingPathname,
+  nameOnboardingPathForNext,
   isAuthenticationPathname,
   loginPathForLocation,
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
   shouldMountPwaForPathname,
 } from './auth-routes';
+
+test('keeps post-registration naming in a dedicated route and preserves the safe destination', () => {
+  expect(isNameOnboardingPathname('/onboarding/name/')).toBe(true);
+  expect(isNameOnboardingPathname('/onboarding/name/step-2')).toBe(false);
+  expect(nameOnboardingPathForNext()).toBe('/onboarding/name');
+  expect(nameOnboardingPathForNext('/e/invite-1?source=email')).toBe(
+    '/onboarding/name?next=%2Fe%2Finvite-1%3Fsource%3Demail',
+  );
+});
 
 describe('authentication routes', () => {
   test.each([

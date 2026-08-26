@@ -71,7 +71,7 @@
 }
 
 .oc-modal .cc-settings-secondary-header > button:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--cc-accent) 72%, transparent);
+  outline: 2px solid var(--cc-focus-ring);
   outline-offset: 2px;
 }
 

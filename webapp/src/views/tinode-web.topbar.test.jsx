@@ -271,7 +271,9 @@ describe('ProfilePopover', () => {
       );
     });
 
-    const logout = document.body.querySelector('[role="button"][aria-label="退出登录"]');
+    const popover = document.body.querySelector('[role="menu"][aria-label="账号菜单"]');
+    const logout = popover?.querySelector('button[role="menuitem"][aria-label="退出登录"]');
+    expect(popover).toBeTruthy();
     expect(logout).toBeTruthy();
 
     await act(async () => logout.click());
@@ -372,7 +374,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(status?.title).toContain('上下文 1M');
   });
 
-  it('shows custom model strength without putting context size in the header', async () => {
+  it('shows only the custom model strength level in the compact header', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
       ...baseConfig,
       desired: { kind: 'custom', model_id: 'custom', revision: 7 },
@@ -390,10 +392,12 @@ describe('LocalAssistantBar model selector', () => {
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('private-model');
-    expect(status?.textContent).toContain('强度 high');
+    expect(status?.textContent).toContain('high');
+    expect(status?.textContent).not.toContain('强度 high');
     expect(status?.textContent).not.toContain('上下文');
     expect(status?.textContent).toContain('自备模型');
     expect(status?.title).toContain('上下文 128K');
+    expect(status?.getAttribute('aria-label')).toContain('推理强度 high');
   });
 
   it('shows the applied cloud model instead of a stale local quota snapshot', async () => {
@@ -418,6 +422,7 @@ describe('LocalAssistantBar model selector', () => {
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('gpt-5.6-sol');
     expect(status?.textContent).toContain('high');
+    expect(status?.textContent).not.toContain('强度 high');
     expect(status?.textContent).not.toContain('gpt-5.6-terra');
     expect(status?.getAttribute('aria-label')).toContain('推理强度 high');
   });

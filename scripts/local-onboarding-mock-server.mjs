@@ -558,13 +558,17 @@ function conversationFromTopic(
 function createUser(input) {
   const username = String(input.username || input.account || `local_user_${nextUserId}`).trim();
   const password = String(input.password || 'password123');
+  const hasDisplayName = Object.prototype.hasOwnProperty.call(input, 'display_name')
+    || Object.prototype.hasOwnProperty.call(input, 'displayName');
   const user = {
     id: nextUserId++,
     uid: nextUserId - 1,
     username,
     email: String(input.email || '').trim(),
     password,
-    display_name: String(input.display_name || input.displayName || username).trim(),
+    display_name: hasDisplayName
+      ? String(input.display_name ?? input.displayName ?? '').trim()
+      : username,
     avatar_url: '',
     account_type: 'human',
   };
@@ -822,13 +826,24 @@ async function handleApi(req, res) {
 
     if (req.method === 'POST' && url.pathname === '/api/auth/register') {
       const body = await readBody(req);
-      const username = String(body.username || body.email || '').trim();
-      if (!username || String(body.password || '').length < 6) {
-        return send(res, 400, { error: 'username min 3 chars, password min 6 chars' });
+      const email = String(body.email || '').trim();
+      const requestedUsername = String(body.username || '').trim();
+      const usernameBase = String(email.split('@')[0] || 'user')
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^[-_]+|[-_]+$/g, '') || 'user';
+      let username = requestedUsername || usernameBase;
+      let suffix = 1;
+      while (!requestedUsername && users.has(username)) {
+        username = `${usernameBase}-${suffix}`;
+        suffix += 1;
+      }
+      if (!email || String(body.password || '').length < 6) {
+        return send(res, 400, { error: 'email required, password min 6 chars' });
       }
       if (users.has(username)) return send(res, 409, { error: 'username taken' });
-      const user = createUser(body);
-      return send(res, 201, userPayload(user, issueToken(user)));
+      createUser({ ...body, email, username, display_name: '' });
+      return send(res, 200, { success: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/auth/login') {
@@ -844,6 +859,15 @@ async function handleApi(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/me') {
       const user = requireUser(req, res);
       if (!user) return;
+      return send(res, 200, userPayload(user));
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/me/update') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      user.display_name = String(body.display_name || '').trim();
+      user.avatar_url = String(body.avatar_url || '').trim();
       return send(res, 200, userPayload(user));
     }
 

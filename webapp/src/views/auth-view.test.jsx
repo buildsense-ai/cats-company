@@ -1,5 +1,6 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Simulate } from 'react-dom/test-utils';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../components/auth-flow-background', () => ({
@@ -219,5 +220,73 @@ describe('AuthView route links', () => {
 
     expect(onLogin).toHaveBeenCalledTimes(1);
     expect(submitButton?.disabled).toBe(false);
+  });
+
+  test('collects only account credentials during registration', async () => {
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="register"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.querySelector('input[name="email"]')).toBeTruthy();
+    expect(container.querySelector('input[name="verificationCode"]')).toBeTruthy();
+    expect(container.querySelector('input[name="newPassword"]')).toBeTruthy();
+    expect(container.querySelector('input[aria-label="机器人邀请码（可选）"]')).toBeTruthy();
+    expect(container.textContent).not.toContain('登录名称');
+  });
+
+  test('submits an optional bot invite code only during registration', async () => {
+    const onRegister = vi.fn().mockResolvedValue(undefined);
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="register"
+          onLogin={vi.fn()}
+          onRegister={onRegister}
+        />,
+      );
+    });
+
+    const setInput = async (selector, value) => {
+      const input = container.querySelector(selector);
+      await act(async () => {
+        Simulate.change(input, { target: { value } });
+      });
+    };
+    await setInput('input[name="email"]', 'invite-user@example.com');
+    await setInput('input[name="verificationCode"]', '123456');
+    await setInput('input[name="newPassword"]', 'secret123');
+    await setInput('input[aria-label="机器人邀请码（可选）"]', 'abc123def456');
+
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(onRegister).toHaveBeenCalledWith(
+      'invite-user@example.com',
+      'secret123',
+      '123456',
+      'ABC123DEF456',
+    );
+
+    await act(async () => {
+      root.render(
+        <AuthView
+          mode="login"
+          onLogin={vi.fn()}
+          onRegister={vi.fn()}
+        />,
+      );
+    });
+    expect(container.querySelector('input[aria-label="机器人邀请码（可选）"]')).toBeNull();
   });
 });

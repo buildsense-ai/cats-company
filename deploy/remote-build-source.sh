@@ -98,6 +98,41 @@ else
   esac
 fi
 
+website_image="ghcr.io/${owner}/cats-company-website:${revision}"
+website_pull_timeout="${REMOTE_WEBSITE_PULL_TIMEOUT_SECONDS:-120}"
+website_image_mode="${REMOTE_WEBSITE_IMAGE_MODE:-local}"
+
+build_website_image() {
+  website_build_timeout="${REMOTE_WEBSITE_BUILD_TIMEOUT_SECONDS:-900}"
+  echo "Building website image locally (timeout ${website_build_timeout}s)."
+  timeout "$website_build_timeout" docker build --progress=plain \
+    --build-arg VITE_APP_BASE_URL="${REMOTE_WEBSITE_APP_BASE_URL:-https://app.catsco.cc}" \
+    -f deploy/Dockerfile.website \
+    -t "$website_image" \
+    .
+}
+
+if docker image inspect "$website_image" >/dev/null 2>&1; then
+  echo "Website image already present: ${website_image}"
+else
+  case "$website_image_mode" in
+    pull)
+      echo "Pulling website image: ${website_image}"
+      if ! timeout "$website_pull_timeout" docker pull "$website_image"; then
+        echo "Website image pull failed or timed out after ${website_pull_timeout}s; falling back to the local build cache."
+        build_website_image
+      fi
+      ;;
+    local)
+      build_website_image
+      ;;
+    *)
+      echo "unsupported REMOTE_WEBSITE_IMAGE_MODE: $website_image_mode" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 find "$shared_source_root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} +
 find "$shared_release_root" -mindepth 1 -maxdepth 1 -name 'cats-company-source-*' -type f -mtime +7 -delete
 find "$root/releases" -mindepth 1 -maxdepth 1 -name 'cats-company-images-*.tar.gz' -type f -delete

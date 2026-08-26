@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const showcaseScript = fileURLToPath(new URL('./local-chat-showcase.mjs', import.meta.url));
+const onboardingScript = fileURLToPath(new URL('./local-onboarding-mock-server.mjs', import.meta.url));
 
 async function availablePort() {
   const server = net.createServer();
@@ -79,4 +80,48 @@ test('showcase mock serves the Agent quota endpoint without console-noisy 404s',
 
   const missingAgentResponse = await fetch(`${baseURL}/api/agents/quota?uid=999999`, { headers });
   assert.equal(missingAgentResponse.status, 404);
+});
+
+test('new-account mock keeps display-name onboarding after registration', async (t) => {
+  const port = await availablePort();
+  const baseURL = `http://127.0.0.1:${port}`;
+  const server = spawn(process.execPath, [onboardingScript], {
+    env: { ...process.env, MOCK_CATS_PORT: String(port), MOCK_CATS_SCENARIO: 'new' },
+    stdio: 'ignore',
+  });
+  t.after(() => {
+    if (!server.killed) server.kill();
+  });
+
+  await waitForServer(baseURL);
+  const email = 'new.person@example.com';
+  const password = 'demo123456';
+  const registerResponse = await fetch(`${baseURL}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, code: '123456' }),
+  });
+  assert.equal(registerResponse.status, 200);
+  assert.deepEqual(await registerResponse.json(), { success: true });
+
+  const loginResponse = await fetch(`${baseURL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account: email, password }),
+  });
+  assert.equal(loginResponse.status, 200);
+  const login = await loginResponse.json();
+  assert.equal(login.username, 'new-person');
+  assert.equal(login.display_name, '');
+
+  const updateResponse = await fetch(`${baseURL}/api/me/update`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${login.token}`,
+    },
+    body: JSON.stringify({ display_name: 'Alex', avatar_url: '' }),
+  });
+  assert.equal(updateResponse.status, 200);
+  assert.equal((await updateResponse.json()).display_name, 'Alex');
 });

@@ -83,11 +83,18 @@ Authorization: ApiKey <api_key>
 
 ```json
 // Request
-{ "username": "alice", "password": "mypassword", "display_name": "Alice" }
+{
+  "email": "alice@example.com",
+  "password": "mypassword",
+  "code": "123456",
+  "username": "alice"
+}
 
 // Response 200
-{ "uid": 1, "username": "alice" }
+{ "success": true }
 ```
+
+`username` 为可选的内部账号标识。Web 注册流程省略该字段，由服务端根据邮箱生成唯一标识；注册并登录后，再通过 `POST /api/me/update` 设置公开显示名称。
 
 #### POST /api/auth/login
 

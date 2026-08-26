@@ -26,6 +26,8 @@ func TestStaticRoutesServeAuthenticationPathsAsSPA(t *testing.T) {
 		"/register/",
 		"/reset-password",
 		"/reset-password/",
+		"/onboarding/name?next=%2Fe%2Finvite-1",
+		"/onboarding/name/",
 	} {
 		t.Run(path, func(t *testing.T) {
 			recorder := httptest.NewRecorder()

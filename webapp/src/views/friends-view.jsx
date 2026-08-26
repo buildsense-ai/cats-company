@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { UserPlus, UsersRound, X } from 'lucide-react';
 import { api } from '../api';
-import t from '../i18n';
 import FriendRequest from '../widgets/friend-request';
 import AddFriend from '../widgets/add-friend';
 import CreateGroup from '../widgets/create-group';
@@ -82,86 +82,92 @@ export default function FriendsView({ onSelectUser, user, onClose }) {
   const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1000 }}>
-      <div className="oc-modal v3-directory-modal" onClick={e => e.stopPropagation()} style={{ width: 600, maxWidth: '90vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column', background: '#191B1F', borderRadius: 12, border: '1px solid var(--v3-border)', overflow: 'hidden' }}>
-        
+    <div className="oc-modal-overlay cc-directory-overlay" onClick={onClose}>
+      <section
+        className="oc-modal v3-directory-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="directory-dialog-title"
+        onClick={e => e.stopPropagation()}
+      >
         {/* Header / Search */}
-        <div style={{ padding: '24px 24px 16px', borderBottom: '1px solid var(--v3-border)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h2 style={{ margin: 0, fontSize: 18, color: '#fff', fontWeight: 600 }}>Directory & New Chat</h2>
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 24, lineHeight: 1 }}>×</button>
+        <header className="cc-directory-header">
+          <div className="cc-directory-title-row">
+            <h2 id="directory-dialog-title">Directory &amp; New Chat</h2>
+            <button type="button" className="cc-directory-close" onClick={onClose} aria-label="关闭">
+              <X size={18} strokeWidth={1.8} aria-hidden="true" />
+            </button>
           </div>
-          <input 
+          <input
+            className="cc-directory-search"
             autoFocus
             type="text"
+            aria-label="搜索联系人或群组"
             placeholder="Search users or groups..." 
             value={search}
             onChange={e => setSearch(e.target.value)}
-            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', padding: '12px 16px', borderRadius: 8, outline: 'none', fontSize: 15 }}
           />
-        </div>
+        </header>
 
         {/* Content area */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
-          
+        <div className="cc-directory-content">
           {/* Quick Actions */}
-          <div style={{ display: 'flex', gap: 12 }}>
-            <button className="v3-btn-secondary" style={{ flex: 1, padding: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => setShowCreateGroup(true)}>
-              <span style={{ fontSize: 16 }}>🌍</span> Create New Group
+          <div className="cc-directory-actions">
+            <button type="button" className="v3-btn-secondary" onClick={() => setShowCreateGroup(true)}>
+              <UsersRound size={17} strokeWidth={1.8} aria-hidden="true" /> Create New Group
             </button>
-            <button className="v3-btn-secondary" style={{ flex: 1, padding: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => setShowAdd(true)}>
-              <span style={{ fontSize: 16 }}>👤</span> Add Friend by ID
+            <button type="button" className="v3-btn-secondary" onClick={() => setShowAdd(true)}>
+              <UserPlus size={17} strokeWidth={1.8} aria-hidden="true" /> Add Friend by ID
             </button>
           </div>
 
           {/* Pending Requests (Only shows if there are any) */}
           {pending.length > 0 && !search && (
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--v3-primary)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>
+            <section className="cc-directory-section">
+              <h3 className="cc-directory-section-title is-accent">
                 New Friend Requests ({pending.length})
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              </h3>
+              <div className="cc-directory-request-list">
                 {pending.map((req) => (
                   <FriendRequest key={req.id} request={req} onAccept={() => handleAccept(req.from_user_id)} onReject={() => handleReject(req.from_user_id)} />
                 ))}
               </div>
-            </div>
+            </section>
           )}
 
           {/* Combined Directory */}
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--v3-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>
+          <section className="cc-directory-section">
+            <h3 className="cc-directory-section-title">
               Groups & Friends
-            </div>
+            </h3>
             
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div className="cc-directory-list">
               {filteredGroups.map(group => (
-                <div key={group.id} className="v3-dir-item" onClick={() => onSelectUser({ topicId: `grp_${group.id}`, name: group.name, isGroup: true, groupId: group.id, avatar_url: group.avatar_url })}>
-                  <Avatar name={group.name} src={group.avatar_url} size={36} isGroup className="v3-avatar" style={{ marginRight: 12 }} />
-                  <span style={{ color: '#E1E2E3', fontWeight: 500, fontSize: 15 }}>{group.name}</span>
-                </div>
+                <button type="button" key={group.id} className="v3-dir-item" onClick={() => onSelectUser({ topicId: `grp_${group.id}`, name: group.name, isGroup: true, groupId: group.id, avatar_url: group.avatar_url })}>
+                  <Avatar name={group.name} src={group.avatar_url} size={36} isGroup className="v3-avatar" />
+                  <span className="cc-directory-name">{group.name}</span>
+                </button>
               ))}
               
               {filteredFriends.map(friend => (
-                <div key={friend.id} className="v3-dir-item" onClick={() => onSelectUser({ topicId: p2pTopicId(user.uid, friend.id), name: friend.display_name || friend.username, isGroup: false, avatar_url: friend.avatar_url, friendId: friend.id })}>
-                  <Avatar name={friend.display_name || friend.username} src={friend.avatar_url} size={36} isBot={friend.account_type === 'bot'} className={`v3-avatar ${friend.account_type === 'bot' ? 'bot' : ''}`} style={{ marginRight: 12 }} />
-                  <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ color: '#E1E2E3', fontWeight: 500, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{friend.display_name || friend.username}</span>
-                    <span style={{ color: 'var(--v3-text-muted)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{userIdentity(friend)}</span>
+                <button type="button" key={friend.id} className="v3-dir-item" onClick={() => onSelectUser({ topicId: p2pTopicId(user.uid, friend.id), name: friend.display_name || friend.username, isGroup: false, avatar_url: friend.avatar_url, friendId: friend.id })}>
+                  <Avatar name={friend.display_name || friend.username} src={friend.avatar_url} size={36} isBot={friend.account_type === 'bot'} className={`v3-avatar ${friend.account_type === 'bot' ? 'bot' : ''}`} />
+                  <span className="cc-directory-person">
+                    <span className="cc-directory-name">{friend.display_name || friend.username}</span>
+                    <span className="cc-directory-identity">{userIdentity(friend)}</span>
                   </span>
-                </div>
+                </button>
               ))}
 
               {filteredGroups.length === 0 && filteredFriends.length === 0 && (
-                <div style={{ padding: 20, textAlign: 'center', color: '#666', fontSize: 14 }}>
+                <div className="cc-directory-empty">
                   No matches found.
                 </div>
               )}
             </div>
-          </div>
+          </section>
         </div>
-
-      </div>
+      </section>
 
       {showAdd && <AddFriend currentUser={user} onClose={() => setShowAdd(false)} onSent={loadPending} />}
       {showCreateGroup && <CreateGroup onClose={() => setShowCreateGroup(false)} onCreated={handleGroupCreated} />}
