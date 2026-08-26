@@ -352,16 +352,24 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		PassHash:    hash,
 	}
 
-	uid, err := h.db.CreateUser(user)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
-		return
+	var uid int64
+	if inviteCode := strings.TrimSpace(req.BotInviteCode); inviteCode != "" {
+		invites, ok := h.db.(store.BotInviteStore)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot invite service unavailable"})
+			return
+		}
+		uid, _, err = invites.CreateUserWithBotInvite(user, strings.ToUpper(inviteCode))
+	} else {
+		uid, err = h.db.CreateUser(user)
 	}
-	if strings.TrimSpace(req.BotInviteCode) != "" {
-		if _, err := redeemBotInviteAfterRegistration(h.db, req.BotInviteCode, uid); err != nil {
+	if err != nil {
+		if errors.Is(err, store.ErrBotInviteUnavailable) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or unavailable bot invite code"})
 			return
 		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})

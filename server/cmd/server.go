@@ -629,6 +629,12 @@ func main() {
 	feedbackUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "feedback_user", Limit: 10, Window: 10 * time.Minute, Burst: 3,
 	})
+	botInviteRedeemIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "bot_invite_redeem_ip", Limit: 30, Window: time.Minute, Burst: 8,
+	})
+	botInviteRedeemUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "bot_invite_redeem_user", Limit: 12, Window: time.Minute, Burst: 4,
+	})
 	deviceConnectorEnrollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "device_connector_enroll_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -867,7 +873,7 @@ func main() {
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
 	mux.HandleFunc("/api/bots/invite-code", ownerAuthWithDB(botHandler.HandleBotInviteCode))
-	mux.HandleFunc("/api/bots/invite/redeem", jwtAuthWithDB(botHandler.HandleRedeemBotInvite))
+	mux.HandleFunc("/api/bots/invite/redeem", chainHTTP(botHandler.HandleRedeemBotInvite, botInviteRedeemIPLimit, jwtAuthWithDB, botInviteRedeemUserLimit))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
 	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))

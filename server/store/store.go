@@ -28,6 +28,8 @@ var ErrBotSkillMutationLeaseExpired = errors.New("bot skill mutation lease expir
 var ErrBotSkillMutationVersionFactsConflict = errors.New("skill version facts do not match the candidate content")
 var ErrBotSkillMutationAtomicCommitRequired = errors.New("bot definition commit requires the atomic mutation commit path")
 var ErrBotSkillMutationDefinitionStale = errors.New("bot definition no longer matches the mutation base")
+var ErrBotSkillMutationRuntimeMismatch = errors.New("bot runtime does not match the mutation")
+var ErrBotSkillMutationActivationFactConflict = errors.New("bot skill activation fact conflicts with the recorded result")
 var ErrBotInviteUnavailable = errors.New("bot invite code is invalid or expired")
 
 const maxConversationTaskStatusFutureClockSkew = 5 * time.Minute
@@ -276,6 +278,7 @@ type BotStore interface {
 // It is optional so focused test stores can keep implementing the legacy
 // Store surface without invitation support.
 type BotInviteStore interface {
+	CreateUserWithBotInvite(user *types.User, code string) (userUID, botUID int64, err error)
 	CreateBotInviteCode(botUID, ownerUID int64, code string) error
 	GetBotInviteCode(botUID, ownerUID int64) (string, error)
 	RevokeBotInviteCode(botUID, ownerUID int64) error
@@ -325,6 +328,14 @@ type BotSkillMutationStore interface {
 	// with a generation CAS. It is intentionally separate from Renew so an
 	// active lease can never be silently stolen.
 	RecoverBotSkillMutationLease(botUID, mutationID, expectedLeaseGeneration int64, expected types.BotSkillMutationStatus, now time.Time, leaseTTL time.Duration) (*types.BotSkillMutation, error)
+}
+
+// BotSkillMutationActivationStore is deliberately separate from the mutation
+// coordinator boundary. Implementations must update BotDefinition Runtime
+// apply state and the mutation activation fact in one database transaction.
+type BotSkillMutationActivationStore interface {
+	ActivateBotSkillMutation(input types.BotSkillMutationActivationInput, now time.Time) (*types.BotSkillMutation, *types.BotDefinitionRecord, bool, error)
+	RecordBotSkillMutationActivationFailure(input types.BotSkillMutationActivationFailureInput, now time.Time) (*types.BotSkillMutation, *types.BotDefinitionRecord, bool, error)
 }
 
 // BotModelConfigStore is optional so existing narrow Store test doubles do not

@@ -417,6 +417,7 @@ export default function AgentStoreModal({
   const [createdMode, setCreatedMode] = useState(CREATE_MODES.SELF_HOSTED);
   const [copiedField, setCopiedField] = useState('');
   const [generatingInviteCode, setGeneratingInviteCode] = useState(null);
+  const [generatedInviteCodes, setGeneratedInviteCodes] = useState({});
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
@@ -1138,11 +1139,17 @@ export default function AgentStoreModal({
   const handleGenerateBotInviteCode = async (bot) => {
     const botId = bot?.id || bot?.uid;
     if (!botId) return;
+    const existingCode = generatedInviteCodes[botId];
+    if (existingCode) {
+      await handleCopy(`invite_${botId}`, existingCode);
+      return;
+    }
     setGeneratingInviteCode(botId);
     try {
       const result = await api.generateBotInviteCode(botId);
       const code = result?.code || '';
       if (code) {
+        setGeneratedInviteCodes((previous) => ({ ...previous, [botId]: code }));
         await navigator.clipboard.writeText(code).catch(() => {});
         feedback.notify({ tone: 'success', message: `邀请码 ${code} 已生成并复制` });
       }
@@ -1498,7 +1505,11 @@ export default function AgentStoreModal({
                             disabled={generatingInviteCode === botId}
                             title="生成机器人邀请码"
                           >
-                            {generatingInviteCode === botId ? '生成中...' : '生成邀请码'}
+                            {generatingInviteCode === botId
+                              ? '生成中...'
+                              : generatedInviteCodes[botId]
+                                ? (copiedField === `invite_${botId}` ? '已复制' : generatedInviteCodes[botId])
+                                : '生成邀请码'}
                           </button>
                         )}
                         {owned && (
