@@ -1792,7 +1792,7 @@ describe('ChatMessage rich file rendering', () => {
       url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
       publish_version: 2,
     };
-    const previewURL = `${artifact.url}?artifact_version=2`;
+    const previewURL = 'https://artifacts.example.test/by-agent/440/lesson-game/v2/';
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -2194,7 +2194,9 @@ describe('ChatMessage rich file rendering', () => {
 
     const panel = container.querySelector('.v3-file-preview-panel');
     const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
-    expect(externalLink?.getAttribute('href')).toBe(`${artifact.url}?artifact_version=3`);
+    expect(externalLink?.getAttribute('href')).toBe(
+      'https://artifacts.example.test/by-agent/440/managed-game/v3/',
+    );
     expect(panel.querySelector('a[download]')).toBeNull();
 
     await act(async () => {
@@ -2204,8 +2206,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('opens a same-origin registry Artifact in a new tab instead of embedding it', async () => {
+  it('previews a same-origin registry Artifact in the side panel with an opaque sandbox', async () => {
     const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
+    const previewURL = 'http://localhost:3000/artifacts/by-agent/440/same-origin/v1/';
     const artifact = {
       id: 'same-origin',
       title: 'Same-origin artifact',
@@ -2229,16 +2232,98 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     const previewButton = container.querySelector('.v3-artifact-actions button');
-    expect(previewButton.disabled).toBe(true);
+    expect(previewButton.disabled).toBe(false);
 
     await act(async () => {
       Simulate.click(container.querySelector('.v3-artifact-main'));
       await Promise.resolve();
     });
 
-    expect(window.open).toHaveBeenCalledWith(artifactURL, '_blank', 'noopener,noreferrer');
-    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
-    expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+    expect(window.open).not.toHaveBeenCalled();
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(panel).not.toBeNull();
+    const frame = panel.querySelector('iframe.v3-file-preview-frame');
+    const frameURL = new URL(frame?.getAttribute('src'));
+    expect(`${frameURL.origin}${frameURL.pathname}${frameURL.search}`).toBe(previewURL);
+    expect(frameURL.hash).toContain('catsco_bridge_nonce=');
+    expect(frame?.getAttribute('srcdoc')).toBeNull();
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-modals');
+    expect(frame?.hasAttribute('credentialless')).toBe(true);
+  });
+
+  it('invalidates the opaque bridge when the preview iframe loads a second document', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/reloadable/latest/', window.location.origin).toString();
+    const onBindingChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile({
+            id: 'reloadable',
+            agent_uid: 440,
+            title: 'Reloadable artifact',
+            url: artifactURL,
+            publish_version: 1,
+          })}
+          onRemoteArtifactFrameChange={onBindingChange}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    const frame = container.querySelector('iframe.v3-file-preview-frame');
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    const firstBinding = onBindingChange.mock.calls.at(-1)?.[0];
+    expect(firstBinding?.bridge).toBe('catsco.artifact-frame-bridge.v1');
+    expect(firstBinding?.bridgeReady).toBe(true);
+    expect(firstBinding?.signal?.aborted).toBe(false);
+
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    expect(firstBinding.signal.aborted).toBe(true);
+    expect(onBindingChange.mock.calls.at(-1)?.[0]).toBeNull();
+    expect(container.querySelector('.v3-remote-artifact-preview-state.error')).not.toBeNull();
+  });
+
+  it('aborts the active opaque bridge when the preview unmounts', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/unmountable/latest/', window.location.origin).toString();
+    const onBindingChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile({
+            id: 'unmountable',
+            agent_uid: 440,
+            title: 'Unmountable artifact',
+            url: artifactURL,
+            publish_version: 1,
+          })}
+          onRemoteArtifactFrameChange={onBindingChange}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    const frame = container.querySelector('iframe.v3-file-preview-frame');
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    const binding = onBindingChange.mock.calls.at(-1)?.[0];
+    expect(binding?.signal?.aborted).toBe(false);
+
+    await act(async () => {
+      root.render(null);
+      await flushAsync();
+    });
+
+    expect(binding.signal.aborted).toBe(true);
   });
 
   it('keeps an unknown external URL as an ordinary link', async () => {

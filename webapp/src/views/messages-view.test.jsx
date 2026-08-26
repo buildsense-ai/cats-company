@@ -3589,7 +3589,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    const refreshedURL = 'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3';
+    const refreshedURL = 'https://artifacts.example.test/by-agent/440/lesson-game/v3/';
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(refreshedURL);
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
@@ -3708,7 +3708,9 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -3718,7 +3720,9 @@ describe('MessagesView composer draft isolation', () => {
       });
     }
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
     expect(contextRequests).toBeGreaterThanOrEqual(3);
 
@@ -3727,7 +3731,9 @@ describe('MessagesView composer draft isolation', () => {
       await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
       await flushPromises();
     });
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -3816,7 +3822,9 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -3831,7 +3839,9 @@ describe('MessagesView composer draft isolation', () => {
       await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
       await flushPromises();
     });
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -3915,7 +3925,9 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
       await flushPromises();
     });
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
     vi.useRealTimers();
   });
@@ -3964,7 +3976,9 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -3984,7 +3998,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
-      'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3',
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
     );
     vi.useRealTimers();
   });
@@ -4557,6 +4571,200 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(wsSendArtifactResultReceipt).not.toHaveBeenCalled();
+  });
+
+  it('drops a result response that arrives after the preview is closed', async () => {
+    const origin = 'https://artifacts.example.test';
+    const resultId = `arr_${'c'.repeat(43)}`;
+    let respondToResult = null;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-25T03:00:00Z',
+              selected_text: '待回写页面',
+            },
+          });
+          return;
+        }
+        if (message.type === 'catsco.artifact.result.request.v1') {
+          respondToResult = () => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.result.response.v1',
+            request_id: message.request_id,
+            receipt: {
+              contract_version: 'catsco.artifact-result-receipt.v1',
+              result_id: resultId,
+              status: 'applied',
+            },
+          });
+        }
+      },
+    };
+    const artifactURL = `${origin}/by-agent/440/close-race/latest/`;
+    const artifact = {
+      id: 'close-race',
+      agent_uid: '440',
+      title: '关闭竞态',
+      kind: 'html',
+      url: artifactURL,
+      status: 'active',
+      publish_version: 1,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'close-race',
+        agentUid: 440,
+        url: artifactURL,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 关闭竞态"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '写回关闭竞态');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    wsSendArtifactResultReceipt.mockClear();
+    await act(async () => {
+      wsHandler({
+        artifact_result: {
+          type: 'request',
+          origin_node_id: 'catsco-node-1',
+          context_ref: `acr_${'x'.repeat(43)}`,
+          writeback_ref: `awr_${'w'.repeat(43)}`,
+          topic_id: 'p2p_1_440',
+          agent_uid: '440',
+          artifact_id: 'close-race',
+          displayed_version: 1,
+          sink_id: 'items.upsert.v1',
+          result_id: resultId,
+          payload: { items: [{ title: '不应回写' }] },
+        },
+      });
+      await flushPromises();
+    });
+    expect(respondToResult).toEqual(expect.any(Function));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.mock-close-preview'));
+      await flushPromises();
+    });
+    await act(async () => {
+      respondToResult();
+      await flushPromises();
+    });
+
+    expect(wsSendArtifactResultReceipt).not.toHaveBeenCalled();
+  });
+
+  it('returns a failed receipt when a same-origin opaque Artifact has no bridge support', async () => {
+    vi.stubGlobal('MessageChannel', undefined);
+    const artifactURL = new URL(
+      '/artifacts/by-agent/440/legacy-game/latest/',
+      window.location.origin,
+    ).toString();
+    const resultId = `arr_${'o'.repeat(43)}`;
+    const frameWindow = { postMessage: vi.fn() };
+    const artifact = {
+      id: 'legacy-game',
+      agent_uid: '440',
+      title: '旧版小游戏',
+      kind: 'html',
+      url: artifactURL,
+      status: 'active',
+      publish_version: 1,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'legacy-game',
+        agentUid: 440,
+        url: artifactURL,
+        bridge: 'catsco.artifact-frame-bridge.v1',
+        bridgeNonce: 'legacy-bridge-nonce',
+        bridgeReady: true,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 旧版小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '把结果写回旧版页面');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    const request = {
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_1_440',
+      agent_uid: '440',
+      artifact_id: 'legacy-game',
+      displayed_version: 1,
+      sink_id: 'items.upsert.v1',
+      result_id: resultId,
+      payload: { items: [{ title: '不应发送到旧页面' }] },
+    };
+    await act(async () => {
+      wsHandler({ artifact_result: request });
+      await flushPromises();
+    });
+
+    expect(frameWindow.postMessage).not.toHaveBeenCalled();
+    expect(wsSendArtifactResultReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'receipt',
+      result_id: resultId,
+      receipt: {
+        contract_version: 'catsco.artifact-result-receipt.v1',
+        result_id: resultId,
+        status: 'failed',
+        code: 'opaque_frame_bridge_required',
+      },
+    }));
   });
 
   it('drops a stale Artifact reference when the preview closes during page capture', async () => {
