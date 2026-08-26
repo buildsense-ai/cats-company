@@ -55,6 +55,7 @@ mkdir -p \
   "$root/data/uploads" \
   "$root/data/dreamina-home" \
   "$root/data/dreamina-worker" \
+  "${PROD_WEBSITE_PUBLIC_ROOT:-$root/website-public}" \
   "$root/logs"
 
 if [ ! -f "$compose_file" ]; then
