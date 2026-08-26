@@ -32,6 +32,18 @@ function FriendSearchModeSelect({ value, onValueChange }) {
   );
 }
 
+function botInviteErrorMessage(error) {
+  const message = String(error?.message || '').trim();
+  if (
+    !message
+    || /bot invite code is invalid or expired/i.test(message)
+    || /invalid or unavailable bot invite code/i.test(message)
+  ) {
+    return '邀请码无效或已失效';
+  }
+  return message;
+}
+
 export default function AddFriend({ currentUser, onClose, onSent }) {
   const [query, setQuery] = useState('');
   const [searchMode, setSearchMode] = useState('name');
@@ -108,7 +120,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
       if (onSent) onSent();
       window.dispatchEvent(new Event('cc:data-changed'));
     } catch (e) {
-      setError(e.message || '邀请码无效或已失效');
+      setError(botInviteErrorMessage(e));
     } finally {
       setRedeemingInvite(false);
     }
