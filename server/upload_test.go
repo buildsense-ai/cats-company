@@ -408,6 +408,7 @@ func TestHandleServeFileServesHTMLFilesInlineWithSandbox(t *testing.T) {
 }
 
 func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
 	for _, ext := range []string{".pdf", ".html"} {
 		t.Run(ext, func(t *testing.T) {
 			dir := t.TempDir()
@@ -443,7 +444,7 @@ func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
 			for _, expected := range []string{
 				"<title>学情报告" + ext + "</title>",
 				"<meta property=\"og:title\" content=\"学情报告" + ext + "\">",
-				"<meta property=\"og:image\" content=\"http://example.com/pwa-512x512.png\">",
+				"<meta property=\"og:image\" content=\"https://app.example/pwa-512x512.png\">",
 				"/uploads/files/" + fileName,
 				"/uploads/files/" + fileName + "?download=1",
 			} {
@@ -536,15 +537,24 @@ func TestRequestAbsoluteURLUsesConfiguredPublicOrigin(t *testing.T) {
 	}
 }
 
-func TestRequestAbsoluteURLDoesNotTrustForwardedHostWithoutConfiguration(t *testing.T) {
+func TestRequestAbsoluteURLRequiresConfiguredPublicOrigin(t *testing.T) {
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "")
 	request := httptest.NewRequest(http.MethodGet, "/uploads/files/report.pdf?preview=1", nil)
 	request.Host = "app.example"
 	request.Header.Set("X-Forwarded-Host", "attacker.example")
 	request.Header.Set("X-Forwarded-Proto", "https")
 
-	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "https://app.example/pwa-512x512.png" {
-		t.Fatalf("absolute URL = %q, want request host without forwarded host", got)
+	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "/pwa-512x512.png" {
+		t.Fatalf("absolute URL = %q, want relative path without configured origin", got)
+	}
+}
+
+func TestRequestAbsoluteURLRejectsNonHTTPSPublicOrigin(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "http://app.example")
+	request := httptest.NewRequest(http.MethodGet, "/uploads/files/report.pdf?preview=1", nil)
+
+	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "/pwa-512x512.png" {
+		t.Fatalf("absolute URL = %q, want relative path for non-HTTPS origin", got)
 	}
 }
 

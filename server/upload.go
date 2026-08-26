@@ -352,55 +352,19 @@ func (h *UploadHandler) handleCreateMobileUploadSession(w http.ResponseWriter, r
 	})
 }
 
-func mobileUploadBaseURL(r *http.Request) string {
+func mobileUploadBaseURL(_ *http.Request) string {
 	if configured := strings.TrimSpace(os.Getenv("CATSCO_MOBILE_UPLOAD_BASE_URL")); configured != "" {
 		return strings.TrimRight(configured, "/")
 	}
-	return requestOrigin(r)
+	return requestOrigin()
 }
 
-func requestOrigin(r *http.Request) string {
-	if configured := configuredPublicOrigin(); configured != "" {
-		return configured
-	}
-	return requestOriginFromHeaders(r)
-}
-
-func configuredPublicOrigin() string {
-	raw := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
-	parsed, err := url.Parse(raw)
-	if err != nil || raw == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" ||
-		(parsed.Path != "" && parsed.Path != "/") {
+func requestOrigin() string {
+	configured, err := configuredPublicBaseURL()
+	if err != nil {
 		return ""
 	}
-	return parsed.Scheme + "://" + parsed.Host
-}
-
-func requestOriginFromHeaders(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwardedProto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))); forwardedProto == "http" || forwardedProto == "https" {
-		scheme = forwardedProto
-	}
-	host := strings.TrimSpace(r.Host)
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + host
-}
-
-func firstForwardedValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	parts := strings.Split(value, ",")
-	return strings.TrimSpace(parts[0])
+	return configured
 }
 
 func (h *UploadHandler) handleGetMobileUploadSession(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -712,8 +676,8 @@ func sanitizeUploadPreviewName(value string) string {
 	return value
 }
 
-func requestAbsoluteURL(r *http.Request, path string) string {
-	origin := requestOrigin(r)
+func requestAbsoluteURL(_ *http.Request, path string) string {
+	origin := requestOrigin()
 	if origin == "" {
 		return path
 	}
