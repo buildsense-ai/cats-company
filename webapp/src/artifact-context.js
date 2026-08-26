@@ -42,6 +42,25 @@ const ARTIFACT_RESULT_MAX_BYTES = 64 * 1024;
 const ARTIFACT_RESULT_RECEIPT_MAX_BYTES = 8 * 1024;
 const ARTIFACT_RESULT_TIMEOUT_MS = 17_000;
 
+function artifactFrameMessagePolicy(url) {
+  let frameOrigin;
+  try {
+    frameOrigin = new URL(url).origin;
+  } catch {
+    return null;
+  }
+
+  // Managed same-origin Artifacts are loaded with an opaque sandbox origin.
+  // They can only receive messages sent with `*`, and their replies report
+  // `null`; keep source identity as the second half of the trust check below.
+  const isOpaqueSameOriginFrame = typeof window !== 'undefined'
+    && frameOrigin === window.location.origin;
+  return {
+    targetOrigin: isOpaqueSameOriginFrame ? '*' : frameOrigin,
+    responseOrigin: isOpaqueSameOriginFrame ? 'null' : frameOrigin,
+  };
+}
+
 function positiveInteger(value) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
@@ -133,12 +152,8 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
   const contentWindow = frame?.contentWindow;
   if (!artifactRef || binding?.artifactId !== artifactRef.id || !contentWindow?.postMessage) return null;
 
-  let targetOrigin;
-  try {
-    targetOrigin = new URL(binding.url).origin;
-  } catch {
-    return null;
-  }
+  const messagePolicy = artifactFrameMessagePolicy(binding.url);
+  if (!messagePolicy) return null;
   const requestId = artifactContextRequestId();
   const boundedTimeout = Number.isFinite(timeoutMs)
     ? Math.max(0, Math.min(1000, Math.round(timeoutMs)))
@@ -154,7 +169,7 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
       resolve(value);
     };
     const handleMessage = (event) => {
-      if (event.source !== contentWindow || event.origin !== targetOrigin) return;
+      if (event.source !== contentWindow || event.origin !== messagePolicy.responseOrigin) return;
       if (event.data?.type !== ARTIFACT_CONTEXT_RESPONSE_TYPE || event.data?.request_id !== requestId) return;
       finish(normalizeArtifactPageContext(event.data.context));
     };
@@ -164,7 +179,7 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
       contentWindow.postMessage({
         type: ARTIFACT_CONTEXT_REQUEST_TYPE,
         request_id: requestId,
-      }, targetOrigin);
+      }, messagePolicy.targetOrigin);
     } catch {
       finish(null);
     }
@@ -217,12 +232,8 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
     || binding?.artifactId !== normalized.artifactId
     || Number(binding?.agentUid || 0) !== normalized.agentUid) return null;
 
-  let targetOrigin;
-  try {
-    targetOrigin = new URL(binding.url).origin;
-  } catch {
-    return null;
-  }
+  const messagePolicy = artifactFrameMessagePolicy(binding.url);
+  if (!messagePolicy) return null;
   const requestId = artifactContextRequestId();
   const boundedTimeout = Number.isFinite(timeoutMs)
     ? Math.max(100, Math.min(20_000, Math.round(timeoutMs)))
@@ -249,7 +260,7 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
       resolve(receipt);
     };
     const handleMessage = (event) => {
-      if (event.source !== contentWindow || event.origin !== targetOrigin) return;
+      if (event.source !== contentWindow || event.origin !== messagePolicy.responseOrigin) return;
       if (event.data?.type !== ARTIFACT_RESULT_RESPONSE_TYPE || event.data?.request_id !== requestId) return;
       finish(normalizeArtifactResultReceipt(event.data.receipt, normalized.resultId)
         || artifactResultFailureReceipt(normalized.resultId, 'invalid_receipt'));
@@ -261,7 +272,7 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
         type: ARTIFACT_RESULT_REQUEST_TYPE,
         request_id: requestId,
         result,
-      }, targetOrigin);
+      }, messagePolicy.targetOrigin);
     } catch {
       finish(null);
     }

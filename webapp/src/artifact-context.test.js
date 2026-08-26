@@ -332,6 +332,44 @@ describe('artifact context snapshot handoff', () => {
     expect(result?.semantic_context).toEqual({ selection: ['f12'], view: 'feedback-list' });
   });
 
+  it('supports an opaque same-origin Artifact iframe for page context', async () => {
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe('*');
+        window.setTimeout(() => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: frameWindow },
+            origin: { value: 'null' },
+            data: {
+              value: {
+                type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
+                request_id: message.request_id,
+                context: {
+                  contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+                  observed_at: '2026-08-26T12:00:00Z',
+                  selected_text: '同源选区',
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        }, 0);
+      },
+    };
+    const result = await requestArtifactPageContext({
+      frame: { contentWindow: frameWindow },
+      artifactId: 'same-origin-game',
+      url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+    }, {
+      contract_version: ARTIFACT_REF_CONTRACT,
+      id: 'same-origin-game',
+      currently_visible: true,
+    }, 50);
+
+    expect(result?.selected_text).toBe('同源选区');
+  });
+
   it('falls back without blocking when the iframe does not answer', async () => {
     const result = await requestArtifactPageContext({
       frame: { contentWindow: { postMessage() {} } },
@@ -403,6 +441,55 @@ describe('artifact context snapshot handoff', () => {
       status: 'applied',
       receipt: { created: 1, state_revision: '43' },
     });
+  });
+
+  it('supports opaque same-origin Artifact iframes for result writeback', async () => {
+    const delivery = normalizeArtifactResultDelivery({
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      context_ref: `acr_${'c'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_7_440',
+      agent_uid: '440',
+      artifact_id: 'same-origin-game',
+      displayed_version: 1,
+      sink_id: 'items.upsert.v1',
+      result_id: `arr_${'r'.repeat(43)}`,
+      payload: { items: [{ title: '同源结果' }] },
+    });
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe('*');
+        expect(message.result.writeback_ref).toBeUndefined();
+        window.setTimeout(() => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: frameWindow },
+            origin: { value: 'null' },
+            data: {
+              value: {
+                type: ARTIFACT_RESULT_RESPONSE_TYPE,
+                request_id: message.request_id,
+                receipt: {
+                  contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+                  result_id: delivery.resultId,
+                  status: 'applied',
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        }, 0);
+      },
+    };
+    const receipt = await requestArtifactResultApply({
+      frame: { contentWindow: frameWindow },
+      artifactId: 'same-origin-game',
+      agentUid: 440,
+      url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+    }, delivery, 50);
+
+    expect(receipt?.status).toBe('applied');
   });
 
   it('rejects malformed result routes and keeps a bridge timeout non-terminal', async () => {
