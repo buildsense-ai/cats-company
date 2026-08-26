@@ -86,13 +86,24 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		}
 		candidateMetadata := payload.Metadata
 		payload.Metadata, payload.ArtifactContextRef = h.hub.extractArtifactContextDelivery(uid, req.TopicID, candidateMetadata)
-		_, payload.ArtifactTaskRef, err = h.hub.extractArtifactTaskDelivery(uid, req.TopicID, candidateMetadata)
+		_, payload.ArtifactTaskRef, err = h.hub.extractArtifactTaskDelivery(uid, req.TopicID, payload.ClientMsgID, candidateMetadata)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			status := http.StatusBadRequest
+			if errors.Is(err, errArtifactTaskDeliveryPending) {
+				status = http.StatusConflict
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
 	} else {
 		payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
+	}
+	if payload.ArtifactTaskRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
+		h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "Artifact task references require a persisted visible message",
+		})
+		return
 	}
 
 	if isTransientRuntimePayload(payload) {
@@ -131,6 +142,19 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	if payload.ArtifactTaskRef != nil && !payload.ArtifactTaskRef.AlreadyDelivered &&
+		!h.hub.IsOnline(payload.ArtifactTaskRef.AgentUID) {
+		h.hub.artifactTasks.failDelivery(
+			payload.ArtifactTaskRef,
+			"agent_offline",
+			"Artifact task Agent is not connected",
+		)
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "Artifact task Agent is offline",
+			"code":  "artifact_task_agent_offline",
+		})
+		return
+	}
 
 	if !isGroupTopic(req.TopicID) {
 		// Ensure p2p topic exists before saving.
@@ -139,6 +163,9 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 
 	result, err := saveNormalizedMessage(h.db, req.TopicID, uid, req.ReplyTo, payload)
 	if err != nil {
+		if payload.ArtifactTaskRef != nil {
+			h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to send"})
 		return
 	}
@@ -169,7 +196,30 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !result.Duplicate {
-		h.fanoutMessage(uid, req.TopicID, req.ReplyTo, payload, result.ID)
+		delivered := h.fanoutMessage(uid, req.TopicID, req.ReplyTo, payload, result.ID)
+		if payload.ArtifactTaskRef != nil && !delivered {
+			h.hub.artifactTasks.failDelivery(
+				payload.ArtifactTaskRef,
+				"turn_delivery_failed",
+				"Artifact task turn could not be delivered to the online Agent",
+			)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "Artifact task turn delivery failed",
+				"code":  "artifact_task_delivery_failed",
+			})
+			return
+		}
+	} else if payload.ArtifactTaskRef != nil && !payload.ArtifactTaskRef.AlreadyDelivered {
+		h.hub.artifactTasks.failDelivery(
+			payload.ArtifactTaskRef,
+			"turn_delivery_conflict",
+			"Artifact task message identity was already used without a confirmed delivery",
+		)
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "Artifact task delivery could not be reconciled",
+			"code":  "artifact_task_delivery_conflict",
+		})
+		return
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -185,11 +235,11 @@ func (h *MessageHandler) accountTypeForUID(uid int64) types.AccountType {
 	return user.AccountType
 }
 
-func (h *MessageHandler) fanoutMessage(uid int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64) {
+func (h *MessageHandler) fanoutMessage(uid int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64) bool {
 	if h == nil || h.hub == nil {
-		return
+		return false
 	}
-	h.hub.fanoutNormalizedMessage(uid, topicID, replyTo, payload, msgID, nil)
+	return h.hub.fanoutNormalizedMessage(uid, topicID, replyTo, payload, msgID, nil)
 }
 
 func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, replyTo int, payload *normalizedMessagePayload) (*savedMessageResult, error) {
@@ -233,13 +283,13 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 	return &savedMessageResult{ID: id}, nil
 }
 
-func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64, exclude *Client) {
+func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64, exclude *Client) bool {
 	if h == nil || payload == nil {
-		return
+		return false
 	}
 	dataMsg := h.messageForRecipient(uid, 0, topicID, replyTo, payload, msgID)
 	if dataMsg == nil {
-		return
+		return false
 	}
 	if h.isTaskStatusPublisher(uid) {
 		h.agentPush.resetVisibleTailAtWorkingBoundary(uid, dataMsg)
@@ -248,7 +298,7 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	if isGroupTopic(topicID) {
 		groupID := extractGroupID(topicID)
 		if groupID == 0 {
-			return
+			return false
 		}
 		mentions := payload.Mentions
 		trustedChannelTrigger := trustedChannelBindingDeliveryMetadata(payload.Metadata) && metadataBool(payload.Metadata, "channel_native_group_triggered")
@@ -256,14 +306,14 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 		if !h.isChannelManagedGroup(groupID) {
 			h.SendToUserExcept(uid, h.messageForRecipient(uid, uid, topicID, replyTo, payload, msgID), exclude)
 		}
-		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid, trustedChannelTrigger)
+		taskDelivered := h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid, trustedChannelTrigger)
 		h.forwardChannelGroupBotReply(uid, topicID, payload, msgID)
-		return
+		return taskDelivered
 	}
 
 	peerUID := extractPeerUID(topicID, uid)
 	if peerUID == 0 {
-		return
+		return false
 	}
 	if !channelMetadataHasSource(payload.Metadata) {
 		h.clearChannelInboundReplyRoute(topicID, uid, peerUID)
@@ -271,7 +321,16 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 
 	h.SendToUserExcept(uid, h.messageForRecipient(uid, uid, topicID, replyTo, payload, msgID), exclude)
 	peerMessage := h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID)
-	h.SendToUser(peerUID, peerMessage)
+	taskDelivered := false
+	if payload.ArtifactTaskRef != nil && payload.ArtifactTaskRef.AgentUID == peerUID {
+		if payload.ArtifactTaskRef.AlreadyDelivered {
+			taskDelivered = true
+		} else if h.sendToUserExceptConfirmed(peerUID, peerMessage, nil) > 0 {
+			taskDelivered = h.artifactTasks.confirmDelivery(payload.ArtifactTaskRef)
+		}
+	} else {
+		h.SendToUser(peerUID, peerMessage)
+	}
 	if shouldNotifyOfflineForMessage(peerMessage) {
 		h.notifyOfflineUserForMessage(peerUID, uid, peerMessage, h.isTaskStatusPublisher(uid))
 	}
@@ -283,6 +342,7 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	if peerClient := h.getClient(peerUID); peerClient != nil && peerClient.accountType == types.AccountBot {
 		h.botStats.RecordRecv(peerUID)
 	}
+	return taskDelivered
 }
 
 func (h *Hub) fanoutNormalizedGroupMessageToHumans(uid int64, topicID string, payload *normalizedMessagePayload, msgID int64) {

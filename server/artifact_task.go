@@ -27,14 +27,21 @@ const (
 	artifactTaskTombstoneTTLDefault   = 10 * time.Minute
 	artifactTaskAgentFinishGrace      = 5 * time.Second
 	artifactTaskStoreMaxEntries       = 4096
+	artifactTaskActorActiveMax        = 32
+	artifactTaskActorRateMax          = 60
+	artifactTaskActorRateWindow       = time.Minute
 	artifactTaskRequestMaxBody        = 96 * 1024
 	artifactTaskOpaqueRandomBytes     = 32
 	artifactTaskVisibleMessageMaxRune = 700
 )
 
 var (
-	artifactTaskIDPattern  = regexp.MustCompile(`^atk_[A-Za-z0-9_-]{43}$`)
-	artifactTaskRefPattern = regexp.MustCompile(`^atr_[A-Za-z0-9_-]{43}$`)
+	artifactTaskIDPattern          = regexp.MustCompile(`^atk_[A-Za-z0-9_-]{43}$`)
+	artifactTaskRefPattern         = regexp.MustCompile(`^atr_[A-Za-z0-9_-]{43}$`)
+	errArtifactTaskStoreFull       = errors.New("Artifact task store is full")
+	errArtifactTaskActorActiveCap  = errors.New("Artifact task active limit exceeded")
+	errArtifactTaskActorRateLimit  = errors.New("Artifact task rate limit exceeded")
+	errArtifactTaskDeliveryPending = errors.New("Artifact task delivery is already in progress")
 )
 
 type artifactTaskState string
@@ -61,6 +68,8 @@ type artifactTask struct {
 	Status           artifactTaskState
 	Code             string
 	Message          string
+	DeliveryClaimed  bool
+	DeliveryClientID string
 	Delivered        bool
 	RunID            string
 	AgentState       string
@@ -73,20 +82,35 @@ type artifactTask struct {
 }
 
 type artifactTaskDeliveryRef struct {
-	Ref      string
-	TaskID   string
-	AgentUID int64
+	Ref              string
+	TaskID           string
+	AgentUID         int64
+	ClientMessageID  string
+	AlreadyDelivered bool
 }
 
+type artifactTaskActorRate struct {
+	WindowStart time.Time
+	Count       int
+}
+
+// artifactTaskStore is intentionally process-local in V4.1. The current
+// production compose runs one Hub; any future multi-Hub deployment must keep
+// preview/task HTTP traffic and the target Agent connection sticky to one Hub
+// until task state gains a shared runtime backend.
 type artifactTaskStore struct {
-	mu           sync.Mutex
-	byRef        map[string]*artifactTask
-	byID         map[string]*artifactTask
-	ttl          time.Duration
-	tombstoneTTL time.Duration
-	agentGrace   time.Duration
-	maxEntries   int
-	now          func() time.Time
+	mu              sync.Mutex
+	byRef           map[string]*artifactTask
+	byID            map[string]*artifactTask
+	ttl             time.Duration
+	tombstoneTTL    time.Duration
+	agentGrace      time.Duration
+	maxEntries      int
+	actorActiveMax  int
+	actorRateMax    int
+	actorRateWindow time.Duration
+	actorRates      map[int64]artifactTaskActorRate
+	now             func() time.Time
 }
 
 type ArtifactTaskHandler struct {
@@ -110,6 +134,7 @@ type artifactTaskPublicStatus struct {
 	Message         string `json:"message,omitempty"`
 	RunID           string `json:"run_id,omitempty"`
 	ResultID        string `json:"result_id,omitempty"`
+	DeliveryStatus  string `json:"delivery_status"`
 	UpdatedAt       string `json:"updated_at"`
 	ExpiresAt       string `json:"expires_at"`
 }
@@ -128,13 +153,17 @@ func newArtifactTaskStore(ttl, tombstoneTTL, agentGrace time.Duration, maxEntrie
 		maxEntries = artifactTaskStoreMaxEntries
 	}
 	return &artifactTaskStore{
-		byRef:        make(map[string]*artifactTask),
-		byID:         make(map[string]*artifactTask),
-		ttl:          ttl,
-		tombstoneTTL: tombstoneTTL,
-		agentGrace:   agentGrace,
-		maxEntries:   maxEntries,
-		now:          time.Now,
+		byRef:           make(map[string]*artifactTask),
+		byID:            make(map[string]*artifactTask),
+		ttl:             ttl,
+		tombstoneTTL:    tombstoneTTL,
+		agentGrace:      agentGrace,
+		maxEntries:      maxEntries,
+		actorActiveMax:  artifactTaskActorActiveMax,
+		actorRateMax:    artifactTaskActorRateMax,
+		actorRateWindow: artifactTaskActorRateWindow,
+		actorRates:      make(map[int64]artifactTaskActorRate),
+		now:             time.Now,
 	}
 }
 
@@ -174,8 +203,18 @@ func (s *artifactTaskStore) create(candidate artifactTask) (artifactTask, error)
 	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
+	if s.activeForActorLocked(candidate.ActorUID) >= s.actorActiveMax {
+		return artifactTask{}, errArtifactTaskActorActiveCap
+	}
+	rate := s.actorRates[candidate.ActorUID]
+	if rate.WindowStart.IsZero() || !now.Before(rate.WindowStart.Add(s.actorRateWindow)) {
+		rate = artifactTaskActorRate{WindowStart: now}
+	}
+	if rate.Count >= s.actorRateMax {
+		return artifactTask{}, errArtifactTaskActorRateLimit
+	}
 	if len(s.byID) >= s.maxEntries && !s.evictTerminalLocked() {
-		return artifactTask{}, errors.New("Artifact task store is full")
+		return artifactTask{}, errArtifactTaskStoreFull
 	}
 	for attempts := 0; attempts < 8; attempts++ {
 		id, err := newArtifactTaskOpaque("atk_")
@@ -198,13 +237,16 @@ func (s *artifactTaskStore) create(candidate artifactTask) (artifactTask, error)
 		stored := cloneArtifactTask(candidate)
 		s.byID[id] = &stored
 		s.byRef[ref] = &stored
+		rate.Count++
+		s.actorRates[candidate.ActorUID] = rate
 		return cloneArtifactTask(stored), nil
 	}
 	return artifactTask{}, errors.New("failed to allocate Artifact task identity")
 }
 
-func (s *artifactTaskStore) claimDelivery(ref string, actorUID int64, topicID string, agentUID int64) (*artifactTaskDeliveryRef, error) {
-	if s == nil || !artifactTaskRefPattern.MatchString(ref) {
+func (s *artifactTaskStore) reserveDelivery(ref string, actorUID int64, topicID string, agentUID int64, clientMessageID string) (*artifactTaskDeliveryRef, error) {
+	clientMessageID = strings.TrimSpace(clientMessageID)
+	if s == nil || !artifactTaskRefPattern.MatchString(ref) || clientMessageID == "" || len(clientMessageID) > 128 {
 		return nil, errors.New("Artifact task reference is invalid")
 	}
 	s.mu.Lock()
@@ -217,27 +259,99 @@ func (s *artifactTaskStore) claimDelivery(ref string, actorUID int64, topicID st
 		return nil, errors.New("Artifact task reference does not match this message")
 	}
 	if task.Delivered {
-		return nil, errors.New("Artifact task was already delivered")
+		if task.DeliveryClientID == clientMessageID {
+			return &artifactTaskDeliveryRef{
+				Ref: task.Ref, TaskID: task.ID, AgentUID: task.AgentUID,
+				ClientMessageID: clientMessageID, AlreadyDelivered: true,
+			}, nil
+		}
+		return nil, errors.New("Artifact task was already delivered by another message")
 	}
-	task.Delivered = true
+	if task.DeliveryClaimed {
+		if task.DeliveryClientID == clientMessageID {
+			return nil, errArtifactTaskDeliveryPending
+		}
+		return nil, errors.New("Artifact task delivery is reserved by another message")
+	}
+	task.DeliveryClaimed = true
+	task.DeliveryClientID = clientMessageID
 	task.UpdatedAt = now
-	return &artifactTaskDeliveryRef{Ref: task.Ref, TaskID: task.ID, AgentUID: task.AgentUID}, nil
+	return &artifactTaskDeliveryRef{
+		Ref: task.Ref, TaskID: task.ID, AgentUID: task.AgentUID, ClientMessageID: clientMessageID,
+	}, nil
 }
 
-func (s *artifactTaskStore) validateDelivery(ref string, taskID string, actorUID int64, topicID string, agentUID int64) *artifactTaskDeliveryRef {
-	if s == nil || !artifactTaskRefPattern.MatchString(ref) || !artifactTaskIDPattern.MatchString(taskID) {
+func (s *artifactTaskStore) confirmDelivery(delivery *artifactTaskDeliveryRef) bool {
+	if s == nil || delivery == nil || delivery.AlreadyDelivered {
+		return delivery != nil && delivery.AlreadyDelivered
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	s.cleanupLocked(now)
+	task := s.byRef[delivery.Ref]
+	if task == nil || task.ID != delivery.TaskID || task.AgentUID != delivery.AgentUID ||
+		!task.DeliveryClaimed || task.DeliveryClientID != delivery.ClientMessageID ||
+		artifactTaskTerminal(task.Status) || !now.Before(task.ExpiresAt) {
+		return false
+	}
+	task.DeliveryClaimed = false
+	task.Delivered = true
+	task.UpdatedAt = now
+	return true
+}
+
+func (s *artifactTaskStore) releaseDelivery(delivery *artifactTaskDeliveryRef) {
+	if s == nil || delivery == nil || delivery.AlreadyDelivered {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task := s.byRef[delivery.Ref]
+	if task == nil || task.ID != delivery.TaskID || task.Delivered ||
+		!task.DeliveryClaimed || task.DeliveryClientID != delivery.ClientMessageID {
+		return
+	}
+	task.DeliveryClaimed = false
+	task.DeliveryClientID = ""
+	task.UpdatedAt = s.now().UTC()
+}
+
+func (s *artifactTaskStore) failDelivery(delivery *artifactTaskDeliveryRef, code, message string) bool {
+	if s == nil || delivery == nil || delivery.AlreadyDelivered {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	s.cleanupLocked(now)
+	task := s.byRef[delivery.Ref]
+	if task == nil || task.ID != delivery.TaskID || task.AgentUID != delivery.AgentUID ||
+		task.DeliveryClientID != delivery.ClientMessageID || artifactTaskTerminal(task.Status) {
+		return false
+	}
+	task.DeliveryClaimed = false
+	task.Delivered = false
+	s.failLocked(task, code, message, now)
+	return true
+}
+
+func (s *artifactTaskStore) validateDelivery(delivery *artifactTaskDeliveryRef, actorUID int64, topicID string, agentUID int64) *artifactTaskDeliveryRef {
+	if s == nil || delivery == nil || !artifactTaskRefPattern.MatchString(delivery.Ref) || !artifactTaskIDPattern.MatchString(delivery.TaskID) {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
-	task := s.byRef[ref]
-	if task == nil || task.ID != taskID || !task.Delivered || task.ActorUID != actorUID || task.TopicID != topicID ||
-		task.AgentUID != agentUID || artifactTaskTerminal(task.Status) || !now.Before(task.ExpiresAt) {
+	task := s.byRef[delivery.Ref]
+	if task == nil || task.ID != delivery.TaskID || task.ActorUID != actorUID || task.TopicID != topicID ||
+		task.AgentUID != agentUID || task.DeliveryClientID != delivery.ClientMessageID ||
+		(!task.Delivered && !task.DeliveryClaimed) || artifactTaskTerminal(task.Status) || !now.Before(task.ExpiresAt) {
 		return nil
 	}
-	return &artifactTaskDeliveryRef{Ref: task.Ref, TaskID: task.ID, AgentUID: task.AgentUID}
+	validated := *delivery
+	return &validated
 }
 
 func (s *artifactTaskStore) forActor(taskID string, actorUID int64) (artifactTask, bool) {
@@ -409,6 +523,21 @@ func (s *artifactTaskStore) cleanupLocked(now time.Time) {
 		delete(s.byID, id)
 		delete(s.byRef, task.Ref)
 	}
+	for actorUID, rate := range s.actorRates {
+		if !rate.WindowStart.IsZero() && !now.Before(rate.WindowStart.Add(s.actorRateWindow)) {
+			delete(s.actorRates, actorUID)
+		}
+	}
+}
+
+func (s *artifactTaskStore) activeForActorLocked(actorUID int64) int {
+	count := 0
+	for _, task := range s.byID {
+		if task.ActorUID == actorUID && !artifactTaskTerminal(task.Status) {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *artifactTaskStore) evictTerminalLocked() bool {
@@ -434,6 +563,12 @@ func artifactTaskTerminal(state artifactTaskState) bool {
 }
 
 func artifactTaskStatus(task artifactTask) artifactTaskPublicStatus {
+	deliveryStatus := "pending"
+	if task.Delivered {
+		deliveryStatus = "delivered"
+	} else if task.Status == artifactTaskFailed {
+		deliveryStatus = "failed"
+	}
 	return artifactTaskPublicStatus{
 		ContractVersion: artifactTaskStatusContract,
 		TaskID:          task.ID,
@@ -442,6 +577,7 @@ func artifactTaskStatus(task artifactTask) artifactTaskPublicStatus {
 		Message:         task.Message,
 		RunID:           task.RunID,
 		ResultID:        task.ResultID,
+		DeliveryStatus:  deliveryStatus,
 		UpdatedAt:       task.UpdatedAt.Format(time.RFC3339Nano),
 		ExpiresAt:       task.ExpiresAt.Format(time.RFC3339Nano),
 	}
@@ -451,7 +587,7 @@ func normalizeArtifactTaskRef(value string) (string, bool) {
 	return value, value != "" && value == strings.TrimSpace(value) && artifactTaskRefPattern.MatchString(value)
 }
 
-func (h *Hub) extractArtifactTaskDelivery(actorUID int64, topicID string, metadata map[string]interface{}) (map[string]interface{}, *artifactTaskDeliveryRef, error) {
+func (h *Hub) extractArtifactTaskDelivery(actorUID int64, topicID, clientMessageID string, metadata map[string]interface{}) (map[string]interface{}, *artifactTaskDeliveryRef, error) {
 	clean := metadataWithoutArtifactContext(metadata)
 	if metadata == nil {
 		return clean, nil, nil
@@ -472,7 +608,7 @@ func (h *Hub) extractArtifactTaskDelivery(actorUID int64, topicID string, metada
 	if !ok {
 		return clean, nil, errors.New("Artifact task topic does not have a current Agent")
 	}
-	delivery, err := h.artifactTasks.claimDelivery(ref, actorUID, topicID, agentUID)
+	delivery, err := h.artifactTasks.reserveDelivery(ref, actorUID, topicID, agentUID, clientMessageID)
 	return clean, delivery, err
 }
 
@@ -484,7 +620,7 @@ func (h *Hub) validatedArtifactTaskDeliveryRef(actorUID int64, topicID string, d
 	if !ok || agentUID != recipientUID {
 		return nil
 	}
-	return h.artifactTasks.validateDelivery(delivery.Ref, delivery.TaskID, actorUID, topicID, recipientUID)
+	return h.artifactTasks.validateDelivery(delivery, actorUID, topicID, recipientUID)
 }
 
 func withArtifactTaskDeliveryRef(metadata map[string]interface{}, delivery *artifactTaskDeliveryRef, recipientUID int64) map[string]interface{} {
@@ -614,7 +750,14 @@ func (h *ArtifactTaskHandler) handleCreate(w http.ResponseWriter, r *http.Reques
 		PageContext:      pageContext,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Artifact task could not be created"})
+		status := http.StatusServiceUnavailable
+		code := "artifact_task_unavailable"
+		if errors.Is(err, errArtifactTaskActorActiveCap) {
+			status, code = http.StatusTooManyRequests, "artifact_task_active_limit"
+		} else if errors.Is(err, errArtifactTaskActorRateLimit) {
+			status, code = http.StatusTooManyRequests, "artifact_task_rate_limit"
+		}
+		writeJSON(w, status, map[string]string{"error": "Artifact task could not be created", "code": code})
 		return
 	}
 	artifactTitle := strings.TrimSpace(record.Title)
@@ -627,6 +770,7 @@ func (h *ArtifactTaskHandler) handleCreate(w http.ResponseWriter, r *http.Reques
 		"task_id":          task.ID,
 		"task_ref":         task.Ref,
 		"status":           task.Status,
+		"delivery_status":  "pending",
 		"visible_message":  visibleMessage,
 		"expires_at":       task.ExpiresAt.Format(time.RFC3339Nano),
 	})

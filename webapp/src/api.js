@@ -401,6 +401,7 @@ export const api = {
       if (content.mode) payload.mode = content.mode;
       if (content.role) payload.role = content.role;
       if (content.metadata) payload.metadata = content.metadata;
+      if (content.client_msg_id) payload.client_msg_id = content.client_msg_id;
       if (typeof content.content === 'string') {
         payload.content = content.content;
       } else if (content.payload || content.type || content.metadata) {

@@ -26,6 +26,7 @@ import {
   ARTIFACT_TASK_REJECTED_TYPE,
   ARTIFACT_TASK_REQUEST_TYPE,
   ARTIFACT_TASK_STATUS_TYPE,
+  classifyArtifactTaskPollFailure,
   normalizeArtifactResultDelivery,
   normalizeArtifactTaskCreated,
   normalizeArtifactTaskRequest,
@@ -79,6 +80,11 @@ const ARTIFACT_REGISTRY_POLL_MS = 5000;
 const ARTIFACT_SNAPSHOT_TIMEOUT_MS = 2200;
 const ARTIFACT_TASK_REQUEST_TIMEOUT_MS = 5000;
 const ARTIFACT_TASK_POLL_MS = 1000;
+const ARTIFACT_TASK_POLL_MAX_FAILURES = 5;
+const ARTIFACT_TASK_CONFIRMATION_MAX_AGE_MS = 12000;
+const ARTIFACT_TASK_DELIVERY_ATTEMPTS = 2;
+const ARTIFACT_TASK_DELIVERY_RECONCILE_ATTEMPTS = 4;
+const ARTIFACT_TASK_DELIVERY_RECONCILE_MS = 150;
 const DELIVERY_ARTIFACT_TYPES = new Set(['file', 'image', 'audio', 'voice']);
 
 function artifactRefreshFileKey(file) {
@@ -752,6 +758,22 @@ export default function MessagesView({
   }, []);
 
   const beginArtifactTaskPolling = useCallback((record) => {
+    const failLocally = (code, message) => {
+      activeArtifactTasksRef.current.delete(record.taskId);
+      if (!artifactTaskBindingIsCurrent(record)) return;
+      postArtifactTaskBridgeMessage(record.binding, {
+        type: ARTIFACT_TASK_STATUS_TYPE,
+        task: {
+          contract_version: 'catsco.artifact-task-status.v1',
+          task_id: record.taskId,
+          status: 'failed',
+          code,
+          message,
+          updated_at: new Date().toISOString(),
+          expires_at: record.expiresAt,
+        },
+      });
+    };
     const poll = async () => {
       if (activeArtifactTasksRef.current.get(record.taskId) !== record) return;
       if (!artifactTaskBindingIsCurrent(record)) {
@@ -764,7 +786,9 @@ export default function MessagesView({
           timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
         });
         const status = normalizeArtifactTaskStatus(response);
+        if (!status) throw new Error('Invalid Artifact task status response');
         if (status && artifactTaskBindingIsCurrent(record)) {
+          record.pollFailures = 0;
           postArtifactTaskBridgeMessage(record.binding, {
             type: ARTIFACT_TASK_STATUS_TYPE,
             task: status,
@@ -774,8 +798,17 @@ export default function MessagesView({
             return;
           }
         }
-      } catch {
-        // A transient Host/API failure does not change the business task state.
+      } catch (error) {
+        record.pollFailures += 1;
+        const decision = classifyArtifactTaskPollFailure(
+          error,
+          record.pollFailures,
+          ARTIFACT_TASK_POLL_MAX_FAILURES,
+        );
+        if (!decision.retry) {
+          failLocally(decision.code, decision.message);
+          return;
+        }
       }
       if (activeArtifactTasksRef.current.get(record.taskId) === record) {
         record.timer = window.setTimeout(poll, ARTIFACT_TASK_POLL_MS);
@@ -812,6 +845,31 @@ export default function MessagesView({
 
     artifactTaskRequestsRef.current.add(requestKey);
     try {
+      // A same-realm Artifact can forge postMessage but cannot approve this
+      // parent-owned dialog. The Bridge activation check is an early UX guard;
+      // this Host confirmation is the V4.1 user-action boundary.
+      const confirmationStartedAt = Date.now();
+      const confirmed = await feedback.confirm({
+        title: '发送给虚拟员工？',
+        message: '该应用希望把你刚才的操作作为一条新消息交给当前虚拟员工处理。',
+        confirmLabel: '确认发送',
+        cancelLabel: '取消',
+      });
+      if (!confirmed || Date.now() - confirmationStartedAt > ARTIFACT_TASK_CONFIRMATION_MAX_AGE_MS) {
+        postArtifactTaskBridgeMessage(binding, {
+          type: ARTIFACT_TASK_REJECTED_TYPE,
+          request_id: request.requestId,
+          code: confirmed ? 'task_confirmation_expired' : 'task_request_cancelled',
+          message: confirmed
+            ? 'Artifact task confirmation expired'
+            : 'Artifact task request was cancelled',
+        });
+        return;
+      }
+      if (activeArtifactFocusRef.current !== focus || activeArtifactFrameRef.current !== binding
+        || activeTopicRef.current !== topic
+        || artifactTopicGenerationRef.current !== focus.topicGeneration) return;
+
       const pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
       if (activeArtifactFocusRef.current !== focus || activeArtifactFrameRef.current !== binding
         || activeTopicRef.current !== topic
@@ -836,20 +894,84 @@ export default function MessagesView({
         focus,
         binding,
         timer: null,
+        pollFailures: 0,
+        expiresAt: created.expiresAt,
       };
       activeArtifactTasksRef.current.set(record.taskId, record);
-      try {
-        await api.sendMessage(topic, {
-          type: 'text',
-          content: created.visibleMessage,
-          metadata: { artifact_task_ref: created.taskRef },
-        });
-      } catch (error) {
+
+      if (!artifactTaskBindingIsCurrent(record)) {
         activeArtifactTasksRef.current.delete(record.taskId);
         await api.failArtifactTask(record.taskId, {
           timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
         }).catch(() => {});
-        throw error;
+        throw new Error('Artifact preview changed before task delivery');
+      }
+
+      const turn = {
+        type: 'text',
+        content: created.visibleMessage,
+        client_msg_id: `artifact-task:${record.taskId}`,
+        metadata: { artifact_task_ref: created.taskRef },
+      };
+      let delivered = false;
+      let deliveryError = null;
+      let deliveryStatus = null;
+      for (let attempt = 0; attempt < ARTIFACT_TASK_DELIVERY_ATTEMPTS && !delivered; attempt += 1) {
+        if (!artifactTaskBindingIsCurrent(record)) break;
+        try {
+          await api.sendMessage(topic, turn);
+          delivered = true;
+        } catch (error) {
+          deliveryError = error;
+          try {
+            deliveryStatus = normalizeArtifactTaskStatus(await api.getArtifactTask(record.taskId, {
+              timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
+            }));
+          } catch {
+            deliveryStatus = null;
+          }
+          if (deliveryStatus?.delivery_status === 'delivered') {
+            delivered = true;
+          } else if (deliveryStatus?.status === 'failed') {
+            break;
+          }
+        }
+      }
+      for (let attempt = 0;
+        !delivered
+          && deliveryStatus?.delivery_status === 'pending'
+          && attempt < ARTIFACT_TASK_DELIVERY_RECONCILE_ATTEMPTS
+          && artifactTaskBindingIsCurrent(record);
+        attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, ARTIFACT_TASK_DELIVERY_RECONCILE_MS));
+        try {
+          const nextStatus = normalizeArtifactTaskStatus(await api.getArtifactTask(record.taskId, {
+            timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
+          }));
+          if (nextStatus) deliveryStatus = nextStatus;
+        } catch {}
+        if (deliveryStatus?.delivery_status === 'delivered') delivered = true;
+        if (deliveryStatus?.status === 'failed') break;
+      }
+      if (!delivered) {
+        activeArtifactTasksRef.current.delete(record.taskId);
+        if (!artifactTaskBindingIsCurrent(record)) {
+          await api.failArtifactTask(record.taskId, {
+            timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
+          }).catch(() => {});
+          throw new Error('Artifact preview changed before task delivery');
+        }
+        const deliveryDefinitelyFailed = deliveryStatus?.status === 'failed';
+        if (!deliveryDefinitelyFailed && deliveryStatus) {
+          await api.failArtifactTask(record.taskId, {
+            timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
+          }).catch(() => {});
+        }
+        throw deliveryError || new Error(
+          deliveryDefinitelyFailed
+            ? (deliveryStatus.message || 'Artifact task delivery failed')
+            : 'Artifact task delivery could not be confirmed',
+        );
       }
 
       postArtifactTaskBridgeMessage(binding, {
@@ -876,7 +998,7 @@ export default function MessagesView({
     } finally {
       artifactTaskRequestsRef.current.delete(requestKey);
     }
-  }, [beginArtifactTaskPolling, postArtifactTaskBridgeMessage, topic]);
+  }, [artifactTaskBindingIsCurrent, beginArtifactTaskPolling, feedback, postArtifactTaskBridgeMessage, topic]);
 
   useEffect(() => {
     const handleMessage = (event) => {
@@ -1302,9 +1424,12 @@ export default function MessagesView({
   const handleArtifactResultRequest = useCallback(async (value) => {
     const delivery = normalizeArtifactResultDelivery(value);
     if (!delivery) return;
+    let snapshot = null;
+    let focus = null;
+    let record = null;
     let binding;
     if (delivery.taskId) {
-      const record = activeArtifactTasksRef.current.get(delivery.taskId);
+      record = activeArtifactTasksRef.current.get(delivery.taskId);
       if (!record || !artifactTaskBindingIsCurrent(record)
         || record.topic !== delivery.topicId
         || record.agentUid !== delivery.agentUid
@@ -1312,8 +1437,8 @@ export default function MessagesView({
         || record.displayedVersion !== delivery.displayedVersion) return;
       binding = record.binding;
     } else {
-      const snapshot = activeArtifactSnapshotRef.current;
-      const focus = activeArtifactFocusRef.current;
+      snapshot = activeArtifactSnapshotRef.current;
+      focus = activeArtifactFocusRef.current;
       binding = activeArtifactFrameRef.current;
       if (!snapshot || snapshot.contextRef !== delivery.contextRef
         || snapshot.topic !== delivery.topicId
@@ -1331,8 +1456,11 @@ export default function MessagesView({
     }
 
     const receipt = await requestArtifactResultApply(binding, delivery);
-    if (!receipt
-      || activeArtifactSnapshotRef.current !== snapshot
+    if (!receipt) return;
+    if (delivery.taskId) {
+      if (activeArtifactTasksRef.current.get(delivery.taskId) !== record
+        || !artifactTaskBindingIsCurrent(record)) return;
+    } else if (activeArtifactSnapshotRef.current !== snapshot
       || activeArtifactFocusRef.current !== focus
       || activeArtifactFrameRef.current !== binding
       || artifactTopicGenerationRef.current !== snapshot.topicGeneration

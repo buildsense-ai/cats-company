@@ -16,6 +16,7 @@ import {
   artifactFrameURLWithBridgeNonce,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
+  classifyArtifactTaskPollFailure,
   normalizeArtifactPageContext,
   normalizeArtifactResultDelivery,
   normalizeArtifactTaskCreated,
@@ -288,15 +289,42 @@ describe('artifact context snapshot handoff', () => {
       contract_version: ARTIFACT_TASK_STATUS_CONTRACT,
       task_id: taskId,
       status: 'running',
+      delivery_status: 'delivered',
       run_id: 'run-42',
       updated_at: '2026-08-26T11:00:00Z',
       expires_at: '2026-08-26T12:00:00Z',
-    })).toMatchObject({ task_id: taskId, status: 'running', run_id: 'run-42' });
+    })).toMatchObject({
+      task_id: taskId,
+      status: 'running',
+      delivery_status: 'delivered',
+      run_id: 'run-42',
+    });
     expect(normalizeArtifactTaskStatus({
       contract_version: ARTIFACT_TASK_STATUS_CONTRACT,
       task_id: taskId,
       status: 'done',
     })).toBeNull();
+  });
+
+  it('stops task polling for permanent absence and after bounded transient failures', () => {
+    expect(classifyArtifactTaskPollFailure({ status: 404 }, 1)).toMatchObject({
+      retry: false,
+      code: 'task_unavailable',
+    });
+    expect(classifyArtifactTaskPollFailure({ status: 410 }, 1)).toMatchObject({
+      retry: false,
+      code: 'task_unavailable',
+    });
+    expect(classifyArtifactTaskPollFailure({ status: 403 }, 1)).toMatchObject({
+      retry: false,
+      code: 'task_status_rejected',
+    });
+    expect(classifyArtifactTaskPollFailure(new TypeError('network'), 1)).toEqual({ retry: true });
+    expect(classifyArtifactTaskPollFailure({ status: 503 }, 4)).toEqual({ retry: true });
+    expect(classifyArtifactTaskPollFailure({ status: 503 }, 5)).toMatchObject({
+      retry: false,
+      code: 'task_status_unavailable',
+    });
   });
 
   it('keeps page observations in the snapshot contract rather than message metadata', () => {

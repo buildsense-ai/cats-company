@@ -4,13 +4,14 @@ import { Simulate } from 'react-dom/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const { artifactRefreshPreviewObserved, feedbackNotify } = vi.hoisted(() => ({
+const { artifactRefreshPreviewObserved, feedbackConfirm, feedbackNotify } = vi.hoisted(() => ({
   artifactRefreshPreviewObserved: vi.fn(),
+  feedbackConfirm: vi.fn(async () => true),
   feedbackNotify: vi.fn(),
 }));
 
 vi.mock('../components/feedback-system', () => ({
-  useFeedback: () => ({ notify: feedbackNotify }),
+  useFeedback: () => ({ confirm: feedbackConfirm, notify: feedbackNotify }),
 }));
 
 vi.mock('../widgets/chat-message', () => ({
@@ -572,6 +573,8 @@ describe('MessagesView composer draft isolation', () => {
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    feedbackConfirm.mockReset();
+    feedbackConfirm.mockResolvedValue(true);
     feedbackNotify.mockReset();
     api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
@@ -4760,7 +4763,13 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(frameWindow.postMessage).not.toHaveBeenCalled();
+    expect(frameWindow.postMessage).toHaveBeenCalledWith(
+      { type: 'catsco.artifact.host.connect.v1' },
+      window.location.origin,
+    );
+    expect(frameWindow.postMessage.mock.calls.some(
+      ([message]) => message?.type === 'catsco.artifact.result.request.v1',
+    )).toBe(false);
     expect(wsSendArtifactResultReceipt).toHaveBeenCalledWith(expect.objectContaining({
       type: 'receipt',
       result_id: resultId,
@@ -4835,6 +4844,7 @@ describe('MessagesView composer draft isolation', () => {
       task_id: taskId,
       task_ref: taskRef,
       status: 'submitted',
+      delivery_status: 'pending',
       visible_message: '来自「任务看板」：创建任务',
       expires_at: '2026-08-26T12:00:00Z',
     });
@@ -4842,10 +4852,12 @@ describe('MessagesView composer draft isolation', () => {
       contract_version: 'catsco.artifact-task-status.v1',
       task_id: taskId,
       status: 'running',
+      delivery_status: 'delivered',
       run_id: 'run-42',
       updated_at: '2026-08-26T03:00:01Z',
       expires_at: '2026-08-26T12:00:00Z',
     });
+    api.sendMessage.mockRejectedValueOnce(new TypeError('response connection closed'));
 
     await mountTopic(root, 'p2p_1_440', {
       cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
@@ -4872,6 +4884,26 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(api.createArtifactTask).not.toHaveBeenCalled();
+
+    feedbackConfirm.mockResolvedValueOnce(false);
+    await act(async () => {
+      dispatchFrameMessage(frameWindow, origin, {
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'task-request-raw-bypass',
+        intent_id: 'tasks.create.v1',
+        payload: { title: 'must require Host confirmation' },
+      });
+      await flushPromises();
+    });
+    expect(feedbackConfirm).toHaveBeenCalledWith(expect.objectContaining({
+      confirmLabel: '确认发送',
+    }));
+    expect(api.createArtifactTask).not.toHaveBeenCalled();
+    expect(posted).toContainEqual(expect.objectContaining({
+      type: 'catsco.artifact.task.rejected.v1',
+      request_id: 'task-request-raw-bypass',
+      code: 'task_request_cancelled',
+    }));
 
     await act(async () => {
       dispatchFrameMessage(frameWindow, origin, {
@@ -4901,8 +4933,11 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
       type: 'text',
       content: '来自「任务看板」：创建任务',
+      client_msg_id: `artifact-task:${taskId}`,
       metadata: { artifact_task_ref: taskRef },
     });
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.failArtifactTask).not.toHaveBeenCalled();
     const accepted = posted.find(message => message.type === 'catsco.artifact.task.accepted.v1');
     expect(accepted).toMatchObject({
       request_id: 'task-request-42',
@@ -4940,6 +4975,93 @@ describe('MessagesView composer draft isolation', () => {
       result_id: resultId,
       receipt: expect.objectContaining({ status: 'applied' }),
     }));
+  });
+
+  it('does not deliver a task turn when the preview changes after task creation started', async () => {
+    const origin = 'https://artifacts.example.test';
+    const taskId = `atk_${'s'.repeat(43)}`;
+    const taskRef = `atr_${'p'.repeat(43)}`;
+    let resolveCreate;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          window.setTimeout(() => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-26T03:00:00Z',
+            },
+          }), 0);
+        }
+      },
+    };
+    const artifact = {
+      id: 'task-board',
+      agent_uid: '440',
+      title: '任务看板',
+      kind: 'mini_app',
+      url: `${origin}/by-agent/440/task-board/latest/`,
+      status: 'active',
+      publish_version: 3,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'task-board',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/task-board/latest/`,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+    api.createArtifactTask.mockReturnValue(new Promise((resolvePromise) => {
+      resolveCreate = resolvePromise;
+    }));
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 任务看板"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      dispatchFrameMessage(frameWindow, origin, {
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'task-request-stale-after-create',
+        intent_id: 'tasks.create.v1',
+        payload: { title: '不应发送' },
+      });
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      await flushPromises();
+    });
+    expect(api.createArtifactTask).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-close-preview'));
+      resolveCreate({
+        contract_version: 'catsco.artifact-task-ref.v1',
+        task_id: taskId,
+        task_ref: taskRef,
+        status: 'submitted',
+        delivery_status: 'pending',
+        visible_message: '来自「任务看板」：创建任务',
+        expires_at: '2026-08-26T12:00:00Z',
+      });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.failArtifactTask).toHaveBeenCalledWith(taskId, { timeoutMs: 5000 });
   });
 
   it('drops a stale Artifact reference when the preview closes during page capture', async () => {

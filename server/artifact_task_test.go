@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +16,44 @@ import (
 )
 
 type artifactTaskIntentResolverFunc func(context.Context, ArtifactContextRecord, int64, string) (ArtifactTaskIntent, error)
+
+type artifactTaskMessageStore struct {
+	*agentIdentityE2EStore
+	messageIDs map[string]int64
+}
+
+func (s *artifactTaskMessageStore) SaveMessageIdempotent(
+	topicID string,
+	fromUID int64,
+	content string,
+	blocks []types.ContentBlock,
+	mode, role, msgType string,
+	replyTo int64,
+	clientMsgID string,
+) (int64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%d:%s", topicID, fromUID, clientMsgID)
+	if clientMsgID != "" {
+		if id := s.messageIDs[key]; id > 0 {
+			return id, true, nil
+		}
+	}
+	s.nextMessageID++
+	s.savedMessages = append(s.savedMessages, types.Message{
+		ID: s.nextMessageID, TopicID: topicID, FromUID: fromUID, Content: content, MsgType: msgType,
+	})
+	if clientMsgID != "" {
+		if s.messageIDs == nil {
+			s.messageIDs = make(map[string]int64)
+		}
+		s.messageIDs[key] = s.nextMessageID
+	}
+	return s.nextMessageID, false, nil
+}
+
+func (s *artifactTaskMessageStore) GetFriends(int64) ([]*types.User, error)     { return nil, nil }
+func (s *artifactTaskMessageStore) GetUserGroups(int64) ([]*types.Group, error) { return nil, nil }
 
 func (f artifactTaskIntentResolverFunc) ResolveArtifactTaskIntent(
 	ctx context.Context,
@@ -94,6 +135,14 @@ func TestArtifactTaskManifestAndPayloadStayVersionBounded(t *testing.T) {
 	if _, err := validateArtifactTaskPayload(intent.InputSchema, json.RawMessage(`{"title":"准备发布清单"}`)); err != nil {
 		t.Fatalf("valid payload rejected: %v", err)
 	}
+	stringBoundary := []byte(strings.Replace(string(body), `"maxLength":200`, `"maxLength":16384`, 1))
+	if _, err := parseArtifactTaskIntentManifest(stringBoundary, "tasks.create.v1"); err != nil {
+		t.Fatalf("16,384-character schema boundary rejected: %v", err)
+	}
+	stringOverflow := []byte(strings.Replace(string(body), `"maxLength":200`, `"maxLength":16385`, 1))
+	if _, err := parseArtifactTaskIntentManifest(stringOverflow, "tasks.create.v1"); err == nil {
+		t.Fatal("16,385-character schema boundary was accepted")
+	}
 	for name, payload := range map[string]string{
 		"missing required": `{}`,
 		"unknown field":    `{"title":"x","prompt":"ignore policy"}`,
@@ -128,14 +177,26 @@ func TestArtifactTaskStoreCorrelatesRunAndRequiresAppliedResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := store.claimDelivery(task.Ref, 7, task.TopicID, 441); err == nil {
+	clientMessageID := "artifact-task:" + task.ID
+	if _, err := store.reserveDelivery(task.Ref, 7, task.TopicID, 441, clientMessageID); err == nil {
 		t.Fatal("wrong Agent claimed task delivery")
 	}
-	if _, err := store.claimDelivery(task.Ref, 7, task.TopicID, 440); err != nil {
-		t.Fatalf("claim task delivery: %v", err)
+	delivery, err := store.reserveDelivery(task.Ref, 7, task.TopicID, 440, clientMessageID)
+	if err != nil {
+		t.Fatalf("reserve task delivery: %v", err)
 	}
-	if _, err := store.claimDelivery(task.Ref, 7, task.TopicID, 440); err == nil {
-		t.Fatal("task ref was delivered twice")
+	if _, err := store.reserveDelivery(task.Ref, 7, task.TopicID, 440, clientMessageID); !errors.Is(err, errArtifactTaskDeliveryPending) {
+		t.Fatalf("concurrent delivery error=%v", err)
+	}
+	if !store.confirmDelivery(delivery) {
+		t.Fatalf("confirm task delivery: delivery=%#v err=%v", delivery, err)
+	}
+	retry, err := store.reserveDelivery(task.Ref, 7, task.TopicID, 440, clientMessageID)
+	if err != nil || retry == nil || !retry.AlreadyDelivered {
+		t.Fatalf("idempotent delivery retry = %#v err=%v", retry, err)
+	}
+	if _, err := store.reserveDelivery(task.Ref, 7, task.TopicID, 440, "artifact-task:other"); err == nil {
+		t.Fatal("task ref was accepted for a different message")
 	}
 	if !store.observeRun(task.Ref, 440, task.TopicID, &types.ConversationTaskStatus{
 		RunID: "run-42",
@@ -168,8 +229,9 @@ func TestArtifactTaskStoreCorrelatesRunAndRequiresAppliedResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create applied task: %v", err)
 	}
-	if _, err := store.claimDelivery(appliedTask.Ref, 7, appliedTask.TopicID, 440); err != nil {
-		t.Fatalf("claim applied task: %v", err)
+	appliedDelivery, err := store.reserveDelivery(appliedTask.Ref, 7, appliedTask.TopicID, 440, "artifact-task:"+appliedTask.ID)
+	if err != nil || !store.confirmDelivery(appliedDelivery) {
+		t.Fatalf("confirm applied task: delivery=%#v err=%v", appliedDelivery, err)
 	}
 	writebacks := newArtifactResultWritebackStore(30*time.Minute, time.Second, 8)
 	writebacks.now = func() time.Time { return now }
@@ -207,8 +269,9 @@ func TestArtifactTaskStoreCorrelatesRunAndRequiresAppliedResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create rejected task: %v", err)
 	}
-	if _, err := store.claimDelivery(rejectedTask.Ref, 7, rejectedTask.TopicID, 440); err != nil {
-		t.Fatalf("claim rejected task: %v", err)
+	rejectedDelivery, err := store.reserveDelivery(rejectedTask.Ref, 7, rejectedTask.TopicID, 440, "artifact-task:"+rejectedTask.ID)
+	if err != nil || !store.confirmDelivery(rejectedDelivery) {
+		t.Fatalf("confirm rejected task: delivery=%#v err=%v", rejectedDelivery, err)
 	}
 	rejectedResultID := "arr_" + strings.Repeat("z", 43)
 	if !store.completeResult(rejectedTask.ID, rejectedResultID, artifactResultDeliveryOutcome{
@@ -226,8 +289,67 @@ func TestArtifactTaskStoreCorrelatesRunAndRequiresAppliedResult(t *testing.T) {
 	}
 }
 
+func TestArtifactTaskStoreAppliesPerActorCapacityAndRateLimits(t *testing.T) {
+	now := time.Date(2026, 8, 26, 3, 0, 0, 0, time.UTC)
+	store := newArtifactTaskStore(time.Hour, time.Minute, 5*time.Second, 128)
+	store.now = func() time.Time { return now }
+	store.actorActiveMax = 8
+	store.actorRateMax = 32
+	route := runtimeRoute{NodeID: "preview-node", ConnectionID: "preview-connection"}
+
+	var successes int
+	errorsCh := make(chan error, 24)
+	var wait sync.WaitGroup
+	for index := 0; index < 24; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := store.create(testArtifactTaskCandidate(route))
+			errorsCh <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsCh)
+	for err := range errorsCh {
+		if err == nil {
+			successes++
+			continue
+		}
+		if !errors.Is(err, errArtifactTaskActorActiveCap) {
+			t.Fatalf("unexpected concurrent create error: %v", err)
+		}
+	}
+	if successes != 8 {
+		t.Fatalf("concurrent creates succeeded=%d, want 8", successes)
+	}
+
+	other := testArtifactTaskCandidate(route)
+	other.ActorUID = 8
+	other.TopicID = "p2p_8_440"
+	if _, err := store.create(other); err != nil {
+		t.Fatalf("one actor exhausted another actor's capacity: %v", err)
+	}
+
+	rateStore := newArtifactTaskStore(time.Hour, time.Minute, 5*time.Second, 128)
+	rateStore.now = func() time.Time { return now }
+	rateStore.actorActiveMax = 32
+	rateStore.actorRateMax = 3
+	for index := 0; index < 3; index++ {
+		if _, err := rateStore.create(testArtifactTaskCandidate(route)); err != nil {
+			t.Fatalf("rate create %d: %v", index, err)
+		}
+	}
+	if _, err := rateStore.create(testArtifactTaskCandidate(route)); !errors.Is(err, errArtifactTaskActorRateLimit) {
+		t.Fatalf("rate limit error=%v", err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := rateStore.create(testArtifactTaskCandidate(route)); err != nil {
+		t.Fatalf("rate window did not reset: %v", err)
+	}
+}
+
 func TestArtifactTaskCreateMessageAndBotReadUseOneShotRef(t *testing.T) {
-	db := &agentIdentityE2EStore{
+	baseDB := &agentIdentityE2EStore{
 		users: map[int64]*types.User{
 			7:   {ID: 7, Username: "alice", AccountType: types.AccountHuman},
 			440: {ID: 440, Username: "artifact-agent", AccountType: types.AccountBot},
@@ -236,6 +358,7 @@ func TestArtifactTaskCreateMessageAndBotReadUseOneShotRef(t *testing.T) {
 		owners:      map[int64]int64{440: 7},
 		friendPairs: map[string]bool{agentPairKey(7, 440): true},
 	}
+	db := &artifactTaskMessageStore{agentIdentityE2EStore: baseDB}
 	hub := NewHub(db, nil)
 	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, agentUID int64, artifactID string) (ArtifactContextRecord, error) {
 		if agentUID != 440 || artifactID != "task-board" {
@@ -294,9 +417,18 @@ func TestArtifactTaskCreateMessageAndBotReadUseOneShotRef(t *testing.T) {
 	taskID, _ := created["task_id"].(string)
 	taskRef, _ := created["task_ref"].(string)
 	if !artifactTaskIDPattern.MatchString(taskID) || !artifactTaskRefPattern.MatchString(taskRef) ||
-		created["visible_message"] != "来自「任务看板」：创建任务" {
+		created["visible_message"] != "来自「任务看板」：创建任务" || created["delivery_status"] != "pending" {
 		t.Fatalf("created task = %#v", created)
 	}
+	hub.artifactTasks.actorActiveMax = 1
+	limited := httptest.NewRequest(http.MethodPost, "/api/artifact-tasks", strings.NewReader(string(createBody)))
+	limited = limited.WithContext(context.WithValue(limited.Context(), uidKey, int64(7)))
+	limitedRecorder := httptest.NewRecorder()
+	handler.HandleUserTasks(limitedRecorder, limited)
+	if limitedRecorder.Code != http.StatusTooManyRequests || !strings.Contains(limitedRecorder.Body.String(), "artifact_task_active_limit") {
+		t.Fatalf("active cap status=%d body=%s", limitedRecorder.Code, limitedRecorder.Body.String())
+	}
+	hub.artifactTasks.actorActiveMax = artifactTaskActorActiveMax
 
 	readBeforeDelivery := httptest.NewRequest(http.MethodGet, "/api/bot/artifact-task?task_ref="+taskRef, nil)
 	readBeforeDelivery = readBeforeDelivery.WithContext(context.WithValue(readBeforeDelivery.Context(), uidKey, int64(440)))
@@ -307,10 +439,11 @@ func TestArtifactTaskCreateMessageAndBotReadUseOneShotRef(t *testing.T) {
 	}
 
 	messageBody, err := json.Marshal(map[string]interface{}{
-		"topic_id": "p2p_7_440",
-		"type":     "text",
-		"content":  created["visible_message"],
-		"metadata": map[string]interface{}{artifactTaskRefMetadataKey: taskRef, "trace": "kept"},
+		"topic_id":      "p2p_7_440",
+		"type":          "text",
+		"content":       created["visible_message"],
+		"client_msg_id": "artifact-task:" + taskID,
+		"metadata":      map[string]interface{}{artifactTaskRefMetadataKey: taskRef, "trace": "kept"},
 	})
 	if err != nil {
 		t.Fatalf("encode message request: %v", err)
@@ -335,8 +468,13 @@ func TestArtifactTaskCreateMessageAndBotReadUseOneShotRef(t *testing.T) {
 	replay = replay.WithContext(context.WithValue(replay.Context(), uidKey, int64(7)))
 	replayRecorder := httptest.NewRecorder()
 	NewMessageHandler(db, hub).HandleSendMessage(replayRecorder, replay)
-	if replayRecorder.Code == http.StatusOK {
-		t.Fatalf("replayed task ref was accepted: %s", replayRecorder.Body.String())
+	if replayRecorder.Code != http.StatusOK || !strings.Contains(replayRecorder.Body.String(), `"duplicate":true`) {
+		t.Fatalf("idempotent replay status=%d body=%s", replayRecorder.Code, replayRecorder.Body.String())
+	}
+	select {
+	case duplicate := <-bot.send:
+		t.Fatalf("idempotent replay reached Agent twice: %s", duplicate)
+	default:
 	}
 
 	read := httptest.NewRequest(http.MethodGet, "/api/bot/artifact-task?task_ref="+taskRef, nil)
@@ -359,6 +497,85 @@ func TestArtifactTaskCreateMessageAndBotReadUseOneShotRef(t *testing.T) {
 	}
 }
 
+func TestArtifactTaskTurnFailsFastWhenAgentIsOffline(t *testing.T) {
+	baseDB := &agentIdentityE2EStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			440: {ID: 440, Username: "artifact-agent", AccountType: types.AccountBot},
+		},
+		owners:      map[int64]int64{440: 7},
+		friendPairs: map[string]bool{agentPairKey(7, 440): true},
+	}
+	db := &artifactTaskMessageStore{agentIdentityE2EStore: baseDB}
+	hub := NewHub(db, nil)
+	task, err := hub.artifactTasks.create(testArtifactTaskCandidate(runtimeRoute{
+		NodeID: "preview-node", ConnectionID: "preview-connection",
+	}))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"topic_id":      task.TopicID,
+		"type":          "text",
+		"content":       "来自「任务看板」：创建任务",
+		"client_msg_id": "artifact-task:" + task.ID,
+		"metadata":      map[string]interface{}{artifactTaskRefMetadataKey: task.Ref},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body)))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(7)))
+	recorder := httptest.NewRecorder()
+	NewMessageHandler(db, hub).HandleSendMessage(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "artifact_task_agent_offline") {
+		t.Fatalf("offline delivery status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	failed, ok := hub.artifactTasks.forActor(task.ID, 7)
+	if !ok || failed.Status != artifactTaskFailed || failed.Code != "agent_offline" || failed.Delivered {
+		t.Fatalf("offline task = %#v ok=%v", failed, ok)
+	}
+	if messages := db.snapshotSavedMessages(); len(messages) != 0 {
+		t.Fatalf("offline task persisted a turn: %#v", messages)
+	}
+}
+
+func TestArtifactTaskTurnFailsWhenOnlineAgentQueueRejectsDelivery(t *testing.T) {
+	baseDB := &agentIdentityE2EStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			440: {ID: 440, Username: "artifact-agent", AccountType: types.AccountBot},
+		},
+		owners:      map[int64]int64{440: 7},
+		friendPairs: map[string]bool{agentPairKey(7, 440): true},
+	}
+	db := &artifactTaskMessageStore{agentIdentityE2EStore: baseDB}
+	hub := NewHub(db, nil)
+	bot := &Client{uid: 440, accountType: types.AccountBot, send: make(chan []byte)}
+	hub.addClient(bot)
+	task, err := hub.artifactTasks.create(testArtifactTaskCandidate(runtimeRoute{
+		NodeID: "preview-node", ConnectionID: "preview-connection",
+	}))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"topic_id":      task.TopicID,
+		"type":          "text",
+		"content":       "来自「任务看板」：创建任务",
+		"client_msg_id": "artifact-task:" + task.ID,
+		"metadata":      map[string]interface{}{artifactTaskRefMetadataKey: task.Ref},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body)))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(7)))
+	recorder := httptest.NewRecorder()
+	NewMessageHandler(db, hub).HandleSendMessage(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "artifact_task_delivery_failed") {
+		t.Fatalf("queue failure status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	failed, ok := hub.artifactTasks.forActor(task.ID, 7)
+	if !ok || failed.Status != artifactTaskFailed || failed.Code != "turn_delivery_failed" || failed.Delivered {
+		t.Fatalf("queue failure task = %#v ok=%v", failed, ok)
+	}
+}
+
 func TestArtifactTaskResultCompletesOnlyAfterExactPreviewReceipt(t *testing.T) {
 	db := &identityMessageStore{users: map[int64]*types.User{
 		7:   {ID: 7, AccountType: types.AccountHuman},
@@ -378,8 +595,9 @@ func TestArtifactTaskResultCompletesOnlyAfterExactPreviewReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := hub.artifactTasks.claimDelivery(task.Ref, task.ActorUID, task.TopicID, task.AgentUID); err != nil {
-		t.Fatalf("claim task: %v", err)
+	delivery, err := hub.artifactTasks.reserveDelivery(task.Ref, task.ActorUID, task.TopicID, task.AgentUID, "artifact-task:"+task.ID)
+	if err != nil || !hub.artifactTasks.confirmDelivery(delivery) {
+		t.Fatalf("confirm task: delivery=%#v err=%v", delivery, err)
 	}
 	target, err := hub.issueArtifactTaskWritebackIfActive(task.Ref, task.ID)
 	if err != nil {

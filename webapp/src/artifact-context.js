@@ -407,10 +407,12 @@ export function normalizeArtifactTaskStatus(value) {
   const message = value.message === undefined ? '' : String(value.message);
   const runId = value.run_id === undefined ? '' : String(value.run_id);
   const resultId = value.result_id === undefined ? '' : String(value.result_id);
+  const deliveryStatus = value.delivery_status === undefined ? '' : String(value.delivery_status);
   if ((code && !/^[a-z][a-z0-9_]{0,63}$/.test(code))
     || (message && (message !== message.trim() || message.length > 500 || /[\0\r\n]/.test(message)))
     || (runId && (runId !== runId.trim() || runId.length > 128 || /[\0\r\n]/.test(runId)))
-    || (resultId && !ARTIFACT_RESULT_ID_PATTERN.test(resultId))) return null;
+    || (resultId && !ARTIFACT_RESULT_ID_PATTERN.test(resultId))
+    || (deliveryStatus && !new Set(['pending', 'delivered', 'failed']).has(deliveryStatus))) return null;
   const normalized = {
     contract_version: ARTIFACT_TASK_STATUS_CONTRACT,
     task_id: value.task_id,
@@ -422,7 +424,35 @@ export function normalizeArtifactTaskStatus(value) {
   if (message) normalized.message = message;
   if (runId) normalized.run_id = runId;
   if (resultId) normalized.result_id = resultId;
+  if (deliveryStatus) normalized.delivery_status = deliveryStatus;
   return normalized;
+}
+
+export function classifyArtifactTaskPollFailure(error, consecutiveFailures, maxFailures = 5) {
+  const status = Number(error?.status || 0);
+  const failures = Math.max(1, Number(consecutiveFailures) || 1);
+  if (status === 404 || status === 410) {
+    return {
+      retry: false,
+      code: 'task_unavailable',
+      message: 'Artifact task is no longer available',
+    };
+  }
+  if (status >= 400 && status < 500 && ![408, 425, 429].includes(status)) {
+    return {
+      retry: false,
+      code: 'task_status_rejected',
+      message: 'Artifact task status can no longer be read',
+    };
+  }
+  if (failures >= Math.max(1, Number(maxFailures) || 5)) {
+    return {
+      retry: false,
+      code: 'task_status_unavailable',
+      message: 'Artifact task status remained unavailable',
+    };
+  }
+  return { retry: true };
 }
 
 export function normalizeArtifactTaskCreated(value) {

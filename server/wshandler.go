@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1452,10 +1453,29 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	}
 	candidateMetadata := payload.Metadata
 	payload.Metadata, payload.ArtifactContextRef = h.extractArtifactContextDelivery(uid, topic, candidateMetadata)
-	_, payload.ArtifactTaskRef, err = h.extractArtifactTaskDelivery(uid, topic, candidateMetadata)
+	_, payload.ArtifactTaskRef, err = h.extractArtifactTaskDelivery(uid, topic, payload.ClientMsgID, candidateMetadata)
 	if err != nil {
+		code := 400
+		if errors.Is(err, errArtifactTaskDeliveryPending) {
+			code = 409
+		}
 		h.SendToClient(client, &ServerMessage{
-			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 400, Text: err.Error()},
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: code, Text: err.Error()},
+		})
+		return
+	}
+	if payload.ArtifactTaskRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
+		h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 400, Text: "Artifact task references require a persisted visible message"},
+		})
+		return
+	}
+	if payload.ArtifactTaskRef != nil && !payload.ArtifactTaskRef.AlreadyDelivered &&
+		!h.IsOnline(payload.ArtifactTaskRef.AgentUID) {
+		h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "agent_offline", "Artifact task Agent is not connected")
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 409, Text: "Artifact task Agent is offline"},
 		})
 		return
 	}
@@ -1494,6 +1514,9 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 
 	result, err := saveNormalizedMessage(h.db, topic, uid, msg.ReplyTo, payload)
 	if err != nil {
+		if payload.ArtifactTaskRef != nil {
+			h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		}
 		log.Printf("save message error: %v", err)
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 500, Text: "save failed"},
@@ -1501,7 +1524,25 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		return
 	}
 
-	// Confirm to sender
+	if payload.ArtifactTaskRef != nil {
+		if result.Duplicate {
+			if !payload.ArtifactTaskRef.AlreadyDelivered {
+				h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_conflict", "Artifact task message identity could not be reconciled")
+				h.SendToClient(client, &ServerMessage{
+					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 409, Text: "Artifact task delivery conflict"},
+				})
+				return
+			}
+		} else if !h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client) {
+			h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_failed", "Artifact task turn could not be delivered to the online Agent")
+			h.SendToClient(client, &ServerMessage{
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 503, Text: "Artifact task turn delivery failed"},
+			})
+			return
+		}
+	}
+
+	// Confirm to sender only after an Artifact task turn has reached the Agent queue.
 	h.SendToClient(client, &ServerMessage{
 		Ctrl: &MsgServerCtrl{
 			ID:    msg.ID,
@@ -1516,7 +1557,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		},
 	})
 
-	if !result.Duplicate {
+	if !result.Duplicate && payload.ArtifactTaskRef == nil {
 		h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client)
 	}
 }
@@ -1732,6 +1773,9 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 
 	result, err := saveNormalizedMessage(h.db, topic, uid, msg.ReplyTo, payload)
 	if err != nil {
+		if payload.ArtifactTaskRef != nil {
+			h.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
+		}
 		log.Printf("save group message error: %v", err)
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 500, Text: "save failed"},
@@ -1739,7 +1783,25 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 		return
 	}
 
-	// Confirm to sender
+	if payload.ArtifactTaskRef != nil {
+		if result.Duplicate {
+			if !payload.ArtifactTaskRef.AlreadyDelivered {
+				h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_conflict", "Artifact task message identity could not be reconciled")
+				h.SendToClient(client, &ServerMessage{
+					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 409, Text: "Artifact task delivery conflict"},
+				})
+				return
+			}
+		} else if !h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client) {
+			h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_failed", "Artifact task turn could not be delivered to the online Agent")
+			h.SendToClient(client, &ServerMessage{
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 503, Text: "Artifact task turn delivery failed"},
+			})
+			return
+		}
+	}
+
+	// Confirm to sender only after an Artifact task turn has reached the Agent queue.
 	h.SendToClient(client, &ServerMessage{
 		Ctrl: &MsgServerCtrl{
 			ID:    msg.ID,
@@ -1754,7 +1816,7 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 		},
 	})
 
-	if !result.Duplicate {
+	if !result.Duplicate && payload.ArtifactTaskRef == nil {
 		h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client)
 	}
 }
@@ -2271,12 +2333,13 @@ func pushNotificationExcerpt(value string) string {
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
 // Agent-task groups route unmentioned human messages to their current default agent.
 // Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
-func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) {
+func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) bool {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
 		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
-		return
+		return false
 	}
+	taskDelivered := false
 	shouldNotifyOffline := shouldNotifyOfflineForMessage(msg)
 
 	memberCount := len(members)
@@ -2351,9 +2414,18 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				metadata,
 			)
 		}
-		h.SendToUser(m.UserID, out)
+		if msg != nil && msg.artifactTaskRef != nil && msg.artifactTaskRef.AgentUID == m.UserID {
+			if msg.artifactTaskRef.AlreadyDelivered {
+				taskDelivered = true
+			} else if h.sendToUserExceptConfirmed(m.UserID, out, nil) > 0 {
+				taskDelivered = h.artifactTasks.confirmDelivery(msg.artifactTaskRef)
+			}
+		} else {
+			h.SendToUser(m.UserID, out)
+		}
 		if !isBot && shouldNotifyOffline {
 			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderPublishesTaskStatus)
 		}
 	}
+	return taskDelivered
 }
