@@ -2241,10 +2241,51 @@ describe('ChatMessage rich file rendering', () => {
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
     const frame = panel.querySelector('iframe.v3-file-preview-frame');
-    expect(frame?.getAttribute('src')).toBe(previewURL);
+    const frameURL = new URL(frame?.getAttribute('src'));
+    expect(`${frameURL.origin}${frameURL.pathname}${frameURL.search}`).toBe(previewURL);
+    expect(frameURL.hash).toContain('catsco_bridge_nonce=');
     expect(frame?.getAttribute('srcdoc')).toBeNull();
     expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-modals');
     expect(frame?.hasAttribute('credentialless')).toBe(true);
+  });
+
+  it('invalidates the opaque bridge when the preview iframe loads a second document', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/reloadable/latest/', window.location.origin).toString();
+    const onBindingChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile({
+            id: 'reloadable',
+            agent_uid: 440,
+            title: 'Reloadable artifact',
+            url: artifactURL,
+            publish_version: 1,
+          })}
+          onRemoteArtifactFrameChange={onBindingChange}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    const frame = container.querySelector('iframe.v3-file-preview-frame');
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    const firstBinding = onBindingChange.mock.calls.at(-1)?.[0];
+    expect(firstBinding?.bridge).toBe('catsco.artifact-frame-bridge.v1');
+    expect(firstBinding?.bridgeReady).toBe(true);
+    expect(firstBinding?.signal?.aborted).toBe(false);
+
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    expect(firstBinding.signal.aborted).toBe(true);
+    expect(onBindingChange.mock.calls.at(-1)?.[0]).toBeNull();
+    expect(container.querySelector('.v3-remote-artifact-preview-state.error')).not.toBeNull();
   });
 
   it('keeps an unknown external URL as an ordinary link', async () => {

@@ -394,7 +394,7 @@ func validateArtifactNodeURL(value, publicBaseURL string, expectedAgentUID int64
 		return nil
 	}
 	artifactURL, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.RawPath != "" {
+	if err != nil || artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.RawPath != "" || artifactURL.Fragment != "" || artifactURL.RawFragment != "" {
 		return errors.New("invalid artifact URL")
 	}
 	baseURL, err := url.Parse(publicBaseURL)

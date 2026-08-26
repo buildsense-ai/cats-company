@@ -482,6 +482,17 @@ func TestCloudArtifactHandlerRejectsURLFromWrongNode(t *testing.T) {
 	}
 }
 
+func TestValidateArtifactNodeURLRejectsFragments(t *testing.T) {
+	err := validateArtifactNodeURL(
+		"https://node-a.example/artifacts/by-agent/440/shared-game/latest/#dashboard",
+		"https://node-a.example/artifacts",
+		440,
+	)
+	if err == nil {
+		t.Fatal("validateArtifactNodeURL accepted a fragment-bearing Artifact URL")
+	}
+}
+
 func TestCloudArtifactHandlerRejectsURLFromWrongAgentNamespace(t *testing.T) {
 	const token = "node-a-management-token-abcdefghijklmnopqrstuvwxyz"
 	var upstream *httptest.Server

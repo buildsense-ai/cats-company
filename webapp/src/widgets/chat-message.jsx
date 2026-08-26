@@ -18,6 +18,8 @@ import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet
 import MobilePdfPreview from './mobile-pdf-preview';
 import {
   ARTIFACT_FRAME_BRIDGE_CONTRACT,
+  artifactFrameBridgeNonce,
+  artifactFrameURLWithBridgeNonce,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
   requestArtifactPageContext,
@@ -2437,6 +2439,15 @@ export function FilePreviewPanel({
   const pendingRemoteArtifactFrameRef = useRef(null);
   const pendingRemoteArtifactAttemptRef = useRef(null);
   const verifiedRemoteArtifactKeysRef = useRef(new Set());
+  const remoteArtifactBridgeStateRef = useRef({
+    key: '',
+    frame: null,
+    nonce: '',
+    loadCount: 0,
+    loaded: false,
+    controller: null,
+  });
+  const [remoteArtifactDocumentEpoch, setRemoteArtifactDocumentEpoch] = useState(0);
   const focusBeforeSheetRef = useRef(null);
   const [isSheetMode, setIsSheetMode] = useState(
     () => window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024,
@@ -2466,6 +2477,14 @@ export function FilePreviewPanel({
     pendingRemoteArtifactFile,
     pendingRemoteArtifactDescriptor,
   );
+  const currentRemoteArtifactBridgeNonce = useMemo(
+    () => descriptor?.isSameOriginRemoteArtifact ? artifactFrameBridgeNonce() : '',
+    [currentRemoteArtifactKey, descriptor?.isSameOriginRemoteArtifact],
+  );
+  const pendingRemoteArtifactBridgeNonce = useMemo(
+    () => pendingRemoteArtifactDescriptor?.isSameOriginRemoteArtifact ? artifactFrameBridgeNonce() : '',
+    [pendingRemoteArtifactKey, pendingRemoteArtifactDescriptor?.isSameOriginRemoteArtifact],
+  );
   const pendingRemoteArtifactAttemptSeed = useMemo(() => {
     if (!pendingRemoteArtifactKey || !pendingRemoteArtifactFile) return null;
     return {
@@ -2475,14 +2494,19 @@ export function FilePreviewPanel({
       errored: false,
       reported: false,
       frame: null,
+      bridgeNonce: pendingRemoteArtifactBridgeNonce,
+      bridgeLoadCount: 0,
+      bridgeReady: false,
+      bridgeController: new AbortController(),
     };
-  }, [pendingRemoteArtifactFile, pendingRemoteArtifactKey]);
+  }, [pendingRemoteArtifactBridgeNonce, pendingRemoteArtifactFile, pendingRemoteArtifactKey]);
 
   const settlePendingRemoteArtifact = (status, expectedAttempt) => {
     const attempt = pendingRemoteArtifactAttemptRef.current;
     if (!attempt || attempt !== expectedAttempt || attempt.settled) return;
     attempt.settled = true;
     if (attempt.timer) window.clearTimeout(attempt.timer);
+    attempt.seed.bridgeController?.abort();
     pendingRemoteArtifactAttemptRef.current = null;
     if (attempt.seed.reported) return;
     attempt.seed.reported = true;
@@ -2518,6 +2542,9 @@ export function FilePreviewPanel({
       bridge: previewFileDescriptor(attempt.file)?.isSameOriginRemoteArtifact
         ? ARTIFACT_FRAME_BRIDGE_CONTRACT
         : undefined,
+      bridgeNonce: attempt.seed.bridgeNonce,
+      bridgeReady: attempt.seed.bridgeReady,
+      signal: attempt.seed.bridgeController?.signal,
     }, artifactRef, REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS);
     settlePendingRemoteArtifact(pageContext ? 'ready' : 'failed', attempt);
   };
@@ -2550,6 +2577,7 @@ export function FilePreviewPanel({
     }
     return () => {
       if (attempt.timer) window.clearTimeout(attempt.timer);
+      attempt.seed.bridgeController?.abort();
       attempt.settled = true;
       if (pendingRemoteArtifactAttemptRef.current === attempt) {
         pendingRemoteArtifactAttemptRef.current = null;
@@ -2559,25 +2587,85 @@ export function FilePreviewPanel({
 
   const handlePendingRemoteArtifactLoad = (seed, frame) => {
     if (!seed) return;
+    seed.bridgeLoadCount += 1;
+    seed.bridgeController?.abort();
+    seed.bridgeController = new AbortController();
+    seed.bridgeReady = !seed.bridgeNonce || seed.bridgeLoadCount === 1;
     seed.loaded = true;
     seed.frame = frame || seed.frame;
     const attempt = pendingRemoteArtifactAttemptRef.current;
     if (!attempt || attempt.seed !== seed || attempt.settled) return;
+    if (!seed.bridgeReady) {
+      settlePendingRemoteArtifact('failed', attempt);
+      return;
+    }
     attempt.frame = seed.frame || attempt.frame;
     void verifyPendingRemoteArtifact(attempt);
   };
 
   const handlePendingRemoteArtifactError = (seed) => {
     if (!seed) return;
+    seed.bridgeController?.abort();
+    seed.bridgeReady = false;
     seed.errored = true;
     const attempt = pendingRemoteArtifactAttemptRef.current;
     if (!attempt || attempt.seed !== seed || attempt.settled) return;
     settlePendingRemoteArtifact('failed', attempt);
   };
 
+  const handleCurrentRemoteArtifactLoad = (event, frameKey, bridgeNonce) => {
+    const frame = event?.currentTarget;
+    const state = remoteArtifactBridgeStateRef.current;
+    if (!frame || state.key !== frameKey || state.nonce !== bridgeNonce) return;
+    state.loadCount += 1;
+    state.frame = frame;
+    state.controller?.abort();
+    state.controller = new AbortController();
+    const isFirstDocument = !bridgeNonce || state.loadCount === 1;
+    state.loaded = isFirstDocument;
+    setRemoteArtifactDocumentEpoch((value) => value + 1);
+    setRemoteFrameState(isFirstDocument ? 'ready' : 'error');
+  };
+
+  const handleCurrentRemoteArtifactError = (frameKey) => {
+    const state = remoteArtifactBridgeStateRef.current;
+    if (state.key !== frameKey) return;
+    state.controller?.abort();
+    state.loaded = false;
+    setRemoteArtifactDocumentEpoch((value) => value + 1);
+    setRemoteFrameState('error');
+  };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    remoteArtifactBridgeStateRef.current.controller?.abort();
+    remoteArtifactBridgeStateRef.current = {
+      key: currentRemoteArtifactKey,
+      frame: null,
+      nonce: currentRemoteArtifactBridgeNonce,
+      loadCount: 0,
+      loaded: false,
+      controller,
+    };
+    setRemoteArtifactDocumentEpoch((value) => value + 1);
+    return () => controller.abort();
+  }, [currentRemoteArtifactBridgeNonce, currentRemoteArtifactKey]);
+
   useEffect(() => {
     const frame = remoteArtifactFrameRef.current;
     if (!preview || !isRemoteArtifact || !frame || !file?.artifact_id) {
+      onRemoteArtifactFrameChange?.(null);
+      return undefined;
+    }
+    const bridgeState = remoteArtifactBridgeStateRef.current;
+    const isOpaqueBridgeReady = descriptor?.isSameOriginRemoteArtifact
+      && Boolean(currentRemoteArtifactBridgeNonce)
+      && bridgeState.key === currentRemoteArtifactKey
+      && bridgeState.nonce === currentRemoteArtifactBridgeNonce
+      && bridgeState.frame === frame
+      && bridgeState.loaded
+      && bridgeState.loadCount === 1;
+    if (descriptor?.isSameOriginRemoteArtifact && !isOpaqueBridgeReady) {
       onRemoteArtifactFrameChange?.(null);
       return undefined;
     }
@@ -2586,13 +2674,16 @@ export function FilePreviewPanel({
       artifactId: String(file.artifact_id),
       agentUid: Number(file.artifact_agent_uid || 0),
       url,
-      bridge: descriptor?.isSameOriginRemoteArtifact
+      bridge: isOpaqueBridgeReady
         ? ARTIFACT_FRAME_BRIDGE_CONTRACT
         : undefined,
+      bridgeNonce: isOpaqueBridgeReady ? currentRemoteArtifactBridgeNonce : undefined,
+      bridgeReady: isOpaqueBridgeReady,
+      signal: bridgeState.controller?.signal,
     };
     onRemoteArtifactFrameChange?.(binding);
     return () => onRemoteArtifactFrameChange?.(null);
-  }, [descriptor?.isSameOriginRemoteArtifact, file?.artifact_agent_uid, file?.artifact_id, isRemoteArtifact, onRemoteArtifactFrameChange, preview, url]);
+  }, [currentRemoteArtifactBridgeNonce, currentRemoteArtifactKey, descriptor?.isSameOriginRemoteArtifact, file?.artifact_agent_uid, file?.artifact_id, isRemoteArtifact, onRemoteArtifactFrameChange, preview, remoteArtifactDocumentEpoch, url]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2937,6 +3028,7 @@ export function FilePreviewPanel({
                 {
                   key: currentRemoteArtifactKey,
                   descriptor,
+                  bridgeNonce: currentRemoteArtifactBridgeNonce,
                   current: true,
                   attemptSeed: null,
                 },
@@ -2944,6 +3036,7 @@ export function FilePreviewPanel({
                   ? {
                      key: pendingRemoteArtifactKey,
                      descriptor: pendingRemoteArtifactDescriptor,
+                     bridgeNonce: pendingRemoteArtifactAttemptSeed?.bridgeNonce || pendingRemoteArtifactBridgeNonce,
                      current: false,
                      attemptSeed: pendingRemoteArtifactAttemptSeed,
                    }
@@ -2952,7 +3045,9 @@ export function FilePreviewPanel({
                 <iframe
                   key={frameEntry.key}
                   ref={frameEntry.current ? remoteArtifactFrameRef : pendingRemoteArtifactFrameRef}
-                  src={frameEntry.descriptor.url}
+                  src={frameEntry.descriptor?.isSameOriginRemoteArtifact
+                    ? artifactFrameURLWithBridgeNonce(frameEntry.descriptor.url, frameEntry.bridgeNonce)
+                    : frameEntry.descriptor.url}
                   className={frameEntry.current ? 'v3-file-preview-frame' : 'v3-file-preview-frame-pending'}
                   title={frameEntry.current ? 'Cloud Artifact Preview' : 'Cloud Artifact Refresh Check'}
                   sandbox={frameEntry.descriptor?.isSameOriginRemoteArtifact ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}
@@ -2968,10 +3063,10 @@ export function FilePreviewPanel({
                     pointerEvents: 'none',
                   }}
                   onLoad={frameEntry.current
-                    ? () => setRemoteFrameState('ready')
+                    ? (event) => handleCurrentRemoteArtifactLoad(event, frameEntry.key, frameEntry.bridgeNonce)
                     : (event) => handlePendingRemoteArtifactLoad(frameEntry.attemptSeed, event.currentTarget)}
                   onError={frameEntry.current
-                    ? () => setRemoteFrameState('error')
+                    ? () => handleCurrentRemoteArtifactError(frameEntry.key)
                     : () => handlePendingRemoteArtifactError(frameEntry.attemptSeed)}
                 />
               ))}

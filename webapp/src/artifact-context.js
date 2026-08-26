@@ -7,13 +7,16 @@ export const ARTIFACT_RESULT_CONTRACT = 'catsco.artifact-result.v1';
 export const ARTIFACT_RESULT_RECEIPT_CONTRACT = 'catsco.artifact-result-receipt.v1';
 export const ARTIFACT_RESULT_REQUEST_TYPE = 'catsco.artifact.result.request.v1';
 export const ARTIFACT_RESULT_RESPONSE_TYPE = 'catsco.artifact.result.response.v1';
-// Opaque-frame bridge v1: the parent sends only this handshake over the
-// WindowProxy with one transferred MessagePort; the Artifact answers READY on
-// that port, then handles the existing context/result request envelopes and
-// returns their existing response envelopes on the same port.
+// Opaque-frame bridge v1: the parent puts a one-time nonce in the iframe URL
+// fragment, waits for the iframe's first load, then sends only this handshake
+// over the WindowProxy with one transferred MessagePort. The Artifact must
+// read that fragment and echo the nonce in READY on the port; it then handles
+// the existing context/result request envelopes on the same port. A later
+// document load invalidates the binding and cannot reuse the port.
 export const ARTIFACT_FRAME_BRIDGE_CONTRACT = 'catsco.artifact-frame-bridge.v1';
 export const ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE = 'catsco.artifact.frame-bridge.request.v1';
 export const ARTIFACT_FRAME_BRIDGE_READY_TYPE = 'catsco.artifact.frame-bridge.ready.v1';
+export const ARTIFACT_FRAME_BRIDGE_NONCE_PARAM = 'catsco_bridge_nonce';
 
 const ARTIFACT_ID_PATTERN = /^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$/;
 const ARTIFACT_CONTEXT_REF_PATTERN = /^acr_[A-Za-z0-9_-]{43}$/;
@@ -53,6 +56,34 @@ const ARTIFACT_FRAME_BRIDGE_CAPABILITIES = Object.freeze([
   ARTIFACT_CONTEXT_REQUEST_TYPE,
   ARTIFACT_RESULT_REQUEST_TYPE,
 ]);
+
+export function artifactFrameBridgeNonce() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  if (globalThis.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  return '';
+}
+
+export function artifactFrameURLWithBridgeNonce(value, nonce) {
+  const normalizedNonce = String(nonce || '').trim();
+  if (!normalizedNonce) return String(value || '');
+  try {
+    const parsed = new URL(String(value || ''));
+    const currentHash = parsed.hash.replace(/^#/, '');
+    const noncePrefix = `${ARTIFACT_FRAME_BRIDGE_NONCE_PARAM}=`;
+    const fragments = currentHash
+      ? currentHash.split('&').filter((fragment) => !fragment.startsWith(noncePrefix))
+      : [];
+    fragments.push(`${noncePrefix}${encodeURIComponent(normalizedNonce)}`);
+    parsed.hash = `#${fragments.join('&')}`;
+    return parsed.toString();
+  } catch {
+    return String(value || '');
+  }
+}
 
 function artifactFrameMessagePolicy(url) {
   let frameOrigin;
@@ -101,10 +132,15 @@ function artifactBridgeTimeout(timeoutMs) {
 function openOpaqueArtifactBridge(binding, timeoutMs) {
   const contentWindow = binding?.frame?.contentWindow;
   const MessageChannelConstructor = globalThis.MessageChannel;
+  const bridgeNonce = String(binding?.bridgeNonce || '').trim();
+  const signal = binding?.signal;
   if (binding?.bridge !== ARTIFACT_FRAME_BRIDGE_CONTRACT
+    || binding?.bridgeReady !== true
+    || !bridgeNonce
     || !contentWindow?.postMessage
     || typeof MessageChannelConstructor !== 'function'
-    || typeof window === 'undefined') return Promise.resolve(null);
+    || typeof window === 'undefined'
+    || signal?.aborted) return Promise.resolve(null);
 
   let channel;
   try {
@@ -125,11 +161,14 @@ function openOpaqueArtifactBridge(binding, timeoutMs) {
   return new Promise((resolve) => {
     let settled = false;
     let timer;
+    const handleAbort = () => finish(false);
+    const removeAbortListener = () => signal?.removeEventListener?.('abort', handleAbort);
     const finish = (ready) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
       parentPort.onmessage = null;
+      removeAbortListener();
       if (!ready) {
         closeArtifactBridgePort(parentPort);
         closeArtifactBridgePort(framePort);
@@ -142,10 +181,12 @@ function openOpaqueArtifactBridge(binding, timeoutMs) {
       const data = event?.data;
       if (data?.type !== ARTIFACT_FRAME_BRIDGE_READY_TYPE
         || data.contract_version !== ARTIFACT_FRAME_BRIDGE_CONTRACT
-        || data.bridge_id !== bridgeId) return;
+        || data.bridge_id !== bridgeId
+        || data.bridge_nonce !== bridgeNonce) return;
       finish(true);
     };
     parentPort.start?.();
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
     timer = window.setTimeout(() => finish(false), handshakeTimeout);
     try {
       // The handshake contains only a random capability identifier and
@@ -164,6 +205,8 @@ function openOpaqueArtifactBridge(binding, timeoutMs) {
 }
 
 async function requestOpaqueArtifactBridge(binding, message, responseType, timeoutMs) {
+  const signal = binding?.signal;
+  if (signal?.aborted) return { available: false, aborted: true, data: null };
   const deadline = Number.isFinite(timeoutMs)
     ? Date.now() + Math.max(0, Math.round(timeoutMs))
     : null;
@@ -171,7 +214,11 @@ async function requestOpaqueArtifactBridge(binding, message, responseType, timeo
     ? undefined
     : Math.max(0, deadline - Date.now());
   const bridge = await openOpaqueArtifactBridge(binding, remainingTimeout());
-  if (!bridge) return { available: false, data: null };
+  if (!bridge) return {
+    available: false,
+    aborted: Boolean(signal?.aborted),
+    data: null,
+  };
 
   const { port } = bridge;
   const boundedTimeout = Number.isFinite(remainingTimeout())
@@ -179,16 +226,19 @@ async function requestOpaqueArtifactBridge(binding, message, responseType, timeo
     : ARTIFACT_RESULT_TIMEOUT_MS;
   if (boundedTimeout <= 0) {
     closeArtifactBridgePort(port);
-    return { available: true, data: null };
+    return { available: true, aborted: Boolean(signal?.aborted), data: null };
   }
   const data = await new Promise((resolve) => {
     let settled = false;
     let timer;
+    const handleAbort = () => finish(null);
+    const removeAbortListener = () => signal?.removeEventListener?.('abort', handleAbort);
     const finish = (value) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
       port.onmessage = null;
+      removeAbortListener();
       closeArtifactBridgePort(port);
       resolve(value);
     };
@@ -198,14 +248,16 @@ async function requestOpaqueArtifactBridge(binding, message, responseType, timeo
       finish(response);
     };
     port.start?.();
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
     timer = window.setTimeout(() => finish(null), boundedTimeout);
     try {
-      port.postMessage(message);
+      if (!signal?.aborted) port.postMessage(message);
+      else finish(null);
     } catch {
       finish(null);
     }
   });
-  return { available: true, data };
+  return { available: true, aborted: Boolean(signal?.aborted), data };
 }
 
 function positiveInteger(value) {
@@ -297,7 +349,8 @@ export function withArtifactContextRef(payload, contextRef) {
 export async function requestArtifactPageContext(binding, artifactRef, timeoutMs = PAGE_CONTEXT_TIMEOUT_MS) {
   const frame = binding?.frame;
   const contentWindow = frame?.contentWindow;
-  if (!artifactRef || binding?.artifactId !== artifactRef.id || !contentWindow?.postMessage) return null;
+  if (!artifactRef || binding?.artifactId !== artifactRef.id || !contentWindow?.postMessage
+    || binding?.signal?.aborted) return null;
 
   const messagePolicy = artifactFrameMessagePolicy(binding.url);
   if (!messagePolicy) return null;
@@ -322,11 +375,16 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
 
   return new Promise((resolve) => {
     let settled = false;
+    const signal = binding?.signal;
+    let timer;
+    const handleAbort = () => finish(null);
+    const removeAbortListener = () => signal?.removeEventListener?.('abort', handleAbort);
     const finish = (value) => {
       if (settled) return;
       settled = true;
       window.removeEventListener('message', handleMessage);
       window.clearTimeout(timer);
+      removeAbortListener();
       resolve(value);
     };
     const handleMessage = (event) => {
@@ -334,10 +392,12 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
       if (event.data?.type !== ARTIFACT_CONTEXT_RESPONSE_TYPE || event.data?.request_id !== requestId) return;
       finish(normalizeArtifactPageContext(event.data.context));
     };
-    const timer = window.setTimeout(() => finish(null), boundedTimeout);
     window.addEventListener('message', handleMessage);
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
+    timer = window.setTimeout(() => finish(null), boundedTimeout);
     try {
-      contentWindow.postMessage(request, messagePolicy.targetOrigin);
+      if (!signal?.aborted) contentWindow.postMessage(request, messagePolicy.targetOrigin);
+      else finish(null);
     } catch {
       finish(null);
     }
@@ -388,7 +448,8 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
   const contentWindow = frame?.contentWindow;
   if (!normalized || !contentWindow
     || binding?.artifactId !== normalized.artifactId
-    || Number(binding?.agentUid || 0) !== normalized.agentUid) return null;
+    || Number(binding?.agentUid || 0) !== normalized.agentUid
+    || binding?.signal?.aborted) return null;
 
   const messagePolicy = artifactFrameMessagePolicy(binding.url);
   if (!messagePolicy) return null;
@@ -398,6 +459,7 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
     // waiting forever, while keeping the payload off the untrusted channel.
     return artifactResultFailureReceipt(normalized.resultId, 'opaque_frame_bridge_required');
   }
+  if (messagePolicy.isOpaque && binding?.bridgeReady !== true) return null;
   if (!contentWindow.postMessage) {
     return messagePolicy.isOpaque
       ? artifactResultFailureReceipt(normalized.resultId, 'opaque_frame_bridge_required')
@@ -432,6 +494,7 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
       boundedTimeout,
     );
     if (!bridgeResponse.available) {
+      if (bridgeResponse.aborted) return null;
       return artifactResultFailureReceipt(normalized.resultId, 'opaque_frame_bridge_required');
     }
     if (!bridgeResponse.data) return null;
@@ -441,11 +504,16 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
 
   return new Promise((resolve) => {
     let settled = false;
+    const signal = binding?.signal;
+    let timer;
+    const handleAbort = () => finish(null);
+    const removeAbortListener = () => signal?.removeEventListener?.('abort', handleAbort);
     const finish = (receipt) => {
       if (settled) return;
       settled = true;
       window.removeEventListener('message', handleMessage);
       window.clearTimeout(timer);
+      removeAbortListener();
       resolve(receipt);
     };
     const handleMessage = (event) => {
@@ -454,10 +522,12 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
       finish(normalizeArtifactResultReceipt(event.data.receipt, normalized.resultId)
         || artifactResultFailureReceipt(normalized.resultId, 'invalid_receipt'));
     };
-    const timer = window.setTimeout(() => finish(null), boundedTimeout);
     window.addEventListener('message', handleMessage);
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
+    timer = window.setTimeout(() => finish(null), boundedTimeout);
     try {
-      contentWindow.postMessage(request, messagePolicy.targetOrigin);
+      if (!signal?.aborted) contentWindow.postMessage(request, messagePolicy.targetOrigin);
+      else finish(null);
     } catch {
       finish(null);
     }

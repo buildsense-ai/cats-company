@@ -1108,7 +1108,14 @@ export default function MessagesView({
       || !artifactBindingMatchesFocus(binding, focus)) return;
 
     const receipt = await requestArtifactResultApply(binding, delivery);
-    if (!receipt) return;
+    if (!receipt
+      || activeArtifactSnapshotRef.current !== snapshot
+      || activeArtifactFocusRef.current !== focus
+      || activeArtifactFrameRef.current !== binding
+      || artifactTopicGenerationRef.current !== snapshot.topicGeneration
+      || activeTopicRef.current !== delivery.topicId
+      || activeArtifactAgentUIDRef.current !== delivery.agentUid
+      || !artifactBindingMatchesFocus(activeArtifactFrameRef.current, focus)) return;
     wsSendArtifactResultReceipt({
       type: 'receipt',
       origin_node_id: delivery.originNodeId,

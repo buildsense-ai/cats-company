@@ -4559,6 +4559,115 @@ describe('MessagesView composer draft isolation', () => {
     expect(wsSendArtifactResultReceipt).not.toHaveBeenCalled();
   });
 
+  it('drops a result response that arrives after the preview is closed', async () => {
+    const origin = 'https://artifacts.example.test';
+    const resultId = `arr_${'c'.repeat(43)}`;
+    let respondToResult = null;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        if (message.type === 'catsco.artifact.context.request.v1') {
+          dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.context.response.v1',
+            request_id: message.request_id,
+            context: {
+              contract_version: 'catsco.artifact-page-context.v1',
+              observed_at: '2026-08-25T03:00:00Z',
+              selected_text: '待回写页面',
+            },
+          });
+          return;
+        }
+        if (message.type === 'catsco.artifact.result.request.v1') {
+          respondToResult = () => dispatchFrameMessage(frameWindow, origin, {
+            type: 'catsco.artifact.result.response.v1',
+            request_id: message.request_id,
+            receipt: {
+              contract_version: 'catsco.artifact-result-receipt.v1',
+              result_id: resultId,
+              status: 'applied',
+            },
+          });
+        }
+      },
+    };
+    const artifactURL = `${origin}/by-agent/440/close-race/latest/`;
+    const artifact = {
+      id: 'close-race',
+      agent_uid: '440',
+      title: '关闭竞态',
+      kind: 'html',
+      url: artifactURL,
+      status: 'active',
+      publish_version: 1,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'close-race',
+        agentUid: 440,
+        url: artifactURL,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 关闭竞态"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '写回关闭竞态');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    wsSendArtifactResultReceipt.mockClear();
+    await act(async () => {
+      wsHandler({
+        artifact_result: {
+          type: 'request',
+          origin_node_id: 'catsco-node-1',
+          context_ref: `acr_${'x'.repeat(43)}`,
+          writeback_ref: `awr_${'w'.repeat(43)}`,
+          topic_id: 'p2p_1_440',
+          agent_uid: '440',
+          artifact_id: 'close-race',
+          displayed_version: 1,
+          sink_id: 'items.upsert.v1',
+          result_id: resultId,
+          payload: { items: [{ title: '不应回写' }] },
+        },
+      });
+      await flushPromises();
+    });
+    expect(respondToResult).toEqual(expect.any(Function));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.mock-close-preview'));
+      await flushPromises();
+    });
+    await act(async () => {
+      respondToResult();
+      await flushPromises();
+    });
+
+    expect(wsSendArtifactResultReceipt).not.toHaveBeenCalled();
+  });
+
   it('returns a failed receipt when a same-origin opaque Artifact has no bridge support', async () => {
     vi.stubGlobal('MessageChannel', undefined);
     const artifactURL = new URL(
@@ -4582,6 +4691,8 @@ describe('MessagesView composer draft isolation', () => {
         agentUid: 440,
         url: artifactURL,
         bridge: 'catsco.artifact-frame-bridge.v1',
+        bridgeNonce: 'legacy-bridge-nonce',
+        bridgeReady: true,
       },
     };
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });

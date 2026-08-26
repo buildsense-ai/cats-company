@@ -10,6 +10,7 @@ import {
   ARTIFACT_RESULT_RECEIPT_CONTRACT,
   ARTIFACT_RESULT_RESPONSE_TYPE,
   artifactContextRefFromSnapshot,
+  artifactFrameURLWithBridgeNonce,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
   normalizeArtifactPageContext,
@@ -56,12 +57,13 @@ function installFakeMessageChannel() {
   };
 }
 
-function opaqueBridgeFrameWindow(onRequest = () => null) {
+function opaqueBridgeFrameWindow(onRequest = () => null, expectedNonce = 'bridge-nonce') {
   const frameWindow = {
     postMessage(message, targetOrigin, transfer) {
       expect(targetOrigin).toBe('*');
       expect(message.type).toBe(ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE);
       expect(message.contract_version).toBe(ARTIFACT_FRAME_BRIDGE_CONTRACT);
+      expect(message.bridge_nonce).toBeUndefined();
       expect(message.result).toBeUndefined();
       const framePort = transfer?.[0];
       if (!framePort) return;
@@ -69,6 +71,7 @@ function opaqueBridgeFrameWindow(onRequest = () => null) {
         type: ARTIFACT_FRAME_BRIDGE_READY_TYPE,
         contract_version: ARTIFACT_FRAME_BRIDGE_CONTRACT,
         bridge_id: message.bridge_id,
+        bridge_nonce: expectedNonce,
       });
       framePort.onmessage = ({ data }) => {
         const response = onRequest(data);
@@ -411,8 +414,13 @@ describe('artifact context snapshot handoff', () => {
       const result = await requestArtifactPageContext({
         frame: { contentWindow: frameWindow },
         artifactId: 'same-origin-game',
-        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        url: artifactFrameURLWithBridgeNonce(
+          `${window.location.origin}/artifacts/same-origin-game/latest/`,
+          'bridge-nonce',
+        ),
         bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridgeNonce: 'bridge-nonce',
+        bridgeReady: true,
       }, {
         contract_version: ARTIFACT_REF_CONTRACT,
         id: 'same-origin-game',
@@ -423,6 +431,125 @@ describe('artifact context snapshot handoff', () => {
     } finally {
       restore();
     }
+  });
+
+  it('rejects an opaque bridge READY from a document without the bound URL nonce', async () => {
+    const restore = installFakeMessageChannel();
+    try {
+      const frameWindow = opaqueBridgeFrameWindow((message) => ({
+        type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
+        request_id: message.request_id,
+        context: {
+          contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+          observed_at: '2026-08-26T12:00:00Z',
+          selected_text: '不应接受',
+        },
+      }), 'attacker-nonce');
+      const result = await requestArtifactPageContext({
+        frame: { contentWindow: frameWindow },
+        artifactId: 'same-origin-game',
+        url: artifactFrameURLWithBridgeNonce(
+          `${window.location.origin}/artifacts/same-origin-game/latest/`,
+          'expected-nonce',
+        ),
+        bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridgeNonce: 'expected-nonce',
+        bridgeReady: true,
+      }, {
+        contract_version: ARTIFACT_REF_CONTRACT,
+        id: 'same-origin-game',
+        currently_visible: true,
+      }, 20);
+
+      expect(result).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not send an opaque handshake until the iframe document has loaded', async () => {
+    const postMessage = vi.fn();
+    const result = await requestArtifactPageContext({
+      frame: { contentWindow: { postMessage } },
+      artifactId: 'same-origin-game',
+      url: artifactFrameURLWithBridgeNonce(
+        `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        'bridge-nonce',
+      ),
+      bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+      bridgeNonce: 'bridge-nonce',
+      bridgeReady: false,
+    }, {
+      contract_version: ARTIFACT_REF_CONTRACT,
+      id: 'same-origin-game',
+      currently_visible: true,
+    }, 20);
+
+    expect(result).toBeNull();
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it('cancels an opaque bridge request when its document binding is invalidated', async () => {
+    const restore = installFakeMessageChannel();
+    try {
+      const controller = new AbortController();
+      const frameWindow = {
+        postMessage(message, targetOrigin, transfer) {
+          expect(targetOrigin).toBe('*');
+          const framePort = transfer?.[0];
+          framePort?.postMessage({
+            type: ARTIFACT_FRAME_BRIDGE_READY_TYPE,
+            contract_version: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+            bridge_id: message.bridge_id,
+            bridge_nonce: 'bridge-nonce',
+          });
+          framePort.onmessage = vi.fn();
+          framePort.start?.();
+        },
+      };
+      const resultPromise = requestArtifactPageContext({
+        frame: { contentWindow: frameWindow },
+        artifactId: 'same-origin-game',
+        url: artifactFrameURLWithBridgeNonce(
+          `${window.location.origin}/artifacts/same-origin-game/latest/`,
+          'bridge-nonce',
+        ),
+        bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridgeNonce: 'bridge-nonce',
+        bridgeReady: true,
+        signal: controller.signal,
+      }, {
+        contract_version: ARTIFACT_REF_CONTRACT,
+        id: 'same-origin-game',
+        currently_visible: true,
+      }, 100);
+      controller.abort();
+
+      expect(await resultPromise).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('adds the bridge nonce as a fragment without changing the artifact URL path or query', () => {
+    const url = artifactFrameURLWithBridgeNonce(
+      `${window.location.origin}/artifacts/same-origin-game/latest/?artifact_version=1`,
+      'nonce-123',
+    );
+    const parsed = new URL(url);
+    expect(parsed.origin).toBe(window.location.origin);
+    expect(parsed.pathname).toBe('/artifacts/same-origin-game/latest/');
+    expect(parsed.search).toBe('?artifact_version=1');
+    expect(parsed.hash).toContain('catsco_bridge_nonce=nonce-123');
+  });
+
+  it('retains an existing hash route before the reserved bridge parameter', () => {
+    const url = artifactFrameURLWithBridgeNonce(
+      `${window.location.origin}/artifacts/same-origin-game/latest/#route=dashboard&filter=open`,
+      'nonce-123',
+    );
+    const parsed = new URL(url);
+    expect(parsed.hash).toBe('#route=dashboard&filter=open&catsco_bridge_nonce=nonce-123');
   });
 
   it('does not use the opaque channel without the explicit bridge binding', async () => {
@@ -546,8 +673,13 @@ describe('artifact context snapshot handoff', () => {
         frame: { contentWindow: frameWindow },
         artifactId: 'same-origin-game',
         agentUid: 440,
-        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        url: artifactFrameURLWithBridgeNonce(
+          `${window.location.origin}/artifacts/same-origin-game/latest/`,
+          'bridge-nonce',
+        ),
         bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridgeNonce: 'bridge-nonce',
+        bridgeReady: true,
       }, delivery, 50);
 
       expect(receipt).toEqual({
@@ -622,8 +754,13 @@ describe('artifact context snapshot handoff', () => {
         frame: { contentWindow: frameWindow },
         artifactId: 'same-origin-game',
         agentUid: 440,
-        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        url: artifactFrameURLWithBridgeNonce(
+          `${window.location.origin}/artifacts/same-origin-game/latest/`,
+          'bridge-nonce',
+        ),
         bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridgeNonce: 'bridge-nonce',
+        bridgeReady: true,
       }, delivery, 5);
 
       expect(receipt).toEqual({
@@ -642,40 +779,36 @@ describe('artifact context snapshot handoff', () => {
   it('does not accept a forged opaque response sent through the navigated WindowProxy', async () => {
     const restore = installFakeMessageChannel();
     try {
-      const frameWindow = {
-        postMessage(message) {
-          window.setTimeout(() => {
-            const event = new Event('message');
-            Object.defineProperties(event, {
-              source: { value: frameWindow },
-              origin: { value: 'null' },
-              data: {
-                value: {
-                  type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
-                  request_id: message.bridge_id,
-                  context: {
-                    contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
-                    observed_at: '2026-08-26T12:00:00Z',
-                    selected_text: '伪造内容',
-                  },
-                },
-              },
-            });
-            window.dispatchEvent(event);
-          }, 0);
-        },
-      };
+      let receivedRequest = null;
+      const frameWindow = opaqueBridgeFrameWindow((message) => {
+        receivedRequest = message;
+        return {
+          type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
+          request_id: message.request_id,
+          context: {
+            contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+            observed_at: '2026-08-26T12:00:00Z',
+            selected_text: '伪造内容',
+          },
+        };
+      }, 'attacker-nonce');
       const result = await requestArtifactPageContext({
         frame: { contentWindow: frameWindow },
         artifactId: 'same-origin-game',
-        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        url: artifactFrameURLWithBridgeNonce(
+          `${window.location.origin}/artifacts/same-origin-game/latest/`,
+          'expected-nonce',
+        ),
         bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridgeNonce: 'expected-nonce',
+        bridgeReady: true,
       }, {
         contract_version: ARTIFACT_REF_CONTRACT,
         id: 'same-origin-game',
         currently_visible: true,
       }, 5);
       expect(result).toBeNull();
+      expect(receivedRequest).toBeNull();
     } finally {
       restore();
     }
