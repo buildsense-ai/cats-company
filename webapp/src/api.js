@@ -613,8 +613,6 @@ export const api = {
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload, { timeoutMs: 630_000 }),
   resetCloudWorker: (name, payload = {}) =>
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload, { timeoutMs: 630_000 }),
-  deleteCloudWorker: (name) =>
-    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}, { timeoutMs: 630_000 }),
   updateBot: (uid, {
     display_name,
     avatar_url,

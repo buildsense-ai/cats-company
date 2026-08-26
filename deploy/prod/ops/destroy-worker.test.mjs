@@ -43,6 +43,13 @@ if (op === "ecs ListEcsInstances") {
   state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
+} else if (op === "ecs DestroyEcsInstance") {
+  if (state.failDestroyInstance) { json({ statusCode: "900", errorCode: "E.DESTROY", message: "boom" }); process.exit(0); }
+  state.destroyedInstances = state.destroyedInstances || [];
+  state.destroyedInstances.push(val("--instanceID"));
+  state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs StopEcsInstance") {
   state.stopCalls = state.stopCalls || [];
   state.stopCalls.push(val("--instanceID"));
@@ -55,7 +62,9 @@ if (op === "ecs ListEcsInstances") {
   if (state.failUnsubscribe) { json({ statusCode: "900", errorCode: "E.UNSUB", message: "boom" }); process.exit(0); }
   state.unsubscribedInstances = state.unsubscribedInstances || [];
   state.unsubscribedInstances.push(val("--instanceID"));
-  state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  state.instances = (state.instances || []).map(i =>
+    i.instanceID === val("--instanceID") ? { ...i, instanceStatus: "unsubscribed", state: "unsubscribed" } : i
+  );
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DeleteEcsKeypair") {
@@ -214,19 +223,34 @@ test("destroy-worker: keypair still cleaned when instance already gone", () => {
   assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
 });
 
-test("destroy-worker: monthly instance (expiredTime) is unsubscribed, not deleted", () => {
+test("destroy-worker: monthly instance is unsubscribed and permanently destroyed", () => {
   const sb = setupSandbox({
     instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9", expiredTime: "2030-01-01T00:00:00Z" }],
     keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
   });
   const r = run(sb, ["--name", "bot-a"]);
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-  assert.match(r.stdout, /"status":"unsubscribed"/);
+  assert.match(r.stdout, /"status":"destroyed"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.deepEqual(state.unsubscribedInstances, ["i-1"], "monthly instance must be unsubscribed");
+  assert.deepEqual(state.destroyedInstances, ["i-1"], "unsubscribed monthly instance must be permanently destroyed");
   assert.deepEqual(state.stopCalls, ["i-1"], "running monthly instance must be stopped first");
   assert.equal((state.deletedInstances || []).length, 0, "monthly instance must not use DeleteEcsInstance");
-  assert.equal((state.deletedKeypairs || []).length, 0, "monthly retention keeps keypair attached");
+  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+});
+
+test("destroy-worker: already-unsubscribed monthly instance is destroyed directly", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "unsubscribed", instanceStatus: "unsubscribed", releaseTime: "2030-01-01T00:00:00Z" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.unsubscribedInstances || []).length, 0);
+  assert.equal((state.stopCalls || []).length, 0);
+  assert.deepEqual(state.destroyedInstances, ["i-1"]);
+  assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
 });
 
 test("destroy-worker: on-demand instance (no expiredTime) still uses DeleteEcsInstance", () => {
@@ -250,6 +274,20 @@ test("destroy-worker: unsubscribe failure fails closed", () => {
   assert.match(r.stderr, /unsubscribe failed/);
 });
 
+test("destroy-worker: permanent destroy failure fails closed after unsubscribe", () => {
+  const sb = setupSandbox({
+    failDestroyInstance: true,
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9", expiredTime: "2030-01-01T00:00:00Z" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /permanent destroy failed/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.unsubscribedInstances, ["i-1"]);
+  assert.equal((state.deletedKeypairs || []).length, 0);
+});
+
 test("destroy-worker: instance delete failure fails closed", () => {
   const sb = setupSandbox({
     instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
@@ -270,10 +308,6 @@ test("destroy-worker: keypair delete failure fails closed with aggregate error",
     failDeleteKeypair: true,
   });
   const r = run(sb, ["--name", "bot-a"]);
-  console.log("DBG status=" + r.status);
-  console.log("DBG stdout=" + JSON.stringify(r.stdout));
-  console.log("DBG stderr=" + JSON.stringify(r.stderr));
-  console.log("DBG state=" + fs.readFileSync(sb.statePath, "utf8"));
   assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stderr, /key pair delete failed/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));

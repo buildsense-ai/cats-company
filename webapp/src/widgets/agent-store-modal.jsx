@@ -1190,26 +1190,15 @@ export default function AgentStoreModal({
     const confirmed = await feedback.confirm({
       title: owned ? `再次确认：永久删除“${bot.display_name}”？` : `再次确认：移除“${bot.display_name}”？`,
       message: owned
-        ? '该云端实例、员工记录及相关配置会被永久删除，且无法恢复。'
+        ? '该自托管助手账号及平台配置会被永久删除，且无法恢复。'
         : '这只会解除好友关系，不会删除对方创建的虚拟员工。请确认这是你要执行的操作。',
       confirmLabel: owned ? '永久删除' : '移除',
       tone: 'danger',
     });
     if (!confirmed) return;
-    const cloudName = owned ? bot.tenant_name : '';
     try {
-      if (cloudName) setCloudActioning({ name: cloudName, action: 'delete' });
       if (owned) {
-        if (bot.tenant_name) {
-          // Cloud workers are removed through the control plane so the cloud
-          // instance gets destroyed (when a destroy script is configured).
-          const result = await api.deleteCloudWorker(bot.tenant_name);
-          if (result && result.warning) {
-            feedback.notify({ tone: 'warning', message: result.warning });
-          }
-        } else {
-          await api.deleteBot(botId);
-        }
+        await api.deleteBot(botId);
       } else {
         await api.removeFriend(botId);
       }
@@ -1218,11 +1207,7 @@ export default function AgentStoreModal({
       setTab('hub');
       feedback.notify({ tone: 'success', message: owned ? '虚拟员工已删除' : '助手已移除' });
     } catch (e) {
-      setError(cloudName
-        ? cloudWorkerActionMessage(e, '删除')
-        : (e.message || t('error_server')));
-    } finally {
-      if (cloudName) setCloudActioning(null);
+      setError(e.message || t('error_server'));
     }
   };
 
@@ -1418,7 +1403,7 @@ export default function AgentStoreModal({
                     <ArrowLeft size={15} /> 返回助手列表
                   </button>
                   <h3><Cloud size={16} /> 云托管管理</h3>
-                  <span>配额 · 创建 · 版本/回滚/重置/删除</span>
+                  <span>创建权益 · 创建 · 更新/回滚/重置/删除</span>
                 </div>
                 <CloudWorkerPanel
                   quota={cloudQuota}
@@ -1433,7 +1418,6 @@ export default function AgentStoreModal({
                   onUpdate={handleCloudUpdate}
                   onRollback={handleCloudRollback}
                   onReset={handleCloudReset}
-                  onDelete={handleDelete}
                   onSwitchMode={() => setHubCloudView(false)}
                 />
               </div>
@@ -1473,7 +1457,7 @@ export default function AgentStoreModal({
                     >
                       <Cloud size={15} />
                       <span>云托管管理</span>
-                      <small>{cloudWorkers.length > 0 ? `${cloudWorkers.length} 个员工` : '配额 · 版本 · 回滚/重置/删除'}</small>
+                      <small>{cloudWorkers.length > 0 ? `${cloudWorkers.length} 个员工` : '创建权益 · 更新/回滚/重置/删除'}</small>
                     </button>
                   )}
 
@@ -1576,15 +1560,17 @@ export default function AgentStoreModal({
                             <Cloud size={14} aria-hidden="true" /> 云托管管理
                           </button>
                         )}
-                        <button
-                          type="button"
-                          className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
-                          aria-label={`删除助手 ${bot.display_name || bot.username}`}
-                          title="删除助手"
-                          onClick={() => handleDelete(bot)}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                        </button>
+                        {(!owned || !bot.tenant_name) && (
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
+                            aria-label={`${owned ? '删除助手' : '移除助手'} ${bot.display_name || bot.username}`}
+                            title={owned ? '删除助手' : '移除助手'}
+                            onClick={() => handleDelete(bot)}
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                          </button>
+                        )}
                       </div>
                     </div>
                       );
@@ -1615,7 +1601,6 @@ export default function AgentStoreModal({
                 onUpdate={handleCloudUpdate}
                 onRollback={handleCloudRollback}
                 onReset={handleCloudReset}
-                onDelete={handleDelete}
                 onSwitchMode={() => setCreateMode(CREATE_MODES.SELF_HOSTED)}
               />
             ) : (

@@ -667,7 +667,6 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 			"update":   h.updateScript != "",
 			"rollback": h.rollbackScript != "",
 			"reset":    h.resetScript != "",
-			"delete":   h.destroyScript != "",
 		},
 	}
 	// Image listing follows the same stale-while-revalidate contract as worker
@@ -691,10 +690,11 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, meta)
 }
 
-// RenewForOwner extends or recovers all provider instances attached to an
+// RenewForOwner extends or resumes all provider instances attached to an
 // owner's paid cloud-worker lifecycles. It is called only after a commercial
 // payment has committed; the provider script is idempotent for active workers
-// and uses Tianyi's recovery API for unsubscribed retention-state instances.
+// and resubscribes provider-expired/freezing instances. Permanently
+// unsubscribed instances are not recoverable in the current worker region.
 func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return
@@ -717,15 +717,17 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 		}
 		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName)
 		if err != nil {
-			log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
 			continue
 		}
-		if expiresAt, parseErr := parseCloudWorkerRenewalExpiry(out); parseErr != nil {
+		result, parseErr := parseCloudWorkerRenewalResult(out)
+		if parseErr != nil {
 			// The provider operation already succeeded. Do not turn a missing
 			// informational field into a second charge or a false failure, but
 			// leave an auditable warning so operators can reconcile the date.
-			log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d succeeded but returned no valid expires_at: %v; lifecycle date unchanged", lifecycle.TenantName, uid, parseErr)
+			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d succeeded but returned no valid expires_at: %v; lifecycle date unchanged", lifecycle.TenantName, uid, parseErr)
 		} else {
+			expiresAt := result.ExpiresAt
 			var extendErr error
 			if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
 				extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
@@ -733,18 +735,26 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 				extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
 			}
 			if extendErr != nil {
-				log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
+				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
+			}
+			if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
+				log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
 			}
 		}
-		log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d completed", lifecycle.TenantName, uid)
+		log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d completed", lifecycle.TenantName, uid)
 	}
 	h.requestCloudStatusRefresh(true)
 }
 
-// parseCloudWorkerRenewalExpiry extracts the provider's final monthly expiry
-// from the JSON emitted by renew-worker.sh. Scripts normally emit one JSON
-// line, but scanning from the end tolerates harmless diagnostics before it.
-func parseCloudWorkerRenewalExpiry(output string) (time.Time, error) {
+type cloudWorkerRenewalResult struct {
+	ExpiresAt         time.Time
+	AutoRenewDisabled *bool
+}
+
+// parseCloudWorkerRenewalResult extracts the provider's final monthly expiry
+// and auto-renew reconciliation result from renew-worker.sh. Scripts normally
+// emit one JSON line, but scanning from the end tolerates diagnostics before it.
+func parseCloudWorkerRenewalResult(output string) (cloudWorkerRenewalResult, error) {
 	var lastErr error
 	lines := strings.Split(output, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -753,28 +763,34 @@ func parseCloudWorkerRenewalExpiry(output string) (time.Time, error) {
 			continue
 		}
 		var result struct {
-			ExpiresAt string `json:"expires_at"`
+			ExpiresAt         string `json:"expires_at"`
+			AutoRenewDisabled *bool  `json:"auto_renew_disabled"`
 		}
 		if err := json.Unmarshal([]byte(line), &result); err != nil {
 			lastErr = err
 			continue
 		}
 		if strings.TrimSpace(result.ExpiresAt) == "" {
-			return time.Time{}, fmt.Errorf("provider response omitted expires_at")
+			return cloudWorkerRenewalResult{}, fmt.Errorf("provider response omitted expires_at")
 		}
 		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(result.ExpiresAt))
 		if err != nil {
-			return time.Time{}, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
+			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
 		}
 		if !expiresAt.After(time.Now().UTC()) {
-			return time.Time{}, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
+			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
 		}
-		return expiresAt.UTC(), nil
+		return cloudWorkerRenewalResult{ExpiresAt: expiresAt.UTC(), AutoRenewDisabled: result.AutoRenewDisabled}, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("provider response was empty")
 	}
-	return time.Time{}, fmt.Errorf("provider response did not contain renewal JSON: %w", lastErr)
+	return cloudWorkerRenewalResult{}, fmt.Errorf("provider response did not contain renewal JSON: %w", lastErr)
+}
+
+func parseCloudWorkerRenewalExpiry(output string) (time.Time, error) {
+	result, err := parseCloudWorkerRenewalResult(output)
+	return result.ExpiresAt, err
 }
 
 // HandleCreate handles POST /api/cloud-workers — create a cloud worker within
@@ -875,7 +891,8 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	tenantName := cloudWorkerTenantName(result.Username)
 
 	// 在创建任何云资源之前持久化 tenant 标识。这样无论 provision 后续怎么失败，
-	// bot 记录都有 tenant handle —— 云托管列表可见、可重试删除、且计入创建配额。
+	// Keep the tenant handle on the bot record so the managed worker remains
+	// visible and operator cleanup can reconcile the database with the provider.
 	// 若这里写入失败，云资源尚未创建，直接回滚删 bot 是安全的（不会产生孤儿实例）。
 	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
 		if reservedCredit {
@@ -1006,7 +1023,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			}
 		}
 		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error": "failed to provision cloud worker; the instance may still exist, retry delete to clean up",
+			"error": "failed to provision cloud worker; the instance may still exist and the record was kept for support cleanup",
 			"code":  "cloud_worker_provision_failed_pending_cleanup",
 		})
 		return
@@ -1070,8 +1087,10 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// SweepExpiredWorkers archives expired monthly workers and, after the grace
-// period, destroys their cloud instance before deleting the bot record.
+// SweepExpiredWorkers archives expired monthly workers without touching the
+// provider instance, allowing Tianyi to move it into expired/freezing. Only
+// after the grace period does it permanently destroy the instance before
+// deleting the bot record.
 // It is deliberately best-effort and idempotent; a failed destroy remains
 // visible as delete_failed for operator retry and never silently disappears.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
@@ -1295,107 +1314,24 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action})
 }
 
-// HandleDelete handles DELETE /api/cloud-workers/{name} — destroy the cloud
-// instance (when a destroy script is configured) and then remove the bot
-// record. Fail-closed: without a destroy script the record is NOT deleted
-// (503) because the instance may still be running and billing; only an
-// explicit operator override (?force=1) may skip the destroy step.
+// HandleDelete rejects user-initiated cloud-worker destruction. Managed
+// workers follow the paid lifecycle: manual package renewal restores eligible
+// expired workers, and the internal lifecycle sweeper performs final cleanup
+// after the retention window. Operators use the private ops script directly.
 func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
-	uid := UIDFromContext(r.Context())
-	if uid == 0 {
+	if UIDFromContext(r.Context()) == 0 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-
-	name := r.PathValue("name")
-	if name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing worker name"})
-		return
-	}
-
-	workers, err := h.cloudWorkersOfOwner(uid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list cloud workers"})
-		return
-	}
-	var botUID int64
-	owned := false
-	for _, w := range workers {
-		if w.TenantName == name {
-			owned = true
-			botUID = w.UID
-			break
-		}
-	}
-	if !owned {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "cloud worker not found"})
-		return
-	}
-
-	if !h.tryBeginOperation(w) {
-		return
-	}
-	defer h.opMu.Unlock()
-
-	// Fail closed: without a destroy script we cannot guarantee the cloud
-	// instance is gone, so deleting the DB record would silently orphan a
-	// still-billed instance. There is NO public force override on this route
-	// (an unauthenticated ?force=1 would let any owner bypass the guard);
-	// operators must configure CATSCO_WORKER_DESTROY_SCRIPT so every delete
-	// destroys the instance first.
-	if h.destroyScript == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "cloud worker destroy is not configured; refusing to delete the record while the instance may still run",
-			"code":  "cloud_worker_delete_unconfigured",
-		})
-		return
-	}
-	if _, err := h.runScript(h.destroyScript, "--name", name); err != nil {
-		log.Printf("[cloud-worker] destroy %s failed: %v", name, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
-		return
-	}
-	// Paid workers have a durable lifecycle row in addition to the bot record.
-	// Finalize it before deleting the bot: the lifecycle row has a cascading FK
-	// to users, so looking it up after DeleteBot would silently lose the chance
-	// to record the terminal state. If finalization fails, keep the bot record so
-	// an operator/user can retry the idempotent provider delete.
-	if lifecycleStore, ok := h.credits.(interface {
-		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
-		MarkCloudWorkerLifecycleDeleted(int64, string) error
-	}); ok && botUID != 0 {
-		lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid)
-		if listErr != nil {
-			log.Printf("[cloud-worker] list lifecycle after delete %s failed: %v", name, listErr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker deletion"})
-			return
-		}
-		for _, lifecycle := range lifecycles {
-			if lifecycle.WorkerUID != botUID || lifecycle.State == "deleted" {
-				continue
-			}
-			if markErr := lifecycleStore.MarkCloudWorkerLifecycleDeleted(lifecycle.ID, ""); markErr != nil {
-				log.Printf("[cloud-worker] mark lifecycle deleted %s failed: %v", name, markErr)
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker deletion"})
-				return
-			}
-		}
-	}
-	if botUID != 0 {
-		if err := h.db.DeleteBot(botUID); err != nil {
-			log.Printf("[cloud-worker] delete bot %d failed: %v", botUID, err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete cloud worker"})
-			return
-		}
-	}
-
-	h.requestCloudStatusRefresh(true)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "deleted"})
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": "cloud workers cannot be deleted by users; renew the package during the retention period or allow the lifecycle to expire",
+		"code":  "cloud_worker_delete_not_allowed",
+	})
 }
 
 // HandleSub routes /api/cloud-workers/ subtree by path segment.
@@ -1414,7 +1350,7 @@ func (h *CloudWorkerHandler) HandleSub(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("name", strings.TrimSuffix(rest, "/reset"))
 		h.HandleReset(w, r)
 	case rest != "" && !strings.Contains(rest, "/"):
-		// DELETE /api/cloud-workers/{name} (method enforced in HandleDelete)
+		// User deletion is policy-blocked; other methods remain unsupported.
 		r.SetPathValue("name", rest)
 		h.HandleDelete(w, r)
 	default:
