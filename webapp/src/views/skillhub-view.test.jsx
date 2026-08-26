@@ -28,6 +28,7 @@ import SkillHubView, {
   resolveSkillHubEntry,
   resolveSharedSkillHubMetadata,
   upsertSkillRef,
+  collectSkillHubWorkspacePages,
   waitForSkillHubWorkspaceAfterSwitch,
   waitForPublishedSkillHubEntry,
 } from './skillhub-view';
@@ -200,6 +201,106 @@ describe('SkillHubView', () => {
     const merged = buildCurrentAgentSkills([], [{ name: 'draft', localSkillId: 'draft-id' }]);
     expect(resolveLocalSkillForAgentSkill(merged[0], [{ name: 'draft', localSkillId: 'draft-id' }]))
       .toMatchObject({ localSkillId: 'draft-id' });
+  });
+
+  it('collects every paginated Runtime workspace Skill beyond the old 200-item boundary', async () => {
+    const revision = 'a'.repeat(64);
+    const allSkills = Array.from({ length: 450 }, (_, index) => ({
+      local_skill_id: `local-${String(index).padStart(3, '0')}`,
+      name: `skill-${index}`,
+    }));
+    const page = (offset) => {
+      const skills = allSkills.slice(offset, offset + 200);
+      const nextOffset = offset + skills.length;
+      return {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        skills_path: 'C:\\xiaoba\\skills',
+        workspace_revision: revision,
+        total_skills: allSkills.length,
+        page_offset: offset,
+        page_limit: 200,
+        next_offset: nextOffset < allSkills.length ? nextOffset : null,
+        truncated: nextOffset < allSkills.length,
+        skills,
+      };
+    };
+    const readPage = vi.fn(async ({ offset = 0, workspace_revision: expectedRevision }) => {
+      if (offset > 0) expect(expectedRevision).toBe(revision);
+      return page(offset);
+    });
+
+    const result = await collectSkillHubWorkspacePages({
+      initialWorkspace: page(0),
+      readPage,
+    });
+
+    expect(result.skills).toHaveLength(450);
+    expect(result.skills.at(-1).local_skill_id).toBe('local-449');
+    expect(result.truncated).toBe(false);
+    expect(result.legacyTruncated).toBe(false);
+    expect(readPage).toHaveBeenCalledTimes(2);
+    expect(readPage).toHaveBeenNthCalledWith(1, {
+      offset: 200,
+      limit: 200,
+      workspace_revision: revision,
+    });
+  });
+
+  it('marks an old Runtime 200-item response as potentially truncated', async () => {
+    const result = await collectSkillHubWorkspacePages({
+      initialWorkspace: {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        skills: Array.from({ length: 200 }, (_, index) => ({
+          local_skill_id: `legacy-${index}`,
+          name: `legacy-${index}`,
+        })),
+      },
+      readPage: vi.fn(),
+    });
+    expect(result.skills).toHaveLength(200);
+    expect(result.legacyTruncated).toBe(true);
+  });
+
+  it('restarts workspace pagination once when the Runtime reports a concurrent change', async () => {
+    const changed = new Error('workspace changed');
+    changed.code = 'WORKSPACE_CHANGED';
+    const readPage = vi.fn()
+      .mockRejectedValueOnce(changed)
+      .mockResolvedValueOnce({
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        workspace_revision: 'b'.repeat(64),
+        total_skills: 1,
+        page_offset: 0,
+        page_limit: 200,
+        next_offset: null,
+        truncated: false,
+        skills: [{ local_skill_id: 'fresh', name: 'fresh' }],
+      });
+    const result = await collectSkillHubWorkspacePages({
+      initialWorkspace: {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        workspace_revision: 'a'.repeat(64),
+        total_skills: 201,
+        page_offset: 0,
+        page_limit: 200,
+        next_offset: 200,
+        truncated: true,
+        skills: Array.from({ length: 200 }, (_, index) => ({
+          local_skill_id: `stale-${index}`,
+          name: `stale-${index}`,
+        })),
+      },
+      readPage,
+    });
+    expect(result.skills).toEqual([{ local_skill_id: 'fresh', name: 'fresh' }]);
+    expect(readPage).toHaveBeenCalledTimes(2);
+    expect(readPage).toHaveBeenLastCalledWith({ limit: 200 });
   });
 
   afterEach(async () => {
