@@ -667,7 +667,6 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 			"update":   h.updateScript != "",
 			"rollback": h.rollbackScript != "",
 			"reset":    h.resetScript != "",
-			"delete":   h.destroyScript != "",
 		},
 	}
 	// Image listing follows the same stale-while-revalidate contract as worker
@@ -892,7 +891,8 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	tenantName := cloudWorkerTenantName(result.Username)
 
 	// 在创建任何云资源之前持久化 tenant 标识。这样无论 provision 后续怎么失败，
-	// bot 记录都有 tenant handle —— 云托管列表可见、可重试删除、且计入创建配额。
+	// Keep the tenant handle on the bot record so the managed worker remains
+	// visible and operator cleanup can reconcile the database with the provider.
 	// 若这里写入失败，云资源尚未创建，直接回滚删 bot 是安全的（不会产生孤儿实例）。
 	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
 		if reservedCredit {
@@ -1023,7 +1023,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			}
 		}
 		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error": "failed to provision cloud worker; the instance may still exist, retry delete to clean up",
+			"error": "failed to provision cloud worker; the instance may still exist and the record was kept for support cleanup",
 			"code":  "cloud_worker_provision_failed_pending_cleanup",
 		})
 		return
@@ -1314,107 +1314,24 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action})
 }
 
-// HandleDelete handles DELETE /api/cloud-workers/{name} — destroy the cloud
-// instance (when a destroy script is configured) and then remove the bot
-// record. Fail-closed: without a destroy script the record is NOT deleted
-// (503) because the instance may still be running and billing; only an
-// explicit operator override (?force=1) may skip the destroy step.
+// HandleDelete rejects user-initiated cloud-worker destruction. Managed
+// workers follow the paid lifecycle: manual package renewal restores eligible
+// expired workers, and the internal lifecycle sweeper performs final cleanup
+// after the retention window. Operators use the private ops script directly.
 func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
-	uid := UIDFromContext(r.Context())
-	if uid == 0 {
+	if UIDFromContext(r.Context()) == 0 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-
-	name := r.PathValue("name")
-	if name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing worker name"})
-		return
-	}
-
-	workers, err := h.cloudWorkersOfOwner(uid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list cloud workers"})
-		return
-	}
-	var botUID int64
-	owned := false
-	for _, w := range workers {
-		if w.TenantName == name {
-			owned = true
-			botUID = w.UID
-			break
-		}
-	}
-	if !owned {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "cloud worker not found"})
-		return
-	}
-
-	if !h.tryBeginOperation(w) {
-		return
-	}
-	defer h.opMu.Unlock()
-
-	// Fail closed: without a destroy script we cannot guarantee the cloud
-	// instance is gone, so deleting the DB record would silently orphan a
-	// still-billed instance. There is NO public force override on this route
-	// (an unauthenticated ?force=1 would let any owner bypass the guard);
-	// operators must configure CATSCO_WORKER_DESTROY_SCRIPT so every delete
-	// destroys the instance first.
-	if h.destroyScript == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "cloud worker destroy is not configured; refusing to delete the record while the instance may still run",
-			"code":  "cloud_worker_delete_unconfigured",
-		})
-		return
-	}
-	if _, err := h.runScript(h.destroyScript, "--name", name); err != nil {
-		log.Printf("[cloud-worker] destroy %s failed: %v", name, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
-		return
-	}
-	// Paid workers have a durable lifecycle row in addition to the bot record.
-	// Finalize it before deleting the bot: the lifecycle row has a cascading FK
-	// to users, so looking it up after DeleteBot would silently lose the chance
-	// to record the terminal state. If finalization fails, keep the bot record so
-	// an operator/user can retry the idempotent provider delete.
-	if lifecycleStore, ok := h.credits.(interface {
-		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
-		MarkCloudWorkerLifecycleDeleted(int64, string) error
-	}); ok && botUID != 0 {
-		lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid)
-		if listErr != nil {
-			log.Printf("[cloud-worker] list lifecycle after delete %s failed: %v", name, listErr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker deletion"})
-			return
-		}
-		for _, lifecycle := range lifecycles {
-			if lifecycle.WorkerUID != botUID || lifecycle.State == "deleted" {
-				continue
-			}
-			if markErr := lifecycleStore.MarkCloudWorkerLifecycleDeleted(lifecycle.ID, ""); markErr != nil {
-				log.Printf("[cloud-worker] mark lifecycle deleted %s failed: %v", name, markErr)
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker deletion"})
-				return
-			}
-		}
-	}
-	if botUID != 0 {
-		if err := h.db.DeleteBot(botUID); err != nil {
-			log.Printf("[cloud-worker] delete bot %d failed: %v", botUID, err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete cloud worker"})
-			return
-		}
-	}
-
-	h.requestCloudStatusRefresh(true)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "deleted"})
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": "cloud workers cannot be deleted by users; renew the package during the retention period or allow the lifecycle to expire",
+		"code":  "cloud_worker_delete_not_allowed",
+	})
 }
 
 // HandleSub routes /api/cloud-workers/ subtree by path segment.
@@ -1433,7 +1350,7 @@ func (h *CloudWorkerHandler) HandleSub(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("name", strings.TrimSuffix(rest, "/reset"))
 		h.HandleReset(w, r)
 	case rest != "" && !strings.Contains(rest, "/"):
-		// DELETE /api/cloud-workers/{name} (method enforced in HandleDelete)
+		// User deletion is policy-blocked; other methods remain unsupported.
 		r.SetPathValue("name", rest)
 		h.HandleDelete(w, r)
 	default:

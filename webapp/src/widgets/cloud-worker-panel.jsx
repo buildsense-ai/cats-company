@@ -10,7 +10,6 @@ import {
   RotateCcw,
   Server,
   ShieldAlert,
-  Trash2,
   Zap,
 } from 'lucide-react';
 
@@ -45,7 +44,7 @@ const cloudLifecycleHint = (status) => {
     return '套餐已到期，云托管员工正处于 15 天保留期；请在套餐页续费，续费后会自动恢复。';
   }
   if (['unsubscribed', 'released', 'deleted'].includes(normalized)) {
-    return '云托管员工已经释放，无法通过续费恢复；删除这条记录后，如仍有创建权益可重新创建。';
+    return '云托管员工已经释放，无法通过续费恢复；请联系支持清理旧记录。';
   }
   return '';
 };
@@ -74,7 +73,6 @@ const CLOUD_ACTION_LABELS = {
   update: '正在更新应用版本，期间员工会短暂离线，请保持页面打开',
   rollback: '正在回滚应用版本，期间员工会短暂离线，请保持页面打开',
   reset: '正在原实例内重装基础镜像，所有数据会被清空，请勿关闭或重复提交',
-  delete: '正在销毁实例并删除员工',
 };
 
 // Do not render an exhausted quota as `0/1`: users can read that as a
@@ -92,7 +90,7 @@ const cloudHostingSummary = (quota, quotaError) => {
 /**
  * 云托管专属面板 —— 当创建助手的「部署方式」选中云托管时替换自托管表单。
  * 聚合云托管创建权益、创建云托管员工、以及已有云托管员工的管理
- * （版本/更新/回滚/重置/删除），全部走云控制面。
+ * （版本/更新/回滚/重置），全部走云控制面。
  */
 const randomCode = () => String(Math.floor(1000 + Math.random() * 9000));
 
@@ -109,7 +107,6 @@ export default function CloudWorkerPanel({
   onUpdate,
   onRollback,
   onReset,
-  onDelete,
   onSwitchMode,
 }) {
   const [name, setName] = useState('');
@@ -488,16 +485,6 @@ export default function CloudWorkerPanel({
                       </button>
                     )}
 
-                    <button
-                      type="button"
-                      className="oc-btn oc-btn-default cc-agent-card-delete"
-                      onClick={() => onDelete(worker)}
-                      disabled={hasActiveAction || !actionAvailable('delete')}
-                      aria-label={actionName === 'delete' ? '删除中' : `删除 ${worker.display_name || worker.username || '员工'}`}
-                      title={!actionAvailable('delete') ? '云端删除服务尚未配置' : '删除：销毁云端实例并删除该助手'}
-                    >
-                      {actionName === 'delete' ? <RefreshCw size={13} className="cc-spin" /> : <Trash2 size={13} />}
-                    </button>
                     </div>
                   </div>
                   {acting && (

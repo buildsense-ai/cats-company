@@ -10,7 +10,7 @@
 | `list-worker-images.sh` | 列出 bake 通道镜像 | 创建 / 重置镜像选择 |
 | `list-worker-releases.sh` | 列出私有 TOS 应用发布 | 更新 / 回滚版本选择 |
 | `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
-| `destroy-worker.sh` | 退订并永久销毁实例 + key pair + 本地 state | 用户主动删除 / 到期保留期结束（幂等） |
+| `destroy-worker.sh` | 退订并永久销毁实例 + key pair + 本地 state | 内部运维清理 / 到期保留期结束（幂等） |
 | `reset-worker.sh` | 原实例重装（丢数据，保留包月订单/到期时间） | 重置 / 重装 |
 | `renew-worker.sh` | 延长包月或恢复 `expired/freezing` 实例，并关闭自动续费 | 套餐续费后的云员工续订/恢复 |
 | `deploy-worker-version.sh` | 安装指定应用版本（保数据） | 更新 / 本地版本缺失时回滚 |

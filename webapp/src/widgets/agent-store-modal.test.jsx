@@ -6,7 +6,6 @@ vi.mock('../api', () => ({
   api: {
     createBot: vi.fn(),
     createCloudWorker: vi.fn(),
-    deleteCloudWorker: vi.fn(),
     getAgents: vi.fn(),
     getCloudWorkerMeta: vi.fn(),
     getCloudWorkers: vi.fn(),
@@ -45,7 +44,6 @@ describe('AgentStoreModal', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     api.createBot.mockReset().mockResolvedValue({ uid: 91 });
     api.createCloudWorker.mockReset().mockResolvedValue({ uid: 92, tenant_name: 'tenant-new' });
-    api.deleteCloudWorker.mockReset().mockResolvedValue({});
     api.getAgents.mockReset().mockResolvedValue({ agents: [] });
     api.getCloudWorkerMeta.mockReset().mockResolvedValue({ images: [] });
     api.getCloudWorkers.mockReset().mockResolvedValue({
@@ -815,6 +813,7 @@ describe('AgentStoreModal', () => {
     expect(entryButton?.classList.contains('oc-btn-default')).toBe(true);
     expect(manageButton?.querySelector('.lucide-settings-2')).not.toBeNull();
     expect(container.querySelector('[aria-label="删除助手 Review Agent"]')?.textContent).toBe('');
+    expect(container.querySelector('[aria-label="删除助手 Private Agent"]')).toBeNull();
     expect(container.querySelector('.cc-agent-usage-guide')).toBeNull();
   });
 

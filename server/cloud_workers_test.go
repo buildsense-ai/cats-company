@@ -811,10 +811,13 @@ func TestCloudWorkerHandleMetaQuota(t *testing.T) {
 		t.Fatalf("images should be absent when no images script configured, got %v", out["images"])
 	}
 	actions := out["actions"].(map[string]interface{})
-	for _, action := range []string{"create", "update", "rollback", "reset", "delete"} {
+	for _, action := range []string{"create", "update", "rollback", "reset"} {
 		if actions[action] != false {
 			t.Fatalf("actions[%q]=%v want false", action, actions[action])
 		}
+	}
+	if _, ok := actions["delete"]; ok {
+		t.Fatalf("delete action must not be exposed: %v", actions)
 	}
 }
 
@@ -899,11 +902,14 @@ func TestCloudWorkerHandleMetaReportsConfiguredActions(t *testing.T) {
 	out := decodeCloudWorkerList(t, rec)
 	actions := out["actions"].(map[string]interface{})
 	for action, want := range map[string]bool{
-		"create": true, "update": true, "rollback": false, "reset": false, "delete": true,
+		"create": true, "update": true, "rollback": false, "reset": false,
 	} {
 		if actions[action] != want {
 			t.Fatalf("actions[%q]=%v want %v", action, actions[action], want)
 		}
+	}
+	if _, ok := actions["delete"]; ok {
+		t.Fatalf("configured destroy script must remain internal: %v", actions)
 	}
 }
 
@@ -1264,10 +1270,9 @@ func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 
 func TestCloudWorkerBusyOperationReturnsConflictWithoutQueueing(t *testing.T) {
 	cfg := workerScriptCfg(t, "7=5", map[string]string{
-		"update":  writeWorkerOpScript(t, "ok"),
-		"destroy": writeWorkerOpScript(t, "ok"),
+		"update": writeWorkerOpScript(t, "ok"),
 	})
-	if cfg.UpdateScript == "" || cfg.DestroyScript == "" {
+	if cfg.UpdateScript == "" {
 		t.Skip("no POSIX shell")
 	}
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
@@ -1285,7 +1290,6 @@ func TestCloudWorkerBusyOperationReturnsConflictWithoutQueueing(t *testing.T) {
 	}{
 		{http.MethodPost, "/api/cloud-workers", map[string]string{"username": "new-worker"}},
 		{http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1.4.9"}},
-		{http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil},
 	}
 	for _, tc := range tests {
 		req := cloudWorkerRequest(7, tc.method, tc.path, tc.body)
@@ -1455,7 +1459,6 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 }
 
 func TestCloudWorkerHandleDelete(t *testing.T) {
-	// --- with destroy script: instance destroyed + bot removed ---
 	cfg := workerScriptCfg(t, "7=5", map[string]string{"destroy": writeWorkerOpScript(t, "ok")})
 	if cfg.DestroyScript == "" {
 		t.Skip("no POSIX shell")
@@ -1467,70 +1470,23 @@ func TestCloudWorkerHandleDelete(t *testing.T) {
 	req := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
 	}
 	out := decodeCloudWorkerList(t, rec)
-	if out["status"] != "deleted" {
-		t.Fatalf("status=%v", out["status"])
+	if out["code"] != "cloud_worker_delete_not_allowed" {
+		t.Fatalf("code=%v want cloud_worker_delete_not_allowed", out["code"])
 	}
-	if len(ts.deletedBots) != 1 || ts.deletedBots[0] != 1 {
-		t.Fatalf("deletedBots=%v want [1]", ts.deletedBots)
+	if len(ts.deletedBots) != 0 {
+		t.Fatalf("user delete must not remove bot: %v", ts.deletedBots)
 	}
 
-	// --- without destroy script: fail closed (503), record kept ---
-	h2, ts2 := newCloudWorkerTestHandler("7=5")
-	ts2.ownerBots = []map[string]interface{}{
-		{"id": int64(2), "username": "bot-b", "display_name": "B", "tenant_name": "bot-bot-b"},
-	}
-	req2 := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-b", nil)
+	// Query parameters cannot bypass the public policy guard.
+	req2 := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-a?force=1", nil)
 	rec2 := httptest.NewRecorder()
-	h2.HandleSub(rec2, req2)
-	if rec2.Code != http.StatusServiceUnavailable {
-		t.Fatalf("no-destroy status=%d want 503 body=%s", rec2.Code, rec2.Body.String())
-	}
-	if out := decodeCloudWorkerList(t, rec2); out["code"] != "cloud_worker_delete_unconfigured" {
-		t.Fatalf("no-destroy code=%v want cloud_worker_delete_unconfigured", out["code"])
-	}
-	if len(ts2.deletedBots) != 0 {
-		t.Fatalf("deletedBots=%v want 0 (fail closed)", ts2.deletedBots)
-	}
-
-	// --- without destroy script: force=1 is NOT honored (no public override;
-	// any owner could otherwise bypass the fail-closed guard) ---
-	req2f := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-b?force=1", nil)
-	rec2f := httptest.NewRecorder()
-	h2.HandleSub(rec2f, req2f)
-	if rec2f.Code != http.StatusServiceUnavailable {
-		t.Fatalf("force status=%d want 503 body=%s", rec2f.Code, rec2f.Body.String())
-	}
-	if len(ts2.deletedBots) != 0 {
-		t.Fatalf("deletedBots=%v want 0 (force must not bypass fail-closed)", ts2.deletedBots)
-	}
-
-	// --- destroy failure: 502, bot kept ---
-	cfg3 := workerScriptCfg(t, "7=5", map[string]string{"destroy": writeWorkerOpScript(t, "fail")})
-	h3, ts3 := newCloudWorkerTestHandlerCfg(cfg3)
-	ts3.ownerBots = []map[string]interface{}{
-		{"id": int64(3), "username": "bot-c", "display_name": "C", "tenant_name": "bot-bot-c"},
-	}
-	req3 := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-c", nil)
-	rec3 := httptest.NewRecorder()
-	h3.HandleSub(rec3, req3)
-	if rec3.Code != http.StatusBadGateway {
-		t.Fatalf("destroy-fail status=%d want 502 body=%s", rec3.Code, rec3.Body.String())
-	}
-	if len(ts3.deletedBots) != 0 {
-		t.Fatalf("bot should be kept when destroy fails: %v", ts3.deletedBots)
-	}
-
-	// --- not owned → 404 ---
-	h4, _ := newCloudWorkerTestHandler("8=5")
-	req4 := cloudWorkerRequest(8, http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil)
-	rec4 := httptest.NewRecorder()
-	h4.HandleSub(rec4, req4)
-	if rec4.Code != http.StatusNotFound {
-		t.Fatalf("not-owned status=%d want 404 body=%s", rec4.Code, rec4.Body.String())
+	h.HandleSub(rec2, req2)
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("force status=%d want 403 body=%s", rec2.Code, rec2.Body.String())
 	}
 }
 
@@ -1612,7 +1568,7 @@ func TestCloudWorkerMuxRouting(t *testing.T) {
 		{http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1.4.9"}, http.StatusOK},
 		{http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", nil, http.StatusOK},
 		{http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil, http.StatusOK},
-		{http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil, http.StatusOK},
+		{http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil, http.StatusForbidden},
 	}
 	for _, c := range cases {
 		req := cloudWorkerRequest(7, c.method, c.path, c.body)

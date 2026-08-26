@@ -198,20 +198,19 @@ describe('CloudWorkerPanel', () => {
     expect(buttons.find((el) => el.textContent.includes('更新')).disabled).toBe(true);
     expect(buttons.find((el) => el.textContent.includes('回滚')).disabled).toBe(true);
     expect(buttons.find((el) => el.textContent.includes('重置')).disabled).toBe(true);
-    expect(buttons[buttons.length - 1].disabled).toBe(false);
+    expect(container.querySelector('.cc-agent-card-delete')).toBeNull();
   });
 
   test('marks unsubscribed instances as unrecoverable', async () => {
     await renderPanel({ workers: [worker({ cloud_status: 'unsubscribed' })] });
     expect(container.textContent).toContain('已释放');
-    expect(container.textContent).toContain('如仍有创建权益可重新创建');
+    expect(container.textContent).toContain('请联系支持清理旧记录');
   });
 
-  test('calls update/rollback/reset/delete callbacks from worker actions', async () => {
+  test('calls update/rollback/reset callbacks without exposing permanent deletion', async () => {
     const onUpdate = vi.fn();
     const onRollback = vi.fn();
     const onReset = vi.fn();
-    const onDelete = vi.fn();
     const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
     const releases = [{ version: '1.4.10' }, { version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
@@ -221,14 +220,12 @@ describe('CloudWorkerPanel', () => {
       onUpdate,
       onRollback,
       onReset,
-      onDelete,
     });
 
     const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
     const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
     const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
-    const deleteBtn = buttons[buttons.length - 1];
 
     await act(async () => {
       Simulate.click(updateBtn);
@@ -270,12 +267,7 @@ describe('CloudWorkerPanel', () => {
       { verified: true },
     );
 
-    // delete fires directly
-    await act(async () => {
-      Simulate.click(deleteBtn);
-    });
-    expect(onDelete).toHaveBeenCalledTimes(1);
-    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ tenant_name: 'tenant-a' }));
+    expect(container.querySelector('.cc-agent-card-delete')).toBeNull();
   });
 
   test('reset requires the displayed captcha before calling onReset', async () => {
