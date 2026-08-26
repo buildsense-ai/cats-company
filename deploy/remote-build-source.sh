@@ -100,7 +100,7 @@ fi
 
 website_image="ghcr.io/${owner}/cats-company-website:${revision}"
 website_pull_timeout="${REMOTE_WEBSITE_PULL_TIMEOUT_SECONDS:-120}"
-website_image_mode="${REMOTE_WEBSITE_IMAGE_MODE:-pull}"
+website_image_mode="${REMOTE_WEBSITE_IMAGE_MODE:-${REMOTE_WEB_IMAGE_MODE:-pull}}"
 
 if docker image inspect "$website_image" >/dev/null 2>&1; then
   echo "Website image already present: ${website_image}"
