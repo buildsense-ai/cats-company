@@ -352,19 +352,40 @@ func (h *UploadHandler) handleCreateMobileUploadSession(w http.ResponseWriter, r
 	})
 }
 
-func mobileUploadBaseURL(_ *http.Request) string {
+func mobileUploadBaseURL(r *http.Request) string {
 	if configured := strings.TrimSpace(os.Getenv("CATSCO_MOBILE_UPLOAD_BASE_URL")); configured != "" {
 		return strings.TrimRight(configured, "/")
 	}
-	return requestOrigin()
+	return requestOriginFromRequest(r)
 }
 
-func requestOrigin() string {
-	configured, err := configuredPublicBaseURL()
-	if err != nil {
+func requestOriginFromRequest(r *http.Request) string {
+	if r == nil {
 		return ""
 	}
-	return configured
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))); forwardedProto == "http" || forwardedProto == "https" {
+		scheme = forwardedProto
+	}
+	host := strings.TrimSpace(r.Host)
+	if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func firstForwardedValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, ",")
+	return strings.TrimSpace(parts[0])
 }
 
 func (h *UploadHandler) handleGetMobileUploadSession(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -542,6 +563,11 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 			http.NotFound(w, r)
 			return
 		}
+		fileInfo, statErr := os.Stat(fullPath)
+		if statErr != nil || !fileInfo.Mode().IsRegular() {
+			http.NotFound(w, r)
+			return
+		}
 		serveUploadPreviewPage(w, r, fileName, ext)
 		return
 	}
@@ -569,6 +595,13 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 }
 
 func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ext string) {
+	publicOrigin, err := configuredPublicBaseURL()
+	if err != nil {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "preview unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
 	name := sanitizeUploadPreviewName(r.URL.Query().Get("name"))
 	if name == "" {
 		name = fileName
@@ -585,9 +618,9 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
 	resourceURL := r.URL.Path
 	downloadURL := resourceURL + "?download=1"
 	pageURL := r.URL.RequestURI()
-	ogImageURL := requestAbsoluteURL(r, "/pwa-512x512.png")
-	ogVideoURL := requestAbsoluteURL(r, resourceURL)
-	canonicalURL := requestAbsoluteURL(r, pageURL)
+	ogImageURL := publicOrigin + "/pwa-512x512.png"
+	ogVideoURL := publicOrigin + resourceURL
+	canonicalURL := publicOrigin + pageURL
 	escapedName := html.EscapeString(name)
 	escapedKind := html.EscapeString(kind)
 	escapedResourceURL := html.EscapeString(resourceURL)
@@ -703,12 +736,12 @@ func sanitizeUploadPreviewName(value string) string {
 	return value
 }
 
-func requestAbsoluteURL(_ *http.Request, path string) string {
-	origin := requestOrigin()
-	if origin == "" {
-		return path
+func requestAbsoluteURL(path string) (string, error) {
+	origin, err := configuredPublicBaseURL()
+	if err != nil {
+		return "", err
 	}
-	return origin + path
+	return origin + path, nil
 }
 
 func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {

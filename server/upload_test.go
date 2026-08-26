@@ -510,6 +510,29 @@ func TestHandleServeFileRendersVideoPreviewWithMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleServeFileReturnsNotFoundForMissingPreviewFile(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+
+	for _, ext := range []string{".pdf", ".html", ".mp4"} {
+		t.Run(ext, func(t *testing.T) {
+			fileName := "20260428_0123456789abcdef0123456789abcdef" + ext
+			recorder := httptest.NewRecorder()
+			handler.HandleServeFile(
+				recorder,
+				httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
+			)
+
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+			}
+			if strings.Contains(recorder.Body.String(), "<meta property=\"og:") {
+				t.Fatal("missing file returned a metadata preview page")
+			}
+		})
+	}
+}
+
 func TestHandleServeFileKeepsDownloadSemanticsWhenPreviewIsRequested(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
@@ -540,6 +563,7 @@ func TestHandleServeFileKeepsDownloadSemanticsWhenPreviewIsRequested(t *testing.
 }
 
 func TestHandleServeFileEscapesPreviewNameInHTMLMetadata(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
 	fullPath := filepath.Join(dir, "files", fileName)
@@ -575,34 +599,74 @@ func TestHandleServeFileEscapesPreviewNameInHTMLMetadata(t *testing.T) {
 
 func TestRequestAbsoluteURLUsesConfiguredPublicOrigin(t *testing.T) {
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example/")
-	request := httptest.NewRequest(http.MethodGet, "/uploads/files/report.pdf?preview=1", nil)
-	request.Host = "internal.example"
-	request.Header.Set("X-Forwarded-Host", "attacker.example")
-	request.Header.Set("X-Forwarded-Proto", "http")
 
-	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "https://app.example/pwa-512x512.png" {
+	got, err := requestAbsoluteURL("/pwa-512x512.png")
+	if err != nil || got != "https://app.example/pwa-512x512.png" {
 		t.Fatalf("absolute URL = %q, want configured public origin", got)
 	}
 }
 
 func TestRequestAbsoluteURLRequiresConfiguredPublicOrigin(t *testing.T) {
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "")
-	request := httptest.NewRequest(http.MethodGet, "/uploads/files/report.pdf?preview=1", nil)
-	request.Host = "app.example"
-	request.Header.Set("X-Forwarded-Host", "attacker.example")
-	request.Header.Set("X-Forwarded-Proto", "https")
 
-	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "/pwa-512x512.png" {
-		t.Fatalf("absolute URL = %q, want relative path without configured origin", got)
+	got, err := requestAbsoluteURL("/pwa-512x512.png")
+	if err == nil || got != "" {
+		t.Fatalf("absolute URL = %q, err = %v, want configuration error", got, err)
 	}
 }
 
 func TestRequestAbsoluteURLRejectsNonHTTPSPublicOrigin(t *testing.T) {
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "http://app.example")
-	request := httptest.NewRequest(http.MethodGet, "/uploads/files/report.pdf?preview=1", nil)
 
-	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "/pwa-512x512.png" {
-		t.Fatalf("absolute URL = %q, want relative path for non-HTTPS origin", got)
+	got, err := requestAbsoluteURL("/pwa-512x512.png")
+	if err == nil || got != "" {
+		t.Fatalf("absolute URL = %q, err = %v, want configuration error", got, err)
+	}
+}
+
+func TestHandleServeFileRejectsPreviewWithoutConfiguredPublicOrigin(t *testing.T) {
+	for _, publicBaseURL := range []string{"", "http://app.example"} {
+		t.Run(publicBaseURL, func(t *testing.T) {
+			t.Setenv("CATSCO_PUBLIC_BASE_URL", publicBaseURL)
+			dir := t.TempDir()
+			fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
+			fullPath := filepath.Join(dir, "files", fileName)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("pdf bytes"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			recorder := httptest.NewRecorder()
+			NewUploadHandler(dir, "/uploads").HandleServeFile(
+				recorder,
+				httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
+			)
+
+			if recorder.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if strings.Contains(recorder.Body.String(), "<link rel=\"canonical\"") {
+				t.Fatal("preview response emitted relative metadata without a public origin")
+			}
+		})
+	}
+}
+
+func TestMobileUploadBaseURLFallsBackToRequestOrigin(t *testing.T) {
+	t.Setenv("CATSCO_MOBILE_UPLOAD_BASE_URL", "")
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "")
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile-upload/sessions", nil)
+	req.Host = "internal.example"
+	req.Header.Set("X-Forwarded-Host", "public.example")
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := mobileUploadBaseURL(req); got != "https://public.example" {
+		t.Fatalf("mobile upload base URL = %q, want request-derived origin", got)
 	}
 }
 
