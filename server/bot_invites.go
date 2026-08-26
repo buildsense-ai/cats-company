@@ -57,8 +57,17 @@ func (h *BotHandler) HandleBotInviteCode(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"code": code})
 	case http.MethodPost:
-		code, err := generateBotInviteCode()
-		if err != nil || invites.CreateBotInviteCode(botUID, uid, code) != nil {
+		var code string
+		for attempt := 0; attempt < 3; attempt++ {
+			code, err = generateBotInviteCode()
+			if err != nil {
+				break
+			}
+			if err = invites.CreateBotInviteCode(botUID, uid, code); err == nil {
+				break
+			}
+		}
+		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate invite code"})
 			return
 		}
@@ -100,6 +109,10 @@ func (h *BotHandler) HandleRedeemBotInvite(w http.ResponseWriter, r *http.Reques
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to redeem invite code"})
 		return
+	}
+	if h.hub != nil {
+		friends := NewFriendHandler(h.db, h.hub)
+		friends.notifyFriendEvent("accepted", botUID, uid, "", append(friends.friendEventRecipients(botUID), uid)...)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "bot_uid": botUID, "status": "accepted"})
 }
