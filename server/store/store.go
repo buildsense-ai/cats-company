@@ -30,6 +30,7 @@ var ErrBotSkillMutationAtomicCommitRequired = errors.New("bot definition commit 
 var ErrBotSkillMutationDefinitionStale = errors.New("bot definition no longer matches the mutation base")
 var ErrBotSkillMutationRuntimeMismatch = errors.New("bot runtime does not match the mutation")
 var ErrBotSkillMutationActivationFactConflict = errors.New("bot skill activation fact conflicts with the recorded result")
+var ErrBotInviteUnavailable = errors.New("bot invite code is invalid or expired")
 
 const maxConversationTaskStatusFutureClockSkew = 5 * time.Minute
 
@@ -271,6 +272,18 @@ type BotStore interface {
 	SetTenantName(botUID int64, tenantName string) error
 	GetTenantName(botUID int64) (string, error)
 	SetBotVisibility(botUID int64, visibility string) error
+}
+
+// BotInviteStore persists the current direct-add invitation for a Bot.
+// It is optional so focused test stores can keep implementing the legacy
+// Store surface without invitation support.
+type BotInviteStore interface {
+	CreateUserWithBotInvite(user *types.User, code string) (userUID, botUID int64, err error)
+	CreateBotInviteCode(botUID, ownerUID int64, code string) error
+	GetBotInviteCode(botUID, ownerUID int64) (string, error)
+	RevokeBotInviteCode(botUID, ownerUID int64) error
+	BotInviteCodeExists(code string) (bool, error)
+	RedeemBotInviteCode(code string, userUID int64) (int64, error)
 }
 
 // BotSkillsVisibilityStore is optional so focused Store test doubles do not

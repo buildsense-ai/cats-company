@@ -270,6 +270,10 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 | PATCH | `/api/bots/visibility` | 设置 Bot 可见性 | `{ "uid": 10, "visibility": "public" }` |
 | PATCH | `/api/bots/skills-visibility?uid={uid}&v={scope}` | 设置技能列表可见范围 | - |
 | POST | `/api/bots/runtime-credential` | 为指定 Bot Runtime 签发受限凭证 | `{ "bot_uid": 10, "body_id": "...", "installation_id": "..." }` |
+| GET | `/api/bots/invite-code?uid={uid}` | 获取当前 Bot 邀请码（所有者） | - |
+| POST | `/api/bots/invite-code?uid={uid}` | 生成/替换 Bot 邀请码（所有者） | - |
+| DELETE | `/api/bots/invite-code?uid={uid}` | 撤销 Bot 邀请码（所有者） | - |
+| POST | `/api/bots/invite/redeem` | 兑换 Bot 邀请码并直接成为好友 | `{ "code": "ABC123..." }` |
 | POST | `/api/bot/skill-mutations/{id}/activation` | Runtime 确认专用 Skill mutation 激活结果 | 见下文 |
 | GET | `/api/agents/skills?uid={uid}` | 按所有者权限读取脱敏技能列表 | - |
 
@@ -290,6 +294,22 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 ```
 
 创建成功后返回 `api_key`，Bot 即可用此 key 通过 WebSocket 接入。
+
+#### Bot 邀请码
+
+Bot 所有者可以生成一个站内邀请码。重新生成会立即使旧邀请码失效；撤销后不能继续兑换。邀请码只用于建立站内 Bot 好友关系，不是 API Key，也不能用于登录或 WebSocket 鉴权。
+
+已登录用户可以调用 `POST /api/bots/invite/redeem` 兑换邀请码，服务端在一个事务中写入用户与 Bot 的双向 `accepted` 好友关系。注册接口也接受可选的 `bot_invite_code` 字段，注册成功后会自动完成同样的兑换流程：
+
+```json
+{
+  "username": "alice",
+  "email": "alice@example.com",
+  "password": "password",
+  "code": "123456",
+  "bot_invite_code": "ABC123DEF456"
+}
+```
 
 #### POST /api/bots/runtime-credential — 签发 Bot Runtime 凭证
 
