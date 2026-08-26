@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -115,16 +114,4 @@ func (h *BotHandler) HandleRedeemBotInvite(w http.ResponseWriter, r *http.Reques
 		friends.notifyFriendEvent("accepted", botUID, uid, "", append(friends.friendEventRecipients(botUID), uid)...)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "bot_uid": botUID, "status": "accepted"})
-}
-
-func redeemBotInviteAfterRegistration(db store.Store, code string, uid int64) (int64, error) {
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return 0, nil
-	}
-	invites, ok := botInviteStore(db)
-	if !ok {
-		return 0, fmt.Errorf("bot invites unavailable")
-	}
-	return invites.RedeemBotInviteCode(strings.ToUpper(code), uid)
 }
