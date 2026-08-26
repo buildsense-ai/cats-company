@@ -3127,6 +3127,67 @@ describe('ChatMessage rich file rendering', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('shares a video metadata preview URL while preserving the download action', async () => {
+    const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: share,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 81,
+              from_uid: 2,
+              content: '[文件] product-demo.mp4',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'product-demo.mp4',
+                  url: '/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4',
+                  size: 4096,
+                  mime_type: 'video/mp4',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('button.oc-rich-video-trigger'));
+        await flushAsync();
+      });
+
+      const preview = container.querySelector('.oc-rich-video-preview');
+      const shareButton = preview.querySelector('button[aria-label="分享视频"]');
+      const download = preview.querySelector('a.oc-rich-media-preview-download');
+      expect(shareButton).not.toBeNull();
+      expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1');
+
+      await act(async () => {
+        Simulate.click(shareButton);
+        await flushAsync();
+      });
+
+      expect(share).toHaveBeenCalledWith({
+        title: 'product-demo.mp4',
+        url: new URL(
+          '/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?preview=1&name=product-demo.mp4',
+          window.location.href,
+        ).toString(),
+      });
+    } finally {
+      if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
+      else delete navigator.share;
+    }
+  });
+
   it.each([
     'product-demo.webm',
     'product-demo.ogv',

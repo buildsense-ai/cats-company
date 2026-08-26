@@ -23,6 +23,22 @@ describe('sharePreviewLink', () => {
     expect(navigatorLike.clipboard.writeText).not.toHaveBeenCalled();
   });
 
+  it('shares a video metadata preview URL instead of the download URL', async () => {
+    const share = vi.fn().mockResolvedValue(undefined);
+
+    const result = await sharePreviewLink({
+      url: '/uploads/files/demo.mp4?download=1',
+      name: 'demo.mp4',
+      navigatorLike: { share },
+    });
+
+    expect(result).toMatchObject({ status: 'shared', method: 'native' });
+    expect(share).toHaveBeenCalledWith({
+      title: 'demo.mp4',
+      url: new URL('/uploads/files/demo.mp4?preview=1&name=demo.mp4', window.location.href).toString(),
+    });
+  });
+
   it('copies the inline preview URL when native sharing is unavailable', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
 

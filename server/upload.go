@@ -538,7 +538,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	forceDownload := r.URL.Query().Get("download") == "1"
 	if !forceDownload && r.URL.Query().Get(uploadPreviewQueryParam) == "1" {
-		if subDir != "files" || (!strings.EqualFold(ext, ".pdf") && !isHTMLUploadExtension(ext)) {
+		if subDir != "files" || !isUploadPreviewableExtension(ext) {
 			http.NotFound(w, r)
 			return
 		}
@@ -577,11 +577,16 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
 	if isHTMLUploadExtension(ext) {
 		kind = "HTML"
 	}
+	isVideo := isInlineVideoExt(ext)
+	if isVideo {
+		kind = "VIDEO"
+	}
 
 	resourceURL := r.URL.Path
 	downloadURL := resourceURL + "?download=1"
 	pageURL := r.URL.RequestURI()
 	ogImageURL := requestAbsoluteURL(r, "/pwa-512x512.png")
+	ogVideoURL := requestAbsoluteURL(r, resourceURL)
 	canonicalURL := requestAbsoluteURL(r, pageURL)
 	escapedName := html.EscapeString(name)
 	escapedKind := html.EscapeString(kind)
@@ -589,10 +594,31 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
 	escapedDownloadURL := html.EscapeString(downloadURL)
 	escapedPageURL := html.EscapeString(canonicalURL)
 	escapedOGImageURL := html.EscapeString(ogImageURL)
+	escapedOGVideoURL := html.EscapeString(ogVideoURL)
+	escapedOGType := "website"
+	mediaMetadata := ""
+	previewElement := fmt.Sprintf(`<iframe src="%s" title="%s"%s></iframe>`,
+		escapedResourceURL,
+		escapedName,
+		htmlAttributeForUploadPreview(ext),
+	)
+	if isVideo {
+		escapedOGType = "video.other"
+		videoMime, _ := inlineVideoMimeType(ext)
+		mediaMetadata = fmt.Sprintf("  <meta property=\"og:video\" content=\"%s\">\n  <meta property=\"og:video:secure_url\" content=\"%s\">\n  <meta property=\"og:video:type\" content=\"%s\">\n",
+			escapedOGVideoURL,
+			escapedOGVideoURL,
+			html.EscapeString(videoMime),
+		)
+		previewElement = fmt.Sprintf(`<video controls playsinline preload="metadata" src="%s" aria-label="%s">您的浏览器暂不支持视频播放。</video>`,
+			escapedResourceURL,
+			escapedName,
+		)
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -606,9 +632,9 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
   <title>%s</title>
   <link rel="canonical" href="%s">
   <meta name="description" content="在 CatsCo 中预览 %s 文件。">
-  <meta property="og:type" content="website">
+  <meta property="og:type" content="%s">
   <meta property="og:site_name" content="CatsCo">
-  <meta property="og:title" content="%s">
+%s  <meta property="og:title" content="%s">
   <meta property="og:description" content="在 CatsCo 中预览 %s 文件。">
   <meta property="og:url" content="%s">
   <meta property="og:image" content="%s">
@@ -627,7 +653,8 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
     header { display: grid; gap: 4px; }
     h1 { margin: 0; font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
     p { margin: 0; color: #60716b; font-size: 14px; }
-    iframe { display: block; width: 100%%; min-height: min(72vh, 900px); border: 0; border-radius: 12px; background: #fdfefd; }
+    iframe, video { display: block; width: 100%%; min-height: min(72vh, 900px); border: 0; border-radius: 12px; background: #fdfefd; }
+    video { max-height: min(72vh, 900px); object-fit: contain; }
     nav { display: flex; flex-wrap: wrap; gap: 12px; }
     a { display: inline-flex; align-items: center; min-height: 40px; box-sizing: border-box; padding: 0 16px; border-radius: 10px; background: #fdfefd; color: #176b57; font-weight: 600; text-decoration: none; }
     a[download] { background: #176b57; color: #fdfefd; }
@@ -639,7 +666,7 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
       <h1>%s</h1>
       <p>%s 文件预览</p>
     </header>
-    <iframe src="%s" title="%s"%s></iframe>
+    %s
     <nav aria-label="文件操作">
       <a href="%s" target="_blank" rel="noopener noreferrer">打开原文件</a>
       <a href="%s" download>下载文件</a>
@@ -647,9 +674,9 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
   </main>
 </body>
 </html>
-`, escapedName, escapedPageURL, escapedKind, escapedName, escapedKind, escapedPageURL, escapedOGImageURL,
-		escapedName, escapedKind, escapedOGImageURL, escapedName, escapedKind, escapedResourceURL,
-		escapedName, htmlAttributeForUploadPreview(ext), escapedResourceURL, escapedDownloadURL)
+`, escapedName, escapedPageURL, escapedKind, escapedOGType, mediaMetadata, escapedName, escapedKind, escapedPageURL, escapedOGImageURL,
+		escapedName, escapedKind, escapedOGImageURL, escapedName, escapedKind, previewElement,
+		escapedResourceURL, escapedDownloadURL)
 }
 
 func htmlAttributeForUploadPreview(ext string) string {
@@ -740,6 +767,10 @@ func isHTMLUploadExtension(ext string) bool {
 	default:
 		return false
 	}
+}
+
+func isUploadPreviewableExtension(ext string) bool {
+	return strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext)
 }
 
 func normalizedUploadMimeType(ext, headerType string) string {

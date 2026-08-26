@@ -2100,18 +2100,34 @@ function spreadsheetPreviewTooLargeMessage() {
 function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [shareState, setShareState] = useState('idle');
+  const [shareNotice, setShareNotice] = useState('');
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
   const fallbackActionRef = useRef(null);
   const shouldFocusFallbackRef = useRef(false);
+  const shareResetTimerRef = useRef(null);
+  const shareRequestRef = useRef(0);
   const src = resolveMediaURL(payload?.url);
   const downloadURL = downloadableMediaURL(src);
 
   useEffect(() => {
     setPlaybackFailed(false);
     setPreviewOpen(false);
+    shareRequestRef.current += 1;
+    setShareState('idle');
+    setShareNotice('');
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
+    }
   }, [src]);
+
+  useEffect(() => () => {
+    shareRequestRef.current += 1;
+    if (shareResetTimerRef.current) window.clearTimeout(shareResetTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!previewOpen || playbackFailed) return undefined;
@@ -2160,6 +2176,45 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
       || Boolean(previewRef.current?.contains(activeElement));
     setPreviewOpen(false);
     setPlaybackFailed(true);
+  };
+
+  const handleShare = async () => {
+    if (!src || shareState === 'pending') return;
+    const requestID = shareRequestRef.current + 1;
+    shareRequestRef.current = requestID;
+    setShareState('pending');
+    setShareNotice('');
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
+    }
+
+    let result;
+    try {
+      result = await sharePreviewLink({ url: src, name: payload?.name || '视频' });
+    } catch {
+      result = { status: 'error' };
+    }
+    if (requestID !== shareRequestRef.current) return;
+
+    if (result.status === 'cancelled' || result.status === 'shared') {
+      setShareState('idle');
+      return;
+    }
+    if (result.status === 'copied') {
+      setShareState('copied');
+      setShareNotice(`${payload?.name || '视频'} 分享链接已复制。`);
+      shareResetTimerRef.current = window.setTimeout(() => {
+        if (requestID !== shareRequestRef.current) return;
+        shareResetTimerRef.current = null;
+        setShareState('idle');
+        setShareNotice('');
+      }, 2200);
+      return;
+    }
+
+    setShareState('error');
+    setShareNotice('暂时无法分享，请使用“下载视频”后从浏览器分享。');
   };
 
   if (!payload || !src || playbackFailed) {
@@ -2233,6 +2288,21 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
           >
             <Download size={20} />
           </PwaDownloadLink>
+          <button
+            aria-label={shareState === 'copied' ? '已复制视频分享链接' : shareState === 'error' ? '重试分享视频' : '分享视频'}
+            aria-busy={shareState === 'pending' || undefined}
+            className={`oc-rich-media-preview-share${shareState === 'copied' ? ' is-success' : ''}${shareState === 'error' ? ' is-error' : ''}`}
+            disabled={shareState === 'pending'}
+            onClick={(event) => {
+              event.stopPropagation();
+              void handleShare();
+            }}
+            title={shareState === 'copied' ? '已复制视频分享链接' : shareState === 'error' ? '重试分享视频' : '分享视频'}
+            type="button"
+          >
+            {shareState === 'copied' ? <CheckCircle2 size={20} /> : <Share2 size={20} />}
+          </button>
+          {shareNotice && <span className="oc-visually-hidden" role="status" aria-live="polite">{shareNotice}</span>}
           <video
             aria-label={payload.name || '视频'}
             autoPlay

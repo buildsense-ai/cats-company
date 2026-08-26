@@ -462,6 +462,54 @@ func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
 	}
 }
 
+func TestHandleServeFileRendersVideoPreviewWithMetadata(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.mp4"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("video bytes must not be rendered as page HTML"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	requestPath := "/uploads/files/" + fileName + "?preview=1&name=" + url.QueryEscape("产品演示.mp4")
+	recorder := httptest.NewRecorder()
+	handler.HandleServeFile(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want HTML", got)
+	}
+	if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "media-src 'self'") {
+		t.Fatalf("Content-Security-Policy = %q, want media-src self", got)
+	}
+
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		"<title>产品演示.mp4</title>",
+		"<meta property=\"og:type\" content=\"video.other\">",
+		"<meta property=\"og:video\" content=\"https://app.example/uploads/files/" + fileName + "\">",
+		"<meta property=\"og:video:type\" content=\"video/mp4\">",
+		"<video controls playsinline preload=\"metadata\"",
+		"/uploads/files/" + fileName + "?download=1",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("body missing %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "video bytes must not be rendered") {
+		t.Fatal("preview page rendered the uploaded video body")
+	}
+	if strings.Contains(body, "<iframe") {
+		t.Fatal("video preview should use a native video element")
+	}
+}
+
 func TestHandleServeFileKeepsDownloadSemanticsWhenPreviewIsRequested(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"

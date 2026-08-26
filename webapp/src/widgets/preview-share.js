@@ -1,4 +1,4 @@
-const UPLOAD_PREVIEW_PATH = /^\/uploads\/files\/[^/]+\.(?:pdf|html?)$/i;
+const UPLOAD_PREVIEW_PATH = /^\/uploads\/files\/[^/]+\.(?:pdf|html?|mp4|webm|ogv|m4v|mov)$/i;
 
 function shareablePreviewURL(url, name = '') {
   const value = String(url || '').trim();
