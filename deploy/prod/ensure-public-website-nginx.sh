@@ -14,7 +14,7 @@ if [ ! -s "$source_config" ]; then
   exit 1
 fi
 
-if [ ! -s "$certificate" ]; then
+if ! sudo test -s "$certificate"; then
   echo "public website certificate is not installed; keeping current nginx config" >&2
   exit 0
 fi
