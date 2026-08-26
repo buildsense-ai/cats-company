@@ -24,6 +24,7 @@ func (a *Adapter) CreateSchema() error {
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createBotSkillMutationsTable,
+		migrateBotSkillMutationsAddActivationFacts,
 		createBotSkillMutationsActiveIndex,
 		createRateLimitTable,
 		createGroupsTable,
@@ -394,6 +395,14 @@ const createBotSkillMutationsActiveIndex = `
 CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_skill_mutations_active
     ON bot_skill_mutations (bot_uid)
     WHERE status IN ('validating','version_ready','definition_committed','activation_pending','compensation_pending');
+`
+
+const migrateBotSkillMutationsAddActivationFacts = `
+ALTER TABLE bot_skill_mutations
+    ADD COLUMN IF NOT EXISTS activation_definition_revision BIGINT DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS activation_skill_set_hash CHAR(64) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS activation_runtime_body_id VARCHAR(128) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS activation_installation_id VARCHAR(128) DEFAULT NULL;
 `
 
 const createRateLimitTable = `

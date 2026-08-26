@@ -31,7 +31,10 @@ func mysqlBotSkillMutationTestRow(
 ) *sqlmock.Rows {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	var definitionRevision any
-	if status == types.BotSkillMutationDefinitionCommitted {
+	if status == types.BotSkillMutationDefinitionCommitted ||
+		status == types.BotSkillMutationActivationPending ||
+		status == types.BotSkillMutationActive ||
+		status == types.BotSkillMutationCompensationPending {
 		definitionRevision = int64(11)
 	}
 	return sqlmock.NewRows(mysqlBotSkillMutationTestColumns).AddRow(

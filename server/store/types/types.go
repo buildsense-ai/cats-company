@@ -794,6 +794,31 @@ type BotSkillMutationTransition struct {
 	ActivatedAt        *time.Time
 }
 
+// BotSkillMutationActivationInput is the trusted Runtime fact used to finish
+// one activation_pending mutation. Runtime identity fields are copied from a
+// verified CatsCo Runtime credential, never from the HTTP request body.
+type BotSkillMutationActivationInput struct {
+	BotUID                    int64
+	MutationID                int64
+	AppliedDefinitionRevision int64
+	SkillSetHash              string
+	RuntimeBodyID             string
+	RuntimeInstallationID     string
+}
+
+// BotSkillMutationActivationFailureInput records a stable, sanitized Runtime
+// failure without accepting raw exception text from the Runtime.
+type BotSkillMutationActivationFailureInput struct {
+	BotUID                      int64
+	MutationID                  int64
+	AttemptedDefinitionRevision int64
+	RuntimeBodyID               string
+	RuntimeInstallationID       string
+	ErrorCode                   string
+	ErrorSummary                string
+	Permanent                   bool
+}
+
 // BotDefinition is the deliberately small portable identity of a XiaoBa bot.
 // Device runtime material, sessions, quotas, and device identities do not
 // belong here. Skills are immutable SkillHub references rather than packages.
