@@ -947,7 +947,7 @@ export default function AgentStoreModal({
           }
         }));
         const currentCodes = Object.fromEntries(inviteEntries.filter(Boolean));
-        setGeneratedInviteCodes((previous) => ({ ...previous, ...currentCodes }));
+        setGeneratedInviteCodes(currentCodes);
       }
 
       if (

@@ -53,19 +53,37 @@ func (a *Adapter) CreateUserWithBotInvite(user *types.User, code string) (int64,
 }
 
 func (a *Adapter) CreateBotInviteCode(botUID, ownerUID int64, code string) error {
-	var existing int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM bot_invite_codes WHERE bot_uid = ?`, botUID).Scan(&existing); err != nil {
+	tx, err := a.db.Begin()
+	if err != nil {
 		return err
 	}
-	if existing > 0 {
-		_, err := a.db.Exec(`UPDATE bot_invite_codes
+	defer tx.Rollback()
+
+	var existing int
+	err = tx.QueryRow(`SELECT 1 FROM bot_invite_codes WHERE bot_uid = ? FOR UPDATE`, botUID).Scan(&existing)
+	if err == nil {
+		result, updateErr := tx.Exec(`UPDATE bot_invite_codes
 SET owner_uid = ?, code = ?, revoked_at = NULL, updated_at = CURRENT_TIMESTAMP
 WHERE bot_uid = ?`, ownerUID, code, botUID)
+		if updateErr != nil {
+			return updateErr
+		}
+		updated, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return rowsErr
+		}
+		if updated < 1 {
+			return sql.ErrNoRows
+		}
+	} else if errors.Is(err, sql.ErrNoRows) {
+		if _, err = tx.Exec(`INSERT INTO bot_invite_codes (bot_uid, owner_uid, code, created_at, updated_at)
+VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, botUID, ownerUID, code); err != nil {
+			return err
+		}
+	} else {
 		return err
 	}
-	_, err := a.db.Exec(`INSERT INTO bot_invite_codes (bot_uid, owner_uid, code, created_at, updated_at)
-VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, botUID, ownerUID, code)
-	return err
+	return tx.Commit()
 }
 
 func (a *Adapter) GetBotInviteCode(botUID, ownerUID int64) (string, error) {
