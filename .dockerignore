@@ -10,6 +10,10 @@
 **/coverage
 **/__pycache__
 
+# Website media is uploaded to the deploy host separately and mounted into
+# the website container. Keep it out of every Docker build context.
+website/public
+
 .env
 .env.*
 *.local.env

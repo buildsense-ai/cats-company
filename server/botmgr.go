@@ -17,8 +17,9 @@ import (
 
 // BotHandler handles bot management API requests.
 type BotHandler struct {
-	db  store.Store
-	hub *Hub
+	db                               store.Store
+	hub                              *Hub
+	runtimeActivationAckScopeAllowed func(int64) bool
 }
 
 // NewBotHandler creates a new BotHandler.
@@ -28,6 +29,10 @@ func NewBotHandler(db store.Store) *BotHandler {
 
 func (h *BotHandler) SetHub(hub *Hub) {
 	h.hub = hub
+}
+
+func (h *BotHandler) SetRuntimeActivationAckScopeAllowed(allowed func(int64) bool) {
+	h.runtimeActivationAckScopeAllowed = allowed
 }
 
 // HandleBotsRouter routes /api/bots by HTTP method.

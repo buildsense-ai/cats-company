@@ -61,6 +61,10 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddProfileDescription,
 		migrateBotConfigAddArtifactUploadPolicy,
 		migrateBotConfigAddSkillMutationMode,
+		migrateBotSkillMutationsAddActivationDefinitionRevision,
+		migrateBotSkillMutationsAddActivationSkillSetHash,
+		migrateBotSkillMutationsAddActivationRuntimeBodyID,
+		migrateBotSkillMutationsAddActivationInstallationID,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
@@ -416,6 +420,22 @@ CREATE TABLE IF NOT EXISTS bot_skill_mutations (
     FOREIGN KEY (bot_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (rollback_of) REFERENCES bot_skill_mutations(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const migrateBotSkillMutationsAddActivationDefinitionRevision = `
+ALTER TABLE bot_skill_mutations ADD COLUMN activation_definition_revision BIGINT DEFAULT NULL;
+`
+
+const migrateBotSkillMutationsAddActivationSkillSetHash = `
+ALTER TABLE bot_skill_mutations ADD COLUMN activation_skill_set_hash CHAR(64) DEFAULT NULL;
+`
+
+const migrateBotSkillMutationsAddActivationRuntimeBodyID = `
+ALTER TABLE bot_skill_mutations ADD COLUMN activation_runtime_body_id VARCHAR(128) DEFAULT NULL;
+`
+
+const migrateBotSkillMutationsAddActivationInstallationID = `
+ALTER TABLE bot_skill_mutations ADD COLUMN activation_installation_id VARCHAR(128) DEFAULT NULL;
 `
 
 const createRateLimitTable = `

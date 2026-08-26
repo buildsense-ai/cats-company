@@ -133,3 +133,46 @@ func TestIssueBotRuntimeCredentialRequiresActualOwner(t *testing.T) {
 		t.Fatalf("non-owner issue status=%d body=%s", denied.Code, denied.Body.String())
 	}
 }
+
+func TestIssueBotRuntimeCredentialKeepsActivationScopeOptInAndRolloutGated(t *testing.T) {
+	now := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	db := &botRuntimeCredentialTestStore{ownerUID: 7}
+	hub := NewHub(db, nil)
+	signer, _ := newBotRuntimeCredentialSigner([]byte(skillMutationGrantTestSecret), func() time.Time { return now })
+	hub.botRuntimeCredentials = signer
+	handler := NewBotHandler(db)
+	handler.SetHub(hub)
+
+	body := []byte(`{"bot_uid":42,"body_id":"body-prod-1","installation_id":"install-prod-1","scopes":["skill_mutation:grant","skill_mutation:activation_ack"]}`)
+	request := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/bots/runtime-credential", bytes.NewReader(body))
+		return req.WithContext(contextWithClaims(req.Context(), &JWTClaims{UID: 7, Username: "owner"}))
+	}
+	denied := httptest.NewRecorder()
+	handler.HandleIssueRuntimeCredential(denied, request())
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("disabled activation scope status=%d body=%s", denied.Code, denied.Body.String())
+	}
+
+	handler.SetRuntimeActivationAckScopeAllowed(func(botUID int64) bool { return botUID == 42 })
+	allowed := httptest.NewRecorder()
+	handler.HandleIssueRuntimeCredential(allowed, request())
+	if allowed.Code != http.StatusCreated {
+		t.Fatalf("enabled activation scope status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+	var response struct {
+		Credential string   `json:"credential"`
+		Scopes     []string `json:"scopes"`
+	}
+	if err := json.Unmarshal(allowed.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := signer.verify(response.Credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !botRuntimeCredentialHasScope(claims, botRuntimeSkillActivationScope) ||
+		len(response.Scopes) != 2 {
+		t.Fatalf("activation scope missing response=%#v claims=%#v", response, claims)
+	}
+}

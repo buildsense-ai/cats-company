@@ -48,6 +48,16 @@ jobs:
             REACT_APP_API_BASE=
           tags: ghcr.io/${{ github.repository_owner }}/cats-company-web:${{ github.sha }}
 
+      - name: Build and push public website image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.website
+          push: true
+          build-args: |
+            VITE_APP_BASE_URL=https://app.catsco.cc
+          tags: ghcr.io/${{ github.repository_owner }}/cats-company-website:${{ github.sha }}
+
       - name: Prepare SSH key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -92,11 +102,13 @@ jobs:
             trap 'rm -rf "${source_tree}"' EXIT
             git archive --format=tar HEAD | tar -xf - -C "${source_tree}"
             remote_mirror="${DEPLOY_CACHE_ROOT}/source-mirror"
-            ssh ${SSH_OPTS} "${REMOTE}" \
-              "bash '${cache_script}' prepare '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}'"
-            rsync --archive --compress --checksum --delete \
-              -e "ssh ${SSH_OPTS}" \
-              "${source_tree}/" "${REMOTE}:${remote_mirror}/"
+            # Website media is delivered by the separately built/pushed OCI
+            # website image. Keep it out of the remote source bundle so normal
+            # code-only deploys do not re-upload videos and avatars.
+            rm -rf "${source_tree}/website/public"
+            tar -C "${source_tree}" -czf - . | \
+              ssh ${SSH_OPTS} "${REMOTE}" \
+                "rm -rf '${remote_mirror}' && mkdir -p '${remote_mirror}' && tar -xzf - -C '${remote_mirror}'"
             ssh ${SSH_OPTS} "${REMOTE}" \
               "bash '${cache_script}' pack '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}' '${remote_mirror}'"
             rm -rf "${source_tree}"
@@ -136,6 +148,7 @@ jobs:
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           export REMOTE_WEB_IMAGE_MODE=local
+          export REMOTE_WEBSITE_IMAGE_MODE=pull
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"

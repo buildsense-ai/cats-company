@@ -21,6 +21,8 @@ const (
 	maxThinToolRPCPendingPerRequester = 64
 	maxThinToolRPCPendingPerDevice    = 32
 	thinToolRPCBotActiveOnServerCode  = "BOT_ACTIVE_ON_SERVER_RUNTIME"
+	thinToolRPCTargetIsServerCode     = "TARGET_IS_SERVER_RUNTIME"
+	thinToolRPCTargetUnavailableCode  = "target_device_unavailable"
 )
 
 type thinToolRPCAuthorizationError struct {
@@ -280,6 +282,17 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 		h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
 		return
 	}
+	if !isSkillHubThinToolOperation(DeviceGrantOperation(toolName)) {
+		if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
+			code := thinToolRPCAuthorizationErrorCode(err)
+			log.Printf("[thin_tool_rpc] ordinary target changed before forward: request_id=%s target_owner=%s target_device=%s tool=%s code=%s reason=%s", requestID, formatUID(ownerUID), deviceID, toolName, code, err.Error())
+			if _, ok := h.thinToolRPC.finishMatching(pending); ok {
+				h.sendThinToolRPCResultToRequester(client, requestID, msg, code, err.Error())
+			}
+			h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
+			return
+		}
+	}
 
 	if !h.sendThinToolRPCToRoute(route, &forward) {
 		log.Printf("[thin_tool_rpc] forward failed: request_id=%s target_owner=%s target_device=%s route=%s", requestID, formatUID(ownerUID), deviceID, describeRuntimeRoute(route))
@@ -355,7 +368,7 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		if client != nil && client.accountType == types.AccountHuman {
 			return fmt.Errorf("human thin_tool_rpc requests are limited to SkillHub device operations")
 		}
-		return nil
+		return h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID)
 	}
 	if h == nil || h.db == nil || h.userDevices == nil || client == nil || client.accountType != types.AccountHuman {
 		return fmt.Errorf("SkillHub device operations require an authenticated human WebApp connection")
@@ -398,6 +411,35 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		}
 	}
 	return fmt.Errorf("target device does not support %s", toolName)
+}
+
+func (h *Hub) authorizeOrdinaryThinToolRPCTarget(ownerUID int64, deviceID string) error {
+	if h == nil || h.userDevices == nil {
+		return &thinToolRPCAuthorizationError{
+			code:    thinToolRPCTargetUnavailableCode,
+			message: "ordinary device tools require a registered target device",
+		}
+	}
+	device, ok := h.userDevices.registeredDevice(ownerUID, deviceID)
+	if !ok {
+		return &thinToolRPCAuthorizationError{
+			code:    thinToolRPCTargetUnavailableCode,
+			message: "ordinary device tools require a registered target device",
+		}
+	}
+	if normalizeDeviceRuntimeRole(device.RuntimeRole) == "server" {
+		return &thinToolRPCAuthorizationError{
+			code:    thinToolRPCTargetIsServerCode,
+			message: "ordinary device tools cannot target a server Runtime",
+		}
+	}
+	if !isActiveDevice(device, h.userDevices.now(), h.userDevices.ttl) {
+		return &thinToolRPCAuthorizationError{
+			code:    thinToolRPCTargetUnavailableCode,
+			message: "ordinary device tool target is not active",
+		}
+	}
+	return nil
 }
 
 func (h *Hub) hasRoutableServerRuntimeForBot(ownerUID int64, botUID int64, excludedDeviceID string) bool {

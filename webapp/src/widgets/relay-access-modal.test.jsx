@@ -86,19 +86,45 @@ describe('RelayAccessModal commercial rollout', () => {
     vi.clearAllMocks();
   });
 
-  async function renderModal(onClose = vi.fn()) {
+  async function renderModal(input = {}) {
+    const props = typeof input === 'function'
+      ? { onClose: input }
+      : { onClose: vi.fn(), ...input };
     await act(async () => {
-      root.render(<RelayAccessModal onClose={onClose} />);
+      root.render(<RelayAccessModal {...props} />);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
     });
-    return onClose;
+    return props.onClose;
   }
 
   function findButton(label) {
     return [...container.querySelectorAll('button')].find(button => button.textContent.includes(label));
   }
+
+  it('preselects the authenticated plan carried from the public pricing page', async () => {
+    const plan = {
+      id: 21,
+      slug: 'catsco-personal',
+      name: 'CatsCo 个人版',
+      price_fen: 39900,
+      currency: 'CNY',
+      sale_state: 'public',
+      duration_days: 30,
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'alipay_page', label: '支付宝支付' }],
+      plans: [plan],
+    });
+
+    await renderModal({ initialPlanSlug: 'personal' });
+
+    expect(container.textContent).toContain('确认购买');
+    expect(container.textContent).toContain(plan.name);
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
 
   async function clickButton(label) {
     const button = findButton(label);

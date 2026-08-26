@@ -270,6 +270,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 | PATCH | `/api/bots/visibility` | 设置 Bot 可见性 | `{ "uid": 10, "visibility": "public" }` |
 | PATCH | `/api/bots/skills-visibility?uid={uid}&v={scope}` | 设置技能列表可见范围 | - |
 | POST | `/api/bots/runtime-credential` | 为指定 Bot Runtime 签发受限凭证 | `{ "bot_uid": 10, "body_id": "...", "installation_id": "..." }` |
+| POST | `/api/bot/skill-mutations/{id}/activation` | Runtime 确认专用 Skill mutation 激活结果 | 见下文 |
 | GET | `/api/agents/skills?uid={uid}` | 按所有者权限读取脱敏技能列表 | - |
 
 #### POST /api/bots — 创建 Bot
@@ -293,7 +294,9 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 #### POST /api/bots/runtime-credential — 签发 Bot Runtime 凭证
 
 仅 Agent 所有者可调用。该接口为一个明确的 Runtime 实例签发独立于 Bot API Key 的受限凭证，凭证绑定
-`bot_uid`、`body_id` 和 `installation_id`，当前只包含 `skill_mutation:grant` 权限。响应包含敏感凭证，必须
+`bot_uid`、`body_id` 和 `installation_id`。未传 `scopes` 时仍只包含原有
+`skill_mutation:grant` 权限。只有 E2 激活 ACK 灰度已为目标 Bot 开启时，所有者才能显式请求额外的
+`skill_mutation:activation_ack`；旧凭据不会自动扩权。响应包含敏感凭证，必须
 按密钥保存；服务端设置 `Cache-Control: no-store`，不会把它作为普通用户或 Bot 登录凭证接受。
 
 ```json
@@ -318,6 +321,36 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 Runtime 仍使用 `X-API-Key` 连接 WebSocket，并额外通过 `X-CatsCo-Runtime-Credential` 携带此凭证。
 只持 Bot API Key 的客户端仍可使用原有聊天连接，但不能申请 Skill mutation grant；凭证与连接的 Bot、body
 或 installation 不一致时，WebSocket 握手会被拒绝。
+
+#### POST /api/bot/skill-mutations/{id}/activation — Runtime 激活确认
+
+该接口默认关闭。只有设置 `CATSCO_SKILL_MUTATION_ACTIVATION_ACK_ENABLED=true`，或将目标 Bot UID
+加入 `CATSCO_SKILL_MUTATION_ACTIVATION_ACK_BOT_UIDS`，并重新签发含
+`skill_mutation:activation_ack` scope 的 Runtime 凭据后才可调用。
+
+成功确认只接受完整 Skill 引用集合的 canonical SHA-256；服务端会校验 Runtime body/installation、
+mutation、Definition revision、精确 after reference 和集合哈希，并在同一数据库事务中更新
+BotDefinition applied 状态与 mutation `active` 状态。重复发送完全相同的事实是幂等的，事实不同返回
+`409`。普通 `/api/bot/definition/ack` 不会把 mutation 改为 `active`。
+
+```json
+{
+  "appliedDefinitionRevision": 42,
+  "skillSetHash": "<sha256>",
+  "result": "applied"
+}
+```
+
+失败确认不接受原始异常文本，仅接受固定错误码；可重试失败保持 `activation_pending`，完整性等永久失败
+进入 `compensation_pending`，等待后续前向补偿流程：
+
+```json
+{
+  "appliedDefinitionRevision": 42,
+  "result": "failed",
+  "errorCode": "PACKAGE_HASH_MISMATCH"
+}
+```
 
 #### PATCH /api/bots/visibility — 设置可见性
 

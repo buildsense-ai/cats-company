@@ -261,3 +261,84 @@ func TestApplyBotSkillMutationDefinitionRejectsDuplicateTargetSkillID(t *testing
 		t.Fatalf("duplicate target check changed definition: %+v", record)
 	}
 }
+
+func TestCanonicalBotSkillSetHashMatchesXiaoBaContract(t *testing.T) {
+	skills := []types.BotSkillRef{
+		{Source: "skillhub", SkillID: "z-skill", Version: "2.0.0", ContentHash: strings.Repeat("b", 64)},
+		{Source: "skillhub", SkillID: "a-skill", Version: "1.0.0", ContentHash: strings.Repeat("a", 64)},
+	}
+	got, err := CanonicalBotSkillSetHash(skills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "f127d734c79984226232193c94e916d3ece5262ede5c44fa480e55b4bd5852af"
+	if got != want {
+		t.Fatalf("hash=%s, want XiaoBa contract hash %s", got, want)
+	}
+	if skills[0].SkillID != "z-skill" {
+		t.Fatal("canonical hashing mutated caller order")
+	}
+	special, err := CanonicalBotSkillSetHash([]types.BotSkillRef{{
+		Source: "skillhub", SkillID: "图\u2028<&>", Version: "v😀", ContentHash: strings.Repeat("c", 64),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const specialWant = "c917984b7cc95e627cf592b0231aae96b1ac595db9940db4fc293ba2102483f7"
+	if special != specialWant {
+		t.Fatalf("Unicode/HTML hash=%s, want XiaoBa JSON.stringify hash %s", special, specialWant)
+	}
+	if _, err := CanonicalBotSkillSetHash([]types.BotSkillRef{{
+		Source: "skillhub", SkillID: `team\skill`, Version: "channel/v1", ContentHash: strings.Repeat("d", 64),
+	}}); err != nil {
+		t.Fatalf("XiaoBa-compatible slash/backslash reference rejected: %v", err)
+	}
+	if _, err := CanonicalBotSkillSetHash([]types.BotSkillRef{{
+		Source: "skillhub", SkillID: "\u0085unsafe", Version: "1.0.0", ContentHash: strings.Repeat("d", 64),
+	}}); err == nil {
+		t.Fatal("XiaoBa-invalid C1 control reference accepted after trimming")
+	}
+}
+
+func TestValidateBotSkillMutationActivationTargetAllowsLaterDefinitionRevision(t *testing.T) {
+	ref := types.BotSkillRef{
+		Source: "skillhub", SkillID: "review-pr", Version: "1.0.1", ContentHash: strings.Repeat("b", 64),
+	}
+	revision := int64(11)
+	record := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{Skills: []types.BotSkillRef{ref}},
+		Runtime:    types.BotDefinitionRuntime{DesiredRevision: 12},
+		Exists:     true,
+	}
+	hash, err := CanonicalBotSkillSetHash(record.Definition.Skills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation := &types.BotSkillMutation{
+		ID: 101, BotUID: 42, RuntimeBodyID: "body-prod-1",
+		DefinitionRevision: &revision, AfterReference: &ref,
+		Status: types.BotSkillMutationActivationPending,
+	}
+	input := types.BotSkillMutationActivationInput{
+		BotUID: 42, MutationID: 101, AppliedDefinitionRevision: 12,
+		SkillSetHash: hash, RuntimeBodyID: "body-prod-1", RuntimeInstallationID: "install-prod-1",
+	}
+	if err := ValidateBotSkillMutationActivationTarget(record, mutation, input); err != nil {
+		t.Fatalf("later revision containing exact Skill reference was rejected: %v", err)
+	}
+	wrongRuntime := input
+	wrongRuntime.RuntimeBodyID = "body-other"
+	if err := ValidateBotSkillMutationActivationTarget(record, mutation, wrongRuntime); !errors.Is(err, ErrBotSkillMutationRuntimeMismatch) {
+		t.Fatalf("wrong Runtime error=%v", err)
+	}
+	wrongHash := input
+	wrongHash.SkillSetHash = strings.Repeat("f", 64)
+	if err := ValidateBotSkillMutationActivationTarget(record, mutation, wrongHash); !errors.Is(err, ErrBotSkillMutationVersionFactsConflict) {
+		t.Fatalf("wrong set hash error=%v", err)
+	}
+	stale := input
+	stale.AppliedDefinitionRevision = 11
+	if err := ValidateBotSkillMutationActivationTarget(record, mutation, stale); !errors.Is(err, ErrBotSkillMutationDefinitionStale) {
+		t.Fatalf("stale revision error=%v", err)
+	}
+}

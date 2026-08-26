@@ -110,6 +110,8 @@ services:
       CATSCO_MODEL_CONFIG_ENCRYPTION_KEY: "${CATSCO_MODEL_CONFIG_ENCRYPTION_KEY:-}"
       CATSCO_BOT_MODEL_CLOUD_ENABLED: "${CATSCO_BOT_MODEL_CLOUD_ENABLED:-true}"
       CATSCO_BOT_MODEL_CLOUD_TEST_UIDS: "${CATSCO_BOT_MODEL_CLOUD_TEST_UIDS:-}"
+      CATSCO_SKILL_MUTATION_ACTIVATION_ACK_ENABLED: "${CATSCO_SKILL_MUTATION_ACTIVATION_ACK_ENABLED:-false}"
+      CATSCO_SKILL_MUTATION_ACTIVATION_ACK_BOT_UIDS: "${CATSCO_SKILL_MUTATION_ACTIVATION_ACK_BOT_UIDS:-}"
       CATSCO_ARTIFACT_INDEX_URL: "${CATSCO_ARTIFACT_INDEX_URL:-}"
       CATSCO_ARTIFACT_MANAGEMENT_URL: "${CATSCO_ARTIFACT_MANAGEMENT_URL:-}"
       CATSCO_ARTIFACT_MANAGEMENT_TOKEN: "${CATSCO_ARTIFACT_MANAGEMENT_TOKEN:-}"
@@ -247,6 +249,21 @@ services:
       - "${PROD_WEB_BIND_HOST:-127.0.0.1}:${PROD_WEB_HOST_PORT:-28080}:80"
     healthcheck:
       test: ["CMD-SHELL", "nginx -t && test -s /usr/share/nginx/html/index.html && test -s /usr/share/nginx/html/manifest.webmanifest && test -s /usr/share/nginx/html/sw.js && test -s /usr/share/nginx/html/offline.html"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - prodnet
+
+  website:
+    image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-website:${IMAGE_TAG}"
+    restart: unless-stopped
+    volumes:
+      - "${PROD_WEBSITE_PUBLIC_ROOT:-/srv/catscompany-prod/website-public}:/opt/catsco-website-public:ro"
+    ports:
+      - "${PROD_WEBSITE_BIND_HOST:-127.0.0.1}:${PROD_WEBSITE_HOST_PORT:-28081}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/health | grep -qx ok"]
       interval: 30s
       timeout: 5s
       retries: 5
