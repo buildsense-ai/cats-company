@@ -47,6 +47,9 @@ const SKILLHUB_SWITCH_INITIAL_DELAY_MS = 2_000;
 const SKILLHUB_SWITCH_RETRY_DELAY_MS = 1_500;
 const SKILLHUB_DEVICE_LIST_TIMEOUT_MS = 5_000;
 const SKILLHUB_WORKSPACE_TIMEOUT_MS = 8_000;
+const SKILLHUB_WORKSPACE_PAGE_SIZE = 200;
+const SKILLHUB_WORKSPACE_MAX_PAGES = 100;
+const SKILLHUB_WORKSPACE_REVISION_PATTERN = /^[0-9a-f]{64}$/;
 const RETRYABLE_SKILLHUB_SWITCH_ERRORS = new Set([
   'BOT_NOT_ACTIVE',
   'REQUEST_EXPIRED',
@@ -440,6 +443,140 @@ export function normalizeLocalSkills(response) {
     canShare: skill?.canShare ?? skill?.can_share ?? true,
     shareError: String(skill?.shareError || skill?.share_error || '').trim(),
   })).filter((skill) => skill.name);
+}
+
+export async function collectSkillHubWorkspacePages({
+  initialWorkspace,
+  readPage,
+  isCurrent = () => true,
+  pageLimit = SKILLHUB_WORKSPACE_PAGE_SIZE,
+  maxPages = SKILLHUB_WORKSPACE_MAX_PAGES,
+}) {
+  if (typeof readPage !== 'function') {
+    throw skillHubWorkspacePaginationError('缺少运行工作区分页读取器。');
+  }
+  let firstPage = initialWorkspace;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!isCurrent()) return null;
+    if (!firstPage) firstPage = await readPage({ limit: pageLimit });
+    try {
+      return await collectSkillHubWorkspacePageAttempt({
+        firstPage,
+        readPage,
+        isCurrent,
+        pageLimit,
+        maxPages,
+      });
+    } catch (error) {
+      if (attempt > 0 || String(error?.code || '') !== 'WORKSPACE_CHANGED') throw error;
+      firstPage = null;
+    }
+  }
+  throw skillHubWorkspacePaginationError('运行工作区在读取期间持续变化，请稍后刷新。');
+}
+
+async function collectSkillHubWorkspacePageAttempt({
+  firstPage,
+  readPage,
+  isCurrent,
+  pageLimit,
+  maxPages,
+}) {
+  const firstSkills = Array.isArray(firstPage?.skills) ? firstPage.skills : [];
+  const firstPagination = parseSkillHubWorkspacePagination(firstPage, 0);
+  if (!firstPagination) {
+    return {
+      ...firstPage,
+      skills: firstSkills,
+      legacyTruncated: firstSkills.length >= pageLimit,
+    };
+  }
+
+  const combined = [];
+  const seen = new Set();
+  let page = firstPage;
+  let expectedOffset = 0;
+  let pageCount = 0;
+  while (page) {
+    if (!isCurrent()) return null;
+    pageCount += 1;
+    if (pageCount > maxPages) {
+      throw skillHubWorkspacePaginationError('运行工作区 Skill 数量超过当前分页安全上限。');
+    }
+    const pagination = parseSkillHubWorkspacePagination(page, expectedOffset);
+    if (
+      !pagination
+      || pagination.revision !== firstPagination.revision
+      || pagination.total !== firstPagination.total
+    ) {
+      throw skillHubWorkspacePaginationError('XiaoBa 返回了不一致的运行工作区分页。');
+    }
+    const pageSkills = Array.isArray(page?.skills) ? page.skills : [];
+    for (const skill of pageSkills) {
+      const localSkillID = String(skill?.local_skill_id || skill?.localSkillId || '').trim();
+      if (!localSkillID || seen.has(localSkillID)) {
+        throw skillHubWorkspacePaginationError('XiaoBa 返回了重复或无效的本地 Skill 标识。');
+      }
+      seen.add(localSkillID);
+      combined.push(skill);
+    }
+    if (combined.length > firstPagination.total) {
+      throw skillHubWorkspacePaginationError('XiaoBa 返回的 Skill 数量超过工作区总数。');
+    }
+    if (pagination.nextOffset === null) {
+      if (combined.length !== firstPagination.total) {
+        throw skillHubWorkspacePaginationError('XiaoBa 提前结束了运行工作区分页。');
+      }
+      return {
+        ...firstPage,
+        skills: combined,
+        next_offset: null,
+        truncated: false,
+        legacyTruncated: false,
+      };
+    }
+    expectedOffset = pagination.nextOffset;
+    page = await readPage({
+      offset: expectedOffset,
+      limit: pageLimit,
+      workspace_revision: firstPagination.revision,
+    });
+  }
+  throw skillHubWorkspacePaginationError('运行工作区分页意外终止。');
+}
+
+function parseSkillHubWorkspacePagination(workspace, expectedOffset) {
+  const hasPagination = workspace?.workspace_revision !== undefined
+    || workspace?.total_skills !== undefined
+    || workspace?.page_offset !== undefined
+    || workspace?.next_offset !== undefined;
+  if (!hasPagination) return null;
+  const revision = String(workspace?.workspace_revision || '').trim().toLowerCase();
+  const total = Number(workspace?.total_skills);
+  const offset = Number(workspace?.page_offset);
+  const nextValue = workspace?.next_offset;
+  const nextOffset = nextValue === null ? null : Number(nextValue);
+  if (
+    !SKILLHUB_WORKSPACE_REVISION_PATTERN.test(revision)
+    || !Number.isSafeInteger(total)
+    || total < 0
+    || !Number.isSafeInteger(offset)
+    || offset !== expectedOffset
+    || (nextOffset !== null && (
+      !Number.isSafeInteger(nextOffset)
+      || nextOffset <= offset
+      || nextOffset > total
+    ))
+  ) {
+    throw skillHubWorkspacePaginationError('XiaoBa 返回了无效的运行工作区分页信息。');
+  }
+  return { revision, total, offset, nextOffset };
+}
+
+function skillHubWorkspacePaginationError(message) {
+  const error = new Error(message);
+  error.code = 'skillhub_workspace_pagination_invalid';
+  return error;
 }
 
 export function isPrivateSkillHubReference(skillId) {
@@ -1094,12 +1231,20 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         }
       }
       if (!isCurrentRequest()) return;
+      workspace = await collectSkillHubWorkspacePages({
+        initialWorkspace: workspace,
+        readPage: (payload) => invoke(SKILLHUB_DEVICE_TOOLS.workspace, payload, 20_000),
+        isCurrent: isCurrentRequest,
+      });
+      if (!workspace || !isCurrentRequest()) return;
       if (String(workspace?.bot_uid || '') !== requestedBotUID) {
         throw new Error('XiaoBa 返回了其他 Agent 的运行工作区，已停止展示。');
       }
       setLocalSkills(normalizeLocalSkills(workspace));
       setLocalSkillsPath(String(workspace?.skills_path || '').trim());
-      setLocalNotice('');
+      setLocalNotice(workspace?.legacyTruncated === true
+        ? '当前 XiaoBa Runtime 未提供分页信息，工作区可能只显示前 200 个 Skill；请升级该 Runtime 后刷新。'
+        : '');
     } catch (error) {
       if (!isCurrentRequest()) return;
       setLocalSkills([]);
