@@ -88,7 +88,16 @@ jobs:
             echo "Reusing source bundle validated by test: ${remote_source}"
           else
             echo "Shared source cache is missing; uploading the tested revision as a fallback."
-            git archive --format=tar.gz --output "${source_bundle}" HEAD
+            source_tree="$(mktemp -d)"
+            trap 'rm -rf "${source_tree}"' EXIT
+            git archive --format=tar HEAD | tar -xf - -C "${source_tree}"
+            # Public website media is delivered once to the server-side
+            # website-public volume; never include it in a GitHub-to-server
+            # source upload, even on this cache-miss fallback path.
+            rm -rf "${source_tree}/website/public"
+            tar -C "${source_tree}" -czf "${source_bundle}" .
+            rm -rf "${source_tree}"
+            trap - EXIT
             ssh ${SSH_OPTS} "${REMOTE}" "rm -f '${remote_temp}' && cat > '${remote_temp}'" < "${source_bundle}"
             ssh ${SSH_OPTS} "${REMOTE}" "tar -tzf '${remote_temp}' >/dev/null && mv '${remote_temp}' '${remote_source}' && bash '${cache_script}' seal '${DEPLOY_CACHE_ROOT}' '${IMAGE_TAG}'"
           fi

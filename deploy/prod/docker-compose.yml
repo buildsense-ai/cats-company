@@ -258,6 +258,8 @@ services:
   website:
     image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-website:${IMAGE_TAG}"
     restart: unless-stopped
+    volumes:
+      - "${PROD_WEBSITE_PUBLIC_ROOT:-/srv/catscompany-prod/website-public}:/opt/catsco-website-public:ro"
     ports:
       - "${PROD_WEBSITE_BIND_HOST:-127.0.0.1}:${PROD_WEBSITE_HOST_PORT:-28081}:80"
     healthcheck:
