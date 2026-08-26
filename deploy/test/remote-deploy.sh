@@ -9,6 +9,7 @@ env_file="$env_dir/test.env"
 compose_file="$compose_dir/docker-compose.yml"
 health_api="${TEST_HEALTH_API:-http://127.0.0.1:16061/health}"
 health_web="${TEST_HEALTH_WEB:-http://127.0.0.1:18080/health}"
+health_website="${TEST_HEALTH_WEBSITE:-http://127.0.0.1:18081/health}"
 
 compose() {
   if command -v docker-compose >/dev/null 2>&1; then
@@ -133,7 +134,7 @@ fi
 
 cd "$compose_dir"
 if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
-  compose -f "$compose_file" --env-file "$env_file" pull server web
+  compose -f "$compose_file" --env-file "$env_file" pull server web website
 fi
 compose -f "$compose_file" --env-file "$env_file" up -d
 compose -f "$compose_file" --env-file "$env_file" ps
@@ -142,5 +143,6 @@ printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
 
 wait_for_health "api" "$health_api"
 wait_for_health "web" "$health_web"
+wait_for_health "website" "$health_website"
 
 echo "deployed revision $revision to $root"

@@ -529,7 +529,7 @@ function extractPlainRelayKey(data) {
   return value ? value.trim() : '';
 }
 
-export default function RelayAccessModal({ onClose }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -629,6 +629,17 @@ export default function RelayAccessModal({ onClose }) {
       controller.abort();
     };
   }, []);
+
+  // Public pricing links can carry a plan slug through the authenticated
+  // workspace. Selecting it here keeps the user on the real payment flow
+  // without exposing credentials or creating an order from the public site.
+  useEffect(() => {
+    const requestedSlug = String(initialPlanSlug || '').trim();
+    const slug = ({ personal: 'catsco-personal', pro: 'catsco-pro' })[requestedSlug] || requestedSlug;
+    if (!slug || !Array.isArray(commercialCatalog?.plans) || purchasePlan) return;
+    const plan = commercialCatalog.plans.find((item) => String(item?.slug || '') === slug);
+    if (plan) setPurchasePlan(plan);
+  }, [commercialCatalog?.plans, initialPlanSlug, purchasePlan]);
 
   const snippet = useMemo(() => configSnippet(config, plainKey), [config, plainKey]);
   const stateText = relayStateLabel(relayKey, config.self_service_enabled, keyLoading);

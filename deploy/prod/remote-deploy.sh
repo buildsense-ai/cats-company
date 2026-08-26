@@ -9,6 +9,7 @@ env_file="$env_dir/prod.env"
 compose_file="$compose_dir/docker-compose.yml"
 health_api="${PROD_HEALTH_API:-http://127.0.0.1:26061/health}"
 health_web="${PROD_HEALTH_WEB:-http://127.0.0.1:28080/health}"
+health_website="${PROD_HEALTH_WEBSITE:-http://127.0.0.1:28081/health}"
 
 compose() {
   if command -v docker-compose >/dev/null 2>&1; then
@@ -153,7 +154,14 @@ fi
 
 cd "$compose_dir"
 if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
-  compose -f "$compose_file" --env-file "$env_file" pull server dreamina-worker web
+  compose -f "$compose_file" --env-file "$env_file" pull server dreamina-worker web website
+fi
+# The first preview rollout used a standalone container while the production
+# stack did not yet declare the website service. Remove only that known
+# temporary container before Compose claims 127.0.0.1:28081; all application
+# containers remain managed by the existing Compose project.
+if docker inspect catsco-website-preview >/dev/null 2>&1; then
+  docker rm -f catsco-website-preview >/dev/null
 fi
 compose -f "$compose_file" --env-file "$env_file" up -d
 compose -f "$compose_file" --env-file "$env_file" ps
@@ -162,6 +170,7 @@ printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
 
 wait_for_health "api" "$health_api"
 wait_for_health "web" "$health_web"
+wait_for_health "website" "$health_website"
 
 worker_health="$(compose -f "$compose_file" --env-file "$env_file" ps --format json dreamina-worker 2>/dev/null || true)"
 if ! printf '%s' "$worker_health" | grep -q '"Health":"healthy"'; then

@@ -270,6 +270,12 @@ function TinodeWebApp({ location }) {
   const recoveredProfileRef = useRef(null);
 
   useEffect(() => {
+    const params = new URLSearchParams(search);
+    if (params.get('open') === 'relay') setShowRelayModal(true);
+    if (params.get('open') === 'download') setShowDownloadModal(true);
+  }, [search]);
+
+  useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
     // the original deep link stable until the server accepts or rejects it.
     if (!user && getToken()) return;
@@ -1372,7 +1378,10 @@ function TinodeWebApp({ location }) {
       )}
 
       {showRelayModal && (
-        <RelayAccessModal onClose={() => setShowRelayModal(false)} />
+        <RelayAccessModal
+          initialPlanSlug={new URLSearchParams(search).get('plan') || ''}
+          onClose={() => setShowRelayModal(false)}
+        />
       )}
 
       {managedGroup?.groupId && (
