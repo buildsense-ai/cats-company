@@ -352,6 +352,17 @@ func main() {
 	artifactRuntimeConfigHandler := server.NewArtifactRuntimeConfigHandlerFromEnv()
 	botDefinitionStore, _ := db.(store.BotDefinitionStore)
 	botDefinitionHandler := server.NewBotDefinitionHandler(db, botDefinitionStore, botModelStore, botModelConfigHandler)
+	botSkillActivationStore, _ := db.(store.BotSkillMutationActivationStore)
+	botSkillActivationHandler := server.NewSkillMutationActivationHandler(db, botSkillActivationStore, hub)
+	botSkillActivationPublicEnabled := envBool("CATSCO_SKILL_MUTATION_ACTIVATION_ACK_ENABLED")
+	botSkillActivationTestUIDs := envInt64Set("CATSCO_SKILL_MUTATION_ACTIVATION_ACK_BOT_UIDS")
+	botSkillActivationHandler.SetRollout(botSkillActivationPublicEnabled, botSkillActivationTestUIDs)
+	botHandler.SetRuntimeActivationAckScopeAllowed(botSkillActivationHandler.Allowed)
+	if botSkillActivationPublicEnabled {
+		log.Printf("Skill mutation activation acknowledgement is enabled for Bot Runtimes")
+	} else if len(botSkillActivationTestUIDs) > 0 {
+		log.Printf("Skill mutation activation acknowledgement allowlist is enabled for %d Bot(s)", len(botSkillActivationTestUIDs))
+	}
 	botDefinitionHandler.SetPromptOnlineResolver(func(uid int64) bool {
 		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
@@ -882,6 +893,7 @@ func main() {
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))
 	mux.HandleFunc("/api/bot/definition/ack", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeAck))
+	mux.HandleFunc("/api/bot/skill-mutations/", botSkillActivationHandler.Handle)
 
 	// Groups (require auth)
 	groupHandler := server.NewGroupHandler(db, hub)

@@ -15,4 +15,14 @@ func TestBotSkillMutationSchemaEnforcesSingleActiveAndIdempotentRequest(t *testi
 			t.Fatalf("schema missing %q", required)
 		}
 	}
+	for _, migration := range []string{
+		migrateBotSkillMutationsAddActivationDefinitionRevision,
+		migrateBotSkillMutationsAddActivationSkillSetHash,
+		migrateBotSkillMutationsAddActivationRuntimeBodyID,
+		migrateBotSkillMutationsAddActivationInstallationID,
+	} {
+		if !strings.Contains(migration, "ALTER TABLE bot_skill_mutations ADD COLUMN activation_") {
+			t.Fatalf("activation fact migration is not additive: %q", migration)
+		}
+	}
 }

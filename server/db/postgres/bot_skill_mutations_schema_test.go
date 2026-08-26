@@ -15,4 +15,14 @@ func TestBotSkillMutationSchemaEnforcesSingleActiveAndIdempotentRequest(t *testi
 			t.Fatalf("schema missing %q", required)
 		}
 	}
+	for _, required := range []string{
+		"activation_definition_revision",
+		"activation_skill_set_hash",
+		"activation_runtime_body_id",
+		"activation_installation_id",
+	} {
+		if !strings.Contains(migrateBotSkillMutationsAddActivationFacts, required) {
+			t.Fatalf("activation fact migration missing %q", required)
+		}
+	}
 }

@@ -15,12 +15,13 @@ import (
 )
 
 const (
-	botRuntimeCredentialHeader    = "X-CatsCo-Runtime-Credential"
-	botRuntimeCredentialTokenType = "bot_runtime_credential"
-	botRuntimeCredentialIssuer    = "catscompany"
-	botRuntimeCredentialAudience  = "catscompany-bot-runtime"
-	botRuntimeCredentialKeyLabel  = "catscompany/bot-runtime-credential/v1"
-	botRuntimeSkillMutationScope  = "skill_mutation:grant"
+	botRuntimeCredentialHeader     = "X-CatsCo-Runtime-Credential"
+	botRuntimeCredentialTokenType  = "bot_runtime_credential"
+	botRuntimeCredentialIssuer     = "catscompany"
+	botRuntimeCredentialAudience   = "catscompany-bot-runtime"
+	botRuntimeCredentialKeyLabel   = "catscompany/bot-runtime-credential/v1"
+	botRuntimeSkillMutationScope   = "skill_mutation:grant"
+	botRuntimeSkillActivationScope = "skill_mutation:activation_ack"
 
 	defaultBotRuntimeCredentialTTL = 30 * 24 * time.Hour
 	maxBotRuntimeCredentialTTL     = 30 * 24 * time.Hour
@@ -47,6 +48,7 @@ type botRuntimeCredentialInput struct {
 	BodyID         string
 	InstallationID string
 	TTL            time.Duration
+	Scopes         []string
 }
 
 type botRuntimeCredentialSigner struct {
@@ -88,6 +90,10 @@ func (s *botRuntimeCredentialSigner) issue(input botRuntimeCredentialInput) (str
 	if ttl <= 0 || ttl > maxBotRuntimeCredentialTTL {
 		return "", nil, errors.New("invalid Bot Runtime credential ttl")
 	}
+	scopes, err := normalizeBotRuntimeCredentialScopes(input.Scopes)
+	if err != nil {
+		return "", nil, err
+	}
 	jti, err := randomHex(16)
 	if err != nil {
 		return "", nil, fmt.Errorf("create Bot Runtime credential id: %w", err)
@@ -99,7 +105,7 @@ func (s *botRuntimeCredentialSigner) issue(input botRuntimeCredentialInput) (str
 		BotUID:         input.BotUID,
 		BodyID:         bodyID,
 		InstallationID: installationID,
-		Scopes:         []string{botRuntimeSkillMutationScope},
+		Scopes:         scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        "brc_" + jti,
 			Issuer:    botRuntimeCredentialIssuer,
@@ -177,13 +183,39 @@ func validateBotRuntimeCredentialClaims(claims *botRuntimeCredentialClaims, now 
 		!now.Before(expiresAt.Add(botRuntimeCredentialClockSkew)) {
 		return errors.New("invalid Bot Runtime credential lifetime")
 	}
-	if claims.Subject != fmt.Sprintf("bot:%d:body:%s", claims.BotUID, bodyID) ||
-		!botRuntimeCredentialHasScope(claims, botRuntimeSkillMutationScope) {
+	scopes, err := normalizeBotRuntimeCredentialScopes(claims.Scopes)
+	if err != nil || claims.Subject != fmt.Sprintf("bot:%d:body:%s", claims.BotUID, bodyID) {
 		return errors.New("invalid Bot Runtime credential binding")
 	}
 	claims.BodyID = bodyID
 	claims.InstallationID = installationID
+	claims.Scopes = scopes
 	return nil
+}
+
+func normalizeBotRuntimeCredentialScopes(input []string) ([]string, error) {
+	if len(input) == 0 {
+		return []string{botRuntimeSkillMutationScope}, nil
+	}
+	seen := make(map[string]bool, len(input))
+	for _, raw := range input {
+		scope := strings.TrimSpace(raw)
+		if scope != botRuntimeSkillMutationScope && scope != botRuntimeSkillActivationScope {
+			return nil, errors.New("invalid Bot Runtime credential scope")
+		}
+		if seen[scope] {
+			return nil, errors.New("duplicate Bot Runtime credential scope")
+		}
+		seen[scope] = true
+	}
+	if !seen[botRuntimeSkillMutationScope] {
+		return nil, errors.New("Bot Runtime credential must include the mutation grant scope")
+	}
+	scopes := []string{botRuntimeSkillMutationScope}
+	if seen[botRuntimeSkillActivationScope] {
+		scopes = append(scopes, botRuntimeSkillActivationScope)
+	}
+	return scopes, nil
 }
 
 func botRuntimeCredentialHasScope(claims *botRuntimeCredentialClaims, scope string) bool {
@@ -206,9 +238,10 @@ func extractBotRuntimeCredential(r *http.Request) string {
 }
 
 type issueBotRuntimeCredentialRequest struct {
-	BotUID         int64  `json:"bot_uid"`
-	BodyID         string `json:"body_id"`
-	InstallationID string `json:"installation_id"`
+	BotUID         int64    `json:"bot_uid"`
+	BodyID         string   `json:"body_id"`
+	InstallationID string   `json:"installation_id"`
+	Scopes         []string `json:"scopes,omitempty"`
 }
 
 // HandleIssueRuntimeCredential lets a human Bot owner provision a scoped
@@ -248,8 +281,19 @@ func (h *BotHandler) HandleIssueRuntimeCredential(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
 		return
 	}
+	scopes, err := normalizeBotRuntimeCredentialScopes(req.Scopes)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid scopes"})
+		return
+	}
+	if botRuntimeCredentialHasRequestedScope(scopes, botRuntimeSkillActivationScope) &&
+		(h.runtimeActivationAckScopeAllowed == nil || !h.runtimeActivationAckScopeAllowed(req.BotUID)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "activation acknowledgement scope is not enabled for this bot"})
+		return
+	}
 	raw, claims, err := h.hub.botRuntimeCredentials.issue(botRuntimeCredentialInput{
 		OwnerUID: ownerUID, BotUID: req.BotUID, BodyID: req.BodyID, InstallationID: req.InstallationID,
+		Scopes: scopes,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -264,4 +308,13 @@ func (h *BotHandler) HandleIssueRuntimeCredential(w http.ResponseWriter, r *http
 		"credential":      raw,
 		"expires_at":      claims.ExpiresAt.Time.UnixMilli(),
 	})
+}
+
+func botRuntimeCredentialHasRequestedScope(scopes []string, expected string) bool {
+	for _, scope := range scopes {
+		if scope == expected {
+			return true
+		}
+	}
+	return false
 }
