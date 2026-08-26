@@ -42,6 +42,8 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
   const [loading, setLoading] = useState(false);
   const [pendingLoading, setPendingLoading] = useState(true);
   const [error, setError] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+  const [redeemingInvite, setRedeemingInvite] = useState(false);
 
   useEffect(() => {
     loadPending();
@@ -95,6 +97,23 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
     }
   };
 
+  const handleRedeemInvite = async () => {
+    const code = inviteCode.trim();
+    if (!code) return;
+    setRedeemingInvite(true);
+    setError('');
+    try {
+      await api.redeemBotInviteCode(code);
+      setInviteCode('');
+      if (onSent) onSent();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (e) {
+      setError(e.message || '邀请码无效或已失效');
+    } finally {
+      setRedeemingInvite(false);
+    }
+  };
+
   const handleAccept = async (userId) => {
     try {
       await api.acceptFriend(userId);
@@ -141,6 +160,20 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
             <div className="oc-collaboration-section-intro">
               <h3>添加好友</h3>
               <p>通过名字或 UID 查找联系人并发送申请。</p>
+            </div>
+
+            <div className="oc-friend-search-row">
+              <input
+                className="oc-friend-invite-input"
+                aria-label="机器人邀请码"
+                placeholder="输入机器人邀请码"
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                onKeyDown={(e) => e.key === 'Enter' && handleRedeemInvite()}
+              />
+              <button type="button" className="oc-btn oc-btn-default" onClick={handleRedeemInvite} disabled={redeemingInvite || !inviteCode.trim()}>
+                {redeemingInvite ? '添加中...' : '使用邀请码'}
+              </button>
             </div>
 
             <div className="oc-friend-search-row">

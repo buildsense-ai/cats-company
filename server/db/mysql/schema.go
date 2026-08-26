@@ -23,6 +23,7 @@ func (a *Adapter) CreateSchema() error {
 		createImageUpscaleTasksTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
+		createBotInviteCodesTable,
 		createBotSkillMutationsTable,
 		createRateLimitTable,
 		createGroupsTable,
@@ -379,6 +380,21 @@ CREATE TABLE IF NOT EXISTS bot_config (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createBotInviteCodesTable = `
+CREATE TABLE IF NOT EXISTS bot_invite_codes (
+    bot_uid BIGINT PRIMARY KEY,
+    owner_uid BIGINT NOT NULL,
+    code VARCHAR(32) NOT NULL UNIQUE,
+    used_count BIGINT NOT NULL DEFAULT 0,
+    revoked_at TIMESTAMP NULL DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (bot_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
+    KEY idx_bot_invite_codes_code_active (code, revoked_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

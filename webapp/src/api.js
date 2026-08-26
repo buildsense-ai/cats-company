@@ -595,7 +595,10 @@ export const api = {
 
   // Bot management
   getMyBots: () => request('GET', '/api/bots'),
-  getBotAPIKey: (uid) => request('GET', `/api/bots/api-key?uid=${uid}`),
+  getBotInviteCode: (uid) => request('GET', `/api/bots/invite-code?uid=${uid}`),
+  generateBotInviteCode: (uid) => request('POST', `/api/bots/invite-code?uid=${uid}`, {}),
+  revokeBotInviteCode: (uid) => request('DELETE', `/api/bots/invite-code?uid=${uid}`, {}),
+  redeemBotInviteCode: (code) => request('POST', '/api/bots/invite/redeem', { code }),
   createBot: ({ username, display_name, role, description }) =>
     request('POST', '/api/bots', { username, display_name, role, description }),
 

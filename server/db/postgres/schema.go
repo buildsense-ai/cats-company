@@ -23,6 +23,7 @@ func (a *Adapter) CreateSchema() error {
 		createImageUpscaleTasksTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
+		createBotInviteCodesTable,
 		createBotSkillMutationsTable,
 		migrateBotSkillMutationsAddActivationFacts,
 		createBotSkillMutationsActiveIndex,
@@ -352,6 +353,19 @@ CREATE TABLE IF NOT EXISTS bot_config (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+const createBotInviteCodesTable = `
+CREATE TABLE IF NOT EXISTS bot_invite_codes (
+    bot_uid BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code VARCHAR(32) NOT NULL UNIQUE,
+    used_count BIGINT NOT NULL DEFAULT 0,
+    revoked_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_bot_invite_codes_code_active ON bot_invite_codes (code, revoked_at);
 `
 
 const createBotSkillMutationsTable = `

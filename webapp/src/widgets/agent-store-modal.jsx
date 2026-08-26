@@ -416,7 +416,7 @@ export default function AgentStoreModal({
   const [createdSkillWarning, setCreatedSkillWarning] = useState('');
   const [createdMode, setCreatedMode] = useState(CREATE_MODES.SELF_HOSTED);
   const [copiedField, setCopiedField] = useState('');
-  const [copyingBotKey, setCopyingBotKey] = useState(null);
+  const [generatingInviteCode, setGeneratingInviteCode] = useState(null);
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
@@ -1135,28 +1135,21 @@ export default function AgentStoreModal({
     }
   };
 
-  const handleCopyBotAPIKey = async (bot, field = 'api_edit') => {
+  const handleGenerateBotInviteCode = async (bot) => {
     const botId = bot?.id || bot?.uid;
     if (!botId) return;
-
+    setGeneratingInviteCode(botId);
     try {
-      setError('');
-      setCopyingBotKey(botId);
-
-      let apiKey = bot.api_key;
-      if (!apiKey) {
-        const result = await api.getBotAPIKey(botId);
-        apiKey = result.api_key;
+      const result = await api.generateBotInviteCode(botId);
+      const code = result?.code || '';
+      if (code) {
+        await navigator.clipboard.writeText(code).catch(() => {});
+        feedback.notify({ tone: 'success', message: `邀请码 ${code} 已生成并复制` });
       }
-      if (!apiKey) throw new Error('API Key not found');
-
-      setBots(prev => prev.map(item => item.id === botId ? { ...item, api_key: apiKey } : item));
-      setEditingBot(prev => prev && (prev.id === botId || prev.uid === botId) ? { ...prev, api_key: apiKey } : prev);
-      await handleCopy(field, apiKey);
     } catch (e) {
-      setError(e.message || 'Failed to copy API Key');
+      setError(e.message || '邀请码生成失败');
     } finally {
-      setCopyingBotKey(null);
+      setGeneratingInviteCode(null);
     }
   };
 
@@ -1501,21 +1494,22 @@ export default function AgentStoreModal({
                           <button
                             type="button"
                             className="oc-btn oc-btn-default cc-agent-card-action"
+                            onClick={() => handleGenerateBotInviteCode(bot)}
+                            disabled={generatingInviteCode === botId}
+                            title="生成机器人邀请码"
+                          >
+                            {generatingInviteCode === botId ? '生成中...' : '生成邀请码'}
+                          </button>
+                        )}
+                        {owned && (
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action"
                             onClick={() => setEntryBot(bot)}
                             title="入口码"
                           >
                             <QrCode size={14} aria-hidden="true" />
                             入口码
-                          </button>
-                        )}
-                        {owned && !bot.tenant_name && (
-                          <button
-                            type="button"
-                            className="oc-btn oc-btn-default cc-agent-card-action"
-                            onClick={() => handleCopyBotAPIKey(bot, `api_${botId}`)}
-                            disabled={copyingBotKey === botId}
-                          >
-                            {copiedField === `api_${botId}` ? '已复制' : copyingBotKey === botId ? '加载中...' : '复制 Key'}
                           </button>
                         )}
                         {owned && bot.tenant_name && (
@@ -2028,7 +2022,7 @@ export default function AgentStoreModal({
                 <AgentManageSection
                   id={`cc-agent-manage-connection-${editingBot.id || editingBot.uid}`}
                   title="连接与凭证"
-                  summary={editingBot.tenant_name ? '云托管无需配置' : 'API Key 与 WebSocket'}
+                  summary={editingBot.tenant_name ? '云托管无需配置' : 'WebSocket 连接'}
                   icon={Code2}
                   open={manageSection === 'connection'}
                   onToggle={() => setManageSection('connection')}
@@ -2040,21 +2034,6 @@ export default function AgentStoreModal({
                   </div>
                 ) : (
                   <div className="cc-agent-credentials">
-                  <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API Key</div>
-                  <div className="cc-agent-credential-row" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                    <code className="cc-agent-credential-value" style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: editingBot.api_key ? 'var(--v3-primary)' : 'var(--v3-text-muted)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
-                      {editingBot.api_key || '点击复制加载 API Key'}
-                    </code>
-                    <button
-                      type="button"
-                      className="oc-btn oc-btn-default"
-                      onClick={() => handleCopyBotAPIKey(editingBot, 'api_edit')}
-                      disabled={copyingBotKey === editingBot.id}
-                    >
-                      {copiedField === 'api_edit' ? '已复制' : copyingBotKey === editingBot.id ? '加载中...' : '复制'}
-                    </button>
-                  </div>
-
                   <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
                   <div className="cc-agent-credential-row" style={{ display: 'flex', gap: 8 }}>
                     <code className="cc-agent-credential-value" style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>

@@ -866,6 +866,8 @@ func main() {
 	// Bot management (user-facing — owner creates/manages their bots)
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
+	mux.HandleFunc("/api/bots/invite-code", ownerAuthWithDB(botHandler.HandleBotInviteCode))
+	mux.HandleFunc("/api/bots/invite/redeem", jwtAuthWithDB(botHandler.HandleRedeemBotInvite))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
 	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))

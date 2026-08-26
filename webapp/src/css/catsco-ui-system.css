@@ -5763,6 +5763,25 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   box-shadow: none;
 }
 
+.oc-friend-invite-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-code);
+  color: var(--cc-text-secondary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.oc-friend-invite-input:focus,
+.oc-friend-invite-input:focus-visible {
+  outline: 0;
+  border-color: var(--cc-border-strong);
+}
+
 .oc-friend-search-control:focus-within {
   border-color: var(--cc-border-strong);
   box-shadow: none;

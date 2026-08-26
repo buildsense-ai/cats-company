@@ -91,6 +91,7 @@ export function AuthView({
   const [password, setPassword] = useState('');
   const [loginName, setLoginName] = useState('');
   const [code, setCode] = useState('');
+  const [botInviteCode, setBotInviteCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [codeSent, setCodeSent] = useState(false);
@@ -130,7 +131,7 @@ export function AuthView({
       if (mode === 'login') {
         await onLogin(username, password);
       } else {
-        await onRegister(email, password, loginName, code);
+        await onRegister(email, password, loginName, code, botInviteCode);
       }
       onAuthenticationIntent?.();
     } catch (err) {
@@ -195,6 +196,14 @@ export function AuthView({
             placeholder={t('password')}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
+          />
+          <input
+            className="oc-auth-input"
+            placeholder="机器人邀请码（可选）"
+            aria-label="机器人邀请码（可选）"
+            autoComplete="off"
+            value={botInviteCode}
+            onChange={(event) => setBotInviteCode(event.target.value.toUpperCase())}
           />
         </>
       ) : (
@@ -307,11 +316,11 @@ export default function AuthGateway({
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
-  const handleRegister = async (email, password, loginName, code) => {
+  const handleRegister = async (email, password, loginName, code, botInviteCode = '') => {
     const username = loginName.trim();
     if (!username) throw new Error('请输入登录名称');
     if (username.length < 3) throw new Error('登录名称至少 3 个字符');
-    await authApi.register({ email, username, password, code });
+    await authApi.register({ email, username, password, code, bot_invite_code: botInviteCode.trim() });
     await handleLogin(email, password);
   };
 
