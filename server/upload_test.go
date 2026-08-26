@@ -407,6 +407,269 @@ func TestHandleServeFileServesHTMLFilesInlineWithSandbox(t *testing.T) {
 	}
 }
 
+func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	for _, ext := range []string{".pdf", ".html"} {
+		t.Run(ext, func(t *testing.T) {
+			dir := t.TempDir()
+			fileName := "20260428_0123456789abcdef0123456789abcdef" + ext
+			fullPath := filepath.Join(dir, "files", fileName)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("file body must not be rendered as the share page"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			handler := NewUploadHandler(dir, "/uploads")
+			friendlyName := "学情报告" + ext
+			requestPath := "/uploads/files/" + fileName + "?preview=1&name=" + url.QueryEscape(friendlyName)
+			recorder := httptest.NewRecorder()
+			handler.HandleServeFile(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+				t.Fatalf("Content-Type = %q, want HTML", got)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=300" {
+				t.Fatalf("Cache-Control = %q, want public preview caching", got)
+			}
+			if got := recorder.Header().Get("Content-Disposition"); got != "" {
+				t.Fatalf("Content-Disposition = %q, want empty for preview page", got)
+			}
+
+			body := recorder.Body.String()
+			for _, expected := range []string{
+				"<title>学情报告" + ext + "</title>",
+				"<meta property=\"og:title\" content=\"学情报告" + ext + "\">",
+				"<meta property=\"og:image\" content=\"https://app.example/pwa-512x512.png\">",
+				"/uploads/files/" + fileName,
+				"/uploads/files/" + fileName + "?download=1",
+			} {
+				if !strings.Contains(body, expected) {
+					t.Fatalf("body missing %q: %s", expected, body)
+				}
+			}
+			if strings.Contains(body, "file body must not be rendered") {
+				t.Fatal("preview page rendered the uploaded file body")
+			}
+			if ext == ".html" && !strings.Contains(body, `sandbox="allow-scripts allow-forms allow-popups allow-modals"`) {
+				t.Fatal("HTML preview iframe is not sandboxed")
+			}
+		})
+	}
+}
+
+func TestHandleServeFileRendersVideoPreviewWithMetadata(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.mp4"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("video bytes must not be rendered as page HTML"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	requestPath := "/uploads/files/" + fileName + "?preview=1&name=" + url.QueryEscape("产品演示.mp4")
+	recorder := httptest.NewRecorder()
+	handler.HandleServeFile(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want HTML", got)
+	}
+	if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "media-src 'self'") {
+		t.Fatalf("Content-Security-Policy = %q, want media-src self", got)
+	}
+
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		"<title>产品演示.mp4</title>",
+		"<meta property=\"og:type\" content=\"video.other\">",
+		"<meta property=\"og:video\" content=\"https://app.example/uploads/files/" + fileName + "\">",
+		"<meta property=\"og:video:type\" content=\"video/mp4\">",
+		"<video controls playsinline preload=\"metadata\"",
+		"/uploads/files/" + fileName + "?download=1",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("body missing %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "video bytes must not be rendered") {
+		t.Fatal("preview page rendered the uploaded video body")
+	}
+	if strings.Contains(body, "<iframe") {
+		t.Fatal("video preview should use a native video element")
+	}
+}
+
+func TestHandleServeFileReturnsNotFoundForMissingPreviewFile(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+
+	for _, ext := range []string{".pdf", ".html", ".mp4"} {
+		t.Run(ext, func(t *testing.T) {
+			fileName := "20260428_0123456789abcdef0123456789abcdef" + ext
+			recorder := httptest.NewRecorder()
+			handler.HandleServeFile(
+				recorder,
+				httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
+			)
+
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+			}
+			if strings.Contains(recorder.Body.String(), "<meta property=\"og:") {
+				t.Fatal("missing file returned a metadata preview page")
+			}
+		})
+	}
+}
+
+func TestHandleServeFileKeepsDownloadSemanticsWhenPreviewIsRequested(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("pdf bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	recorder := httptest.NewRecorder()
+	handler.HandleServeFile(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1&download=1", nil),
+	)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Header().Get("Content-Disposition"); got != "attachment" {
+		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/pdf" {
+		t.Fatalf("Content-Type = %q, want application/pdf", got)
+	}
+}
+
+func TestHandleServeFileEscapesPreviewNameInHTMLMetadata(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("pdf bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	recorder := httptest.NewRecorder()
+	handler.HandleServeFile(
+		recorder,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/uploads/files/"+fileName+"?preview=1&name="+url.QueryEscape(`<script>alert('x')</script>.pdf`),
+			nil,
+		),
+	)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;.pdf") {
+		t.Fatalf("escaped preview name missing from HTML: %s", body)
+	}
+	if strings.Contains(body, "<script>alert('x')</script>") {
+		t.Fatal("preview name was rendered as executable HTML")
+	}
+}
+
+func TestRequestAbsoluteURLUsesConfiguredPublicOrigin(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example/")
+
+	got, err := requestAbsoluteURL("/pwa-512x512.png")
+	if err != nil || got != "https://app.example/pwa-512x512.png" {
+		t.Fatalf("absolute URL = %q, want configured public origin", got)
+	}
+}
+
+func TestRequestAbsoluteURLRequiresConfiguredPublicOrigin(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "")
+
+	got, err := requestAbsoluteURL("/pwa-512x512.png")
+	if err == nil || got != "" {
+		t.Fatalf("absolute URL = %q, err = %v, want configuration error", got, err)
+	}
+}
+
+func TestRequestAbsoluteURLRejectsNonHTTPSPublicOrigin(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "http://app.example")
+
+	got, err := requestAbsoluteURL("/pwa-512x512.png")
+	if err == nil || got != "" {
+		t.Fatalf("absolute URL = %q, err = %v, want configuration error", got, err)
+	}
+}
+
+func TestHandleServeFileRejectsPreviewWithoutConfiguredPublicOrigin(t *testing.T) {
+	for _, publicBaseURL := range []string{"", "http://app.example"} {
+		t.Run(publicBaseURL, func(t *testing.T) {
+			t.Setenv("CATSCO_PUBLIC_BASE_URL", publicBaseURL)
+			dir := t.TempDir()
+			fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
+			fullPath := filepath.Join(dir, "files", fileName)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("pdf bytes"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			recorder := httptest.NewRecorder()
+			NewUploadHandler(dir, "/uploads").HandleServeFile(
+				recorder,
+				httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1", nil),
+			)
+
+			if recorder.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if strings.Contains(recorder.Body.String(), "<link rel=\"canonical\"") {
+				t.Fatal("preview response emitted relative metadata without a public origin")
+			}
+		})
+	}
+}
+
+func TestMobileUploadBaseURLFallsBackToRequestOrigin(t *testing.T) {
+	t.Setenv("CATSCO_MOBILE_UPLOAD_BASE_URL", "")
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "")
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile-upload/sessions", nil)
+	req.Host = "internal.example"
+	req.Header.Set("X-Forwarded-Host", "public.example")
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := mobileUploadBaseURL(req); got != "https://public.example" {
+		t.Fatalf("mobile upload base URL = %q, want request-derived origin", got)
+	}
+}
+
 func TestHandleServeFileForcesHTMLDownloadWithoutSandbox(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.html"

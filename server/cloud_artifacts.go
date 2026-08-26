@@ -1077,14 +1077,11 @@ type agentArtifactAPIRoute struct {
 }
 
 func configuredArtifactPublishOrigin() (artifactURLOrigin, error) {
-	raw := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
-	parsed, err := url.Parse(raw)
-	if err != nil || raw == "" || parsed.Scheme != "https" || parsed.Host == "" ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" ||
-		(parsed.Path != "" && parsed.Path != "/") {
-		return artifactURLOrigin{}, errors.New("CATSCO_PUBLIC_BASE_URL must be a public HTTPS origin")
+	configured, err := configuredPublicBaseURL()
+	if err != nil {
+		return artifactURLOrigin{}, err
 	}
-	return parseArtifactURLOrigin(raw)
+	return parseArtifactURLOrigin(configured)
 }
 
 func validateCloudArtifactPublishRequest(request cloudArtifactPublishRequest, expectedOrigin artifactURLOrigin) (string, error) {
