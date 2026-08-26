@@ -3589,7 +3589,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    const refreshedURL = 'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3';
+    const refreshedURL = 'https://artifacts.example.test/by-agent/440/lesson-game/v3/';
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(refreshedURL);
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
@@ -3708,7 +3708,9 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -3718,7 +3720,9 @@ describe('MessagesView composer draft isolation', () => {
       });
     }
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
     expect(contextRequests).toBeGreaterThanOrEqual(3);
 
@@ -3727,7 +3731,9 @@ describe('MessagesView composer draft isolation', () => {
       await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
       await flushPromises();
     });
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -3816,7 +3822,9 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -3831,7 +3839,9 @@ describe('MessagesView composer draft isolation', () => {
       await vi.advanceTimersByTimeAsync(ARTIFACT_REGISTRY_POLL_MS_FOR_TEST);
       await flushPromises();
     });
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -3915,7 +3925,9 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.click(container.querySelector('.mock-ready-artifact-refresh'));
       await flushPromises();
     });
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
     vi.useRealTimers();
   });
@@ -3964,7 +3976,9 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(versionTwo.url);
-    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toContain('artifact_version=3');
+    expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe(
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
+    );
     expect(artifactRefreshPreviewObserved).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -3984,7 +3998,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-url')).toBe(
-      'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3',
+      'https://artifacts.example.test/by-agent/440/lesson-game/v3/',
     );
     vi.useRealTimers();
   });

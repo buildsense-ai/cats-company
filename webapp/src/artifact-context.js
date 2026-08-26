@@ -301,18 +301,45 @@ export function artifactURLForVersion(value, version) {
   const publishVersion = positiveInteger(version);
   if (publishVersion <= 0) return '';
   try {
-    const parsed = new URL(String(value || '').trim());
+    const rawValue = String(value || '').trim();
+    const parsed = new URL(rawValue);
     if (!['http:', 'https:'].includes(parsed.protocol)) return '';
-    const versionedPath = parsed.pathname.replace(
-      /(\/artifacts\/[^/]+\/)(?:latest|v[1-9]\d*)(?=\/|$)/,
-      `$1v${publishVersion}`,
+    // URL normalizes dot segments before exposing `pathname`, so validate the
+    // raw path as well. Published Artifact paths are ASCII and canonical;
+    // encoded segments, duplicate slashes, and traversal segments are not.
+    const rawPath = rawValue.match(/^https?:\/\/[^/?#]*(\/[^?#]*)?(?:[?#]|$)/i)?.[1] || '';
+    if (!rawPath || rawPath.includes('\\') || rawPath.includes('//')
+      || rawPath.split('/').some((segment) => segment === '.'
+        || segment === '..'
+        || segment.includes('%'))) return '';
+    const pathSegments = parsed.pathname.split('/');
+    const hasTrailingSlash = parsed.pathname.endsWith('/');
+    const canonicalSegments = pathSegments.slice(1, hasTrailingSlash ? -1 : undefined);
+    if (canonicalSegments.some((segment) => !segment || segment === '.' || segment === '..')) return '';
+    // Artifact nodes expose the immutable version as the final path segment.
+    // Keep this independent of the node layout (`/artifacts/...`, mapped
+    // `/artifacts/by-agent/...`, or the legacy `/by-agent/...` form) so the
+    // opaque-frame contract never needs a query-string version selector.
+    const versionMatch = parsed.pathname.match(
+      /^(.*\/)([^/]+)\/(?:latest|v[1-9]\d*)(\/?)$/,
     );
-    if (versionedPath !== parsed.pathname) {
-      parsed.pathname = versionedPath;
-      parsed.searchParams.delete('artifact_version');
-      return parsed.toString();
-    }
-    parsed.searchParams.set('artifact_version', String(publishVersion));
+    // A managed URL without a recognized version segment is not safe to use
+    // as a refresh candidate: returning it would make a later page-context
+    // response look like proof that the requested version was loaded.
+    if (!versionMatch) return '';
+    const [, parentPath, artifactID, trailingSlash] = versionMatch;
+    if (artifactID.length > ARTIFACT_ID_MAX_LENGTH || !ARTIFACT_ID_PATTERN.test(artifactID)) return '';
+    parsed.pathname = `${parentPath}${artifactID}/v${publishVersion}${trailingSlash}`;
+    // Query values can select a different document and must not be carried
+    // into the opaque sandbox URL. Preserve application route fragments, but
+    // never reuse a bridge nonce from a previous document.
+    parsed.search = '';
+    const noncePrefix = `${ARTIFACT_FRAME_BRIDGE_NONCE_PARAM}=`;
+    const fragments = parsed.hash
+      .replace(/^#/, '')
+      .split('&')
+      .filter((fragment) => fragment && !fragment.startsWith(noncePrefix));
+    parsed.hash = fragments.length > 0 ? `#${fragments.join('&')}` : '';
     return parsed.toString();
   } catch {
     return '';

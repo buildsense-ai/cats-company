@@ -146,7 +146,7 @@ describe('artifact context snapshot handoff', () => {
       'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/?view=compact',
       3,
     )).toBe(
-      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v3/?view=compact',
+      'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v3/',
     );
     expect(artifactURLForVersion(
       'https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/v2/?artifact_version=2',
@@ -157,9 +157,38 @@ describe('artifact context snapshot handoff', () => {
     expect(artifactURLForVersion(
       'https://example.test/custom/latest/',
       3,
-    )).toBe('https://example.test/custom/latest/?artifact_version=3');
+    )).toBe('https://example.test/custom/v3/');
+    expect(artifactURLForVersion(
+      'https://example.test/by-agent/440/malformed/',
+      3,
+    )).toBe('');
+    expect(artifactURLForVersion(
+      'https://example.test/by-agent/440/lesson-game/v0/',
+      3,
+    )).toBe('');
+    expect(artifactURLForVersion(
+      'https://example.test/artifacts/foo/../latest/',
+      3,
+    )).toBe('');
+    expect(artifactURLForVersion(
+      'https://example.test/artifacts/by-agent/440/%2e%2e/game/latest/',
+      3,
+    )).toBe('');
+    expect(artifactURLForVersion(
+      'https://example.test/artifacts//by-agent/440/game/latest/',
+      3,
+    )).toBe('');
     expect(artifactURLForVersion('file:///tmp/lesson-game/index.html', 3)).toBe('');
     expect(artifactURLForVersion('https://example.test/latest/', 0)).toBe('');
+  });
+
+  it('canonicalizes mapped Agent Artifact URLs before adding the bridge nonce', () => {
+    expect(artifactURLForVersion(
+      'https://mapped.example.test/artifacts/by-agent/440/lesson-game/latest/?view=compact#dashboard&catsco_bridge_nonce=stale',
+      3,
+    )).toBe(
+      'https://mapped.example.test/artifacts/by-agent/440/lesson-game/v3/#dashboard',
+    );
   });
 
   it('accepts only an opaque context_ref response with the exact contract', () => {

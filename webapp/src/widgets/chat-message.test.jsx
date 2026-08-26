@@ -1792,7 +1792,7 @@ describe('ChatMessage rich file rendering', () => {
       url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
       publish_version: 2,
     };
-    const previewURL = `${artifact.url}?artifact_version=2`;
+    const previewURL = 'https://artifacts.example.test/by-agent/440/lesson-game/v2/';
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -2194,7 +2194,9 @@ describe('ChatMessage rich file rendering', () => {
 
     const panel = container.querySelector('.v3-file-preview-panel');
     const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
-    expect(externalLink?.getAttribute('href')).toBe(`${artifact.url}?artifact_version=3`);
+    expect(externalLink?.getAttribute('href')).toBe(
+      'https://artifacts.example.test/by-agent/440/managed-game/v3/',
+    );
     expect(panel.querySelector('a[download]')).toBeNull();
 
     await act(async () => {
@@ -2206,7 +2208,7 @@ describe('ChatMessage rich file rendering', () => {
 
   it('previews a same-origin registry Artifact in the side panel with an opaque sandbox', async () => {
     const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
-    const previewURL = `${artifactURL}?artifact_version=1`;
+    const previewURL = 'http://localhost:3000/artifacts/by-agent/440/same-origin/v1/';
     const artifact = {
       id: 'same-origin',
       title: 'Same-origin artifact',
@@ -2286,6 +2288,42 @@ describe('ChatMessage rich file rendering', () => {
     expect(firstBinding.signal.aborted).toBe(true);
     expect(onBindingChange.mock.calls.at(-1)?.[0]).toBeNull();
     expect(container.querySelector('.v3-remote-artifact-preview-state.error')).not.toBeNull();
+  });
+
+  it('aborts the active opaque bridge when the preview unmounts', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/unmountable/latest/', window.location.origin).toString();
+    const onBindingChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile({
+            id: 'unmountable',
+            agent_uid: 440,
+            title: 'Unmountable artifact',
+            url: artifactURL,
+            publish_version: 1,
+          })}
+          onRemoteArtifactFrameChange={onBindingChange}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    const frame = container.querySelector('iframe.v3-file-preview-frame');
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    const binding = onBindingChange.mock.calls.at(-1)?.[0];
+    expect(binding?.signal?.aborted).toBe(false);
+
+    await act(async () => {
+      root.render(null);
+      await flushAsync();
+    });
+
+    expect(binding.signal.aborted).toBe(true);
   });
 
   it('keeps an unknown external URL as an ordinary link', async () => {

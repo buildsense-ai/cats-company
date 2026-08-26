@@ -371,7 +371,7 @@ func parseCanonicalArtifactNodeURL(value string, management bool) (string, error
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" {
+		parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawPath != "" {
 		return "", errors.New("invalid artifact node URL")
 	}
 	trimmedPath := strings.TrimRight(parsed.Path, "/")
@@ -394,7 +394,7 @@ func validateArtifactNodeURL(value, publicBaseURL string, expectedAgentUID int64
 		return nil
 	}
 	artifactURL, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.RawPath != "" || artifactURL.Fragment != "" || artifactURL.RawFragment != "" {
+	if err != nil || artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.ForceQuery || artifactURL.RawPath != "" || artifactURL.Fragment != "" || artifactURL.RawFragment != "" {
 		return errors.New("invalid artifact URL")
 	}
 	baseURL, err := url.Parse(publicBaseURL)
@@ -405,7 +405,11 @@ func validateArtifactNodeURL(value, publicBaseURL string, expectedAgentUID int64
 		return errors.New("artifact URL does not belong to the configured node")
 	}
 	basePath := strings.TrimRight(path.Clean("/"+strings.TrimPrefix(baseURL.Path, "/")), "/")
-	artifactPath := path.Clean("/" + strings.TrimPrefix(artifactURL.Path, "/"))
+	trimmedArtifactPath := strings.TrimRight(artifactURL.Path, "/")
+	artifactPath := path.Clean("/" + strings.TrimPrefix(trimmedArtifactPath, "/"))
+	if trimmedArtifactPath == "" || trimmedArtifactPath != artifactPath {
+		return errors.New("artifact URL path must be canonical")
+	}
 	if basePath != "" && artifactPath != basePath && !strings.HasPrefix(artifactPath, basePath+"/") {
 		return errors.New("artifact URL does not belong to the configured node")
 	}

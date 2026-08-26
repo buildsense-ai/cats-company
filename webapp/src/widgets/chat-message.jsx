@@ -2648,7 +2648,17 @@ export function FilePreviewPanel({
       controller,
     };
     setRemoteArtifactDocumentEpoch((value) => value + 1);
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      const state = remoteArtifactBridgeStateRef.current;
+      // The load handler replaces the controller for the active document.
+      // Abort that replacement on unmount as well, while guarding against an
+      // old effect cleanup touching a newer artifact binding.
+      if (state.key === currentRemoteArtifactKey
+        && state.nonce === currentRemoteArtifactBridgeNonce) {
+        state.controller?.abort();
+      }
+    };
   }, [currentRemoteArtifactBridgeNonce, currentRemoteArtifactKey]);
 
   useEffect(() => {
