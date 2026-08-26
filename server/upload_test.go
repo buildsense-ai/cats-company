@@ -524,6 +524,30 @@ func TestHandleServeFileEscapesPreviewNameInHTMLMetadata(t *testing.T) {
 	}
 }
 
+func TestRequestAbsoluteURLUsesConfiguredPublicOrigin(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example/")
+	request := httptest.NewRequest(http.MethodGet, "/uploads/files/report.pdf?preview=1", nil)
+	request.Host = "internal.example"
+	request.Header.Set("X-Forwarded-Host", "attacker.example")
+	request.Header.Set("X-Forwarded-Proto", "http")
+
+	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "https://app.example/pwa-512x512.png" {
+		t.Fatalf("absolute URL = %q, want configured public origin", got)
+	}
+}
+
+func TestRequestAbsoluteURLDoesNotTrustForwardedHostWithoutConfiguration(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "")
+	request := httptest.NewRequest(http.MethodGet, "/uploads/files/report.pdf?preview=1", nil)
+	request.Host = "app.example"
+	request.Header.Set("X-Forwarded-Host", "attacker.example")
+	request.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := requestAbsoluteURL(request, "/pwa-512x512.png"); got != "https://app.example/pwa-512x512.png" {
+		t.Fatalf("absolute URL = %q, want request host without forwarded host", got)
+	}
+}
+
 func TestHandleServeFileForcesHTMLDownloadWithoutSandbox(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.html"

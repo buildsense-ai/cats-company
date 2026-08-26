@@ -356,17 +356,39 @@ func mobileUploadBaseURL(r *http.Request) string {
 	if configured := strings.TrimSpace(os.Getenv("CATSCO_MOBILE_UPLOAD_BASE_URL")); configured != "" {
 		return strings.TrimRight(configured, "/")
 	}
+	return requestOrigin(r)
+}
+
+func requestOrigin(r *http.Request) string {
+	if configured := configuredPublicOrigin(); configured != "" {
+		return configured
+	}
+	return requestOriginFromHeaders(r)
+}
+
+func configuredPublicOrigin() string {
+	raw := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
+	parsed, err := url.Parse(raw)
+	if err != nil || raw == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func requestOriginFromHeaders(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if forwardedProto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+	if forwardedProto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))); forwardedProto == "http" || forwardedProto == "https" {
 		scheme = forwardedProto
 	}
 	host := strings.TrimSpace(r.Host)
-	if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
-		host = forwardedHost
-	}
 	if host == "" {
 		return ""
 	}
@@ -691,24 +713,11 @@ func sanitizeUploadPreviewName(value string) string {
 }
 
 func requestAbsoluteURL(r *http.Request, path string) string {
-	if r == nil {
+	origin := requestOrigin(r)
+	if origin == "" {
 		return path
 	}
-	host := strings.TrimSpace(r.Host)
-	if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
-		host = forwardedHost
-	}
-	if host == "" {
-		return path
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwardedProto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))); forwardedProto == "http" || forwardedProto == "https" {
-		scheme = forwardedProto
-	}
-	return scheme + "://" + host + path
+	return origin + path
 }
 
 func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {

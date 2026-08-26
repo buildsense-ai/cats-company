@@ -38,6 +38,21 @@ describe('sharePreviewLink', () => {
     );
   });
 
+  it('does not advertise unsupported XHTML uploads as metadata previews', async () => {
+    const share = vi.fn().mockResolvedValue(undefined);
+
+    await sharePreviewLink({
+      url: '/uploads/files/report.xhtml',
+      name: 'report.xhtml',
+      navigatorLike: { share },
+    });
+
+    expect(share).toHaveBeenCalledWith({
+      title: 'report.xhtml',
+      url: new URL('/uploads/files/report.xhtml', window.location.href).toString(),
+    });
+  });
+
   it('does not fall back to copying when the user cancels native sharing', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const share = vi.fn().mockRejectedValue(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
