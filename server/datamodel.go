@@ -50,6 +50,8 @@ type ServerMessage struct {
 	// artifactContextRef is an in-memory, recipient-scoped delivery capability.
 	// It is never serialized directly and never persisted with a message.
 	artifactContextRef *artifactContextDeliveryRef
+	// artifactTaskRef follows the same recipient-scoped, non-durable transport.
+	artifactTaskRef *artifactTaskDeliveryRef
 }
 
 // --- Client messages ---
@@ -233,6 +235,7 @@ type MsgArtifactResult struct {
 	OriginNodeID          string          `json:"origin_node_id,omitempty"`
 	ActorUID              string          `json:"actor_uid,omitempty"`
 	ContextRef            string          `json:"context_ref,omitempty"`
+	TaskID                string          `json:"task_id,omitempty"`
 	WritebackRef          string          `json:"writeback_ref,omitempty"`
 	TopicID               string          `json:"topic_id,omitempty"`
 	AgentUID              string          `json:"agent_uid,omitempty"`

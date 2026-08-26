@@ -17,11 +17,21 @@ export const ARTIFACT_FRAME_BRIDGE_CONTRACT = 'catsco.artifact-frame-bridge.v1';
 export const ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE = 'catsco.artifact.frame-bridge.request.v1';
 export const ARTIFACT_FRAME_BRIDGE_READY_TYPE = 'catsco.artifact.frame-bridge.ready.v1';
 export const ARTIFACT_FRAME_BRIDGE_NONCE_PARAM = 'catsco_bridge_nonce';
+export const ARTIFACT_TASK_REQUEST_TYPE = 'catsco.artifact.task.request.v1';
+export const ARTIFACT_TASK_ACCEPTED_TYPE = 'catsco.artifact.task.accepted.v1';
+export const ARTIFACT_TASK_REJECTED_TYPE = 'catsco.artifact.task.rejected.v1';
+export const ARTIFACT_TASK_STATUS_TYPE = 'catsco.artifact.task.status.v1';
+export const ARTIFACT_BRIDGE_READY_TYPE = 'catsco.artifact.bridge.ready.v1';
+export const ARTIFACT_HOST_CONNECT_TYPE = 'catsco.artifact.host.connect.v1';
+export const ARTIFACT_TASK_STATUS_CONTRACT = 'catsco.artifact-task-status.v1';
+export const ARTIFACT_TASK_REF_CONTRACT = 'catsco.artifact-task-ref.v1';
 
 const ARTIFACT_ID_PATTERN = /^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$/;
 const ARTIFACT_CONTEXT_REF_PATTERN = /^acr_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_WRITEBACK_REF_PATTERN = /^awr_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_RESULT_ID_PATTERN = /^arr_[A-Za-z0-9_-]{43}$/;
+const ARTIFACT_TASK_ID_PATTERN = /^atk_[A-Za-z0-9_-]{43}$/;
+const ARTIFACT_TASK_REF_PATTERN = /^atr_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_RESULT_SINK_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9]\d*$/;
 const ARTIFACT_RUNTIME_NODE_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const ARTIFACT_ID_MAX_LENGTH = 64;
@@ -259,6 +269,8 @@ async function requestOpaqueArtifactBridge(binding, message, responseType, timeo
   });
   return { available: true, aborted: Boolean(signal?.aborted), data };
 }
+const ARTIFACT_TASK_PAYLOAD_MAX_BYTES = 64 * 1024;
+const ARTIFACT_TASK_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
 
 function positiveInteger(value) {
   const parsed = Number(value);
@@ -373,6 +385,63 @@ export function withArtifactContextRef(payload, contextRef) {
   };
 }
 
+export function normalizeArtifactTaskRequest(value) {
+  if (!semanticPlainObject(value) || value.type !== ARTIFACT_TASK_REQUEST_TYPE) return null;
+  const allowed = new Set(['type', 'request_id', 'intent_id', 'payload']);
+  if (!Object.keys(value).every((key) => allowed.has(key) && !UNSAFE_SEMANTIC_KEYS.has(key))) return null;
+  const requestId = String(value.request_id || '');
+  const intentId = String(value.intent_id || '');
+  if (!ARTIFACT_TASK_REQUEST_ID_PATTERN.test(requestId)
+    || !ARTIFACT_RESULT_SINK_ID_PATTERN.test(intentId)) return null;
+  const payload = cloneBoundedArtifactResultJSON(value.payload, ARTIFACT_TASK_PAYLOAD_MAX_BYTES);
+  if (payload === INVALID_SEMANTIC_VALUE) return null;
+  return { requestId, intentId, payload };
+}
+
+export function normalizeArtifactTaskStatus(value) {
+  if (!semanticPlainObject(value)
+    || value.contract_version !== ARTIFACT_TASK_STATUS_CONTRACT
+    || !ARTIFACT_TASK_ID_PATTERN.test(String(value.task_id || ''))
+    || !new Set(['submitted', 'running', 'completed', 'failed']).has(value.status)) return null;
+  const code = value.code === undefined ? '' : String(value.code);
+  const message = value.message === undefined ? '' : String(value.message);
+  const runId = value.run_id === undefined ? '' : String(value.run_id);
+  const resultId = value.result_id === undefined ? '' : String(value.result_id);
+  if ((code && !/^[a-z][a-z0-9_]{0,63}$/.test(code))
+    || (message && (message !== message.trim() || message.length > 500 || /[\0\r\n]/.test(message)))
+    || (runId && (runId !== runId.trim() || runId.length > 128 || /[\0\r\n]/.test(runId)))
+    || (resultId && !ARTIFACT_RESULT_ID_PATTERN.test(resultId))) return null;
+  const normalized = {
+    contract_version: ARTIFACT_TASK_STATUS_CONTRACT,
+    task_id: value.task_id,
+    status: value.status,
+    updated_at: String(value.updated_at || ''),
+    expires_at: String(value.expires_at || ''),
+  };
+  if (code) normalized.code = code;
+  if (message) normalized.message = message;
+  if (runId) normalized.run_id = runId;
+  if (resultId) normalized.result_id = resultId;
+  return normalized;
+}
+
+export function normalizeArtifactTaskCreated(value) {
+  if (!semanticPlainObject(value)
+    || value.contract_version !== ARTIFACT_TASK_REF_CONTRACT
+    || !ARTIFACT_TASK_ID_PATTERN.test(String(value.task_id || ''))
+    || !ARTIFACT_TASK_REF_PATTERN.test(String(value.task_ref || ''))
+    || value.status !== 'submitted') return null;
+  const visibleMessage = String(value.visible_message || '').trim();
+  if (!visibleMessage || visibleMessage.length > 700 || /[\0\r\n]/.test(visibleMessage)) return null;
+  return {
+    taskId: value.task_id,
+    taskRef: value.task_ref,
+    status: value.status,
+    visibleMessage,
+    expiresAt: String(value.expires_at || ''),
+  };
+}
+
 export async function requestArtifactPageContext(binding, artifactRef, timeoutMs = PAGE_CONTEXT_TIMEOUT_MS) {
   const frame = binding?.frame;
   const contentWindow = frame?.contentWindow;
@@ -434,6 +503,7 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
 export function normalizeArtifactResultDelivery(value) {
   if (!semanticPlainObject(value) || value.type !== 'request') return null;
   const contextRef = String(value.context_ref || '');
+  const taskId = String(value.task_id || '');
   const writebackRef = String(value.writeback_ref || '');
   const resultId = String(value.result_id || '');
   const sinkId = String(value.sink_id || '');
@@ -443,7 +513,8 @@ export function normalizeArtifactResultDelivery(value) {
   const agentUid = positiveInteger(value.agent_uid);
   const displayedVersion = positiveInteger(value.displayed_version);
   if (!ARTIFACT_RUNTIME_NODE_PATTERN.test(originNodeId)
-    || !ARTIFACT_CONTEXT_REF_PATTERN.test(contextRef)
+    || !((ARTIFACT_CONTEXT_REF_PATTERN.test(contextRef) && !taskId)
+      || (!contextRef && ARTIFACT_TASK_ID_PATTERN.test(taskId)))
     || !ARTIFACT_WRITEBACK_REF_PATTERN.test(writebackRef)
     || !ARTIFACT_RESULT_ID_PATTERN.test(resultId)
     || !ARTIFACT_RESULT_SINK_ID_PATTERN.test(sinkId)
@@ -457,6 +528,7 @@ export function normalizeArtifactResultDelivery(value) {
     type: 'request',
     originNodeId,
     contextRef,
+    taskId,
     writebackRef,
     topicId,
     agentUid,

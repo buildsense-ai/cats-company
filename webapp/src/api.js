@@ -436,6 +436,30 @@ export const api = {
     { context_ref: contextRef },
     options,
   ),
+  createArtifactTask: (task, options = {}) => {
+    const previewSession = wsArtifactPreviewSession;
+    return request(
+      'POST',
+      '/api/artifact-tasks',
+      {
+        ...task,
+        ...(previewSession ? { preview_session: previewSession } : {}),
+      },
+      options,
+    );
+  },
+  getArtifactTask: (taskId, options = {}) => request(
+    'GET',
+    `/api/artifact-tasks?task_id=${encodeURIComponent(String(taskId || ''))}`,
+    undefined,
+    options,
+  ),
+  failArtifactTask: (taskId, options = {}) => request(
+    'DELETE',
+    '/api/artifact-tasks',
+    { task_id: taskId },
+    options,
+  ),
 
   // REST fallback for message history
   getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>

@@ -51,6 +51,7 @@ type normalizedMessagePayload struct {
 	ContentBlocks       []types.ContentBlock
 	Metadata            map[string]interface{}
 	ArtifactContextRef  *artifactContextDeliveryRef
+	ArtifactTaskRef     *artifactTaskDeliveryRef
 	Mode                string
 	Role                string
 	Mentions            []string
@@ -83,7 +84,13 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, code, map[string]string{"error": text})
 			return
 		}
-		payload.Metadata, payload.ArtifactContextRef = h.hub.extractArtifactContextDelivery(uid, req.TopicID, payload.Metadata)
+		candidateMetadata := payload.Metadata
+		payload.Metadata, payload.ArtifactContextRef = h.hub.extractArtifactContextDelivery(uid, req.TopicID, candidateMetadata)
+		_, payload.ArtifactTaskRef, err = h.hub.extractArtifactTaskDelivery(uid, req.TopicID, candidateMetadata)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 	} else {
 		payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
 	}
@@ -331,6 +338,11 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		h.validatedArtifactContextDeliveryRef(uid, topicID, payload.ArtifactContextRef, recipientUID),
 		recipientUID,
 	)
+	metadata = withArtifactTaskDeliveryRef(
+		metadata,
+		h.validatedArtifactTaskDeliveryRef(uid, topicID, payload.ArtifactTaskRef, recipientUID),
+		recipientUID,
+	)
 	return &ServerMessage{
 		Data: &MsgServerData{
 			Topic:         topicID,
@@ -347,6 +359,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		},
 		suppressPushNotification: suppressPushNotification,
 		artifactContextRef:       payload.ArtifactContextRef,
+		artifactTaskRef:          payload.ArtifactTaskRef,
 	}
 }
 

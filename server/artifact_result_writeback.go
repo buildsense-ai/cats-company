@@ -45,11 +45,14 @@ var (
 type artifactWritebackTarget struct {
 	Ref              string
 	ContextRef       string
+	TaskID           string
+	TaskRef          string
 	ActorUID         int64
 	TopicID          string
 	AgentUID         int64
 	ArtifactID       string
 	DisplayedVersion int64
+	ResultSink       string
 	SnapshotRevision uint64
 	PreviewRoute     runtimeRoute
 	CreatedAt        time.Time
@@ -78,16 +81,19 @@ type artifactResultDeliveryState struct {
 }
 
 type artifactResultWritebackStore struct {
-	mu        sync.Mutex
-	tickets   map[string]artifactWritebackTarget
+	mu      sync.Mutex
+	tickets map[string]artifactWritebackTarget
+
 	byContext map[string]string
+	byTask    map[string]string
 	// invalidated prevents a delayed Bot read from reissuing a target after replacement.
-	invalidated map[string]time.Time
-	deliveries  map[string]*artifactResultDeliveryState
-	ticketTTL   time.Duration
-	deliveryTTL time.Duration
-	maxEntries  int
-	now         func() time.Time
+	invalidated      map[string]time.Time
+	invalidatedTasks map[string]time.Time
+	deliveries       map[string]*artifactResultDeliveryState
+	ticketTTL        time.Duration
+	deliveryTTL      time.Duration
+	maxEntries       int
+	now              func() time.Time
 }
 
 type ArtifactResultHandler struct {
@@ -97,6 +103,7 @@ type ArtifactResultHandler struct {
 type artifactResultSubmitRequest struct {
 	ContractVersion       string          `json:"contract_version"`
 	WritebackRef          string          `json:"writeback_ref"`
+	TaskID                string          `json:"task_id,omitempty"`
 	ArtifactID            string          `json:"artifact_id"`
 	DisplayedVersion      int64           `json:"displayed_version"`
 	SinkID                string          `json:"sink_id"`
@@ -125,14 +132,16 @@ func newArtifactResultWritebackStore(ticketTTL, deliveryTTL time.Duration, maxEn
 		maxEntries = artifactResultStoreMaxEntries
 	}
 	return &artifactResultWritebackStore{
-		tickets:     make(map[string]artifactWritebackTarget),
-		byContext:   make(map[string]string),
-		invalidated: make(map[string]time.Time),
-		deliveries:  make(map[string]*artifactResultDeliveryState),
-		ticketTTL:   ticketTTL,
-		deliveryTTL: deliveryTTL,
-		maxEntries:  maxEntries,
-		now:         time.Now,
+		tickets:          make(map[string]artifactWritebackTarget),
+		byContext:        make(map[string]string),
+		byTask:           make(map[string]string),
+		invalidated:      make(map[string]time.Time),
+		invalidatedTasks: make(map[string]time.Time),
+		deliveries:       make(map[string]*artifactResultDeliveryState),
+		ticketTTL:        ticketTTL,
+		deliveryTTL:      deliveryTTL,
+		maxEntries:       maxEntries,
+		now:              time.Now,
 	}
 }
 
@@ -159,10 +168,46 @@ func (h *Hub) issueArtifactWritebackIfCurrent(
 	return target, status, issueErr
 }
 
+func (h *Hub) issueArtifactTaskWritebackIfActive(taskRef, taskID string) (artifactWritebackTarget, error) {
+	if h == nil || h.artifactTasks == nil || h.artifactResultWritebacks == nil {
+		return artifactWritebackTarget{}, errors.New("Artifact task writeback unavailable")
+	}
+	var target artifactWritebackTarget
+	var issueErr error
+	active := h.artifactTasks.withWritable(taskRef, taskID, func(task artifactTask) {
+		target, issueErr = h.artifactResultWritebacks.issueTask(task)
+	})
+	if !active {
+		return artifactWritebackTarget{}, errors.New("Artifact task is no longer active")
+	}
+	return target, issueErr
+}
+
 func (h *Hub) claimArtifactResultDeliveryForSend(
 	delivery *artifactResultDeliveryState,
 ) (artifactWritebackTarget, bool) {
-	if h == nil || h.artifactContextSnapshots == nil || h.artifactResultWritebacks == nil || delivery == nil {
+	if h == nil || h.artifactResultWritebacks == nil || delivery == nil {
+		return artifactWritebackTarget{}, false
+	}
+	if delivery.Target.TaskID != "" {
+		if h.artifactTasks == nil {
+			return artifactWritebackTarget{}, false
+		}
+		var target artifactWritebackTarget
+		var claimed bool
+		active := h.artifactTasks.withWritable(
+			delivery.Target.TaskRef,
+			delivery.Target.TaskID,
+			func(artifactTask) {
+				target, claimed = h.artifactResultWritebacks.claimDeliveryForSend(delivery)
+			},
+		)
+		if !active {
+			h.artifactResultWritebacks.invalidateTask(delivery.Target.TaskID)
+		}
+		return target, claimed
+	}
+	if h.artifactContextSnapshots == nil {
 		return artifactWritebackTarget{}, false
 	}
 	var target artifactWritebackTarget
@@ -237,6 +282,59 @@ func (s *artifactResultWritebackStore) issue(snapshot artifactContextSnapshot) (
 	return target, nil
 }
 
+func (s *artifactResultWritebackStore) issueTask(task artifactTask) (artifactWritebackTarget, error) {
+	if s == nil || !artifactTaskIDPattern.MatchString(task.ID) || !artifactTaskRefPattern.MatchString(task.Ref) ||
+		task.ActorUID <= 0 || task.AgentUID <= 0 || task.TopicID == "" ||
+		!validArtifactID(task.Artifact.ID) || task.DisplayedVersion <= 0 ||
+		!artifactResultSinkIDPattern.MatchString(task.Intent.ResultSink) ||
+		task.PreviewRoute.NodeID == "" || task.PreviewRoute.ConnectionID == "" {
+		return artifactWritebackTarget{}, errors.New("invalid Artifact task writeback target")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	s.cleanupLocked(now)
+	if invalidUntil := s.invalidatedTasks[task.ID]; !invalidUntil.IsZero() && now.Before(invalidUntil) {
+		return artifactWritebackTarget{}, errors.New("Artifact task is no longer active")
+	}
+	if ref := s.byTask[task.ID]; ref != "" {
+		if target, ok := s.tickets[ref]; ok && now.Before(target.ExpiresAt) &&
+			target.TaskRef == task.Ref && target.ActorUID == task.ActorUID && target.TopicID == task.TopicID &&
+			target.AgentUID == task.AgentUID && target.ArtifactID == task.Artifact.ID &&
+			target.DisplayedVersion == task.DisplayedVersion && target.ResultSink == task.Intent.ResultSink &&
+			target.PreviewRoute.matches(task.PreviewRoute) {
+			return target, nil
+		}
+	}
+	if len(s.tickets) >= s.maxEntries {
+		return artifactWritebackTarget{}, errors.New("Artifact writeback target store is full")
+	}
+	ref, err := newArtifactResultOpaqueRef("awr_")
+	if err != nil {
+		return artifactWritebackTarget{}, err
+	}
+	// A task-bound target remains usable for the task's full connected lifetime.
+	// Ordinary V3.2 snapshot targets keep the shorter ticketTTL above.
+	expiresAt := task.ExpiresAt
+	target := artifactWritebackTarget{
+		Ref:              ref,
+		TaskID:           task.ID,
+		TaskRef:          task.Ref,
+		ActorUID:         task.ActorUID,
+		TopicID:          task.TopicID,
+		AgentUID:         task.AgentUID,
+		ArtifactID:       task.Artifact.ID,
+		DisplayedVersion: task.DisplayedVersion,
+		ResultSink:       task.Intent.ResultSink,
+		PreviewRoute:     task.PreviewRoute,
+		CreatedAt:        now,
+		ExpiresAt:        expiresAt,
+	}
+	s.tickets[target.Ref] = target
+	s.byTask[target.TaskID] = target.Ref
+	return target, nil
+}
+
 func (s *artifactResultWritebackStore) target(ref string) (artifactWritebackTarget, bool) {
 	if s == nil || !artifactWritebackRefPattern.MatchString(ref) {
 		return artifactWritebackTarget{}, false
@@ -268,6 +366,29 @@ func (s *artifactResultWritebackStore) invalidateContext(contextRef string) {
 		s.completeLocked(delivery, artifactResultDeliveryOutcome{
 			Status: "target_mismatch",
 			Code:   "artifact_preview_changed",
+		})
+	}
+}
+
+func (s *artifactResultWritebackStore) invalidateTask(taskID string) {
+	if s == nil || !artifactTaskIDPattern.MatchString(taskID) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	s.cleanupLocked(now)
+	s.invalidatedTasks[taskID] = now.Add(s.ticketTTL)
+	ref := s.byTask[taskID]
+	delete(s.byTask, taskID)
+	delete(s.tickets, ref)
+	for _, delivery := range s.deliveries {
+		if delivery.Completed || delivery.SendClaimed || delivery.Target.TaskID != taskID {
+			continue
+		}
+		s.completeLocked(delivery, artifactResultDeliveryOutcome{
+			Status: "target_mismatch",
+			Code:   "artifact_task_closed",
 		})
 	}
 }
@@ -372,6 +493,7 @@ func (s *artifactResultWritebackStore) completeReceipt(msg *MsgArtifactResult, r
 	target := delivery.Target
 	actorUID, _ := strconv.ParseInt(msg.ActorUID, 10, 64)
 	if actorUID != target.ActorUID || msg.ContextRef != target.ContextRef ||
+		msg.TaskID != target.TaskID ||
 		msg.WritebackRef != target.Ref || msg.TopicID != target.TopicID ||
 		msg.AgentUID != strconv.FormatInt(target.AgentUID, 10) ||
 		msg.ArtifactID != target.ArtifactID || msg.DisplayedVersion != target.DisplayedVersion {
@@ -441,13 +563,21 @@ func (s *artifactResultWritebackStore) cleanupLocked(now time.Time) {
 			delete(s.invalidated, contextRef)
 		}
 	}
+	for taskID, expiresAt := range s.invalidatedTasks {
+		if !now.Before(expiresAt) {
+			delete(s.invalidatedTasks, taskID)
+		}
+	}
 	for ref, target := range s.tickets {
 		if now.Before(target.ExpiresAt) {
 			continue
 		}
 		delete(s.tickets, ref)
-		if s.byContext[target.ContextRef] == ref {
+		if target.ContextRef != "" && s.byContext[target.ContextRef] == ref {
 			delete(s.byContext, target.ContextRef)
+		}
+		if target.TaskID != "" && s.byTask[target.TaskID] == ref {
+			delete(s.byTask, target.TaskID)
 		}
 	}
 	for resultID, delivery := range s.deliveries {
@@ -510,7 +640,8 @@ func (h *ArtifactResultHandler) HandleBotResults(w http.ResponseWriter, r *http.
 		return
 	}
 	if target.AgentUID != botUID || target.ArtifactID != request.ArtifactID ||
-		target.DisplayedVersion != request.DisplayedVersion {
+		target.DisplayedVersion != request.DisplayedVersion || target.TaskID != request.TaskID ||
+		(target.ResultSink != "" && target.ResultSink != request.SinkID) {
 		writeArtifactResultDelivery(w, http.StatusForbidden, request.ResultID, artifactResultDeliveryOutcome{
 			Status: "target_mismatch",
 			Code:   "artifact_result_target_mismatch",
@@ -563,6 +694,7 @@ func (h *ArtifactResultHandler) HandleBotResults(w http.ResponseWriter, r *http.
 				OriginNodeID:          h.hub.nodeID,
 				ActorUID:              strconv.FormatInt(target.ActorUID, 10),
 				ContextRef:            target.ContextRef,
+				TaskID:                target.TaskID,
 				WritebackRef:          target.Ref,
 				TopicID:               target.TopicID,
 				AgentUID:              strconv.FormatInt(target.AgentUID, 10),
@@ -606,13 +738,16 @@ func (h *ArtifactResultHandler) HandleBotResults(w http.ResponseWriter, r *http.
 			Code:   "artifact_result_outcome_unavailable",
 		}
 	}
+	if target.TaskID != "" && h.hub.artifactTasks != nil {
+		h.hub.artifactTasks.completeResult(target.TaskID, request.ResultID, outcome)
+	}
 	writeArtifactResultDelivery(w, http.StatusOK, request.ResultID, outcome)
 }
 
 func (h *Hub) handleArtifactResultReceipt(client *Client, msg *MsgArtifactResult) {
 	if h == nil || client == nil || msg == nil || client.accountType != types.AccountHuman ||
 		strings.TrimSpace(msg.Type) != "receipt" || !artifactRuntimeNodePattern.MatchString(msg.OriginNodeID) ||
-		!artifactContextRefPattern.MatchString(msg.ContextRef) ||
+		!validArtifactResultCorrelation(msg.ContextRef, msg.TaskID) ||
 		!artifactWritebackRefPattern.MatchString(msg.WritebackRef) ||
 		!artifactResultIDPattern.MatchString(msg.ResultID) || !validArtifactID(msg.ArtifactID) ||
 		msg.DisplayedVersion <= 0 || len(msg.Receipt) == 0 || len(msg.Receipt) > artifactResultReceiptMaxBytes {
@@ -623,6 +758,7 @@ func (h *Hub) handleArtifactResultReceipt(client *Client, msg *MsgArtifactResult
 		OriginNodeID:     msg.OriginNodeID,
 		ActorUID:         strconv.FormatInt(client.uid, 10),
 		ContextRef:       msg.ContextRef,
+		TaskID:           msg.TaskID,
 		WritebackRef:     msg.WritebackRef,
 		TopicID:          strings.TrimSpace(msg.TopicID),
 		AgentUID:         strings.TrimSpace(msg.AgentUID),
@@ -642,8 +778,16 @@ func (h *Hub) handleArtifactResultReceipt(client *Client, msg *MsgArtifactResult
 }
 
 func (h *Hub) acceptArtifactResultReceipt(msg *MsgArtifactResult, sourceRoute runtimeRoute) bool {
-	return h != nil && h.artifactResultWritebacks != nil &&
-		h.artifactResultWritebacks.completeReceipt(msg, msg.Receipt, sourceRoute)
+	if h == nil || h.artifactResultWritebacks == nil ||
+		!h.artifactResultWritebacks.completeReceipt(msg, msg.Receipt, sourceRoute) {
+		return false
+	}
+	if msg.TaskID != "" && h.artifactTasks != nil {
+		if outcome, ok := h.artifactResultWritebacks.outcome(msg.ResultID); ok {
+			h.artifactTasks.completeResult(msg.TaskID, msg.ResultID, outcome)
+		}
+	}
+	return true
 }
 
 func (h *Hub) sendArtifactResultToLocalRoute(route runtimeRoute, msg *MsgArtifactResult) bool {
@@ -683,6 +827,7 @@ func decodeArtifactResultSubmitRequest(w http.ResponseWriter, r *http.Request) (
 	}
 	if request.ContractVersion != artifactResultContract ||
 		!artifactWritebackRefPattern.MatchString(request.WritebackRef) ||
+		(request.TaskID != "" && !artifactTaskIDPattern.MatchString(request.TaskID)) ||
 		!validArtifactID(request.ArtifactID) || request.DisplayedVersion <= 0 ||
 		!artifactResultSinkIDPattern.MatchString(request.SinkID) ||
 		!artifactResultIDPattern.MatchString(request.ResultID) ||
@@ -798,6 +943,13 @@ func validArtifactResultRevision(value string) bool {
 		!strings.ContainsAny(value, "\x00\r\n"))
 }
 
+func validArtifactResultCorrelation(contextRef, taskID string) bool {
+	if taskID != "" {
+		return contextRef == "" && artifactTaskIDPattern.MatchString(taskID)
+	}
+	return artifactContextRefPattern.MatchString(contextRef)
+}
+
 func validArtifactResultMessage(value string) bool {
 	return value == "" || (value == strings.TrimSpace(value) && utf8.RuneCountInString(value) <= 2_000 &&
 		!strings.ContainsAny(value, "\x00\r\n"))
@@ -808,6 +960,7 @@ func hashArtifactResultRequest(request artifactResultSubmitRequest, target artif
 		ActorUID              int64           `json:"actor_uid"`
 		TopicID               string          `json:"topic_id"`
 		AgentUID              int64           `json:"agent_uid"`
+		TaskID                string          `json:"task_id,omitempty"`
 		ArtifactID            string          `json:"artifact_id"`
 		DisplayedVersion      int64           `json:"displayed_version"`
 		SinkID                string          `json:"sink_id"`
@@ -818,6 +971,7 @@ func hashArtifactResultRequest(request artifactResultSubmitRequest, target artif
 		ActorUID:              target.ActorUID,
 		TopicID:               target.TopicID,
 		AgentUID:              target.AgentUID,
+		TaskID:                target.TaskID,
 		ArtifactID:            request.ArtifactID,
 		DisplayedVersion:      request.DisplayedVersion,
 		SinkID:                request.SinkID,
