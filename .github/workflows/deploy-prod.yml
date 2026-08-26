@@ -63,12 +63,17 @@ jobs:
           cp deploy/prod/ensure-image-timeout-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-v1-timeout.py "${tmpdir}/compose/"
           cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"
+          cp deploy/prod/ensure-public-website-nginx.sh "${tmpdir}/compose/"
+          cp deploy/prod/ensure-preview-website-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"
           cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
           cp deploy/prod/sync-worker-project-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
+          cp deploy/tencent/nginx/catscompany-app.conf "${tmpdir}/compose/"
+          cp deploy/tencent/nginx/catsco-public.conf "${tmpdir}/compose/"
+          cp deploy/tencent/nginx/catsco-preview.conf "${tmpdir}/compose/"
           cp deploy/prod/tinode.prod.conf "${tmpdir}/compose/"
           cp deploy/prod/env.prod.example "${tmpdir}/env/"
           tar -C "${tmpdir}" -czf prod-stack-files.tar.gz .
@@ -141,7 +146,7 @@ jobs:
             mv "$artifact_nodes_temp" "$root/secrets/artifact-nodes.json"
             export CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
           fi
-          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh" "$root/compose/ensure-public-website-nginx.sh" "$root/compose/ensure-preview-website-nginx.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
@@ -149,6 +154,14 @@ jobs:
           "$root/compose/remote-deploy.sh" "$root" "$revision"
           sudo "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app
           sudo "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
+          # Preview is an independent vhost and only activates after its own
+          # certificate and the website health check.
+          "$root/compose/ensure-preview-website-nginx.sh" "$root"
+          # Once preview is healthy, make the temporary root-domain behavior
+          # explicit: catsco.cc/www redirect there, while app/relay vhosts are
+          # left untouched. This helper is fail-closed and restores configs on
+          # nginx validation failure.
+          "$root/compose/ensure-public-website-nginx.sh" "$root"
           "$root/compose/remote-status.sh" "$root"
           EOF
 

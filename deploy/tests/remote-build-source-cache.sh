@@ -72,11 +72,12 @@ printf 'preserve\n' > "$cache_root/source/$revision/reuse-marker"
 second_output="$(run_build "$revision" local 2>&1)"
 fallback_output="$(run_build "$fallback_revision" pull 2>&1)"
 
-[ "$(grep -c '^build ' "$docker_log")" -eq 6 ]
-[ "$(grep -c '^pull ' "$docker_log")" -eq 1 ]
+[ "$(grep -c '^build ' "$docker_log")" -eq 8 ]
+[ "$(grep -c '^pull ' "$docker_log")" -eq 2 ]
 [ -f "$cache_root/source/$revision/reuse-marker" ]
 grep -q 'Building web image locally' <<<"$first_output"
 grep -q 'timed out after 120s' <<<"$fallback_output"
+grep -q 'Website image pull failed' <<<"$fallback_output"
 grep -q 'Source tree already present' <<<"$second_output"
 grep -q 'Server image already present' <<<"$second_output"
 grep -q 'Dreamina worker image already present' <<<"$second_output"

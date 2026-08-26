@@ -255,6 +255,19 @@ services:
     networks:
       - prodnet
 
+  website:
+    image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-website:${IMAGE_TAG}"
+    restart: unless-stopped
+    ports:
+      - "${PROD_WEBSITE_BIND_HOST:-127.0.0.1}:${PROD_WEBSITE_HOST_PORT:-28081}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/health | grep -qx ok"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - prodnet
+
 networks:
   prodnet:
     name: catscompany_prod_net

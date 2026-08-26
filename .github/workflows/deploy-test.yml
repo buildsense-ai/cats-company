@@ -48,6 +48,16 @@ jobs:
             REACT_APP_API_BASE=
           tags: ghcr.io/${{ github.repository_owner }}/cats-company-web:${{ github.sha }}
 
+      - name: Build and push public website image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.website
+          push: true
+          build-args: |
+            VITE_APP_BASE_URL=https://app.catsco.cc
+          tags: ghcr.io/${{ github.repository_owner }}/cats-company-website:${{ github.sha }}
+
       - name: Prepare SSH key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -136,6 +146,7 @@ jobs:
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           export REMOTE_WEB_IMAGE_MODE=local
+          export REMOTE_WEBSITE_IMAGE_MODE=pull
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"
