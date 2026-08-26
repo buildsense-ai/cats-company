@@ -2513,7 +2513,7 @@ describe('ChatMessage rich file rendering', () => {
 
       expect(share).toHaveBeenCalledWith({
         title: 'report.pdf',
-        url: new URL('/uploads/files/report.pdf', window.location.href).toString(),
+        url: new URL('/uploads/files/report.pdf?preview=1&name=report.pdf', window.location.href).toString(),
       });
     } finally {
       if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
@@ -2572,7 +2572,7 @@ describe('ChatMessage rich file rendering', () => {
 
       expect(share).toHaveBeenCalledWith({
         title: 'report.html',
-        url: new URL('/uploads/files/report.html', window.location.href).toString(),
+        url: new URL('/uploads/files/report.html?preview=1&name=report.html', window.location.href).toString(),
       });
     } finally {
       if (originalShare) Object.defineProperty(navigator, 'share', originalShare);

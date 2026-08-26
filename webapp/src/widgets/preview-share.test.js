@@ -17,7 +17,7 @@ describe('sharePreviewLink', () => {
     expect(result).toMatchObject({ status: 'shared', method: 'native' });
     expect(share).toHaveBeenCalledWith({
       title: 'report.pdf',
-      url: new URL('/uploads/files/report.pdf', window.location.href).toString(),
+      url: new URL('/uploads/files/report.pdf?preview=1&name=report.pdf', window.location.href).toString(),
     });
     expect(share.mock.calls[0][0].url).not.toContain('download=1');
     expect(navigatorLike.clipboard.writeText).not.toHaveBeenCalled();
@@ -34,7 +34,7 @@ describe('sharePreviewLink', () => {
 
     expect(result).toMatchObject({ status: 'copied', method: 'clipboard' });
     expect(writeText).toHaveBeenCalledWith(
-      new URL('/uploads/files/report.html', window.location.href).toString(),
+      new URL('/uploads/files/report.html?preview=1&name=report.html', window.location.href).toString(),
     );
   });
 

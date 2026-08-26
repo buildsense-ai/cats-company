@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"mime"
@@ -34,6 +35,7 @@ const (
 	rawUploadQueryValue       = "1"
 	rawUploadFileNameHeader   = "X-CatsCo-File-Name"
 	rawUploadFileSizeHeader   = "X-CatsCo-File-Size"
+	uploadPreviewQueryParam   = "preview"
 	uploadIncompleteCode      = "upload_incomplete"
 	uploadInvalidRequestCode  = "upload_invalid_request"
 	uploadMetadataInvalidCode = "upload_metadata_invalid"
@@ -548,8 +550,17 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cache-Control", "no-store")
 	forceDownload := r.URL.Query().Get("download") == "1"
+	if !forceDownload && r.URL.Query().Get(uploadPreviewQueryParam) == "1" {
+		if subDir != "files" || (!strings.EqualFold(ext, ".pdf") && !isHTMLUploadExtension(ext)) {
+			http.NotFound(w, r)
+			return
+		}
+		serveUploadPreviewPage(w, r, fileName, ext)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
 	if forceDownload {
 		w.Header().Set("Content-Disposition", "attachment")
 	}
@@ -569,6 +580,135 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	http.ServeFile(w, r, fullPath)
+}
+
+func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ext string) {
+	name := sanitizeUploadPreviewName(r.URL.Query().Get("name"))
+	if name == "" {
+		name = fileName
+	}
+	kind := "PDF"
+	if isHTMLUploadExtension(ext) {
+		kind = "HTML"
+	}
+
+	resourceURL := r.URL.Path
+	downloadURL := resourceURL + "?download=1"
+	pageURL := r.URL.RequestURI()
+	ogImageURL := requestAbsoluteURL(r, "/pwa-512x512.png")
+	canonicalURL := requestAbsoluteURL(r, pageURL)
+	escapedName := html.EscapeString(name)
+	escapedKind := html.EscapeString(kind)
+	escapedResourceURL := html.EscapeString(resourceURL)
+	escapedDownloadURL := html.EscapeString(downloadURL)
+	escapedPageURL := html.EscapeString(canonicalURL)
+	escapedOGImageURL := html.EscapeString(ogImageURL)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	_, _ = fmt.Fprintf(w, `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>%s</title>
+  <link rel="canonical" href="%s">
+  <meta name="description" content="在 CatsCo 中预览 %s 文件。">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="CatsCo">
+  <meta property="og:title" content="%s">
+  <meta property="og:description" content="在 CatsCo 中预览 %s 文件。">
+  <meta property="og:url" content="%s">
+  <meta property="og:image" content="%s">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:image:alt" content="CatsCo 文件预览">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="%s">
+  <meta name="twitter:description" content="在 CatsCo 中预览 %s 文件。">
+  <meta name="twitter:image" content="%s">
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f3f7f5; color: #243a33; }
+    main { display: grid; gap: 16px; min-height: 100vh; box-sizing: border-box; padding: 24px; }
+    header { display: grid; gap: 4px; }
+    h1 { margin: 0; font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
+    p { margin: 0; color: #60716b; font-size: 14px; }
+    iframe { display: block; width: 100%%; min-height: min(72vh, 900px); border: 0; border-radius: 12px; background: #fdfefd; }
+    nav { display: flex; flex-wrap: wrap; gap: 12px; }
+    a { display: inline-flex; align-items: center; min-height: 40px; box-sizing: border-box; padding: 0 16px; border-radius: 10px; background: #fdfefd; color: #176b57; font-weight: 600; text-decoration: none; }
+    a[download] { background: #176b57; color: #fdfefd; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>%s</h1>
+      <p>%s 文件预览</p>
+    </header>
+    <iframe src="%s" title="%s"%s></iframe>
+    <nav aria-label="文件操作">
+      <a href="%s" target="_blank" rel="noopener noreferrer">打开原文件</a>
+      <a href="%s" download>下载文件</a>
+    </nav>
+  </main>
+</body>
+</html>
+`, escapedName, escapedPageURL, escapedKind, escapedName, escapedKind, escapedPageURL, escapedOGImageURL,
+		escapedName, escapedKind, escapedOGImageURL, escapedName, escapedKind, escapedResourceURL,
+		escapedName, htmlAttributeForUploadPreview(ext), escapedResourceURL, escapedDownloadURL)
+}
+
+func htmlAttributeForUploadPreview(ext string) string {
+	if isHTMLUploadExtension(ext) {
+		return ` sandbox="allow-scripts allow-forms allow-popups allow-modals"`
+	}
+	return ""
+}
+
+func sanitizeUploadPreviewName(value string) string {
+	value = strings.Map(func(char rune) rune {
+		if char < 0x20 || char == 0x7f {
+			return -1
+		}
+		return char
+	}, strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > 240 {
+		value = string(runes[:240])
+	}
+	return value
+}
+
+func requestAbsoluteURL(r *http.Request, path string) string {
+	if r == nil {
+		return path
+	}
+	host := strings.TrimSpace(r.Host)
+	if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
+	if host == "" {
+		return path
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto"))); forwardedProto == "http" || forwardedProto == "https" {
+		scheme = forwardedProto
+	}
+	return scheme + "://" + host + path
 }
 
 func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {

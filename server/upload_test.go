@@ -407,6 +407,123 @@ func TestHandleServeFileServesHTMLFilesInlineWithSandbox(t *testing.T) {
 	}
 }
 
+func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
+	for _, ext := range []string{".pdf", ".html"} {
+		t.Run(ext, func(t *testing.T) {
+			dir := t.TempDir()
+			fileName := "20260428_0123456789abcdef0123456789abcdef" + ext
+			fullPath := filepath.Join(dir, "files", fileName)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("file body must not be rendered as the share page"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			handler := NewUploadHandler(dir, "/uploads")
+			friendlyName := "学情报告" + ext
+			requestPath := "/uploads/files/" + fileName + "?preview=1&name=" + url.QueryEscape(friendlyName)
+			recorder := httptest.NewRecorder()
+			handler.HandleServeFile(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+				t.Fatalf("Content-Type = %q, want HTML", got)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=300" {
+				t.Fatalf("Cache-Control = %q, want public preview caching", got)
+			}
+			if got := recorder.Header().Get("Content-Disposition"); got != "" {
+				t.Fatalf("Content-Disposition = %q, want empty for preview page", got)
+			}
+
+			body := recorder.Body.String()
+			for _, expected := range []string{
+				"<title>学情报告" + ext + "</title>",
+				"<meta property=\"og:title\" content=\"学情报告" + ext + "\">",
+				"<meta property=\"og:image\" content=\"http://example.com/pwa-512x512.png\">",
+				"/uploads/files/" + fileName,
+				"/uploads/files/" + fileName + "?download=1",
+			} {
+				if !strings.Contains(body, expected) {
+					t.Fatalf("body missing %q: %s", expected, body)
+				}
+			}
+			if strings.Contains(body, "file body must not be rendered") {
+				t.Fatal("preview page rendered the uploaded file body")
+			}
+			if ext == ".html" && !strings.Contains(body, `sandbox="allow-scripts allow-forms allow-popups allow-modals"`) {
+				t.Fatal("HTML preview iframe is not sandboxed")
+			}
+		})
+	}
+}
+
+func TestHandleServeFileKeepsDownloadSemanticsWhenPreviewIsRequested(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("pdf bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	recorder := httptest.NewRecorder()
+	handler.HandleServeFile(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?preview=1&download=1", nil),
+	)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Header().Get("Content-Disposition"); got != "attachment" {
+		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/pdf" {
+		t.Fatalf("Content-Type = %q, want application/pdf", got)
+	}
+}
+
+func TestHandleServeFileEscapesPreviewNameInHTMLMetadata(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.pdf"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("pdf bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	recorder := httptest.NewRecorder()
+	handler.HandleServeFile(
+		recorder,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/uploads/files/"+fileName+"?preview=1&name="+url.QueryEscape(`<script>alert('x')</script>.pdf`),
+			nil,
+		),
+	)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;.pdf") {
+		t.Fatalf("escaped preview name missing from HTML: %s", body)
+	}
+	if strings.Contains(body, "<script>alert('x')</script>") {
+		t.Fatal("preview name was rendered as executable HTML")
+	}
+}
+
 func TestHandleServeFileForcesHTMLDownloadWithoutSandbox(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.html"
