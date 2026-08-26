@@ -443,7 +443,7 @@ describe('artifact context snapshot handoff', () => {
     });
   });
 
-  it('supports opaque same-origin Artifact iframes for result writeback', async () => {
+  it('does not send result writeback to an opaque same-origin Artifact iframe', async () => {
     const delivery = normalizeArtifactResultDelivery({
       type: 'request',
       origin_node_id: 'catsco-node-1',
@@ -457,31 +457,8 @@ describe('artifact context snapshot handoff', () => {
       result_id: `arr_${'r'.repeat(43)}`,
       payload: { items: [{ title: '同源结果' }] },
     });
-    const frameWindow = {
-      postMessage(message, targetOrigin) {
-        expect(targetOrigin).toBe('*');
-        expect(message.result.writeback_ref).toBeUndefined();
-        window.setTimeout(() => {
-          const event = new Event('message');
-          Object.defineProperties(event, {
-            source: { value: frameWindow },
-            origin: { value: 'null' },
-            data: {
-              value: {
-                type: ARTIFACT_RESULT_RESPONSE_TYPE,
-                request_id: message.request_id,
-                receipt: {
-                  contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
-                  result_id: delivery.resultId,
-                  status: 'applied',
-                },
-              },
-            },
-          });
-          window.dispatchEvent(event);
-        }, 0);
-      },
-    };
+    const postMessage = vi.fn();
+    const frameWindow = { postMessage };
     const receipt = await requestArtifactResultApply({
       frame: { contentWindow: frameWindow },
       artifactId: 'same-origin-game',
@@ -489,7 +466,8 @@ describe('artifact context snapshot handoff', () => {
       url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
     }, delivery, 50);
 
-    expect(receipt?.status).toBe('applied');
+    expect(receipt).toBeNull();
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it('rejects malformed result routes and keeps a bridge timeout non-terminal', async () => {

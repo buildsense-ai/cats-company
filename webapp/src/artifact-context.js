@@ -58,6 +58,7 @@ function artifactFrameMessagePolicy(url) {
   return {
     targetOrigin: isOpaqueSameOriginFrame ? '*' : frameOrigin,
     responseOrigin: isOpaqueSameOriginFrame ? 'null' : frameOrigin,
+    isOpaque: isOpaqueSameOriginFrame,
   };
 }
 
@@ -234,6 +235,11 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
 
   const messagePolicy = artifactFrameMessagePolicy(binding.url);
   if (!messagePolicy) return null;
+  // An opaque sandbox origin has no serializable targetOrigin. Sending a
+  // result payload with `*` would allow a navigated document in the same
+  // WindowProxy to receive the writeback. Context requests carry no user
+  // data, but result writeback is deliberately unavailable for this case.
+  if (messagePolicy.isOpaque) return null;
   const requestId = artifactContextRequestId();
   const boundedTimeout = Number.isFinite(timeoutMs)
     ? Math.max(100, Math.min(20_000, Math.round(timeoutMs)))
