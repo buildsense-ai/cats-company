@@ -46,11 +46,20 @@ var (
 
 type artifactTaskState string
 
+type artifactTaskFailOutcome uint8
+
 const (
 	artifactTaskSubmitted artifactTaskState = "submitted"
 	artifactTaskRunning   artifactTaskState = "running"
 	artifactTaskCompleted artifactTaskState = "completed"
 	artifactTaskFailed    artifactTaskState = "failed"
+)
+
+const (
+	artifactTaskFailNotFound artifactTaskFailOutcome = iota
+	artifactTaskFailApplied
+	artifactTaskFailDeliveryPending
+	artifactTaskFailDeliveryCommitted
 )
 
 type artifactTask struct {
@@ -473,8 +482,22 @@ func (s *artifactTaskStore) completeResult(taskID, resultID string, outcome arti
 }
 
 func (s *artifactTaskStore) failForActor(taskID string, actorUID int64, code, message string) bool {
+	return s.failForActorWithClaimPolicy(taskID, actorUID, code, message, false) == artifactTaskFailApplied
+}
+
+func (s *artifactTaskStore) requestFailForActor(taskID string, actorUID int64, code, message string) artifactTaskFailOutcome {
+	return s.failForActorWithClaimPolicy(taskID, actorUID, code, message, true)
+}
+
+func (s *artifactTaskStore) failForActorWithClaimPolicy(
+	taskID string,
+	actorUID int64,
+	code string,
+	message string,
+	preserveClaim bool,
+) artifactTaskFailOutcome {
 	if s == nil || !artifactTaskIDPattern.MatchString(taskID) || actorUID <= 0 {
-		return false
+		return artifactTaskFailNotFound
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -482,10 +505,18 @@ func (s *artifactTaskStore) failForActor(taskID string, actorUID int64, code, me
 	s.cleanupLocked(now)
 	task := s.byID[taskID]
 	if task == nil || task.ActorUID != actorUID || artifactTaskTerminal(task.Status) {
-		return false
+		return artifactTaskFailNotFound
+	}
+	if preserveClaim {
+		if task.Delivered {
+			return artifactTaskFailDeliveryCommitted
+		}
+		if task.DeliveryClaimed {
+			return artifactTaskFailDeliveryPending
+		}
 	}
 	s.failLocked(task, code, message, now)
-	return true
+	return artifactTaskFailApplied
 }
 
 func (s *artifactTaskStore) failLocked(task *artifactTask, code, message string, now time.Time) {
@@ -804,8 +835,35 @@ func (h *ArtifactTaskHandler) handleDeliveryFailure(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Artifact task"})
 		return
 	}
-	if h == nil || h.hub == nil || h.hub.artifactTasks == nil ||
-		!h.hub.artifactTasks.failForActor(request.TaskID, actorUID, "turn_delivery_failed", "Artifact task could not be delivered to the conversation") {
+	if h == nil || h.hub == nil || h.hub.artifactTasks == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Artifact task not found"})
+		return
+	}
+	failOutcome := h.hub.artifactTasks.requestFailForActor(
+		request.TaskID,
+		actorUID,
+		"turn_delivery_failed",
+		"Artifact task could not be delivered to the conversation",
+	)
+	if failOutcome == artifactTaskFailDeliveryPending {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":           "Artifact task delivery is still in progress",
+			"code":            "artifact_task_delivery_pending",
+			"delivery_status": "pending",
+			"task_id":         request.TaskID,
+		})
+		return
+	}
+	if failOutcome == artifactTaskFailDeliveryCommitted {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":           "Artifact task turn was already delivered",
+			"code":            "artifact_task_delivery_committed",
+			"delivery_status": "delivered",
+			"task_id":         request.TaskID,
+		})
+		return
+	}
+	if failOutcome != artifactTaskFailApplied {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Artifact task not found"})
 		return
 	}

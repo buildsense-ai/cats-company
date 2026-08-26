@@ -4848,7 +4848,15 @@ describe('MessagesView composer draft isolation', () => {
       visible_message: '来自「任务看板」：创建任务',
       expires_at: '2026-08-26T12:00:00Z',
     });
-    api.getArtifactTask.mockResolvedValue({
+    const pendingTaskStatus = {
+      contract_version: 'catsco.artifact-task-status.v1',
+      task_id: taskId,
+      status: 'submitted',
+      delivery_status: 'pending',
+      updated_at: '2026-08-26T03:00:00Z',
+      expires_at: '2026-08-26T12:00:00Z',
+    };
+    const deliveredTaskStatus = {
       contract_version: 'catsco.artifact-task-status.v1',
       task_id: taskId,
       status: 'running',
@@ -4856,8 +4864,22 @@ describe('MessagesView composer draft isolation', () => {
       run_id: 'run-42',
       updated_at: '2026-08-26T03:00:01Z',
       expires_at: '2026-08-26T12:00:00Z',
+    };
+    let taskStatusReads = 0;
+    api.getArtifactTask.mockImplementation(async () => {
+      taskStatusReads += 1;
+      return taskStatusReads <= 6 ? pendingTaskStatus : deliveredTaskStatus;
     });
-    api.sendMessage.mockRejectedValueOnce(new TypeError('response connection closed'));
+    api.sendMessage
+      .mockRejectedValueOnce(new TypeError('response connection closed'))
+      .mockRejectedValueOnce(new TypeError('response connection still closed'));
+    api.failArtifactTask.mockRejectedValueOnce(Object.assign(
+      new Error('Artifact task delivery is still in progress'),
+      {
+        status: 409,
+        data: { code: 'artifact_task_delivery_pending', delivery_status: 'pending' },
+      },
+    ));
 
     await mountTopic(root, 'p2p_1_440', {
       cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
@@ -4912,7 +4934,10 @@ describe('MessagesView composer draft isolation', () => {
         intent_id: 'tasks.create.v1',
         payload: { title: '准备发布清单' },
       });
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await vi.waitFor(() => {
+        expect(posted.some(message => message.type === 'catsco.artifact.task.status.v1'
+          && message.task?.delivery_status === 'delivered')).toBe(true);
+      }, { timeout: 3000 });
       await flushPromises();
     });
 
@@ -4936,14 +4961,26 @@ describe('MessagesView composer draft isolation', () => {
       client_msg_id: `artifact-task:${taskId}`,
       metadata: { artifact_task_ref: taskRef },
     });
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    expect(api.failArtifactTask).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(api.failArtifactTask).toHaveBeenCalledWith(taskId, { timeoutMs: 5000 });
     const accepted = posted.find(message => message.type === 'catsco.artifact.task.accepted.v1');
     expect(accepted).toMatchObject({
       request_id: 'task-request-42',
-      task: { task_id: taskId, status: 'submitted' },
+      task: { task_id: taskId, status: 'submitted', delivery_status: 'pending' },
     });
     expect(JSON.stringify(accepted)).not.toContain(taskRef);
+    expect(posted).toContainEqual(expect.objectContaining({
+      type: 'catsco.artifact.task.status.v1',
+      task: expect.objectContaining({
+        task_id: taskId,
+        status: 'running',
+        delivery_status: 'delivered',
+      }),
+    }));
+    expect(posted).not.toContainEqual(expect.objectContaining({
+      type: 'catsco.artifact.task.rejected.v1',
+      request_id: 'task-request-42',
+    }));
 
     await act(async () => {
       wsHandler({

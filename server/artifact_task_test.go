@@ -20,6 +20,7 @@ type artifactTaskIntentResolverFunc func(context.Context, ArtifactContextRecord,
 type artifactTaskMessageStore struct {
 	*agentIdentityE2EStore
 	messageIDs map[string]int64
+	beforeSave func()
 }
 
 func (s *artifactTaskMessageStore) SaveMessageIdempotent(
@@ -31,6 +32,9 @@ func (s *artifactTaskMessageStore) SaveMessageIdempotent(
 	replyTo int64,
 	clientMsgID string,
 ) (int64, bool, error) {
+	if s.beforeSave != nil {
+		s.beforeSave()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := fmt.Sprintf("%s:%d:%s", topicID, fromUID, clientMsgID)
@@ -573,6 +577,156 @@ func TestArtifactTaskTurnFailsWhenOnlineAgentQueueRejectsDelivery(t *testing.T) 
 	failed, ok := hub.artifactTasks.forActor(task.ID, 7)
 	if !ok || failed.Status != artifactTaskFailed || failed.Code != "turn_delivery_failed" || failed.Delivered {
 		t.Fatalf("queue failure task = %#v ok=%v", failed, ok)
+	}
+}
+
+func TestArtifactTaskActorFailWaitsForClaimedDelivery(t *testing.T) {
+	baseDB := &agentIdentityE2EStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			440: {ID: 440, Username: "artifact-agent", AccountType: types.AccountBot},
+		},
+		owners:      map[int64]int64{440: 7},
+		friendPairs: map[string]bool{agentPairKey(7, 440): true},
+	}
+	saveStarted := make(chan struct{})
+	releaseSave := make(chan struct{})
+	var saveOnce sync.Once
+	db := &artifactTaskMessageStore{
+		agentIdentityE2EStore: baseDB,
+		beforeSave: func() {
+			saveOnce.Do(func() { close(saveStarted) })
+			<-releaseSave
+		},
+	}
+	hub := NewHub(db, nil)
+	bot := &Client{uid: 440, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	hub.addClient(bot)
+	task, err := hub.artifactTasks.create(testArtifactTaskCandidate(runtimeRoute{
+		NodeID: "preview-node", ConnectionID: "preview-connection",
+	}))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"topic_id":      task.TopicID,
+		"type":          "text",
+		"content":       "来自「任务看板」：创建任务",
+		"client_msg_id": "artifact-task:" + task.ID,
+		"metadata":      map[string]interface{}{artifactTaskRefMetadataKey: task.Ref},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body)))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(7)))
+	recorder := httptest.NewRecorder()
+	sendDone := make(chan struct{})
+	go func() {
+		NewMessageHandler(db, hub).HandleSendMessage(recorder, request)
+		close(sendDone)
+	}()
+
+	select {
+	case <-saveStarted:
+	case <-time.After(time.Second):
+		close(releaseSave)
+		t.Fatal("task delivery did not reach the delayed save")
+	}
+
+	failBody := fmt.Sprintf(`{"task_id":%q}`, task.ID)
+	failRequest := httptest.NewRequest(http.MethodDelete, "/api/artifact-tasks", strings.NewReader(failBody))
+	failRequest = failRequest.WithContext(context.WithValue(failRequest.Context(), uidKey, int64(7)))
+	failRecorder := httptest.NewRecorder()
+	NewArtifactTaskHandler(hub).HandleUserTasks(failRecorder, failRequest)
+	if failRecorder.Code != http.StatusConflict ||
+		!strings.Contains(failRecorder.Body.String(), "artifact_task_delivery_pending") {
+		close(releaseSave)
+		t.Fatalf("claimed fail status=%d body=%s", failRecorder.Code, failRecorder.Body.String())
+	}
+	pending, ok := hub.artifactTasks.forActor(task.ID, 7)
+	if !ok || pending.Status != artifactTaskSubmitted || !pending.DeliveryClaimed || pending.Delivered {
+		close(releaseSave)
+		t.Fatalf("claimed task changed state: %#v ok=%v", pending, ok)
+	}
+
+	close(releaseSave)
+	select {
+	case <-sendDone:
+	case <-time.After(time.Second):
+		t.Fatal("delayed task delivery did not finish")
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delayed delivery status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &delivered)
+	if delivered.Data == nil || delivered.Data.Metadata[artifactTaskRefMetadataKey] != task.Ref {
+		t.Fatalf("delayed Agent turn lost task ref: %#v", delivered.Data)
+	}
+	final, ok := hub.artifactTasks.forActor(task.ID, 7)
+	if !ok || final.Status != artifactTaskSubmitted || !final.Delivered || final.DeliveryClaimed {
+		t.Fatalf("delayed task final state = %#v ok=%v", final, ok)
+	}
+
+	committedFailRecorder := httptest.NewRecorder()
+	committedFailRequest := httptest.NewRequest(http.MethodDelete, "/api/artifact-tasks", strings.NewReader(failBody))
+	committedFailRequest = committedFailRequest.WithContext(context.WithValue(committedFailRequest.Context(), uidKey, int64(7)))
+	NewArtifactTaskHandler(hub).HandleUserTasks(committedFailRecorder, committedFailRequest)
+	if committedFailRecorder.Code != http.StatusConflict ||
+		!strings.Contains(committedFailRecorder.Body.String(), "artifact_task_delivery_committed") {
+		t.Fatalf("committed fail status=%d body=%s", committedFailRecorder.Code, committedFailRecorder.Body.String())
+	}
+	final, ok = hub.artifactTasks.forActor(task.ID, 7)
+	if !ok || final.Status != artifactTaskSubmitted || !final.Delivered || final.DeliveryClaimed {
+		t.Fatalf("committed task changed state = %#v ok=%v", final, ok)
+	}
+}
+
+func TestArtifactTaskInvalidDeliveryNeverFallsBackToOrdinaryAgentTurn(t *testing.T) {
+	baseDB := &agentIdentityE2EStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			440: {ID: 440, Username: "artifact-agent", AccountType: types.AccountBot},
+		},
+		owners:      map[int64]int64{440: 7},
+		friendPairs: map[string]bool{agentPairKey(7, 440): true},
+	}
+	hub := NewHub(&artifactTaskMessageStore{agentIdentityE2EStore: baseDB}, nil)
+	bot := &Client{uid: 440, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	hub.addClient(bot)
+	task, err := hub.artifactTasks.create(testArtifactTaskCandidate(runtimeRoute{
+		NodeID: "preview-node", ConnectionID: "preview-connection",
+	}))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	delivery, err := hub.artifactTasks.reserveDelivery(
+		task.Ref,
+		7,
+		task.TopicID,
+		440,
+		"artifact-task:"+task.ID,
+	)
+	if err != nil {
+		t.Fatalf("reserve delivery: %v", err)
+	}
+	if !hub.artifactTasks.failForActor(task.ID, task.ActorUID, "preview_disconnected", "preview disconnected") {
+		t.Fatal("delivery did not become terminal")
+	}
+	payload := &normalizedMessagePayload{
+		StoredContent:   `"来自「任务看板」：创建任务"`,
+		DisplayContent:  "来自「任务看板」：创建任务",
+		StoredType:      "text",
+		DisplayType:     "text",
+		ClientMsgID:     delivery.ClientMessageID,
+		Metadata:        map[string]interface{}{},
+		ArtifactTaskRef: delivery,
+	}
+	if hub.fanoutNormalizedMessage(7, task.TopicID, 0, payload, 1, nil) {
+		t.Fatal("terminal task delivery was reported as delivered")
+	}
+	select {
+	case message := <-bot.send:
+		t.Fatalf("terminal task reached Agent as an ordinary turn: %s", message)
+	default:
 	}
 }
 

@@ -306,6 +306,9 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 		if !h.isChannelManagedGroup(groupID) {
 			h.SendToUserExcept(uid, h.messageForRecipient(uid, uid, topicID, replyTo, payload, msgID), exclude)
 		}
+		// Recipient 0 is only a group-routing template. Preserve the reserved
+		// delivery candidate for per-Agent validation inside the broadcaster.
+		dataMsg.artifactTaskRef = payload.ArtifactTaskRef
 		taskDelivered := h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid, trustedChannelTrigger)
 		h.forwardChannelGroupBotReply(uid, topicID, payload, msgID)
 		return taskDelivered
@@ -323,10 +326,15 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	peerMessage := h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID)
 	taskDelivered := false
 	if payload.ArtifactTaskRef != nil && payload.ArtifactTaskRef.AgentUID == peerUID {
-		if payload.ArtifactTaskRef.AlreadyDelivered {
+		// A task candidate that lost validation must never degrade into an
+		// ordinary visible Agent turn.
+		if peerMessage == nil || peerMessage.artifactTaskRef == nil {
+			return false
+		}
+		if peerMessage.artifactTaskRef.AlreadyDelivered {
 			taskDelivered = true
 		} else if h.sendToUserExceptConfirmed(peerUID, peerMessage, nil) > 0 {
-			taskDelivered = h.artifactTasks.confirmDelivery(payload.ArtifactTaskRef)
+			taskDelivered = h.artifactTasks.confirmDelivery(peerMessage.artifactTaskRef)
 		}
 	} else {
 		h.SendToUser(peerUID, peerMessage)
@@ -398,9 +406,15 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		h.validatedArtifactContextDeliveryRef(uid, topicID, payload.ArtifactContextRef, recipientUID),
 		recipientUID,
 	)
+	validatedTaskDelivery := h.validatedArtifactTaskDeliveryRef(
+		uid,
+		topicID,
+		payload.ArtifactTaskRef,
+		recipientUID,
+	)
 	metadata = withArtifactTaskDeliveryRef(
 		metadata,
-		h.validatedArtifactTaskDeliveryRef(uid, topicID, payload.ArtifactTaskRef, recipientUID),
+		validatedTaskDelivery,
 		recipientUID,
 	)
 	return &ServerMessage{
@@ -419,7 +433,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		},
 		suppressPushNotification: suppressPushNotification,
 		artifactContextRef:       payload.ArtifactContextRef,
-		artifactTaskRef:          payload.ArtifactTaskRef,
+		artifactTaskRef:          validatedTaskDelivery,
 	}
 }
 

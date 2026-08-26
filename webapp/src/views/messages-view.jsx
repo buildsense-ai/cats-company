@@ -954,24 +954,38 @@ export default function MessagesView({
         if (deliveryStatus?.status === 'failed') break;
       }
       if (!delivered) {
-        activeArtifactTasksRef.current.delete(record.taskId);
         if (!artifactTaskBindingIsCurrent(record)) {
+          activeArtifactTasksRef.current.delete(record.taskId);
           await api.failArtifactTask(record.taskId, {
             timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
           }).catch(() => {});
           throw new Error('Artifact preview changed before task delivery');
         }
         const deliveryDefinitelyFailed = deliveryStatus?.status === 'failed';
+        let deliveryRemainsServerOwned = false;
         if (!deliveryDefinitelyFailed && deliveryStatus) {
-          await api.failArtifactTask(record.taskId, {
-            timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
-          }).catch(() => {});
+          try {
+            await api.failArtifactTask(record.taskId, {
+              timeoutMs: ARTIFACT_TASK_REQUEST_TIMEOUT_MS,
+            });
+          } catch (error) {
+            const deliveryConflict = error?.status === 409 ? error?.data : null;
+            if (deliveryConflict?.code === 'artifact_task_delivery_pending') {
+              deliveryRemainsServerOwned = true;
+            } else if (deliveryConflict?.code === 'artifact_task_delivery_committed') {
+              delivered = true;
+              deliveryRemainsServerOwned = true;
+            }
+          }
         }
-        throw deliveryError || new Error(
-          deliveryDefinitelyFailed
-            ? (deliveryStatus.message || 'Artifact task delivery failed')
-            : 'Artifact task delivery could not be confirmed',
-        );
+        if (!deliveryRemainsServerOwned) {
+          activeArtifactTasksRef.current.delete(record.taskId);
+          throw deliveryError || new Error(
+            deliveryDefinitelyFailed
+              ? (deliveryStatus.message || 'Artifact task delivery failed')
+              : 'Artifact task delivery could not be confirmed',
+          );
+        }
       }
 
       postArtifactTaskBridgeMessage(binding, {
@@ -981,6 +995,7 @@ export default function MessagesView({
           contract_version: 'catsco.artifact-task-status.v1',
           task_id: record.taskId,
           status: 'submitted',
+          delivery_status: delivered ? 'delivered' : 'pending',
           expires_at: created.expiresAt,
           updated_at: new Date().toISOString(),
         },

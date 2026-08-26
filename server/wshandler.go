@@ -2404,21 +2404,34 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				h.validatedArtifactContextDeliveryRef(senderUID, msg.Data.Topic, msg.artifactContextRef, m.UserID),
 				m.UserID,
 			)
+			validatedTaskDelivery := h.validatedArtifactTaskDeliveryRef(
+				senderUID,
+				msg.Data.Topic,
+				msg.artifactTaskRef,
+				m.UserID,
+			)
 			metadata = withArtifactTaskDeliveryRef(
 				metadata,
-				h.validatedArtifactTaskDeliveryRef(senderUID, msg.Data.Topic, msg.artifactTaskRef, m.UserID),
+				validatedTaskDelivery,
 				m.UserID,
 			)
 			out = cloneDataMessageWithMetadata(
 				msg,
 				metadata,
 			)
+			out.artifactTaskRef = validatedTaskDelivery
 		}
 		if msg != nil && msg.artifactTaskRef != nil && msg.artifactTaskRef.AgentUID == m.UserID {
-			if msg.artifactTaskRef.AlreadyDelivered {
+			// Never deliver a task-shaped message to its target Agent after the
+			// reserved delivery stopped validating; that would become an ordinary
+			// turn without artifact_task_ref.
+			if out == nil || out.artifactTaskRef == nil {
+				continue
+			}
+			if out.artifactTaskRef.AlreadyDelivered {
 				taskDelivered = true
 			} else if h.sendToUserExceptConfirmed(m.UserID, out, nil) > 0 {
-				taskDelivered = h.artifactTasks.confirmDelivery(msg.artifactTaskRef)
+				taskDelivered = h.artifactTasks.confirmDelivery(out.artifactTaskRef)
 			}
 		} else {
 			h.SendToUser(m.UserID, out)
