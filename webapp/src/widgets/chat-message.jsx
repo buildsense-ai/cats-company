@@ -16,7 +16,12 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
-import { artifactRefFromPreviewFile, artifactURLForVersion, requestArtifactPageContext } from '../artifact-context';
+import {
+  ARTIFACT_FRAME_BRIDGE_CONTRACT,
+  artifactRefFromPreviewFile,
+  artifactURLForVersion,
+  requestArtifactPageContext,
+} from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
 import { sharePreviewLink } from './preview-share';
 
@@ -2069,8 +2074,8 @@ export function previewFileDescriptor(payload) {
     && Boolean(normalizeArtifactURL(url));
   const isSameOriginRemoteArtifact = isManagedRemoteArtifact && isSameOriginURL(url);
   // Managed Artifacts should use the side preview regardless of origin. Keep
-  // same-origin pages on an opaque sandbox origin so generated content cannot
-  // reach the workspace that hosts the preview panel.
+  // same-origin pages on an opaque sandbox; the bridge uses a transferred
+  // MessagePort so a later navigation cannot receive result payloads.
   const isRemoteArtifact = isManagedRemoteArtifact;
   const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
   const canPreview = isManagedRemoteArtifact
@@ -2510,6 +2515,9 @@ export function FilePreviewPanel({
       artifactId: artifactRef.id,
       url: attempt.file.url,
       agentUid: attempt.file.artifact_agent_uid,
+      bridge: previewFileDescriptor(attempt.file)?.isSameOriginRemoteArtifact
+        ? ARTIFACT_FRAME_BRIDGE_CONTRACT
+        : undefined,
     }, artifactRef, REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS);
     settlePendingRemoteArtifact(pageContext ? 'ready' : 'failed', attempt);
   };
@@ -2578,10 +2586,13 @@ export function FilePreviewPanel({
       artifactId: String(file.artifact_id),
       agentUid: Number(file.artifact_agent_uid || 0),
       url,
+      bridge: descriptor?.isSameOriginRemoteArtifact
+        ? ARTIFACT_FRAME_BRIDGE_CONTRACT
+        : undefined,
     };
     onRemoteArtifactFrameChange?.(binding);
     return () => onRemoteArtifactFrameChange?.(null);
-  }, [file?.artifact_agent_uid, file?.artifact_id, isRemoteArtifact, onRemoteArtifactFrameChange, preview, url]);
+  }, [descriptor?.isSameOriginRemoteArtifact, file?.artifact_agent_uid, file?.artifact_id, isRemoteArtifact, onRemoteArtifactFrameChange, preview, url]);
 
   useEffect(() => {
     let cancelled = false;

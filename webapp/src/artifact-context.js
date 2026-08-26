@@ -7,6 +7,13 @@ export const ARTIFACT_RESULT_CONTRACT = 'catsco.artifact-result.v1';
 export const ARTIFACT_RESULT_RECEIPT_CONTRACT = 'catsco.artifact-result-receipt.v1';
 export const ARTIFACT_RESULT_REQUEST_TYPE = 'catsco.artifact.result.request.v1';
 export const ARTIFACT_RESULT_RESPONSE_TYPE = 'catsco.artifact.result.response.v1';
+// Opaque-frame bridge v1: the parent sends only this handshake over the
+// WindowProxy with one transferred MessagePort; the Artifact answers READY on
+// that port, then handles the existing context/result request envelopes and
+// returns their existing response envelopes on the same port.
+export const ARTIFACT_FRAME_BRIDGE_CONTRACT = 'catsco.artifact-frame-bridge.v1';
+export const ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE = 'catsco.artifact.frame-bridge.request.v1';
+export const ARTIFACT_FRAME_BRIDGE_READY_TYPE = 'catsco.artifact.frame-bridge.ready.v1';
 
 const ARTIFACT_ID_PATTERN = /^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$/;
 const ARTIFACT_CONTEXT_REF_PATTERN = /^acr_[A-Za-z0-9_-]{43}$/;
@@ -41,6 +48,11 @@ const PAGE_CONTEXT_CONTROL_TYPES = new Set([
 const ARTIFACT_RESULT_MAX_BYTES = 64 * 1024;
 const ARTIFACT_RESULT_RECEIPT_MAX_BYTES = 8 * 1024;
 const ARTIFACT_RESULT_TIMEOUT_MS = 17_000;
+const ARTIFACT_FRAME_BRIDGE_HANDSHAKE_TIMEOUT_MS = 500;
+const ARTIFACT_FRAME_BRIDGE_CAPABILITIES = Object.freeze([
+  ARTIFACT_CONTEXT_REQUEST_TYPE,
+  ARTIFACT_RESULT_REQUEST_TYPE,
+]);
 
 function artifactFrameMessagePolicy(url) {
   let frameOrigin;
@@ -50,16 +62,150 @@ function artifactFrameMessagePolicy(url) {
     return null;
   }
 
-  // Managed same-origin Artifacts are loaded with an opaque sandbox origin.
-  // They can only receive messages sent with `*`, and their replies report
-  // `null`; keep source identity as the second half of the trust check below.
+  // A same-origin Artifact is deliberately loaded with an opaque sandbox
+  // origin (`null`). It can only receive the initial bridge handshake with
+  // `*`; all protocol payloads use the transferred MessagePort instead of
+  // this WindowProxy channel.
   const isOpaqueSameOriginFrame = typeof window !== 'undefined'
     && frameOrigin === window.location.origin;
+  if (isOpaqueSameOriginFrame) {
+    return {
+      targetOrigin: null,
+      responseOrigin: null,
+      isOpaque: true,
+    };
+  }
   return {
-    targetOrigin: isOpaqueSameOriginFrame ? '*' : frameOrigin,
-    responseOrigin: isOpaqueSameOriginFrame ? 'null' : frameOrigin,
-    isOpaque: isOpaqueSameOriginFrame,
+    targetOrigin: frameOrigin,
+    responseOrigin: frameOrigin,
+    isOpaque: false,
   };
+}
+
+function closeArtifactBridgePort(port) {
+  try {
+    port?.close?.();
+  } catch {
+    // The port may already have been detached by a navigation.
+  }
+}
+
+function artifactBridgeTimeout(timeoutMs) {
+  if (!Number.isFinite(timeoutMs)) return ARTIFACT_FRAME_BRIDGE_HANDSHAKE_TIMEOUT_MS;
+  return Math.max(0, Math.min(
+    ARTIFACT_FRAME_BRIDGE_HANDSHAKE_TIMEOUT_MS,
+    Math.round(timeoutMs),
+  ));
+}
+
+function openOpaqueArtifactBridge(binding, timeoutMs) {
+  const contentWindow = binding?.frame?.contentWindow;
+  const MessageChannelConstructor = globalThis.MessageChannel;
+  if (binding?.bridge !== ARTIFACT_FRAME_BRIDGE_CONTRACT
+    || !contentWindow?.postMessage
+    || typeof MessageChannelConstructor !== 'function'
+    || typeof window === 'undefined') return Promise.resolve(null);
+
+  let channel;
+  try {
+    channel = new MessageChannelConstructor();
+  } catch {
+    return Promise.resolve(null);
+  }
+  const parentPort = channel?.port1;
+  const framePort = channel?.port2;
+  if (!parentPort || !framePort) {
+    closeArtifactBridgePort(parentPort);
+    closeArtifactBridgePort(framePort);
+    return Promise.resolve(null);
+  }
+
+  const bridgeId = artifactContextRequestId();
+  const handshakeTimeout = artifactBridgeTimeout(timeoutMs);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      parentPort.onmessage = null;
+      if (!ready) {
+        closeArtifactBridgePort(parentPort);
+        closeArtifactBridgePort(framePort);
+        resolve(null);
+        return;
+      }
+      resolve({ port: parentPort, bridgeId });
+    };
+    parentPort.onmessage = (event) => {
+      const data = event?.data;
+      if (data?.type !== ARTIFACT_FRAME_BRIDGE_READY_TYPE
+        || data.contract_version !== ARTIFACT_FRAME_BRIDGE_CONTRACT
+        || data.bridge_id !== bridgeId) return;
+      finish(true);
+    };
+    parentPort.start?.();
+    timer = window.setTimeout(() => finish(false), handshakeTimeout);
+    try {
+      // The handshake contains only a random capability identifier and
+      // protocol metadata. No page context or result payload crosses `*`.
+      contentWindow.postMessage({
+        type: ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE,
+        contract_version: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridge_id: bridgeId,
+        parent_origin: window.location.origin,
+        capabilities: ARTIFACT_FRAME_BRIDGE_CAPABILITIES,
+      }, '*', [framePort]);
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+async function requestOpaqueArtifactBridge(binding, message, responseType, timeoutMs) {
+  const deadline = Number.isFinite(timeoutMs)
+    ? Date.now() + Math.max(0, Math.round(timeoutMs))
+    : null;
+  const remainingTimeout = () => deadline === null
+    ? undefined
+    : Math.max(0, deadline - Date.now());
+  const bridge = await openOpaqueArtifactBridge(binding, remainingTimeout());
+  if (!bridge) return { available: false, data: null };
+
+  const { port } = bridge;
+  const boundedTimeout = Number.isFinite(remainingTimeout())
+    ? Math.max(0, Math.min(20_000, Math.round(remainingTimeout())))
+    : ARTIFACT_RESULT_TIMEOUT_MS;
+  if (boundedTimeout <= 0) {
+    closeArtifactBridgePort(port);
+    return { available: true, data: null };
+  }
+  const data = await new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      port.onmessage = null;
+      closeArtifactBridgePort(port);
+      resolve(value);
+    };
+    port.onmessage = (event) => {
+      const response = event?.data;
+      if (response?.type !== responseType || response.request_id !== message.request_id) return;
+      finish(response);
+    };
+    port.start?.();
+    timer = window.setTimeout(() => finish(null), boundedTimeout);
+    try {
+      port.postMessage(message);
+    } catch {
+      finish(null);
+    }
+  });
+  return { available: true, data };
 }
 
 function positiveInteger(value) {
@@ -159,6 +305,20 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
   const boundedTimeout = Number.isFinite(timeoutMs)
     ? Math.max(0, Math.min(1000, Math.round(timeoutMs)))
     : PAGE_CONTEXT_TIMEOUT_MS;
+  const request = {
+    type: ARTIFACT_CONTEXT_REQUEST_TYPE,
+    request_id: requestId,
+  };
+
+  if (messagePolicy.isOpaque) {
+    const bridgeResponse = await requestOpaqueArtifactBridge(
+      binding,
+      request,
+      ARTIFACT_CONTEXT_RESPONSE_TYPE,
+      boundedTimeout,
+    );
+    return bridgeResponse.data ? normalizeArtifactPageContext(bridgeResponse.data.context) : null;
+  }
 
   return new Promise((resolve) => {
     let settled = false;
@@ -177,10 +337,7 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
     const timer = window.setTimeout(() => finish(null), boundedTimeout);
     window.addEventListener('message', handleMessage);
     try {
-      contentWindow.postMessage({
-        type: ARTIFACT_CONTEXT_REQUEST_TYPE,
-        request_id: requestId,
-      }, messagePolicy.targetOrigin);
+      contentWindow.postMessage(request, messagePolicy.targetOrigin);
     } catch {
       finish(null);
     }
@@ -229,17 +386,23 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
   const normalized = delivery?.resultId ? delivery : normalizeArtifactResultDelivery(delivery);
   const frame = binding?.frame;
   const contentWindow = frame?.contentWindow;
-  if (!normalized || !contentWindow?.postMessage
+  if (!normalized || !contentWindow
     || binding?.artifactId !== normalized.artifactId
     || Number(binding?.agentUid || 0) !== normalized.agentUid) return null;
 
   const messagePolicy = artifactFrameMessagePolicy(binding.url);
   if (!messagePolicy) return null;
-  // An opaque sandbox origin has no serializable targetOrigin. Sending a
-  // result payload with `*` would allow a navigated document in the same
-  // WindowProxy to receive the writeback. Context requests carry no user
-  // data, but result writeback is deliberately unavailable for this case.
-  if (messagePolicy.isOpaque) return null;
+  if (messagePolicy.isOpaque && binding?.bridge !== ARTIFACT_FRAME_BRIDGE_CONTRACT) {
+    // A legacy direct opaque frame cannot safely receive a result payload.
+    // Return a terminal local receipt so the upstream delivery is not left
+    // waiting forever, while keeping the payload off the untrusted channel.
+    return artifactResultFailureReceipt(normalized.resultId, 'opaque_frame_bridge_required');
+  }
+  if (!contentWindow.postMessage) {
+    return messagePolicy.isOpaque
+      ? artifactResultFailureReceipt(normalized.resultId, 'opaque_frame_bridge_required')
+      : null;
+  }
   const requestId = artifactContextRequestId();
   const boundedTimeout = Number.isFinite(timeoutMs)
     ? Math.max(100, Math.min(20_000, Math.round(timeoutMs)))
@@ -254,6 +417,26 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
   };
   if (normalized.expectedStateRevision) {
     result.expected_state_revision = normalized.expectedStateRevision;
+  }
+  const request = {
+    type: ARTIFACT_RESULT_REQUEST_TYPE,
+    request_id: requestId,
+    result,
+  };
+
+  if (messagePolicy.isOpaque) {
+    const bridgeResponse = await requestOpaqueArtifactBridge(
+      binding,
+      request,
+      ARTIFACT_RESULT_RESPONSE_TYPE,
+      boundedTimeout,
+    );
+    if (!bridgeResponse.available) {
+      return artifactResultFailureReceipt(normalized.resultId, 'opaque_frame_bridge_required');
+    }
+    if (!bridgeResponse.data) return null;
+    return normalizeArtifactResultReceipt(bridgeResponse.data.receipt, normalized.resultId)
+      || artifactResultFailureReceipt(normalized.resultId, 'invalid_receipt');
   }
 
   return new Promise((resolve) => {
@@ -274,11 +457,7 @@ export async function requestArtifactResultApply(binding, delivery, timeoutMs = 
     const timer = window.setTimeout(() => finish(null), boundedTimeout);
     window.addEventListener('message', handleMessage);
     try {
-      contentWindow.postMessage({
-        type: ARTIFACT_RESULT_REQUEST_TYPE,
-        request_id: requestId,
-        result,
-      }, messagePolicy.targetOrigin);
+      contentWindow.postMessage(request, messagePolicy.targetOrigin);
     } catch {
       finish(null);
     }

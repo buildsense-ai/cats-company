@@ -2204,7 +2204,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('previews a same-origin registry Artifact in the side panel without same-origin iframe access', async () => {
+  it('previews a same-origin registry Artifact in the side panel with an opaque sandbox', async () => {
     const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
     const previewURL = `${artifactURL}?artifact_version=1`;
     const artifact = {
@@ -2242,6 +2242,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel).not.toBeNull();
     const frame = panel.querySelector('iframe.v3-file-preview-frame');
     expect(frame?.getAttribute('src')).toBe(previewURL);
+    expect(frame?.getAttribute('srcdoc')).toBeNull();
     expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-modals');
     expect(frame?.hasAttribute('credentialless')).toBe(true);
   });

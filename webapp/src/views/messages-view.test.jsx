@@ -4559,6 +4559,89 @@ describe('MessagesView composer draft isolation', () => {
     expect(wsSendArtifactResultReceipt).not.toHaveBeenCalled();
   });
 
+  it('returns a failed receipt when a same-origin opaque Artifact has no bridge support', async () => {
+    vi.stubGlobal('MessageChannel', undefined);
+    const artifactURL = new URL(
+      '/artifacts/by-agent/440/legacy-game/latest/',
+      window.location.origin,
+    ).toString();
+    const resultId = `arr_${'o'.repeat(43)}`;
+    const frameWindow = { postMessage: vi.fn() };
+    const artifact = {
+      id: 'legacy-game',
+      agent_uid: '440',
+      title: '旧版小游戏',
+      kind: 'html',
+      url: artifactURL,
+      status: 'active',
+      publish_version: 1,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'legacy-game',
+        agentUid: 440,
+        url: artifactURL,
+        bridge: 'catsco.artifact-frame-bridge.v1',
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{ uid: 440, is_bot: true, cloud_artifacts_enabled: true }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => { await flushPromises(); });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 旧版小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '把结果写回旧版页面');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    const request = {
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_1_440',
+      agent_uid: '440',
+      artifact_id: 'legacy-game',
+      displayed_version: 1,
+      sink_id: 'items.upsert.v1',
+      result_id: resultId,
+      payload: { items: [{ title: '不应发送到旧页面' }] },
+    };
+    await act(async () => {
+      wsHandler({ artifact_result: request });
+      await flushPromises();
+    });
+
+    expect(frameWindow.postMessage).not.toHaveBeenCalled();
+    expect(wsSendArtifactResultReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'receipt',
+      result_id: resultId,
+      receipt: {
+        contract_version: 'catsco.artifact-result-receipt.v1',
+        result_id: resultId,
+        status: 'failed',
+        code: 'opaque_frame_bridge_required',
+      },
+    }));
+  });
+
   it('drops a stale Artifact reference when the preview closes during page capture', async () => {
     const origin = 'https://artifacts.example.test';
     let respondToSnapshot = null;

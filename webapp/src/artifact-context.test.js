@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ARTIFACT_CONTEXT_REF_CONTRACT,
   ARTIFACT_CONTEXT_RESPONSE_TYPE,
+  ARTIFACT_FRAME_BRIDGE_CONTRACT,
+  ARTIFACT_FRAME_BRIDGE_READY_TYPE,
+  ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE,
   ARTIFACT_PAGE_CONTEXT_CONTRACT,
   ARTIFACT_REF_CONTRACT,
   ARTIFACT_RESULT_RECEIPT_CONTRACT,
@@ -15,6 +18,67 @@ import {
   requestArtifactResultApply,
   withArtifactContextRef,
 } from './artifact-context';
+
+function installFakeMessageChannel() {
+  const original = globalThis.MessageChannel;
+  class FakePort {
+    constructor() {
+      this.peer = null;
+      this.onmessage = null;
+      this.closed = false;
+    }
+
+    start() {}
+
+    close() {
+      this.closed = true;
+    }
+
+    postMessage(data) {
+      if (this.closed || !this.peer || this.peer.closed) return;
+      window.setTimeout(() => {
+        if (!this.peer?.closed) this.peer.onmessage?.({ data });
+      }, 0);
+    }
+  }
+  class FakeMessageChannel {
+    constructor() {
+      this.port1 = new FakePort();
+      this.port2 = new FakePort();
+      this.port1.peer = this.port2;
+      this.port2.peer = this.port1;
+    }
+  }
+  globalThis.MessageChannel = FakeMessageChannel;
+  return () => {
+    if (original === undefined) delete globalThis.MessageChannel;
+    else globalThis.MessageChannel = original;
+  };
+}
+
+function opaqueBridgeFrameWindow(onRequest = () => null) {
+  const frameWindow = {
+    postMessage(message, targetOrigin, transfer) {
+      expect(targetOrigin).toBe('*');
+      expect(message.type).toBe(ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE);
+      expect(message.contract_version).toBe(ARTIFACT_FRAME_BRIDGE_CONTRACT);
+      expect(message.result).toBeUndefined();
+      const framePort = transfer?.[0];
+      if (!framePort) return;
+      framePort.postMessage({
+        type: ARTIFACT_FRAME_BRIDGE_READY_TYPE,
+        contract_version: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+        bridge_id: message.bridge_id,
+      });
+      framePort.onmessage = ({ data }) => {
+        const response = onRequest(data);
+        if (response) framePort.postMessage(response);
+      };
+      framePort.start?.();
+    },
+  };
+  return frameWindow;
+}
 
 describe('artifact context snapshot handoff', () => {
   it('builds a narrow reference from a visible cloud artifact preview', () => {
@@ -333,32 +397,38 @@ describe('artifact context snapshot handoff', () => {
   });
 
   it('supports an opaque same-origin Artifact iframe for page context', async () => {
-    const frameWindow = {
-      postMessage(message, targetOrigin) {
-        expect(targetOrigin).toBe('*');
-        window.setTimeout(() => {
-          const event = new Event('message');
-          Object.defineProperties(event, {
-            source: { value: frameWindow },
-            origin: { value: 'null' },
-            data: {
-              value: {
-                type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
-                request_id: message.request_id,
-                context: {
-                  contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
-                  observed_at: '2026-08-26T12:00:00Z',
-                  selected_text: '同源选区',
-                },
-              },
-            },
-          });
-          window.dispatchEvent(event);
-        }, 0);
-      },
-    };
+    const restore = installFakeMessageChannel();
+    try {
+      const frameWindow = opaqueBridgeFrameWindow((message) => ({
+        type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
+        request_id: message.request_id,
+        context: {
+          contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+          observed_at: '2026-08-26T12:00:00Z',
+          selected_text: '同源选区',
+        },
+      }));
+      const result = await requestArtifactPageContext({
+        frame: { contentWindow: frameWindow },
+        artifactId: 'same-origin-game',
+        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+      }, {
+        contract_version: ARTIFACT_REF_CONTRACT,
+        id: 'same-origin-game',
+        currently_visible: true,
+      }, 50);
+
+      expect(result?.selected_text).toBe('同源选区');
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not use the opaque channel without the explicit bridge binding', async () => {
+    const postMessage = vi.fn();
     const result = await requestArtifactPageContext({
-      frame: { contentWindow: frameWindow },
+      frame: { contentWindow: { postMessage } },
       artifactId: 'same-origin-game',
       url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
     }, {
@@ -367,7 +437,8 @@ describe('artifact context snapshot handoff', () => {
       currently_visible: true,
     }, 50);
 
-    expect(result?.selected_text).toBe('同源选区');
+    expect(result).toBeNull();
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it('falls back without blocking when the iframe does not answer', async () => {
@@ -443,7 +514,7 @@ describe('artifact context snapshot handoff', () => {
     });
   });
 
-  it('does not send result writeback to an opaque same-origin Artifact iframe', async () => {
+  it('supports result writeback through the bound opaque MessagePort', async () => {
     const delivery = normalizeArtifactResultDelivery({
       type: 'request',
       origin_node_id: 'catsco-node-1',
@@ -457,17 +528,157 @@ describe('artifact context snapshot handoff', () => {
       result_id: `arr_${'r'.repeat(43)}`,
       payload: { items: [{ title: '同源结果' }] },
     });
+    const restore = installFakeMessageChannel();
+    try {
+      const frameWindow = opaqueBridgeFrameWindow((message) => {
+        expect(message.result.payload.items[0].title).toBe('同源结果');
+        return {
+          type: ARTIFACT_RESULT_RESPONSE_TYPE,
+          request_id: message.request_id,
+          receipt: {
+            contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+            result_id: delivery.resultId,
+            status: 'applied',
+          },
+        };
+      });
+      const receipt = await requestArtifactResultApply({
+        frame: { contentWindow: frameWindow },
+        artifactId: 'same-origin-game',
+        agentUid: 440,
+        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+      }, delivery, 50);
+
+      expect(receipt).toEqual({
+        contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+        result_id: delivery.resultId,
+        status: 'applied',
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('returns an explicit failure when an opaque result bridge is unavailable', async () => {
+    const delivery = normalizeArtifactResultDelivery({
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      context_ref: `acr_${'c'.repeat(43)}`,
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_7_440',
+      agent_uid: '440',
+      artifact_id: 'same-origin-game',
+      displayed_version: 1,
+      sink_id: 'items.upsert.v1',
+      result_id: `arr_${'s'.repeat(43)}`,
+      payload: { items: [{ title: '不应发送' }] },
+    });
     const postMessage = vi.fn();
-    const frameWindow = { postMessage };
     const receipt = await requestArtifactResultApply({
-      frame: { contentWindow: frameWindow },
+      frame: { contentWindow: { postMessage } },
       artifactId: 'same-origin-game',
       agentUid: 440,
       url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
     }, delivery, 50);
 
-    expect(receipt).toBeNull();
+    expect(receipt).toEqual({
+      contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+      result_id: delivery.resultId,
+      status: 'failed',
+      code: 'opaque_frame_bridge_required',
+    });
     expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it('returns an explicit failure for an old opaque page without sending the result over WindowProxy', async () => {
+    const restore = installFakeMessageChannel();
+    try {
+      const calls = [];
+      const frameWindow = {
+        postMessage(message, targetOrigin, transfer) {
+          calls.push({ message, targetOrigin, transfer });
+          expect(targetOrigin).toBe('*');
+          expect(message.type).toBe(ARTIFACT_FRAME_BRIDGE_REQUEST_TYPE);
+          expect(message.result).toBeUndefined();
+          // Simulate a legacy page: it ignores the handshake and never gets
+          // the transferred port, so no result payload can leak to it.
+        },
+      };
+      const delivery = normalizeArtifactResultDelivery({
+        type: 'request',
+        origin_node_id: 'catsco-node-1',
+        context_ref: `acr_${'c'.repeat(43)}`,
+        writeback_ref: `awr_${'w'.repeat(43)}`,
+        topic_id: 'p2p_7_440',
+        agent_uid: '440',
+        artifact_id: 'same-origin-game',
+        displayed_version: 1,
+        sink_id: 'items.upsert.v1',
+        result_id: `arr_${'o'.repeat(43)}`,
+        payload: { items: [{ title: '不应发送' }] },
+      });
+      const receipt = await requestArtifactResultApply({
+        frame: { contentWindow: frameWindow },
+        artifactId: 'same-origin-game',
+        agentUid: 440,
+        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+      }, delivery, 5);
+
+      expect(receipt).toEqual({
+        contract_version: ARTIFACT_RESULT_RECEIPT_CONTRACT,
+        result_id: delivery.resultId,
+        status: 'failed',
+        code: 'opaque_frame_bridge_required',
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].message.result).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not accept a forged opaque response sent through the navigated WindowProxy', async () => {
+    const restore = installFakeMessageChannel();
+    try {
+      const frameWindow = {
+        postMessage(message) {
+          window.setTimeout(() => {
+            const event = new Event('message');
+            Object.defineProperties(event, {
+              source: { value: frameWindow },
+              origin: { value: 'null' },
+              data: {
+                value: {
+                  type: ARTIFACT_CONTEXT_RESPONSE_TYPE,
+                  request_id: message.bridge_id,
+                  context: {
+                    contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+                    observed_at: '2026-08-26T12:00:00Z',
+                    selected_text: '伪造内容',
+                  },
+                },
+              },
+            });
+            window.dispatchEvent(event);
+          }, 0);
+        },
+      };
+      const result = await requestArtifactPageContext({
+        frame: { contentWindow: frameWindow },
+        artifactId: 'same-origin-game',
+        url: `${window.location.origin}/artifacts/same-origin-game/latest/`,
+        bridge: ARTIFACT_FRAME_BRIDGE_CONTRACT,
+      }, {
+        contract_version: ARTIFACT_REF_CONTRACT,
+        id: 'same-origin-game',
+        currently_visible: true,
+      }, 5);
+      expect(result).toBeNull();
+    } finally {
+      restore();
+    }
   });
 
   it('rejects malformed result routes and keeps a bridge timeout non-terminal', async () => {
