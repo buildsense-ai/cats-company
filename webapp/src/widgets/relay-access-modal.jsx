@@ -31,8 +31,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '后台任务与主动协作',
       '个人 Skill 与使用偏好持续沉淀',
       '常规响应优先级',
-      '含 1 次云托管员工创建',
-      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
+      '含 1 次云托管员工创建权益',
+      '云托管员工随套餐有效；到期后保留 15 天，期间续费可恢复',
     ],
   },
   'catsco-pro': {
@@ -49,8 +49,8 @@ const COMMERCIAL_PLAN_PRESENTATION = {
       '复杂任务优先获得更强执行能力',
       '高峰期更高响应优先级',
       '更宽松的公平使用边界',
-      '含 1 次云托管员工创建',
-      '云员工随套餐有效 30 天，到期有 15 天天翼云保留期',
+      '含 1 次云托管员工创建权益',
+      '云托管员工随套餐有效；到期后保留 15 天，期间续费可恢复',
     ],
   },
   'catsco-trial-3d': {
@@ -1012,6 +1012,9 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
   const purchaseIsRenewal = Boolean(
     purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) === activeOfficialPlanTier,
   );
+  const purchaseIncludesCloudWorker = Boolean(
+    purchasePlan && CURRENT_COMMERCIAL_PLAN_SLUGS.has(purchasePlan.slug),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1563,10 +1566,10 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
                   <span>{purchaseIsRenewal ? '确认续费' : '确认购买'}</span>
                   <strong>{purchasePlan.name}</strong>
                   <p>{purchaseIsRenewal
-                    ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期时间顺延 ${Number(purchasePlan.duration_days || 30)} 天；不会自动扣款。`
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；不会自动扣款。`
                     : purchaseIsUpgrade
                     ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
-                    : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。`}</p>
+                    : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
                   <button type="button" className="secondary" onClick={() => setPurchasePlan(null)} disabled={Boolean(paymentLoading)}>返回</button>

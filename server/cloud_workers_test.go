@@ -66,6 +66,20 @@ func TestParseCloudWorkerRenewalExpiry(t *testing.T) {
 	}
 }
 
+func TestParseCloudWorkerRenewalResultReportsAutoRenewReconciliation(t *testing.T) {
+	want := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	result, err := parseCloudWorkerRenewalResult(`{"expires_at":"` + want.Format(time.RFC3339) + `","auto_renew_disabled":false}`)
+	if err != nil {
+		t.Fatalf("parse renewal result: %v", err)
+	}
+	if !result.ExpiresAt.Equal(want) {
+		t.Fatalf("expiry=%s want %s", result.ExpiresAt, want)
+	}
+	if result.AutoRenewDisabled == nil || *result.AutoRenewDisabled {
+		t.Fatalf("auto renew result=%v want explicit false", result.AutoRenewDisabled)
+	}
+}
+
 type cloudWorkerTestStore struct {
 	store.Store
 	ownerBots         []map[string]interface{}

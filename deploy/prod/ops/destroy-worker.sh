@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # destroy-worker.sh — 云托管虚拟员工销毁（B4-1c）
 #
-# 按实例名 worker-<tenant> 找到云实例并删除，同时清理 key pair
-# worker-key-<tenant> 与本地 state 目录。fail-closed：删除失败聚合报告。
+# 按实例名 worker-<tenant> 找到云实例并永久删除，同时清理 key pair
+# worker-key-<tenant> 与本地 state 目录。包月实例会先退订，等待进入
+# unsubscribed，再调用 DestroyEcsInstance。fail-closed：删除失败聚合报告。
 #
 # 用法：
 #   destroy-worker.sh --name <tenant> [--dry-run]
@@ -86,7 +87,7 @@ stop_instance() {
   [[ -n "$instance_id" ]] || return 1
   status="$(jq -r '.instanceStatus // .state // ""' <<<"$inst_json" | tr '[:upper:]' '[:lower:]')"
   case "$status" in
-    stopped|shutoff|unsubscribed|error|bootdiskexpired|nobootdisk) return 0 ;;
+    stopped|shutoff|expired|freezing|frozen|unsubscribed|error|bootdiskexpired|nobootdisk) return 0 ;;
   esac
   ctyun ecs StopEcsInstance --regionID "$REGION_ID" --instanceID "$instance_id" --force false >/dev/null 2>&1 \
     || { echo "error: instance stop failed (instance_id=$instance_id)" >&2; return 1; }
@@ -96,7 +97,7 @@ stop_instance() {
     [[ -n "$current" ]] || return 0
     status="$(jq -r '.instanceStatus // .state // ""' <<<"$current" | tr '[:upper:]' '[:lower:]')"
     case "$status" in
-      stopped|shutoff|unsubscribed|error|bootdiskexpired|nobootdisk) return 0 ;;
+      stopped|shutoff|expired|freezing|frozen|unsubscribed|error|bootdiskexpired|nobootdisk) return 0 ;;
     esac
   done
   echo "error: timed out waiting for instance stop (instance_id=$instance_id)" >&2
@@ -116,7 +117,6 @@ gen_uuid() {
 
 # --- 1. 删实例（不存在则跳过） ---
 instance_id=""
-monthly_instance=0
 instance_status=""
 inst="$(find_instance "$INSTANCE_NAME")"
 if [[ -n "$inst" ]]; then
@@ -125,21 +125,59 @@ if [[ -n "$inst" ]]; then
     echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"instance_id\":\"$instance_id\"}"
     exit 0
   fi
-  # 按计费方式删除（实测 2026-08-13）：包月实例（expiredTime 非空）走
-  # UnsubscribeEcsInstance 退订；按量实例走 DeleteEcsInstance。
-  # 两个 API 都需 clientToken 且不接受 --projectID。
+  # 包月实例先退订，再永久销毁；按量实例走 DeleteEcsInstance。
+  # 这些 API 都需 clientToken 且不接受 --projectID。
   if [[ -n "$instance_id" ]]; then
-    if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst")" ]]; then
-      monthly_instance=1
-      instance_status="$(jq -r '.instanceStatus // .state // ""' <<<"$inst" | tr '[:upper:]' '[:lower:]')"
+    instance_status="$(jq -r '.instanceStatus // .state // ""' <<<"$inst" | tr '[:upper:]' '[:lower:]')"
+    if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst")" \
+      || "$instance_status" =~ ^(expired|freezing|frozen|unsubscribed|bootdiskexpired)$ ]]; then
       stop_instance "$inst" || exit 1
-      # Tianyi keeps an unsubscribed monthly instance in its 15-day retention
-      # window.  It remains attached to its key pair until release; treating
-      # the successful unsubscribe as terminal avoids a false failed delete.
       if [[ "$instance_status" != "unsubscribed" ]]; then
         ctyun ecs UnsubscribeEcsInstance \
           --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
           || { echo "error: instance unsubscribe failed (instance_id=$instance_id)" >&2; exit 1; }
+      fi
+
+      destroy_ready=0
+      already_removed=0
+      for _ in $(seq 1 60); do
+        current="$(find_instance "$INSTANCE_NAME")"
+        if [[ -z "$current" ]]; then
+          already_removed=1
+          break
+        fi
+        current_status="$(jq -r '.instanceStatus // .state // ""' <<<"$current" | tr '[:upper:]' '[:lower:]')"
+        case "$current_status" in
+          unsubscribed) destroy_ready=1; break ;;
+          released|deleted) already_removed=1; break ;;
+        esac
+        sleep 2
+      done
+      if [[ "$already_removed" -eq 0 && "$destroy_ready" -eq 0 ]]; then
+        echo "error: timed out waiting for instance unsubscribe (instance_id=$instance_id)" >&2
+        exit 1
+      fi
+      if [[ "$destroy_ready" -eq 1 ]]; then
+        ctyun ecs DestroyEcsInstance \
+          --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+          || { echo "error: instance permanent destroy failed (instance_id=$instance_id)" >&2; exit 1; }
+        removed=0
+        for _ in $(seq 1 60); do
+          current="$(find_instance "$INSTANCE_NAME")"
+          if [[ -z "$current" ]]; then
+            removed=1
+            break
+          fi
+          current_status="$(jq -r '.instanceStatus // .state // ""' <<<"$current" | tr '[:upper:]' '[:lower:]')"
+          case "$current_status" in
+            released|deleted) removed=1; break ;;
+          esac
+          sleep 2
+        done
+        if [[ "$removed" -eq 0 ]]; then
+          echo "error: timed out waiting for permanent instance destroy (instance_id=$instance_id)" >&2
+          exit 1
+        fi
       fi
     else
       ctyun ecs DeleteEcsInstance \
@@ -155,17 +193,15 @@ fi
 
 # --- 2. 删 key pair（幂等：不存在则跳过） ---
 errors=""
-if [[ "$monthly_instance" -eq 0 ]]; then
-  kp="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-    --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
-    | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
-  if [[ -n "$kp" ]]; then
-    # 实测（2026-08-07）：DeleteEcsKeypair 不接受 --projectID，会报 unknown flag
-    if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
-      : # ok
-    else
-      errors="key pair delete failed; "
-    fi
+kp="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+  --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
+  | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
+if [[ -n "$kp" ]]; then
+  # 实测（2026-08-07）：DeleteEcsKeypair 不接受 --projectID，会报 unknown flag
+  if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
+    : # ok
+  else
+    errors="key pair delete failed; "
   fi
 fi
 
@@ -184,9 +220,7 @@ if [[ -n "$errors" ]]; then
   exit 1
 fi
 
-if [[ "$monthly_instance" -eq 1 ]]; then
-  echo "{\"status\":\"unsubscribed\",\"instance_name\":\"$INSTANCE_NAME\",\"instance_id\":\"$instance_id\"}"
-elif [[ -z "$instance_id" ]]; then
+if [[ -z "$instance_id" ]]; then
   echo "{\"status\":\"not-found\",\"instance_name\":\"$INSTANCE_NAME\"}"
 else
   echo "{\"status\":\"destroyed\",\"instance_name\":\"$INSTANCE_NAME\",\"instance_id\":\"$instance_id\"}"

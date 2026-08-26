@@ -691,10 +691,11 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, meta)
 }
 
-// RenewForOwner extends or recovers all provider instances attached to an
+// RenewForOwner extends or resumes all provider instances attached to an
 // owner's paid cloud-worker lifecycles. It is called only after a commercial
 // payment has committed; the provider script is idempotent for active workers
-// and uses Tianyi's recovery API for unsubscribed retention-state instances.
+// and resubscribes provider-expired/freezing instances. Permanently
+// unsubscribed instances are not recoverable in the current worker region.
 func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return
@@ -717,15 +718,17 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 		}
 		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName)
 		if err != nil {
-			log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
 			continue
 		}
-		if expiresAt, parseErr := parseCloudWorkerRenewalExpiry(out); parseErr != nil {
+		result, parseErr := parseCloudWorkerRenewalResult(out)
+		if parseErr != nil {
 			// The provider operation already succeeded. Do not turn a missing
 			// informational field into a second charge or a false failure, but
 			// leave an auditable warning so operators can reconcile the date.
-			log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d succeeded but returned no valid expires_at: %v; lifecycle date unchanged", lifecycle.TenantName, uid, parseErr)
+			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d succeeded but returned no valid expires_at: %v; lifecycle date unchanged", lifecycle.TenantName, uid, parseErr)
 		} else {
+			expiresAt := result.ExpiresAt
 			var extendErr error
 			if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
 				extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
@@ -733,18 +736,26 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 				extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
 			}
 			if extendErr != nil {
-				log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
+				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
+			}
+			if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
+				log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
 			}
 		}
-		log.Printf("[cloud-worker] renewal/recovery tenant=%s uid=%d completed", lifecycle.TenantName, uid)
+		log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d completed", lifecycle.TenantName, uid)
 	}
 	h.requestCloudStatusRefresh(true)
 }
 
-// parseCloudWorkerRenewalExpiry extracts the provider's final monthly expiry
-// from the JSON emitted by renew-worker.sh. Scripts normally emit one JSON
-// line, but scanning from the end tolerates harmless diagnostics before it.
-func parseCloudWorkerRenewalExpiry(output string) (time.Time, error) {
+type cloudWorkerRenewalResult struct {
+	ExpiresAt         time.Time
+	AutoRenewDisabled *bool
+}
+
+// parseCloudWorkerRenewalResult extracts the provider's final monthly expiry
+// and auto-renew reconciliation result from renew-worker.sh. Scripts normally
+// emit one JSON line, but scanning from the end tolerates diagnostics before it.
+func parseCloudWorkerRenewalResult(output string) (cloudWorkerRenewalResult, error) {
 	var lastErr error
 	lines := strings.Split(output, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -753,28 +764,34 @@ func parseCloudWorkerRenewalExpiry(output string) (time.Time, error) {
 			continue
 		}
 		var result struct {
-			ExpiresAt string `json:"expires_at"`
+			ExpiresAt         string `json:"expires_at"`
+			AutoRenewDisabled *bool  `json:"auto_renew_disabled"`
 		}
 		if err := json.Unmarshal([]byte(line), &result); err != nil {
 			lastErr = err
 			continue
 		}
 		if strings.TrimSpace(result.ExpiresAt) == "" {
-			return time.Time{}, fmt.Errorf("provider response omitted expires_at")
+			return cloudWorkerRenewalResult{}, fmt.Errorf("provider response omitted expires_at")
 		}
 		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(result.ExpiresAt))
 		if err != nil {
-			return time.Time{}, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
+			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
 		}
 		if !expiresAt.After(time.Now().UTC()) {
-			return time.Time{}, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
+			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
 		}
-		return expiresAt.UTC(), nil
+		return cloudWorkerRenewalResult{ExpiresAt: expiresAt.UTC(), AutoRenewDisabled: result.AutoRenewDisabled}, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("provider response was empty")
 	}
-	return time.Time{}, fmt.Errorf("provider response did not contain renewal JSON: %w", lastErr)
+	return cloudWorkerRenewalResult{}, fmt.Errorf("provider response did not contain renewal JSON: %w", lastErr)
+}
+
+func parseCloudWorkerRenewalExpiry(output string) (time.Time, error) {
+	result, err := parseCloudWorkerRenewalResult(output)
+	return result.ExpiresAt, err
 }
 
 // HandleCreate handles POST /api/cloud-workers — create a cloud worker within
@@ -1070,8 +1087,10 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// SweepExpiredWorkers archives expired monthly workers and, after the grace
-// period, destroys their cloud instance before deleting the bot record.
+// SweepExpiredWorkers archives expired monthly workers without touching the
+// provider instance, allowing Tianyi to move it into expired/freezing. Only
+// after the grace period does it permanently destroy the instance before
+// deleting the bot record.
 // It is deliberately best-effort and idempotent; a failed destroy remains
 // visible as delete_failed for operator retry and never silently disappears.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {

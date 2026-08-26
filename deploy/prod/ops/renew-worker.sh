@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# renew-worker.sh — extend or recover one monthly cloud worker after a paid
+# renew-worker.sh — extend or resume one monthly cloud worker after a paid
 # CatsCo plan renewal.
 #
-# Active instances use ResubscribeEcsInstance. Instances that Tianyi has moved
-# to the unsubscribed retention state use RecoverEcsUnsubscribedInstance. The
-# latter is still billable and must only be called after the CatsCo payment is
-# durably fulfilled. This script never creates a replacement instance.
+# Active and provider-expired/freezing instances use ResubscribeEcsInstance.
+# An unsubscribed instance has already left the renewable lifecycle in the
+# current worker region and is rejected explicitly. This script never creates
+# a replacement instance and always disables provider-side automatic renewal.
 set -Eeuo pipefail
 
 NAME=""
@@ -75,31 +75,25 @@ instance="$(find_instance)"
 [[ -n "$instance" ]] || { echo "error: instance $INSTANCE_NAME not found; renewal never creates a replacement" >&2; exit 1; }
 instance_id="$(jq -r '.instanceID // ""' <<<"$instance")"
 state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$instance" | tr '[:upper:]' '[:lower:]')"
-release_time="$(jq -r '.releaseTime // ""' <<<"$instance")"
 [[ -n "$instance_id" ]] || { echo "error: instance $INSTANCE_NAME has no instanceID" >&2; exit 1; }
 
-if [[ "$state" == "unsubscribed" ]]; then
-  if [[ -n "$release_time" ]]; then
-    release_epoch="$(date -d "$release_time" +%s 2>/dev/null || true)"
-    if [[ -n "$release_epoch" && "$release_epoch" -le "$(date +%s)" ]]; then
-      echo "error: instance $INSTANCE_NAME passed Tianyi releaseTime=$release_time; it cannot be recovered" >&2
-      exit 1
-    fi
-  fi
-  operation="recover"
-else
-  case "$state" in
-    running|active|stopped|shutoff|error) operation="resubscribe" ;;
-    released|deleted|bootdiskexpired|nobootdisk)
-      echo "error: instance $INSTANCE_NAME is $state; it cannot be renewed" >&2
-      exit 1
-      ;;
-    *)
-      echo "error: instance $INSTANCE_NAME has unsupported provider state=$state" >&2
-      exit 1
-      ;;
-  esac
-fi
+case "$state" in
+  running|active|stopped|shutoff|error|expired|freezing|frozen)
+    operation="resubscribe"
+    ;;
+  unsubscribed)
+    echo "error: instance $INSTANCE_NAME is unsubscribed; this region cannot resubscribe or recover it" >&2
+    exit 1
+    ;;
+  released|deleted|bootdiskexpired|nobootdisk)
+    echo "error: instance $INSTANCE_NAME is $state; it cannot be renewed" >&2
+    exit 1
+    ;;
+  *)
+    echo "error: instance $INSTANCE_NAME has unsupported provider state=$state" >&2
+    exit 1
+    ;;
+esac
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   printf '{"status":"dry-run","operation":"%s","instance_name":"%s","instance_id":"%s","cycle_count":%s}\n' \
@@ -107,14 +101,17 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-if [[ "$operation" == "recover" ]]; then
-  ctyun ecs RecoverEcsUnsubscribedInstance --regionID "$REGION_ID" \
-    --instanceIDList "[\"$instance_id\"]" --cycleType MONTH --cycleCount "$CYCLE_COUNT" >/dev/null
-else
-  ctyun ecs ResubscribeEcsInstance --regionID "$REGION_ID" --instanceID "$instance_id" \
-    --clientToken "catsco-renew-${instance_id}-$(date +%s%N)" \
-    --cycleType MONTH --cycleCount "$CYCLE_COUNT" >/dev/null
-fi
+client_token="catsco-renew-${instance_id}-$(date +%s%N)"
+resubscribed=0
+for attempt in 1 2 3; do
+  if ctyun ecs ResubscribeEcsInstance --regionID "$REGION_ID" --instanceID "$instance_id" \
+    --clientToken "$client_token" --cycleType MONTH --cycleCount "$CYCLE_COUNT" >/dev/null; then
+    resubscribed=1
+    break
+  fi
+  [[ "$attempt" == "3" ]] || sleep 5
+done
+[[ "$resubscribed" -eq 1 ]] || { echo "error: failed to resubscribe instance_id=$instance_id" >&2; exit 1; }
 
 for _ in $(seq 1 90); do
   instance="$(find_instance)"
@@ -123,9 +120,22 @@ for _ in $(seq 1 90); do
     expires_at="$(jq -r '.expiredTime // ""' <<<"$instance")"
     case "$state" in
       running|active)
+        auto_renew_disabled=0
+        for attempt in 1 2 3 4 5; do
+          if ctyun ecs UpdateEcsAutoRenewConfig --regionID "$REGION_ID" \
+            --instanceIDList "$instance_id" --autoRenewStatus 0 >/dev/null; then
+            auto_renew_disabled=1
+            break
+          fi
+          [[ "$attempt" == "5" ]] || sleep 3
+        done
+        if [[ "$auto_renew_disabled" -ne 1 ]]; then
+          echo "warning: instance renewed but automatic renewal could not be disabled; operator reconciliation required (instance_id=$instance_id)" >&2
+        fi
         jq -cn --arg status renewed --arg operation "$operation" --arg name "$INSTANCE_NAME" \
           --arg instanceID "$instance_id" --arg expiresAt "$expires_at" \
-          '{status:$status,operation:$operation,instance_name:$name,instance_id:$instanceID,expires_at:$expiresAt}'
+          --argjson autoRenewDisabled "$([[ "$auto_renew_disabled" -eq 1 ]] && echo true || echo false)" \
+          '{status:$status,operation:$operation,instance_name:$name,instance_id:$instanceID,expires_at:$expiresAt,auto_renew_disabled:$autoRenewDisabled}'
         exit 0
         ;;
       released|deleted)

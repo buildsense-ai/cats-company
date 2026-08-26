@@ -21,6 +21,12 @@ const CLOUD_STATUS_META = {
   online: { label: '在线', tone: 'ok' },
   offline: { label: '离线', tone: 'muted' },
   stopped: { label: '已停止', tone: 'warn' },
+  expired: { label: '已到期，等待续费', tone: 'warn' },
+  freezing: { label: '冻结保留中', tone: 'warn' },
+  frozen: { label: '冻结保留中', tone: 'warn' },
+  unsubscribed: { label: '已释放', tone: 'danger' },
+  released: { label: '实例已释放', tone: 'danger' },
+  deleted: { label: '实例已释放', tone: 'danger' },
   missing: { label: '实例不存在', tone: 'danger' },
   error: { label: '异常', tone: 'danger' },
   failed: { label: '异常', tone: 'danger' },
@@ -31,6 +37,22 @@ const CLOUD_STATUS_META = {
 const statusMeta = (status) => (
   CLOUD_STATUS_META[String(status || '').toLowerCase()]
   || CLOUD_STATUS_META.unknown
+);
+
+const cloudLifecycleHint = (status) => {
+  const normalized = String(status || '').toLowerCase();
+  if (['expired', 'freezing', 'frozen'].includes(normalized)) {
+    return '套餐已到期，云托管员工正处于 15 天保留期；请在套餐页续费，续费后会自动恢复。';
+  }
+  if (['unsubscribed', 'released', 'deleted'].includes(normalized)) {
+    return '云托管员工已经释放，无法通过续费恢复；删除这条记录后，如仍有创建权益可重新创建。';
+  }
+  return '';
+};
+
+const cloudActionsBlocked = (status) => (
+  ['expired', 'freezing', 'frozen', 'unsubscribed', 'released', 'deleted', 'missing']
+    .includes(String(status || '').toLowerCase())
 );
 
 const parseVersion = (value) => {
@@ -63,13 +85,13 @@ const cloudHostingSummary = (quota, quotaError) => {
   if (!quota || !quota.enabled) return '云端部署当前未开放，请联系管理员开通';
   const remaining = Number(quota.remaining);
   return remaining > 0
-    ? `部署到云端虚拟员工（还可创建 ${remaining} 次）`
-    : '云端虚拟员工创建权益已用完';
+    ? `云托管员工（剩余 ${remaining} 次创建权益）`
+    : '云托管员工创建权益已用完';
 };
 
 /**
  * 云托管专属面板 —— 当创建助手的「部署方式」选中云托管时替换自托管表单。
- * 聚合云托管配额、创建云端虚拟员工、以及已有云托管员工的管理
+ * 聚合云托管创建权益、创建云托管员工、以及已有云托管员工的管理
  * （版本/更新/回滚/重置/删除），全部走云控制面。
  */
 const randomCode = () => String(Math.floor(1000 + Math.random() * 9000));
@@ -172,11 +194,11 @@ export default function CloudWorkerPanel({
   ) : (!quota || !quota.enabled) ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端部署当前未开放，请联系管理员开通</p>
   ) : quota.remaining <= 0 ? (
-    <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端虚拟员工创建权益已用完，暂时无法继续创建</p>
+    <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云托管员工创建权益已用完，暂时无法继续创建</p>
   ) : (
     <>
       <div className="cc-cloud-quota-bar"><i style={{ width: `${usedPct}%` }} /></div>
-      <p>还可创建 <b>{quota.remaining}</b> 个云端虚拟员工</p>
+      <p>还可使用 <b>{quota.remaining}</b> 次创建权益</p>
     </>
   );
 
@@ -212,9 +234,9 @@ export default function CloudWorkerPanel({
       )}
 
       {/* 配额与说明 */}
-      <section className="cc-cloud-quota" aria-label="云托管配额">
+      <section className="cc-cloud-quota" aria-label="云托管创建权益">
         <div className="cc-cloud-quota-head">
-          <div><Cloud size={16} /> <strong>云托管配额</strong></div>
+          <div><Cloud size={16} /> <strong>云托管创建权益</strong></div>
           <span>{quota ? `${quota.used}/${quota.total} 已使用` : '—'}</span>
         </div>
         {quotaNote}
@@ -255,7 +277,7 @@ export default function CloudWorkerPanel({
             )}
             {!creating && !createError && (
               <p className="cc-cloud-create-hint">
-                创建后会供给一台云端虚拟员工并自动完成部署，无需配置身份 Key，可直接使用。
+                创建后会为该员工提供云端运行环境并自动完成部署，无需配置身份 Key。
               </p>
             )}
           </>
@@ -288,6 +310,8 @@ export default function CloudWorkerPanel({
             {workers.map((worker) => {
               const id = worker.id || worker.uid;
               const meta = statusMeta(worker.cloud_status);
+              const lifecycleHint = cloudLifecycleHint(worker.cloud_status);
+              const managementBlocked = cloudActionsBlocked(worker.cloud_status);
               const acting = activeAction.name === worker.tenant_name;
               const actionName = acting ? activeAction.action : '';
               const currentVersion = parseVersion(worker.app_version);
@@ -332,6 +356,9 @@ export default function CloudWorkerPanel({
                       </span>
                     )}
                   </div>
+                  {lifecycleHint && (
+                    <p className="cc-cloud-version-hint"><AlertCircle size={13} /> {lifecycleHint}</p>
+                  )}
 
                   <div className="cc-cloud-worker-controls">
                     <div className="cc-cloud-version-controls">
@@ -340,7 +367,7 @@ export default function CloudWorkerPanel({
                         <select
                           className="cc-cloud-version-select cc-cloud-update-version-select"
                           value={updateTarget}
-                          disabled={hasActiveAction || upgradeVersions.length === 0 || !actionAvailable('update')}
+                          disabled={hasActiveAction || managementBlocked || upgradeVersions.length === 0 || !actionAvailable('update')}
                           onChange={(e) => setUpdateSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
                           title={!currentVersion ? '当前应用版本未知，无法判断可更新版本' : (upgradeVersions.length === 0 ? '暂无高于当前版本的应用发布' : '仅显示高于当前应用版本的发布')}
                         >
@@ -357,7 +384,7 @@ export default function CloudWorkerPanel({
                         <select
                           className="cc-cloud-version-select cc-cloud-rollback-version-select"
                           value={rollbackTarget}
-                          disabled={hasActiveAction || rollbackVersions.length === 0 || !actionAvailable('rollback')}
+                          disabled={hasActiveAction || managementBlocked || rollbackVersions.length === 0 || !actionAvailable('rollback')}
                           onChange={(e) => setRollbackSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
                           title={!currentVersion ? '当前应用版本未知，无法判断可回滚版本' : (rollbackVersions.length === 0 ? '暂无低于当前版本的应用发布' : '仅显示低于当前应用版本的发布')}
                         >
@@ -374,7 +401,7 @@ export default function CloudWorkerPanel({
                         <select
                           className="cc-cloud-image-select"
                           value={imageTarget}
-                          disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
+                          disabled={hasActiveAction || managementBlocked || imageVersions.length === 0 || !actionAvailable('reset')}
                           onChange={(e) => setImageSelections((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
                           title={imageVersions.length === 0 ? '暂无可用基础镜像' : '仅重置实例时使用，重置会清空数据'}
                         >
@@ -393,8 +420,8 @@ export default function CloudWorkerPanel({
                       type="button"
                       className="oc-btn oc-btn-primary"
                       onClick={() => onUpdate(worker, updateTarget)}
-                      disabled={hasActiveAction || !updateTarget || !actionAvailable('update')}
-                      title={!actionAvailable('update') ? '云端更新服务尚未配置' : (!updateTarget ? '暂无高于当前版本的应用发布，无法更新' : '更新到所选应用版本，保留当前数据')}
+                      disabled={hasActiveAction || managementBlocked || !updateTarget || !actionAvailable('update')}
+                      title={managementBlocked ? '实例到期冻结或已经释放，当前不能更新' : (!actionAvailable('update') ? '云端更新服务尚未配置' : (!updateTarget ? '暂无高于当前版本的应用发布，无法更新' : '更新到所选应用版本，保留当前数据'))}
                     >
                       {actionName === 'update' ? <><RefreshCw size={13} className="cc-spin" /> 更新中...</> : <><ArrowUpCircle size={13} /> 更新</>}
                     </button>
@@ -403,8 +430,8 @@ export default function CloudWorkerPanel({
                       type="button"
                       className="oc-btn oc-btn-default"
                       onClick={() => onRollback(worker, rollbackTarget, { fromPanel: true })}
-                      disabled={hasActiveAction || !rollbackTarget || !actionAvailable('rollback')}
-                      title={!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (!rollbackTarget ? '暂无低于当前版本的应用发布，无法回滚' : '回滚到所选应用版本，保留当前数据')}
+                      disabled={hasActiveAction || managementBlocked || !rollbackTarget || !actionAvailable('rollback')}
+                      title={managementBlocked ? '实例到期冻结或已经释放，当前不能回滚' : (!actionAvailable('rollback') ? '云端回滚服务尚未配置' : (!rollbackTarget ? '暂无低于当前版本的应用发布，无法回滚' : '回滚到所选应用版本，保留当前数据'))}
                     >
                       {actionName === 'rollback' ? <><RefreshCw size={13} className="cc-spin" /> 回滚中...</> : <><RotateCcw size={13} /> 回滚</>}
                     </button>
@@ -454,8 +481,8 @@ export default function CloudWorkerPanel({
                         type="button"
                         className="oc-btn oc-btn-default"
                         onClick={() => beginReset(worker.tenant_name)}
-                        disabled={hasActiveAction || imageVersions.length === 0 || !actionAvailable('reset')}
-                          title={!actionAvailable('reset') ? '云端重置服务尚未配置' : (imageVersions.length === 0 ? '暂无可用基础镜像，无法重置' : '重置：在原实例内重装所选镜像，保留包月到期时间但清空所有数据（需验证码）')}
+                        disabled={hasActiveAction || managementBlocked || imageVersions.length === 0 || !actionAvailable('reset')}
+                          title={managementBlocked ? '实例到期冻结或已经释放，当前不能重置' : (!actionAvailable('reset') ? '云端重置服务尚未配置' : (imageVersions.length === 0 ? '暂无可用基础镜像，无法重置' : '重置：在原实例内重装所选镜像，保留包月到期时间但清空所有数据（需验证码）'))}
                       >
                           {actionName === 'reset' ? <><RefreshCw size={13} className="cc-spin" /> 重置中...</> : <><RefreshCw size={13} /> 重置</>}
                       </button>

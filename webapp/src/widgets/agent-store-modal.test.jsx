@@ -1054,7 +1054,7 @@ describe('AgentStoreModal', () => {
     // Self-hosted form is shown by default.
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('创建我的专属助手'))).toBe(true);
-    expect(container.textContent).not.toContain('云托管配额');
+    expect(container.textContent).not.toContain('云托管创建权益');
 
     // Select managed hosting -> the cloud panel replaces the self-hosted form.
     const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
@@ -1063,7 +1063,7 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('1/3 已使用');
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('创建云托管员工'))).toBe(true);
@@ -1302,8 +1302,8 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
-    // 云托管管理视图：配额 + 员工管理，无部署方式 radio
-    expect(container.textContent).toContain('云托管配额');
+    // 云托管管理视图：创建权益 + 员工管理，无部署方式 radio
+    expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('运行中');
     expect(container.querySelector('.cc-agent-hosting')).toBeNull();

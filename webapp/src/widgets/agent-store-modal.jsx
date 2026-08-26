@@ -1418,7 +1418,7 @@ export default function AgentStoreModal({
                     <ArrowLeft size={15} /> 返回助手列表
                   </button>
                   <h3><Cloud size={16} /> 云托管管理</h3>
-                  <span>配额 · 创建 · 版本/回滚/重置/删除</span>
+                  <span>创建权益 · 创建 · 更新/回滚/重置/删除</span>
                 </div>
                 <CloudWorkerPanel
                   quota={cloudQuota}
@@ -1473,7 +1473,7 @@ export default function AgentStoreModal({
                     >
                       <Cloud size={15} />
                       <span>云托管管理</span>
-                      <small>{cloudWorkers.length > 0 ? `${cloudWorkers.length} 个员工` : '配额 · 版本 · 回滚/重置/删除'}</small>
+                      <small>{cloudWorkers.length > 0 ? `${cloudWorkers.length} 个员工` : '创建权益 · 更新/回滚/重置/删除'}</small>
                     </button>
                   )}
 
