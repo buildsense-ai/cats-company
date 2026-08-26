@@ -53,9 +53,18 @@ func (a *Adapter) CreateUserWithBotInvite(user *types.User, code string) (int64,
 }
 
 func (a *Adapter) CreateBotInviteCode(botUID, ownerUID int64, code string) error {
+	var existing int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM bot_invite_codes WHERE bot_uid = ?`, botUID).Scan(&existing); err != nil {
+		return err
+	}
+	if existing > 0 {
+		_, err := a.db.Exec(`UPDATE bot_invite_codes
+SET owner_uid = ?, code = ?, revoked_at = NULL, updated_at = CURRENT_TIMESTAMP
+WHERE bot_uid = ?`, ownerUID, code, botUID)
+		return err
+	}
 	_, err := a.db.Exec(`INSERT INTO bot_invite_codes (bot_uid, owner_uid, code, created_at, updated_at)
-VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-ON DUPLICATE KEY UPDATE owner_uid = VALUES(owner_uid), code = VALUES(code), revoked_at = NULL, updated_at = CURRENT_TIMESTAMP`, botUID, ownerUID, code)
+VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, botUID, ownerUID, code)
 	return err
 }
 

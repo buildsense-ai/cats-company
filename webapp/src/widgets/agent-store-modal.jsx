@@ -935,6 +935,20 @@ export default function AgentStoreModal({
       // Core assistant data is entirely local to CatsCompany and should render
       // without waiting for cloud-provider reconciliation.
       setBots(manageableBots);
+      if (api.getBotInviteCode) {
+        const inviteEntries = await Promise.all(manageableBots.map(async (bot) => {
+          const botId = bot?.id || bot?.uid;
+          if (!botId) return null;
+          try {
+            const invite = await api.getBotInviteCode(botId);
+            return invite?.code ? [String(botId), invite.code] : null;
+          } catch {
+            return null;
+          }
+        }));
+        const currentCodes = Object.fromEntries(inviteEntries.filter(Boolean));
+        setGeneratedInviteCodes((previous) => ({ ...previous, ...currentCodes }));
+      }
 
       if (
         !initialAgentAppliedRef.current
@@ -1136,11 +1150,11 @@ export default function AgentStoreModal({
     }
   };
 
-  const handleGenerateBotInviteCode = async (bot) => {
+  const handleGenerateBotInviteCode = async (bot, { regenerate = false } = {}) => {
     const botId = bot?.id || bot?.uid;
     if (!botId) return;
     const existingCode = generatedInviteCodes[botId];
-    if (existingCode) {
+    if (existingCode && !regenerate) {
       await handleCopy(`invite_${botId}`, existingCode);
       return;
     }
@@ -1498,19 +1512,39 @@ export default function AgentStoreModal({
                           </button>
                         )}
                         {owned && (
-                          <button
-                            type="button"
-                            className="oc-btn oc-btn-default cc-agent-card-action"
-                            onClick={() => handleGenerateBotInviteCode(bot)}
-                            disabled={generatingInviteCode === botId}
-                            title="生成机器人邀请码"
-                          >
-                            {generatingInviteCode === botId
-                              ? '生成中...'
-                              : generatedInviteCodes[botId]
-                                ? (copiedField === `invite_${botId}` ? '已复制' : generatedInviteCodes[botId])
-                                : '生成邀请码'}
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              className="oc-btn oc-btn-default cc-agent-card-action"
+                              onClick={() => handleGenerateBotInviteCode(bot)}
+                              disabled={generatingInviteCode === botId}
+                              title="复制当前机器人邀请码"
+                            >
+                              {generatingInviteCode === botId
+                                ? '生成中...'
+                                : generatedInviteCodes[botId]
+                                  ? (copiedField === `invite_${botId}` ? '已复制' : generatedInviteCodes[botId])
+                                  : '生成邀请码'}
+                            </button>
+                            {generatedInviteCodes[botId] && (
+                              <button
+                                type="button"
+                                className="oc-btn oc-btn-default cc-agent-card-action"
+                                onClick={async () => {
+                                  const confirmed = await feedback.confirm({
+                                    title: '重新生成邀请码？',
+                                    message: '旧邀请码会立即失效，已分享给别人的邀请码将无法继续使用。',
+                                    confirmLabel: '重新生成',
+                                  });
+                                  if (confirmed) handleGenerateBotInviteCode(bot, { regenerate: true });
+                                }}
+                                disabled={generatingInviteCode === botId}
+                                title="使旧邀请码失效并重新生成"
+                              >
+                                重新生成
+                              </button>
+                            )}
+                          </>
                         )}
                         {owned && (
                           <button
