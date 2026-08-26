@@ -2068,10 +2068,13 @@ export function previewFileDescriptor(payload) {
     && isHtml
     && Boolean(normalizeArtifactURL(url));
   const isSameOriginRemoteArtifact = isManagedRemoteArtifact && isSameOriginURL(url);
-  const isRemoteArtifact = isManagedRemoteArtifact && !isSameOriginRemoteArtifact;
+  // Managed Artifacts should use the side preview regardless of origin. Keep
+  // same-origin pages on an opaque sandbox origin so generated content cannot
+  // reach the workspace that hosts the preview panel.
+  const isRemoteArtifact = isManagedRemoteArtifact;
   const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
   const canPreview = isManagedRemoteArtifact
-    ? isRemoteArtifact
+    ? true
     : isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
   return {
     payload,
@@ -2941,7 +2944,7 @@ export function FilePreviewPanel({
                   src={frameEntry.descriptor.url}
                   className={frameEntry.current ? 'v3-file-preview-frame' : 'v3-file-preview-frame-pending'}
                   title={frameEntry.current ? 'Cloud Artifact Preview' : 'Cloud Artifact Refresh Check'}
-                  sandbox={REMOTE_ARTIFACT_PREVIEW_SANDBOX}
+                  sandbox={frameEntry.descriptor?.isSameOriginRemoteArtifact ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}
                   credentialless=""
                   referrerPolicy="no-referrer"
                   aria-hidden={frameEntry.current ? undefined : 'true'}

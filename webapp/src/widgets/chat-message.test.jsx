@@ -2204,8 +2204,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('opens a same-origin registry Artifact in a new tab instead of embedding it', async () => {
+  it('previews a same-origin registry Artifact in the side panel without same-origin iframe access', async () => {
     const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
+    const previewURL = `${artifactURL}?artifact_version=1`;
     const artifact = {
       id: 'same-origin',
       title: 'Same-origin artifact',
@@ -2229,16 +2230,20 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     const previewButton = container.querySelector('.v3-artifact-actions button');
-    expect(previewButton.disabled).toBe(true);
+    expect(previewButton.disabled).toBe(false);
 
     await act(async () => {
       Simulate.click(container.querySelector('.v3-artifact-main'));
       await Promise.resolve();
     });
 
-    expect(window.open).toHaveBeenCalledWith(artifactURL, '_blank', 'noopener,noreferrer');
-    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
-    expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+    expect(window.open).not.toHaveBeenCalled();
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(panel).not.toBeNull();
+    const frame = panel.querySelector('iframe.v3-file-preview-frame');
+    expect(frame?.getAttribute('src')).toBe(previewURL);
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-modals');
+    expect(frame?.hasAttribute('credentialless')).toBe(true);
   });
 
   it('keeps an unknown external URL as an ordinary link', async () => {
