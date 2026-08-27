@@ -5,6 +5,10 @@ export const APP_SIDEBAR_WIDTH_STORAGE_KEY = 'cc_app_sidebar_width_v1';
 export const DEFAULT_APP_SIDEBAR_WIDTH = 260;
 export const MIN_APP_SIDEBAR_WIDTH = 220;
 export const MAX_APP_SIDEBAR_WIDTH = 480;
+// Keep the mobile drawer at the product default and only narrow it when the
+// viewport cannot leave a small, useful slice of the conversation visible.
+export const MOBILE_SIDEBAR_CONTENT_PEEK = 64;
+export const MAX_MOBILE_APP_SIDEBAR_WIDTH = DEFAULT_APP_SIDEBAR_WIDTH;
 
 export function clampSidebarWidth(
   value,
@@ -22,6 +26,18 @@ export function getSidebarMaxWidth(viewportWidth) {
   return Math.max(
     MIN_APP_SIDEBAR_WIDTH,
     Math.min(MAX_APP_SIDEBAR_WIDTH, Math.floor(numericViewport - 480)),
+  );
+}
+
+export function getMobileSidebarMaxWidth(viewportWidth) {
+  const numericViewport = Number(viewportWidth);
+  if (!Number.isFinite(numericViewport)) return MAX_MOBILE_APP_SIDEBAR_WIDTH;
+  return Math.max(
+    MIN_APP_SIDEBAR_WIDTH,
+    Math.min(
+      MAX_MOBILE_APP_SIDEBAR_WIDTH,
+      Math.floor(numericViewport - MOBILE_SIDEBAR_CONTENT_PEEK),
+    ),
   );
 }
 

@@ -2203,6 +2203,11 @@ html[data-theme="liquid"] .catsco-brand-mark {
   min-width: 52px;
 }
 
+.cc-history-item.is-selection-mode .cc-history-selection-trailing > .cc-task-row-status {
+  right: 0;
+  opacity: 1;
+}
+
 .cc-history-batch-bar {
   position: relative;
   z-index: 18;
@@ -2761,13 +2766,23 @@ html[data-theme="liquid"] .catsco-brand-mark {
     opacity: 0;
   }
 
-  .cc-history-item .cc-chat-row-trailing:has(> .cc-task-row-status) {
+  .cc-history-batch-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.25fr);
+  }
+
+  .cc-history-batch-action {
+    gap: 4px;
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .cc-history-item:not(.is-selection-mode) .cc-chat-row-trailing:has(> .cc-task-row-status) {
     flex-basis: 108px;
     width: 108px;
     min-width: 108px;
   }
 
-  .cc-history-item .cc-chat-row-trailing > .cc-task-row-status {
+  .cc-history-item:not(.is-selection-mode) .cc-chat-row-trailing > .cc-task-row-status {
     right: calc((var(--cc-sidebar-action-size) * 2) + 4px);
     opacity: 1;
   }
@@ -5061,10 +5076,6 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 }
 
 @media (max-width: 760px) {
-  :root {
-    --cc-sidebar-width: min(86vw, 300px);
-  }
-
   .oc-auth {
     padding: 16px;
     align-items: flex-start;
@@ -5079,8 +5090,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 90;
-    width: min(86vw, 300px);
-    flex-basis: min(86vw, 300px);
+    width: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
+    flex-basis: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
     box-shadow: none;
   }
 
@@ -5223,8 +5234,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 @media (max-width: 768px) {
   .v3-sidebar:not(.collapsed) {
-    width: min(86vw, 300px);
-    flex-basis: min(86vw, 300px);
+    width: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
+    flex-basis: var(--cc-sidebar-user-width, var(--cc-sidebar-width));
   }
 
   .v3-sidebar-resize-handle {

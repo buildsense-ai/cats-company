@@ -18,6 +18,7 @@ import EmptyTaskComposer from '../widgets/empty-task-composer';
 import SidebarResizeHandle, {
   MIN_APP_SIDEBAR_WIDTH,
   clampSidebarWidth,
+  getMobileSidebarMaxWidth,
   getSidebarMaxWidth,
   loadSidebarWidth,
   saveSidebarWidth,
@@ -414,7 +415,10 @@ function TinodeWebApp({ location }) {
     setStandaloneCloudArtifactsRequest(null);
     setEmptyTaskSelectedAgent(null);
   }, [activeTopicId]);
-  const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
+  const isMobileSidebarViewport = sidebarViewportWidth <= 768;
+  const appSidebarMaxWidth = isMobileSidebarViewport
+    ? getMobileSidebarMaxWidth(sidebarViewportWidth)
+    : getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
     MIN_APP_SIDEBAR_WIDTH,
@@ -1304,7 +1308,7 @@ function TinodeWebApp({ location }) {
         <SidebarResizeHandle
           width={appSidebarWidth}
           maxWidth={appSidebarMaxWidth}
-          disabled={appSidebarCollapsed || sidebarViewportWidth <= 768}
+          disabled={appSidebarCollapsed || isMobileSidebarViewport}
           onWidthChange={previewAppSidebarWidth}
           onWidthCommit={commitAppSidebarWidth}
           onResizeChange={setIsSidebarResizing}
