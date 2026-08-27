@@ -14,6 +14,9 @@ services:
       OC_REDIS_KEY_PREFIX: "${OC_REDIS_KEY_PREFIX:-}"
       CATSCO_NODE_ID: "${CATSCO_NODE_ID:-}"
       OC_JWT_SECRET: "${OC_JWT_SECRET}"
+      # Comma-separated human usernames allowed to use the protected admin API.
+      # Keep the real value only in the server-side prod.env.
+      OC_ADMIN_USERNAMES: "${OC_ADMIN_USERNAMES:-}"
       CATSCO_STT_ENABLED: "${CATSCO_STT_ENABLED:-0}"
       CATSCO_STT_PROVIDER: "${CATSCO_STT_PROVIDER:-volcengine-doubao-streaming-v2}"
       CATSCO_STT_TICKET_TTL_SECONDS: "${CATSCO_STT_TICKET_TTL_SECONDS:-45}"
