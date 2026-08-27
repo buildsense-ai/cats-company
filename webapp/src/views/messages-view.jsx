@@ -607,6 +607,10 @@ export default function MessagesView({
     };
   }, [topic]);
 
+  const persistComposerDraftStore = useCallback(() => {
+    composerDraftStore?.persist?.();
+  }, [composerDraftStore]);
+
   const updateComposerDraft = useCallback((draftTopic, value) => {
     if (!draftTopic) return;
     if (value) {
@@ -614,7 +618,8 @@ export default function MessagesView({
     } else {
       composerDraftsRef.current.delete(draftTopic);
     }
-  }, []);
+    persistComposerDraftStore();
+  }, [persistComposerDraftStore]);
 
   const updateStructuredMentionDraft = useCallback((draftTopic, selections) => {
     if (!draftTopic) return;
@@ -623,7 +628,8 @@ export default function MessagesView({
     } else {
       structuredMentionDraftsRef.current.delete(draftTopic);
     }
-  }, []);
+    persistComposerDraftStore();
+  }, [persistComposerDraftStore]);
 
   const updateAttachmentDraft = useCallback((draftTopic, nextValue) => {
     if (!draftTopic) return [];
@@ -639,8 +645,9 @@ export default function MessagesView({
       pendingAttachmentsRef.current = normalized;
       setPendingAttachments(normalized);
     }
+    persistComposerDraftStore();
     return normalized;
-  }, []);
+  }, [persistComposerDraftStore]);
 
   useEffect(() => {
     previewWidthRef.current = previewWidth;
