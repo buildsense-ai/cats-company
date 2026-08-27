@@ -596,10 +596,14 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
   const unavailable = skill.isLocalSkill && !skill.canBind
     && (!skill.localSkill?.canShare || skill.localSkill?.source === 'system');
-  const sourceMetadata = [
-    skill.sourceLabel || '在线',
-    ...(!skill.isLocalSkill ? [formatCatalogueVersion(skill.latestVersion) || '版本待确认', skill.author || '发布者待确认'] : []),
-  ].filter(Boolean).join(' · ');
+  const versionAndPublisher = [
+    formatCatalogueVersion(skill.latestVersion) || '版本待确认',
+    skill.author || '发布者待确认',
+  ].join(' · ');
+  const publishedTime = formatCataloguePublishedTime(skill.publishedAt);
+  const sourceMetadata = skill.isLocalSkill
+    ? skill.sourceLabel || '本机'
+    : `${versionAndPublisher} · ${publishedTime}`;
   return (
     <article className={`cc-skillhub-card${installed ? ' is-added' : ''}`}>
       <div className='cc-skillhub-card-title'>
@@ -608,7 +612,12 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
       </div>
       <p>{skill.description || '这个能力暂时没有补充说明。'}</p>
       <div className='cc-skillhub-card-footer'>
-        <span className={`cc-skillhub-card-source${skill.isLocalSkill ? ' is-local' : ''}`} title={sourceMetadata}>{sourceMetadata}</span>
+        <div className={`cc-skillhub-card-source${skill.isLocalSkill ? ' is-local' : ''}`} title={sourceMetadata}>
+          {skill.isLocalSkill ? <span>{sourceMetadata}</span> : <>
+            <span>{versionAndPublisher}</span>
+            <time dateTime={skill.publishedAt || undefined}>{publishedTime}</time>
+          </>}
+        </div>
         {!isReadOnly && <button type='button' className={installed ? 'added' : 'primary'} disabled={!definitionReady || installed || unavailable || saving || Boolean(sharingSkill)} title={unavailable ? '此能力暂时不能同步' : undefined} onClick={() => onInstallSkill(skill)}>
           {installed ? <Check size={14} aria-hidden='true' /> : <Package size={14} aria-hidden='true' />}
           {installed ? '已添加' : adding || sharing ? '添加中…' : '添加'}
@@ -622,6 +631,14 @@ function formatCatalogueVersion(version) {
   const value = String(version || '').trim();
   if (!value) return '';
   return value.startsWith('v') ? value : `v${value}`;
+}
+
+function formatCataloguePublishedTime(value) {
+  const timestamp = Date.parse(String(value || ''));
+  if (!Number.isFinite(timestamp)) return '发布时间待确认';
+  return `发布于 ${new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).format(new Date(timestamp))}`;
 }
 
 function formatAddedSkillVersion(skill, privateReference) {

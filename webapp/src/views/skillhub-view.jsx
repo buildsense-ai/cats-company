@@ -654,8 +654,7 @@ export function buildSkillLibrary({ catalogue = [], installedByID = new Map(), l
     ? normalizedLocal.filter((skill) => `${skill.displayName} ${skill.description}`.toLocaleLowerCase().includes(normalizedQuery))
     : normalizedLocal;
   const online = catalogue
-    .filter((skill) => !localCloudIDs.has(skill.skillId))
-    .map((skill) => ({ ...skill, sourceLabel: '在线' }));
+    .filter((skill) => !localCloudIDs.has(skill.skillId));
   return [...visibleLocal, ...online];
 }
 
