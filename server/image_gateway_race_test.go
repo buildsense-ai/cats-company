@@ -302,6 +302,72 @@ func TestImageEditRaceUsesJSONAndMultipartTransportsConcurrently(t *testing.T) {
 	}
 }
 
+func TestImageEditMaskUsesOnlyMultipartProviderAndForwardsMaskFile(t *testing.T) {
+	jsonCalled := make(chan struct{}, 1)
+	jsonUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonCalled <- struct{}{}
+		http.Error(w, "masked edit must not use JSON transport", http.StatusBadRequest)
+	}))
+	t.Cleanup(jsonUpstream.Close)
+
+	maskCaptured := make(chan []byte, 1)
+	multipartUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(20 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(r.MultipartForm.File["image"]) != 1 || len(r.MultipartForm.File["mask"]) != 1 {
+			http.Error(w, "expected one image and one mask", http.StatusBadRequest)
+			return
+		}
+		file, err := r.MultipartForm.File["mask"][0].Open()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		contents, err := io.ReadAll(file)
+		_ = file.Close()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		maskCaptured <- contents
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testImageResponse(t, 53)))
+	}))
+	t.Cleanup(multipartUpstream.Close)
+
+	jsonProvider := raceTestProvider("json", jsonUpstream.URL+"/v1/images/generations", jsonUpstream.URL+"/v1/images/edits", imageOperationGeneration, imageOperationEdit)
+	multipartProvider := raceTestProvider("multipart", multipartUpstream.URL+"/v1/images/generations", multipartUpstream.URL+"/v1/images/edits", imageOperationGeneration, imageOperationEdit)
+	multipartProvider.editTransport = imageEditTransportMultipart
+	handler := newImageGenerationProxyHandlerWithProviders(
+		[]imageUpstreamProvider{jsonProvider, multipartProvider},
+		ImageGenerationProxyOptions{RaceDeadline: time.Second},
+	)
+	sourceURL := testDecodablePNGDataURL(24, 16, false)
+	maskURL := testDecodablePNGDataURL(24, 16, true)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(imageEditBodyWithMask("remove object", sourceURL, maskURL)))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.HandleEdit(recorder, req)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("X-CatsCo-Image-Provider") != "multipart" {
+		t.Fatalf("status=%d provider=%q body=%s", recorder.Code, recorder.Header().Get("X-CatsCo-Image-Provider"), recorder.Body.String())
+	}
+	select {
+	case <-jsonCalled:
+		t.Fatal("JSON provider received a masked edit")
+	default:
+	}
+	select {
+	case contents := <-maskCaptured:
+		if !imageBytesMatchMediaType(contents, "image/png") {
+			t.Fatal("multipart mask is not PNG")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("multipart mask was not captured")
+	}
+}
+
 func TestImageRaceProviderLanesRetryIndependently(t *testing.T) {
 	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	relayB := newScriptedImageUpstream(t,

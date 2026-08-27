@@ -438,6 +438,12 @@ func (h *ImageGenerationProxyHandler) forwardImageRequest(
 	}
 
 	if !h.raceEnabled {
+		if operation == imageOperationEdit {
+			if _, hasMask := payload["mask"]; hasMask {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image mask editing requires a configured multipart provider"})
+				return
+			}
+		}
 		h.forwardSingleImageRequest(w, r, payload, operation, referenceCount, referenceBytes)
 		return
 	}
@@ -445,7 +451,7 @@ func (h *ImageGenerationProxyHandler) forwardImageRequest(
 	requesterUID := UIDFromContext(r.Context())
 	startedAt := time.Now()
 	raceID := newImageRaceID()
-	providers := h.eligibleImageProviders(operation, nil)
+	providers := h.eligibleImageProviders(operation, nil, payload)
 	if len(providers) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image operation has no configured provider"})
 		return

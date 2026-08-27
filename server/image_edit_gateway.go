@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image/png"
 	"mime"
 	"net/http"
 	"regexp"
@@ -101,6 +102,7 @@ func validateImageEditPayload(
 		"model":              {},
 		"prompt":             {},
 		"images":             {},
+		"mask":               {},
 		"n":                  {},
 		"size":               {},
 		"quality":            {},
@@ -141,6 +143,7 @@ func validateImageEditPayload(
 	}
 
 	var totalBytes int64
+	var firstImageURL string
 	seenDigests := make(map[[sha256.Size]byte]struct{}, len(images))
 	for index, rawImage := range images {
 		image, ok := rawImage.(map[string]interface{})
@@ -156,6 +159,9 @@ func validateImageEditPayload(
 				status:  http.StatusBadRequest,
 				message: "images[" + strconv.Itoa(index) + "].image_url is required",
 			}
+		}
+		if index == 0 {
+			firstImageURL = imageURL
 		}
 		decodedBytes, digest, err := validateImageEditDataURL(imageURL, limits.maxImageBytes)
 		if err != nil {
@@ -176,7 +182,64 @@ func validateImageEditPayload(
 			}
 		}
 	}
+	if rawMask, exists := payload["mask"]; exists {
+		maskURL, ok := rawMask.(string)
+		if !ok || strings.TrimSpace(maskURL) == "" {
+			return 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a PNG data URL"}
+		}
+		maskBytes, err := validateImageEditMask(maskURL, firstImageURL, limits.maxImageBytes)
+		if err != nil {
+			return 0, 0, err
+		}
+		totalBytes += maskBytes
+		if totalBytes > limits.maxTotalBytes {
+			return 0, 0, &imageEditRequestError{status: http.StatusRequestEntityTooLarge, message: "reference images and mask exceed the decoded total size limit"}
+		}
+	}
 	return len(images), totalBytes, nil
+}
+
+func validateImageEditMask(maskURL, firstImageURL string, maxDecodedBytes int64) (int64, error) {
+	if !strings.HasPrefix(maskURL, "data:image/png;base64,") {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a base64 PNG data URL"}
+	}
+	maskBytes, _, err := validateImageEditDataURL(maskURL, maxDecodedBytes)
+	if err != nil {
+		var requestErr *imageEditRequestError
+		if errors.As(err, &requestErr) && requestErr.status == http.StatusRequestEntityTooLarge {
+			return 0, &imageEditRequestError{status: requestErr.status, message: "mask exceeds the decoded size limit"}
+		}
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a valid base64 PNG data URL"}
+	}
+	if !strings.HasPrefix(firstImageURL, "data:image/png;base64,") {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be PNG when mask is provided"}
+	}
+	_, sourceBytes, err := decodeImageEditDataURL(firstImageURL)
+	if err != nil {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be a valid PNG when mask is provided"}
+	}
+	_, decodedMask, err := decodeImageEditDataURL(maskURL)
+	if err != nil {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a valid base64 PNG data URL"}
+	}
+	sourceConfig, err := png.DecodeConfig(bytes.NewReader(sourceBytes))
+	if err != nil {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be a decodable PNG when mask is provided"}
+	}
+	maskConfig, err := png.DecodeConfig(bytes.NewReader(decodedMask))
+	if err != nil {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a decodable PNG"}
+	}
+	if sourceConfig.Width != maskConfig.Width || sourceConfig.Height != maskConfig.Height {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask dimensions must match the first image"}
+	}
+	if maskConfig.Width <= 0 || maskConfig.Height <= 0 || maskConfig.Width > 8192 || maskConfig.Height > 8192 || int64(maskConfig.Width)*int64(maskConfig.Height) > 64_000_000 {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask dimensions exceed the supported limit"}
+	}
+	if len(decodedMask) < 26 || (decodedMask[25] != 4 && decodedMask[25] != 6) {
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask PNG must contain an alpha channel"}
+	}
+	return maskBytes, nil
 }
 
 func validateImageEditOutputOptions(payload map[string]interface{}) error {
@@ -309,6 +372,33 @@ func validateImageEditDataURL(value string, maxDecodedBytes int64) (int64, [sha2
 		}
 	}
 	return int64(len(decoded)), sha256.Sum256(decoded), nil
+}
+
+func decodeImageEditDataURL(value string) (string, []byte, error) {
+	comma := strings.IndexByte(value, ',')
+	if comma < 0 {
+		return "", nil, errors.New("invalid data URL")
+	}
+	var mediaType string
+	switch value[:comma] {
+	case "data:image/png;base64":
+		mediaType = "image/png"
+	case "data:image/jpeg;base64":
+		mediaType = "image/jpeg"
+	case "data:image/webp;base64":
+		mediaType = "image/webp"
+	default:
+		return "", nil, errors.New("unsupported data URL media type")
+	}
+	encoded := value[comma+1:]
+	if encoded == "" || strings.ContainsAny(encoded, " \t\r\n") {
+		return "", nil, errors.New("invalid base64 image")
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(decoded) == 0 || !imageBytesMatchMediaType(decoded, mediaType) {
+		return "", nil, errors.New("invalid base64 image")
+	}
+	return mediaType, decoded, nil
 }
 
 func imageBytesMatchMediaType(decoded []byte, mediaType string) bool {
