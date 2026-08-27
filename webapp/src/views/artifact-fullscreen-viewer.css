@@ -1,0 +1,82 @@
+.artifact-fullscreen-viewer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #ffffff;
+  color: #202124;
+}
+
+.artifact-fullscreen-viewer-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #ffffff;
+}
+
+.artifact-fullscreen-viewer-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  background: #ffffff;
+  color: #5f6368;
+  font-size: 14px;
+  text-align: center;
+}
+
+.artifact-fullscreen-viewer-state strong {
+  color: #202124;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.artifact-fullscreen-viewer-state button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid #d7dadc;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #303134;
+  cursor: pointer;
+  font: inherit;
+}
+
+.artifact-fullscreen-viewer-state button:hover {
+  background: #f4f5f5;
+}
+
+.artifact-fullscreen-viewer-state button:focus-visible {
+  outline: 2px solid #16855b;
+  outline-offset: 2px;
+}
+
+.artifact-fullscreen-viewer-state.is-error {
+  color: #9b2c2c;
+}
+
+.artifact-fullscreen-viewer-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid #d8dcda;
+  border-top-color: #16855b;
+  border-radius: 50%;
+  animation: artifact-fullscreen-viewer-spin 700ms linear infinite;
+}
+
+@keyframes artifact-fullscreen-viewer-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .artifact-fullscreen-viewer-spinner {
+    animation: none;
+  }
+}

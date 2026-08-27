@@ -60,9 +60,9 @@ describe('CloudWorkerPanel', () => {
 
   test('shows quota usage and remaining capacity', async () => {
     await renderPanel();
-    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('1/3 已使用');
-    expect(container.textContent).toContain('还可创建 2 个云端虚拟员工');
+    expect(container.textContent).toContain('还可使用 2 次创建权益');
     const bar = container.querySelector('.cc-cloud-quota-bar i');
     expect(bar).toBeTruthy();
     expect(bar.style.width).toBe('33%');
@@ -81,8 +81,8 @@ describe('CloudWorkerPanel', () => {
   test('blocks creation when quota is exhausted', async () => {
     await renderPanel({ quota: { enabled: true, total: 1, used: 1, remaining: 0 } });
     expect(container.querySelector('.cc-cloud-create-card input')).toBeNull();
-    expect(container.textContent).toContain('云端虚拟员工创建权益已用完，暂时无法继续创建');
-    expect(container.textContent).toContain('云端虚拟员工创建权益已用完');
+    expect(container.textContent).toContain('云托管员工创建权益已用完，暂时无法继续创建');
+    expect(container.textContent).toContain('云托管员工创建权益已用完');
     expect(container.textContent).not.toContain('可创建 0/1');
   });
 
@@ -186,11 +186,31 @@ describe('CloudWorkerPanel', () => {
     expect(text).toContain('实例不存在');
   });
 
-  test('calls update/rollback/reset/delete callbacks from worker actions', async () => {
+  test('explains renewable freezing states and blocks in-instance management', async () => {
+    await renderPanel({
+      workers: [worker({ cloud_status: 'freezing' })],
+      images: [{ version: '1.4.9' }],
+      releases: [{ version: '1.4.10' }, { version: '1.4.8' }],
+    });
+    expect(container.textContent).toContain('冻结保留中');
+    expect(container.textContent).toContain('请在套餐页续费，续费后会自动恢复');
+    const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    expect(buttons.find((el) => el.textContent.includes('更新')).disabled).toBe(true);
+    expect(buttons.find((el) => el.textContent.includes('回滚')).disabled).toBe(true);
+    expect(buttons.find((el) => el.textContent.includes('重置')).disabled).toBe(true);
+    expect(container.querySelector('.cc-agent-card-delete')).toBeNull();
+  });
+
+  test('marks unsubscribed instances as unrecoverable', async () => {
+    await renderPanel({ workers: [worker({ cloud_status: 'unsubscribed' })] });
+    expect(container.textContent).toContain('已释放');
+    expect(container.textContent).toContain('请联系支持清理旧记录');
+  });
+
+  test('calls update/rollback/reset callbacks without exposing permanent deletion', async () => {
     const onUpdate = vi.fn();
     const onRollback = vi.fn();
     const onReset = vi.fn();
-    const onDelete = vi.fn();
     const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
     const releases = [{ version: '1.4.10' }, { version: '1.4.9' }, { version: '1.4.8' }];
     await renderPanel({
@@ -200,14 +220,12 @@ describe('CloudWorkerPanel', () => {
       onUpdate,
       onRollback,
       onReset,
-      onDelete,
     });
 
     const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
     const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
     const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
-    const deleteBtn = buttons[buttons.length - 1];
 
     await act(async () => {
       Simulate.click(updateBtn);
@@ -249,12 +267,7 @@ describe('CloudWorkerPanel', () => {
       { verified: true },
     );
 
-    // delete fires directly
-    await act(async () => {
-      Simulate.click(deleteBtn);
-    });
-    expect(onDelete).toHaveBeenCalledTimes(1);
-    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ tenant_name: 'tenant-a' }));
+    expect(container.querySelector('.cc-agent-card-delete')).toBeNull();
   });
 
   test('reset requires the displayed captcha before calling onReset', async () => {
@@ -496,7 +509,7 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({ showHostingSwitch: false });
     expect(container.querySelector('.cc-agent-hosting')).toBeNull();
     // 面板其余部分仍在
-    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('创建云托管员工');
   });
 

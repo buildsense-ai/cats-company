@@ -19,6 +19,7 @@ var commercialOfficialPaidModels = []string{
 	"MiniMax-M2.7",
 	"MiniMax-M3",
 	"deepseek-v4-flash",
+	"glm-5.3-flash",
 	"gpt-5.6-terra",
 	"gpt-5.6-sol",
 	"gpt-5.6-luna",

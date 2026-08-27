@@ -186,9 +186,9 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confir
 		return fulfilled, changed, err
 	}
 	if strings.EqualFold(fulfilled.PlanSlug, "catsco-personal") || strings.EqualFold(fulfilled.PlanSlug, "catsco-pro") {
-		// Payment is already committed. Provider recovery/renewal is retried by
-		// the caller's normal operational loop if this process exits; never make
-		// an Alipay callback fail because Tianyi is temporarily unavailable.
+		// Payment and the database lifecycle extension are already committed.
+		// Provider renewal remains asynchronous so a Tianyi failure never makes
+		// an Alipay callback fail or rolls back the paid entitlement.
 		go h.renewCloudWorkers(fulfilled.UID)
 	}
 	return fulfilled, changed, nil

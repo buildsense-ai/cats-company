@@ -470,6 +470,25 @@ func (h *BotHandler) HandleDeleteBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Managed cloud workers belong to the paid retention lifecycle. Users may
+	// delete self-hosted bots, but cloud-worker cleanup is reserved for the
+	// internal lifecycle/operator path so the database and provider cannot drift.
+	tenantName, err := h.db.GetTenantName(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to verify bot hosting type",
+			"code":  "bot_hosting_type_unavailable",
+		})
+		return
+	}
+	if strings.TrimSpace(tenantName) != "" {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "cloud workers cannot be deleted by users; renew the package during the retention period or allow the lifecycle to expire",
+			"code":  "cloud_worker_delete_not_allowed",
+		})
+		return
+	}
+
 	if err := h.db.DeleteBot(botUID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete failed"})
 		return

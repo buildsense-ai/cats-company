@@ -17,10 +17,26 @@ describe('sharePreviewLink', () => {
     expect(result).toMatchObject({ status: 'shared', method: 'native' });
     expect(share).toHaveBeenCalledWith({
       title: 'report.pdf',
-      url: new URL('/uploads/files/report.pdf', window.location.href).toString(),
+      url: new URL('/uploads/files/report.pdf?preview=1&name=report.pdf', window.location.href).toString(),
     });
     expect(share.mock.calls[0][0].url).not.toContain('download=1');
     expect(navigatorLike.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it('shares a video metadata preview URL instead of the download URL', async () => {
+    const share = vi.fn().mockResolvedValue(undefined);
+
+    const result = await sharePreviewLink({
+      url: '/uploads/files/demo.mp4?download=1',
+      name: 'demo.mp4',
+      navigatorLike: { share },
+    });
+
+    expect(result).toMatchObject({ status: 'shared', method: 'native' });
+    expect(share).toHaveBeenCalledWith({
+      title: 'demo.mp4',
+      url: new URL('/uploads/files/demo.mp4?preview=1&name=demo.mp4', window.location.href).toString(),
+    });
   });
 
   it('copies the inline preview URL when native sharing is unavailable', async () => {
@@ -34,8 +50,23 @@ describe('sharePreviewLink', () => {
 
     expect(result).toMatchObject({ status: 'copied', method: 'clipboard' });
     expect(writeText).toHaveBeenCalledWith(
-      new URL('/uploads/files/report.html', window.location.href).toString(),
+      new URL('/uploads/files/report.html?preview=1&name=report.html', window.location.href).toString(),
     );
+  });
+
+  it('does not advertise unsupported XHTML uploads as metadata previews', async () => {
+    const share = vi.fn().mockResolvedValue(undefined);
+
+    await sharePreviewLink({
+      url: '/uploads/files/report.xhtml',
+      name: 'report.xhtml',
+      navigatorLike: { share },
+    });
+
+    expect(share).toHaveBeenCalledWith({
+      title: 'report.xhtml',
+      url: new URL('/uploads/files/report.xhtml', window.location.href).toString(),
+    });
   });
 
   it('does not fall back to copying when the user cancels native sharing', async () => {

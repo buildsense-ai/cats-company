@@ -16,7 +16,18 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
-import { artifactRefFromPreviewFile, artifactURLForVersion, requestArtifactPageContext } from '../artifact-context';
+import {
+  HTML_PREVIEW_SANDBOX,
+  REMOTE_ARTIFACT_PREVIEW_SANDBOX,
+} from './controlled-artifact-preview';
+import {
+  ARTIFACT_FRAME_BRIDGE_CONTRACT,
+  artifactFrameBridgeNonce,
+  artifactFrameURLWithBridgeNonce,
+  artifactRefFromPreviewFile,
+  artifactURLForVersion,
+  requestArtifactPageContext,
+} from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
 import { sharePreviewLink } from './preview-share';
 
@@ -36,9 +47,7 @@ const SPREADSHEET_MIME_TYPES = new Set([
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
-const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
 const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
 const FILE_PREVIEW_TIMEOUT_MS = 15_000;
@@ -1672,16 +1681,9 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   const previewArtifact = () => {
     if (descriptor?.canPreview) onPreviewFile?.(payload);
   };
-  const openArtifact = () => {
-    if (descriptor?.canPreview) {
-      previewArtifact();
-    } else if (artifact.url) {
-      window.open(artifact.url, '_blank', 'noopener,noreferrer');
-    }
-  };
   return (
     <div className={`v3-attachment-card v3-artifact-card cloud-static${isActive ? ' active' : ''}`}>
-      <button className="v3-artifact-main" onClick={openArtifact} title="预览生成物" type="button">
+      <button className="v3-artifact-main" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览生成物" type="button">
         <div className="v3-attachment-icon"><FileCode2 size={18} strokeWidth={1.5} /></div>
         <div className="v3-attachment-info">
           <span className="v3-attachment-name" title={payload.name}>{payload.name}</span>
@@ -1692,9 +1694,6 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
         <button className="v3-artifact-action" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览" type="button">
           <Eye size={15} /><span>预览</span>
         </button>
-        <a className="v3-artifact-action" href={artifact.url} onClick={(event) => event.stopPropagation()} rel="noopener noreferrer" target="_blank" title="在新标签页打开">
-          <ExternalLink size={15} /><span>打开</span>
-        </a>
       </div>
     </div>
   );
@@ -2103,10 +2102,13 @@ export function previewFileDescriptor(payload) {
     && isHtml
     && Boolean(normalizeArtifactURL(url));
   const isSameOriginRemoteArtifact = isManagedRemoteArtifact && isSameOriginURL(url);
-  const isRemoteArtifact = isManagedRemoteArtifact && !isSameOriginRemoteArtifact;
+  // Managed Artifacts should use the side preview regardless of origin. Keep
+  // same-origin pages on an opaque sandbox; the bridge uses a transferred
+  // MessagePort so a later navigation cannot receive result payloads.
+  const isRemoteArtifact = isManagedRemoteArtifact;
   const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
   const canPreview = isManagedRemoteArtifact
-    ? isRemoteArtifact
+    ? true
     : isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
   return {
     payload,
@@ -2135,18 +2137,34 @@ function spreadsheetPreviewTooLargeMessage() {
 function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [shareState, setShareState] = useState('idle');
+  const [shareNotice, setShareNotice] = useState('');
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
   const fallbackActionRef = useRef(null);
   const shouldFocusFallbackRef = useRef(false);
+  const shareResetTimerRef = useRef(null);
+  const shareRequestRef = useRef(0);
   const src = resolveMediaURL(payload?.url);
   const downloadURL = downloadableMediaURL(src);
 
   useEffect(() => {
     setPlaybackFailed(false);
     setPreviewOpen(false);
+    shareRequestRef.current += 1;
+    setShareState('idle');
+    setShareNotice('');
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
+    }
   }, [src]);
+
+  useEffect(() => () => {
+    shareRequestRef.current += 1;
+    if (shareResetTimerRef.current) window.clearTimeout(shareResetTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!previewOpen || playbackFailed) return undefined;
@@ -2195,6 +2213,45 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
       || Boolean(previewRef.current?.contains(activeElement));
     setPreviewOpen(false);
     setPlaybackFailed(true);
+  };
+
+  const handleShare = async () => {
+    if (!src || shareState === 'pending') return;
+    const requestID = shareRequestRef.current + 1;
+    shareRequestRef.current = requestID;
+    setShareState('pending');
+    setShareNotice('');
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
+      shareResetTimerRef.current = null;
+    }
+
+    let result;
+    try {
+      result = await sharePreviewLink({ url: src, name: payload?.name || '视频' });
+    } catch {
+      result = { status: 'error' };
+    }
+    if (requestID !== shareRequestRef.current) return;
+
+    if (result.status === 'cancelled' || result.status === 'shared') {
+      setShareState('idle');
+      return;
+    }
+    if (result.status === 'copied') {
+      setShareState('copied');
+      setShareNotice(`${payload?.name || '视频'} 分享链接已复制。`);
+      shareResetTimerRef.current = window.setTimeout(() => {
+        if (requestID !== shareRequestRef.current) return;
+        shareResetTimerRef.current = null;
+        setShareState('idle');
+        setShareNotice('');
+      }, 2200);
+      return;
+    }
+
+    setShareState('error');
+    setShareNotice('暂时无法分享，请使用“下载视频”后从浏览器分享。');
   };
 
   if (!payload || !src || playbackFailed) {
@@ -2268,6 +2325,21 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
           >
             <Download size={20} />
           </PwaDownloadLink>
+          <button
+            aria-label={shareState === 'copied' ? '已复制视频分享链接' : shareState === 'error' ? '重试分享视频' : '分享视频'}
+            aria-busy={shareState === 'pending' || undefined}
+            className={`oc-rich-media-preview-share${shareState === 'copied' ? ' is-success' : ''}${shareState === 'error' ? ' is-error' : ''}`}
+            disabled={shareState === 'pending'}
+            onClick={(event) => {
+              event.stopPropagation();
+              void handleShare();
+            }}
+            title={shareState === 'copied' ? '已复制视频分享链接' : shareState === 'error' ? '重试分享视频' : '分享视频'}
+            type="button"
+          >
+            {shareState === 'copied' ? <CheckCircle2 size={20} /> : <Share2 size={20} />}
+          </button>
+          {shareNotice && <span className="oc-visually-hidden" role="status" aria-live="polite">{shareNotice}</span>}
           <video
             aria-label={payload.name || '视频'}
             autoPlay
@@ -2441,6 +2513,7 @@ export function FilePreviewPanel({
   pendingRemoteArtifactFile,
   onRemoteArtifactRefreshReady,
   onRemoteArtifactRefreshFailed,
+  onOpenRemoteArtifactFullscreen,
 }) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
@@ -2464,6 +2537,15 @@ export function FilePreviewPanel({
   const pendingRemoteArtifactFrameRef = useRef(null);
   const pendingRemoteArtifactAttemptRef = useRef(null);
   const verifiedRemoteArtifactKeysRef = useRef(new Set());
+  const remoteArtifactBridgeStateRef = useRef({
+    key: '',
+    frame: null,
+    nonce: '',
+    loadCount: 0,
+    loaded: false,
+    controller: null,
+  });
+  const [remoteArtifactDocumentEpoch, setRemoteArtifactDocumentEpoch] = useState(0);
   const focusBeforeSheetRef = useRef(null);
   const [isSheetMode, setIsSheetMode] = useState(
     () => window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024,
@@ -2493,6 +2575,14 @@ export function FilePreviewPanel({
     pendingRemoteArtifactFile,
     pendingRemoteArtifactDescriptor,
   );
+  const currentRemoteArtifactBridgeNonce = useMemo(
+    () => descriptor?.isSameOriginRemoteArtifact ? artifactFrameBridgeNonce() : '',
+    [currentRemoteArtifactKey, descriptor?.isSameOriginRemoteArtifact],
+  );
+  const pendingRemoteArtifactBridgeNonce = useMemo(
+    () => pendingRemoteArtifactDescriptor?.isSameOriginRemoteArtifact ? artifactFrameBridgeNonce() : '',
+    [pendingRemoteArtifactKey, pendingRemoteArtifactDescriptor?.isSameOriginRemoteArtifact],
+  );
   const pendingRemoteArtifactAttemptSeed = useMemo(() => {
     if (!pendingRemoteArtifactKey || !pendingRemoteArtifactFile) return null;
     return {
@@ -2502,14 +2592,19 @@ export function FilePreviewPanel({
       errored: false,
       reported: false,
       frame: null,
+      bridgeNonce: pendingRemoteArtifactBridgeNonce,
+      bridgeLoadCount: 0,
+      bridgeReady: false,
+      bridgeController: new AbortController(),
     };
-  }, [pendingRemoteArtifactFile, pendingRemoteArtifactKey]);
+  }, [pendingRemoteArtifactBridgeNonce, pendingRemoteArtifactFile, pendingRemoteArtifactKey]);
 
   const settlePendingRemoteArtifact = (status, expectedAttempt) => {
     const attempt = pendingRemoteArtifactAttemptRef.current;
     if (!attempt || attempt !== expectedAttempt || attempt.settled) return;
     attempt.settled = true;
     if (attempt.timer) window.clearTimeout(attempt.timer);
+    attempt.seed.bridgeController?.abort();
     pendingRemoteArtifactAttemptRef.current = null;
     if (attempt.seed.reported) return;
     attempt.seed.reported = true;
@@ -2542,6 +2637,12 @@ export function FilePreviewPanel({
       artifactId: artifactRef.id,
       url: attempt.file.url,
       agentUid: attempt.file.artifact_agent_uid,
+      bridge: previewFileDescriptor(attempt.file)?.isSameOriginRemoteArtifact
+        ? ARTIFACT_FRAME_BRIDGE_CONTRACT
+        : undefined,
+      bridgeNonce: attempt.seed.bridgeNonce,
+      bridgeReady: attempt.seed.bridgeReady,
+      signal: attempt.seed.bridgeController?.signal,
     }, artifactRef, REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS);
     settlePendingRemoteArtifact(pageContext ? 'ready' : 'failed', attempt);
   };
@@ -2574,6 +2675,7 @@ export function FilePreviewPanel({
     }
     return () => {
       if (attempt.timer) window.clearTimeout(attempt.timer);
+      attempt.seed.bridgeController?.abort();
       attempt.settled = true;
       if (pendingRemoteArtifactAttemptRef.current === attempt) {
         pendingRemoteArtifactAttemptRef.current = null;
@@ -2583,25 +2685,92 @@ export function FilePreviewPanel({
 
   const handlePendingRemoteArtifactLoad = (seed, frame) => {
     if (!seed) return;
+    seed.bridgeLoadCount += 1;
+    seed.bridgeController?.abort();
+    seed.bridgeController = new AbortController();
+    seed.bridgeReady = !seed.bridgeNonce || seed.bridgeLoadCount === 1;
     seed.loaded = true;
     seed.frame = frame || seed.frame;
     const attempt = pendingRemoteArtifactAttemptRef.current;
     if (!attempt || attempt.seed !== seed || attempt.settled) return;
+    if (!seed.bridgeReady) {
+      settlePendingRemoteArtifact('failed', attempt);
+      return;
+    }
     attempt.frame = seed.frame || attempt.frame;
     void verifyPendingRemoteArtifact(attempt);
   };
 
   const handlePendingRemoteArtifactError = (seed) => {
     if (!seed) return;
+    seed.bridgeController?.abort();
+    seed.bridgeReady = false;
     seed.errored = true;
     const attempt = pendingRemoteArtifactAttemptRef.current;
     if (!attempt || attempt.seed !== seed || attempt.settled) return;
     settlePendingRemoteArtifact('failed', attempt);
   };
 
+  const handleCurrentRemoteArtifactLoad = (event, frameKey, bridgeNonce) => {
+    const frame = event?.currentTarget;
+    const state = remoteArtifactBridgeStateRef.current;
+    if (!frame || state.key !== frameKey || state.nonce !== bridgeNonce) return;
+    state.loadCount += 1;
+    state.frame = frame;
+    state.controller?.abort();
+    state.controller = new AbortController();
+    const isFirstDocument = !bridgeNonce || state.loadCount === 1;
+    state.loaded = isFirstDocument;
+    setRemoteArtifactDocumentEpoch((value) => value + 1);
+    setRemoteFrameState(isFirstDocument ? 'ready' : 'error');
+  };
+
+  const handleCurrentRemoteArtifactError = (frameKey) => {
+    const state = remoteArtifactBridgeStateRef.current;
+    if (state.key !== frameKey) return;
+    state.controller?.abort();
+    state.loaded = false;
+    setRemoteArtifactDocumentEpoch((value) => value + 1);
+    setRemoteFrameState('error');
+  };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    remoteArtifactBridgeStateRef.current.controller?.abort();
+    remoteArtifactBridgeStateRef.current = {
+      key: currentRemoteArtifactKey,
+      frame: null,
+      nonce: currentRemoteArtifactBridgeNonce,
+      loadCount: 0,
+      loaded: false,
+      controller,
+    };
+    setRemoteArtifactDocumentEpoch((value) => value + 1);
+    return () => {
+      controller.abort();
+      const state = remoteArtifactBridgeStateRef.current;
+      if (state.key === currentRemoteArtifactKey
+        && state.nonce === currentRemoteArtifactBridgeNonce) {
+        state.controller?.abort();
+      }
+    };
+  }, [currentRemoteArtifactBridgeNonce, currentRemoteArtifactKey]);
+
   useEffect(() => {
     const frame = remoteArtifactFrameRef.current;
     if (!preview || !isRemoteArtifact || !frame || !file?.artifact_id) {
+      onRemoteArtifactFrameChange?.(null);
+      return undefined;
+    }
+    const bridgeState = remoteArtifactBridgeStateRef.current;
+    const isOpaqueBridgeReady = descriptor?.isSameOriginRemoteArtifact
+      && Boolean(currentRemoteArtifactBridgeNonce)
+      && bridgeState.key === currentRemoteArtifactKey
+      && bridgeState.nonce === currentRemoteArtifactBridgeNonce
+      && bridgeState.frame === frame
+      && bridgeState.loaded
+      && bridgeState.loadCount === 1;
+    if (descriptor?.isSameOriginRemoteArtifact && !isOpaqueBridgeReady) {
       onRemoteArtifactFrameChange?.(null);
       return undefined;
     }
@@ -2610,10 +2779,16 @@ export function FilePreviewPanel({
       artifactId: String(file.artifact_id),
       agentUid: Number(file.artifact_agent_uid || 0),
       url,
+      bridge: isOpaqueBridgeReady
+        ? ARTIFACT_FRAME_BRIDGE_CONTRACT
+        : undefined,
+      bridgeNonce: isOpaqueBridgeReady ? currentRemoteArtifactBridgeNonce : undefined,
+      bridgeReady: isOpaqueBridgeReady,
+      signal: bridgeState.controller?.signal,
     };
     onRemoteArtifactFrameChange?.(binding);
     return () => onRemoteArtifactFrameChange?.(null);
-  }, [file?.artifact_agent_uid, file?.artifact_id, isRemoteArtifact, onRemoteArtifactFrameChange, preview, url]);
+  }, [currentRemoteArtifactBridgeNonce, currentRemoteArtifactKey, descriptor?.isSameOriginRemoteArtifact, file?.artifact_agent_uid, file?.artifact_id, isRemoteArtifact, onRemoteArtifactFrameChange, preview, remoteArtifactDocumentEpoch, url]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2942,9 +3117,21 @@ export function FilePreviewPanel({
                 <Download size={18} />
               </PwaDownloadLink>
             )}
-            <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
-              <ExternalLink size={18} />
-            </a>
+            {isRemoteArtifact ? (
+              <button
+                type="button"
+                title="在新标签页打开"
+                aria-label="在新标签页打开"
+                onClick={() => onOpenRemoteArtifactFullscreen?.(file)}
+                disabled={!onOpenRemoteArtifactFullscreen}
+              >
+                <ExternalLink size={18} />
+              </button>
+            ) : (
+              <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
+                <ExternalLink size={18} />
+              </a>
+            )}
             <button ref={closeButtonRef} aria-label="关闭预览" onClick={onClose} type="button">
               <X size={18} />
             </button>
@@ -2958,6 +3145,7 @@ export function FilePreviewPanel({
                 {
                   key: currentRemoteArtifactKey,
                   descriptor,
+                  bridgeNonce: currentRemoteArtifactBridgeNonce,
                   current: true,
                   attemptSeed: null,
                 },
@@ -2965,6 +3153,7 @@ export function FilePreviewPanel({
                   ? {
                      key: pendingRemoteArtifactKey,
                      descriptor: pendingRemoteArtifactDescriptor,
+                     bridgeNonce: pendingRemoteArtifactAttemptSeed?.bridgeNonce || pendingRemoteArtifactBridgeNonce,
                      current: false,
                      attemptSeed: pendingRemoteArtifactAttemptSeed,
                    }
@@ -2973,10 +3162,12 @@ export function FilePreviewPanel({
                 <iframe
                   key={frameEntry.key}
                   ref={frameEntry.current ? remoteArtifactFrameRef : pendingRemoteArtifactFrameRef}
-                  src={frameEntry.descriptor.url}
+                  src={frameEntry.descriptor?.isSameOriginRemoteArtifact
+                    ? artifactFrameURLWithBridgeNonce(frameEntry.descriptor.url, frameEntry.bridgeNonce)
+                    : frameEntry.descriptor.url}
                   className={frameEntry.current ? 'v3-file-preview-frame' : 'v3-file-preview-frame-pending'}
                   title={frameEntry.current ? 'Cloud Artifact Preview' : 'Cloud Artifact Refresh Check'}
-                  sandbox={REMOTE_ARTIFACT_PREVIEW_SANDBOX}
+                  sandbox={frameEntry.descriptor?.isSameOriginRemoteArtifact ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}
                   credentialless=""
                   referrerPolicy="no-referrer"
                   aria-hidden={frameEntry.current ? undefined : 'true'}
@@ -2989,10 +3180,10 @@ export function FilePreviewPanel({
                     pointerEvents: 'none',
                   }}
                   onLoad={frameEntry.current
-                    ? () => setRemoteFrameState('ready')
+                    ? (event) => handleCurrentRemoteArtifactLoad(event, frameEntry.key, frameEntry.bridgeNonce)
                     : (event) => handlePendingRemoteArtifactLoad(frameEntry.attemptSeed, event.currentTarget)}
                   onError={frameEntry.current
-                    ? () => setRemoteFrameState('error')
+                    ? () => handleCurrentRemoteArtifactError(frameEntry.key)
                     : () => handlePendingRemoteArtifactError(frameEntry.attemptSeed)}
                 />
               ))}
@@ -3002,7 +3193,9 @@ export function FilePreviewPanel({
               {remoteFrameState === 'error' && (
                 <div className="v3-remote-artifact-preview-state error" role="alert">
                   <span>预览加载失败</span>
-                  <a href={url} rel="noopener noreferrer" target="_blank">在新标签页打开</a>
+                  <button type="button" onClick={() => onOpenRemoteArtifactFullscreen?.(file)}>
+                    在新标签页打开
+                  </button>
                 </div>
               )}
             </div>
@@ -3058,10 +3251,10 @@ export function FilePreviewPanel({
             <span>关闭预览</span>
           </button>
           {isRemoteArtifact ? (
-            <a href={url} target="_blank" rel="noopener noreferrer">
+            <button type="button" onClick={() => onOpenRemoteArtifactFullscreen?.(file)}>
               <ExternalLink size={17} />
               <span>新标签页打开</span>
-            </a>
+            </button>
           ) : (
             <PwaDownloadLink href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
               <Download size={17} />

@@ -1938,8 +1938,8 @@ export default function ChatListView({
     const confirmed = await feedback.confirm({
       title: onDeleteHistoryTask ? `删除任务“${chat.name}”？` : `从列表移除“${chat.name}”？`,
       message: onDeleteHistoryTask
-        ? '删除后无法在任务列表中继续访问该任务。'
-        : '此操作只影响当前浏览器，不会删除历史消息。',
+        ? '删除后无法在任务列表中继续访问该任务，但不会删除关联的 AI 员工或云托管实例。'
+        : '此操作只影响当前浏览器，不会删除历史消息、AI 员工或云托管实例。',
       confirmLabel: actionLabel,
       tone: 'danger',
     });

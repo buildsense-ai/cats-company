@@ -68,7 +68,12 @@ const catscoUiSystemCss = readFileSync(
   'utf8',
 );
 
-function PreviewHarness({ message, knownArtifacts = [], isSelf = false }) {
+function PreviewHarness({
+  message,
+  knownArtifacts = [],
+  isSelf = false,
+  onOpenRemoteArtifactFullscreen = vi.fn(),
+}) {
   const [previewFile, setPreviewFile] = React.useState(null);
   const chatColumnRef = React.useRef(null);
   return (
@@ -86,7 +91,12 @@ function PreviewHarness({ message, knownArtifacts = [], isSelf = false }) {
       </div>
       {previewFile && (
         <div className="v3-file-preview-shell">
-          <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
+          <FilePreviewPanel
+            file={previewFile}
+            onClose={() => setPreviewFile(null)}
+            backgroundRef={chatColumnRef}
+            onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
+          />
         </div>
       )}
     </div>
@@ -1827,7 +1837,8 @@ describe('ChatMessage rich file rendering', () => {
       url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
       publish_version: 2,
     };
-    const previewURL = `${artifact.url}?artifact_version=2`;
+    const onOpenRemoteArtifactFullscreen = vi.fn();
+    const previewURL = 'https://artifacts.example.test/by-agent/440/lesson-game/v2/';
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -1838,6 +1849,7 @@ describe('ChatMessage rich file rendering', () => {
             created_at: '2026-07-27T00:00:00Z',
           }}
           knownArtifacts={[artifact]}
+          onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
         />,
       );
       await Promise.resolve();
@@ -1860,8 +1872,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('src')).toBe(previewURL);
     expect(frame.getAttribute('sandbox')).toContain('allow-same-origin');
     expect(frame.hasAttribute('credentialless')).toBe(true);
-    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(previewURL);
-    expect(container.querySelector('.v3-artifact-action[href]').getAttribute('href')).toBe(artifact.url);
+    const fullscreenButton = panel.querySelector('button[aria-label="在新标签页打开"]');
+    expect(fullscreenButton).not.toBeNull();
+    expect(container.querySelector('.v3-artifact-action[href]')).toBeNull();
     expect(panel.querySelector('.v3-remote-artifact-preview-state').textContent).toContain('正在加载');
 
     await act(async () => {
@@ -1875,7 +1888,14 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
-    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(previewURL);
+    await act(async () => Simulate.click(
+      panel.querySelector('.v3-remote-artifact-preview-state.error button'),
+    ));
+    expect(onOpenRemoteArtifactFullscreen).toHaveBeenCalledWith(expect.objectContaining({
+      artifact_id: 'lesson-game',
+      publish_version: 2,
+      url: previewURL,
+    }));
   });
 
   it('keeps the current Artifact visible until the hidden refresh frame answers through the page bridge', async () => {
@@ -2215,6 +2235,7 @@ describe('ChatMessage rich file rendering', () => {
     };
     const onBack = vi.fn();
     const onClose = vi.fn();
+    const onOpenRemoteArtifactFullscreen = vi.fn();
 
     await act(async () => {
       root.render(
@@ -2222,15 +2243,23 @@ describe('ChatMessage rich file rendering', () => {
           file={createCloudArtifactPreviewFile(artifact)}
           onBack={onBack}
           onClose={onClose}
+          onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
         />,
       );
       await Promise.resolve();
     });
 
     const panel = container.querySelector('.v3-file-preview-panel');
-    const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
-    expect(externalLink?.getAttribute('href')).toBe(`${artifact.url}?artifact_version=3`);
+    const externalButton = panel.querySelector('button[aria-label="在新标签页打开"]');
+    expect(externalButton).not.toBeNull();
     expect(panel.querySelector('a[download]')).toBeNull();
+
+    await act(async () => Simulate.click(externalButton));
+    expect(onOpenRemoteArtifactFullscreen).toHaveBeenCalledWith(expect.objectContaining({
+      artifact_id: 'managed-game',
+      publish_version: 3,
+      url: 'https://artifacts.example.test/by-agent/440/managed-game/v3/',
+    }));
 
     await act(async () => {
       Simulate.click(panel.querySelector('button[aria-label="返回云文件"]'));
@@ -2239,8 +2268,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('opens a same-origin registry Artifact in a new tab instead of embedding it', async () => {
+  it('previews a same-origin registry Artifact in the side panel with an opaque sandbox', async () => {
     const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
+    const previewURL = 'http://localhost:3000/artifacts/by-agent/440/same-origin/v1/';
     const artifact = {
       id: 'same-origin',
       title: 'Same-origin artifact',
@@ -2264,16 +2294,98 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     const previewButton = container.querySelector('.v3-artifact-actions button');
-    expect(previewButton.disabled).toBe(true);
+    expect(previewButton.disabled).toBe(false);
 
     await act(async () => {
       Simulate.click(container.querySelector('.v3-artifact-main'));
       await Promise.resolve();
     });
 
-    expect(window.open).toHaveBeenCalledWith(artifactURL, '_blank', 'noopener,noreferrer');
-    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
-    expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+    expect(window.open).not.toHaveBeenCalled();
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(panel).not.toBeNull();
+    const frame = panel.querySelector('iframe.v3-file-preview-frame');
+    const frameURL = new URL(frame?.getAttribute('src'));
+    expect(`${frameURL.origin}${frameURL.pathname}${frameURL.search}`).toBe(previewURL);
+    expect(frameURL.hash).toContain('catsco_bridge_nonce=');
+    expect(frame?.getAttribute('srcdoc')).toBeNull();
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-popups allow-modals');
+    expect(frame?.hasAttribute('credentialless')).toBe(true);
+  });
+
+  it('invalidates the opaque bridge when the preview iframe loads a second document', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/reloadable/latest/', window.location.origin).toString();
+    const onBindingChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile({
+            id: 'reloadable',
+            agent_uid: 440,
+            title: 'Reloadable artifact',
+            url: artifactURL,
+            publish_version: 1,
+          })}
+          onRemoteArtifactFrameChange={onBindingChange}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    const frame = container.querySelector('iframe.v3-file-preview-frame');
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    const firstBinding = onBindingChange.mock.calls.at(-1)?.[0];
+    expect(firstBinding?.bridge).toBe('catsco.artifact-frame-bridge.v1');
+    expect(firstBinding?.bridgeReady).toBe(true);
+    expect(firstBinding?.signal?.aborted).toBe(false);
+
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    expect(firstBinding.signal.aborted).toBe(true);
+    expect(onBindingChange.mock.calls.at(-1)?.[0]).toBeNull();
+    expect(container.querySelector('.v3-remote-artifact-preview-state.error')).not.toBeNull();
+  });
+
+  it('aborts the active opaque bridge when the preview unmounts', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/unmountable/latest/', window.location.origin).toString();
+    const onBindingChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile({
+            id: 'unmountable',
+            agent_uid: 440,
+            title: 'Unmountable artifact',
+            url: artifactURL,
+            publish_version: 1,
+          })}
+          onRemoteArtifactFrameChange={onBindingChange}
+          onClose={vi.fn()}
+        />,
+      );
+      await flushAsync();
+    });
+
+    const frame = container.querySelector('iframe.v3-file-preview-frame');
+    await act(async () => {
+      Simulate.load(frame);
+      await flushAsync();
+    });
+    const binding = onBindingChange.mock.calls.at(-1)?.[0];
+    expect(binding?.signal?.aborted).toBe(false);
+
+    await act(async () => {
+      root.render(null);
+      await flushAsync();
+    });
+
+    expect(binding.signal.aborted).toBe(true);
   });
 
   it('keeps an unknown external URL as an ordinary link', async () => {
@@ -2548,7 +2660,7 @@ describe('ChatMessage rich file rendering', () => {
 
       expect(share).toHaveBeenCalledWith({
         title: 'report.pdf',
-        url: new URL('/uploads/files/report.pdf', window.location.href).toString(),
+        url: new URL('/uploads/files/report.pdf?preview=1&name=report.pdf', window.location.href).toString(),
       });
     } finally {
       if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
@@ -2607,7 +2719,7 @@ describe('ChatMessage rich file rendering', () => {
 
       expect(share).toHaveBeenCalledWith({
         title: 'report.html',
-        url: new URL('/uploads/files/report.html', window.location.href).toString(),
+        url: new URL('/uploads/files/report.html?preview=1&name=report.html', window.location.href).toString(),
       });
     } finally {
       if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
@@ -3160,6 +3272,67 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('shares a video metadata preview URL while preserving the download action', async () => {
+    const originalShare = Object.getOwnPropertyDescriptor(navigator, 'share');
+    const share = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: share,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 81,
+              from_uid: 2,
+              content: '[文件] product-demo.mp4',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'product-demo.mp4',
+                  url: '/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4',
+                  size: 4096,
+                  mime_type: 'video/mp4',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('button.oc-rich-video-trigger'));
+        await flushAsync();
+      });
+
+      const preview = container.querySelector('.oc-rich-video-preview');
+      const shareButton = preview.querySelector('button[aria-label="分享视频"]');
+      const download = preview.querySelector('a.oc-rich-media-preview-download');
+      expect(shareButton).not.toBeNull();
+      expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1');
+
+      await act(async () => {
+        Simulate.click(shareButton);
+        await flushAsync();
+      });
+
+      expect(share).toHaveBeenCalledWith({
+        title: 'product-demo.mp4',
+        url: new URL(
+          '/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?preview=1&name=product-demo.mp4',
+          window.location.href,
+        ).toString(),
+      });
+    } finally {
+      if (originalShare) Object.defineProperty(navigator, 'share', originalShare);
+      else delete navigator.share;
+    }
   });
 
   it.each([

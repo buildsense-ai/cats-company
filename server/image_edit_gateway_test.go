@@ -1,9 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -38,6 +42,107 @@ func imageEditBody(prompt string, images ...string) string {
 		panic(err)
 	}
 	return string(encoded)
+}
+
+func testDecodablePNGDataURL(width, height int, transparent bool) string {
+	canvas := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			alpha := uint8(255)
+			if transparent && x >= width/3 && x < 2*width/3 && y >= height/3 && y < 2*height/3 {
+				alpha = 0
+			}
+			canvas.SetNRGBA(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: alpha})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canvas); err != nil {
+		panic(err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+}
+
+func imageEditBodyWithMask(prompt, imageURL, maskURL string) string {
+	payload := map[string]interface{}{
+		"prompt": prompt,
+		"images": []map[string]string{{"image_url": imageURL}},
+		"mask":   maskURL,
+		"size":   "1024x1024",
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func TestValidateImageEditPayloadAcceptsMatchingTransparentPNGMask(t *testing.T) {
+	payload := map[string]interface{}{
+		"prompt": "remove the selected subject",
+		"images": []interface{}{map[string]interface{}{"image_url": testDecodablePNGDataURL(24, 16, false)}},
+		"mask":   testDecodablePNGDataURL(24, 16, true),
+	}
+	count, decodedBytes, err := validateImageEditPayload(payload, defaultImageEditReferenceLimits)
+	if err != nil {
+		t.Fatalf("validate mask payload: %v", err)
+	}
+	if count != 1 || decodedBytes <= 0 {
+		t.Fatalf("count=%d decodedBytes=%d", count, decodedBytes)
+	}
+}
+
+func TestValidateImageEditPayloadRejectsInvalidMasks(t *testing.T) {
+	source := testDecodablePNGDataURL(24, 16, false)
+	for _, testCase := range []struct {
+		name string
+		mask interface{}
+	}{
+		{name: "non string", mask: 42},
+		{name: "mismatched dimensions", mask: testDecodablePNGDataURL(12, 16, true)},
+		{name: "missing alpha channel", mask: testDecodablePNGDataURL(24, 16, false)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			payload := map[string]interface{}{
+				"prompt": "remove object",
+				"images": []interface{}{map[string]interface{}{"image_url": source}},
+				"mask":   testCase.mask,
+			}
+			if _, _, err := validateImageEditPayload(payload, defaultImageEditReferenceLimits); err == nil {
+				t.Fatal("expected mask validation error")
+			}
+		})
+	}
+}
+
+func TestValidateImageEditPayloadPreservesOversizedMaskStatus(t *testing.T) {
+	sourceURL := testDecodablePNGDataURL(24, 16, false)
+	maskURL := testDecodablePNGDataURL(24, 16, true)
+	_, sourceBytes, err := decodeImageEditDataURL(sourceURL)
+	if err != nil {
+		t.Fatalf("decode source image: %v", err)
+	}
+	_, maskBytes, err := decodeImageEditDataURL(maskURL)
+	if err != nil {
+		t.Fatalf("decode mask image: %v", err)
+	}
+	maskBytes = append(maskBytes, make([]byte, len(sourceBytes)+1)...)
+	maskURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskBytes)
+
+	payload := map[string]interface{}{
+		"prompt": "remove object",
+		"images": []interface{}{map[string]interface{}{"image_url": sourceURL}},
+		"mask":   maskURL,
+	}
+	limits := imageEditReferenceLimits{
+		maxImages:     3,
+		maxImageBytes: int64(len(maskBytes) - 1),
+		maxTotalBytes: int64(len(sourceBytes) + len(maskBytes)),
+	}
+	_, _, err = validateImageEditPayload(payload, limits)
+	requestErr, ok := err.(*imageEditRequestError)
+	if !ok || requestErr.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected oversized mask to return %d, got %#v", http.StatusRequestEntityTooLarge, err)
+	}
 }
 
 func TestImageEditProxyHandlerForwardsReferencesAndForcesPolicy(t *testing.T) {

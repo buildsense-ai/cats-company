@@ -450,8 +450,10 @@ func main() {
 	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	cloudArtifactHandler.SetNotifier(hub)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
+	hub.SetArtifactTaskIntentResolver(cloudArtifactHandler)
 	artifactContextSnapshotHandler := server.NewArtifactContextSnapshotHandler(hub)
 	artifactResultHandler := server.NewArtifactResultHandler(hub)
+	artifactTaskHandler := server.NewArtifactTaskHandler(hub)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	imageUpscaleTaskStore, _ := db.(store.ImageUpscaleTaskStore)
 	imageUpscaleHandler := server.NewImageUpscaleProxyHandlerFromEnv(imageUpscaleTaskStore)
@@ -631,6 +633,12 @@ func main() {
 	feedbackUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "feedback_user", Limit: 10, Window: 10 * time.Minute, Burst: 3,
 	})
+	botInviteRedeemIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "bot_invite_redeem_ip", Limit: 30, Window: time.Minute, Burst: 8,
+	})
+	botInviteRedeemUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "bot_invite_redeem_user", Limit: 12, Window: time.Minute, Burst: 4,
+	})
 	deviceConnectorEnrollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "device_connector_enroll_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -770,6 +778,7 @@ func main() {
 	mux.HandleFunc("/api/messages/search", authWithDB(msgHandler.HandleSearchMessages))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
 	mux.HandleFunc("/api/artifact-context/snapshots", jwtAuthWithDB(artifactContextSnapshotHandler.HandleUserSnapshots))
+	mux.HandleFunc("/api/artifact-tasks", jwtAuthWithDB(artifactTaskHandler.HandleUserTasks))
 	mux.HandleFunc("/api/stt/sessions", jwtAuthWithDB(sttHandler.HandleSession))
 	mux.HandleFunc("/api/stt/realtime", sttHandler.HandleRealtime)
 	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
@@ -868,6 +877,8 @@ func main() {
 	// Bot management (user-facing — owner creates/manages their bots)
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
+	mux.HandleFunc("/api/bots/invite-code", ownerAuthWithDB(botHandler.HandleBotInviteCode))
+	mux.HandleFunc("/api/bots/invite/redeem", chainHTTP(botHandler.HandleRedeemBotInvite, botInviteRedeemIPLimit, jwtAuthWithDB, botInviteRedeemUserLimit))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
 	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))
@@ -880,6 +891,7 @@ func main() {
 	mux.HandleFunc("/api/bot/identity", botAPIKeyAuthWithDB(server.HandleBotIdentity))
 	mux.HandleFunc("/api/bot/artifact-runtime-config", botAPIKeyAuthWithDB(artifactRuntimeConfigHandler.Handle))
 	mux.HandleFunc("/api/bot/artifact-context", botAPIKeyAuthWithDB(artifactContextSnapshotHandler.HandleBotRead))
+	mux.HandleFunc("/api/bot/artifact-task", botAPIKeyAuthWithDB(artifactTaskHandler.HandleBotRead))
 	mux.HandleFunc("/api/bot/artifact-results", botAPIKeyAuthWithDB(artifactResultHandler.HandleBotResults))
 	mux.HandleFunc("/api/bots/definition", ownerAuthWithDB(botDefinitionHandler.HandleOwnerDefinition))
 	mux.HandleFunc("/api/bots/definition/model", ownerAuthWithDB(botDefinitionHandler.HandleOwnerModel))

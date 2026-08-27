@@ -81,8 +81,8 @@ if [[ "$EXT_IP" != "0" && "$EXT_IP" != "1" ]]; then
 fi
 # 计费模式（平台按月售卖，默认 month）：month = 包月 + 到期时间，ondemand = 按量
 # CTYUN_WORKER_CYCLE_COUNT：包月时长（月），默认 1
-# CTYUN_WORKER_AUTO_RENEW 已废弃并忽略。云托管实例严禁自动续费，
-# 到期后的冻结/释放由天翼云策略和 CatsCompany 生命周期任务处理。
+# CTYUN_WORKER_AUTO_RENEW 已废弃并忽略。云托管实例严禁自动续费；
+# 创建完成后会显式写入 autoRenewStatus=0，不能依赖云侧默认值。
 BILLING_MODE="${CTYUN_WORKER_BILLING_MODE:-month}"
 CYCLE_COUNT="${CTYUN_WORKER_CYCLE_COUNT:-1}"
 if [[ "$BILLING_MODE" != "month" && "$BILLING_MODE" != "ondemand" ]]; then
@@ -354,6 +354,13 @@ for _ in $(seq 1 60); do
   sleep 10
 done
 [[ -n "$INSTANCE_IP" ]] || { echo "error: timed out waiting for instance to be running" >&2; exit 1; }
+
+# 包月订单必须显式关闭天翼云自动续费。若云侧拒绝该设置，供给失败并进入
+# 清理流程，避免创建一台可能在用户未续订 CatsCo 套餐时继续扣费的实例。
+if [[ "$BILLING_MODE" == "month" ]]; then
+  ctyun ecs UpdateEcsAutoRenewConfig --regionID "$REGION_ID" \
+    --instanceIDList "$CREATED_INSTANCE_UUID" --autoRenewStatus 0 >/dev/null
+fi
 
 # SSH 跳板（NAT 架构）：ProxyCommand 经跳板机转发，凭据全来自环境变量
 # （不依赖容器内 ~/.ssh/config，容器重建后无需手工恢复）

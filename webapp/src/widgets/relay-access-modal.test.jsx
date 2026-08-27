@@ -123,6 +123,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(container.textContent).toContain('确认购买');
     expect(container.textContent).toContain(plan.name);
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('云托管员工到期后保留 15 天');
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
@@ -705,7 +706,9 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
 
     await clickButton('续费');
-    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('续费后从当前套餐到期时间顺延 30 天');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('续费后从当前套餐到期日顺延 30 天');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('到期保留期的云托管员工会自动恢复');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('已释放的实例无法恢复');
   });
 
   it('offers Personal users an immediate Pro upgrade with explicit reset timing', async () => {
@@ -893,6 +896,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
     expect(container.textContent).toContain('确认购买');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).not.toContain('云托管员工到期后保留 15 天');
     await clickButton('确认购买');
 
     expect(api.createCommercialOrder).toHaveBeenCalledWith(9, 'test', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });

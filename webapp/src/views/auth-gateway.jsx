@@ -92,6 +92,7 @@ export function AuthView({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
+  const [botInviteCode, setBotInviteCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [codeSent, setCodeSent] = useState(false);
@@ -131,7 +132,7 @@ export function AuthView({
       if (mode === 'login') {
         await onLogin(username, password);
       } else {
-        await onRegister(email, password, code);
+        await onRegister(email, password, code, botInviteCode);
       }
       onAuthenticationIntent?.();
     } catch (err) {
@@ -242,6 +243,14 @@ export function AuthView({
             value={password}
             onChange={(event) => setPassword(event.target.value)}
           />
+          <input
+            className="oc-auth-input"
+            placeholder="机器人邀请码（可选）"
+            aria-label="机器人邀请码（可选）"
+            autoComplete="off"
+            value={botInviteCode}
+            onChange={(event) => setBotInviteCode(event.target.value.toUpperCase())}
+          />
         </>
       )}
 
@@ -311,8 +320,8 @@ export default function AuthGateway({
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
-  const handleRegister = async (email, password, code) => {
-    await authApi.register({ email, password, code });
+  const handleRegister = async (email, password, code, botInviteCode = '') => {
+    await authApi.register({ email, password, code, bot_invite_code: botInviteCode.trim() });
     await establishSession(email, password);
     navigateBrowserPath(
       nameOnboardingPathForNext(postAuthenticationPathFromSearch(search)),

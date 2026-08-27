@@ -6,7 +6,6 @@ vi.mock('../api', () => ({
   api: {
     createBot: vi.fn(),
     createCloudWorker: vi.fn(),
-    deleteCloudWorker: vi.fn(),
     getAgents: vi.fn(),
     getCloudWorkerMeta: vi.fn(),
     getCloudWorkers: vi.fn(),
@@ -14,9 +13,11 @@ vi.mock('../api', () => ({
     getAgentPrompt: vi.fn(),
     getBotDefinitionPrompt: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
+    getBotInviteCode: vi.fn(),
     getFriends: vi.fn(),
     getLocalSkills: vi.fn(),
     getMyBots: vi.fn(),
+    generateBotInviteCode: vi.fn(),
     updateCloudWorker: vi.fn(),
     resetCloudWorker: vi.fn(),
     rollbackCloudWorker: vi.fn(),
@@ -45,7 +46,6 @@ describe('AgentStoreModal', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     api.createBot.mockReset().mockResolvedValue({ uid: 91 });
     api.createCloudWorker.mockReset().mockResolvedValue({ uid: 92, tenant_name: 'tenant-new' });
-    api.deleteCloudWorker.mockReset().mockResolvedValue({});
     api.getAgents.mockReset().mockResolvedValue({ agents: [] });
     api.getCloudWorkerMeta.mockReset().mockResolvedValue({ images: [] });
     api.getCloudWorkers.mockReset().mockResolvedValue({
@@ -68,9 +68,11 @@ describe('AgentStoreModal', () => {
       runtime: { appliedRevision: 2, lastAttemptRevision: 2, appliedAt: '2026-08-13T08:00:00Z' },
     });
     api.getBotDefinitionSkills.mockReset().mockResolvedValue({ revision: 0, skills: [] });
+    api.getBotInviteCode.mockReset().mockResolvedValue({});
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
     api.getLocalSkills.mockReset().mockResolvedValue({ skills: [] });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
+    api.generateBotInviteCode.mockReset().mockResolvedValue({ code: 'NEWCODE12345' });
     api.updateCloudWorker.mockReset().mockResolvedValue({});
     api.resetCloudWorker.mockReset().mockResolvedValue({});
     api.rollbackCloudWorker.mockReset().mockResolvedValue({});
@@ -88,12 +90,17 @@ describe('AgentStoreModal', () => {
       runtime: { appliedRevision: 2, lastAttemptRevision: 2 },
     });
     api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/avatar.png' });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await act(async () => {
       root.unmount();
     });
@@ -815,7 +822,95 @@ describe('AgentStoreModal', () => {
     expect(entryButton?.classList.contains('oc-btn-default')).toBe(true);
     expect(manageButton?.querySelector('.lucide-settings-2')).not.toBeNull();
     expect(container.querySelector('[aria-label="删除助手 Review Agent"]')?.textContent).toBe('');
+    expect(container.querySelector('[aria-label="删除助手 Private Agent"]')).toBeNull();
     expect(container.querySelector('.cc-agent-usage-guide')).toBeNull();
+  });
+
+  test('keeps the invite-code action stable while copy feedback changes', async () => {
+    vi.useFakeTimers();
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 42,
+        username: 'review-agent',
+        display_name: 'Review Agent',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+      }],
+    });
+    api.getBotInviteCode.mockResolvedValue({ code: 'CBBEDC7C5FC0' });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const inviteButton = container.querySelector('.cc-agent-card-invite-code');
+    const card = inviteButton.closest('.v3-agent-card');
+    expect(inviteButton.textContent).toContain('CBBEDC7C5FC0');
+    expect(inviteButton.textContent).not.toContain('已复制');
+    expect(inviteButton.querySelector('.lucide-copy')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(inviteButton);
+      await Promise.resolve();
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('CBBEDC7C5FC0');
+    expect(api.generateBotInviteCode).not.toHaveBeenCalled();
+    expect(inviteButton.textContent).toContain('CBBEDC7C5FC0');
+    expect(inviteButton.querySelector('.lucide-check')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(card);
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(inviteButton.textContent).toContain('CBBEDC7C5FC0');
+    expect(inviteButton.querySelector('.lucide-copy')).not.toBeNull();
+    expect(inviteButton.classList.contains('cc-agent-card-invite-code')).toBe(true);
+  });
+
+  test('keeps invite-code regeneration behind confirmation', async () => {
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 42,
+        username: 'review-agent',
+        display_name: 'Review Agent',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+      }],
+    });
+    api.getBotInviteCode.mockResolvedValue({ code: 'CBBEDC7C5FC0' });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const regenerateButton = Array.from(container.querySelectorAll('.cc-agent-card-action'))
+      .find((button) => button.textContent === '重新生成');
+    await act(async () => {
+      Simulate.click(regenerateButton);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(api.generateBotInviteCode).toHaveBeenCalledWith(42);
+    confirmSpy.mockRestore();
   });
 
   test('does not apply a completed avatar upload to a different managed assistant', async () => {
@@ -1054,7 +1149,7 @@ describe('AgentStoreModal', () => {
     // Self-hosted form is shown by default.
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('创建我的专属助手'))).toBe(true);
-    expect(container.textContent).not.toContain('云托管配额');
+    expect(container.textContent).not.toContain('云托管创建权益');
 
     // Select managed hosting -> the cloud panel replaces the self-hosted form.
     const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
@@ -1063,7 +1158,7 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('1/3 已使用');
     expect(Array.from(container.querySelectorAll('button'))
       .some((button) => button.textContent.includes('创建云托管员工'))).toBe(true);
@@ -1302,8 +1397,8 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
-    // 云托管管理视图：配额 + 员工管理，无部署方式 radio
-    expect(container.textContent).toContain('云托管配额');
+    // 云托管管理视图：创建权益 + 员工管理，无部署方式 radio
+    expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('运行中');
     expect(container.querySelector('.cc-agent-hosting')).toBeNull();

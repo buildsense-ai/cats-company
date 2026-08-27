@@ -236,6 +236,15 @@ read-only in the server container.
 Every `public_base_url` must use a different origin (scheme, host, or port) from
 `CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
 so executable Artifact HTML cannot share the CatsCo application origin.
+Published managed Artifact HTML URLs are part of the opaque-frame bridge
+contract: they must be canonical paths without query/fragment components and
+must serve the final document directly. Do not configure an HTTP redirect from
+an Artifact URL to another document. Before publishing a node, verify a real
+HTML URL with redirects disabled; a 3xx response is a deployment failure:
+
+```bash
+curl --fail --max-redirs 0 --location --silent --show-error --output /dev/null <artifact-url>
+```
 For example:
 
 ```bash

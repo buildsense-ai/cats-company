@@ -157,6 +157,10 @@ export function isWSConnected() {
   return wsConnected;
 }
 
+export function hasArtifactPreviewSession() {
+  return Boolean(wsArtifactPreviewSession?.token);
+}
+
 async function localRequest(method, path, body, options = {}) {
   const { timeoutMs = 45_000 } = options;
   const controller = new AbortController();
@@ -401,6 +405,7 @@ export const api = {
       if (content.mode) payload.mode = content.mode;
       if (content.role) payload.role = content.role;
       if (content.metadata) payload.metadata = content.metadata;
+      if (content.client_msg_id) payload.client_msg_id = content.client_msg_id;
       if (typeof content.content === 'string') {
         payload.content = content.content;
       } else if (content.payload || content.type || content.metadata) {
@@ -434,6 +439,30 @@ export const api = {
     'DELETE',
     '/api/artifact-context/snapshots',
     { context_ref: contextRef },
+    options,
+  ),
+  createArtifactTask: (task, options = {}) => {
+    const previewSession = wsArtifactPreviewSession;
+    return request(
+      'POST',
+      '/api/artifact-tasks',
+      {
+        ...task,
+        ...(previewSession ? { preview_session: previewSession } : {}),
+      },
+      options,
+    );
+  },
+  getArtifactTask: (taskId, options = {}) => request(
+    'GET',
+    `/api/artifact-tasks?task_id=${encodeURIComponent(String(taskId || ''))}`,
+    undefined,
+    options,
+  ),
+  failArtifactTask: (taskId, options = {}) => request(
+    'DELETE',
+    '/api/artifact-tasks',
+    { task_id: taskId },
     options,
   ),
 
@@ -595,7 +624,10 @@ export const api = {
 
   // Bot management
   getMyBots: () => request('GET', '/api/bots'),
-  getBotAPIKey: (uid) => request('GET', `/api/bots/api-key?uid=${uid}`),
+  getBotInviteCode: (uid) => request('GET', `/api/bots/invite-code?uid=${uid}`),
+  generateBotInviteCode: (uid) => request('POST', `/api/bots/invite-code?uid=${uid}`, {}),
+  revokeBotInviteCode: (uid) => request('DELETE', `/api/bots/invite-code?uid=${uid}`, {}),
+  redeemBotInviteCode: (code) => request('POST', '/api/bots/invite/redeem', { code }),
   createBot: ({ username, display_name, role, description }) =>
     request('POST', '/api/bots', { username, display_name, role, description }),
 
@@ -610,8 +642,6 @@ export const api = {
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload, { timeoutMs: 630_000 }),
   resetCloudWorker: (name, payload = {}) =>
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload, { timeoutMs: 630_000 }),
-  deleteCloudWorker: (name) =>
-    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}, { timeoutMs: 630_000 }),
   updateBot: (uid, {
     display_name,
     avatar_url,

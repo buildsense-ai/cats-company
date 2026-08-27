@@ -176,7 +176,7 @@ func testCommercialRelayBaselineContract(t *testing.T, db *Adapter) {
 		t.Fatalf("create free baseline user: %v", err)
 	}
 	anchor := time.Date(2026, 8, 1, 8, 30, 0, 0, time.UTC)
-	budgets := map[string]float64{"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-v4-flash": 100}
+	budgets := map[string]float64{"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-v4-flash": 100, "glm-5.3-flash": 100}
 	created, err := db.EnsureCommercialRelayBaseline(freeUID, "free", budgets, anchor)
 	if err != nil || !created {
 		t.Fatalf("create free relay baseline: created=%v err=%v", created, err)
@@ -186,7 +186,7 @@ func testCommercialRelayBaselineContract(t *testing.T, db *Adapter) {
 		t.Fatalf("free relay baseline was not idempotent: created=%v err=%v", created, err)
 	}
 	summary, err := db.GetCommercialSummary(freeUID)
-	if err != nil || summary.TotalCNY != 1600 || len(summary.Entitlements) != 1 || len(summary.Grants) != 3 {
+	if err != nil || summary.TotalCNY != 1700 || len(summary.Entitlements) != 1 || len(summary.Grants) != 4 {
 		t.Fatalf("unexpected free relay baseline summary: summary=%#v err=%v", summary, err)
 	}
 	if summary.Entitlements[0].PlanSlug != "catsco-free" || !summary.Entitlements[0].StartsAt.Equal(anchor) {
@@ -212,7 +212,7 @@ func testCommercialRelayBaselineContract(t *testing.T, db *Adapter) {
 		t.Fatalf("recreate free relay baseline after refund: created=%v err=%v", created, err)
 	}
 	restored, err := db.GetCommercialSummary(freeUID)
-	if err != nil || restored.TotalCNY != 1600 || len(restored.Entitlements) != 1 || len(restored.Grants) != 3 {
+	if err != nil || restored.TotalCNY != 1700 || len(restored.Entitlements) != 1 || len(restored.Grants) != 4 {
 		t.Fatalf("unexpected restored free relay baseline summary: summary=%#v err=%v", restored, err)
 	}
 
@@ -554,14 +554,14 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	t.Helper()
 	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750, "gpt-5.6-terra": 1750, "gpt-5.6-sol": 1750, "gpt-5.6-luna": 1750}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 1500, "MiniMax-M3": 1500, "deepseek-v4-flash": 1500, "glm-5.3-flash": 1500, "gpt-5.6-terra": 1500, "gpt-5.6-sol": 1500, "gpt-5.6-luna": 1500}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create personal plan: %v", err)
 	}
 	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 5250, "MiniMax-M3": 5250, "deepseek-v4-flash": 5250, "gpt-5.6-terra": 5250, "gpt-5.6-sol": 5250, "gpt-5.6-luna": 5250}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 4500, "MiniMax-M3": 4500, "deepseek-v4-flash": 4500, "glm-5.3-flash": 4500, "gpt-5.6-terra": 4500, "gpt-5.6-sol": 4500, "gpt-5.6-luna": 4500}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)
@@ -582,7 +582,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatal("paid upgrade order did not retain payment timestamp")
 	}
 	summary, err := db.GetCommercialSummary(paidUID)
-	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 5275 {
+	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 4525 {
 		t.Fatalf("paid upgrade did not replace personal quota: summary=%#v err=%v", summary, err)
 	}
 	var bonusRevokedAt sql.NullTime
@@ -596,7 +596,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'upgrade' AND entry_type = 'revoke'`, paidUID).Scan(&upgradeLedger); err != nil {
 		t.Fatalf("count upgrade ledger entries: %v", err)
 	}
-	if revokedPersonalGrants != 6 || upgradeLedger != 6 {
+	if revokedPersonalGrants != 7 || upgradeLedger != 7 {
 		t.Fatalf("paid upgrade audit mismatch: revoked=%d ledger=%d", revokedPersonalGrants, upgradeLedger)
 	}
 	var personalState string
@@ -684,7 +684,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("redeem personal invite: %v", err)
 	}
 	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
-	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 5250 {
+	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 4500 {
 		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
 	}
 }

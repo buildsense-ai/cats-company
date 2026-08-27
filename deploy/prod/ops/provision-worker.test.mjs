@@ -376,7 +376,7 @@ test("provision-worker: monthly billing by default without auto-renew", () => {
   assert.match(state.createArgs, /--cycleCount 1/);
   assert.match(state.createArgs, /--extIP 0/);
   assert.ok(!state.createArgs.includes("--bandwidth"), "private-IP provisioning must not request public bandwidth");
-  assert.equal((state.renewCalls || []).length, 0, "cloud workers must never auto-renew");
+  assert.deepEqual(state.renewCalls, [{ instanceIDList: "i-worker-bot-a", autoRenewStatus: "0", autoRenewCycleType: "", autoRenewCycleCount: "" }]);
   assert.ok((state.instances || [])[0].expiredTime, "monthly instance should carry expiredTime");
 });
 
@@ -412,7 +412,17 @@ test("provision-worker: deprecated AUTO_RENEW setting is ignored", () => {
   if (r.status !== 0) assert.equal(r.status, 0, r.stderr);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.match(state.createArgs, /--onDemand false/);
-  assert.equal((state.renewCalls || []).length, 0, "auto-renew must remain disabled");
+  assert.deepEqual(state.renewCalls, [{ instanceIDList: "i-worker-bot-a", autoRenewStatus: "0", autoRenewCycleType: "", autoRenewCycleCount: "" }]);
+});
+
+test("provision-worker: fails closed when provider auto-renew cannot be disabled", () => {
+  const sb = setupSandbox({ failAutoRenew: true });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /E\.RENEW/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.unsubscribedInstances, ["i-worker-bot-a"]);
 });
 
 test("provision-worker: post-create failure unsubscribes monthly instance in cleanup", () => {

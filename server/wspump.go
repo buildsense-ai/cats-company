@@ -25,17 +25,24 @@ func (h *Hub) SendToUser(uid int64, msg *ServerMessage) {
 
 // SendToUserExcept sends a server message to all of a user's connections except one.
 func (h *Hub) SendToUserExcept(uid int64, msg *ServerMessage, exclude *Client) {
+	h.sendToUserExceptConfirmed(uid, msg, exclude)
+}
+
+// sendToUserExceptConfirmed returns how many live messaging connections
+// accepted the message into their bounded WebSocket send queue.
+func (h *Hub) sendToUserExceptConfirmed(uid int64, msg *ServerMessage, exclude *Client) int {
 	clients := h.getClients(uid)
 	if len(clients) == 0 {
-		return
+		return 0
 	}
 
 	data, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("marshal error: %v", err)
-		return
+		return 0
 	}
 
+	delivered := 0
 	for _, client := range clients {
 		if client == exclude {
 			continue
@@ -43,8 +50,11 @@ func (h *Hub) SendToUserExcept(uid int64, msg *ServerMessage, exclude *Client) {
 		if client.deviceConnector != nil {
 			continue
 		}
-		h.sendRawToClient(client, data)
+		if h.sendRawToClient(client, data) {
+			delivered++
+		}
 	}
+	return delivered
 }
 
 // SendToClient sends a server message to a specific connection.
@@ -62,14 +72,15 @@ func (h *Hub) SendToClient(client *Client, msg *ServerMessage) {
 	h.sendRawToClient(client, data)
 }
 
-func (h *Hub) sendRawToClient(client *Client, data []byte) {
+func (h *Hub) sendRawToClient(client *Client, data []byte) bool {
 	if client == nil {
-		return
+		return false
 	}
 	if client.trySend(data) {
-		return
+		return true
 	}
 	h.disconnectClient(client, "send buffer full")
+	return false
 }
 
 func (h *Hub) disconnectClient(client *Client, reason string) {

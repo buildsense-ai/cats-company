@@ -6007,6 +6007,25 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   box-shadow: none;
 }
 
+.oc-friend-invite-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-code);
+  color: var(--cc-text-secondary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.oc-friend-invite-input:focus,
+.oc-friend-invite-input:focus-visible {
+  outline: 0;
+  border-color: var(--cc-border-strong);
+}
+
 .oc-friend-search-control:focus-within {
   border-color: var(--cc-border-strong);
   box-shadow: none;
@@ -8449,6 +8468,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-manager .v3-agent-card .v3-agent-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
@@ -8506,12 +8527,27 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-card-action {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  max-width: 100%;
   min-height: 36px;
   padding: 0 12px !important;
   border-radius: 8px !important;
+  white-space: nowrap;
+}
+
+.cc-agent-card-invite-code {
+  flex: 1 1 150px;
+  min-width: min(150px, 100%);
+}
+
+.cc-agent-card-invite-value {
+  overflow: hidden;
+  min-width: 0;
+  font-family: var(--cc-font-mono);
+  text-overflow: ellipsis;
 }
 
 .cc-agent-card-delete {
@@ -9576,7 +9612,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 /* Desktop connection dialog */
 .oc-modal.catsco-download-modal {
-  width: min(640px, calc(100vw - 32px));
+  width: min(580px, calc(100vw - 32px));
   padding: 0;
 }
 
@@ -9602,8 +9638,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .catsco-connect-body {
   display: grid;
-  gap: 10px;
-  padding: 8px 20px 18px;
+  gap: 14px;
+  padding: 12px 20px 20px;
   overflow: auto;
 }
 
@@ -9611,6 +9647,10 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cc-selected) 42%, var(--cc-panel));
   min-width: 0;
   color: var(--v3-text-main);
 }
@@ -9618,8 +9658,72 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .catsco-connect-summary > svg { flex: 0 0 auto; margin-top: 2px; }
 .catsco-connect-copy { min-width: 0; }
 
+.catsco-connect-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 9px;
+  min-width: 0;
+}
+
+.catsco-connect-title-row strong {
+  color: var(--cc-text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.catsco-connect-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+  color: var(--cc-text-secondary);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.catsco-connect-status::before {
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+.catsco-connect-status.is-success {
+  border-color: color-mix(in srgb, var(--cc-accent) 35%, var(--cc-border));
+  color: var(--cc-accent);
+}
+
+.catsco-connect-status.is-pending { color: var(--cc-warning, #d58a14); }
+.catsco-connect-status.is-error { color: var(--cc-danger); }
+
+.catsco-connect-description {
+  margin-top: 4px;
+  color: var(--v3-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.catsco-connect-reselect {
+  margin-top: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cc-accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.catsco-connect-reselect:hover { text-decoration: underline; }
+
 .catsco-connect-actions {
   display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -9646,6 +9750,57 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   background: color-mix(in srgb, var(--cc-accent) 8%, var(--cc-panel));
   color: var(--cc-accent);
   font-weight: 600;
+}
+
+.catsco-desktop-download-section,
+.catsco-device-section,
+.catsco-audit-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.catsco-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.catsco-desktop-download-section .catsco-download-section-title,
+.catsco-device-section .catsco-download-section-title,
+.catsco-audit-section .catsco-download-section-title {
+  padding: 0;
+}
+
+.catsco-section-meta {
+  flex: 0 0 auto;
+  color: var(--cc-muted);
+  font-size: 11px;
+}
+
+.catsco-desktop-download-section .catsco-download-list,
+.catsco-device-section .catsco-download-list {
+  gap: 8px;
+  padding: 0;
+}
+
+.catsco-audit-section .catsco-download-list {
+  gap: 6px;
+  padding: 0;
+}
+
+.catsco-download-toggle,
+.catsco-download-more {
+  gap: 7px;
+}
+
+.catsco-download-more {
+  min-height: 34px;
+  justify-content: center;
+  border-style: dashed;
+  color: var(--cc-text-secondary);
 }
 
 .oc-password-reset-code-row {
@@ -9897,13 +10052,62 @@ button[aria-label="关闭"]:not(:disabled):active {
   transform: none;
 }
 
+.catsco-download-card-primary {
+  border-color: color-mix(in srgb, var(--cc-accent) 34%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-accent) 6%, var(--cc-panel));
+}
+
+.catsco-download-card-primary:hover {
+  border-color: color-mix(in srgb, var(--cc-accent) 48%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-accent) 10%, var(--cc-panel));
+}
+
 .catsco-download-card.catsco-device-card {
-  grid-template-columns: 40px minmax(0, 1fr) 32px;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
   align-items: center;
 }
 
-.catsco-device-card .catsco-download-action {
+.catsco-download-card.catsco-device-card.is-preferred {
+  border-color: color-mix(in srgb, var(--cc-accent) 42%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-accent) 7%, var(--cc-panel));
+}
+
+.catsco-device-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.catsco-device-role {
+  display: inline-flex;
+  align-items: center;
+  min-height: 19px;
+  padding: 1px 6px;
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+  color: var(--cc-text-secondary);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.catsco-device-role.is-preferred {
+  border-color: color-mix(in srgb, var(--cc-accent) 36%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-accent) 9%, transparent);
+  color: var(--cc-accent);
+  font-weight: 700;
+}
+
+.catsco-device-actions {
   grid-column: 3;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.catsco-device-select.is-selected {
+  color: var(--cc-accent);
 }
 
 .catsco-device-capabilities {
@@ -9935,8 +10139,21 @@ button[aria-label="关闭"]:not(:disabled):active {
 }
 
 @media (max-width: 640px) {
+  .oc-modal-overlay > .oc-modal.catsco-download-modal {
+    align-self: flex-start;
+    height: auto !important;
+  }
+
+  .catsco-connect-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .catsco-connect-body {
+    padding-inline: 14px;
+  }
+
   .catsco-download-card.catsco-device-card {
-    grid-template-columns: 36px minmax(0, 1fr) 28px;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
   }
 }
 
@@ -10134,10 +10351,6 @@ html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(
     max-width: 100%;
   }
 
-  .cc-agent-manager .v3-agent-card .v3-agent-actions {
-    flex-wrap: wrap;
-  }
-
   .cc-agent-card-action {
     min-width: 0;
     padding-inline: 8px !important;
@@ -10173,6 +10386,11 @@ html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(
     align-self: stretch;
     max-height: calc(100vh - 32px) !important;
     margin-block-start: 0;
+  }
+
+  .oc-modal-overlay > .oc-modal.catsco-download-modal:not(.cc-confirm-dialog) {
+    align-self: flex-start !important;
+    height: auto !important;
   }
 }
 
@@ -11104,6 +11322,50 @@ html[data-theme="liquid"] :is(
   transform: scale(0.96);
 }
 
+.oc-rich-media-preview-share {
+  position: fixed;
+  top: 20px;
+  right: 132px;
+  z-index: 1;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid oklch(0.96 0.008 165 / 0.24);
+  border-radius: 50%;
+  background: oklch(0.19 0.01 165 / 0.72);
+  color: oklch(0.96 0.008 165);
+  cursor: pointer;
+  transition:
+    background 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oc-rich-media-preview-share:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 3px;
+}
+
+.oc-rich-media-preview-share:hover {
+  background: oklch(0.27 0.018 165 / 0.86);
+  transform: translateY(-1px);
+}
+
+.oc-rich-media-preview-share:active {
+  transform: scale(0.96);
+}
+
+.oc-rich-media-preview-share.is-success {
+  border-color: color-mix(in srgb, var(--cc-accent) 58%, oklch(0.96 0.008 165 / 0.24));
+  color: var(--cc-accent);
+}
+
+.oc-rich-media-preview-share.is-error {
+  border-color: color-mix(in srgb, oklch(0.79 0.14 25) 54%, oklch(0.96 0.008 165 / 0.24));
+  color: oklch(0.79 0.14 25);
+}
+
 .oc-rich-image-gallery-preview .oc-rich-media-preview-close {
   width: 56px;
   height: 56px;
@@ -11257,6 +11519,7 @@ html[data-theme="liquid"] :is(
   .v3-message .oc-rich-video-play,
   .oc-rich-media-preview-close,
   .oc-rich-media-preview-download,
+  .oc-rich-media-preview-share,
   .oc-rich-video-preview-close,
   .v3-message .oc-rich-audio-download {
     transition: none;
@@ -11271,6 +11534,8 @@ html[data-theme="liquid"] :is(
   .oc-rich-media-preview-close:active,
   .oc-rich-media-preview-download:hover,
   .oc-rich-media-preview-download:active,
+  .oc-rich-media-preview-share:hover,
+  .oc-rich-media-preview-share:active,
   .oc-rich-video-preview-close:hover,
   .oc-rich-video-preview-close:active {
     transform: none;

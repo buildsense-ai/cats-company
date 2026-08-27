@@ -136,12 +136,13 @@ func (h *UserHandler) SetRelayRegistrationProvisioning(admin *RelayAdminClient) 
 
 // RegisterRequest is the JSON body for user registration.
 type RegisterRequest struct {
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email,omitempty"`
-	Phone       string `json:"phone,omitempty"`
-	Code        string `json:"code,omitempty"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	DisplayName   string `json:"display_name"`
+	Email         string `json:"email,omitempty"`
+	Phone         string `json:"phone,omitempty"`
+	Code          string `json:"code,omitempty"`
+	BotInviteCode string `json:"bot_invite_code,omitempty"`
 }
 
 // SendCodeRequest is the JSON body for sending verification code.
@@ -364,6 +365,19 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code required"})
 		return
 	}
+	if inviteCode := strings.ToUpper(strings.TrimSpace(req.BotInviteCode)); inviteCode != "" {
+		if invites, ok := h.db.(store.BotInviteStore); ok {
+			valid, err := invites.BotInviteCodeExists(inviteCode)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+				return
+			}
+			if !valid {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or unavailable bot invite code"})
+				return
+			}
+		}
+	}
 
 	switch consumeVerificationCode(email, req.Code, verificationPurposeRegister) {
 	case codeStatusValid:
@@ -393,8 +407,22 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		PassHash:    hash,
 	}
 
-	uid, err := h.db.CreateUser(user)
+	var uid int64
+	if inviteCode := strings.TrimSpace(req.BotInviteCode); inviteCode != "" {
+		invites, ok := h.db.(store.BotInviteStore)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot invite service unavailable"})
+			return
+		}
+		uid, _, err = invites.CreateUserWithBotInvite(user, strings.ToUpper(inviteCode))
+	} else {
+		uid, err = h.db.CreateUser(user)
+	}
 	if err != nil {
+		if errors.Is(err, store.ErrBotInviteUnavailable) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or unavailable bot invite code"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
 		return
 	}

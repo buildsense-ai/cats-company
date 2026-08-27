@@ -352,6 +352,16 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.querySelector('button[aria-label="模型用量"]')).toBeNull();
   });
 
+  it('opens the unified CatsCo desktop modal from the top-right desktop button', async () => {
+    const onDownload = vi.fn();
+    await renderBar({ onDownload });
+    const button = container.querySelector('button[aria-label="打开桌面端"]');
+    expect(button).toBeTruthy();
+    expect(button.getAttribute('title')).toBe('桌面端');
+    await act(async () => button.click());
+    expect(onDownload).toHaveBeenCalledTimes(1);
+  });
+
   it('always renders the cloud button and enables it when an Agent resource handler is available', async () => {
     const onOpenCloudArtifacts = vi.fn();
     await renderBar({ onOpenCloudArtifacts });

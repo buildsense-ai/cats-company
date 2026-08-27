@@ -7,6 +7,7 @@ vi.mock('../api', () => ({
     acceptFriend: vi.fn(),
     getPendingRequests: vi.fn(),
     rejectFriend: vi.fn(),
+    redeemBotInviteCode: vi.fn(),
     searchUsers: vi.fn(),
     sendFriendRequest: vi.fn(),
   },
@@ -124,6 +125,25 @@ describe('AddFriend search mode', () => {
 
     expect(container.querySelector('.oc-contact-item')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('shows a localized error when a bot invite code is invalid or expired', async () => {
+    api.redeemBotInviteCode.mockRejectedValue(
+      new Error('bot invite code is invalid or expired'),
+    );
+    await mount();
+
+    const input = container.querySelector('[aria-label="机器人邀请码"]');
+    await act(async () => Simulate.change(input, { target: { value: 'EXPIRED1' } }));
+    const redeemButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.trim() === '使用邀请码');
+    await act(async () => {
+      Simulate.click(redeemButton);
+      await flushPromises();
+    });
+
+    expect(api.redeemBotInviteCode).toHaveBeenCalledWith('EXPIRED1');
+    expect(container.querySelector('.oc-form-error').textContent).toBe('邀请码无效或已失效');
   });
 
   it('opens a body portal aligned to the trigger and selects a mode', async () => {

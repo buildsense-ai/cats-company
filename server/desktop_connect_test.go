@@ -47,7 +47,7 @@ func TestDesktopConnectSessionExchangeIsSingleUse(t *testing.T) {
 		t.Fatalf("missing code/deeplink in response: %+v", created)
 	}
 
-	body := []byte(`{"code":"` + created.Code + `"}`)
+	body := []byte(`{"code":"` + created.Code + `","device_id":"device-local","installation_id":"install-local","display_name":"CK123","runtime_role":"desktop"}`)
 	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/desktop-connect/exchange", bytes.NewReader(body))
 	exchangeRec := httptest.NewRecorder()
 	handler.HandleExchange(exchangeRec, exchangeReq)
@@ -75,6 +75,25 @@ func TestDesktopConnectSessionExchangeIsSingleUse(t *testing.T) {
 	}
 	if claims.TokenType != persistentUserTokenType || claims.ExpiresAt != nil {
 		t.Fatalf("unexpected desktop token claims: type=%q expires_at=%v", claims.TokenType, claims.ExpiresAt)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/desktop-connect/status?code="+created.Code, nil)
+	statusRec := httptest.NewRecorder()
+	handler.HandleStatus(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var connectStatus struct {
+		State       string `json:"state"`
+		DeviceID    string `json:"device_id"`
+		DisplayName string `json:"display_name"`
+		RuntimeRole string `json:"runtime_role"`
+	}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &connectStatus); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if connectStatus.State != "claimed" || connectStatus.DeviceID != "install-local" || connectStatus.DisplayName != "CK123" || connectStatus.RuntimeRole != "desktop" {
+		t.Fatalf("unexpected claimed device status: %+v", connectStatus)
 	}
 
 	reuseReq := httptest.NewRequest(http.MethodPost, "/api/desktop-connect/exchange", bytes.NewReader(body))

@@ -195,7 +195,8 @@ func metadataWithoutArtifactContext(metadata map[string]interface{}) map[string]
 	next := make(map[string]interface{}, len(metadata))
 	for key, value := range metadata {
 		if key == artifactRefMetadataKey || key == artifactContextMetadataKey ||
-			key == artifactPageContextMetadataKey || key == artifactContextRefMetadataKey {
+			key == artifactPageContextMetadataKey || key == artifactContextRefMetadataKey ||
+			key == artifactTaskRefMetadataKey {
 			continue
 		}
 		next[key] = value

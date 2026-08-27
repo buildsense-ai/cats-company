@@ -24,8 +24,8 @@ import SidebarResizeHandle, {
 } from '../widgets/sidebar-resizer';
 import ProfileEditor from '../widgets/profile-editor';
 import FeedbackModal from '../widgets/feedback-modal';
-import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
+import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import GroupSettings from '../widgets/group-settings';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
@@ -33,6 +33,8 @@ import EditableConversationTitle from '../widgets/editable-conversation-title';
 import IdentityOnboarding from '../components/identity-onboarding';
 import { useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
+import ArtifactFullscreenViewer from './artifact-fullscreen-viewer';
+import { ARTIFACT_VIEWER_PATH } from '../artifact-preview-coordinator';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
   describeModelApplyError,
@@ -201,16 +203,29 @@ function todayKey() {
   return `${year}-${month}-${day}`;
 }
 
-function findConnectedLocalAgent(agents) {
-  return (agents || []).find((agent) => agent.relation === 'owner' && agent.is_online);
-}
-
 function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
+function createComposerDraftStore() {
+  return {
+    inputDrafts: new Map(),
+    structuredMentionDrafts: new Map(),
+    attachmentDrafts: new Map(),
+  };
+}
+
+export function resetComposerDraftStore(draftStoreRef) {
+  const nextStore = createComposerDraftStore();
+  draftStoreRef.current = nextStore;
+  return nextStore;
+}
+
 export default function TinodeWeb({ location = window.location } = {}) {
   const { pathname = '/', search = '' } = location;
+  if (pathname === ARTIFACT_VIEWER_PATH) {
+    return <ArtifactFullscreenViewer location={location} />;
+  }
   const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
   if (mobileUploadMatch) {
     return <MobileUploadView sessionId={decodeURIComponent(mobileUploadMatch[1])} />;
@@ -247,6 +262,11 @@ function TinodeWebApp({ location }) {
   const [messageLocationRequest, setMessageLocationRequest] = useState(null);
   const messageLocationSequenceRef = useRef(0);
   const taskDraftSequenceRef = useRef(0);
+  const composerDraftStoreRef = useRef(null);
+
+  if (composerDraftStoreRef.current === null) {
+    resetComposerDraftStore(composerDraftStoreRef);
+  }
 
   useEffect(() => {
     if (!user) return undefined;
@@ -273,19 +293,24 @@ function TinodeWebApp({ location }) {
   const [showProfilePopover, setShowProfilePopover] = useState(false);
   const profilePopoverRef = useRef(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
-  const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
+  const [desktopModalMode, setDesktopModalMode] = useState('connect');
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
 
+  const openDesktopModal = useCallback((mode = 'connect') => {
+    setDesktopModalMode(mode === 'download' ? 'download' : 'connect');
+    setShowDesktopConnectModal(true);
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(search);
     if (params.get('open') === 'relay') setShowRelayModal(true);
-    if (params.get('open') === 'download') setShowDownloadModal(true);
-  }, [search]);
+    if (params.get('open') === 'download') openDesktopModal('download');
+  }, [openDesktopModal, search]);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
@@ -711,6 +736,7 @@ function TinodeWebApp({ location }) {
     setCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsTab('active');
+    resetComposerDraftStore(composerDraftStoreRef);
     setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
@@ -931,9 +957,8 @@ function TinodeWebApp({ location }) {
     if (!user?.uid) return;
     try {
       setLocalAgentStatus((status) => (status === 'connected' ? status : 'checking'));
-      const res = await api.getAgents();
-      const connected = findConnectedLocalAgent(res.agents || []);
-      if (connected) {
+      const res = await api.getDevices();
+      if (hasRoutableDesktopDevice(res.devices || [])) {
         setLocalAgentStatus('connected');
         return;
       }
@@ -942,14 +967,14 @@ function TinodeWebApp({ location }) {
         const promptKey = desktopPromptStorageKey(user.uid);
         if (readStorageValue(promptKey) !== todayKey()) {
           writeStorageValue(promptKey, todayKey());
-          setShowDesktopConnectModal(true);
+          openDesktopModal('connect');
         }
       }
     } catch (error) {
       console.warn('Failed to check desktop agent connection:', error);
       setLocalAgentStatus('unknown');
     }
-  }, [user?.uid]);
+  }, [openDesktopModal, user?.uid]);
 
   useEffect(() => {
     if (!user?.uid) return undefined;
@@ -1129,16 +1154,18 @@ function TinodeWebApp({ location }) {
     return nextTopic;
   }, [activateResolvedTopic, resolveAgentTopic]);
 
-  const handleDesktopConnected = async (agent) => {
+  const handleDesktopConnected = async (device) => {
     try {
-      const agentUid = agent?.uid || agent?.id;
+      const agentUid = device?.botUid;
       if (!agentUid) {
         setLocalAgentStatus('connected');
         setShowDesktopConnectModal(false);
         window.dispatchEvent(new Event('cc:data-changed'));
         return;
       }
-      await activateAgentTopic(agent);
+      const res = await api.getAgents();
+      const agent = (res.agents || []).find((candidate) => String(candidate.uid || candidate.id) === String(agentUid));
+      if (agent) await activateAgentTopic(agent);
       setLocalAgentStatus('connected');
       setShowDesktopConnectModal(false);
       window.dispatchEvent(new Event('cc:data-changed'));
@@ -1210,7 +1237,7 @@ function TinodeWebApp({ location }) {
       agentModelState={displayedAgentModel}
       activeAgent={displayedActiveAgent}
       currentModelName={currentModelName}
-      onDownload={() => setShowDownloadModal(true)}
+      onDownload={() => openDesktopModal('download')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
       title={activeTopic?.name || taskDraftTitle(taskDraft)}
       mobileModelInfo={mobileModelInfo}
@@ -1348,11 +1375,8 @@ function TinodeWebApp({ location }) {
             <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
               <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
             </button>
-            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
-              <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
-            </button>
-            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDesktopConnectModal(true); }}>
-              <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手
+            <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); openDesktopModal('connect'); }}>
+              <Laptop size={16} style={{marginRight: 10}} /> CatsCo 桌面端
             </button>
             <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
               <KeyRound size={16} style={{marginRight: 10}} /> 套餐与权益
@@ -1405,13 +1429,14 @@ function TinodeWebApp({ location }) {
                 localAssistantStatus={localAgentStatus}
                 onAgentModelChange={handleActiveAgentModelChange}
                 onActiveAgentChange={handleActiveAgentChange}
-                onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
+                onOpenDesktopConnect={() => openDesktopModal('connect')}
                 onResolveAgentTopic={resolveAgentTopic}
                 onActivateTopic={activateResolvedTopic}
                 cloudArtifactsRequest={cloudArtifactsRequest}
                 onCloudArtifactsRequestConsumed={consumeCloudArtifactsRequest}
                 messageLocationRequest={messageLocationRequest}
                 onBackToSearch={() => setSearchOpen(true)}
+                composerDraftStore={composerDraftStoreRef.current}
               />
             ) : (
               <>
@@ -1477,15 +1502,13 @@ function TinodeWebApp({ location }) {
         <FeedbackModal user={user} onClose={() => setShowFeedbackModal(false)} />
       )}
 
-      {showDownloadModal && (
-        <CatsCoDownloadModal onClose={() => setShowDownloadModal(false)} />
-      )}
-
       {showDesktopConnectModal && (
         <DesktopConnectModal
+          userId={user.uid}
           onClose={() => setShowDesktopConnectModal(false)}
           onConnected={handleDesktopConnected}
           onStatusChange={(status) => setLocalAgentStatus(status)}
+          initialMode={desktopModalMode}
         />
       )}
 
@@ -1640,8 +1663,8 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         >
           <Cloud size={17} aria-hidden="true" />
         </button>
-        <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onDownload} aria-label="下载桌面端">
-          <Download size={17} />
+        <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onDownload} aria-label="打开桌面端" title="桌面端">
+          <Laptop size={17} />
         </button>
         <div ref={mobileActionsRef} className="v3-mobile-actions">
           <button

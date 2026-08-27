@@ -482,6 +482,46 @@ func TestCloudArtifactHandlerRejectsURLFromWrongNode(t *testing.T) {
 	}
 }
 
+func TestValidateArtifactNodeURLRejectsFragments(t *testing.T) {
+	err := validateArtifactNodeURL(
+		"https://node-a.example/artifacts/by-agent/440/shared-game/latest/#dashboard",
+		"https://node-a.example/artifacts",
+		440,
+	)
+	if err == nil {
+		t.Fatal("validateArtifactNodeURL accepted a fragment-bearing Artifact URL")
+	}
+}
+
+func TestValidateArtifactNodeURLRejectsForceQuery(t *testing.T) {
+	err := validateArtifactNodeURL(
+		"https://node-a.example/artifacts/by-agent/440/shared-game/latest/?",
+		"https://node-a.example/artifacts",
+		440,
+	)
+	if err == nil {
+		t.Fatal("validateArtifactNodeURL accepted a force-query Artifact URL")
+	}
+}
+
+func TestValidateArtifactNodeURLRejectsNonCanonicalPaths(t *testing.T) {
+	tests := []string{
+		"https://node-a.example/artifacts//by-agent/440/shared-game/latest/",
+		"https://node-a.example/artifacts/by-agent/440/../440/shared-game/latest/",
+	}
+	for _, artifactURL := range tests {
+		t.Run(artifactURL, func(t *testing.T) {
+			if err := validateArtifactNodeURL(
+				artifactURL,
+				"https://node-a.example/artifacts",
+				440,
+			); err == nil {
+				t.Fatalf("validateArtifactNodeURL accepted non-canonical path %q", artifactURL)
+			}
+		})
+	}
+}
+
 func TestCloudArtifactHandlerRejectsURLFromWrongAgentNamespace(t *testing.T) {
 	const token = "node-a-management-token-abcdefghijklmnopqrstuvwxyz"
 	var upstream *httptest.Server
@@ -585,6 +625,20 @@ func TestParseArtifactNodeRegistryRejectsIncompleteMappings(t *testing.T) {
 				"agents": map[string]string{"440": "node-a"},
 			},
 			contains: "canonical",
+		},
+		{
+			name: "force-query management URL",
+			document: map[string]any{
+				"nodes": map[string]any{
+					"node-a": map[string]string{
+						"public_base_url":      "https://node-a.example/artifacts",
+						"management_url":       "https://node-a.example/internal/artifacts?",
+						"management_token_env": "NODE_A_TOKEN",
+					},
+				},
+				"agents": map[string]string{"440": "node-a"},
+			},
+			contains: "invalid artifact node URL",
 		},
 		{
 			name: "public node with token source",
