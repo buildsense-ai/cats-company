@@ -13,9 +13,11 @@ vi.mock('../api', () => ({
     getAgentPrompt: vi.fn(),
     getBotDefinitionPrompt: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
+    getBotInviteCode: vi.fn(),
     getFriends: vi.fn(),
     getLocalSkills: vi.fn(),
     getMyBots: vi.fn(),
+    generateBotInviteCode: vi.fn(),
     updateCloudWorker: vi.fn(),
     resetCloudWorker: vi.fn(),
     rollbackCloudWorker: vi.fn(),
@@ -66,9 +68,11 @@ describe('AgentStoreModal', () => {
       runtime: { appliedRevision: 2, lastAttemptRevision: 2, appliedAt: '2026-08-13T08:00:00Z' },
     });
     api.getBotDefinitionSkills.mockReset().mockResolvedValue({ revision: 0, skills: [] });
+    api.getBotInviteCode.mockReset().mockResolvedValue({});
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
     api.getLocalSkills.mockReset().mockResolvedValue({ skills: [] });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
+    api.generateBotInviteCode.mockReset().mockResolvedValue({ code: 'NEWCODE12345' });
     api.updateCloudWorker.mockReset().mockResolvedValue({});
     api.resetCloudWorker.mockReset().mockResolvedValue({});
     api.rollbackCloudWorker.mockReset().mockResolvedValue({});
@@ -86,12 +90,17 @@ describe('AgentStoreModal', () => {
       runtime: { appliedRevision: 2, lastAttemptRevision: 2 },
     });
     api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/avatar.png' });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await act(async () => {
       root.unmount();
     });
@@ -815,6 +824,93 @@ describe('AgentStoreModal', () => {
     expect(container.querySelector('[aria-label="删除助手 Review Agent"]')?.textContent).toBe('');
     expect(container.querySelector('[aria-label="删除助手 Private Agent"]')).toBeNull();
     expect(container.querySelector('.cc-agent-usage-guide')).toBeNull();
+  });
+
+  test('keeps the invite-code action stable while copy feedback changes', async () => {
+    vi.useFakeTimers();
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 42,
+        username: 'review-agent',
+        display_name: 'Review Agent',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+      }],
+    });
+    api.getBotInviteCode.mockResolvedValue({ code: 'CBBEDC7C5FC0' });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const inviteButton = container.querySelector('.cc-agent-card-invite-code');
+    const card = inviteButton.closest('.v3-agent-card');
+    expect(inviteButton.textContent).toContain('CBBEDC7C5FC0');
+    expect(inviteButton.textContent).not.toContain('已复制');
+    expect(inviteButton.querySelector('.lucide-copy')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(inviteButton);
+      await Promise.resolve();
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('CBBEDC7C5FC0');
+    expect(api.generateBotInviteCode).not.toHaveBeenCalled();
+    expect(inviteButton.textContent).toContain('CBBEDC7C5FC0');
+    expect(inviteButton.querySelector('.lucide-check')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(card);
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(inviteButton.textContent).toContain('CBBEDC7C5FC0');
+    expect(inviteButton.querySelector('.lucide-copy')).not.toBeNull();
+    expect(inviteButton.classList.contains('cc-agent-card-invite-code')).toBe(true);
+  });
+
+  test('keeps invite-code regeneration behind confirmation', async () => {
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 42,
+        username: 'review-agent',
+        display_name: 'Review Agent',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+      }],
+    });
+    api.getBotInviteCode.mockResolvedValue({ code: 'CBBEDC7C5FC0' });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const regenerateButton = Array.from(container.querySelectorAll('.cc-agent-card-action'))
+      .find((button) => button.textContent === '重新生成');
+    await act(async () => {
+      Simulate.click(regenerateButton);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(api.generateBotInviteCode).toHaveBeenCalledWith(42);
+    confirmSpy.mockRestore();
   });
 
   test('does not apply a completed avatar upload to a different managed assistant', async () => {

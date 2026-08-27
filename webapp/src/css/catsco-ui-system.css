@@ -8255,6 +8255,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-manager .v3-agent-card .v3-agent-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
@@ -8312,12 +8314,27 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-card-action {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  max-width: 100%;
   min-height: 36px;
   padding: 0 12px !important;
   border-radius: 8px !important;
+  white-space: nowrap;
+}
+
+.cc-agent-card-invite-code {
+  flex: 1 1 150px;
+  min-width: min(150px, 100%);
+}
+
+.cc-agent-card-invite-value {
+  overflow: hidden;
+  min-width: 0;
+  font-family: var(--cc-font-mono);
+  text-overflow: ellipsis;
 }
 
 .cc-agent-card-delete {
@@ -10067,10 +10084,6 @@ html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(
   .cc-agent-manager .v3-agent-card {
     min-width: 0;
     max-width: 100%;
-  }
-
-  .cc-agent-manager .v3-agent-card .v3-agent-actions {
-    flex-wrap: wrap;
   }
 
   .cc-agent-card-action {
