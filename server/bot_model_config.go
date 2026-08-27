@@ -83,6 +83,12 @@ var botModelCatalog = []botModelCatalogItem{
 		Vision: true,
 	},
 	{
+		ID: "glm-5.3-flash", Label: "GLM 5.3 Flash", Description: "高性价比多模态模型，适合长上下文与工具任务",
+		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
+		ReasoningEfforts: []string{"max"}, DefaultReasoningEffort: "max",
+		Vision: true,
+	},
+	{
 		ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Description: "OpenAI Responses，支持精细推理强度",
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000,
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",

@@ -15,8 +15,8 @@ import (
 
 func TestValidateCommercialOfficialPaidPlanModelsRequiresAllPublicModels(t *testing.T) {
 	complete := map[string]float64{
-		"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750,
-		"gpt-5.6-terra": 1750, "gpt-5.6-sol": 1750, "gpt-5.6-luna": 1750,
+		"MiniMax-M2.7": 1500, "MiniMax-M3": 1500, "deepseek-v4-flash": 1500, "glm-5.3-flash": 1500,
+		"gpt-5.6-terra": 1500, "gpt-5.6-sol": 1500, "gpt-5.6-luna": 1500,
 	}
 	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err != nil {
 		t.Fatalf("complete paid plan rejected: %v", err)
@@ -649,8 +649,8 @@ func TestCommercialRelayDryRunBuildsBudgetDiff(t *testing.T) {
 			},
 			{
 				Provider:      "glm-anthropic",
-				Model:         "glm-5.1",
-				AllowedModels: []string{"glm-5.1"},
+				Model:         "glm-5.3-flash",
+				AllowedModels: []string{"glm-5.3-flash"},
 				Budget:        commercialRelayBudget{MaxLimit: 500, CurrentUsage: 0, ResetDuration: "1M"},
 			},
 		}},
@@ -667,7 +667,7 @@ func TestCommercialRelayDryRunBuildsBudgetDiff(t *testing.T) {
 	if row := findCommercialRelayComparison(t, dryRun, "deepseek-v4-flash"); row.Status != "mismatch" || row.Delta != 25 {
 		t.Fatalf("unexpected deepseek row: %+v", row)
 	}
-	if row := findCommercialRelayComparison(t, dryRun, "glm-5.1"); row.Status != "relay_only" || row.RelayLimit != 500 {
+	if row := findCommercialRelayComparison(t, dryRun, "glm-5.3-flash"); row.Status != "relay_only" || row.RelayLimit != 500 {
 		t.Fatalf("unexpected glm row: %+v", row)
 	}
 	if len(dryRun.ProposedUpdates) != 2 {

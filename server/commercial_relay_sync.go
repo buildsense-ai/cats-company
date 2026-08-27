@@ -550,6 +550,7 @@ var commercialRelayFreeBudgets = map[string]float64{
 	"MiniMax-M2.7":      1000,
 	"MiniMax-M3":        500,
 	"deepseek-v4-flash": 100,
+	"glm-5.3-flash":     100,
 }
 
 func commercialRelayHasBaselineEntitlement(summary *types.CommercialSummary) bool {

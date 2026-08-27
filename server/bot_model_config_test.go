@@ -963,7 +963,7 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	defer relay.Close()
 	summary := &types.CommercialSummary{TotalCNY: 33600, TotalsByModel: map[string]float64{
 		"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-v4-flash": 100,
-		"gpt-5.6-terra": 15750, "gpt-5.6-sol": 15750, "glm-5.1": 500,
+		"gpt-5.6-terra": 15750, "gpt-5.6-sol": 15750, "glm-5.3-flash": 500,
 	}}
 	handler := NewBotModelConfigHandler(nil, nil)
 	handler.SetRelayUsageClient(&RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()})
@@ -974,8 +974,8 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	if quotaError != "" {
 		t.Fatalf("quota error=%q", quotaError)
 	}
-	if len(catalog) != 5 {
-		t.Fatalf("catalog length=%d, want 5 granted models: %#v", len(catalog), catalog)
+	if len(catalog) != 6 {
+		t.Fatalf("catalog length=%d, want 6 granted models: %#v", len(catalog), catalog)
 	}
 	for _, item := range catalog {
 		if item.ID == "gpt-5.6-luna" {
@@ -992,6 +992,7 @@ func TestOwnerModelCatalogOnlyReturnsModelsIncludedInFreePlan(t *testing.T) {
 		"MiniMax-M2.7":      1000,
 		"MiniMax-M3":        500,
 		"deepseek-v4-flash": 100,
+		"glm-5.3-flash":     100,
 	}}
 	handler := NewBotModelConfigHandler(nil, nil)
 	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: summary}, true, nil)
@@ -1000,7 +1001,7 @@ func TestOwnerModelCatalogOnlyReturnsModelsIncludedInFreePlan(t *testing.T) {
 	if quotaError != "" {
 		t.Fatalf("quota error=%q", quotaError)
 	}
-	want := []string{"minimax-m2.7", "minimax-m3", "deepseek-v4-flash"}
+	want := []string{"minimax-m2.7", "minimax-m3", "deepseek-v4-flash", "glm-5.3-flash"}
 	if len(catalog) != len(want) {
 		t.Fatalf("catalog=%#v, want %v", catalog, want)
 	}
