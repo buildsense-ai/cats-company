@@ -1465,6 +1465,8 @@ export default function AgentStoreModal({
                     {bots.map(bot => {
                       const botId = bot.id || bot.uid;
                       const owned = isOwnedBot(bot);
+                      const inviteCode = generatedInviteCodes[botId];
+                      const inviteCodeCopied = copiedField === `invite_${botId}`;
                       return (
                       <div key={botId} className="v3-agent-card" style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', padding: 16, borderRadius: 12 }}>
                       <div className="v3-agent-header" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1508,18 +1510,27 @@ export default function AgentStoreModal({
                           <>
                             <button
                               type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action"
+                              className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-invite-code"
                               onClick={() => handleGenerateBotInviteCode(bot)}
                               disabled={generatingInviteCode === botId}
-                              title="复制当前机器人邀请码"
+                              aria-label={inviteCode ? `复制邀请码 ${inviteCode}` : '生成邀请码'}
+                              title={inviteCodeCopied ? '邀请码已复制' : (inviteCode ? '复制当前机器人邀请码' : '生成邀请码')}
                             >
-                              {generatingInviteCode === botId
-                                ? '生成中...'
-                                : generatedInviteCodes[botId]
-                                  ? (copiedField === `invite_${botId}` ? '已复制' : generatedInviteCodes[botId])
-                                  : '生成邀请码'}
+                              {inviteCode ? (
+                                <>
+                                  <span className="cc-agent-card-invite-value">{inviteCode}</span>
+                                  {generatingInviteCode === botId
+                                    ? <RefreshCw size={14} aria-hidden="true" />
+                                    : inviteCodeCopied
+                                      ? <Check size={14} aria-hidden="true" />
+                                      : <Copy size={14} aria-hidden="true" />}
+                                  <span className="oc-visually-hidden" role="status" aria-live="polite">
+                                    {inviteCodeCopied ? '邀请码已复制' : ''}
+                                  </span>
+                                </>
+                              ) : generatingInviteCode === botId ? '生成中...' : '生成邀请码'}
                             </button>
-                            {generatedInviteCodes[botId] && (
+                            {inviteCode && (
                               <button
                                 type="button"
                                 className="oc-btn oc-btn-default cc-agent-card-action"
