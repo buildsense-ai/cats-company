@@ -182,7 +182,6 @@ describe('ArtifactFullscreenViewer', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     channels.length = 0;
-    sessionStorage.clear();
     mocks.sessionReady = false;
     mocks.wsHandler = null;
     mocks.frameWindow = { postMessage: mocks.framePostMessage };
@@ -226,7 +225,6 @@ describe('ArtifactFullscreenViewer', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
-    sessionStorage.clear();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
@@ -281,27 +279,6 @@ describe('ArtifactFullscreenViewer', () => {
       { type: 'catsco.artifact.host.connect.v1' },
       'https://artifacts.example.test',
     );
-  });
-
-  it('clears persisted composer drafts when the viewer session expires', async () => {
-    sessionStorage.setItem('catsco_composer_drafts:v1:1', JSON.stringify({
-      inputDrafts: [['p2p_1_2', 'stale draft']],
-      structuredMentionDrafts: [],
-      attachmentDrafts: [],
-    }));
-
-    await act(async () => {
-      root.render(<ArtifactFullscreenViewer location={location} />);
-      await flushPromises();
-    });
-
-    await act(async () => {
-      mocks.wsHandler?.({ _type: 'ws_auth_expired' });
-      await flushPromises();
-    });
-
-    expect(mocks.setToken).toHaveBeenCalledWith(null);
-    expect(sessionStorage.getItem('catsco_composer_drafts:v1:1')).toBeNull();
   });
 
   it('keeps an unaccepted duplicate inert and releases it when ownership is rejected', async () => {

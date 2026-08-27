@@ -78,10 +78,6 @@ import {
   writeStorageValue,
 } from '../utils/storage-access';
 import {
-  clearPersistedComposerDrafts,
-  composerDraftStorageKey,
-} from '../utils/composer-draft-storage';
-import {
   authenticationRedirectPath,
   isNameOnboardingPathname,
   navigateBrowserPath,
@@ -94,6 +90,7 @@ const TABS = {
   CHATS: 'chats'
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
+const COMPOSER_DRAFT_STORAGE_PREFIX = 'catsco_composer_drafts:v1:';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
@@ -201,6 +198,11 @@ function todayKey() {
 
 function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
+}
+
+function composerDraftStorageKey(userID) {
+  const normalizedUserID = String(userID || '').trim();
+  return normalizedUserID ? `${COMPOSER_DRAFT_STORAGE_PREFIX}${normalizedUserID}` : '';
 }
 
 function draftEntries(entries, acceptsValue) {
@@ -740,7 +742,6 @@ function TinodeWebApp({ location }) {
     setStandaloneCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsTab('active');
     composerDraftStoreRef.current?.clearPersisted?.();
-    clearPersistedComposerDrafts();
     resetComposerDraftStore(composerDraftStoreRef);
     composerDraftOwnerRef.current = '';
     setActiveView('chats');
