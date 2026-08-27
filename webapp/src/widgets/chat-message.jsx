@@ -17,6 +17,10 @@ import {
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
 import {
+  HTML_PREVIEW_SANDBOX,
+  REMOTE_ARTIFACT_PREVIEW_SANDBOX,
+} from './controlled-artifact-preview';
+import {
   ARTIFACT_FRAME_BRIDGE_CONTRACT,
   artifactFrameBridgeNonce,
   artifactFrameURLWithBridgeNonce,
@@ -43,9 +47,7 @@ const SPREADSHEET_MIME_TYPES = new Set([
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
-const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
 const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
 const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
 const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
 const FILE_PREVIEW_TIMEOUT_MS = 15_000;
@@ -1644,16 +1646,9 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   const previewArtifact = () => {
     if (descriptor?.canPreview) onPreviewFile?.(payload);
   };
-  const openArtifact = () => {
-    if (descriptor?.canPreview) {
-      previewArtifact();
-    } else if (artifact.url) {
-      window.open(artifact.url, '_blank', 'noopener,noreferrer');
-    }
-  };
   return (
     <div className={`v3-attachment-card v3-artifact-card cloud-static${isActive ? ' active' : ''}`}>
-      <button className="v3-artifact-main" onClick={openArtifact} title="预览生成物" type="button">
+      <button className="v3-artifact-main" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览生成物" type="button">
         <div className="v3-attachment-icon"><FileCode2 size={18} strokeWidth={1.5} /></div>
         <div className="v3-attachment-info">
           <span className="v3-attachment-name" title={payload.name}>{payload.name}</span>
@@ -1664,9 +1659,6 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
         <button className="v3-artifact-action" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览" type="button">
           <Eye size={15} /><span>预览</span>
         </button>
-        <a className="v3-artifact-action" href={artifact.url} onClick={(event) => event.stopPropagation()} rel="noopener noreferrer" target="_blank" title="在新标签页打开">
-          <ExternalLink size={15} /><span>打开</span>
-        </a>
       </div>
     </div>
   );
@@ -2486,6 +2478,7 @@ export function FilePreviewPanel({
   pendingRemoteArtifactFile,
   onRemoteArtifactRefreshReady,
   onRemoteArtifactRefreshFailed,
+  onOpenRemoteArtifactFullscreen,
 }) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
@@ -2721,9 +2714,6 @@ export function FilePreviewPanel({
     return () => {
       controller.abort();
       const state = remoteArtifactBridgeStateRef.current;
-      // The load handler replaces the controller for the active document.
-      // Abort that replacement on unmount as well, while guarding against an
-      // old effect cleanup touching a newer artifact binding.
       if (state.key === currentRemoteArtifactKey
         && state.nonce === currentRemoteArtifactBridgeNonce) {
         state.controller?.abort();
@@ -3092,9 +3082,21 @@ export function FilePreviewPanel({
                 <Download size={18} />
               </PwaDownloadLink>
             )}
-            <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
-              <ExternalLink size={18} />
-            </a>
+            {isRemoteArtifact ? (
+              <button
+                type="button"
+                title="在新标签页打开"
+                aria-label="在新标签页打开"
+                onClick={() => onOpenRemoteArtifactFullscreen?.(file)}
+                disabled={!onOpenRemoteArtifactFullscreen}
+              >
+                <ExternalLink size={18} />
+              </button>
+            ) : (
+              <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
+                <ExternalLink size={18} />
+              </a>
+            )}
             <button ref={closeButtonRef} aria-label="关闭预览" onClick={onClose} type="button">
               <X size={18} />
             </button>
@@ -3156,7 +3158,9 @@ export function FilePreviewPanel({
               {remoteFrameState === 'error' && (
                 <div className="v3-remote-artifact-preview-state error" role="alert">
                   <span>预览加载失败</span>
-                  <a href={url} rel="noopener noreferrer" target="_blank">在新标签页打开</a>
+                  <button type="button" onClick={() => onOpenRemoteArtifactFullscreen?.(file)}>
+                    在新标签页打开
+                  </button>
                 </div>
               )}
             </div>
@@ -3212,10 +3216,10 @@ export function FilePreviewPanel({
             <span>关闭预览</span>
           </button>
           {isRemoteArtifact ? (
-            <a href={url} target="_blank" rel="noopener noreferrer">
+            <button type="button" onClick={() => onOpenRemoteArtifactFullscreen?.(file)}>
               <ExternalLink size={17} />
               <span>新标签页打开</span>
-            </a>
+            </button>
           ) : (
             <PwaDownloadLink href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
               <Download size={17} />

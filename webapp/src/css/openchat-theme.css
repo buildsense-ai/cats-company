@@ -8510,8 +8510,14 @@ button.catsco-download-action:disabled {
   flex-direction: column;
   color: #fca5a5;
 }
-.v3-remote-artifact-preview-state a {
+.v3-remote-artifact-preview-state a,
+.v3-remote-artifact-preview-state button {
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--v3-primary);
+  cursor: pointer;
+  font: inherit;
   font-weight: 700;
 }
 .v3-file-preview-text {

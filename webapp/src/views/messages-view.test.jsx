@@ -101,6 +101,7 @@ vi.mock('../widgets/chat-message', () => ({
     pendingRemoteArtifactFile,
     onRemoteArtifactRefreshReady,
     onRemoteArtifactRefreshFailed,
+    onOpenRemoteArtifactFullscreen,
   }) {
     onRemoteArtifactFrameChange?.(file?.artifact_frame_binding || null);
     React.useEffect(() => {
@@ -136,6 +137,15 @@ vi.mock('../widgets/chat-message', () => ({
               fail refresh
             </button>
           </>
+        )}
+        {file?.artifact_id && (
+          <button
+            type="button"
+            className="mock-open-artifact-fullscreen"
+            onClick={() => onOpenRemoteArtifactFullscreen?.(file)}
+          >
+            open fullscreen
+          </button>
         )}
         <button type="button" className="mock-close-preview" onClick={onClose}>close</button>
       </aside>
@@ -248,6 +258,10 @@ import {
   openConversationShareImageForManualSave,
   renderConversationShareImage,
 } from '../utils/conversation-share-image';
+import {
+  ARTIFACT_PREVIEW_COORDINATION_CONTRACT,
+  createArtifactPreviewMessage,
+} from '../artifact-preview-coordinator';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -262,6 +276,31 @@ const user = {
   account_type: 'human',
 };
 const ARTIFACT_REGISTRY_POLL_MS_FOR_TEST = 5000;
+const artifactPreviewChannels = [];
+
+class MockArtifactPreviewChannel {
+  constructor(name) {
+    this.name = name;
+    this.onmessage = null;
+    this.posted = [];
+    this.closed = false;
+    this.onPost = null;
+    artifactPreviewChannels.push(this);
+  }
+
+  postMessage(message) {
+    this.posted.push(message);
+    this.onPost?.(message);
+  }
+
+  receive(message) {
+    this.onmessage?.({ data: message });
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
 
 function renderTopic(root, topic, extraProps = {}) {
   root.render(
@@ -554,6 +593,9 @@ describe('MessagesView composer draft isolation', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
+    sessionStorage.clear();
+    artifactPreviewChannels.length = 0;
+    vi.stubGlobal('BroadcastChannel', MockArtifactPreviewChannel);
     api.getMessages.mockResolvedValue({ messages: [] });
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getAgents.mockResolvedValue({ agents: [] });
@@ -613,6 +655,7 @@ describe('MessagesView composer draft isolation', () => {
     vi.unstubAllGlobals();
     window.IntersectionObserver = originalIntersectionObserver;
     container.remove();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -4226,6 +4269,181 @@ describe('MessagesView composer draft isolation', () => {
     }, undefined);
     expect(container.textContent).not.toContain('lesson-game');
     expect(container.textContent).not.toContain('当前 Artifact');
+  });
+
+  it('hands the exact Artifact version to a ready Viewer and reads fresh context from that tab', async () => {
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    const openedWindow = {
+      closed: false,
+      close: vi.fn(function close() { this.closed = true; }),
+      focus: vi.fn(),
+      opener: window,
+    };
+    const replacementWindow = {
+      closed: false,
+      close: vi.fn(function close() { this.closed = true; }),
+      focus: vi.fn(),
+      opener: window,
+    };
+    const openSpy = vi.spyOn(window, 'open')
+      .mockReturnValueOnce(openedWindow)
+      .mockReturnValueOnce(replacementWindow);
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => flushPromises());
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-open-artifact-fullscreen'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-open-artifact-fullscreen'));
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.mock-file-preview')).not.toBeNull();
+    expect(openSpy).toHaveBeenCalledTimes(2);
+    expect(openedWindow.close).toHaveBeenCalledTimes(1);
+    const viewerURL = new URL(openSpy.mock.calls[1][0]);
+    expect(viewerURL.pathname).toBe('/artifact-viewer');
+    expect(Object.fromEntries(viewerURL.searchParams)).toMatchObject({
+      topic: 'p2p_1_440',
+      agent: '440',
+      artifact: 'lesson-game',
+      version: '2',
+    });
+    expect(openSpy.mock.calls[0][0]).not.toContain('artifacts.example.test');
+
+    const channel = artifactPreviewChannels[0];
+    expect(channel).toBeTruthy();
+    const identity = {
+      topicId: 'p2p_1_440',
+      agentUid: 440,
+      artifactId: 'lesson-game',
+      displayedVersion: 2,
+    };
+    await act(async () => {
+      channel.receive(createArtifactPreviewMessage('viewer_ready', identity, {
+        viewer_id: 'viewer_12345678',
+        handoff_id: viewerURL.searchParams.get('handoff'),
+        context_ref: `acr_${'i'.repeat(43)}`,
+      }));
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-file-preview')).toBeNull();
+    expect(replacementWindow.close).not.toHaveBeenCalled();
+
+    channel.onPost = (message) => {
+      if (message.type !== 'context_request') return;
+      channel.receive(createArtifactPreviewMessage('context_response', identity, {
+        viewer_id: 'viewer_12345678',
+        handoff_id: viewerURL.searchParams.get('handoff'),
+        request_id: message.request_id,
+        context_ref: `acr_${'v'.repeat(43)}`,
+      }));
+    };
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '分析全屏页面');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    const contextRequest = channel.posted.find((message) => message.type === 'context_request');
+    expect(contextRequest).toMatchObject({
+      contract_version: ARTIFACT_PREVIEW_COORDINATION_CONTRACT,
+      viewer_id: 'viewer_12345678',
+      topic_id: 'p2p_1_440',
+      artifact_id: 'lesson-game',
+      displayed_version: 2,
+    });
+    expect(api.createArtifactContextSnapshot).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
+      type: 'text',
+      content: '分析全屏页面',
+      metadata: {
+        artifact_context_ref: `acr_${'v'.repeat(43)}`,
+      },
+    }, undefined);
+  });
+
+  it('keeps the sidebar active when the browser blocks the Viewer tab', async () => {
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      status: 'active',
+      publish_version: 2,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    vi.spyOn(window, 'open').mockReturnValue(null);
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => flushPromises());
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '共享'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-open-artifact-fullscreen'));
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.mock-file-preview')).not.toBeNull();
+    expect(feedbackNotify).toHaveBeenCalledWith(expect.objectContaining({
+      tone: 'warning',
+      message: expect.stringContaining('浏览器拦截'),
+    }));
   });
 
   it('sends the ordinary message when snapshot creation fails', async () => {

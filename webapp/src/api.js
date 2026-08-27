@@ -157,6 +157,10 @@ export function isWSConnected() {
   return wsConnected;
 }
 
+export function hasArtifactPreviewSession() {
+  return Boolean(wsArtifactPreviewSession?.token);
+}
+
 async function localRequest(method, path, body, options = {}) {
   const { timeoutMs = 45_000 } = options;
   const controller = new AbortController();
