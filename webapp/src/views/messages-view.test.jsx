@@ -974,6 +974,31 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('textarea.v3-composer-input').value).toBe('another draft');
   });
 
+  it('restores an unsent draft after returning from SkillHub', async () => {
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+    };
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, 'keep this draft while browsing skills');
+    });
+
+    await act(async () => {
+      root.render(<main data-testid="skillhub-view">SkillHub</main>);
+      await Promise.resolve();
+    });
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+
+    expect(container.querySelector('textarea.v3-composer-input').value)
+      .toBe('keep this draft while browsing skills');
+  });
+
   it('adapts the composer placeholder to agent groups, agent chats, and human chats', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       members: [

@@ -405,6 +405,7 @@ export default function MessagesView({
   onCloudArtifactsRequestConsumed,
   messageLocationRequest,
   onBackToSearch,
+  composerDraftStore,
 }) {
   const feedback = useFeedback();
   const [input, setInput] = useState('');
@@ -558,9 +559,9 @@ export default function MessagesView({
   const questionIndexLoadingRef = useRef(false);
   const questionIndexAbortControllerRef = useRef(null);
   const questionJumpAbortControllerRef = useRef(null);
-  const composerDraftsRef = useRef(new Map());
-  const structuredMentionDraftsRef = useRef(new Map());
-  const attachmentDraftsRef = useRef(new Map());
+  const composerDraftsRef = useRef(null);
+  const structuredMentionDraftsRef = useRef(null);
+  const attachmentDraftsRef = useRef(null);
   const pendingAttachmentsRef = useRef([]);
   const previewWidthRef = useRef(previewWidth);
   const phoneUploadFileKeysRef = useRef(new Set());
@@ -571,6 +572,12 @@ export default function MessagesView({
   const conversationShareGenerateButtonRef = useRef(null);
   const conversationSharePreviewRef = useRef(null);
   const conversationSharePreviewCloseRef = useRef(null);
+
+  if (composerDraftsRef.current === null) {
+    composerDraftsRef.current = composerDraftStore?.inputDrafts || new Map();
+    structuredMentionDraftsRef.current = composerDraftStore?.structuredMentionDrafts || new Map();
+    attachmentDraftsRef.current = composerDraftStore?.attachmentDrafts || new Map();
+  }
 
   if (artifactTopicRef.current !== topic) {
     artifactTopicRef.current = topic;
