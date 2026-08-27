@@ -1042,6 +1042,26 @@ describe('MessagesView composer draft isolation', () => {
       .toBe('keep this draft while browsing skills');
   });
 
+  it('persists a real composer draft as soon as its text changes', async () => {
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, 'persist this before opening SkillHub');
+    });
+
+    expect(composerDraftStore.inputDrafts.get('p2p_1_2'))
+      .toBe('persist this before opening SkillHub');
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
   it('adapts the composer placeholder to agent groups, agent chats, and human chats', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       members: [

@@ -16,6 +16,7 @@ vi.mock('../api', () => {
     getAgentQuota: vi.fn().mockResolvedValue({}),
     getAgents: vi.fn().mockResolvedValue({ agents: [] }),
     getConversations: vi.fn().mockResolvedValue({ conversations: [] }),
+    getDevices: vi.fn().mockResolvedValue({ devices: [] }),
     getGroupInfo: vi.fn().mockResolvedValue({}),
     getMe: vi.fn().mockResolvedValue({ uid: 1, username: 'cats' }),
     getRelayAdminAccess: vi.fn().mockResolvedValue({ allowed: false }),

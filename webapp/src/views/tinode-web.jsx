@@ -259,6 +259,9 @@ function createComposerDraftStore(userID) {
   draftStore.deactivate = () => {
     active = false;
   };
+  draftStore.activate = () => {
+    active = true;
+  };
   draftStore.clearPersisted = () => {
     active = false;
     if (storageKey) removeStorageValue(storageKey, 'sessionStorage');
@@ -324,6 +327,13 @@ function TinodeWebApp({ location }) {
     composerDraftOwnerRef.current = composerDraftOwner;
     composerDraftStoreRef.current = createComposerDraftStore(composerDraftOwner);
   }
+
+  useEffect(() => {
+    composerDraftStoreRef.current?.activate?.();
+    return () => {
+      composerDraftStoreRef.current?.deactivate?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!user) return undefined;
