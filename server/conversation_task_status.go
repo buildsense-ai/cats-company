@@ -47,6 +47,7 @@ func (h *MessageHandler) handleTaskStatus(uid int64, topicID string, payload *no
 	if h != nil && h.hub != nil {
 		h.hub.observeGroupAgentTaskStatus(sourceStatus)
 		h.hub.observeAgentPushTaskStatus(sourceStatus)
+		h.hub.observeArtifactTaskStatus(uid, topicID, payload, sourceStatus)
 		h.hub.fanoutConversationTaskStatus(uid, status, nil)
 	}
 	return status, nil
@@ -72,6 +73,7 @@ func (h *Hub) handleTaskStatusPub(client *Client, msg *MsgClientPub, topicID str
 	h.SendToClient(client, taskStatusAck(msg.ID, topicID, status))
 	h.observeGroupAgentTaskStatus(sourceStatus)
 	h.observeAgentPushTaskStatus(sourceStatus)
+	h.observeArtifactTaskStatus(client.uid, topicID, payload, sourceStatus)
 	h.fanoutConversationTaskStatus(client.uid, status, client)
 }
 

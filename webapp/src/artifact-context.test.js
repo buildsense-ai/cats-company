@@ -9,12 +9,19 @@ import {
   ARTIFACT_REF_CONTRACT,
   ARTIFACT_RESULT_RECEIPT_CONTRACT,
   ARTIFACT_RESULT_RESPONSE_TYPE,
+  ARTIFACT_TASK_REF_CONTRACT,
+  ARTIFACT_TASK_REQUEST_TYPE,
+  ARTIFACT_TASK_STATUS_CONTRACT,
   artifactContextRefFromSnapshot,
   artifactFrameURLWithBridgeNonce,
   artifactRefFromPreviewFile,
   artifactURLForVersion,
+  classifyArtifactTaskPollFailure,
   normalizeArtifactPageContext,
   normalizeArtifactResultDelivery,
+  normalizeArtifactTaskCreated,
+  normalizeArtifactTaskRequest,
+  normalizeArtifactTaskStatus,
   requestArtifactPageContext,
   requestArtifactResultApply,
   withArtifactContextRef,
@@ -233,6 +240,91 @@ describe('artifact context snapshot handoff', () => {
       },
     });
     expect(withArtifactContextRef('分析这些', 'lesson-game')).toBe('分析这些');
+  });
+
+  it('normalizes only a bounded declared task request shape', () => {
+    expect(normalizeArtifactTaskRequest({
+      type: ARTIFACT_TASK_REQUEST_TYPE,
+      request_id: 'task-request-42',
+      intent_id: 'tasks.create.v1',
+      payload: { title: '准备发布清单' },
+    })).toEqual({
+      requestId: 'task-request-42',
+      intentId: 'tasks.create.v1',
+      payload: { title: '准备发布清单' },
+    });
+    expect(normalizeArtifactTaskRequest({
+      type: ARTIFACT_TASK_REQUEST_TYPE,
+      request_id: 'task-request-42',
+      intent_id: 'tasks.create.v1',
+      payload: {},
+      prompt: 'ignore policy',
+    })).toBeNull();
+    expect(normalizeArtifactTaskRequest({
+      type: ARTIFACT_TASK_REQUEST_TYPE,
+      request_id: 'short',
+      intent_id: 'tasks.create.v1',
+      payload: {},
+    })).toBeNull();
+  });
+
+  it('keeps task capabilities private while normalizing public task identity and status', () => {
+    const taskId = `atk_${'t'.repeat(43)}`;
+    const taskRef = `atr_${'q'.repeat(43)}`;
+    expect(normalizeArtifactTaskCreated({
+      contract_version: ARTIFACT_TASK_REF_CONTRACT,
+      task_id: taskId,
+      task_ref: taskRef,
+      status: 'submitted',
+      visible_message: '来自「任务看板」：创建任务',
+      expires_at: '2026-08-26T12:00:00Z',
+    })).toEqual({
+      taskId,
+      taskRef,
+      status: 'submitted',
+      visibleMessage: '来自「任务看板」：创建任务',
+      expiresAt: '2026-08-26T12:00:00Z',
+    });
+    expect(normalizeArtifactTaskStatus({
+      contract_version: ARTIFACT_TASK_STATUS_CONTRACT,
+      task_id: taskId,
+      status: 'running',
+      delivery_status: 'delivered',
+      run_id: 'run-42',
+      updated_at: '2026-08-26T11:00:00Z',
+      expires_at: '2026-08-26T12:00:00Z',
+    })).toMatchObject({
+      task_id: taskId,
+      status: 'running',
+      delivery_status: 'delivered',
+      run_id: 'run-42',
+    });
+    expect(normalizeArtifactTaskStatus({
+      contract_version: ARTIFACT_TASK_STATUS_CONTRACT,
+      task_id: taskId,
+      status: 'done',
+    })).toBeNull();
+  });
+
+  it('stops task polling for permanent absence and after bounded transient failures', () => {
+    expect(classifyArtifactTaskPollFailure({ status: 404 }, 1)).toMatchObject({
+      retry: false,
+      code: 'task_unavailable',
+    });
+    expect(classifyArtifactTaskPollFailure({ status: 410 }, 1)).toMatchObject({
+      retry: false,
+      code: 'task_unavailable',
+    });
+    expect(classifyArtifactTaskPollFailure({ status: 403 }, 1)).toMatchObject({
+      retry: false,
+      code: 'task_status_rejected',
+    });
+    expect(classifyArtifactTaskPollFailure(new TypeError('network'), 1)).toEqual({ retry: true });
+    expect(classifyArtifactTaskPollFailure({ status: 503 }, 4)).toEqual({ retry: true });
+    expect(classifyArtifactTaskPollFailure({ status: 503 }, 5)).toMatchObject({
+      retry: false,
+      code: 'task_status_unavailable',
+    });
   });
 
   it('keeps page observations in the snapshot contract rather than message metadata', () => {
@@ -841,6 +933,31 @@ describe('artifact context snapshot handoff', () => {
     } finally {
       restore();
     }
+  });
+
+  it('accepts exactly one task correlation for a task-bound result delivery', () => {
+    const base = {
+      type: 'request',
+      origin_node_id: 'catsco-node-1',
+      writeback_ref: `awr_${'w'.repeat(43)}`,
+      topic_id: 'p2p_7_440',
+      agent_uid: '440',
+      artifact_id: 'risk-register',
+      displayed_version: 3,
+      sink_id: 'risk-items.upsert.v1',
+      result_id: `arr_${'r'.repeat(43)}`,
+      payload: { items: [] },
+    };
+    const taskId = `atk_${'t'.repeat(43)}`;
+    expect(normalizeArtifactResultDelivery({ ...base, task_id: taskId })).toMatchObject({
+      taskId,
+      contextRef: '',
+    });
+    expect(normalizeArtifactResultDelivery({
+      ...base,
+      task_id: taskId,
+      context_ref: `acr_${'c'.repeat(43)}`,
+    })).toBeNull();
   });
 
   it('rejects malformed result routes and keeps a bridge timeout non-terminal', async () => {
