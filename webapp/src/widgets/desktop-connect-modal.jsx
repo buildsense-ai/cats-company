@@ -1,8 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, CheckCircle2, Download, Laptop, Loader2, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Download, Laptop, Loader2, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import PwaDownloadLink from './pwa-download-link';
-import { FALLBACK_RELEASE_VERSION, buildDownloadOptions } from './catsco-download-modal';
+import {
+  FALLBACK_RELEASE_VERSION,
+  auditDescription,
+  auditMeta,
+  auditTitle,
+  buildDownloadOptions,
+  deviceStatusLabel,
+  releaseVersion,
+  visibleDeviceAuditEvents,
+} from './catsco-desktop-shared';
 
 function detectRecommendedOption(downloadOptions) {
   const platform = `${navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase();
@@ -21,11 +30,13 @@ function findConnectedLocalAgent(agents) {
   return (agents || []).find((agent) => agent.relation === 'owner' && agent.is_online);
 }
 
-export default function DesktopConnectModal({ onClose, onConnected, onStatusChange }) {
+export default function DesktopConnectModal({ onClose, onConnected, onStatusChange, initialMode = 'connect' }) {
   const [state, setState] = useState('idle');
   const [error, setError] = useState('');
-  const [showDownloads, setShowDownloads] = useState(false);
+  const [showDownloads, setShowDownloads] = useState(initialMode === 'download');
   const [showAdvancedDownloads, setShowAdvancedDownloads] = useState(false);
+  const [devices, setDevices] = useState([]);
+  const [audit, setAudit] = useState([]);
   const [launchDetected, setLaunchDetected] = useState(false);
   const sessionRef = useRef(null);
   const connectedRef = useRef(false);
@@ -41,6 +52,25 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
     () => downloadOptions.filter((option) => option.key !== recommendedDownload?.key),
     [downloadOptions, recommendedDownload?.key],
   );
+
+  const loadDeviceState = useCallback(async () => {
+    try {
+      const [deviceResp, auditResp] = await Promise.all([
+        api.getDevices(),
+        api.getDeviceAudit(8),
+      ]);
+      setDevices(deviceResp?.devices || []);
+      setAudit(auditResp?.events || []);
+    } catch (err) {
+      // Device inventory is supplementary to the connection flow. Keep the
+      // modal usable when an older server does not expose these endpoints.
+      console.warn('Failed to load CatsCo device state:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDeviceState();
+  }, [loadDeviceState]);
 
   useEffect(() => () => {
     launchCleanupRef.current?.();
@@ -176,6 +206,16 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
     }
   };
 
+  const handleUnlinkDevice = async (deviceId) => {
+    setError('');
+    try {
+      await api.unlinkDevice(deviceId);
+      await loadDeviceState();
+    } catch (err) {
+      setError(err.message || '设备解绑失败');
+    }
+  };
+
   const renderDownload = (option, primary = false) => {
     const Icon = option.icon;
     return (
@@ -198,6 +238,17 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
   };
 
   const busy = state === 'opening' || state === 'waiting' || state === 'waiting_download';
+  const statusLabel = state === 'connected'
+    ? '已连接'
+    : busy
+      ? '连接中'
+      : state === 'failed'
+        ? '连接失败'
+        : state === 'download'
+          ? '需要安装'
+          : '未连接';
+  const statusTone = state === 'connected' ? 'is-success' : busy ? 'is-pending' : state === 'failed' ? 'is-error' : 'is-neutral';
+  const hasAudit = visibleDeviceAuditEvents(audit).length > 0;
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
@@ -205,14 +256,13 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
         className="oc-modal catsco-download-modal cc-settings-secondary-surface"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="desktop-connect-dialog-title"
-        aria-describedby="desktop-connect-dialog-description"
+        aria-labelledby="catsco-desktop-modal-title"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3 id="desktop-connect-dialog-title">连接本地 CatsCo 助手</h3>
-            <p id="desktop-connect-dialog-description">网页登录后，桌面端会自动完成同账号连接。</p>
+            <h3 id="catsco-desktop-modal-title">CatsCo 桌面端</h3>
+            <p>连接电脑、查看设备，或下载当前版本。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />
@@ -223,10 +273,13 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
           <div className="catsco-connect-summary">
             {state === 'connected' ? <CheckCircle2 size={20} color="#0BA36D" /> : busy ? <Loader2 className="catsco-spin" size={20} /> : <Laptop size={20} />}
             <div className="catsco-connect-copy">
-              <div style={{ fontWeight: 600 }}>
-                {state === 'connected' ? '已连接本地助手' : busy ? '正在等待桌面端确认' : '打开已安装的 CatsCo 桌面端'}
+              <div className="catsco-connect-title-row">
+                <strong>
+                  {state === 'connected' ? '已连接本地助手' : busy ? '正在等待桌面端确认' : '连接我的电脑助手'}
+                </strong>
+                <span className={`catsco-connect-status ${statusTone}`} aria-live="polite">{statusLabel}</span>
               </div>
-              <div style={{ fontSize: 13, color: 'var(--v3-text-muted)', marginTop: 4 }}>
+              <div className="catsco-connect-description">
                 {state === 'download' || state === 'waiting_download'
                   ? '没有检测到已连接的桌面端。若尚未安装，请下载推荐版本；安装后再点击打开。'
                   : launchDetected
@@ -254,30 +307,103 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
           <div className="catsco-connect-actions">
             <button className="oc-btn oc-btn-primary" type="button" onClick={startConnect} disabled={state === 'connected' || busy}>
               {busy && <Loader2 className="catsco-spin" size={16} />}
-              {busy ? '等待连接...' : '打开 CatsCo 桌面端'}
+              {!busy && state !== 'connected' && <Laptop size={16} />}
+              {busy ? '等待连接...' : state === 'connected' ? '已连接' : '打开 CatsCo 桌面端'}
             </button>
 
             <button
               type="button"
-              className="oc-btn oc-btn-default"
+              className="oc-btn oc-btn-default catsco-download-toggle"
               onClick={() => setShowDownloads((value) => !value)}
+              aria-expanded={showDownloads}
             >
+              <Download size={16} />
               {showDownloads ? '收起下载' : '下载桌面端'}
             </button>
           </div>
 
           {showDownloads && (
-            <div className="catsco-download-list">
-              {recommendedDownload && renderDownload(recommendedDownload, true)}
-              <button
-                type="button"
-                className="oc-btn oc-btn-default"
-                style={{ width: '100%', justifyContent: 'center' }}
-                onClick={() => setShowAdvancedDownloads((value) => !value)}
-              >
-                {showAdvancedDownloads ? '收起其他版本' : '其他系统版本'}
-              </button>
-              {showAdvancedDownloads && otherDownloads.map((option) => renderDownload(option))}
+            <div className="catsco-desktop-download-section">
+              <div className="catsco-section-heading">
+                <h4 className="catsco-download-section-title">可下载版本</h4>
+                <span className="catsco-section-meta">v{releaseVersion(desktopRelease)}</span>
+              </div>
+              <div className="catsco-download-list">
+                {recommendedDownload && renderDownload(recommendedDownload, true)}
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-default catsco-download-more"
+                  onClick={() => setShowAdvancedDownloads((value) => !value)}
+                  aria-expanded={showAdvancedDownloads}
+                >
+                  {showAdvancedDownloads ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                  {showAdvancedDownloads ? '收起其他版本' : '其他系统版本'}
+                </button>
+                {showAdvancedDownloads && otherDownloads.map((option) => renderDownload(option))}
+              </div>
+            </div>
+          )}
+
+          {devices.length > 0 && (
+            <div className="catsco-device-section">
+              <div className="catsco-section-heading">
+                <h4 className="catsco-download-section-title">已连接设备</h4>
+                <span className="catsco-section-meta">{devices.length} 台</span>
+              </div>
+              <div className="catsco-download-list">
+                {devices.map((device) => (
+                  <div key={device.deviceId} className="catsco-download-card catsco-device-card">
+                    <span className="catsco-download-icon">
+                      <Monitor size={20} />
+                    </span>
+                    <span className="catsco-download-copy">
+                      <span className="catsco-download-title">{device.displayName || device.deviceId}</span>
+                      <span className="catsco-download-desc">{deviceStatusLabel(device)}</span>
+                      {(device.capabilities || []).length > 0 && (
+                        <span className="catsco-device-capabilities" aria-label="设备能力">
+                          {device.capabilities.map((capability, index) => (
+                            <span key={`${capability}-${index}`}>{capability}</span>
+                          ))}
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      className="catsco-download-action"
+                      onClick={() => handleUnlinkDevice(device.deviceId)}
+                      aria-label={`解绑设备 ${device.displayName || device.deviceId}`}
+                      title="解绑设备"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {hasAudit && (
+            <div className="catsco-audit-section">
+              <div className="catsco-section-heading">
+                <h4 className="catsco-download-section-title">最近活动</h4>
+                <span className="catsco-section-meta">最多 3 条</span>
+              </div>
+              <div className="catsco-download-list">
+                {visibleDeviceAuditEvents(audit).map((event) => (
+                  <div key={event.id} className="catsco-download-card">
+                    <span className="catsco-download-icon">
+                      <RefreshCw size={18} />
+                    </span>
+                    <span className="catsco-download-copy">
+                      <span className="catsco-download-title">{auditTitle(event)}</span>
+                      <span className="catsco-download-desc">{auditDescription(event)}</span>
+                    </span>
+                    {auditMeta(event) && (
+                      <span className="catsco-download-meta">{auditMeta(event)}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
