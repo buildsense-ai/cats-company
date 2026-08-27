@@ -136,6 +136,7 @@ export default function ChatComposer({
   overlay,
   boxOverlay,
   rootProps = {},
+  modelInfo = null,
 }) {
   const rootRef = useRef(null);
   const inputRef = useRef(null);
@@ -167,6 +168,7 @@ export default function ChatComposer({
   const [voiceHoldCancel, setVoiceHoldCancel] = useState(false);
   const showAgentPicker = agentPickerVisible && (typeof onAgentToggle === 'function' || Boolean(agentMenu));
   const anyMenuOpen = attachmentOpen || (showAgentPicker && agentOpen);
+  const hasComposerContent = Boolean(String(value || '').trim() || attachments.length > 0);
 
   const showVoiceDurationBoundaryNotice = (hasText) => {
     const notice = formatVoiceDurationBoundaryNotice(hasText);
@@ -647,6 +649,16 @@ export default function ChatComposer({
         aria-busy={agentReplyActive}
       >
         {boxOverlay}
+        {modelInfo && (
+          <div
+            className="v3-composer-model-info"
+            title={modelInfo.title || undefined}
+            aria-label={`${modelInfo.model || '模型'}${modelInfo.quota ? `，${modelInfo.quota}` : ''}`}
+          >
+            <span className="v3-composer-model-name">{modelInfo.model || '模型未知'}</span>
+            {modelInfo.quota && <span className={`v3-composer-model-quota${modelInfo.tone ? ` ${modelInfo.tone}` : ''}`}>{modelInfo.quota}</span>}
+          </div>
+        )}
         {context && <div className="v3-composer-context">{context}</div>}
         {notices && <div className="v3-composer-notices">{notices}</div>}
         {attachments.length > 0 && (
@@ -699,7 +711,7 @@ export default function ChatComposer({
             })}
           </div>
         )}
-        <div className="v3-composer-row">
+        <div className={`v3-composer-row${stop ? ' has-stop' : (hasComposerContent ? ' has-content' : ' is-empty')}`}>
           <div ref={attachmentPickerRef} className="v3-attachment-picker">
             <button
               className="v3-tool v3-composer-plus"

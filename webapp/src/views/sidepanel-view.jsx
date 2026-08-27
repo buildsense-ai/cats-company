@@ -269,6 +269,7 @@ export default function ChatListView({
   onOpenMobileLink,
   onOpenSkillHub,
   onOpenCloudArtifacts,
+  newTaskRequest = 0,
 }) {
   const feedback = useFeedback();
   const [chats, setChats] = useState([]);
@@ -1132,6 +1133,13 @@ export default function ChatListView({
     setNewTaskProject(project);
     setShowNewChat(true);
   };
+
+  useEffect(() => {
+    if (newTaskRequest > 0) {
+      setNewTaskProject(null);
+      setShowNewChat(true);
+    }
+  }, [newTaskRequest]);
 
   const closeNewTaskDialog = () => {
     setShowNewChat(false);
@@ -3195,12 +3203,15 @@ export default function ChatListView({
         {additionalSidebarTools}
       </div>}
 
-      {!compact && <div ref={sidebarListRef} className="v3-chat-list">
+      {!compact && <div
+        ref={sidebarListRef}
+        className={`v3-chat-list${historySelectionMode ? ' is-history-selection-mode' : ''}`}
+      >
 
         {/* 历史任务：只承载单人 + Agent 与多人 + Agent 两种工作会话 */}
         <SidebarSectionHeader
-          className={`cc-conversation-section${(isSearching || !projectsCollapsed) ? ' cc-section-after-expanded-content' : ''}`}
-          label="历史任务"
+          className={`cc-conversation-section${historySelectionMode ? ' cc-history-selection-section' : ''}${(isSearching || !projectsCollapsed) ? ' cc-section-after-expanded-content' : ''}`}
+          label={historySelectionMode ? '选择历史任务' : '历史任务'}
           sectionRef={conversationsSectionRef}
           expanded={!collapsed.conversations}
           onToggle={() => toggleCollapsed('conversations')}
@@ -3215,7 +3226,7 @@ export default function ChatListView({
                 aria-pressed={historySelectionMode}
                 disabled={Boolean(batchAction)}
               >
-                {historySelectionMode ? <X size={15} /> : <ListChecks size={15} />}
+                {historySelectionMode ? <Check size={15} strokeWidth={2.4} /> : <ListChecks size={15} />}
               </button>
               {!historySelectionMode && (
                 <button type="button" className="cc-section-add" onClick={() => openNewTaskDialog()} title="新建任务" aria-label="新建任务">
@@ -3467,7 +3478,11 @@ export default function ChatListView({
       </div>}
 
       {!compact && historySelectionMode && (
-        <section className="cc-history-batch-bar" aria-label={t('sidebar_batch_bar_label')}>
+        <section
+          className="cc-history-batch-bar"
+          data-has-selection={selectedHistoryTasks.length > 0 ? 'true' : 'false'}
+          aria-label={t('sidebar_batch_bar_label')}
+        >
           <div className="cc-history-batch-summary" role="status" aria-live="polite">
             <strong>{selectedHistoryTasks.length > 0
               ? t('sidebar_batch_selected_count', { count: selectedHistoryTasks.length })
@@ -3494,7 +3509,7 @@ export default function ChatListView({
             </button>
             <button
               type="button"
-              className="cc-history-batch-text-action"
+              className="cc-history-batch-text-action cc-history-batch-mobile-done"
               onClick={exitHistorySelectionMode}
               disabled={Boolean(batchAction)}
             >
@@ -3597,11 +3612,27 @@ export default function ChatListView({
               onClick={handleBatchDeleteHistoryTasks}
             >
               <Trash2 size={15} aria-hidden="true" />
-              <span>{batchAction === 'delete'
-                ? t('sidebar_batch_deleting')
-                : (selectedDeletableTasks.length
-                  ? t('sidebar_batch_delete_count', { count: selectedDeletableTasks.length })
-                  : t('sidebar_batch_delete'))}</span>
+              <span>{batchAction === 'delete' ? t('sidebar_batch_deleting') : t('sidebar_batch_delete')}</span>
+            </button>
+          </div>
+          <div className="cc-history-batch-exit-actions" aria-label={t('sidebar_batch_exit_actions_aria')}>
+            <button
+              type="button"
+              className="cc-history-batch-exit-button"
+              aria-label={t('sidebar_batch_cancel_selection_aria')}
+              onClick={exitHistorySelectionMode}
+              disabled={Boolean(batchAction)}
+            >
+              {t('sidebar_batch_cancel')}
+            </button>
+            <button
+              type="button"
+              className="cc-history-batch-exit-button is-confirm"
+              aria-label={t('sidebar_batch_confirm_selection_aria')}
+              onClick={exitHistorySelectionMode}
+              disabled={Boolean(batchAction)}
+            >
+              {t('sidebar_batch_confirm')}
             </button>
           </div>
         </section>

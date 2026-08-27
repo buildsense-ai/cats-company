@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
@@ -971,6 +971,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
+  const longPressTimerRef = useRef(null);
   const moreActionsTriggerRef = useRef(null);
   const moreActionsMenuRef = useRef(null);
   const moreActionsMenuId = `message-more-actions-${useId().replace(/:/g, '')}`;
@@ -1150,6 +1151,31 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     onCreateConversationShare?.();
   };
 
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleMessagePointerDown = (event) => {
+    const isMobileViewport = window.matchMedia?.('(max-width: 768px)').matches;
+    if ((event.pointerType === 'mouse' && !isMobileViewport) || event.button > 0) return;
+    clearLongPressTimer();
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      setMoreActionsOpen(true);
+    }, 1000);
+  };
+
+  const handleMessagePointerEnd = () => {
+    clearLongPressTimer();
+  };
+
+  const handleMessageContextMenu = (event) => {
+    if (window.matchMedia?.('(max-width: 768px)').matches) event.preventDefault();
+  };
+
   useEffect(() => {
     if (!moreActionsOpen) return undefined;
 
@@ -1178,6 +1204,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     };
   }, [moreActionsOpen]);
 
+  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
@@ -1201,7 +1229,14 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       )}
 
       <div className="v3-msg-body">
-        <div className="v3-message-bubble">
+          <div
+            className="v3-message-bubble"
+            onPointerDown={handleMessagePointerDown}
+            onPointerUp={handleMessagePointerEnd}
+            onPointerCancel={handleMessagePointerEnd}
+            onPointerLeave={handleMessagePointerEnd}
+            onContextMenu={handleMessageContextMenu}
+          >
           {!isConsecutive && (
             <div className="v3-msg-header">
               <span className="v3-msg-name">{displayName}</span>

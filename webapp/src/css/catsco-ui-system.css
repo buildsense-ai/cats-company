@@ -64,6 +64,9 @@
   --cc-modal-backdrop: rgba(0, 0, 0, 0.72);
   --cc-task-hover: #f5f5f6;
   --cc-task-selected: #e7e7e9;
+  --cc-batch-hover-bg: rgba(31, 31, 31, 0.045);
+  --cc-batch-selected-bg: rgba(31, 31, 31, 0.065);
+  --cc-batch-selected-control: #5d5d63;
   --cc-radius-sm: 6px;
   --cc-radius-md: 8px;
   --cc-radius-lg: 12px;
@@ -141,6 +144,9 @@ html[data-theme="dark"] {
   --cc-tooltip-border: rgba(236, 236, 236, 0.06);
   --cc-task-hover: #232325;
   --cc-task-selected: #303034;
+  --cc-batch-hover-bg: rgba(255, 255, 255, 0.055);
+  --cc-batch-selected-bg: rgba(255, 255, 255, 0.075);
+  --cc-batch-selected-control: #b8b8bc;
 }
 
 html[data-theme="liquid"] {
@@ -184,6 +190,9 @@ html[data-theme="liquid"] {
   --cc-tooltip-border: rgba(236, 236, 236, 0.06);
   --cc-task-hover: rgba(86, 98, 217, 0.055);
   --cc-task-selected: rgba(73, 86, 168, 0.12);
+  --cc-batch-hover-bg: rgba(31, 31, 31, 0.045);
+  --cc-batch-selected-bg: rgba(31, 31, 31, 0.065);
+  --cc-batch-selected-control: #5d5d63;
   --cc-liquid-violet: #7548cf;
   --cc-liquid-blue: #5662d9;
   --cc-liquid-edge: rgba(73, 86, 168, 0.12);
@@ -2277,6 +2286,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
   margin-top: 8px;
 }
 
+.cc-history-batch-exit-actions {
+  display: none;
+}
+
 .cc-history-batch-menu-wrap {
   position: relative;
   min-width: 0;
@@ -2606,6 +2619,206 @@ html[data-theme="liquid"] .catsco-brand-mark {
   height: 8px;
   border-radius: 999px;
   background: currentColor;
+}
+
+@media (min-width: 769px) {
+  .cc-task-row-status.completed,
+  .cc-compact-task-status.completed {
+    color: var(--cc-brand-text-start);
+  }
+
+  .cc-task-status-dot--completed {
+    width: 7px;
+    height: 7px;
+  }
+
+  .cloud-artifact-kind-icon.application svg {
+    width: 26px;
+    height: 26px;
+    stroke-width: 1.65;
+  }
+
+  .v3-chat-list.is-history-selection-mode {
+    padding-bottom: 18px;
+  }
+
+  .cc-conversation-section.cc-history-selection-section {
+    margin-bottom: 5px !important;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .cc-history-select-trigger[aria-pressed="true"] {
+    display: none;
+  }
+
+  .v3-chat-item.cc-history-item.is-selection-mode {
+    border-radius: 8px;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .v3-chat-item.cc-history-item.is-selection-mode:is(:hover, :focus-within) {
+    background: var(--cc-batch-hover-bg);
+    box-shadow: none;
+  }
+
+  .v3-chat-item.cc-history-item.is-selected-for-batch,
+  .v3-chat-item.cc-history-item.is-selected-for-batch:is(:hover, :focus-within) {
+    background: var(--cc-batch-selected-bg);
+    box-shadow: none;
+    color: var(--cc-text);
+  }
+
+  .cc-history-selection-control {
+    width: 17px;
+    height: 17px;
+    flex-basis: 17px;
+    margin-right: 8px;
+    border-color: color-mix(in srgb, var(--cc-text) 24%, var(--cc-border));
+    border-radius: 5px;
+    background: var(--cc-panel);
+  }
+
+  .cc-history-selection-control.is-selected {
+    border-color: var(--cc-batch-selected-control);
+    background: var(--cc-batch-selected-control);
+    color: var(--cc-panel);
+  }
+
+  .cc-history-batch-bar {
+    margin: 0 7px 8px;
+    padding: 10px;
+    border: 1px solid var(--cc-border);
+    border-radius: 12px;
+    background: var(--cc-panel);
+    box-shadow: 0 -4px 12px rgba(31, 31, 31, 0.07);
+  }
+
+  .cc-history-batch-summary {
+    min-height: 30px;
+    gap: 6px;
+  }
+
+  .cc-history-batch-summary strong {
+    color: var(--cc-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .cc-history-batch-text-action {
+    min-width: 0;
+    min-height: 30px;
+    padding: 0 8px;
+    border-radius: 7px;
+    background: var(--cc-secondary-action-bg);
+    color: var(--cc-secondary-action-text);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .cc-history-batch-text-action:hover:not(:disabled),
+  .cc-history-batch-text-action:focus-visible {
+    background: var(--cc-secondary-action-bg-hover);
+    color: var(--cc-text);
+    text-decoration: none;
+  }
+
+  .cc-history-batch-mobile-done {
+    display: none;
+  }
+
+  .cc-history-batch-actions {
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--cc-border);
+  }
+
+  .cc-history-batch-action {
+    min-height: 34px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--cc-secondary-action-bg);
+    color: var(--cc-secondary-action-text);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .cc-history-batch-action:hover:not(:disabled),
+  .cc-history-batch-action:focus-visible,
+  .cc-history-batch-action[aria-expanded="true"] {
+    border-color: transparent;
+    background: var(--cc-secondary-action-bg-hover);
+    color: var(--cc-text);
+  }
+
+  .cc-history-batch-action.danger {
+    background: color-mix(in srgb, var(--cc-danger) 7%, var(--cc-panel));
+    color: var(--cc-danger-text);
+  }
+
+  .cc-history-batch-action.danger:disabled {
+    background: var(--cc-secondary-action-bg);
+    color: var(--cc-muted);
+  }
+
+  .cc-history-batch-action.danger:hover:not(:disabled),
+  .cc-history-batch-action.danger:focus-visible {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--cc-danger) 12%, var(--cc-panel));
+  }
+
+  .cc-history-batch-exit-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--cc-border);
+  }
+
+  .cc-history-batch-exit-button {
+    min-width: 0;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--cc-secondary-action-bg);
+    color: var(--cc-secondary-action-text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+
+  .cc-history-batch-exit-button.is-confirm {
+    background: color-mix(in srgb, var(--cc-text) 14%, var(--cc-panel));
+    color: var(--cc-text);
+  }
+
+  .cc-history-batch-exit-button:hover:not(:disabled),
+  .cc-history-batch-exit-button:focus-visible {
+    background: var(--cc-secondary-action-bg-hover);
+    color: var(--cc-text);
+  }
+
+  .cc-history-batch-exit-button:focus-visible {
+    outline: 0;
+    box-shadow: inset 0 0 0 1px var(--cc-border-strong);
+  }
+
+  .cc-history-batch-exit-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+  }
+
+  html[data-theme="dark"] .cc-history-batch-bar {
+    box-shadow: 0 -3px 10px rgba(0, 0, 0, 0.24);
+  }
 }
 
 .cc-task-row-status.failed {

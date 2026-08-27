@@ -71,7 +71,13 @@ const historicalImage = {
   created_at: '2026-07-29T03:20:00.000Z',
 };
 
-function TestPanel({ initialTab = 'active', topicId = 'p2p_7_440', agentUid = 440, onPreviewArtifact, onPreviewFile }) {
+function TestPanel({
+  initialTab = 'active',
+  topicId = 'p2p_7_440',
+  agentUid = 440,
+  onPreviewArtifact,
+  onPreviewFile,
+}) {
   const [tab, setTab] = React.useState(initialTab);
   return (
     <FeedbackProvider>
@@ -135,18 +141,19 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '共享']);
+      .toEqual(['文件', '应用']);
     expect(container.textContent).toContain('共享成果');
     expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('所有者');
     expect(container.textContent).toContain('成员可查看 · 你可管理全部成果');
     expect(container.textContent).not.toContain('已添加该 Agent');
     expect(container.querySelector('button[aria-label="筛选成果范围"]')?.textContent).toContain('当前任务');
     expect(container.textContent).toContain('成员甲');
+    expect(container.querySelector('.cloud-artifact-kind-icon.application .lucide-cloud')).not.toBeNull();
     expect(container.textContent).not.toContain('Agent 用户可见');
     expect(container.textContent).not.toContain('技能');
   });
 
-  test('labels legacy results as Agent generated instead of treating visibility as an uploader', async () => {
+  test('does not present an Agent as the uploader of a legacy result', async () => {
     api.getCloudArtifacts.mockResolvedValueOnce({
       artifacts: [{
         ...activeArtifact,
@@ -161,8 +168,45 @@ describe('CloudArtifactsPanel', () => {
     });
     await renderPanel();
 
-    expect(container.textContent).toContain('豆包 生成');
+    expect(container.textContent).toContain('上传用户未知');
+    expect(container.textContent).not.toContain('豆包 生成');
     expect(container.textContent).not.toContain('Agent 用户可见');
+  });
+
+  test('does not guess the current account for a legacy Agent result', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'agent',
+        creator_name: '自迭代',
+        uploader_uid: '',
+        uploader_name: '',
+        agent_name: '自迭代',
+      }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).not.toContain('Cycren');
+    expect(container.textContent).not.toContain('自迭代 生成');
+    expect(container.textContent).toContain('上传用户未知');
+  });
+
+  test('shows the uploading account name ahead of Agent generation metadata', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'agent',
+        creator_name: '自迭代',
+        agent_name: '自迭代',
+        uploader_name: 'Cycren',
+      }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain('Cycren');
+    expect(container.textContent).not.toContain('自迭代 生成');
   });
 
   test('does not guess a creator for historical results with no provenance', async () => {
@@ -180,7 +224,7 @@ describe('CloudArtifactsPanel', () => {
     });
     await renderPanel();
 
-    expect(container.textContent).toContain('来源未知');
+    expect(container.textContent).toContain('上传用户未知');
   });
 
   test('filters results by the current task and can show all Agent results', async () => {
@@ -441,7 +485,8 @@ describe('CloudArtifactsPanel', () => {
       source_topic_id: 'p2p_7_440',
     });
     expect(container.textContent).toContain('课堂网页');
-    expect(container.textContent).toContain('我上传');
+    expect(container.textContent).toContain('成员甲');
+    expect(container.textContent).not.toContain('我上传');
     expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('成员');
     expect(container.textContent).toContain('你可以查看和上传成果');
     expect(container.querySelector('button[aria-label="下架 课堂网页"]')).not.toBeNull();
@@ -512,7 +557,11 @@ describe('CloudArtifactsPanel', () => {
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
   });
 
-  async function renderPanel({ initialTab = 'active', topicId = 'p2p_7_440', agentUid = 440 } = {}) {
+  async function renderPanel({
+    initialTab = 'active',
+    topicId = 'p2p_7_440',
+    agentUid = 440,
+  } = {}) {
     await act(async () => {
       root.render(
         <TestPanel

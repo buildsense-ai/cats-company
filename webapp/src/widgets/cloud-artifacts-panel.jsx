@@ -6,7 +6,6 @@ import {
   Download,
   Eye,
   ExternalLink,
-  FileCode2,
   FileText,
   Image as ImageIcon,
   RefreshCw,
@@ -47,14 +46,12 @@ function artifactMeta(artifact) {
   const creatorType = String(artifact.creator_type || '').trim();
   const creatorName = String(artifact.creator_name || '').trim();
   const uploaderName = String(artifact.uploader_name || '').trim();
-  const agentName = String(artifact.agent_name || '').trim();
-  if (creatorType === 'user' || (!creatorType && (artifact.uploader_uid || uploaderName))) {
-    if (artifact.uploaded_by_me) items.push('我上传');
-    else items.push(creatorName || uploaderName || '未知上传者');
-  } else if (creatorType === 'agent' || (!creatorType && agentName)) {
-    items.push((creatorName || agentName || 'Agent') + ' 生成');
+  if (uploaderName) {
+    items.push(uploaderName);
+  } else if (creatorType === 'user' && creatorName) {
+    items.push(creatorName);
   } else {
-    items.push('来源未知');
+    items.push('上传用户未知');
   }
   if (artifact.source_title) items.push(artifact.source_title);
   const time = formatUpdatedAt(artifact.status === 'deleted' ? artifact.deleted_at : artifact.updated_at);
@@ -387,7 +384,7 @@ export default function CloudArtifactsPanel({
                 className={artifactTabSelected ? 'active' : ''}
                 onClick={() => selectTab('active')}
               >
-                共享
+                应用
               </button>
             )}
           </div>
@@ -604,13 +601,14 @@ function ArtifactScopeSelect({ value, canSelectCurrent, onChange }) {
 function ArtifactSummary({ artifact }) {
   return (
     <>
-      <span className={'cloud-artifact-kind-icon ' + artifact.kind} aria-hidden="true">
-        {artifact.kind === 'mini_app' ? <Cloud size={18} /> : <FileCode2 size={18} />}
+      <span className={'cloud-artifact-kind-icon application ' + artifact.kind} aria-hidden="true">
+        <Cloud size={22} />
       </span>
       <div className="cloud-artifact-copy">
         <h4>{artifact.title}</h4>
         <p>
-          {artifactMeta(artifact).map((item, index) => <span key={index}>{item}</span>)}
+          {artifactMeta(artifact)
+            .map((item, index) => <span key={index}>{item}</span>)}
         </p>
       </div>
     </>

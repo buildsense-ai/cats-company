@@ -24,6 +24,7 @@ export default function EmptyTaskComposer({
   onActivateTopic,
   voiceInputAvailable,
   createVoiceSession,
+  modelInfo = null,
 }) {
   const [input, setInput] = useState('');
   const initialAgentId = agentKey(initialAgent);
@@ -631,6 +632,7 @@ export default function EmptyTaskComposer({
           setAttachmentStatus(null);
         }}
         notices={notices}
+        modelInfo={modelInfo}
         overlay={phoneUploadOverlay}
         boxOverlay={isDragActive ? (
           <div className="v3-drop-overlay" aria-hidden="true">

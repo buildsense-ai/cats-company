@@ -965,6 +965,19 @@ describe('CatsCo shell styling', () => {
     expect(css).not.toContain('.cc-task-status-icon');
   });
 
+  it('uses the logo brand green for completed task dots on desktop without changing mobile geometry', () => {
+    expect(css).toContain(`@media (min-width: 769px) {
+  .cc-task-row-status.completed,
+  .cc-compact-task-status.completed {
+    color: var(--cc-brand-text-start);
+  }
+
+  .cc-task-status-dot--completed {
+    width: 7px;
+    height: 7px;
+  }`);
+  });
+
   it('keeps terminal state dots at least 3:1 against every sidebar theme', () => {
     const root = ruleFor(':root');
     const dark = ruleFor('html[data-theme="dark"]');
