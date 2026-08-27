@@ -9382,7 +9382,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 /* Desktop connection dialog */
 .oc-modal.catsco-download-modal {
-  width: min(640px, calc(100vw - 32px));
+  width: min(580px, calc(100vw - 32px));
   padding: 0;
 }
 
@@ -9408,8 +9408,8 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .catsco-connect-body {
   display: grid;
-  gap: 10px;
-  padding: 8px 20px 18px;
+  gap: 14px;
+  padding: 12px 20px 20px;
   overflow: auto;
 }
 
@@ -9417,6 +9417,10 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cc-selected) 42%, var(--cc-panel));
   min-width: 0;
   color: var(--v3-text-main);
 }
@@ -9424,8 +9428,59 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .catsco-connect-summary > svg { flex: 0 0 auto; margin-top: 2px; }
 .catsco-connect-copy { min-width: 0; }
 
+.catsco-connect-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 9px;
+  min-width: 0;
+}
+
+.catsco-connect-title-row strong {
+  color: var(--cc-text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.catsco-connect-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+  color: var(--cc-text-secondary);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.catsco-connect-status::before {
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+.catsco-connect-status.is-success {
+  border-color: color-mix(in srgb, var(--cc-accent) 35%, var(--cc-border));
+  color: var(--cc-accent);
+}
+
+.catsco-connect-status.is-pending { color: var(--cc-warning, #d58a14); }
+.catsco-connect-status.is-error { color: var(--cc-danger); }
+
+.catsco-connect-description {
+  margin-top: 4px;
+  color: var(--v3-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .catsco-connect-actions {
   display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -9452,6 +9507,57 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   background: color-mix(in srgb, var(--cc-accent) 8%, var(--cc-panel));
   color: var(--cc-accent);
   font-weight: 600;
+}
+
+.catsco-desktop-download-section,
+.catsco-device-section,
+.catsco-audit-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.catsco-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.catsco-desktop-download-section .catsco-download-section-title,
+.catsco-device-section .catsco-download-section-title,
+.catsco-audit-section .catsco-download-section-title {
+  padding: 0;
+}
+
+.catsco-section-meta {
+  flex: 0 0 auto;
+  color: var(--cc-muted);
+  font-size: 11px;
+}
+
+.catsco-desktop-download-section .catsco-download-list,
+.catsco-device-section .catsco-download-list {
+  gap: 8px;
+  padding: 0;
+}
+
+.catsco-audit-section .catsco-download-list {
+  gap: 6px;
+  padding: 0;
+}
+
+.catsco-download-toggle,
+.catsco-download-more {
+  gap: 7px;
+}
+
+.catsco-download-more {
+  min-height: 34px;
+  justify-content: center;
+  border-style: dashed;
+  color: var(--cc-text-secondary);
 }
 
 .oc-password-reset-code-row {
@@ -9703,6 +9809,16 @@ button[aria-label="关闭"]:not(:disabled):active {
   transform: none;
 }
 
+.catsco-download-card-primary {
+  border-color: color-mix(in srgb, var(--cc-accent) 34%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-accent) 6%, var(--cc-panel));
+}
+
+.catsco-download-card-primary:hover {
+  border-color: color-mix(in srgb, var(--cc-accent) 48%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-accent) 10%, var(--cc-panel));
+}
+
 .catsco-download-card.catsco-device-card {
   grid-template-columns: 40px minmax(0, 1fr) 32px;
   align-items: center;
@@ -9741,6 +9857,19 @@ button[aria-label="关闭"]:not(:disabled):active {
 }
 
 @media (max-width: 640px) {
+  .oc-modal-overlay > .oc-modal.catsco-download-modal {
+    align-self: flex-start;
+    height: auto !important;
+  }
+
+  .catsco-connect-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .catsco-connect-body {
+    padding-inline: 14px;
+  }
+
   .catsco-download-card.catsco-device-card {
     grid-template-columns: 36px minmax(0, 1fr) 28px;
   }
@@ -9979,6 +10108,11 @@ html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(
     align-self: stretch;
     max-height: calc(100vh - 32px) !important;
     margin-block-start: 0;
+  }
+
+  .oc-modal-overlay > .oc-modal.catsco-download-modal:not(.cc-confirm-dialog) {
+    align-self: flex-start !important;
+    height: auto !important;
   }
 }
 
