@@ -200,6 +200,20 @@ function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
+function createComposerDraftStore() {
+  return {
+    inputDrafts: new Map(),
+    structuredMentionDrafts: new Map(),
+    attachmentDrafts: new Map(),
+  };
+}
+
+export function resetComposerDraftStore(draftStoreRef) {
+  const nextStore = createComposerDraftStore();
+  draftStoreRef.current = nextStore;
+  return nextStore;
+}
+
 export default function TinodeWeb({ location = window.location } = {}) {
   const { pathname = '/', search = '' } = location;
   const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
@@ -241,11 +255,7 @@ function TinodeWebApp({ location }) {
   const composerDraftStoreRef = useRef(null);
 
   if (composerDraftStoreRef.current === null) {
-    composerDraftStoreRef.current = {
-      inputDrafts: new Map(),
-      structuredMentionDrafts: new Map(),
-      attachmentDrafts: new Map(),
-    };
+    resetComposerDraftStore(composerDraftStoreRef);
   }
 
   useEffect(() => {
@@ -649,9 +659,7 @@ function TinodeWebApp({ location }) {
     setCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsTab('active');
-    composerDraftStoreRef.current.inputDrafts.clear();
-    composerDraftStoreRef.current.structuredMentionDrafts.clear();
-    composerDraftStoreRef.current.attachmentDrafts.clear();
+    resetComposerDraftStore(composerDraftStoreRef);
     setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
