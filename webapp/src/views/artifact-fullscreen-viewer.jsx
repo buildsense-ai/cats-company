@@ -185,7 +185,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   }, [invalidateCurrentSnapshot, postCoordination]);
 
   const handleArtifactResult = useCallback(async (value) => {
-    if (!identity || releasedRef.current) return;
+    if (!identity || releasedRef.current || !readyRef.current) return;
     const delivery = normalizeArtifactResultDelivery(value);
     if (delivery?.taskId) {
       await taskHostRef.current?.handleResultDelivery(value);
@@ -272,6 +272,25 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       releaseViewer();
       return;
     }
+    if (message.type === 'viewer_rejected') {
+      if (message.viewerId !== viewerIdRef.current) return;
+      releaseViewer(message.error || 'viewer_rejected');
+      return;
+    }
+    if (message.type === 'viewer_accepted') {
+      if (message.viewerId !== viewerIdRef.current
+        || releasedRef.current
+        || !readyAttemptRef.current
+        || !snapshotRef.current
+        || !bindingRef.current
+        || !hasArtifactPreviewSession()) return;
+      readyAttemptRef.current = false;
+      readyRef.current = true;
+      setReady(true);
+      taskHostRef.current?.resume();
+      taskHostRef.current?.connect(bindingRef.current);
+      return;
+    }
     if (message.type === 'request_current_preview') {
       if (message.viewerId === viewerIdRef.current
         && message.requestId
@@ -287,7 +306,8 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     if (message.type !== 'context_request'
       || message.viewerId !== viewerIdRef.current
       || !message.requestId
-      || releasedRef.current) return;
+      || releasedRef.current
+      || !readyRef.current) return;
     const contextRef = await captureSnapshot();
     postCoordination('context_response', {
       request_id: message.requestId,
@@ -359,7 +379,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   useEffect(() => {
     if (!identity) return undefined;
     const suspendViewerSession = () => {
-      const wasReady = readyRef.current;
+      const wasAnnounced = readyAttemptRef.current || readyRef.current;
       sessionEpochRef.current += 1;
       readyAttemptRef.current = false;
       readyRef.current = false;
@@ -367,7 +387,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       setSessionReady(false);
       taskHostRef.current?.suspend();
       invalidateCurrentSnapshot();
-      if (wasReady) postCoordination('viewer_closed', { error: 'connection_lost' });
+      if (wasAnnounced) postCoordination('viewer_closed', { error: 'connection_lost' });
     };
     const handleWSMessage = (message) => {
       if (message?._type === 'ws_auth_expired') {
@@ -431,16 +451,15 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     readyAttemptRef.current = true;
     void captureSnapshot().then((contextRef) => {
       if (sessionEpochRef.current !== sessionEpoch) return;
-      readyAttemptRef.current = false;
       if (!contextRef || releasedRef.current) {
+        readyAttemptRef.current = false;
         setError('artifact_viewer_connection');
         return;
       }
-      readyRef.current = true;
-      setReady(true);
-      taskHostRef.current?.resume();
-      taskHostRef.current?.connect(bindingRef.current);
-      postCoordination('viewer_ready', { context_ref: contextRef });
+      if (!postCoordination('viewer_ready', { context_ref: contextRef })) {
+        readyAttemptRef.current = false;
+        setError('artifact_viewer_connection');
+      }
     });
   }, [captureSnapshot, error, file, frameReady, identityKey, postCoordination, released, sessionReady]);
 

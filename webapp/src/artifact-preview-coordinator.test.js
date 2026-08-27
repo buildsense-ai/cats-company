@@ -145,6 +145,55 @@ test('accepts a handoff only from the exact Viewer identity and version', async 
       handoffId: 'handoff_12345678',
       viewerId: 'viewer_12345678',
     });
+    expect(channel.posted).toContainEqual(expect.objectContaining({
+      type: 'viewer_accepted',
+      viewer_id: 'viewer_12345678',
+      handoff_id: 'handoff_12345678',
+    }));
+    coordinator.close();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('rejects a duplicate Viewer on a live handoff and reclaims every matching tab', async () => {
+  vi.useFakeTimers();
+  try {
+    const channel = fakeChannel();
+    const coordinator = createArtifactPreviewChatCoordinator({ channel });
+    const control = coordinator.beginHandoff(identity, 'handoff_12345678');
+
+    channel.receive(createArtifactPreviewMessage('viewer_ready', identity, {
+      viewer_id: 'viewer_primary1',
+      handoff_id: 'handoff_12345678',
+    }));
+    await control.promise;
+    channel.receive(createArtifactPreviewMessage('viewer_ready', identity, {
+      viewer_id: 'viewer_duplicate1',
+      handoff_id: 'handoff_12345678',
+    }));
+
+    expect(coordinator.getActiveViewer(identity)).toMatchObject({
+      viewerId: 'viewer_primary1',
+      handoffId: 'handoff_12345678',
+    });
+    expect(channel.posted).toContainEqual(expect.objectContaining({
+      type: 'viewer_rejected',
+      viewer_id: 'viewer_duplicate1',
+      handoff_id: 'handoff_12345678',
+      error: 'viewer_already_active',
+    }));
+
+    coordinator.claimSidebar();
+
+    const claim = channel.posted.filter((message) => message.type === 'sidebar_claimed').at(-1);
+    expect(claim).toMatchObject({
+      handoff_id: 'handoff_12345678',
+      artifact_id: identity.artifactId,
+      displayed_version: identity.displayedVersion,
+    });
+    expect(claim).not.toHaveProperty('viewer_id');
+    expect(coordinator.getActiveViewer()).toBeNull();
     coordinator.close();
   } finally {
     vi.useRealTimers();
@@ -480,9 +529,9 @@ test('claiming the sidebar releases the Viewer and cancels pending context reque
     expect(coordinator.getActiveViewer()).toBeNull();
     expect(channel.posted.at(-1)).toMatchObject({
       type: 'sidebar_claimed',
-      viewer_id: 'viewer_12345678',
       handoff_id: 'handoff_12345678',
     });
+    expect(channel.posted.at(-1)).not.toHaveProperty('viewer_id');
     coordinator.close();
   } finally {
     vi.useRealTimers();

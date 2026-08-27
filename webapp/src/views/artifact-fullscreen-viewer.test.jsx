@@ -162,6 +162,19 @@ function dispatchArtifactFrameMessage(data) {
   window.dispatchEvent(event);
 }
 
+async function acceptLatestViewer(channel = channels[0]) {
+  const ready = channel?.posted.filter((message) => message.type === 'viewer_ready').at(-1);
+  if (!ready) throw new Error('Viewer has not announced readiness');
+  await act(async () => {
+    channel.receive(createArtifactPreviewMessage('viewer_accepted', identity, {
+      viewer_id: ready.viewer_id,
+      handoff_id: ready.handoff_id,
+    }));
+    await flushPromises();
+  });
+  return ready;
+}
+
 describe('ArtifactFullscreenViewer', () => {
   let container;
   let root;
@@ -216,7 +229,7 @@ describe('ArtifactFullscreenViewer', () => {
     vi.clearAllMocks();
   });
 
-  it('loads exact vN and reports ready only after its own preview session and snapshot exist', async () => {
+  it('loads exact vN but activates only after the coordinator accepts ownership', async () => {
     await act(async () => {
       root.render(<ArtifactFullscreenViewer location={location} />);
       await flushPromises();
@@ -255,6 +268,64 @@ describe('ArtifactFullscreenViewer', () => {
         contract_version: 'catsco.artifact-page-context.v1',
       }),
     }, { timeoutMs: 3000 });
+    expect(mocks.framePostMessage).not.toHaveBeenCalledWith(
+      { type: 'catsco.artifact.host.connect.v1' },
+      'https://artifacts.example.test',
+    );
+
+    await acceptLatestViewer();
+
+    expect(mocks.framePostMessage).toHaveBeenCalledWith(
+      { type: 'catsco.artifact.host.connect.v1' },
+      'https://artifacts.example.test',
+    );
+  });
+
+  it('keeps an unaccepted duplicate inert and releases it when ownership is rejected', async () => {
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={location} />);
+      await flushPromises();
+    });
+    await act(async () => {
+      mocks.sessionReady = true;
+      mocks.wsHandler?.({ ctrl: { params: { artifact_preview_session: {} } } });
+      await flushPromises();
+    });
+    const channel = channels[0];
+    const ready = channel.posted.find((message) => message.type === 'viewer_ready');
+
+    await act(async () => {
+      dispatchArtifactFrameMessage({
+        type: 'catsco.artifact.task.request.v1',
+        request_id: 'task-request-duplicate-1',
+        intent_id: 'risks.compare.v1',
+        payload: { risk_ids: ['risk-1'] },
+      });
+      mocks.wsHandler?.({
+        artifact_result: {
+          contextRef: `acr_${'a'.repeat(43)}`,
+          topicId: identity.topicId,
+          agentUid: identity.agentUid,
+          artifactId: identity.artifactId,
+          displayedVersion: identity.displayedVersion,
+        },
+      });
+      await flushPromises();
+    });
+    expect(mocks.feedbackConfirm).not.toHaveBeenCalled();
+    expect(mocks.createArtifactTask).not.toHaveBeenCalled();
+    expect(mocks.requestArtifactResultApply).not.toHaveBeenCalled();
+
+    await act(async () => {
+      channel.receive(createArtifactPreviewMessage('viewer_rejected', identity, {
+        viewer_id: ready.viewer_id,
+        handoff_id: 'handoff_12345678',
+        error: 'viewer_already_active',
+      }));
+      await flushPromises();
+    });
+    expect(container.textContent).toContain('应用已经回到对话侧边栏');
+    expect(mocks.disconnectWS).toHaveBeenCalled();
   });
 
   it('runs the V4.1 task loop and writes the task result back from the fullscreen viewer', async () => {
@@ -289,6 +360,7 @@ describe('ArtifactFullscreenViewer', () => {
       mocks.wsHandler?.({ ctrl: { params: { artifact_preview_session: {} } } });
       await flushPromises();
     });
+    await acceptLatestViewer();
     expect(mocks.framePostMessage).toHaveBeenCalledWith(
       { type: 'catsco.artifact.host.connect.v1' },
       'https://artifacts.example.test',
@@ -349,6 +421,7 @@ describe('ArtifactFullscreenViewer', () => {
       expect(mocks.createArtifactContextSnapshot).toHaveBeenCalledTimes(2);
     });
     expect(channels[0].posted.filter((message) => message.type === 'viewer_ready')).toHaveLength(2);
+    await acceptLatestViewer();
     expect(mocks.failArtifactTask).not.toHaveBeenCalled();
 
     const delivery = {
@@ -406,6 +479,7 @@ describe('ArtifactFullscreenViewer', () => {
       mocks.wsHandler?.({ ctrl: { params: { artifact_preview_session: {} } } });
       await flushPromises();
     });
+    await acceptLatestViewer();
     await act(async () => {
       dispatchArtifactFrameMessage({
         type: 'catsco.artifact.task.request.v1',
@@ -450,6 +524,7 @@ describe('ArtifactFullscreenViewer', () => {
     });
     const channel = channels[0];
     const ready = channel.posted.find((message) => message.type === 'viewer_ready');
+    await acceptLatestViewer(channel);
 
     await act(async () => {
       channel.receive(createArtifactPreviewMessage('request_current_preview', identity, {
@@ -529,7 +604,6 @@ describe('ArtifactFullscreenViewer', () => {
 
     await act(async () => {
       channel.receive(createArtifactPreviewMessage('sidebar_claimed', identity, {
-        viewer_id: ready.viewer_id,
         handoff_id: 'handoff_12345678',
       }));
       await flushPromises();
@@ -560,6 +634,7 @@ describe('ArtifactFullscreenViewer', () => {
     });
     const channel = channels[0];
     expect(channel.posted.filter((message) => message.type === 'viewer_ready')).toHaveLength(1);
+    await acceptLatestViewer(channel);
 
     await act(async () => {
       mocks.sessionReady = false;
@@ -586,6 +661,7 @@ describe('ArtifactFullscreenViewer', () => {
       handoff_id: 'handoff_12345678',
       context_ref: `acr_${'c'.repeat(43)}`,
     });
+    await acceptLatestViewer(channel);
   });
 
   it('rebuilds its preview session and snapshot after returning from BFCache', async () => {
@@ -609,6 +685,7 @@ describe('ArtifactFullscreenViewer', () => {
     });
     const channel = channels[0];
     expect(channel.posted.filter((message) => message.type === 'viewer_ready')).toHaveLength(1);
+    await acceptLatestViewer(channel);
 
     const pageHide = new Event('pagehide');
     Object.defineProperty(pageHide, 'persisted', { value: true });
@@ -645,5 +722,6 @@ describe('ArtifactFullscreenViewer', () => {
       handoff_id: 'handoff_12345678',
       context_ref: `acr_${'d'.repeat(43)}`,
     });
+    await acceptLatestViewer(channel);
   });
 });

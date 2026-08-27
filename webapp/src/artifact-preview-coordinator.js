@@ -17,6 +17,8 @@ const ARTIFACT_CONTEXT_REF_PATTERN = /^acr_[A-Za-z0-9_-]{43}$/;
 const COORDINATION_TYPES = new Set([
   'viewer_hello',
   'viewer_ready',
+  'viewer_accepted',
+  'viewer_rejected',
   'viewer_heartbeat',
   'viewer_closed',
   'viewer_released',
@@ -278,6 +280,34 @@ export function createArtifactPreviewChatCoordinator({
     return activeViewer;
   };
 
+  const rejectViewer = (value, error = 'viewer_not_active') => {
+    const viewer = normalizeArtifactPreviewViewerLease(value);
+    if (!viewer) return false;
+    return post('viewer_rejected', viewer, {
+      viewer_id: viewer.viewerId,
+      handoff_id: viewer.handoffId,
+      error,
+    });
+  };
+
+  const acceptViewer = (value) => {
+    const viewer = normalizeArtifactPreviewViewerLease(value);
+    if (!viewer) return null;
+    const previousViewer = activeViewer || recoverableViewer;
+    if (previousViewer
+      && !sameViewerLease(previousViewer, viewer)
+      && sameViewerHandoff(previousViewer, viewer)) {
+      rejectViewer(previousViewer, 'viewer_replaced');
+    }
+    const accepted = activateViewer(viewer);
+    if (!accepted) return null;
+    post('viewer_accepted', accepted, {
+      viewer_id: accepted.viewerId,
+      handoff_id: accepted.handoffId,
+    });
+    return accepted;
+  };
+
   const touchActiveViewer = (value) => {
     if (!sameViewerLease(activeViewer, value)) return false;
     activeViewer = {
@@ -437,20 +467,22 @@ export function createArtifactPreviewChatCoordinator({
       if (pending
         && message.viewerId
         && sameArtifactPreviewIdentity(message, pending.identity)) {
-        activateViewer({
+        const accepted = acceptViewer({
           ...pending.identity,
           viewerId: message.viewerId,
           handoffId: message.handoffId,
         });
-        finishHandoff(message.handoffId, { ...activeViewer });
+        finishHandoff(message.handoffId, accepted ? { ...accepted } : null);
         return;
       }
-      if (message.viewerId
-        && sameViewerHandoff(message, recoverableViewer)
-        && (!activeViewer
+      if (message.viewerId && sameViewerHandoff(message, recoverableViewer)) {
+        if (!activeViewer
           || message.viewerId === activeViewer.viewerId
-          || now() - activeViewer.lastSeenAt > ARTIFACT_VIEWER_HEARTBEAT_TTL_MS)) {
-        activateViewer(message);
+          || now() - activeViewer.lastSeenAt > ARTIFACT_VIEWER_HEARTBEAT_TTL_MS) {
+          acceptViewer(message);
+        } else {
+          rejectViewer(message, 'viewer_already_active');
+        }
       }
       return;
     }
@@ -469,7 +501,7 @@ export function createArtifactPreviewChatCoordinator({
         : null;
       if (discovery && sameViewerLease(message, discovery)) {
         clearDiscovery(message.requestId);
-        activateViewer(discovery);
+        acceptViewer(discovery);
       } else {
         touchActiveViewer(message);
       }
@@ -507,7 +539,7 @@ export function createArtifactPreviewChatCoordinator({
     if (late && sameViewerLease(message, late)) {
       clearLateContextRequest(message.requestId);
       if (sameViewerHandoff(late, recoverableViewer)
-        && (!activeViewer || sameViewerLease(activeViewer, late))) activateViewer(late);
+        && (!activeViewer || sameViewerLease(activeViewer, late))) acceptViewer(late);
     }
   };
 
@@ -561,7 +593,6 @@ export function createArtifactPreviewChatCoordinator({
       clearAllDiscoveries();
       if (confirmedViewer) {
         post('sidebar_claimed', confirmedViewer, {
-          viewer_id: confirmedViewer.viewerId,
           handoff_id: confirmedViewer.handoffId,
         });
       } else if (recoveringViewer) {
