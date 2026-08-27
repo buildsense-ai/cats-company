@@ -27,6 +27,8 @@ import {
   parseArtifactViewerLocation,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
+import { createArtifactTaskHost } from '../artifact-task-host';
+import { useFeedback } from '../components/feedback-system';
 import { createCloudArtifactPreviewFile, previewFileDescriptor } from '../widgets/chat-message';
 import ControlledArtifactPreview from '../widgets/controlled-artifact-preview';
 import './artifact-fullscreen-viewer.css';
@@ -45,6 +47,7 @@ function viewerErrorMessage(error) {
 }
 
 export default function ArtifactFullscreenViewer({ location = window.location } = {}) {
+  const feedback = useFeedback();
   const params = useMemo(
     () => parseArtifactViewerLocation(location),
     [location.pathname, location.search],
@@ -61,7 +64,10 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   const viewerIdRef = useRef(artifactPreviewCoordinationID('viewer'));
   const channelRef = useRef(null);
   const bindingRef = useRef(null);
+  const fileRef = useRef(null);
   const snapshotRef = useRef(null);
+  const taskHostRef = useRef(null);
+  const taskFeedbackRef = useRef(feedback);
   const captureQueueRef = useRef(Promise.resolve());
   const coordinationHandlerRef = useRef(null);
   const resultHandlerRef = useRef(null);
@@ -77,6 +83,8 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   const [sessionReady, setSessionReady] = useState(false);
   const [ready, setReady] = useState(false);
   const [released, setReleased] = useState(false);
+  fileRef.current = file;
+  taskFeedbackRef.current = feedback;
   const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
 
   const postCoordination = useCallback((type, extra = {}) => {
@@ -170,6 +178,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     setSessionReady(false);
     setError('');
     setReleased(true);
+    taskHostRef.current?.deactivate();
     invalidateCurrentSnapshot();
     postCoordination('viewer_released', { error: reason });
     disconnectWS();
@@ -178,6 +187,10 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   const handleArtifactResult = useCallback(async (value) => {
     if (!identity || releasedRef.current) return;
     const delivery = normalizeArtifactResultDelivery(value);
+    if (delivery?.taskId) {
+      await taskHostRef.current?.handleResultDelivery(value);
+      return;
+    }
     const snapshot = snapshotRef.current;
     const binding = bindingRef.current;
     if (!delivery || !snapshot || !binding
@@ -206,6 +219,47 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     });
   }, [identityKey]);
   resultHandlerRef.current = handleArtifactResult;
+
+  useEffect(() => {
+    if (!identity) return undefined;
+    const host = createArtifactTaskHost({
+      getCurrentSession: () => {
+        const currentFile = fileRef.current;
+        const binding = bindingRef.current;
+        const artifactRef = artifactRefFromPreviewFile(currentFile, identity.agentUid);
+        if (releasedRef.current || !readyRef.current || !hasArtifactPreviewSession()
+          || !currentFile || !binding || !artifactRef
+          || binding.artifactId !== identity.artifactId
+          || Number(binding.agentUid || 0) !== identity.agentUid
+          || Number(artifactRef.displayed_version || 0) !== identity.displayedVersion) return null;
+        return {
+          token: binding,
+          identityKey,
+          topicId: identity.topicId,
+          topicGeneration: 0,
+          agentUid: identity.agentUid,
+          artifactId: identity.artifactId,
+          displayedVersion: identity.displayedVersion,
+          artifactRef,
+          binding,
+        };
+      },
+      confirmTask: () => taskFeedbackRef.current.confirm({
+        title: '发送给虚拟员工？',
+        message: '该应用希望把你刚才的操作作为一条新消息交给当前虚拟员工处理。',
+        confirmLabel: '确认发送',
+        cancelLabel: '取消',
+      }),
+    });
+    taskHostRef.current = host;
+    window.addEventListener('message', host.handleWindowMessage);
+    if (readyRef.current) host.connect(bindingRef.current);
+    return () => {
+      window.removeEventListener('message', host.handleWindowMessage);
+      host.dispose();
+      if (taskHostRef.current === host) taskHostRef.current = null;
+    };
+  }, [identityKey]);
 
   coordinationHandlerRef.current = async (rawMessage) => {
     const message = normalizeArtifactPreviewMessage(rawMessage);
@@ -311,6 +365,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       readyRef.current = false;
       setReady(false);
       setSessionReady(false);
+      taskHostRef.current?.suspend();
       invalidateCurrentSnapshot();
       if (wasReady) postCoordination('viewer_closed', { error: 'connection_lost' });
     };
@@ -383,6 +438,8 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       }
       readyRef.current = true;
       setReady(true);
+      taskHostRef.current?.resume();
+      taskHostRef.current?.connect(bindingRef.current);
       postCoordination('viewer_ready', { context_ref: contextRef });
     });
   }, [captureSnapshot, error, file, frameReady, identityKey, postCoordination, released, sessionReady]);
@@ -406,11 +463,13 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
         readyRef.current = false;
         setReady(false);
         setSessionReady(false);
+        taskHostRef.current?.suspend();
         postCoordination('viewer_closed', { error: 'bfcache' });
         invalidateCurrentSnapshot();
         return;
       }
       postCoordination('viewer_closed');
+      taskHostRef.current?.deactivate();
       invalidateCurrentSnapshot();
     };
     const handlePageShow = (event) => {
@@ -431,6 +490,8 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   const handleBindingChange = useCallback((binding) => {
     bindingRef.current = binding;
     setFrameReady(Boolean(binding));
+    if (!binding) taskHostRef.current?.deactivate();
+    else if (readyRef.current) taskHostRef.current?.connect(binding);
   }, []);
 
   return (
