@@ -68,7 +68,12 @@ const catscoUiSystemCss = readFileSync(
   'utf8',
 );
 
-function PreviewHarness({ message, knownArtifacts = [], isSelf = false }) {
+function PreviewHarness({
+  message,
+  knownArtifacts = [],
+  isSelf = false,
+  onOpenRemoteArtifactFullscreen = vi.fn(),
+}) {
   const [previewFile, setPreviewFile] = React.useState(null);
   const chatColumnRef = React.useRef(null);
   return (
@@ -86,7 +91,12 @@ function PreviewHarness({ message, knownArtifacts = [], isSelf = false }) {
       </div>
       {previewFile && (
         <div className="v3-file-preview-shell">
-          <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
+          <FilePreviewPanel
+            file={previewFile}
+            onClose={() => setPreviewFile(null)}
+            backgroundRef={chatColumnRef}
+            onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
+          />
         </div>
       )}
     </div>
@@ -1792,6 +1802,7 @@ describe('ChatMessage rich file rendering', () => {
       url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
       publish_version: 2,
     };
+    const onOpenRemoteArtifactFullscreen = vi.fn();
     const previewURL = 'https://artifacts.example.test/by-agent/440/lesson-game/v2/';
     await act(async () => {
       root.render(
@@ -1803,6 +1814,7 @@ describe('ChatMessage rich file rendering', () => {
             created_at: '2026-07-27T00:00:00Z',
           }}
           knownArtifacts={[artifact]}
+          onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
         />,
       );
       await Promise.resolve();
@@ -1825,8 +1837,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('src')).toBe(previewURL);
     expect(frame.getAttribute('sandbox')).toContain('allow-same-origin');
     expect(frame.hasAttribute('credentialless')).toBe(true);
-    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(previewURL);
-    expect(container.querySelector('.v3-artifact-action[href]').getAttribute('href')).toBe(artifact.url);
+    const fullscreenButton = panel.querySelector('button[aria-label="在新标签页打开"]');
+    expect(fullscreenButton).not.toBeNull();
+    expect(container.querySelector('.v3-artifact-action[href]')).toBeNull();
     expect(panel.querySelector('.v3-remote-artifact-preview-state').textContent).toContain('正在加载');
 
     await act(async () => {
@@ -1840,7 +1853,14 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
-    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(previewURL);
+    await act(async () => Simulate.click(
+      panel.querySelector('.v3-remote-artifact-preview-state.error button'),
+    ));
+    expect(onOpenRemoteArtifactFullscreen).toHaveBeenCalledWith(expect.objectContaining({
+      artifact_id: 'lesson-game',
+      publish_version: 2,
+      url: previewURL,
+    }));
   });
 
   it('keeps the current Artifact visible until the hidden refresh frame answers through the page bridge', async () => {
@@ -2180,6 +2200,7 @@ describe('ChatMessage rich file rendering', () => {
     };
     const onBack = vi.fn();
     const onClose = vi.fn();
+    const onOpenRemoteArtifactFullscreen = vi.fn();
 
     await act(async () => {
       root.render(
@@ -2187,17 +2208,23 @@ describe('ChatMessage rich file rendering', () => {
           file={createCloudArtifactPreviewFile(artifact)}
           onBack={onBack}
           onClose={onClose}
+          onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
         />,
       );
       await Promise.resolve();
     });
 
     const panel = container.querySelector('.v3-file-preview-panel');
-    const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
-    expect(externalLink?.getAttribute('href')).toBe(
-      'https://artifacts.example.test/by-agent/440/managed-game/v3/',
-    );
+    const externalButton = panel.querySelector('button[aria-label="在新标签页打开"]');
+    expect(externalButton).not.toBeNull();
     expect(panel.querySelector('a[download]')).toBeNull();
+
+    await act(async () => Simulate.click(externalButton));
+    expect(onOpenRemoteArtifactFullscreen).toHaveBeenCalledWith(expect.objectContaining({
+      artifact_id: 'managed-game',
+      publish_version: 3,
+      url: 'https://artifacts.example.test/by-agent/440/managed-game/v3/',
+    }));
 
     await act(async () => {
       Simulate.click(panel.querySelector('button[aria-label="返回云文件"]'));

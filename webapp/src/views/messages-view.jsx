@@ -36,6 +36,13 @@ import {
   withArtifactContextRef,
 } from '../artifact-context';
 import {
+  artifactPreviewCoordinationID,
+  createArtifactPreviewChatCoordinator,
+  createArtifactPreviewLeaseStore,
+  createArtifactViewerURL,
+  sameArtifactPreviewIdentity,
+} from '../artifact-preview-coordinator';
+import {
   conversationShareMessageKey,
   conversationShareText,
   downloadConversationShareImage,
@@ -528,6 +535,8 @@ export default function MessagesView({
   const activeArtifactTasksRef = useRef(new Map());
   const artifactTaskRequestsRef = useRef(new Set());
   const artifactHostBindingRef = useRef(null);
+  const artifactPreviewCoordinatorRef = useRef(null);
+  const artifactViewerHandoffRef = useRef(null);
   const historyOffsetRef = useRef(0);
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
@@ -578,6 +587,27 @@ export default function MessagesView({
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
   }
+
+  useEffect(() => {
+    const leaseStore = createArtifactPreviewLeaseStore();
+    const coordinator = createArtifactPreviewChatCoordinator({
+      recoveryLease: leaseStore.read(),
+      onViewerLeaseChange: (lease) => {
+        if (lease) leaseStore.write(lease);
+        else leaseStore.clear();
+      },
+    });
+    artifactPreviewCoordinatorRef.current = coordinator;
+    return () => {
+      const pending = artifactViewerHandoffRef.current;
+      artifactViewerHandoffRef.current = null;
+      pending?.control?.cancel();
+      coordinator?.close();
+      if (artifactPreviewCoordinatorRef.current === coordinator) {
+        artifactPreviewCoordinatorRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -700,7 +730,29 @@ export default function MessagesView({
     artifactHostBindingRef.current = null;
   }, [invalidateArtifactSnapshot]);
 
+  const cancelArtifactViewerHandoff = useCallback(({ closeWindow = true } = {}) => {
+    const pending = artifactViewerHandoffRef.current;
+    if (!pending) return;
+    artifactViewerHandoffRef.current = null;
+    pending.control?.cancel({ release: true });
+    if (closeWindow) {
+      try {
+        if (pending.openedWindow && !pending.openedWindow.closed) pending.openedWindow.close();
+      } catch {
+        // The browser may have detached the opened tab before cancellation.
+      }
+    }
+  }, []);
+
+  const claimArtifactSidebarControl = useCallback(() => {
+    cancelArtifactViewerHandoff();
+    artifactPreviewCoordinatorRef.current?.claimSidebar();
+  }, [cancelArtifactViewerHandoff]);
+
   const setPreviewFileWithFocus = useCallback((file) => {
+    if (artifactRefFromPreviewFile(file, Number(file?.artifact_agent_uid || 0))) {
+      claimArtifactSidebarControl();
+    }
     invalidateArtifactSnapshot();
     activeArtifactFocusRef.current = artifactMessageFocusFromPreviewFile(
       file,
@@ -709,7 +761,7 @@ export default function MessagesView({
     );
     activeArtifactFrameRef.current = null;
     setPreviewFile(file);
-  }, [invalidateArtifactSnapshot]);
+  }, [claimArtifactSidebarControl, invalidateArtifactSnapshot]);
 
   const handleRemoteArtifactFrameChange = useCallback((binding) => {
     const activeBinding = artifactBindingMatchesFocus(
@@ -1055,6 +1107,7 @@ export default function MessagesView({
   }, [setPreviewFileWithFocus]);
 
   const closeSidePanel = useCallback(() => {
+    cancelArtifactViewerHandoff();
     setPendingArtifactRefresh(null);
     clearActiveArtifactFocus();
     setPreviewFile(null);
@@ -1062,7 +1115,88 @@ export default function MessagesView({
     setCloudArtifactsListOpen(false);
     setCloudArtifactsReturnOpen(false);
     setCloudArtifactsTab('files');
-  }, [clearActiveArtifactFocus]);
+  }, [cancelArtifactViewerHandoff, clearActiveArtifactFocus]);
+
+  const openRemoteArtifactFullscreen = useCallback(async (file) => {
+    const focus = artifactMessageFocusFromPreviewFile(
+      file,
+      artifactTopicRef.current,
+      artifactTopicGenerationRef.current,
+    );
+    const coordinator = artifactPreviewCoordinatorRef.current;
+    if (!focus || !coordinator) {
+      feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
+      return;
+    }
+    cancelArtifactViewerHandoff();
+    const identity = {
+      topicId: focus.topic,
+      agentUid: focus.agentUid,
+      artifactId: focus.artifactId,
+      displayedVersion: focus.displayedVersion,
+    };
+    const handoffId = artifactPreviewCoordinationID('handoff');
+    const viewerURL = createArtifactViewerURL(identity, { handoffId });
+    const control = coordinator.beginHandoff(identity, handoffId);
+    if (!viewerURL || !control) {
+      control?.cancel();
+      feedback.notify({ tone: 'warning', message: '当前应用无法建立新标签页连接。' });
+      return;
+    }
+
+    let openedWindow = null;
+    try {
+      openedWindow = window.open(viewerURL, '_blank');
+    } catch {
+      openedWindow = null;
+    }
+    if (!openedWindow) {
+      control.cancel();
+      feedback.notify({ tone: 'warning', message: '新标签页被浏览器拦截，右侧应用仍可继续使用。' });
+      return;
+    }
+    try {
+      openedWindow.opener = null;
+      openedWindow.focus?.();
+    } catch {
+      // The handoff uses BroadcastChannel and does not depend on window.opener.
+    }
+
+    const pending = { control, focus, identity, openedWindow };
+    artifactViewerHandoffRef.current = pending;
+    const viewer = await control.promise;
+    if (artifactViewerHandoffRef.current !== pending) return;
+    artifactViewerHandoffRef.current = null;
+
+    const currentFocus = activeArtifactFocusRef.current;
+    const stillOwnsSidebar = Boolean(currentFocus
+      && currentFocus.topic === identity.topicId
+      && currentFocus.topic === artifactTopicRef.current
+      && currentFocus.topicGeneration === artifactTopicGenerationRef.current
+      && currentFocus.agentUid === identity.agentUid
+      && currentFocus.artifactId === identity.artifactId
+      && currentFocus.displayedVersion === identity.displayedVersion);
+    if (!viewer || !stillOwnsSidebar || !sameArtifactPreviewIdentity(viewer, identity)) {
+      coordinator.claimSidebar();
+      try {
+        if (!openedWindow.closed) openedWindow.close();
+      } catch {
+        // A detached tab will stop heartbeating and expire naturally.
+      }
+      if (stillOwnsSidebar) {
+        feedback.notify({ tone: 'warning', message: '新标签页未能接管应用，右侧应用仍可继续使用。' });
+      }
+      return;
+    }
+
+    setPendingArtifactRefresh(null);
+    clearActiveArtifactFocus();
+    setPreviewFile(null);
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(false);
+    setCloudArtifactsTab('files');
+  }, [cancelArtifactViewerHandoff, clearActiveArtifactFocus, feedback]);
 
   const previewCloudArtifact = useCallback((artifact) => {
     setPendingArtifactRefresh(null);
@@ -1078,55 +1212,79 @@ export default function MessagesView({
     const focus = activeArtifactFocusRef.current;
     const topicGeneration = artifactTopicGenerationRef.current;
     const empty = { contextRef: '' };
-    if (!focus
-      || focus.topic !== topic
-      || focus.topicGeneration !== topicGeneration
-      || artifactTopicRef.current !== topic
-      || activeTopicRef.current !== topic
-      || focus.agentUid !== activeArtifactAgentUIDRef.current) return empty;
+    const localFocusValid = Boolean(focus
+      && focus.topic === topic
+      && focus.topicGeneration === topicGeneration
+      && artifactTopicRef.current === topic
+      && activeTopicRef.current === topic
+      && focus.agentUid === activeArtifactAgentUIDRef.current);
 
-    const binding = activeArtifactFrameRef.current;
-    const hasMatchingBinding = artifactBindingMatchesFocus(binding, focus);
-    let pageContext = null;
-    if (hasMatchingBinding) {
-      pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
+    if (localFocusValid) {
+      const binding = activeArtifactFrameRef.current;
+      const hasMatchingBinding = artifactBindingMatchesFocus(binding, focus);
+      let pageContext = null;
+      if (hasMatchingBinding) {
+        pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
+      }
+
+      if (activeArtifactFocusRef.current !== focus
+        || (hasMatchingBinding && activeArtifactFrameRef.current !== binding)
+        || artifactTopicRef.current !== topic
+        || artifactTopicGenerationRef.current !== topicGeneration
+        || activeTopicRef.current !== topic
+        || activeArtifactAgentUIDRef.current !== focus.agentUid) return empty;
+
+      let response;
+      try {
+        response = await api.createArtifactContextSnapshot({
+          topic_id: topic,
+          artifact_ref: focus.artifactRef,
+          ...(pageContext ? { page_context: pageContext } : {}),
+        }, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS });
+      } catch {
+        return empty;
+      }
+      const contextRef = artifactContextRefFromSnapshot(response);
+      if (!contextRef) return empty;
+      const snapshot = {
+        contextRef,
+        topic,
+        topicGeneration,
+        agentUid: focus.agentUid,
+        artifactId: focus.artifactId,
+      };
+      if (activeArtifactFocusRef.current !== focus
+        || artifactTopicRef.current !== topic
+        || artifactTopicGenerationRef.current !== topicGeneration
+        || activeTopicRef.current !== topic
+        || activeArtifactAgentUIDRef.current !== focus.agentUid) {
+        invalidateArtifactSnapshot(snapshot);
+        return empty;
+      }
+      activeArtifactSnapshotRef.current = snapshot;
+      return { contextRef };
     }
 
-    if (activeArtifactFocusRef.current !== focus
-      || (hasMatchingBinding && activeArtifactFrameRef.current !== binding)
+    const coordinator = artifactPreviewCoordinatorRef.current;
+    const viewer = coordinator?.getActiveViewer();
+    if (!viewer
+      || viewer.topicId !== topic
+      || viewer.agentUid !== activeArtifactAgentUIDRef.current
       || artifactTopicRef.current !== topic
-      || artifactTopicGenerationRef.current !== topicGeneration
-      || activeTopicRef.current !== topic
-      || activeArtifactAgentUIDRef.current !== focus.agentUid) return empty;
-
-    let response;
-    try {
-      response = await api.createArtifactContextSnapshot({
-        topic_id: topic,
-        artifact_ref: focus.artifactRef,
-        ...(pageContext ? { page_context: pageContext } : {}),
-      }, { timeoutMs: ARTIFACT_SNAPSHOT_TIMEOUT_MS });
-    } catch {
-      return empty;
-    }
-    const contextRef = artifactContextRefFromSnapshot(response);
+      || activeTopicRef.current !== topic) return empty;
+    const contextRef = await coordinator.requestContext(viewer);
     if (!contextRef) return empty;
-    const snapshot = {
-      contextRef,
-      topic,
-      topicGeneration,
-      agentUid: focus.agentUid,
-      artifactId: focus.artifactId,
-    };
-    if (activeArtifactFocusRef.current !== focus
+    const currentViewer = coordinator.getActiveViewer(viewer);
+    if (!currentViewer
+      || currentViewer.viewerId !== viewer.viewerId
+      || !sameArtifactPreviewIdentity(currentViewer, viewer)
       || artifactTopicRef.current !== topic
       || artifactTopicGenerationRef.current !== topicGeneration
       || activeTopicRef.current !== topic
-      || activeArtifactAgentUIDRef.current !== focus.agentUid) {
-      invalidateArtifactSnapshot(snapshot);
+      || activeArtifactAgentUIDRef.current !== viewer.agentUid) {
+      invalidateArtifactSnapshot({ contextRef });
       return empty;
     }
-    activeArtifactSnapshotRef.current = snapshot;
     return { contextRef };
   }, [invalidateArtifactSnapshot, topic]);
 
@@ -4573,6 +4731,7 @@ export default function MessagesView({
                 onRemoteArtifactRefreshReady={handleArtifactRefreshReady}
                 onRemoteArtifactRefreshFailed={handleArtifactRefreshFailed}
                 onRemoteArtifactFrameChange={handleRemoteArtifactFrameChange}
+                onOpenRemoteArtifactFullscreen={openRemoteArtifactFullscreen}
               />
             )}
           </div>

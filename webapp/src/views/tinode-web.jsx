@@ -32,6 +32,8 @@ import EditableConversationTitle from '../widgets/editable-conversation-title';
 import IdentityOnboarding from '../components/identity-onboarding';
 import { useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
+import ArtifactFullscreenViewer from './artifact-fullscreen-viewer';
+import { ARTIFACT_VIEWER_PATH } from '../artifact-preview-coordinator';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
   describeModelApplyError,
@@ -201,6 +203,9 @@ function isInvalidSessionError(error) {
 
 export default function TinodeWeb({ location = window.location } = {}) {
   const { pathname = '/', search = '' } = location;
+  if (pathname === ARTIFACT_VIEWER_PATH) {
+    return <ArtifactFullscreenViewer location={location} />;
+  }
   const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
   if (mobileUploadMatch) {
     return <MobileUploadView sessionId={decodeURIComponent(mobileUploadMatch[1])} />;
