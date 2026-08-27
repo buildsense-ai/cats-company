@@ -136,6 +136,7 @@ describe('SkillHubView', () => {
         description: 'Summarize text',
         author: 'arrowhaken',
         latestVersion: '2.0.0',
+        publishedAt: '2026-08-20T02:03:04Z',
         contentHash: 'b'.repeat(64),
       }],
     });
@@ -337,10 +338,16 @@ describe('SkillHubView', () => {
       { uid: 1, relation: 'owner' },
       { uid: 2, relation: 'friend' },
     ] }, 10).map((bot) => bot.uid)).toEqual([1]);
-    expect(normalizeSkillHubSkills({ items: [{ id: 'a', name: 'A', latest_version: '1.2.0' }] })[0]).toMatchObject({
+    expect(normalizeSkillHubSkills({ items: [{
+      id: 'a',
+      name: 'A',
+      latest_version: '1.2.0',
+      published_at: '2026-08-20T02:03:04Z',
+    }] })[0]).toMatchObject({
       skillId: 'a',
       displayName: 'A',
       latestVersion: '1.2.0',
+      publishedAt: '2026-08-20T02:03:04Z',
     });
     expect(normalizeLocalSkills({ skills: [{
       name: 'local-demo',
@@ -794,6 +801,7 @@ describe('SkillHubView', () => {
         description: 'Cloud ability',
         author: 'alice',
         latestVersion: '1.0.0',
+        publishedAt: '2026-08-20T02:03:04Z',
         contentHash: 'b'.repeat(64),
       }],
       localSkills: [{
@@ -806,12 +814,12 @@ describe('SkillHubView', () => {
     });
 
     expect(library.map((skill) => skill.displayName)).toEqual(['Local Writer', 'Online Writer']);
-    expect(library.map((skill) => skill.sourceLabel)).toEqual(['本机', '在线']);
+    expect(library.map((skill) => skill.sourceLabel)).toEqual(['本机', undefined]);
     expect(library[0]).toMatchObject({ isLocalSkill: true, canBind: false });
     expect(library[1]).toMatchObject({ latestVersion: '1.0.0', author: 'alice' });
   });
 
-  it('shows the stable version and CatsCo publisher on online catalogue cards', async () => {
+  it('shows the stable version, CatsCo publisher, and publication time on catalogue cards', async () => {
     await act(async () => {
       root.render(<SkillHubView user={{ uid: 7 }} />);
       await Promise.resolve();
@@ -823,8 +831,12 @@ describe('SkillHubView', () => {
     const card = [...container.querySelectorAll('.cc-skillhub-card')]
       .find(candidate => candidate.textContent.includes('Summarize'));
     const source = card?.querySelector('.cc-skillhub-card-source');
-    expect(source?.textContent).toBe('在线 · v2.0.0 · arrowhaken');
-    expect(source?.getAttribute('title')).toBe('在线 · v2.0.0 · arrowhaken');
+    const expectedTime = `发布于 ${new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).format(new Date('2026-08-20T02:03:04Z'))}`;
+    expect(source?.textContent).toBe(`v2.0.0 · arrowhaken${expectedTime}`);
+    expect(source?.getAttribute('title')).toBe(`v2.0.0 · arrowhaken · ${expectedTime}`);
+    expect(source?.querySelector('time')?.getAttribute('datetime')).toBe('2026-08-20T02:03:04Z');
   });
 
   it('keeps catalogue metadata placeholders visible when an old response omits fields', async () => {
@@ -842,7 +854,7 @@ describe('SkillHubView', () => {
     const card = [...container.querySelectorAll('.cc-skillhub-card')]
       .find(candidate => candidate.textContent.includes('Legacy Tool'));
     expect(card?.querySelector('.cc-skillhub-card-source')?.textContent)
-      .toBe('在线 · 版本待确认 · 发布者待确认');
+      .toBe('版本待确认 · 发布者待确认发布时间待确认');
   });
 
   it('explains account sync before adding a local-only ability from the library', async () => {
@@ -907,7 +919,9 @@ describe('SkillHubView', () => {
     const cards = [...container.querySelectorAll('.cc-skillhub-card')];
     expect(cards[0].textContent).toContain('Local Writer');
     expect(cards[0].textContent).toContain('本机');
-    expect(cards[1].textContent).toContain('在线');
+    expect(cards[1].textContent).not.toContain('在线');
+    expect(cards[1].textContent).toContain('v2.0.0 · arrowhaken');
+    expect(cards[1].textContent).toContain('发布于');
 
     await act(async () => {
       Simulate.click(cards[0].querySelector('button'));

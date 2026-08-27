@@ -874,7 +874,9 @@
 .cc-skillhub-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 11px; border-top: 1px solid var(--cc-border); }
 .cc-skillhub-card-footer > span { display: inline-flex; align-items: center; gap: 4px; color: var(--cc-muted); font-size: 11px; }
 .cc-skillhub-card-footer > span.verified { color: var(--cc-success-text); }
-.cc-skillhub-card-footer > .cc-skillhub-card-source { min-width: 0; overflow: hidden; font-weight: var(--cc-font-weight-medium); text-overflow: ellipsis; white-space: nowrap; }
+.cc-skillhub-card-footer > .cc-skillhub-card-source { display: grid; min-width: 0; gap: 2px; color: var(--cc-muted); font-size: 11px; font-weight: var(--cc-font-weight-medium); }
+.cc-skillhub-card-source > span, .cc-skillhub-card-source > time { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-skillhub-card-source > time { font-size: 10px; font-weight: var(--cc-font-weight-regular); }
 .cc-skillhub-card-footer > .cc-skillhub-card-source.is-local { color: var(--cc-accent-text); }
 .cc-skillhub-card-footer button { min-width: 76px; }
 .cc-skillhub-library-status { display: flex; align-items: center; gap: 6px; padding: 10px 20px 0; color: var(--cc-muted); font-size: 11px; }

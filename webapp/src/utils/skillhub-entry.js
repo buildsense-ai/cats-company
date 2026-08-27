@@ -24,6 +24,7 @@ export function normalizeSkillHubSkills(response) {
     latestVersion: String(
       skill?.latestVersion || skill?.latest_version || skill?.version || '',
     ).trim(),
+    publishedAt: String(skill?.publishedAt || skill?.published_at || '').trim(),
     contentHash: String(
       skill?.contentHash || skill?.content_hash || skill?.sha256 || '',
     ).trim().toLowerCase(),
