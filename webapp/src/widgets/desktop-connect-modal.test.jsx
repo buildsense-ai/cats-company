@@ -48,9 +48,16 @@ describe('DesktopConnectModal', () => {
 
     expect(container.textContent).toContain('CatsCo 桌面端');
     expect(container.textContent).toContain('连接我的电脑助手');
-    expect(container.textContent).toContain('当前版本');
-    expect(container.textContent).toContain('Windows');
+    expect(container.textContent).toContain('v1.5.0');
     expect(container.textContent).toContain('收起下载');
+    const recommended = container.querySelector('.catsco-download-card-primary');
+    expect(recommended).not.toBeNull();
+    expect([
+      'Windows',
+      'macOS Apple Silicon',
+      'macOS Intel',
+      'Linux AppImage',
+    ].some((platform) => recommended.textContent.includes(platform))).toBe(true);
   });
 
   test('keeps connected device management in the unified modal', async () => {
