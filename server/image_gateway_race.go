@@ -68,11 +68,16 @@ type imageProviderAttemptEvent struct {
 
 var errAsyncImageResponse = errors.New("asynchronous image response is not a completed image")
 
-func (h *ImageGenerationProxyHandler) eligibleImageProviders(operation imageProviderOperation, excluded map[string]struct{}) []imageUpstreamProvider {
+func (h *ImageGenerationProxyHandler) eligibleImageProviders(operation imageProviderOperation, excluded map[string]struct{}, payload map[string]interface{}) []imageUpstreamProvider {
 	providers := make([]imageUpstreamProvider, 0, len(h.providers))
 	for _, provider := range h.providers {
 		if !provider.supports(operation) {
 			continue
+		}
+		if operation == imageOperationEdit && payload != nil {
+			if _, hasMask := payload["mask"]; hasMask && provider.editTransport != imageEditTransportMultipart {
+				continue
+			}
 		}
 		if _, skip := excluded[provider.id]; skip {
 			continue
@@ -157,7 +162,7 @@ func (h *ImageGenerationProxyHandler) runImageRace(
 	operation imageProviderOperation,
 	observer func(int, imageAttemptResult),
 ) imageRaceExecution {
-	providers := h.eligibleImageProviders(operation, nil)
+	providers := h.eligibleImageProviders(operation, nil, payload)
 	execution := imageRaceExecution{providerAttempts: make(map[string]int, len(providers))}
 	if len(providers) == 0 {
 		execution.outcome = imageRaceProvidersUnavailable
@@ -401,6 +406,26 @@ func encodeMultipartImageEdit(payload map[string]interface{}) ([]byte, string, e
 			index+1,
 			extension,
 		))
+		headers.Set("Content-Type", mediaType)
+		part, err := writer.CreatePart(headers)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := part.Write(contents); err != nil {
+			return nil, "", err
+		}
+	}
+	if rawMask, exists := payload["mask"]; exists {
+		maskURL, ok := rawMask.(string)
+		if !ok {
+			return nil, "", errors.New("multipart image edit mask is invalid")
+		}
+		mediaType, contents, extension, err := decodeMultipartReference(maskURL)
+		if err != nil || mediaType != "image/png" {
+			return nil, "", errors.New("multipart image edit mask must be PNG")
+		}
+		headers := make(textproto.MIMEHeader)
+		headers.Set("Content-Disposition", fmt.Sprintf(`form-data; name="mask"; filename="mask.%s"`, extension))
 		headers.Set("Content-Type", mediaType)
 		part, err := writer.CreatePart(headers)
 		if err != nil {
