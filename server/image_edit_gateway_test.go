@@ -114,6 +114,37 @@ func TestValidateImageEditPayloadRejectsInvalidMasks(t *testing.T) {
 	}
 }
 
+func TestValidateImageEditPayloadPreservesOversizedMaskStatus(t *testing.T) {
+	sourceURL := testDecodablePNGDataURL(24, 16, false)
+	maskURL := testDecodablePNGDataURL(24, 16, true)
+	_, sourceBytes, err := decodeImageEditDataURL(sourceURL)
+	if err != nil {
+		t.Fatalf("decode source image: %v", err)
+	}
+	_, maskBytes, err := decodeImageEditDataURL(maskURL)
+	if err != nil {
+		t.Fatalf("decode mask image: %v", err)
+	}
+	maskBytes = append(maskBytes, make([]byte, len(sourceBytes)+1)...)
+	maskURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskBytes)
+
+	payload := map[string]interface{}{
+		"prompt": "remove object",
+		"images": []interface{}{map[string]interface{}{"image_url": sourceURL}},
+		"mask":   maskURL,
+	}
+	limits := imageEditReferenceLimits{
+		maxImages:     3,
+		maxImageBytes: int64(len(maskBytes) - 1),
+		maxTotalBytes: int64(len(sourceBytes) + len(maskBytes)),
+	}
+	_, _, err = validateImageEditPayload(payload, limits)
+	requestErr, ok := err.(*imageEditRequestError)
+	if !ok || requestErr.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected oversized mask to return %d, got %#v", http.StatusRequestEntityTooLarge, err)
+	}
+}
+
 func TestImageEditProxyHandlerForwardsReferencesAndForcesPolicy(t *testing.T) {
 	var upstreamAuthorization string
 	var upstreamPath string

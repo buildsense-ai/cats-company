@@ -205,6 +205,10 @@ func validateImageEditMask(maskURL, firstImageURL string, maxDecodedBytes int64)
 	}
 	maskBytes, _, err := validateImageEditDataURL(maskURL, maxDecodedBytes)
 	if err != nil {
+		var requestErr *imageEditRequestError
+		if errors.As(err, &requestErr) && requestErr.status == http.StatusRequestEntityTooLarge {
+			return 0, &imageEditRequestError{status: requestErr.status, message: "mask exceeds the decoded size limit"}
+		}
 		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a valid base64 PNG data URL"}
 	}
 	if !strings.HasPrefix(firstImageURL, "data:image/png;base64,") {
