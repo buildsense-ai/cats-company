@@ -92,6 +92,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   localStorage.clear();
+  sessionStorage.clear();
   window.history.replaceState(null, '', '/');
 });
 
@@ -221,4 +222,27 @@ test('clears a missing-profile session when the account no longer exists', async
   await vi.waitFor(() => {
     expect(mocks.setToken).toHaveBeenCalledWith(null);
   });
+});
+
+test('clears persisted drafts when an uncached session is rejected', async () => {
+  localStorage.removeItem('oc_user');
+  sessionStorage.setItem(
+    'catsco_composer_drafts:v1:1',
+    JSON.stringify({
+      inputDrafts: [['p2p_1_2', 'stale draft']],
+      structuredMentionDrafts: [],
+      attachmentDrafts: [],
+    }),
+  );
+  const unauthorized = Object.assign(new Error('登录状态已失效'), { status: 401 });
+  mocks.getMe.mockRejectedValue(unauthorized);
+
+  await act(async () => {
+    root.render(<TinodeWeb location={{ pathname: '/', search: '', hash: '' }} />);
+  });
+
+  await vi.waitFor(() => {
+    expect(mocks.setToken).toHaveBeenCalledWith(null);
+  });
+  expect(sessionStorage.getItem('catsco_composer_drafts:v1:1')).toBeNull();
 });

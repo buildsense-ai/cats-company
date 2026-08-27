@@ -88,16 +88,51 @@ vi.mock('./skillhub-view', () => ({
 
 vi.mock('./messages-view', () => ({
   default: ({ composerDraftStore, topic }) => (
-    <textarea
-      aria-label="消息草稿"
-      defaultValue={composerDraftStore.inputDrafts.get(topic) || ''}
-      onChange={(event) => {
-        const value = event.target.value;
-        if (value) composerDraftStore.inputDrafts.set(topic, value);
-        else composerDraftStore.inputDrafts.delete(topic);
-        composerDraftStore.persist?.();
-      }}
-    />
+    <>
+      <textarea
+        aria-label="消息草稿"
+        defaultValue={composerDraftStore.inputDrafts.get(topic) || ''}
+        onChange={(event) => {
+          const value = event.target.value;
+          if (value) composerDraftStore.inputDrafts.set(topic, value);
+          else composerDraftStore.inputDrafts.delete(topic);
+          composerDraftStore.persist?.();
+        }}
+      />
+      <button
+        type="button"
+        aria-label="保存提及草稿"
+        onClick={() => {
+          composerDraftStore.structuredMentionDrafts.set(topic, [
+            { target: 'usr2', label: '助手', start: 0, end: 3 },
+          ]);
+          composerDraftStore.persist?.();
+        }}
+      >
+        保存提及
+      </button>
+      <button
+        type="button"
+        aria-label="保存附件草稿"
+        onClick={() => {
+          composerDraftStore.attachmentDrafts.set(topic, [{
+            name: 'report.pdf',
+            type: 'file',
+            size: 24,
+            content: { type: 'file', payload: { file_key: 'report.pdf' } },
+          }]);
+          composerDraftStore.persist?.();
+        }}
+      >
+        保存附件
+      </button>
+      <output aria-label="已恢复提及">
+        {composerDraftStore.structuredMentionDrafts.get(topic)?.[0]?.label || ''}
+      </output>
+      <output aria-label="已恢复附件">
+        {composerDraftStore.attachmentDrafts.get(topic)?.[0]?.name || ''}
+      </output>
+    </>
   ),
 }));
 
@@ -130,6 +165,7 @@ beforeEach(() => {
   mocks.sessionRevision = 1;
   window.matchMedia = vi.fn(() => ({ matches: false }));
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
+  sessionStorage.clear();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -171,4 +207,66 @@ test('restores a draft when returning from SkillHub after the workspace remounts
 
   expect(container.querySelector('textarea[aria-label="消息草稿"]').value)
     .toBe('draft survives SkillHub navigation');
+});
+
+test('round-trips text, mentions, and attachments across a workspace remount', async () => {
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+  await selectTestConversation();
+
+  const textarea = container.querySelector('textarea[aria-label="消息草稿"]');
+  await act(async () => {
+    textarea.value = 'structured draft';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+    Simulate.click(container.querySelector('[aria-label="保存提及草稿"]'));
+    Simulate.click(container.querySelector('[aria-label="保存附件草稿"]'));
+  });
+
+  const stored = JSON.parse(sessionStorage.getItem('catsco_composer_drafts:v1:1'));
+  expect(stored.inputDrafts).toEqual([['p2p_1_2', 'structured draft']]);
+  expect(stored.structuredMentionDrafts).toEqual([[
+    'p2p_1_2',
+    [{ target: 'usr2', label: '助手', start: 0, end: 3 }],
+  ]]);
+  expect(stored.attachmentDrafts).toEqual([[
+    'p2p_1_2',
+    [{
+      name: 'report.pdf',
+      type: 'file',
+      size: 24,
+      content: { type: 'file', payload: { file_key: 'report.pdf' } },
+    }],
+  ]]);
+
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+  await selectTestConversation();
+
+  expect(container.querySelector('textarea[aria-label="消息草稿"]').value)
+    .toBe('structured draft');
+  expect(container.querySelector('[aria-label="已恢复提及"]').textContent).toBe('助手');
+  expect(container.querySelector('[aria-label="已恢复附件"]').textContent).toBe('report.pdf');
+});
+
+test('does not restore another account\'s composer drafts', async () => {
+  sessionStorage.setItem('catsco_composer_drafts:v1:2', JSON.stringify({
+    inputDrafts: [['p2p_1_2', 'another account draft']],
+    structuredMentionDrafts: [],
+    attachmentDrafts: [],
+  }));
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+  await selectTestConversation();
+
+  expect(container.querySelector('textarea[aria-label="消息草稿"]').value).toBe('');
+  expect(sessionStorage.getItem('catsco_composer_drafts:v1:2')).not.toBeNull();
 });

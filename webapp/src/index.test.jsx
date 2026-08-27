@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getPushPromptOwner: vi.fn(() => ''),
   readStoredUserProfile: vi.fn(() => null),
   clearStoredUserProfile: vi.fn(() => true),
+  clearPersistedComposerDrafts: vi.fn(() => 0),
   registerPwaServiceWorker: vi.fn(),
   getPwaUpdateServiceWorker: vi.fn(() => null),
   isPwaRefreshPending: vi.fn(() => false),
@@ -96,6 +97,10 @@ vi.mock('./utils/user-profile', () => ({
   readStoredUserProfile: mocks.readStoredUserProfile,
 }));
 
+vi.mock('./utils/composer-draft-storage', () => ({
+  clearPersistedComposerDrafts: mocks.clearPersistedComposerDrafts,
+}));
+
 import {
   App,
   isWorkspaceChunkLoadError,
@@ -117,6 +122,7 @@ beforeEach(() => {
   mocks.readStoredUserProfile.mockReturnValue(null);
   mocks.setToken.mockClear();
   mocks.clearStoredUserProfile.mockClear();
+  mocks.clearPersistedComposerDrafts.mockClear();
   mocks.registerPwaServiceWorker.mockClear();
   mocks.getPwaUpdateServiceWorker.mockReset().mockReturnValue(null);
   mocks.isPwaRefreshPending.mockReset().mockReturnValue(false);
@@ -215,6 +221,7 @@ test('clears an expired token before it can load the workspace or redirect a dee
   expect(container.querySelector('[data-testid="auth-gateway"]')).toBeTruthy();
   expect(container.querySelector('[data-testid="tinode-web"]')).toBeFalsy();
   expect(mocks.setToken).toHaveBeenCalledWith(null);
+  expect(mocks.clearPersistedComposerDrafts).toHaveBeenCalledTimes(1);
   expect(mocks.clearStoredUserProfile).toHaveBeenCalledTimes(1);
 });
 
