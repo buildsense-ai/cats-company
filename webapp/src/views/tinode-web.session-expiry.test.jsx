@@ -60,7 +60,7 @@ vi.mock('../utils/theme-access', () => ({
   verifyLiquidThemePassword: vi.fn(),
 }));
 
-import TinodeWeb from './tinode-web';
+import TinodeWeb, { resetComposerDraftStore } from './tinode-web';
 
 let container;
 let root;
@@ -93,6 +93,26 @@ afterEach(async () => {
   container.remove();
   localStorage.clear();
   window.history.replaceState(null, '', '/');
+});
+
+test('replaces draft maps so stale callbacks cannot restore a closed session draft', () => {
+  const staleStore = {
+    inputDrafts: new Map([['p2p_1_2', 'old session draft']]),
+    structuredMentionDrafts: new Map(),
+    attachmentDrafts: new Map(),
+  };
+  const draftStoreRef = { current: staleStore };
+
+  const activeStore = resetComposerDraftStore(draftStoreRef);
+  staleStore.inputDrafts.set('p2p_1_2', 'late-send draft');
+  staleStore.structuredMentionDrafts.set('p2p_1_2', [{ target: 'usr2' }]);
+  staleStore.attachmentDrafts.set('p2p_1_2', [{ name: 'late-upload.png' }]);
+
+  expect(draftStoreRef.current).toBe(activeStore);
+  expect(activeStore).not.toBe(staleStore);
+  expect(activeStore.inputDrafts.get('p2p_1_2')).toBeUndefined();
+  expect(activeStore.structuredMentionDrafts.get('p2p_1_2')).toBeUndefined();
+  expect(activeStore.attachmentDrafts.get('p2p_1_2')).toBeUndefined();
 });
 
 test('keeps the current deep link when a WebSocket session expires', async () => {

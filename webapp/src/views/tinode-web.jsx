@@ -198,6 +198,20 @@ function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
+function createComposerDraftStore() {
+  return {
+    inputDrafts: new Map(),
+    structuredMentionDrafts: new Map(),
+    attachmentDrafts: new Map(),
+  };
+}
+
+export function resetComposerDraftStore(draftStoreRef) {
+  const nextStore = createComposerDraftStore();
+  draftStoreRef.current = nextStore;
+  return nextStore;
+}
+
 export default function TinodeWeb({ location = window.location } = {}) {
   const { pathname = '/', search = '' } = location;
   if (pathname === ARTIFACT_VIEWER_PATH) {
@@ -239,6 +253,11 @@ function TinodeWebApp({ location }) {
   const [messageLocationRequest, setMessageLocationRequest] = useState(null);
   const messageLocationSequenceRef = useRef(0);
   const taskDraftSequenceRef = useRef(0);
+  const composerDraftStoreRef = useRef(null);
+
+  if (composerDraftStoreRef.current === null) {
+    resetComposerDraftStore(composerDraftStoreRef);
+  }
 
   useEffect(() => {
     if (!user) return undefined;
@@ -646,6 +665,7 @@ function TinodeWebApp({ location }) {
     setCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsTab('active');
+    resetComposerDraftStore(composerDraftStoreRef);
     setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
@@ -1328,6 +1348,7 @@ function TinodeWebApp({ location }) {
                 onCloudArtifactsRequestConsumed={consumeCloudArtifactsRequest}
                 messageLocationRequest={messageLocationRequest}
                 onBackToSearch={() => setSearchOpen(true)}
+                composerDraftStore={composerDraftStoreRef.current}
               />
             ) : (
               <>
