@@ -19,6 +19,7 @@ vi.mock('../api', () => {
     getRelayConfig: vi.fn().mockResolvedValue({}),
     getMe: mocks.getMe,
     getAgents: vi.fn().mockResolvedValue({ agents: [] }),
+    getDevices: vi.fn().mockResolvedValue({ devices: [] }),
     getAgentQuota: vi.fn().mockResolvedValue({}),
     getGroupInfo: vi.fn().mockResolvedValue({}),
     unsubscribePush: vi.fn().mockResolvedValue({}),

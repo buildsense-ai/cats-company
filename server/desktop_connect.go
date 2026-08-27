@@ -21,11 +21,14 @@ type DesktopConnectHandler struct {
 }
 
 type desktopConnectSession struct {
-	Code      string
-	UID       int64
-	CreatedAt time.Time
-	ExpiresAt time.Time
-	ClaimedAt *time.Time
+	Code               string
+	UID                int64
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	ClaimedAt          *time.Time
+	ClaimedDeviceID    string
+	ClaimedDisplayName string
+	ClaimedRuntimeRole string
 }
 
 type desktopConnectSessionStore struct {
@@ -79,13 +82,34 @@ func (h *DesktopConnectHandler) HandleExchange(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var req struct {
-		Code string `json:"code"`
+		Code           string `json:"code"`
+		DeviceID       string `json:"device_id"`
+		InstallationID string `json:"installation_id"`
+		DisplayName    string `json:"display_name"`
+		RuntimeRole    string `json:"runtime_role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	session, status, msg := h.sessions.claim(req.Code)
+	deviceID := strings.TrimSpace(req.InstallationID)
+	if deviceID == "" {
+		deviceID = strings.TrimSpace(req.DeviceID)
+	}
+	if normalized, err := normalizeUserDeviceID(deviceID); err == nil {
+		deviceID = normalized
+	} else {
+		deviceID = ""
+	}
+	runtimeRole := normalizeDeviceRuntimeRole(req.RuntimeRole)
+	if runtimeRole != "desktop" {
+		deviceID = ""
+	}
+	session, status, msg := h.sessions.claim(req.Code, desktopConnectClaim{
+		DeviceID:    deviceID,
+		DisplayName: normalizeDeviceText(req.DisplayName),
+		RuntimeRole: runtimeRole,
+	})
 	if status != 0 {
 		writeJSON(w, status, map[string]string{"error": msg})
 		return
@@ -132,10 +156,22 @@ func (h *DesktopConnectHandler) HandleStatus(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "desktop connect session not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"state":      state,
 		"expires_at": session.ExpiresAt.Format(time.RFC3339),
-	})
+	}
+	if session.ClaimedDeviceID != "" {
+		response["device_id"] = session.ClaimedDeviceID
+		response["display_name"] = session.ClaimedDisplayName
+		response["runtime_role"] = session.ClaimedRuntimeRole
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+type desktopConnectClaim struct {
+	DeviceID    string
+	DisplayName string
+	RuntimeRole string
 }
 
 func (s *desktopConnectSessionStore) create(uid int64) *desktopConnectSession {
@@ -153,7 +189,7 @@ func (s *desktopConnectSessionStore) create(uid int64) *desktopConnectSession {
 	return session
 }
 
-func (s *desktopConnectSessionStore) claim(code string) (*desktopConnectSession, int, string) {
+func (s *desktopConnectSessionStore) claim(code string, claim desktopConnectClaim) (*desktopConnectSession, int, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -174,6 +210,9 @@ func (s *desktopConnectSessionStore) claim(code string) (*desktopConnectSession,
 		return nil, http.StatusConflict, "desktop connect session already used"
 	}
 	session.ClaimedAt = &now
+	session.ClaimedDeviceID = claim.DeviceID
+	session.ClaimedDisplayName = claim.DisplayName
+	session.ClaimedRuntimeRole = claim.RuntimeRole
 	return session, 0, ""
 }
 

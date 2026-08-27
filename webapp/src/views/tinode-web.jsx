@@ -25,6 +25,7 @@ import SidebarResizeHandle, {
 import ProfileEditor from '../widgets/profile-editor';
 import FeedbackModal from '../widgets/feedback-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
+import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import GroupSettings from '../widgets/group-settings';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
@@ -191,10 +192,6 @@ function todayKey() {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-}
-
-function findConnectedLocalAgent(agents) {
-  return (agents || []).find((agent) => agent.relation === 'owner' && agent.is_online);
 }
 
 function isInvalidSessionError(error) {
@@ -869,9 +866,8 @@ function TinodeWebApp({ location }) {
     if (!user?.uid) return;
     try {
       setLocalAgentStatus((status) => (status === 'connected' ? status : 'checking'));
-      const res = await api.getAgents();
-      const connected = findConnectedLocalAgent(res.agents || []);
-      if (connected) {
+      const res = await api.getDevices();
+      if (hasRoutableDesktopDevice(res.devices || [])) {
         setLocalAgentStatus('connected');
         return;
       }
@@ -1067,16 +1063,18 @@ function TinodeWebApp({ location }) {
     return nextTopic;
   }, [activateResolvedTopic, resolveAgentTopic]);
 
-  const handleDesktopConnected = async (agent) => {
+  const handleDesktopConnected = async (device) => {
     try {
-      const agentUid = agent?.uid || agent?.id;
+      const agentUid = device?.botUid;
       if (!agentUid) {
         setLocalAgentStatus('connected');
         setShowDesktopConnectModal(false);
         window.dispatchEvent(new Event('cc:data-changed'));
         return;
       }
-      await activateAgentTopic(agent);
+      const res = await api.getAgents();
+      const agent = (res.agents || []).find((candidate) => String(candidate.uid || candidate.id) === String(agentUid));
+      if (agent) await activateAgentTopic(agent);
       setLocalAgentStatus('connected');
       setShowDesktopConnectModal(false);
       window.dispatchEvent(new Event('cc:data-changed'));
@@ -1393,6 +1391,7 @@ function TinodeWebApp({ location }) {
 
       {showDesktopConnectModal && (
         <DesktopConnectModal
+          userId={user.uid}
           onClose={() => setShowDesktopConnectModal(false)}
           onConnected={handleDesktopConnected}
           onStatusChange={(status) => setLocalAgentStatus(status)}

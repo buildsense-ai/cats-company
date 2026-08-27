@@ -74,6 +74,30 @@ export function deviceStatusLabel(device) {
   return device.unavailableReason || device.status || '离线';
 }
 
+const LEGACY_DESKTOP_CAPABILITY = 'skillhub.localBot.switch';
+
+export function deviceRuntimeRole(device) {
+  const role = String(device?.runtimeRole || '').trim().toLowerCase();
+  if (role === 'desktop' || role === 'server') return role;
+  return (device?.capabilities || []).includes(LEGACY_DESKTOP_CAPABILITY) ? 'desktop' : 'unknown';
+}
+
+export function isDesktopDevice(device) {
+  return deviceRuntimeRole(device) === 'desktop';
+}
+
+export function isCloudRuntimeDevice(device) {
+  return deviceRuntimeRole(device) === 'server';
+}
+
+export function isRoutableDesktopDevice(device) {
+  return isDesktopDevice(device) && Boolean(device?.routable);
+}
+
+export function hasRoutableDesktopDevice(devices) {
+  return (devices || []).some(isRoutableDesktopDevice);
+}
+
 const HIDDEN_AUDIT_PHASES = new Set(['pairing_created']);
 
 const AUDIT_PHASE_LABELS = {
