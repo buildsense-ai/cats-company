@@ -84,6 +84,11 @@ export default function EmptyTaskComposer({
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
 
+  const persistAttachmentDraft = useCallback((attachments) => {
+    writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, attachments);
+    persistComposerDraftStore(composerDraftStore);
+  }, [composerDraftStore, normalizedDraftKey]);
+
   useEffect(() => {
     const nextInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
     const nextAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
@@ -123,8 +128,23 @@ export default function EmptyTaskComposer({
 
   const appendAttachments = useCallback((attachments) => {
     if (!attachments?.length) return;
-    replaceAttachments([...pendingAttachmentsRef.current, ...attachments]);
-  }, [replaceAttachments]);
+    // The shared store outlives this view while navigating to SkillHub, so an
+    // upload that finishes after unmount must still be added and persisted.
+    const hasSharedAttachmentStore = Boolean(
+      composerDraftStore
+      && (
+        typeof composerDraftStore.getAttachmentDraft === 'function'
+        || typeof composerDraftStore.attachmentDrafts?.get === 'function'
+      )
+    );
+    const currentAttachments = hasSharedAttachmentStore
+      ? readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey)
+      : pendingAttachmentsRef.current;
+    const nextAttachments = [...currentAttachments, ...attachments];
+    pendingAttachmentsRef.current = nextAttachments;
+    if (mountedRef.current) setPendingAttachments(nextAttachments);
+    persistAttachmentDraft(nextAttachments);
+  }, [composerDraftStore, normalizedDraftKey, persistAttachmentDraft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -207,8 +227,10 @@ export default function EmptyTaskComposer({
     if (!operation) {
       operation = (async () => {
         const data = await api.getMobileUploadSession(sessionId);
-        if (!mountedRef.current || phoneUploadSessionRef.current?.session_id !== sessionId) return [];
+        if (phoneUploadSessionRef.current?.session_id !== sessionId) return [];
 
+        // Keep the shared draft up to date even if navigation unmounted this
+        // view while the polling request was in flight.
         const nextAttachments = [];
         for (const file of Array.isArray(data?.files) ? data.files : []) {
           const fileKey = file.file_key || file.url || file.name;
@@ -219,12 +241,14 @@ export default function EmptyTaskComposer({
 
         if (nextAttachments.length > 0) {
           appendAttachments(nextAttachments);
-          setAttachmentStatus({
-            tone: 'success',
-            message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新任务。`,
-          });
+          if (mountedRef.current) {
+            setAttachmentStatus({
+              tone: 'success',
+              message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新任务。`,
+            });
+          }
         }
-        setPhoneUploadError('');
+        if (mountedRef.current) setPhoneUploadError('');
         return nextAttachments;
       })();
       phoneUploadSyncRef.current = operation;
@@ -278,15 +302,16 @@ export default function EmptyTaskComposer({
         const type = inferAttachmentType(file, requestedType);
         const validationError = validateAttachmentBeforeUpload(file, type);
         if (validationError) {
-          setAttachmentStatus({ tone: 'error', message: validationError });
+          if (mountedRef.current) setAttachmentStatus({ tone: 'error', message: validationError });
           failedCount += 1;
           continue;
         }
 
-        setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
+        if (mountedRef.current) {
+          setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
+        }
         try {
           const data = await api.uploadFile(file, type);
-          if (!mountedRef.current) return;
           appendAttachments([attachmentFromUpload(data, type, file.type)]);
           uploadedCount += 1;
         } catch (error) {

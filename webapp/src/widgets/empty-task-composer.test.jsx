@@ -188,6 +188,171 @@ describe('EmptyTaskComposer', () => {
     expect(composerDraftStore.persist).toHaveBeenCalled();
   });
 
+  it('persists an attachment when navigation unmounts the composer during upload', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+    expect(api.uploadFile).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('does not overwrite a newer text draft when an old upload finishes late', async () => {
+    const attachmentDrafts = new Map();
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '新的草稿内容',
+    );
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBe('新的草稿内容');
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({ name: 'brief.pdf' }),
+    ]);
+  });
+
+  it('persists phone-uploaded attachments when navigation unmounts the composer during polling', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolvePoll;
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'draft-upload',
+      upload_url: '/mobile-upload/draft-upload',
+    });
+    api.getMobileUploadSession.mockReturnValueOnce(new Promise((resolve) => {
+      resolvePoll = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('draft-upload'));
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolvePoll({
+        session_id: 'draft-upload',
+        files: [{
+          file_key: 'phone-brief.pdf',
+          url: '/uploads/files/phone-brief.pdf',
+          name: 'phone-brief.pdf',
+          size: 2048,
+          type: 'file',
+          mime_type: 'application/pdf',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'phone-brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'phone-brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
   it('shows voice input on the new task composer and inserts the final transcript', async () => {
     let callbacks;
     const session = {
