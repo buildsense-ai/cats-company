@@ -21,18 +21,29 @@
   transform: translateX(-50%);
 }
 
-.brand-mark {
+.site-header-brand {
   display: inline-flex;
-  width: 40px;
-  height: 26px;
   flex: none;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
 }
 
-.brand-mark img {
+.site-header-brand-mark,
+.site-header-wordmark {
   display: block;
-  width: 100%;
-  height: 100%;
+  flex: none;
   object-fit: contain;
+}
+
+.site-header-brand-mark {
+  width: 48px;
+  height: 24px;
+}
+
+.site-header-wordmark {
+  width: 84px;
+  height: auto;
 }
 
 .nav-link {
@@ -202,6 +213,19 @@
 @media (max-width: 767px) {
   .site-header > div {
     height: 68px;
+  }
+
+  .site-header-brand {
+    gap: 5px;
+  }
+
+  .site-header-brand-mark {
+    width: 41px;
+    height: 21px;
+  }
+
+  .site-header-wordmark {
+    width: 72px;
   }
 
   .mobile-menu-button {
