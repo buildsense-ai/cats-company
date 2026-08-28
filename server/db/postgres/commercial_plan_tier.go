@@ -273,14 +273,21 @@ func revokeCommercialPlanTier(tx *sql.Tx, uid int64, slug, targetSlug string, no
 		UPDATE cloud_worker_credits c
 		SET state = 'revoked', reservation_ref = '', reserved_at = NULL
 		WHERE c.uid = $1 AND c.state = 'available'
-		  AND c.source_ref IN (
+		  AND (c.entitlement_id IN (
+			SELECT e.id
+			FROM commercial_entitlements e
+			JOIN commercial_plans p ON p.id = e.plan_id
+			WHERE e.uid = $1 AND e.source IN ('order', 'invite') AND e.state = 'active'
+			  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
+			  AND p.slug = $3
+		  ) OR c.source_ref IN (
 			SELECT 'order:' || e.source_ref
 			FROM commercial_entitlements e
 			JOIN commercial_plans p ON p.id = e.plan_id
 			WHERE e.uid = $1 AND e.source = 'order' AND e.state = 'active'
 			  AND e.starts_at <= $2 AND (e.expires_at IS NULL OR e.expires_at > $2)
 			  AND p.slug = $3
-		  )`, uid, now, slug); err != nil {
+		  ))`, uid, now, slug); err != nil {
 		return fmt.Errorf("revoke superseded cloud worker credit: %w", err)
 	}
 	if _, err := tx.Exec(`

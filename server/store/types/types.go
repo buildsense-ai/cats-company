@@ -166,19 +166,20 @@ type CommercialManagedRelayBudget struct {
 
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.
 type CommercialInviteCode struct {
-	ID             int64      `json:"id"`
-	Code           string     `json:"code"`
-	PlanID         int64      `json:"plan_id"`
-	PlanSlug       string     `json:"plan_slug,omitempty"`
-	PlanName       string     `json:"plan_name,omitempty"`
-	MaxRedemptions int        `json:"max_redemptions"`
-	RedeemedCount  int        `json:"redeemed_count"`
-	State          int        `json:"state"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-	Note           string     `json:"note,omitempty"`
-	CreatedByUID   int64      `json:"created_by_uid,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID                 int64      `json:"id"`
+	Code               string     `json:"code"`
+	PlanID             int64      `json:"plan_id"`
+	PlanSlug           string     `json:"plan_slug,omitempty"`
+	PlanName           string     `json:"plan_name,omitempty"`
+	MaxRedemptions     int        `json:"max_redemptions"`
+	RedeemedCount      int        `json:"redeemed_count"`
+	CloudWorkerCredits int        `json:"cloud_worker_credits"`
+	State              int        `json:"state"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	Note               string     `json:"note,omitempty"`
+	CreatedByUID       int64      `json:"created_by_uid,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // CommercialEntitlement is a user's active or historical package assignment.

@@ -37,6 +37,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateCommercialPlansAddSaleFields,
 		migrateCommercialPlansAddInternalQuota,
 		createCommercialInviteCodesTable,
+		migrateCommercialInviteWorkerCredits,
 		createCommercialEntitlementsTable,
 		createCommercialQuotaGrantsTable,
 		createCommercialQuotaLedgerTable,
@@ -44,6 +45,7 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialOrderRequestIDsTable,
 		createCommercialPaymentEventsTable,
 		createCloudWorkerCreditsTable,
+		migrateCloudWorkerCreditsEntitlement,
 		createCloudWorkerLifecyclesTable,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
@@ -571,6 +573,20 @@ DO $$ BEGIN
 END $$;
 `
 
+const migrateCommercialInviteWorkerCredits = `
+ALTER TABLE commercial_invite_codes ADD COLUMN IF NOT EXISTS cloud_worker_credits INT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_invites_worker_credits') THEN
+        ALTER TABLE commercial_invite_codes ADD CONSTRAINT chk_commercial_invites_worker_credits CHECK (cloud_worker_credits >= 0);
+    END IF;
+END $$;
+`
+
+const migrateCloudWorkerCreditsEntitlement = `
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS entitlement_id BIGINT REFERENCES commercial_entitlements(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_entitlement ON cloud_worker_credits(entitlement_id) WHERE entitlement_id IS NOT NULL;
+`
+
 const createCommercialInviteCodesTable = `
 CREATE TABLE IF NOT EXISTS commercial_invite_codes (
     id BIGSERIAL PRIMARY KEY,
@@ -578,6 +594,7 @@ CREATE TABLE IF NOT EXISTS commercial_invite_codes (
     plan_id BIGINT NOT NULL REFERENCES commercial_plans(id) ON DELETE RESTRICT,
     max_redemptions INT NOT NULL DEFAULT 1,
     redeemed_count INT NOT NULL DEFAULT 0,
+    cloud_worker_credits INT NOT NULL DEFAULT 0,
     state SMALLINT NOT NULL DEFAULT 0,
     expires_at TIMESTAMPTZ DEFAULT NULL,
     note TEXT NOT NULL DEFAULT '',
@@ -585,7 +602,8 @@ CREATE TABLE IF NOT EXISTS commercial_invite_codes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_commercial_invites_state CHECK (state IN (0, 1)),
-    CONSTRAINT chk_commercial_invites_redemptions CHECK (max_redemptions > 0 AND redeemed_count >= 0 AND redeemed_count <= max_redemptions)
+    CONSTRAINT chk_commercial_invites_redemptions CHECK (max_redemptions > 0 AND redeemed_count >= 0 AND redeemed_count <= max_redemptions),
+    CONSTRAINT chk_commercial_invites_worker_credits CHECK (cloud_worker_credits >= 0)
 );
 `
 
@@ -973,6 +991,7 @@ const createCloudWorkerCreditsTable = `
 CREATE TABLE IF NOT EXISTS cloud_worker_credits (
     id BIGSERIAL PRIMARY KEY,
     uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    entitlement_id BIGINT DEFAULT NULL REFERENCES commercial_entitlements(id) ON DELETE SET NULL,
     source_ref VARCHAR(128) NOT NULL,
     state VARCHAR(16) NOT NULL DEFAULT 'available',
     reservation_ref VARCHAR(128) NOT NULL DEFAULT '',
@@ -986,6 +1005,7 @@ CREATE TABLE IF NOT EXISTS cloud_worker_credits (
 CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_source ON cloud_worker_credits(source_ref);
 CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_reservation ON cloud_worker_credits(reservation_ref) WHERE reservation_ref <> '';
 CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_uid_state ON cloud_worker_credits(uid, state, expires_at);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_entitlement ON cloud_worker_credits(entitlement_id) WHERE entitlement_id IS NOT NULL;
 `
 
 const createCloudWorkerLifecyclesTable = `

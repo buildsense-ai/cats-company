@@ -283,13 +283,16 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 		Source: "invite", SourceRef: "MANUAL-SETUP", State: "active", StartsAt: packageStarts, ExpiresAt: &packageExpires,
 	})
 
-	inviteReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/invites", strings.NewReader(`{"code":"SCHOOL2026","plan_id":1,"max_redemptions":3}`))
+	inviteReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/invites", strings.NewReader(`{"code":"SCHOOL2026","plan_id":1,"max_redemptions":3,"cloud_worker_credits":2}`))
 	inviteReq.RemoteAddr = "127.0.0.1:40200"
 	inviteReq.Header.Set("Content-Type", "application/json")
 	inviteRec := httptest.NewRecorder()
 	handler.HandleCommercialInvites(inviteRec, inviteReq)
 	if inviteRec.Code != http.StatusOK {
 		t.Fatalf("invite status=%d body=%s", inviteRec.Code, inviteRec.Body.String())
+	}
+	if len(store.invites) != 1 || store.invites[0].CloudWorkerCredits != 2 {
+		t.Fatalf("invite worker credits were not saved: %#v", store.invites)
 	}
 
 	grantReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/grants", strings.NewReader(`{"uid":38,"model":"minimax-m3","amount_cny":100}`))

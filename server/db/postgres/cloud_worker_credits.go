@@ -72,6 +72,14 @@ func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool,
 	if _, err := tx.Exec(`
 		UPDATE cloud_worker_credits c
 		SET state = CASE
+			WHEN c.entitlement_id IS NOT NULL
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM commercial_entitlements e
+				WHERE e.id = c.entitlement_id AND e.uid = c.uid
+				  AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+				  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+			 ) THEN 'revoked'
 			WHEN c.source_ref LIKE 'order:%'
 			 AND NOT EXISTS (
 				SELECT 1
