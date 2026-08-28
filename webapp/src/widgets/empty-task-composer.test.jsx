@@ -109,6 +109,32 @@ describe('EmptyTaskComposer', () => {
     expect(menu.textContent).toContain('手机扫码上传');
   });
 
+  it('restores an unsent new-task draft from the shared store after remounting', async () => {
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+
+    await mountComposer({ composerDraftStore, draftKey: 'new-task' });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '保留这条尚未建立会话的草稿');
+
+    expect(composerDraftStore.inputDrafts.get('new-task'))
+      .toBe('保留这条尚未建立会话的草稿');
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore, draftKey: 'new-task' });
+
+    expect(container.querySelector('textarea.v3-composer-input').value)
+      .toBe('保留这条尚未建立会话的草稿');
+  });
+
   it('shows voice input on the new task composer and inserts the final transcript', async () => {
     let callbacks;
     const session = {

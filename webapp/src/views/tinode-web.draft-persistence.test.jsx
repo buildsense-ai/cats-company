@@ -64,7 +64,7 @@ vi.mock('../utils/theme-access', () => ({
 }));
 
 vi.mock('./sidepanel-view', () => ({
-  default: ({ additionalSidebarTools, onSelectTopic }) => (
+  default: ({ additionalSidebarTools, onSelectTopic, onStartAgentTask }) => (
     <nav>
       {additionalSidebarTools}
       <button
@@ -77,6 +77,12 @@ vi.mock('./sidepanel-view', () => ({
         })}
       >
         打开测试会话
+      </button>
+      <button
+        type="button"
+        onClick={() => onStartAgentTask({ uid: 7, display_name: '测试 Agent' })}
+      >
+        选择 Agent 返回新任务
       </button>
     </nav>
   ),
@@ -101,7 +107,24 @@ vi.mock('./messages-view', () => ({
   ),
 }));
 
-vi.mock('../widgets/empty-task-composer', () => ({ default: () => <div /> }));
+vi.mock('../widgets/empty-task-composer', () => ({
+  default: ({ composerDraftStore, draftKey = 'new-task' }) => {
+    const key = String(draftKey || 'new-task');
+    const inputDrafts = composerDraftStore?.inputDrafts;
+    return (
+      <textarea
+        aria-label="新任务草稿"
+        defaultValue={inputDrafts?.get?.(key) || ''}
+        onChange={(event) => {
+          const value = event.target.value;
+          if (value) inputDrafts?.set?.(key, value);
+          else inputDrafts?.delete?.(key);
+          composerDraftStore?.persist?.();
+        }}
+      />
+    );
+  },
+}));
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
 vi.mock('../widgets/desktop-connect-modal', () => ({ default: () => null }));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
@@ -171,4 +194,48 @@ test('restores a draft when returning from SkillHub after the workspace remounts
 
   expect(container.querySelector('textarea[aria-label="消息草稿"]').value)
     .toBe('draft survives SkillHub navigation');
+});
+
+test('restores a new-task draft when returning from SkillHub before a session exists', async () => {
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea[aria-label="新任务草稿"]');
+  expect(textarea).not.toBeNull();
+  await act(async () => {
+    textarea.value = 'new task draft survives SkillHub navigation';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+  });
+
+  expect(JSON.parse(sessionStorage.getItem('catsco_composer_drafts:v1:1')))
+    .toMatchObject({
+      inputDrafts: [['new-task', 'new task draft survives SkillHub navigation']],
+    });
+
+  await act(async () => {
+    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
+    await Promise.resolve();
+  });
+  expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
+
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea[aria-label="新任务草稿"]').value)
+    .toBe('new task draft survives SkillHub navigation');
+
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea[aria-label="新任务草稿"]').value)
+    .toBe('new task draft survives SkillHub navigation');
 });

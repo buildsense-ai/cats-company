@@ -91,6 +91,8 @@ const TABS = {
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 const COMPOSER_DRAFT_STORAGE_PREFIX = 'catsco_composer_drafts:v1:';
+// A new task has no topic yet; keep its draft on a stable key across agent selection.
+const NEW_TASK_DRAFT_KEY = 'new-task';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
@@ -1434,9 +1436,11 @@ function TinodeWebApp({ location }) {
                 {localAssistantBar}
                 <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
                   <NoActiveTask
-                    key={taskDraft?.key || 'new-task'}
+                    key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    initialAgent={taskDraft?.agent}
+                    initialAgent={taskDraft?.agent || emptyTaskSelectedAgent}
+                    composerDraftStore={composerDraftStoreRef.current}
+                    draftKey={NEW_TASK_DRAFT_KEY}
                     onSelectedAgentChange={setEmptyTaskSelectedAgent}
                     onResolveAgentTopic={createDraftAgentTaskTopic}
                     onActivateTopic={activateResolvedTopic}
@@ -1621,7 +1625,15 @@ function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft,
   };
 }
 
-function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic }) {
+function NoActiveTask({
+  user,
+  initialAgent,
+  composerDraftStore,
+  draftKey,
+  onSelectedAgentChange,
+  onResolveAgentTopic,
+  onActivateTopic,
+}) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -1631,6 +1643,8 @@ function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgen
         </div>
         <EmptyTaskComposer
           initialAgent={initialAgent}
+          composerDraftStore={composerDraftStore}
+          draftKey={draftKey}
           onSelectedAgentChange={onSelectedAgentChange}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}

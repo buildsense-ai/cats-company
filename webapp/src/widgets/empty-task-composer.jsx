@@ -15,17 +15,32 @@ import QRCode from './qr-code';
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
 
+function readDraftInput(composerDraftStore, draftKey) {
+  const value = composerDraftStore?.inputDrafts?.get?.(draftKey);
+  return typeof value === 'string' ? value : '';
+}
+
+function readDraftAttachments(composerDraftStore, draftKey) {
+  const value = composerDraftStore?.attachmentDrafts?.get?.(draftKey);
+  return Array.isArray(value) ? [...value] : [];
+}
+
 export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
   placeholder = '输入指令，我帮您完成',
   initialAgent,
+  composerDraftStore,
+  draftKey = 'new-task',
   onSelectedAgentChange,
   onResolveAgentTopic,
   onActivateTopic,
   voiceInputAvailable,
   createVoiceSession,
 }) {
-  const [input, setInput] = useState('');
+  const normalizedDraftKey = String(draftKey || 'new-task');
+  const initialDraftInput = readDraftInput(composerDraftStore, normalizedDraftKey);
+  const initialDraftAttachments = readDraftAttachments(composerDraftStore, normalizedDraftKey);
+  const [input, setInput] = useState(initialDraftInput);
   const initialAgentId = agentKey(initialAgent);
   const [agents, setAgents] = useState(() => initialAgentId ? [initialAgent] : []);
   const [agentsLoading, setAgentsLoading] = useState(true);
@@ -33,7 +48,7 @@ export default function EmptyTaskComposer({
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [pendingAttachments, setPendingAttachments] = useState(initialDraftAttachments);
   const [attachmentStatus, setAttachmentStatus] = useState(null);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
@@ -46,16 +61,45 @@ export default function EmptyTaskComposer({
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const mountedRef = useRef(true);
-  const inputValueRef = useRef('');
+  const inputValueRef = useRef(initialDraftInput);
   const initialAgentRef = useRef(initialAgent);
   const agentsRef = useRef(initialAgentId ? [initialAgent] : []);
   const selectedAgentIdRef = useRef(initialAgentId);
-  const pendingAttachmentsRef = useRef([]);
+  const pendingAttachmentsRef = useRef(initialDraftAttachments);
   const dragDepthRef = useRef(0);
   const sendInFlightRef = useRef(false);
   const phoneUploadSessionRef = useRef(null);
   const phoneUploadFileKeysRef = useRef(new Set());
   const phoneUploadSyncRef = useRef(null);
+
+  const persistDraft = useCallback(() => {
+    const inputDrafts = composerDraftStore?.inputDrafts;
+    if (typeof inputDrafts?.set === 'function' && typeof inputDrafts?.delete === 'function') {
+      const value = String(inputValueRef.current || '');
+      if (value) inputDrafts.set(normalizedDraftKey, value);
+      else inputDrafts.delete(normalizedDraftKey);
+    }
+
+    const attachmentDrafts = composerDraftStore?.attachmentDrafts;
+    if (typeof attachmentDrafts?.set === 'function' && typeof attachmentDrafts?.delete === 'function') {
+      const attachments = Array.isArray(pendingAttachmentsRef.current)
+        ? pendingAttachmentsRef.current
+        : [];
+      if (attachments.length > 0) attachmentDrafts.set(normalizedDraftKey, [...attachments]);
+      else attachmentDrafts.delete(normalizedDraftKey);
+    }
+
+    composerDraftStore?.persist?.();
+  }, [composerDraftStore, normalizedDraftKey]);
+
+  useEffect(() => {
+    const nextInput = readDraftInput(composerDraftStore, normalizedDraftKey);
+    const nextAttachments = readDraftAttachments(composerDraftStore, normalizedDraftKey);
+    inputValueRef.current = nextInput;
+    pendingAttachmentsRef.current = nextAttachments;
+    setInput(nextInput);
+    setPendingAttachments(nextAttachments);
+  }, [composerDraftStore, normalizedDraftKey]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -79,9 +123,11 @@ export default function EmptyTaskComposer({
   }, [initialAgent]);
 
   const replaceAttachments = useCallback((nextAttachments) => {
-    pendingAttachmentsRef.current = nextAttachments;
-    if (mountedRef.current) setPendingAttachments(nextAttachments);
-  }, []);
+    const normalized = Array.isArray(nextAttachments) ? [...nextAttachments] : [];
+    pendingAttachmentsRef.current = normalized;
+    if (mountedRef.current) setPendingAttachments(normalized);
+    persistDraft();
+  }, [persistDraft]);
 
   const appendAttachments = useCallback((attachments) => {
     if (!attachments?.length) return;
@@ -316,7 +362,8 @@ export default function EmptyTaskComposer({
     const value = event.target.value;
     inputValueRef.current = value;
     setInput(value);
-  }, []);
+    persistDraft();
+  }, [persistDraft]);
 
   const handleVoiceFinal = useCallback((transcript, insertion) => {
     const textarea = textareaRef.current;
@@ -324,11 +371,12 @@ export default function EmptyTaskComposer({
     if (!result) return;
     inputValueRef.current = result.value;
     setInput(result.value);
+    persistDraft();
     window.setTimeout(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(result.caret, result.caret);
     }, 0);
-  }, []);
+  }, [persistDraft]);
 
   const handlePaste = useCallback(async (event) => {
     const files = collectClipboardFiles(event.clipboardData);
@@ -432,6 +480,7 @@ export default function EmptyTaskComposer({
       if (!mountedRef.current) return;
       inputValueRef.current = '';
       pendingAttachmentsRef.current = [];
+      persistDraft();
       phoneUploadSessionRef.current = null;
       if (mountedRef.current) {
         setInput('');
@@ -459,7 +508,7 @@ export default function EmptyTaskComposer({
       sendInFlightRef.current = false;
       if (mountedRef.current) setIsSubmitting(false);
     }
-  }, [isUploadingAttachment, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
+  }, [isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistDraft, syncPhoneUploads]);
 
   const handleKeyDown = useCallback((event) => {
     const nativeEvent = event.nativeEvent || event;
