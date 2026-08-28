@@ -21,6 +21,8 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
+		createArtifactRuntimeStatesTable,
+		createArtifactRuntimeEventsTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createBotInviteCodesTable,
@@ -353,6 +355,42 @@ CREATE TABLE IF NOT EXISTS image_upscale_tasks (
     updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     INDEX idx_image_upscale_tasks_expires_at (expires_at),
     FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createArtifactRuntimeStatesTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_states (
+    agent_uid BIGINT NOT NULL,
+    artifact_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    namespace VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    document_key VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+    value_json JSON NOT NULL,
+    revision BIGINT NOT NULL,
+    updated_by_uid BIGINT NOT NULL,
+    updated_by_type ENUM('viewer','agent') NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (agent_uid, artifact_id, namespace, document_key),
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
+    CHECK (revision > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createArtifactRuntimeEventsTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_events (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    event_type ENUM('state.updated') NOT NULL,
+    agent_uid BIGINT NOT NULL,
+    artifact_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    namespace VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    document_key VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+    revision BIGINT NOT NULL,
+    updated_by_uid BIGINT NOT NULL,
+    updated_by_type ENUM('viewer','agent') NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    INDEX idx_artifact_runtime_events_artifact (agent_uid, artifact_id, id),
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
+    CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

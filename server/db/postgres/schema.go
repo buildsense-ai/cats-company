@@ -21,6 +21,8 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
+		createArtifactRuntimeStatesTable,
+		createArtifactRuntimeEventsTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createBotInviteCodesTable,
@@ -106,6 +108,7 @@ func (a *Adapter) CreateSchema() error {
 		createProjectIndexes,
 		createMessagesIndexes,
 		createConversationTaskStatusIndexes,
+		createArtifactRuntimeIndexes,
 		createBotConfigIndexes,
 		createGroupMembersIndexes,
 		createFeedbackIndexes,
@@ -313,6 +316,37 @@ CREATE TABLE IF NOT EXISTS image_upscale_tasks (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_image_upscale_tasks_expires_at ON image_upscale_tasks (expires_at);
+`
+
+const createArtifactRuntimeStatesTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_states (
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    namespace VARCHAR(64) NOT NULL,
+    document_key VARCHAR(128) NOT NULL,
+    value_json JSONB NOT NULL,
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    updated_by_uid BIGINT NOT NULL,
+    updated_by_type VARCHAR(16) NOT NULL CHECK (updated_by_type IN ('viewer','agent')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_uid, artifact_id, namespace, document_key)
+);
+`
+
+const createArtifactRuntimeEventsTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_events (
+    id BIGSERIAL PRIMARY KEY,
+    event_type VARCHAR(64) NOT NULL CHECK (event_type = 'state.updated'),
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    namespace VARCHAR(64) NOT NULL,
+    document_key VARCHAR(128) NOT NULL,
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    updated_by_uid BIGINT NOT NULL,
+    updated_by_type VARCHAR(16) NOT NULL CHECK (updated_by_type IN ('viewer','agent')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
@@ -1361,6 +1395,10 @@ CREATE INDEX IF NOT EXISTS idx_conversation_task_statuses_state ON conversation_
 CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_updated_at ON conversation_task_status_sources (updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_state ON conversation_task_status_sources (state);
 `
+const createArtifactRuntimeIndexes = `
+CREATE INDEX IF NOT EXISTS idx_artifact_runtime_events_artifact
+    ON artifact_runtime_events (agent_uid, artifact_id, id);
+`
 const createBotConfigIndexes = `
 CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_config_api_key ON bot_config (api_key) WHERE api_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bot_config_owner ON bot_config (owner_id);
@@ -1457,6 +1495,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_conversation_task_statuses_updated_at BEFORE UPDATE ON conversation_task_statuses
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_conversation_task_status_sources_updated_at BEFORE UPDATE ON conversation_task_status_sources
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_artifact_runtime_states_updated_at BEFORE UPDATE ON artifact_runtime_states
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_auth_services_updated_at BEFORE UPDATE ON auth_services
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

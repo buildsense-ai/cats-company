@@ -62,6 +62,7 @@ type Hub struct {
 	groupTurns                 *groupAgentTurnTracker
 	artifactContextResolver    ArtifactContextResolver
 	artifactTaskIntentResolver ArtifactTaskIntentResolver
+	artifactRuntimeResolver    ArtifactRuntimeManifestResolver
 	artifactContextSnapshots   *artifactContextSnapshotStore
 	artifactResultWritebacks   *artifactResultWritebackStore
 	artifactTasks              *artifactTaskStore
