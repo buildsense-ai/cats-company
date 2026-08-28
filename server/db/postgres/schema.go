@@ -1005,7 +1005,6 @@ CREATE TABLE IF NOT EXISTS cloud_worker_credits (
 CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_source ON cloud_worker_credits(source_ref);
 CREATE UNIQUE INDEX IF NOT EXISTS uk_cloud_worker_credits_reservation ON cloud_worker_credits(reservation_ref) WHERE reservation_ref <> '';
 CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_uid_state ON cloud_worker_credits(uid, state, expires_at);
-CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_entitlement ON cloud_worker_credits(entitlement_id) WHERE entitlement_id IS NOT NULL;
 `
 
 const createCloudWorkerLifecyclesTable = `
