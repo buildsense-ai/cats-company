@@ -118,7 +118,7 @@ jobs:
           fi
 
       - name: Deploy isolated test stack
-        timeout-minutes: 25
+        timeout-minutes: 45
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}

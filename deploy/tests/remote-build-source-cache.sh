@@ -39,7 +39,7 @@ if [ "${1:-}" = "build" ]; then
     fi
     previous="$argument"
   done
-  printf 'build %s\n' "$image" >> "$FAKE_DOCKER_LOG"
+  printf 'build %s %s\n' "$image" "$*" >> "$FAKE_DOCKER_LOG"
   printf '%s\n' "$image" >> "$FAKE_DOCKER_IMAGES"
   exit 0
 fi
@@ -76,6 +76,7 @@ fallback_output="$(run_build "$fallback_revision" pull 2>&1)"
 [ "$(grep -c '^pull ' "$docker_log")" -eq 1 ]
 [ -f "$cache_root/source/$revision/reuse-marker" ]
 grep -q 'Building web image locally' <<<"$first_output"
+grep -q -- '--build-arg APK_REPOSITORY=https://mirrors.aliyun.com/alpine' "$docker_log"
 grep -q 'timed out after 120s' <<<"$fallback_output"
 grep -q 'Source tree already present' <<<"$second_output"
 grep -q 'Server image already present' <<<"$second_output"
