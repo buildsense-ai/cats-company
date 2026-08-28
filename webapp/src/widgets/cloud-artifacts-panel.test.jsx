@@ -173,7 +173,7 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('Agent 用户可见');
   });
 
-  test('does not guess the current account for a legacy Agent result', async () => {
+  test('shows the Agent creator name when no uploading account is present', async () => {
     api.getCloudArtifacts.mockResolvedValueOnce({
       artifacts: [{
         ...activeArtifact,
@@ -188,8 +188,26 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     expect(container.textContent).not.toContain('Cycren');
-    expect(container.textContent).not.toContain('自迭代 生成');
-    expect(container.textContent).toContain('上传用户未知');
+    expect(container.textContent).toContain('自迭代 生成');
+    expect(container.textContent).not.toContain('上传用户未知');
+  });
+
+  test('falls back to the Agent name when creator name is missing', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'agent',
+        creator_name: '',
+        uploader_uid: '',
+        uploader_name: '',
+        agent_name: '豆包',
+      }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain('豆包 生成');
+    expect(container.textContent).not.toContain('上传用户未知');
   });
 
   test('shows the uploading account name ahead of Agent generation metadata', async () => {

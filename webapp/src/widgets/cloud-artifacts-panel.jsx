@@ -50,6 +50,10 @@ function artifactMeta(artifact) {
     items.push(uploaderName);
   } else if (creatorType === 'user' && creatorName) {
     items.push(creatorName);
+  } else if (creatorType === 'agent') {
+    const agentName = creatorName || String(artifact.agent_name || '').trim();
+    if (agentName) items.push(`${agentName} 生成`);
+    else items.push('上传用户未知');
   } else {
     items.push('上传用户未知');
   }
