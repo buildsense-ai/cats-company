@@ -60,6 +60,10 @@ type CloudArtifactHandler struct {
 	artifactContextCacheTTL                time.Duration
 	artifactContextExactMutationGeneration map[artifactContextCacheKey]uint64
 	artifactContextIDMutationGeneration    map[string]uint64
+
+	artifactRuntimeManifestCacheMu sync.Mutex
+	artifactRuntimeManifestCache   map[string]artifactRuntimeManifestCacheEntry
+	artifactRuntimeManifestTTL     time.Duration
 }
 
 // CloudArtifactNotifier delivers a post-publish notification without making

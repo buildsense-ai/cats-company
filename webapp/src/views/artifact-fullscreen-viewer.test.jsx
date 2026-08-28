@@ -25,6 +25,12 @@ const mocks = vi.hoisted(() => ({
   requestArtifactPageContext: vi.fn(),
   requestArtifactResultApply: vi.fn(),
   clearPersistedComposerDrafts: vi.fn(),
+  runtimeResume: vi.fn(),
+  runtimeSuspend: vi.fn(),
+  runtimeDeactivate: vi.fn(),
+  runtimeDispose: vi.fn(),
+  runtimeBindingChange: null,
+  runtimeBinding: null,
 }));
 
 vi.mock('../api', () => ({
@@ -54,6 +60,16 @@ vi.mock('../components/feedback-system', () => ({
 
 vi.mock('../utils/composer-draft-storage', () => ({
   clearPersistedComposerDrafts: mocks.clearPersistedComposerDrafts,
+}));
+
+vi.mock('../artifact-runtime-host', () => ({
+  createArtifactRuntimeHost: () => ({
+    handleWindowMessage: vi.fn(),
+    resume: mocks.runtimeResume,
+    suspend: mocks.runtimeSuspend,
+    deactivate: mocks.runtimeDeactivate,
+    dispose: mocks.runtimeDispose,
+  }),
 }));
 
 vi.mock('../artifact-context', async (importOriginal) => ({
@@ -107,8 +123,14 @@ vi.mock('../widgets/controlled-artifact-preview', () => ({
       signal: new AbortController().signal,
     }), [file]);
     React.useEffect(() => {
+      mocks.runtimeBindingChange = onBindingChange;
+      mocks.runtimeBinding = binding;
       onBindingChange?.(binding);
-      return () => onBindingChange?.(null);
+      return () => {
+        if (mocks.runtimeBindingChange === onBindingChange) mocks.runtimeBindingChange = null;
+        if (mocks.runtimeBinding === binding) mocks.runtimeBinding = null;
+        onBindingChange?.(null);
+      };
     }, [binding, onBindingChange]);
     return <iframe title="mock-artifact" data-url={file.url} />;
   },
@@ -189,6 +211,8 @@ describe('ArtifactFullscreenViewer', () => {
     channels.length = 0;
     mocks.sessionReady = false;
     mocks.wsHandler = null;
+    mocks.runtimeBindingChange = null;
+    mocks.runtimeBinding = null;
     mocks.frameWindow = { postMessage: mocks.framePostMessage };
     mocks.feedbackConfirm.mockResolvedValue(true);
     mocks.failArtifactTask.mockResolvedValue({ ok: true });
@@ -301,6 +325,31 @@ describe('ArtifactFullscreenViewer', () => {
     expect(mocks.setToken).toHaveBeenCalledWith(null);
     expect(mocks.clearPersistedComposerDrafts).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('暂时无法连接');
+  });
+
+  it('resumes Runtime when the fullscreen iframe binding is recreated', async () => {
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={location} />);
+      await flushPromises();
+    });
+    await act(async () => {
+      mocks.sessionReady = true;
+      mocks.wsHandler?.({ ctrl: { params: { artifact_preview_session: {} } } });
+      await flushPromises();
+    });
+    await acceptLatestViewer();
+
+    const resumesBeforeBindingReset = mocks.runtimeResume.mock.calls.length;
+    await act(async () => {
+      const bindingChange = mocks.runtimeBindingChange;
+      const binding = mocks.runtimeBinding;
+      bindingChange?.(null);
+      bindingChange?.(binding);
+      await flushPromises();
+    });
+
+    expect(mocks.runtimeDeactivate).toHaveBeenCalled();
+    expect(mocks.runtimeResume.mock.calls.length).toBeGreaterThan(resumesBeforeBindingReset);
   });
 
   it('keeps an unaccepted duplicate inert and releases it when ownership is rejected', async () => {

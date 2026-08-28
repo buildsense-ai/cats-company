@@ -32,6 +32,126 @@
   background: color-mix(in srgb, var(--cc-text) 16%, transparent);
 }
 
+.v3-profile-popover .v3-popover-item.danger {
+  margin-top: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--cc-text-secondary) !important;
+  box-shadow: none !important;
+}
+
+.v3-profile-popover .v3-popover-item.danger:hover,
+.v3-profile-popover .v3-popover-item.danger:focus-visible {
+  background: color-mix(in srgb, var(--cc-text) 12%, transparent) !important;
+  color: var(--cc-text) !important;
+}
+
+.v3-profile-popover .v3-popover-item.danger:active {
+  background: color-mix(in srgb, var(--cc-text) 16%, transparent) !important;
+  color: var(--cc-text) !important;
+}
+
+.catsco-download-modal .catsco-connect-summary {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 14px;
+}
+
+.catsco-download-modal .catsco-connect-summary > svg {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  justify-self: center;
+  color: var(--cc-text-secondary);
+}
+
+.catsco-download-modal .catsco-connect-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.catsco-download-modal .catsco-connect-actions .oc-btn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  gap: 0;
+  text-align: center;
+}
+
+.catsco-download-modal .catsco-connect-actions .oc-btn > svg {
+  flex: 0 0 auto;
+}
+
+.catsco-download-modal .catsco-download-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  text-align: center;
+}
+
+.catsco-download-modal .catsco-download-card-primary,
+.catsco-download-modal .catsco-download-card.catsco-device-card.is-preferred {
+  border-color: var(--cc-border);
+  background: var(--cc-selected);
+  color: var(--cc-text);
+}
+
+.catsco-download-modal .catsco-download-card-primary:hover,
+.catsco-download-modal .catsco-download-card.catsco-device-card.is-preferred:hover {
+  border-color: var(--cc-border);
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.catsco-download-modal .catsco-download-card:not(.catsco-device-card) {
+  grid-template-columns: 40px minmax(0, 1fr) 32px;
+}
+
+.catsco-download-modal .catsco-download-icon {
+  border: 0;
+  background: transparent !important;
+  color: var(--cc-text-secondary) !important;
+  box-shadow: none;
+}
+
+.cc-settings-secondary-surface.catsco-download-modal .catsco-download-card > .catsco-download-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 32px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  margin-right: -2px;
+  margin-left: auto;
+  border-color: transparent !important;
+  border-radius: 8px;
+  background: transparent !important;
+  color: var(--cc-text-secondary) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.cc-settings-secondary-surface.catsco-download-modal .catsco-download-card > .catsco-download-action:hover,
+.cc-settings-secondary-surface.catsco-download-modal .catsco-download-card > .catsco-download-action:focus-visible {
+  border-color: transparent !important;
+  background: var(--cc-secondary-action-bg-hover) !important;
+  color: var(--cc-text) !important;
+  border-radius: 8px;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.cc-settings-secondary-surface.catsco-download-modal .catsco-download-card > .catsco-download-action:active {
+  background: var(--cc-secondary-action-bg-active) !important;
+  color: var(--cc-text) !important;
+  border-radius: 8px;
+  box-shadow: none !important;
+  transform: scale(0.96) !important;
+}
+
 .oc-modal :is(.oc-btn-default, .v3-btn-secondary) {
   border: 0 !important;
   background: var(--cc-secondary-action-bg) !important;
@@ -962,6 +1082,10 @@ html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
     font-weight: 500;
   }
 
+  .v3-local-assistant-status .v3-model-reasoning-strength {
+    display: none;
+  }
+
   .v3-profile-footer,
   .v3-profile-footer:hover,
   html[data-theme='liquid'] .v3-profile-footer,
@@ -985,6 +1109,25 @@ html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
 
   .v3-message-actions.open {
     display: flex;
+  }
+
+  .v3-message-footer .v3-action-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    touch-action: manipulation;
+  }
+
+  .v3-message-footer .v3-action-btn:active:not(:disabled) {
+    background: var(--cc-hover);
+    color: var(--cc-text);
+  }
+
+  .v3-message-footer .v3-message-action-menu button {
+    min-height: 44px;
+    height: 44px;
+    font-size: 14px;
+    touch-action: manipulation;
   }
 
   .v3-message-actions.open + .v3-msg-time {
@@ -1137,7 +1280,7 @@ html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
   }
 
   .v3-composer-model-info {
-    display: flex;
+    display: none;
     align-items: center;
     gap: 8px;
     min-height: 28px;

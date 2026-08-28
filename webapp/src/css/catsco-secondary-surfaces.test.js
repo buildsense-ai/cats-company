@@ -9,6 +9,8 @@ const workspaceStylesSource = readFileSync(resolve(process.cwd(), 'src/views/wor
   .replace(/\r\n?/g, '\n');
 const tinodeWebSource = readFileSync(resolve(process.cwd(), 'src/views/tinode-web.jsx'), 'utf8')
   .replace(/\r\n?/g, '\n');
+const desktopConnectSource = readFileSync(resolve(process.cwd(), 'src/widgets/desktop-connect-modal.jsx'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 
 describe('secondary surface design contract', () => {
   it('loads the scoped layer after the shared settings controls', () => {
@@ -43,6 +45,23 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('transform: none !important;');
   });
 
+  it('keeps profile logout and desktop downloads on the neutral interaction system', () => {
+    const connectActionsSource = desktopConnectSource.match(
+      /<div className="catsco-connect-actions">([\s\S]*?)<\/div>/,
+    )?.[1] || '';
+
+    expect(css).toMatch(/\.v3-profile-popover \.v3-popover-item\.danger\s*\{[^}]*margin-top: 0 !important;[^}]*border: 0 !important;[^}]*background: transparent !important;[^}]*color: var\(--cc-text-secondary\) !important;/s);
+    expect(css).toMatch(/\.catsco-download-modal \.catsco-connect-actions\s*\{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/s);
+    expect(connectActionsSource).not.toContain('<Laptop');
+    expect(connectActionsSource).not.toContain('<Download');
+    expect(css).toMatch(/\.catsco-download-modal \.catsco-connect-summary\s*\{[^}]*grid-template-columns: 32px minmax\(0, 1fr\);[^}]*align-items: center;/s);
+    expect(css).toMatch(/\.catsco-download-modal \.catsco-download-more\s*\{[^}]*display: inline-flex;[^}]*align-items: center;[^}]*justify-content: center;[^}]*gap: 7px;/s);
+    expect(css).toMatch(/\.catsco-download-modal \.catsco-download-card:not\(\.catsco-device-card\)\s*\{[^}]*grid-template-columns: 40px minmax\(0, 1fr\) 32px;/s);
+    expect(css).toMatch(/\.catsco-download-modal \.catsco-download-icon\s*\{[^}]*background: transparent !important;[^}]*color: var\(--cc-text-secondary\) !important;/s);
+    expect(css).toMatch(/\.cc-settings-secondary-surface\.catsco-download-modal \.catsco-download-card > \.catsco-download-action\s*\{[^}]*width: 32px !important;[^}]*height: 32px !important;[^}]*margin-right: -2px;[^}]*margin-left: auto;[^}]*border-radius: 8px;[^}]*background: transparent !important;/s);
+    expect(css).toMatch(/\.catsco-download-modal \.catsco-download-card-primary,[^{]*\.catsco-download-card\.catsco-device-card\.is-preferred\s*\{[^}]*background: var\(--cc-selected\);[^}]*color: var\(--cc-text\);/s);
+  });
+
   it('keeps the phone upload dialog opaque inside inherited empty-state layouts', () => {
     expect(css).toContain('background: var(--cc-main-bg);');
     expect(css).toContain('backdrop-filter: none;');
@@ -62,20 +81,22 @@ describe('secondary surface design contract', () => {
     expect(css).toMatch(/\.cc-sidebar-primary\s*\{[^}]*font-size:\s*16px;[^}]*font-weight:\s*500;[^}]*line-height:\s*23px;/s);
     expect(css).toMatch(/\.v3-chat-item\s*\{[^}]*font-size:\s*15px;[^}]*font-weight:\s*400;[^}]*line-height:\s*22px;/s);
     expect(css).toMatch(/\.v3-chat-item\.active\s*\{[^}]*font-weight:\s*500;/s);
+    expect(css).toMatch(/\.v3-local-assistant-status \.v3-model-reasoning-strength\s*\{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.v3-profile-footer,\s*\.v3-profile-footer:hover,[^{]*html\[data-theme='liquid'\]\[data-liquid-variant='green'\] \.v3-profile-footer:hover\s*\{[^}]*border-top:\s*0;[^}]*background:\s*transparent;[^}]*backdrop-filter:\s*none;[^}]*box-shadow:\s*none;/s);
     expect(css).toContain('.v3-composer-row {');
     expect(css).toContain('gap: 6px;');
     expect(css).toContain('.v3-composer-row.is-empty:not(.has-stop) .v3-send');
     expect(css).toContain('.v3-composer-row.has-content .v3-voice-button');
-    expect(css).toContain('.v3-composer-model-info {');
-    expect(css).toContain('display: flex;');
+    expect(css).toMatch(/\.v3-composer-model-info\s*\{[^}]*display:\s*none;/s);
     expect(css).toContain('.v3-composer-model-quota.warning { color: var(--cc-warning-text); }');
     expect(css).toContain('.v3-composer-model-quota.danger { color: var(--cc-danger-text); }');
     expect(css).toContain('.v3-mobile-model-quota.warning { color: var(--cc-warning-text); }');
     expect(css).toContain('.v3-mobile-model-quota.danger { color: var(--cc-danger-text); }');
     expect(css).not.toContain('#f8d477');
     expect(css).not.toContain('#f2a0a0');
-    expect(css).toContain('.v3-mobile-model-info {');
+    expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*display:\s*flex;/s);
+    expect(css).toMatch(/\.v3-message-footer \.v3-action-btn\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;[^}]*touch-action:\s*manipulation;/s);
+    expect(css).toMatch(/\.v3-message-footer \.v3-message-action-menu button\s*\{[^}]*min-height:\s*44px;[^}]*height:\s*44px;/s);
     expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 36px);');
     expect(css).toMatch(/\.v3-shell-title,\s*\.v3-shell-title-input\s*\{/);
     expect(css).toContain('top: max(12px, env(safe-area-inset-top));');

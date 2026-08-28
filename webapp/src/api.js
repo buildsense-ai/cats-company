@@ -465,6 +465,18 @@ export const api = {
     { task_id: taskId },
     options,
   ),
+  artifactRuntimeRequest: (runtimeRequest, options = {}) => {
+    const previewSession = wsArtifactPreviewSession;
+    return request(
+      'POST',
+      '/api/artifact-runtime',
+      {
+        ...runtimeRequest,
+        ...(previewSession ? { preview_session: previewSession } : {}),
+      },
+      options,
+    );
+  },
 
   // REST fallback for message history
   getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>

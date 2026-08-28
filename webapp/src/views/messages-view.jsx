@@ -42,6 +42,7 @@ import {
   withArtifactContextRef,
 } from '../artifact-context';
 import { createArtifactTaskHost } from '../artifact-task-host';
+import { createArtifactRuntimeHost } from '../artifact-runtime-host';
 import {
   artifactPreviewCoordinationID,
   createArtifactPreviewChatCoordinator,
@@ -535,6 +536,7 @@ export default function MessagesView({
   const activeArtifactFocusRef = useRef(null);
   const activeArtifactSnapshotRef = useRef(null);
   const artifactTaskHostRef = useRef(null);
+  const artifactRuntimeHostRef = useRef(null);
   const artifactTaskFeedbackRef = useRef(feedback);
   const artifactPreviewCoordinatorRef = useRef(null);
   const artifactViewerHandoffRef = useRef(null);
@@ -762,6 +764,7 @@ export default function MessagesView({
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
     artifactTaskHostRef.current?.deactivate();
+    artifactRuntimeHostRef.current?.deactivate();
   }, [invalidateArtifactSnapshot]);
 
   const cancelArtifactViewerHandoff = useCallback(({ closeWindow = true } = {}) => {
@@ -789,6 +792,7 @@ export default function MessagesView({
     }
     invalidateArtifactSnapshot();
     artifactTaskHostRef.current?.deactivate();
+    artifactRuntimeHostRef.current?.deactivate();
     activeArtifactFocusRef.current = artifactMessageFocusFromPreviewFile(
       file,
       artifactTopicRef.current,
@@ -806,32 +810,35 @@ export default function MessagesView({
     activeArtifactFrameRef.current = activeBinding;
     if (!activeBinding) {
       artifactTaskHostRef.current?.deactivate();
+      artifactRuntimeHostRef.current?.deactivate();
       return;
     }
+    artifactRuntimeHostRef.current?.resume();
     artifactTaskHostRef.current?.connect(activeBinding);
   }, []);
 
   useEffect(() => {
+    const getCurrentSession = () => {
+      const focus = activeArtifactFocusRef.current;
+      const binding = activeArtifactFrameRef.current;
+      if (!focus || !binding || activeTopicRef.current !== focus.topic
+        || artifactTopicGenerationRef.current !== focus.topicGeneration
+        || activeArtifactAgentUIDRef.current !== focus.agentUid
+        || !artifactBindingMatchesFocus(binding, focus)) return null;
+      return {
+        token: focus,
+        identityKey: focus.previewKey,
+        topicId: focus.topic,
+        topicGeneration: focus.topicGeneration,
+        agentUid: focus.agentUid,
+        artifactId: focus.artifactId,
+        displayedVersion: focus.displayedVersion,
+        artifactRef: focus.artifactRef,
+        binding,
+      };
+    };
     const host = createArtifactTaskHost({
-      getCurrentSession: () => {
-        const focus = activeArtifactFocusRef.current;
-        const binding = activeArtifactFrameRef.current;
-        if (!focus || !binding || activeTopicRef.current !== focus.topic
-          || artifactTopicGenerationRef.current !== focus.topicGeneration
-          || activeArtifactAgentUIDRef.current !== focus.agentUid
-          || !artifactBindingMatchesFocus(binding, focus)) return null;
-        return {
-          token: focus,
-          identityKey: focus.previewKey,
-          topicId: focus.topic,
-          topicGeneration: focus.topicGeneration,
-          agentUid: focus.agentUid,
-          artifactId: focus.artifactId,
-          displayedVersion: focus.displayedVersion,
-          artifactRef: focus.artifactRef,
-          binding,
-        };
-      },
+      getCurrentSession,
       confirmTask: () => artifactTaskFeedbackRef.current.confirm({
         title: '发送给虚拟员工？',
         message: '该应用希望把你刚才的操作作为一条新消息交给当前虚拟员工处理。',
@@ -839,13 +846,19 @@ export default function MessagesView({
         cancelLabel: '取消',
       }),
     });
+    const runtimeHost = createArtifactRuntimeHost({ getCurrentSession });
     artifactTaskHostRef.current = host;
+    artifactRuntimeHostRef.current = runtimeHost;
     host.connect(activeArtifactFrameRef.current);
     window.addEventListener('message', host.handleWindowMessage);
+    window.addEventListener('message', runtimeHost.handleWindowMessage);
     return () => {
       window.removeEventListener('message', host.handleWindowMessage);
+      window.removeEventListener('message', runtimeHost.handleWindowMessage);
       host.dispose();
+      runtimeHost.dispose();
       if (artifactTaskHostRef.current === host) artifactTaskHostRef.current = null;
+      if (artifactRuntimeHostRef.current === runtimeHost) artifactRuntimeHostRef.current = null;
     };
   }, []);
 

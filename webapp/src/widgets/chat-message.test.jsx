@@ -73,6 +73,7 @@ function PreviewHarness({
   knownArtifacts = [],
   isSelf = false,
   onOpenRemoteArtifactFullscreen = vi.fn(),
+  onRemoteArtifactFrameChange = vi.fn(),
 }) {
   const [previewFile, setPreviewFile] = React.useState(null);
   const chatColumnRef = React.useRef(null);
@@ -96,6 +97,7 @@ function PreviewHarness({
             onClose={() => setPreviewFile(null)}
             backgroundRef={chatColumnRef}
             onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
+            onRemoteArtifactFrameChange={onRemoteArtifactFrameChange}
           />
         </div>
       )}
@@ -1063,16 +1065,18 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
-  it('opens the existing message actions after a one-second mobile long press', async () => {
-    vi.useFakeTimers();
+  it('opens message actions after a mobile tap and keeps buttons clickable', async () => {
+    const onReply = vi.fn();
+    const originalMatchMedia = window.matchMedia;
     await act(async () => {
       root.render(
         <ChatMessage
-          message={{ id: 21, from_uid: 2, content: '长按查看操作', created_at: '2026-06-09T00:00:00Z' }}
+          message={{ id: 21, from_uid: 2, content: '点击查看操作', created_at: '2026-06-09T00:00:00Z' }}
           isSelf={false}
           isGroup={false}
           senderName="CatsCo"
-          onReply={vi.fn()}
+          onReply={onReply}
+          onCreateConversationShare={vi.fn()}
         />,
       );
       await Promise.resolve();
@@ -1082,20 +1086,30 @@ describe('ChatMessage rich file rendering', () => {
     const actions = container.querySelector('.v3-message-actions');
     expect(actions?.classList.contains('open')).toBe(false);
 
-    await act(async () => {
-      Simulate.pointerDown(bubble, { pointerType: 'touch', button: 0 });
-      vi.advanceTimersByTime(999);
-    });
-    expect(actions?.classList.contains('open')).toBe(false);
+    try {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: true, addListener: vi.fn(), removeListener: vi.fn() });
+      await act(async () => {
+        Simulate.click(bubble);
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.v3-message-actions')?.classList.contains('open')).toBe(true);
 
-    await act(async () => {
-      vi.advanceTimersByTime(1);
-    });
-    expect(container.querySelector('.v3-message-actions')?.classList.contains('open')).toBe(true);
+      await act(async () => {
+        Simulate.click(container.querySelector('[aria-label="更多操作"]'));
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.v3-message-action-menu')).not.toBeNull();
 
-    await act(async () => {
-      Simulate.pointerUp(bubble, { pointerType: 'touch', button: 0 });
-    });
+      await act(async () => {
+        Simulate.click(container.querySelector('[aria-label="回复"]'));
+        await Promise.resolve();
+      });
+      expect(onReply).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('.v3-message-actions')?.classList.contains('open')).toBe(true);
+      expect(container.querySelector('.v3-message-action-menu')).toBeNull();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
   });
 
   it('shows a direct edit action for the current user message', async () => {
@@ -1839,6 +1853,7 @@ describe('ChatMessage rich file rendering', () => {
       publish_version: 2,
     };
     const onOpenRemoteArtifactFullscreen = vi.fn();
+    const onRemoteArtifactFrameChange = vi.fn();
     const previewURL = 'https://artifacts.example.test/by-agent/440/lesson-game/v2/';
     await act(async () => {
       root.render(
@@ -1851,6 +1866,7 @@ describe('ChatMessage rich file rendering', () => {
           }}
           knownArtifacts={[artifact]}
           onOpenRemoteArtifactFullscreen={onOpenRemoteArtifactFullscreen}
+          onRemoteArtifactFrameChange={onRemoteArtifactFrameChange}
         />,
       );
       await Promise.resolve();
@@ -1883,11 +1899,16 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(panel.querySelector('.v3-remote-artifact-preview-state')).toBeNull();
+    const firstBinding = onRemoteArtifactFrameChange.mock.calls.at(-1)?.[0];
+    expect(firstBinding?.artifactId).toBe('lesson-game');
+    expect(firstBinding?.signal?.aborted).toBe(false);
 
     await act(async () => {
-      Simulate.error(frame);
+      Simulate.load(frame);
       await Promise.resolve();
     });
+    expect(firstBinding.signal.aborted).toBe(true);
+    expect(onRemoteArtifactFrameChange.mock.calls.at(-1)?.[0]).toBeNull();
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
     await act(async () => Simulate.click(
       panel.querySelector('.v3-remote-artifact-preview-state.error button'),

@@ -28,6 +28,7 @@ import {
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import { createArtifactTaskHost } from '../artifact-task-host';
+import { createArtifactRuntimeHost } from '../artifact-runtime-host';
 import { useFeedback } from '../components/feedback-system';
 import { clearPersistedComposerDrafts } from '../utils/composer-draft-storage';
 import { createCloudArtifactPreviewFile, previewFileDescriptor } from '../widgets/chat-message';
@@ -68,6 +69,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   const fileRef = useRef(null);
   const snapshotRef = useRef(null);
   const taskHostRef = useRef(null);
+  const runtimeHostRef = useRef(null);
   const taskFeedbackRef = useRef(feedback);
   const captureQueueRef = useRef(Promise.resolve());
   const coordinationHandlerRef = useRef(null);
@@ -180,6 +182,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     setError('');
     setReleased(true);
     taskHostRef.current?.deactivate();
+    runtimeHostRef.current?.deactivate();
     invalidateCurrentSnapshot();
     postCoordination('viewer_released', { error: reason });
     disconnectWS();
@@ -223,28 +226,29 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
 
   useEffect(() => {
     if (!identity) return undefined;
+    const getCurrentSession = () => {
+      const currentFile = fileRef.current;
+      const binding = bindingRef.current;
+      const artifactRef = artifactRefFromPreviewFile(currentFile, identity.agentUid);
+      if (releasedRef.current || !readyRef.current || !hasArtifactPreviewSession()
+        || !currentFile || !binding || !artifactRef
+        || binding.artifactId !== identity.artifactId
+        || Number(binding.agentUid || 0) !== identity.agentUid
+        || Number(artifactRef.displayed_version || 0) !== identity.displayedVersion) return null;
+      return {
+        token: binding,
+        identityKey,
+        topicId: identity.topicId,
+        topicGeneration: 0,
+        agentUid: identity.agentUid,
+        artifactId: identity.artifactId,
+        displayedVersion: identity.displayedVersion,
+        artifactRef,
+        binding,
+      };
+    };
     const host = createArtifactTaskHost({
-      getCurrentSession: () => {
-        const currentFile = fileRef.current;
-        const binding = bindingRef.current;
-        const artifactRef = artifactRefFromPreviewFile(currentFile, identity.agentUid);
-        if (releasedRef.current || !readyRef.current || !hasArtifactPreviewSession()
-          || !currentFile || !binding || !artifactRef
-          || binding.artifactId !== identity.artifactId
-          || Number(binding.agentUid || 0) !== identity.agentUid
-          || Number(artifactRef.displayed_version || 0) !== identity.displayedVersion) return null;
-        return {
-          token: binding,
-          identityKey,
-          topicId: identity.topicId,
-          topicGeneration: 0,
-          agentUid: identity.agentUid,
-          artifactId: identity.artifactId,
-          displayedVersion: identity.displayedVersion,
-          artifactRef,
-          binding,
-        };
-      },
+      getCurrentSession,
       confirmTask: () => taskFeedbackRef.current.confirm({
         title: '发送给虚拟员工？',
         message: '该应用希望把你刚才的操作作为一条新消息交给当前虚拟员工处理。',
@@ -252,13 +256,19 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
         cancelLabel: '取消',
       }),
     });
+    const runtimeHost = createArtifactRuntimeHost({ getCurrentSession });
     taskHostRef.current = host;
+    runtimeHostRef.current = runtimeHost;
     window.addEventListener('message', host.handleWindowMessage);
+    window.addEventListener('message', runtimeHost.handleWindowMessage);
     if (readyRef.current) host.connect(bindingRef.current);
     return () => {
       window.removeEventListener('message', host.handleWindowMessage);
+      window.removeEventListener('message', runtimeHost.handleWindowMessage);
       host.dispose();
+      runtimeHost.dispose();
       if (taskHostRef.current === host) taskHostRef.current = null;
+      if (runtimeHostRef.current === runtimeHost) runtimeHostRef.current = null;
     };
   }, [identityKey]);
 
@@ -289,6 +299,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       readyRef.current = true;
       setReady(true);
       taskHostRef.current?.resume();
+      runtimeHostRef.current?.resume();
       taskHostRef.current?.connect(bindingRef.current);
       return;
     }
@@ -387,6 +398,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       setReady(false);
       setSessionReady(false);
       taskHostRef.current?.suspend();
+      runtimeHostRef.current?.suspend();
       invalidateCurrentSnapshot();
       if (wasAnnounced) postCoordination('viewer_closed', { error: 'connection_lost' });
     };
@@ -485,12 +497,14 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
         setReady(false);
         setSessionReady(false);
         taskHostRef.current?.suspend();
+        runtimeHostRef.current?.suspend();
         postCoordination('viewer_closed', { error: 'bfcache' });
         invalidateCurrentSnapshot();
         return;
       }
       postCoordination('viewer_closed');
       taskHostRef.current?.deactivate();
+      runtimeHostRef.current?.deactivate();
       invalidateCurrentSnapshot();
     };
     const handlePageShow = (event) => {
@@ -511,8 +525,13 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
   const handleBindingChange = useCallback((binding) => {
     bindingRef.current = binding;
     setFrameReady(Boolean(binding));
-    if (!binding) taskHostRef.current?.deactivate();
-    else if (readyRef.current) taskHostRef.current?.connect(binding);
+    if (!binding) {
+      taskHostRef.current?.deactivate();
+      runtimeHostRef.current?.deactivate();
+    } else if (readyRef.current) {
+      runtimeHostRef.current?.resume();
+      taskHostRef.current?.connect(binding);
+    }
   }, []);
 
   return (

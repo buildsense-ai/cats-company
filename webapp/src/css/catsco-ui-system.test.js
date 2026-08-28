@@ -10,6 +10,7 @@ const searchOverlayCss = readFileSync(resolve(process.cwd(), 'src/css/search-ove
 const liquidGreenCss = readFileSync(resolve(process.cwd(), 'src/css/catsco-liquid-green.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
 const brandAssetPath = resolve(process.cwd(), 'public/catsco-brand-mark.webp');
+const wordmarkAssetPath = resolve(process.cwd(), 'public/catsco-wordmark.png');
 
 const ruleIn = (source, selector) => source.match(
   new RegExp(`(?:^|\\r?\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`),
@@ -268,14 +269,17 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor(':root')).toContain('--oc-tab-active: #29bc95;');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-brand-text-start: #29bc95;');
     expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-brand-text-end: #7548cf;');
-    expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain(
-      'var(--cc-brand-text-start) 0%',
-    );
-    expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain('letter-spacing: 0.01em;');
-    expect(ruleFor('.v3-sidebar-header .catsco-brand-name'))
-      .toContain('text-shadow: none;');
+    const wordmarkRule = ruleFor('.v3-sidebar-header .catsco-brand-name');
+    expect(existsSync(wordmarkAssetPath)).toBe(true);
+    expect(statSync(wordmarkAssetPath).size).toBeLessThan(100_000);
+    expect(wordmarkRule).toContain('width: 88px;');
+    expect(wordmarkRule).toContain('height: 18px;');
+    expect(wordmarkRule).toContain('font-size: 0;');
+    expect(wordmarkRule).toContain('background-color: currentColor;');
+    expect(wordmarkRule).toContain("mask: url('/catsco-wordmark.png') center / contain no-repeat;");
+    expect(wordmarkRule).toContain('text-shadow: none;');
     expect(css).toMatch(
-      /@media \(forced-colors: active\)[\s\S]*?\.v3-sidebar-header \.catsco-brand-name\s*\{[^}]*-webkit-text-fill-color: currentColor;/,
+      /@media \(forced-colors: active\)[\s\S]*?\.v3-sidebar-header \.catsco-brand-name\s*\{[^}]*-webkit-mask: none;[^}]*mask: none;[^}]*font-size: 19px;/,
     );
     expect(ruleFor('.v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark'))
       .toContain('width: 34px;');
@@ -286,8 +290,10 @@ describe('CatsCo shell styling', () => {
     );
     expect(collapsedButtonRule).toContain('background: transparent;');
     expect(collapsedButtonRule).toContain('box-shadow: none;');
-    expect(ruleFor('html[data-theme="liquid"] .catsco-brand-mark'))
-      .toContain('filter: hue-rotate(68deg) saturate(1.05) brightness(0.78);');
+    const liquidBrandMarkRule = ruleFor('html[data-theme="liquid"] .catsco-brand-mark');
+    expect(liquidBrandMarkRule).toContain('background: var(--cc-brand-text-start);');
+    expect(liquidBrandMarkRule).toContain("mask: url('/catsco-brand-mark.webp') center / contain no-repeat;");
+    expect(liquidBrandMarkRule).toContain('filter: none;');
   });
 
   it('keeps sidebar chrome fixed while the navigation list owns overflow', () => {
@@ -299,10 +305,10 @@ describe('CatsCo shell styling', () => {
     const listRule = ruleFor('.v3-chat-list');
     const footerRule = ruleFor('.v3-profile-footer');
 
-    expect(headerRule).toContain('height: 48px;');
-    expect(headerRule).toContain('min-height: 48px;');
-    expect(headerRule).toContain('flex: 0 0 48px;');
-    expect(headerRule).toContain('padding: 0 8px 0 12px;');
+    expect(headerRule).toContain('height: 54px;');
+    expect(headerRule).toContain('min-height: 54px;');
+    expect(headerRule).toContain('flex: 0 0 54px;');
+    expect(headerRule).toContain('padding: 0 8px 0 10px;');
     expect(headerRule).toContain('border-bottom: 0;');
     expect(collapsedHeaderRule).toContain('height: 44.8px;');
     expect(collapsedHeaderRule).toContain('flex-basis: 44.8px;');
@@ -311,6 +317,15 @@ describe('CatsCo shell styling', () => {
     expect(collapseButtonRule).toContain('height: 30.4px;');
     expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 19px;');
     expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('height: 19px;');
+    const liquidHeaderButtonRule = ruleFor(
+      'html[data-theme="liquid"] :is(\n  .v3-sidebar-header-actions .v3-sidebar-collapse-btn,\n  .v3-chat-list .cc-section-add\n)',
+    );
+    expect(liquidHeaderButtonRule).toContain('border-color: transparent;');
+    expect(liquidHeaderButtonRule).toContain('background: transparent;');
+    expect(liquidHeaderButtonRule).toContain('box-shadow: none;');
+    expect(ruleFor(
+      'html[data-theme="liquid"] :is(\n  .v3-sidebar-header-actions .v3-sidebar-collapse-btn,\n  .v3-chat-list .cc-section-add\n):is(:hover, :focus-visible)',
+    )).toContain('background: rgba(237, 240, 255, 0.94);');
     expect(toolsRule).toContain('flex: 0 0 auto;');
     expect(toolsRule).toContain('padding: 0 8px 7px;');
     expect(listRule).toContain('min-height: 0;');
@@ -750,10 +765,11 @@ describe('CatsCo shell styling', () => {
     const composerInputRule = ruleFor('html[data-theme="liquid"] .v3-composer-input');
 
     expect(composerRule).toContain('background: rgba(255, 255, 255, 0.84);');
-    expect(composerRule).toContain('0 0 0 1px rgba(73, 86, 168, 0.05)');
-    expect(composerRule).toContain('0 4px 12px rgba(79, 91, 148, 0.12)');
+    expect(composerRule).toContain('border: 1px solid rgba(86, 98, 217, 0.18);');
+    expect(composerRule).not.toContain('0 0 0 1px');
+    expect(composerRule).toContain('0 4px 12px rgba(79, 91, 148, 0.08)');
     expect(composerRule).toContain('inset 0 8px 12px -10px rgba(255, 255, 255, 0.96)');
-    expect(composerFocusRule).toContain('border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-liquid-edge));');
+    expect(composerFocusRule).toContain('border-color: rgba(86, 98, 217, 0.42);');
     expect(composerFocusRule).not.toContain('linear-gradient');
     expect(composerFocusRule).not.toContain('box-shadow');
     expect(composerFocusRule).not.toContain('transform');

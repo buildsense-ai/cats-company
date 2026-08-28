@@ -288,6 +288,19 @@ describe('WebSocket connection recovery', () => {
       },
     });
 
+    await api.api.artifactRuntimeRequest({
+      contract_version: 'catsco.artifact-runtime-request.v1',
+      operation: 'connect',
+      topic_id: 'p2p_7_440',
+      artifact_ref: { id: 'lesson-game' },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      preview_session: {
+        contract_version: 'catsco.artifact-preview-session.v1',
+        token: 'first-preview-session',
+      },
+    });
+
     api.reconnectWS(vi.fn());
     const secondSocket = MockWebSocket.instances[1];
     secondSocket.open();
@@ -295,7 +308,7 @@ describe('WebSocket connection recovery', () => {
       topic_id: 'p2p_7_440',
       artifact_ref: { id: 'lesson-game' },
     });
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).not.toHaveProperty('preview_session');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).not.toHaveProperty('preview_session');
   });
 
   test('derives a stable subscription identity from the push endpoint', async () => {

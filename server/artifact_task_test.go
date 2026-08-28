@@ -162,6 +162,19 @@ func TestArtifactTaskManifestAndPayloadStayVersionBounded(t *testing.T) {
 	); err == nil {
 		t.Fatal("intent targeting an undeclared sink was accepted")
 	}
+	v4Body := []byte(strings.Replace(
+		strings.TrimSuffix(string(body), "}"),
+		`"catsco.artifact-manifest.v3"`,
+		`"catsco.artifact-manifest.v4"`,
+		1,
+	) + `,"runtime":{"version":"0.1","surfaces":[{"id":"task-board"}],"state":[{"namespace":"tasks","mode":"read-write"}]}}`)
+	if _, err := parseArtifactTaskIntentManifest(v4Body, "tasks.create.v1"); err != nil {
+		t.Fatalf("v4 task manifest rejected: %v", err)
+	}
+	v3WithNullRuntime := []byte(strings.TrimSuffix(string(body), "}") + `,"runtime":null}`)
+	if _, err := parseArtifactTaskIntentManifest(v3WithNullRuntime, "tasks.create.v1"); err == nil {
+		t.Fatal("v3 task manifest with a runtime field was accepted")
+	}
 	url, err := artifactTaskVersionManifestURL(ArtifactContextRecord{
 		ID:  "task-board",
 		URL: "https://agent-440.artifacts.catsco.fun:19991/artifacts/task-board/latest/?cache=1#view",

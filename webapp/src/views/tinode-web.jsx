@@ -1297,7 +1297,7 @@ function TinodeWebApp({ location }) {
         <div className="v3-sidebar-header">
           <div className="v3-brand-title">
             <span className="catsco-brand-mark" aria-hidden="true" />
-            <span className="catsco-brand-name">CatsCo</span>
+            <span className="catsco-brand-name" aria-label="CatsCo">CatsCo</span>
           </div>
           <div className="v3-sidebar-header-actions">
             {!appSidebarCollapsed && (

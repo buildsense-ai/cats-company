@@ -15,15 +15,16 @@ import (
 )
 
 const (
-	artifactTaskManifestContract = "catsco.artifact-manifest.v3"
-	artifactTaskManifestFilename = "artifact-manifest.json"
-	artifactTaskManifestMaxBytes = 64 * 1024
-	artifactTaskIntentMaxItems   = 16
-	artifactTaskSchemaMaxDepth   = 8
-	artifactTaskSchemaMaxNodes   = 256
-	artifactTaskSchemaMaxProps   = 64
-	artifactTaskSchemaMaxEnum    = 64
-	artifactTaskPayloadMaxBytes  = 64 * 1024
+	artifactTaskManifestContract   = "catsco.artifact-manifest.v3"
+	artifactTaskManifestContractV4 = "catsco.artifact-manifest.v4"
+	artifactTaskManifestFilename   = "artifact-manifest.json"
+	artifactTaskManifestMaxBytes   = 64 * 1024
+	artifactTaskIntentMaxItems     = 16
+	artifactTaskSchemaMaxDepth     = 8
+	artifactTaskSchemaMaxNodes     = 256
+	artifactTaskSchemaMaxProps     = 64
+	artifactTaskSchemaMaxEnum      = 64
+	artifactTaskPayloadMaxBytes    = 64 * 1024
 )
 
 var artifactTaskManifestKeys = map[string]bool{
@@ -35,6 +36,7 @@ var artifactTaskManifestKeys = map[string]bool{
 	"observation_capabilities": true,
 	"result_sinks":             true,
 	"task_intents":             true,
+	"runtime":                  true,
 }
 
 // ArtifactTaskIntent is application-authored data from one immutable Artifact
@@ -133,8 +135,17 @@ func parseArtifactTaskIntentManifest(body []byte, intentID string) (ArtifactTask
 			return ArtifactTaskIntent{}, fmt.Errorf("Artifact task manifest contains unsupported field %q", key)
 		}
 	}
-	if manifest["contract_version"] != artifactTaskManifestContract {
-		return ArtifactTaskIntent{}, fmt.Errorf("Artifact task manifest must use %s", artifactTaskManifestContract)
+	contractVersion := manifest["contract_version"]
+	if contractVersion != artifactTaskManifestContract && contractVersion != artifactTaskManifestContractV4 {
+		return ArtifactTaskIntent{}, fmt.Errorf(
+			"Artifact task manifest must use %s or %s",
+			artifactTaskManifestContract,
+			artifactTaskManifestContractV4,
+		)
+	}
+	_, hasRuntime := manifest["runtime"]
+	if contractVersion != artifactTaskManifestContractV4 && hasRuntime {
+		return ArtifactTaskIntent{}, errors.New("Only Artifact manifest v4 supports runtime")
 	}
 	sinkIDs, err := artifactTaskManifestSinkIDs(manifest["result_sinks"])
 	if err != nil {
