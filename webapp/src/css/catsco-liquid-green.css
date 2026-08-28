@@ -404,6 +404,24 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] :is(
+  .v3-sidebar-header-actions .v3-sidebar-collapse-btn,
+  .v3-chat-list .cc-section-add
+) {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] :is(
+  .v3-sidebar-header-actions .v3-sidebar-collapse-btn,
+  .v3-chat-list .cc-section-add
+):is(:hover, :focus-visible) {
+  border-color: rgba(230, 255, 249, 0.28);
+  background: rgba(255, 255, 255, 0.13);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] :is(
   .v3-sidebar-collapse-btn,
   .v3-action-btn,
   .v3-tool,
@@ -796,6 +814,56 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(
   opacity: 0.46;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
   transform: none;
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card-primary,
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card.catsco-device-card.is-preferred {
+  border-color: var(--cc-border) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--cc-text) !important;
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card-primary:hover,
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card.catsco-device-card.is-preferred:hover {
+  border-color: var(--cc-border) !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: var(--cc-text) !important;
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-icon {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--cc-text-secondary) !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card > .catsco-download-action {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: var(--cc-text-secondary) !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card > .catsco-download-action:is(:hover, :focus-visible) {
+  background: rgba(255, 255, 255, 0.13) !important;
+  color: var(--cc-text) !important;
+}
+
+/* Final download-modal neutral pass: keep release actions quiet until interaction. */
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card > .catsco-download-action {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--cc-text-secondary) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card > .catsco-download-action:hover,
+html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card > .catsco-download-action:focus-visible {
+  border: 0 !important;
+  background: rgba(255, 255, 255, 0.13) !important;
+  color: var(--cc-text) !important;
+  box-shadow: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
