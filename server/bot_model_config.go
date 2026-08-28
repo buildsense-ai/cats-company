@@ -53,18 +53,31 @@ type BotModelConfigHandler struct {
 }
 
 type botModelCatalogItem struct {
-	ID                     string             `json:"id"`
-	Label                  string             `json:"label"`
-	Description            string             `json:"description"`
-	Provider               string             `json:"provider"`
-	Protocol               string             `json:"protocol"`
-	ContextWindowTokens    int64              `json:"context_window_tokens"`
-	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
-	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
-	Vision                 bool               `json:"vision,omitempty"`
-	Available              bool               `json:"available"`
-	UnavailableReason      string             `json:"unavailable_reason,omitempty"`
-	Quota                  *relayUsageSummary `json:"quota,omitempty"`
+	ID                     string                     `json:"id"`
+	Label                  string                     `json:"label"`
+	Description            string                     `json:"description"`
+	Provider               string                     `json:"provider"`
+	Protocol               string                     `json:"protocol"`
+	ContextWindowTokens    int64                      `json:"context_window_tokens"`
+	ReasoningEfforts       []string                   `json:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort string                     `json:"default_reasoning_effort,omitempty"`
+	Vision                 bool                       `json:"vision,omitempty"`
+	Available              bool                       `json:"available"`
+	UnavailableReason      string                     `json:"unavailable_reason,omitempty"`
+	Runtime                *botModelRuntimeDescriptor `json:"runtime,omitempty"`
+	Quota                  *relayUsageSummary         `json:"quota,omitempty"`
+}
+
+// botModelRuntimeDescriptor is non-secret metadata consumed by XiaoBa. Relay
+// endpoints and credentials are deliberately excluded and remain device-local.
+type botModelRuntimeDescriptor struct {
+	Model               string `json:"model"`
+	Provider            string `json:"provider"`
+	ContextWindowTokens int64  `json:"contextWindowTokens"`
+	OpenAIAPIMode       string `json:"openaiApiMode,omitempty"`
+	Vision              bool   `json:"vision"`
+	ToolCalling         bool   `json:"toolCalling"`
+	Streaming           bool   `json:"streaming"`
 }
 
 var botModelCatalog = []botModelCatalogItem{
@@ -723,6 +736,7 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		catalog[i].Available = true
 		catalog[i].UnavailableReason = ""
 		catalog[i].Quota = nil
+		catalog[i].Runtime = catalogRuntimeDescriptor(catalog[i])
 	}
 
 	var commercialSummary *types.CommercialSummary
@@ -769,6 +783,23 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		catalog[i].Quota = usage.Summary
 	}
 	return catalog, ""
+}
+
+func catalogRuntimeDescriptor(model botModelCatalogItem) *botModelRuntimeDescriptor {
+	provider := strings.ToLower(strings.TrimSpace(model.Provider))
+	if provider != "anthropic" && provider != "openai" || model.ID == "" || model.ContextWindowTokens <= 0 {
+		return nil
+	}
+	// Relay-facing model names currently equal the public catalog IDs. Keeping
+	// this derived from the catalog makes new entries automatically portable.
+	d := &botModelRuntimeDescriptor{
+		Model: model.ID, Provider: provider, ContextWindowTokens: model.ContextWindowTokens,
+		Vision: model.Vision, ToolCalling: true, Streaming: true,
+	}
+	if provider == "openai" {
+		d.OpenAIAPIMode = "responses"
+	}
+	return d
 }
 
 func (h *BotModelConfigHandler) catalogModelAllowed(ownerUID int64, modelID string) (bool, error) {
