@@ -597,14 +597,48 @@ func commercialRelayBaselineForSummary(summary *types.CommercialSummary, relayUs
 			}
 		}
 	}
-	if relayUser != nil && relayUser.Limits.MonthlyBudget.MaxLimit > commercialRelayBlockedLimit {
-		return "", nil, fmt.Errorf("relay shared quota exists without a commercial baseline")
-	}
 	profile, budgets := commercialRelayBaseline(relayUser)
 	if len(budgets) == 0 {
-		return "", nil, fmt.Errorf("relay baseline quota is unavailable")
+		return "", nil, fmt.Errorf("relay quota exists without recoverable model limits")
+	}
+	// A Relay key created before commercial entitlements existed may already
+	// carry a shared pool. Preserve its model access and exact pool total as an
+	// auditable baseline instead of multiplying the shared limit by model count.
+	if relayUser != nil {
+		sharedLimit := relayUser.Limits.MonthlyBudget.MaxLimit
+		if sharedLimit > commercialRelayBlockedLimit {
+			originalTotal := commercialRelayBudgetTotal(budgets)
+			if profile != commercialRelayBaselineProfileFree || !nearlyEqual(originalTotal, sharedLimit) {
+				profile = commercialRelayBaselineProfileLegacy
+				budgets = normalizeCommercialRelaySharedBaseline(budgets, sharedLimit)
+			}
+		}
 	}
 	return profile, budgets, nil
+}
+
+func commercialRelayBudgetTotal(budgets map[string]float64) float64 {
+	total := 0.0
+	for _, amount := range budgets {
+		if amount > 0 {
+			total += amount
+		}
+	}
+	return total
+}
+
+func normalizeCommercialRelaySharedBaseline(budgets map[string]float64, sharedLimit float64) map[string]float64 {
+	total := commercialRelayBudgetTotal(budgets)
+	if total <= commercialRelayBlockedLimit || sharedLimit <= commercialRelayBlockedLimit || nearlyEqual(total, sharedLimit) {
+		return budgets
+	}
+	normalized := make(map[string]float64, len(budgets))
+	for model, amount := range budgets {
+		if amount > 0 {
+			normalized[model] = amount * sharedLimit / total
+		}
+	}
+	return normalized
 }
 
 func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[string]float64) {
