@@ -5,19 +5,26 @@ import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
+  buildMobileModelInfo,
   cloudArtifactNotificationToast,
   commitPreviewSession,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
   ProfilePopover,
+  getMobileSidebarWidth,
   resolveInitialUser,
   resolveDisplayedActiveAgent,
+  shouldOpenProfileSettingsDirectly,
 } from './tinode-web';
 import { api } from '../api';
 
 const topbarCss = readFileSync(
   resolve(process.cwd(), 'src/css/catsco-topbar.css'),
+  'utf8',
+);
+const tinodeWebSource = readFileSync(
+  resolve(process.cwd(), 'src/views/tinode-web.jsx'),
   'utf8',
 );
 
@@ -235,6 +242,19 @@ describe('cloud artifact action visibility', () => {
 });
 
 describe('ProfilePopover', () => {
+  it('keeps the mobile sidebar gesture boundary aligned with the CSS width contract', () => {
+    expect(getMobileSidebarWidth(375)).toBe(292.5);
+    expect(getMobileSidebarWidth(390)).toBe(304.2);
+    expect(getMobileSidebarWidth(430)).toBe(320);
+  });
+
+  it('routes the phone profile footer directly to settings', () => {
+    expect(shouldOpenProfileSettingsDirectly(375)).toBe(true);
+    expect(shouldOpenProfileSettingsDirectly(768)).toBe(true);
+    expect(shouldOpenProfileSettingsDirectly(769)).toBe(false);
+    expect(shouldOpenProfileSettingsDirectly(1440)).toBe(false);
+  });
+
   it('escapes the collapsed sidebar clipping context and marks the compact flyout', async () => {
     const sidebar = document.createElement('aside');
     document.body.appendChild(sidebar);
@@ -281,6 +301,36 @@ describe('ProfilePopover', () => {
 
     await act(async () => root.unmount());
     sidebar.remove();
+  });
+});
+
+describe('mobile model context wiring', () => {
+  it('omits the mobile model fallback when the conversation has no responsible Agent', () => {
+    expect(buildMobileModelInfo('MiniMax-M2.7', {
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    }, {
+      source: 'relay',
+      model: 'MiniMax-M3',
+      remaining_percent: 80,
+    })).toBeNull();
+  });
+
+  it('keeps the account model context for a regular conversation', () => {
+    expect(buildMobileModelInfo('MiniMax-M2.7', null, {
+      source: 'relay',
+      model: 'MiniMax-M2.7',
+      remaining_percent: 80,
+    })).toMatchObject({
+      model: 'MiniMax-M2.7',
+      quota: '剩余 80%',
+    });
+  });
+
+  it('routes profile desktop actions through the modal mode setter', () => {
+    expect(tinodeWebSource).toContain("onOpenDownload={() => openDesktopModal('download')}");
+    expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");
   });
 });
 
@@ -362,6 +412,66 @@ describe('LocalAssistantBar model selector', () => {
     expect(unavailableButton.disabled).toBe(true);
   });
 
+  it('groups mobile header actions behind a more menu while preserving both actions', async () => {
+    const onOpenCloudArtifacts = vi.fn();
+    const onDownload = vi.fn();
+    const onNewTask = vi.fn();
+    await renderBar({ onOpenCloudArtifacts, onDownload, onNewTask });
+
+    const moreButton = container.querySelector('button[aria-label="更多操作"]');
+    expect(moreButton).toBeTruthy();
+    expect(moreButton.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => moreButton.click());
+    expect(moreButton.getAttribute('aria-expanded')).toBe('true');
+    const menu = container.querySelector('[role="menu"][aria-label="更多操作"]');
+    expect(menu).toBeTruthy();
+    expect(menu.textContent).toContain('新建任务');
+    expect(menu.textContent).toContain('打开产物');
+    expect(menu.textContent).toContain('下载桌面端');
+
+    await act(async () => menu.querySelector('button[aria-label="打开产物"]').click());
+    expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="menu"][aria-label="更多操作"]')).toBeNull();
+
+    await act(async () => moreButton.click());
+    const downloadItem = container.querySelector('[role="menu"] button[aria-label="下载桌面端"]');
+    await act(async () => downloadItem?.click());
+    expect(onDownload).toHaveBeenCalledTimes(1);
+
+    await act(async () => moreButton.click());
+    const newTaskItem = container.querySelector('[role="menu"] button[aria-label="新建任务"]');
+    await act(async () => newTaskItem?.click());
+    expect(onNewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports keyboard navigation and returns focus from the mobile actions menu', async () => {
+    await renderBar({ onOpenCloudArtifacts: vi.fn(), onDownload: vi.fn(), onNewTask: vi.fn() });
+
+    const moreButton = container.querySelector('button[aria-label="更多操作"]');
+    await act(async () => moreButton.click());
+
+    const menu = container.querySelector('[role="menu"][aria-label="更多操作"]');
+    const items = [...menu.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+    expect(document.activeElement).toBe(items[0]);
+
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items.at(-1));
+
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[0]);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(container.querySelector('[role="menu"][aria-label="更多操作"]')).toBeNull();
+    expect(document.activeElement).toBe(moreButton);
+  });
+
   it('keeps conversation-share image generation out of the top bar', async () => {
     await renderBar({ onCreateConversationShare: vi.fn() });
     expect(container.querySelector('button[aria-label="制作对话分享图"]')).toBeNull();
@@ -372,6 +482,23 @@ describe('LocalAssistantBar model selector', () => {
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toBe('minimax-m3剩余 75%');
     expect(status?.getAttribute('aria-label')).toContain('minimax-m3');
+  });
+
+  it('renders mobile model context below the conversation title', async () => {
+    await renderBar({
+      mobileModelInfo: {
+        model: 'MiniMax-M2.7',
+        quota: '剩余 95%',
+        tone: 'warning',
+        title: '当前使用的模型：MiniMax-M2.7',
+      },
+    });
+
+    const info = container.querySelector('.v3-mobile-model-info');
+    expect(info?.textContent).toContain('MiniMax-M2.7');
+    expect(info?.textContent).toContain('剩余 95%');
+    expect(info?.getAttribute('aria-label')).toContain('剩余 95%');
+    expect(info?.previousElementSibling?.classList.contains('v3-shell-title')).toBe(true);
   });
 
   it('keeps catalog context details out of the compact header', async () => {

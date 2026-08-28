@@ -413,6 +413,7 @@ export default function MessagesView({
   messageLocationRequest,
   onBackToSearch,
   composerDraftStore,
+  modelInfo = null,
 }) {
   const feedback = useFeedback();
   const [input, setInput] = useState('');
@@ -4599,6 +4600,7 @@ export default function MessagesView({
             )}
           </>
         )}
+        modelInfo={modelInfo}
       />
       <input ref={imageInputRef} type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'image')} />
       <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'file')} />

@@ -41,6 +41,7 @@ export default function EmptyTaskComposer({
   onActivateTopic,
   voiceInputAvailable,
   createVoiceSession,
+  modelInfo = null,
 }) {
   const normalizedDraftKey = String(draftKey || NEW_TASK_DRAFT_KEY);
   // Components used outside TinodeWeb may not receive the shared store. Keep
@@ -836,6 +837,7 @@ export default function EmptyTaskComposer({
           setAttachmentStatus(null);
         }}
         notices={notices}
+        modelInfo={modelInfo}
         overlay={phoneUploadOverlay}
         boxOverlay={isDragActive ? (
           <div className="v3-drop-overlay" aria-hidden="true">

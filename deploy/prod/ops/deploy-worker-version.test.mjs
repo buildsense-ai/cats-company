@@ -56,17 +56,18 @@ state.sshCalls = state.sshCalls || [];
 state.sshCalls.push(command);
 if (command.includes("readlink -f /opt/catsco/current") && command.includes("systemctl is-active --quiet")) {
   fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
-  process.exit(state.currentRelease ? 0 : 1);
+  process.exit(state.currentRelease && state.localRelease ? 0 : 1);
 }
-if (command.includes("test -f") && command.includes("worker-release.json")) {
+if (command.includes(".catsco-release-complete")) {
   fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
   process.exit(state.localRelease ? 0 : 1);
 }
 if (command.includes("ln -sfn") && command.includes("systemctl restart")) {
   state.localActivations = (state.localActivations || 0) + 1;
 }
-if (command.includes("update-worker-artifact.sh") || command.includes("catsco-version-bot-a")) {
+if (command.includes("--artifact") && command.includes("--sha256") && command.includes("--commit")) {
   state.updateCalls = (state.updateCalls || 0) + 1;
+  state.localRelease = true;
 }
 fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(state));
 process.exit(0);
@@ -233,6 +234,29 @@ test("deploy-worker-version: reuses an existing worker-local release", () => {
   assert.equal(state.scpCalls || 0, 0);
 });
 
+test("deploy-worker-version: never reuses an interrupted release without a completion marker", () => {
+  const sb = setupSandbox({ localRelease: false });
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /"status":"updated"/);
+  const state = readState(sb);
+  assert.ok(
+    state.sshCalls.some(command => command.includes(".catsco-release-complete")),
+    "local reuse must be gated by the completion marker",
+  );
+  assert.equal(state.localActivations || 0, 0, "an incomplete tree must never be activated directly");
+  assert.equal(state.scpCalls, 2, "the artifact and hardened updater must be transferred");
+});
+
+test("deploy-worker-version: rejects an unavailable configured updater override", () => {
+  const sb = setupSandbox({ localRelease: false });
+  sb.env.CATSCO_WORKER_UPDATER_SCRIPT = toMsys(path.join(sb.sandbox, "missing-updater.sh"));
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /configured worker updater is unavailable/);
+  assert.equal(readState(sb).scpCalls || 0, 0, "nothing should reach the worker without a valid updater");
+});
+
 test("deploy-worker-version: current active release is a no-op", () => {
   const sb = setupSandbox({ currentRelease: true, localRelease: true });
   const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
@@ -254,7 +278,7 @@ test("deploy-worker-version: lazily downloads once and reuses the shared cache",
   assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
   const state = readState(sb);
   assert.equal(state.artifactDownloads, 1, "valid shared artifact must not be downloaded twice");
-  assert.equal(state.scpCalls, 4, "each uncached worker install transfers artifact + updater");
+  assert.equal(state.scpCalls, 2, "the first install transfers artifact + updater; the second reuses the verified release");
   assert.deepEqual(
     state.tosFetchArgs.slice(0, 2).map(args => args[args.indexOf("--key") + 1]),
     [
@@ -271,6 +295,9 @@ test("deploy-worker-version: corrupted shared cache is downloaded again", () => 
   assert.equal(first.status, 0, first.stderr);
   const cached = path.join(sb.cacheDir, "1.4.9", "catsco-worker-1.4.9.tar.gz");
   fs.writeFileSync(cached, "corrupted");
+  const stateAfterFirst = readState(sb);
+  stateAfterFirst.localRelease = false;
+  fs.writeFileSync(sb.statePath, JSON.stringify(stateAfterFirst));
 
   const second = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
   assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);

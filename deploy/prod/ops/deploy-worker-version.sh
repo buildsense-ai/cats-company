@@ -143,6 +143,7 @@ trap cleanup EXIT
 
 MANIFEST="$TEMP_DIR/manifest.json"
 UPDATER="$TEMP_DIR/update-worker-artifact.sh"
+UPDATER_OVERRIDE="${CATSCO_WORKER_UPDATER_SCRIPT:-}"
 download_private_object() {
   local key="$1" destination="$2" timeout_seconds="$3"
   timeout -s TERM -k 15 "${timeout_seconds}s" tos-fetch \
@@ -181,14 +182,14 @@ fi
 RELEASE_ID="${VERSION}-${COMMIT:0:8}"
 RELEASE_ROOT="/opt/catsco/releases/$RELEASE_ID"
 if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
-  "current=\$(readlink -f /opt/catsco/current 2>/dev/null || true); test \"\$current\" = '$RELEASE_ROOT' && systemctl is-active --quiet catsco-agent.service"; then
+  "current=\$(readlink -f /opt/catsco/current 2>/dev/null || true); test \"\$current\" = '$RELEASE_ROOT' && test -f '$RELEASE_ROOT/.catsco-release-complete' && jq -e '.schemaVersion == 1 and .version == \"$VERSION\" and .commit == \"$COMMIT\" and (.sha256 | ascii_downcase) == \"${EXPECTED_SHA,,}\"' '$RELEASE_ROOT/.catsco-release-complete' >/dev/null && systemctl is-active --quiet catsco-agent.service"; then
   record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
   jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \
     '{status:"already-current",instance_name:$name,version:$version,commit:$commit}'
   exit 0
 fi
 if timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
-  "test -f '$RELEASE_ROOT/worker-release.json' && jq -e '.version == \"$VERSION\" and .commit == \"$COMMIT\"' '$RELEASE_ROOT/worker-release.json' >/dev/null"; then
+  "test -f '$RELEASE_ROOT/.catsco-release-complete' && jq -e '.schemaVersion == 1 and .version == \"$VERSION\" and .commit == \"$COMMIT\" and (.sha256 | ascii_downcase) == \"${EXPECTED_SHA,,}\"' '$RELEASE_ROOT/.catsco-release-complete' >/dev/null"; then
   timeout -s TERM -k 20 90s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
     "old=\$(readlink -f /opt/catsco/current 2>/dev/null || true); mkdir -p /var/lib/catsco; if test \"\$old\" != '$RELEASE_ROOT'; then printf '%s\\n' \"\$old\" > /var/lib/catsco/previous-release; fi; ln -sfn '$RELEASE_ROOT' /opt/catsco/current; systemctl restart catsco-agent.service; sleep 5; systemctl is-active catsco-agent.service" >/dev/null
   record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
@@ -209,13 +210,30 @@ if [[ "${ACTUAL_SHA,,}" != "${EXPECTED_SHA,,}" ]]; then
   [[ "${ACTUAL_SHA,,}" == "${EXPECTED_SHA,,}" ]] || { echo "error: artifact checksum mismatch" >&2; exit 1; }
   mv -f "$DOWNLOAD" "$ARTIFACT"
 fi
-tar -xOf "$ARTIFACT" app/scripts/update-worker-artifact.sh > "$UPDATER"
+if [[ -n "$UPDATER_OVERRIDE" ]]; then
+  [[ -f "$UPDATER_OVERRIDE" && -r "$UPDATER_OVERRIDE" ]] || {
+    echo "error: configured worker updater is unavailable" >&2
+    exit 1
+  }
+  cp "$UPDATER_OVERRIDE" "$UPDATER"
+else
+  tar -xOf "$ARTIFACT" app/scripts/update-worker-artifact.sh > "$UPDATER"
+fi
 chmod 700 "$UPDATER"
 
 timeout -s TERM -k 15 300s scp "${ssh_opts[@]}" "$ARTIFACT" "root@$INSTANCE_IP:${REMOTE_PREFIX}.tar.gz"
 timeout -s TERM -k 15 60s scp "${ssh_opts[@]}" "$UPDATER" "root@$INSTANCE_IP:${REMOTE_PREFIX}.sh"
 timeout -s TERM -k 30 300s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
   "bash '${REMOTE_PREFIX}.sh' --artifact '${REMOTE_PREFIX}.tar.gz' --sha256 '$EXPECTED_SHA' --version '$VERSION' --commit '$COMMIT'"
+
+# Never trust a zero exit from a legacy or interrupted updater by itself. The
+# completion marker is the cross-component commit record for the immutable
+# release and must match the exact artifact selected above.
+timeout -s TERM -k 10 30s ssh "${ssh_opts[@]}" "root@$INSTANCE_IP" \
+  "test -f '$RELEASE_ROOT/.catsco-release-complete' && jq -e '.schemaVersion == 1 and .version == \"$VERSION\" and .commit == \"$COMMIT\" and (.sha256 | ascii_downcase) == \"${EXPECTED_SHA,,}\"' '$RELEASE_ROOT/.catsco-release-complete' >/dev/null" || {
+  echo "error: worker updater returned without a valid completion marker" >&2
+  exit 1
+}
 
 record_app_version "$VERSION" || echo "warning: could not persist active application version" >&2
 jq -nc --arg name "worker-$NAME" --arg version "$VERSION" --arg commit "$COMMIT" \

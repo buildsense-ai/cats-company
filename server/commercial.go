@@ -903,12 +903,13 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"invites": invites})
 	case http.MethodPost:
 		var req struct {
-			Code           string `json:"code"`
-			PlanID         int64  `json:"plan_id"`
-			MaxRedemptions int    `json:"max_redemptions"`
-			State          int    `json:"state"`
-			ExpiresAt      string `json:"expires_at"`
-			Note           string `json:"note"`
+			Code               string `json:"code"`
+			PlanID             int64  `json:"plan_id"`
+			MaxRedemptions     int    `json:"max_redemptions"`
+			CloudWorkerCredits int    `json:"cloud_worker_credits"`
+			State              int    `json:"state"`
+			ExpiresAt          string `json:"expires_at"`
+			Note               string `json:"note"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid invite request"})
@@ -927,6 +928,10 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported invite state"})
 			return
 		}
+		if req.CloudWorkerCredits < 0 || req.CloudWorkerCredits > 100 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud_worker_credits must be between 0 and 100"})
+			return
+		}
 		var expiresAt *time.Time
 		if strings.TrimSpace(req.ExpiresAt) != "" {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt))
@@ -937,12 +942,13 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			expiresAt = &parsed
 		}
 		id, err := store.CreateCommercialInviteCode(&types.CommercialInviteCode{
-			Code:           code,
-			PlanID:         req.PlanID,
-			MaxRedemptions: req.MaxRedemptions,
-			State:          req.State,
-			ExpiresAt:      expiresAt,
-			Note:           req.Note,
+			Code:               code,
+			PlanID:             req.PlanID,
+			MaxRedemptions:     req.MaxRedemptions,
+			CloudWorkerCredits: req.CloudWorkerCredits,
+			State:              req.State,
+			ExpiresAt:          expiresAt,
+			Note:               req.Note,
 		})
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save invite code"})

@@ -652,11 +652,11 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		}
 	}
 
-	personalInvite := &types.CommercialInviteCode{Code: "TIER-PERSONAL", PlanID: personalID, MaxRedemptions: 1}
+	personalInvite := &types.CommercialInviteCode{Code: "TIER-PERSONAL", PlanID: personalID, MaxRedemptions: 1, CloudWorkerCredits: 2}
 	if _, err := db.CreateCommercialInviteCode(personalInvite); err != nil {
 		t.Fatalf("create personal invite: %v", err)
 	}
-	proInvite := &types.CommercialInviteCode{Code: "TIER-PRO", PlanID: proID, MaxRedemptions: 1}
+	proInvite := &types.CommercialInviteCode{Code: "TIER-PRO", PlanID: proID, MaxRedemptions: 1, CloudWorkerCredits: 1}
 	if _, err := db.CreateCommercialInviteCode(proInvite); err != nil {
 		t.Fatalf("create pro invite: %v", err)
 	}
@@ -683,9 +683,52 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if _, err := db.RedeemCommercialInvite(inviteUID, personalInvite.Code); err != nil {
 		t.Fatalf("redeem personal invite: %v", err)
 	}
+	var personalEntitlementID int64
+	if err := db.db.QueryRow(`
+		SELECT id FROM commercial_entitlements
+		WHERE uid = $1 AND source = 'invite' AND source_ref = $2`, inviteUID, personalInvite.Code).Scan(&personalEntitlementID); err != nil {
+		t.Fatalf("load personal invite entitlement: %v", err)
+	}
+	var personalCredits int
+	if err := db.db.QueryRow(`
+		SELECT COUNT(*) FROM cloud_worker_credits
+		WHERE uid = $1 AND entitlement_id = $2 AND state = 'available'`, inviteUID, personalEntitlementID).Scan(&personalCredits); err != nil || personalCredits != 2 {
+		t.Fatalf("personal invite credits mismatch: count=%d err=%v", personalCredits, err)
+	}
+	if _, err := db.db.Exec(`
+		UPDATE cloud_worker_credits
+		SET state = 'reserved', reservation_ref = 'invite-upgrade-in-flight', reserved_at = CURRENT_TIMESTAMP
+		WHERE id = (SELECT id FROM cloud_worker_credits WHERE entitlement_id = $1 ORDER BY id LIMIT 1)`, personalEntitlementID); err != nil {
+		t.Fatalf("reserve personal invite credit: %v", err)
+	}
 	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
 	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 4500 {
 		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
+	}
+	var revokedPersonal, reservedPersonal, availablePro int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE entitlement_id = $1 AND state = 'revoked'`, personalEntitlementID).Scan(&revokedPersonal); err != nil {
+		t.Fatalf("count revoked personal invite credits: %v", err)
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE entitlement_id = $1 AND state = 'reserved'`, personalEntitlementID).Scan(&reservedPersonal); err != nil {
+		t.Fatalf("count reserved personal invite credits: %v", err)
+	}
+	if err := db.db.QueryRow(`
+		SELECT COUNT(*) FROM cloud_worker_credits c
+		JOIN commercial_entitlements e ON e.id = c.entitlement_id
+		WHERE e.uid = $1 AND e.source_ref = $2 AND c.state = 'available'`, inviteUID, proInvite.Code).Scan(&availablePro); err != nil {
+		t.Fatalf("count available pro invite credits: %v", err)
+	}
+	if revokedPersonal != 1 || reservedPersonal != 1 || availablePro != 1 {
+		t.Fatalf("invite upgrade credit states mismatch: revoked_personal=%d reserved_personal=%d available_pro=%d", revokedPersonal, reservedPersonal, availablePro)
+	}
+	if _, err := db.db.Exec(`UPDATE cloud_worker_credits SET reserved_at = CURRENT_TIMESTAMP - INTERVAL '30 minutes' WHERE entitlement_id = $1 AND state = 'reserved'`, personalEntitlementID); err != nil {
+		t.Fatalf("age personal invite reservation: %v", err)
+	}
+	if ok, err := db.ReserveCloudWorkerCredit(inviteUID, "invite-upgrade-retry"); err != nil || !ok {
+		t.Fatalf("reserve pro credit after stale personal reservation: ok=%v err=%v", ok, err)
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE entitlement_id = $1 AND state = 'revoked'`, personalEntitlementID).Scan(&revokedPersonal); err != nil || revokedPersonal != 2 {
+		t.Fatalf("stale superseded invite credit was restored: revoked=%d err=%v", revokedPersonal, err)
 	}
 }
 

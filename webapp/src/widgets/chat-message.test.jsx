@@ -144,6 +144,7 @@ describe('ChatMessage rich file rendering', () => {
     });
     container.remove();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {
@@ -1060,6 +1061,41 @@ describe('ChatMessage rich file rendering', () => {
     });
     expect(onCreateConversationShare).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
+  });
+
+  it('opens the existing message actions after a one-second mobile long press', async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{ id: 21, from_uid: 2, content: '长按查看操作', created_at: '2026-06-09T00:00:00Z' }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          onReply={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const bubble = container.querySelector('.v3-message-bubble');
+    const actions = container.querySelector('.v3-message-actions');
+    expect(actions?.classList.contains('open')).toBe(false);
+
+    await act(async () => {
+      Simulate.pointerDown(bubble, { pointerType: 'touch', button: 0 });
+      vi.advanceTimersByTime(999);
+    });
+    expect(actions?.classList.contains('open')).toBe(false);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(container.querySelector('.v3-message-actions')?.classList.contains('open')).toBe(true);
+
+    await act(async () => {
+      Simulate.pointerUp(bubble, { pointerType: 'touch', button: 0 });
+    });
   });
 
   it('shows a direct edit action for the current user message', async () => {
