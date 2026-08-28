@@ -159,12 +159,12 @@ func (h *ArtifactRuntimeHandler) handleBotObserve(w http.ResponseWriter, r *http
 		writeArtifactRuntimeError(w, http.StatusForbidden, "namespace_not_declared", "Artifact Runtime namespace is not declared", 0)
 		return
 	}
-	states, err := h.store.ListArtifactRuntimeStates(r.Context(), access.AgentUID, access.Artifact.ID, artifactRuntimeStateListMax)
+	states, err := h.store.ListArtifactRuntimeStates(r.Context(), access.AgentUID, access.Artifact.ID, artifactRuntimeStateListMax+1)
 	if err != nil {
 		writeArtifactRuntimeError(w, http.StatusServiceUnavailable, "state_unavailable", "Artifact Runtime State is unavailable", 0)
 		return
 	}
-	refs := artifactRuntimeStateReferences(states, access.Manifest)
+	refs, truncated := artifactRuntimeStateReferencePage(states, access.Manifest)
 	response := map[string]interface{}{
 		"ok":               true,
 		"contract_version": artifactRuntimeObservationContract,
@@ -177,6 +177,7 @@ func (h *ArtifactRuntimeHandler) handleBotObserve(w http.ResponseWriter, r *http
 			"view": artifactRuntimeViewFromPageContext(access.PageContext),
 		},
 		"state_refs": refs,
+		"truncated":  truncated,
 		"trust": map[string]string{
 			"artifact": "server_validated",
 			"runtime":  "immutable_manifest_validated",
@@ -262,14 +263,15 @@ func (h *ArtifactRuntimeHandler) handleOperation(
 			"operation": operation, "state": response,
 		})
 	case "state.list":
-		states, err := h.store.ListArtifactRuntimeStates(r.Context(), access.AgentUID, access.Artifact.ID, artifactRuntimeStateListMax)
+		states, err := h.store.ListArtifactRuntimeStates(r.Context(), access.AgentUID, access.Artifact.ID, artifactRuntimeStateListMax+1)
 		if err != nil {
 			writeArtifactRuntimeError(w, http.StatusServiceUnavailable, "state_unavailable", "Artifact Runtime State is unavailable", 0)
 			return
 		}
+		refs, truncated := artifactRuntimeStateReferencePage(states, access.Manifest)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ok": true, "contract_version": artifactRuntimeResponseContract,
-			"operation": operation, "state_refs": artifactRuntimeStateReferences(states, access.Manifest),
+			"operation": operation, "state_refs": refs, "truncated": truncated,
 		})
 	case "state.put", "state.patch":
 		if !h.validateStateTarget(w, access, namespace, key, true) {
@@ -544,6 +546,14 @@ func artifactRuntimeStateReferences(states []*store.ArtifactRuntimeState, manife
 		})
 	}
 	return result
+}
+
+func artifactRuntimeStateReferencePage(states []*store.ArtifactRuntimeState, manifest ArtifactRuntimeManifest) ([]map[string]interface{}, bool) {
+	truncated := len(states) > artifactRuntimeStateListMax
+	if truncated {
+		states = states[:artifactRuntimeStateListMax]
+	}
+	return artifactRuntimeStateReferences(states, manifest), truncated
 }
 
 func artifactRuntimeStateResponse(state *store.ArtifactRuntimeState, includeValue bool) map[string]interface{} {

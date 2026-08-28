@@ -189,13 +189,17 @@ export function createArtifactRuntimeHost({
   }, { timeoutMs: RUNTIME_REQUEST_TIMEOUT_MS });
 
   const stopSubscription = () => {
+    if (subscription) subscription.generation += 1;
     if (subscription?.timer) clearTimer(subscription.timer);
     subscription = null;
   };
 
   const pauseSubscription = () => {
     if (subscription?.timer) clearTimer(subscription.timer);
-    if (subscription) subscription.timer = null;
+    if (subscription) {
+      subscription.timer = null;
+      subscription.generation += 1;
+    }
   };
 
   const postResponse = (session, requestId, response) => postBridgeMessage(session.binding, {
@@ -210,8 +214,18 @@ export function createArtifactRuntimeHost({
     response: { ok: false, error: publicRuntimeError(error) },
   });
 
-  const pollEvents = async (record) => {
-    if (disposed || subscription !== record) return;
+  const schedulePoll = (record, timeoutMs) => {
+    if (disposed || suspended || subscription !== record || record.timer) return;
+    const generation = record.generation;
+    record.timer = setTimer(() => {
+      if (subscription !== record || record.generation !== generation) return;
+      record.timer = null;
+      void pollEvents(record, generation);
+    }, timeoutMs);
+  };
+
+  const pollEvents = async (record, generation) => {
+    if (disposed || subscription !== record || record.generation !== generation) return;
     if (suspended) {
       pauseSubscription();
       return;
@@ -225,7 +239,8 @@ export function createArtifactRuntimeHost({
         after_event_id: record.cursor,
         limit: 100,
       });
-      if (subscription !== record || !sessionMatches(currentSession(), record)) return;
+      if (subscription !== record || record.generation !== generation
+        || !sessionMatches(currentSession(), record)) return;
       const events = Array.isArray(response?.events) ? response.events : [];
       for (const event of events) {
         if (!sessionMatches(currentSession(), record)) return;
@@ -244,16 +259,16 @@ export function createArtifactRuntimeHost({
       // A transient poll failure leaves the cursor untouched, so the next
       // successful request replays every committed event.
     }
-    if (subscription === record && !suspended) {
-      record.timer = setTimer(() => void pollEvents(record), RUNTIME_EVENT_POLL_MS);
+    if (subscription === record && record.generation === generation && !suspended) {
+      schedulePoll(record, RUNTIME_EVENT_POLL_MS);
     }
   };
 
   const beginSubscription = (session, cursor) => {
     stopSubscription();
-    const record = { ...session, cursor, timer: null };
+    const record = { ...session, cursor, timer: null, generation: 1 };
     subscription = record;
-    record.timer = setTimer(() => void pollEvents(record), 0);
+    schedulePoll(record, 0);
     return record;
   };
 
@@ -320,8 +335,7 @@ export function createArtifactRuntimeHost({
       return;
     }
     if (!subscription.timer) {
-      const record = subscription;
-      record.timer = setTimer(() => void pollEvents(record), 0);
+      schedulePoll(subscription, 0);
     }
   };
 

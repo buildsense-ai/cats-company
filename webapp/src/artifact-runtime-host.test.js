@@ -252,6 +252,38 @@ describe('createArtifactRuntimeHost', () => {
     ))).toBe(true);
   });
 
+  it('invalidates an in-flight poll generation before suspend and resume schedules a replacement', async () => {
+    const harness = createHarness();
+    harness.host.handleWindowMessage(harness.event(runtimeRequest(
+      'events.subscribe',
+      { after_event_id: 7 },
+      'subscribe-generation',
+    )));
+    await flush();
+
+    harness.holdNextPoll();
+    const firstPoll = harness.timers.at(-1);
+    firstPoll.callback();
+    await flush();
+
+    harness.host.suspend();
+    harness.host.resume();
+    const resumedPoll = harness.timers.at(-1);
+    expect(resumedPoll).not.toBe(firstPoll);
+    const timerCountAfterResume = harness.timers.length;
+
+    harness.resolveHeldPoll({
+      ok: true,
+      event_cursor: 7,
+      events: [],
+    });
+    await flush();
+    expect(harness.timers).toHaveLength(timerCountAfterResume);
+
+    await runTimer(resumedPoll);
+    expect(harness.timers).toHaveLength(timerCountAfterResume + 1);
+  });
+
   it('keeps the cursor after a transient poll failure and lets the ordered poll deliver a write event', async () => {
     const harness = createHarness();
     harness.host.handleWindowMessage(harness.event(runtimeRequest(

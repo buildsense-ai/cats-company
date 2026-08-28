@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -399,5 +400,25 @@ func TestArtifactRuntimeEventCursorAdvancesPastUndeclaredNamespace(t *testing.T)
 	}
 	if result["event_cursor"] != float64(11) || len(result["events"].([]interface{})) != 0 {
 		t.Fatalf("event cursor did not pass retired namespace: %#v", result)
+	}
+}
+
+func TestArtifactRuntimeStateReferencePageReportsTruncationBeforeManifestFiltering(t *testing.T) {
+	states := make([]*store.ArtifactRuntimeState, 0, artifactRuntimeStateListMax+1)
+	for index := 0; index < artifactRuntimeStateListMax; index++ {
+		states = append(states, &store.ArtifactRuntimeState{
+			Namespace: "legacy", Key: fmt.Sprintf("key-%03d", index), Revision: 1,
+		})
+	}
+	states = append(states, &store.ArtifactRuntimeState{
+		Namespace: "risks", Key: "main", Revision: 2,
+	})
+	refs, truncated := artifactRuntimeStateReferencePage(states, ArtifactRuntimeManifest{
+		Version:  "0.1",
+		Surfaces: []ArtifactRuntimeSurface{{ID: "risk-list"}},
+		State:    []ArtifactRuntimeStateDeclaration{{Namespace: "risks", Mode: "read-write"}},
+	})
+	if !truncated || len(refs) != 0 {
+		t.Fatalf("refs=%#v truncated=%t, want an explicit incomplete page", refs, truncated)
 	}
 }
