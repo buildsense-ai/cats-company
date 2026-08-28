@@ -47,6 +47,9 @@ type commercialRelayBaselineTestStore struct {
 }
 
 func (s *commercialRelayBaselineTestStore) EnsureCommercialRelayBaseline(_ int64, profile string, budgets map[string]float64, startsAt time.Time) (bool, error) {
+	if commercialRelayHasBaselineEntitlement(s.summary) {
+		return false, nil
+	}
 	s.profile = profile
 	s.budgets = budgets
 	s.startsAt = startsAt
@@ -1214,6 +1217,128 @@ func TestCommercialRelayBaselineRestoresFreeAfterRefund(t *testing.T) {
 	profile, budgets, err := commercialRelayBaselineForSummary(summary, relayUser)
 	if err != nil || profile != commercialRelayBaselineProfileFree || len(budgets) != len(commercialRelayFreeBudgets) {
 		t.Fatalf("refund did not restore free baseline: profile=%q budgets=%#v err=%v", profile, budgets, err)
+	}
+}
+
+func TestCommercialRelayBaselineMigratesHistoricalSharedQuota(t *testing.T) {
+	summary := &types.CommercialSummary{UID: 957, TotalsByModel: map[string]float64{}}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 1600, ResetDuration: "1M"},
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax-m27", Model: "MiniMax-M2.7", AllowedModels: []string{"MiniMax-M2.7"}, Budget: commercialRelayBudget{MaxLimit: 1000, ResetDuration: "1M"}},
+			{Provider: "minimax-m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500, ResetDuration: "1M"}},
+			{Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"}, Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M"}},
+		},
+	}}
+
+	profile, budgets, err := commercialRelayBaselineForSummary(summary, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileLegacy {
+		t.Fatalf("profile=%q, want legacy", profile)
+	}
+	if len(budgets) != 3 || budgets["MiniMax-M2.7"] != 1000 || budgets["MiniMax-M3"] != 500 || budgets["deepseek-v4-flash"] != 100 {
+		t.Fatalf("historical model budgets were not preserved: %#v", budgets)
+	}
+	if total := budgets["MiniMax-M2.7"] + budgets["MiniMax-M3"] + budgets["deepseek-v4-flash"]; total != relayUser.Limits.MonthlyBudget.MaxLimit {
+		t.Fatalf("legacy pool=%v, want relay shared limit=%v", total, relayUser.Limits.MonthlyBudget.MaxLimit)
+	}
+}
+
+func TestCommercialRelayBaselineDoesNotMultiplySharedProviderLimits(t *testing.T) {
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 1600, ResetDuration: "1M"},
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax-m27", Model: "MiniMax-M2.7", AllowedModels: []string{"MiniMax-M2.7"}, Budget: commercialRelayBudget{MaxLimit: 1600}},
+			{Provider: "minimax-m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 1600}},
+			{Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"}, Budget: commercialRelayBudget{MaxLimit: 1600}},
+		},
+	}}
+
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 957}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileLegacy {
+		t.Fatalf("profile=%q, want legacy", profile)
+	}
+	if len(budgets) != 3 || !nearlyEqual(commercialRelayBudgetTotal(budgets), 1600) {
+		t.Fatalf("shared pool was multiplied during migration: %#v", budgets)
+	}
+}
+
+func TestCommercialRelayBaselineRecognizesExistingFreeSharedPool(t *testing.T) {
+	limits := make([]commercialRelayModelLimit, 0, len(commercialRelayFreeBudgets))
+	for model, amount := range commercialRelayFreeBudgets {
+		limits = append(limits, commercialRelayModelLimit{Provider: model, Model: model, AllowedModels: []string{model}, Budget: commercialRelayBudget{MaxLimit: amount}})
+	}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: commercialRelayBudgetTotal(commercialRelayFreeBudgets), ResetDuration: "1M"},
+		ModelLimits:   limits,
+	}}
+
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 1001}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(budgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets)) {
+		t.Fatalf("existing free shared pool was misclassified: profile=%q budgets=%#v", profile, budgets)
+	}
+}
+
+func TestCommercialRelayBaselineLegacyMigrationIsIdempotent(t *testing.T) {
+	reset := "2026-08-01T08:30:00Z"
+	store := &commercialRelayBaselineTestStore{commercialRelaySyncTestStore: &commercialRelaySyncTestStore{
+		summary: &types.CommercialSummary{UID: 957, TotalsByModel: map[string]float64{}},
+	}}
+	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, UsageWindowStart: reset, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 1600, ResetDuration: "1M"},
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax-m27", Model: "MiniMax-M2.7", AllowedModels: []string{"MiniMax-M2.7"}, Budget: commercialRelayBudget{MaxLimit: 1000, ResetDuration: "1M", LastReset: reset}},
+			{Provider: "minimax-m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500, ResetDuration: "1M", LastReset: reset}},
+			{Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"}, Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M", LastReset: reset}},
+		},
+	}}
+	state.Limits.AvailableModelLimits = append([]commercialRelayModelLimit(nil), state.Limits.ModelLimits...)
+	var posted map[string]interface{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(state)
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Fatal(err)
+			}
+			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: posted["monthly_budget"].(float64), ResetDuration: "1M"}
+			state.UsageWindowStart = posted["usage_window_start"].(string)
+			for index := range state.Limits.ModelLimits {
+				state.Limits.ModelLimits[index].Budget.MaxLimit = state.Limits.MonthlyBudget.MaxLimit
+			}
+			var scopes []commercialRelayModelScope
+			raw, _ := json.Marshal(posted["model_scopes"])
+			_ = json.Unmarshal(raw, &scopes)
+			state.Limits.ModelScopes = scopes
+			_ = json.NewEncoder(w).Encode(state)
+		}
+	}))
+	defer relay.Close()
+
+	syncer := NewCommercialRelaySyncer(store, &RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()}, CommercialRelaySyncerOptions{EnforceUIDs: map[int64]bool{957: true}})
+	if _, err := syncer.SyncUID(context.Background(), 957); err != nil {
+		t.Fatal(err)
+	}
+	if store.created != 1 || store.profile != commercialRelayBaselineProfileLegacy || store.summary.TotalCNY != 1600 {
+		t.Fatalf("legacy baseline was not created once with the original pool: %#v", store)
+	}
+	if posted["monthly_budget"] != float64(1600) {
+		t.Fatalf("shared pool changed during migration: %#v", posted)
+	}
+	if _, err := syncer.SyncUID(context.Background(), 957); err != nil {
+		t.Fatal(err)
+	}
+	if store.created != 1 || store.summary.TotalCNY != 1600 {
+		t.Fatalf("repeat sync duplicated legacy grants: %#v", store)
 	}
 }
 
