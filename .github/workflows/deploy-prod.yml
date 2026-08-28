@@ -98,7 +98,7 @@ jobs:
             tar -C "${source_tree}" -czf "${source_bundle}" .
             rm -rf "${source_tree}"
             trap - EXIT
-            ssh ${SSH_OPTS} "${REMOTE}" "rm -f '${remote_temp}' && cat > '${remote_temp}'" < "${source_bundle}"
+            ssh ${SSH_OPTS} "${REMOTE}" "rm -f '${remote_temp}' && timeout 420 cat > '${remote_temp}'" < "${source_bundle}"
             ssh ${SSH_OPTS} "${REMOTE}" "tar -tzf '${remote_temp}' >/dev/null && mv '${remote_temp}' '${remote_source}' && bash '${cache_script}' seal '${DEPLOY_CACHE_ROOT}' '${IMAGE_TAG}'"
           fi
 
