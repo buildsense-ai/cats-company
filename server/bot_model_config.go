@@ -91,12 +91,7 @@ var botModelCatalog = []botModelCatalogItem{
 		ID: "minimax-m3", Label: "MiniMax M3", Description: "支持多模态与长上下文",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000, Vision: true, RuntimeModel: "MiniMax-M3",
 	},
-	{
-		ID: "deepseek-v4-flash", Label: "DeepSeek V4 Flash", Description: "低额度 Flash，支持推理强度与视觉理解",
-		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
-		ReasoningEfforts: []string{"high", "max", "disabled"}, DefaultReasoningEffort: "high",
-		Vision: true, RuntimeModel: "deepseek-v4-flash",
-	},
+	deepSeekModelCatalogItem(),
 	{
 		ID: "glm-5.3-flash", Label: "GLM 5.3 Flash", Description: "高性价比多模态模型，适合长上下文与工具任务",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
