@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
@@ -19,10 +20,18 @@ type CloudWorkerAdminDataStore interface {
 	ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord, error)
 }
 
+type CloudWorkerAdminImportStore interface {
+	UpsertExternalCloudWorkerBinding(types.CloudWorkerBindingRecord) error
+}
+
 // CloudWorkerAdminOverviewHandler is the internal read-only endpoint wired
 // behind CommercialOpsHandler's service authentication.
 type CloudWorkerAdminOverviewHandler interface {
 	HandleAdminOverview(http.ResponseWriter, *http.Request)
+}
+
+type CloudWorkerAdminImporter interface {
+	HandleAdminImport(http.ResponseWriter, *http.Request)
 }
 
 type cloudWorkerAdminItem struct {
@@ -47,6 +56,18 @@ type cloudWorkerAdminItem struct {
 	CreditState        string     `json:"credit_state,omitempty"`
 	CreditSourceRef    string     `json:"credit_source_ref,omitempty"`
 	CreditExpiresAt    *time.Time `json:"credit_expires_at,omitempty"`
+	Provider           string     `json:"provider,omitempty"`
+	RegionID           string     `json:"region_id,omitempty"`
+	ProjectID          string     `json:"project_id,omitempty"`
+	AZName             string     `json:"az_name,omitempty"`
+	InstanceID         string     `json:"instance_id,omitempty"`
+	InstanceName       string     `json:"instance_name,omitempty"`
+	PublicIP           string     `json:"public_ip,omitempty"`
+	ManagementMode     string     `json:"management_mode,omitempty"`
+	LifecycleMode      string     `json:"lifecycle_mode,omitempty"`
+	BindingSource      string     `json:"binding_source,omitempty"`
+	BindingStatus      string     `json:"binding_status,omitempty"`
+	LastVerifiedAt     *time.Time `json:"last_verified_at,omitempty"`
 }
 
 type cloudWorkerAdminOverview struct {
@@ -98,7 +119,15 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 		appVersion := ""
 		imageID := ""
 		imageVersion := ""
-		if statusLoaded {
+		if record.ManagementMode == "manual_import" || record.LifecycleMode == "external" {
+			// Imported machines are inventory-only. Their provider status is
+			// populated by a future explicit verify action, never inferred from
+			// the platform worker status script (which uses tenant names).
+			providerStatus = record.BindingStatus
+			if providerStatus == "" {
+				providerStatus = "unverified"
+			}
+		} else if statusLoaded {
 			providerStatus = "missing"
 			if info, found := infos[record.TenantName]; found {
 				providerStatus = strings.TrimSpace(info.Status)
@@ -132,6 +161,18 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 			CreditState:        record.CreditState,
 			CreditSourceRef:    record.CreditSourceRef,
 			CreditExpiresAt:    record.CreditExpiresAt,
+			Provider:           record.Provider,
+			RegionID:           record.RegionID,
+			ProjectID:          record.ProjectID,
+			AZName:             record.AZName,
+			InstanceID:         record.InstanceID,
+			InstanceName:       record.InstanceName,
+			PublicIP:           record.PublicIP,
+			ManagementMode:     record.ManagementMode,
+			LifecycleMode:      record.LifecycleMode,
+			BindingSource:      record.BindingSource,
+			BindingStatus:      record.BindingStatus,
+			LastVerifiedAt:     record.LastVerifiedAt,
 		}
 		overview.StatusCounts[providerStatus]++
 		if item.LifecycleState != "" {
@@ -149,6 +190,62 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 		return overview.Workers[i].UID < overview.Workers[j].UID
 	})
 	return overview, nil
+}
+
+type externalCloudWorkerImportRequest struct {
+	WorkerUID    *int64 `json:"worker_uid"`
+	OwnerUID     *int64 `json:"owner_uid"`
+	TenantName   string `json:"tenant_name"`
+	Provider     string `json:"provider"`
+	RegionID     string `json:"region_id"`
+	ProjectID    string `json:"project_id"`
+	AZName       string `json:"az_name"`
+	InstanceID   string `json:"instance_id"`
+	InstanceName string `json:"instance_name"`
+	PublicIP     string `json:"public_ip"`
+}
+
+// HandleAdminImport registers an existing provider instance as external
+// inventory. Management/lifecycle modes are intentionally not accepted from
+// the request: every import is fail-safe manual_import/external.
+func (h *CloudWorkerHandler) HandleAdminImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	data, ok := h.db.(CloudWorkerAdminImportStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker admin store unavailable"})
+		return
+	}
+	var req externalCloudWorkerImportRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	req.Provider = strings.ToLower(strings.TrimSpace(req.Provider))
+	if req.Provider == "" {
+		req.Provider = "ctyun"
+	}
+	if req.Provider != "ctyun" || strings.TrimSpace(req.RegionID) == "" || strings.TrimSpace(req.InstanceID) == "" || strings.TrimSpace(req.InstanceName) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider, region_id, instance_id and instance_name are required"})
+		return
+	}
+	if req.OwnerUID == nil || *req.OwnerUID <= 0 || req.WorkerUID != nil && *req.WorkerUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "owner_uid is required and worker_uid must be positive when provided"})
+		return
+	}
+	if strings.TrimSpace(req.TenantName) == "" {
+		req.TenantName = strings.TrimSpace(req.InstanceName)
+	}
+	record := types.CloudWorkerBindingRecord{WorkerUID: req.WorkerUID, OwnerUID: req.OwnerUID, TenantName: strings.TrimSpace(req.TenantName), Provider: req.Provider, RegionID: strings.TrimSpace(req.RegionID), ProjectID: strings.TrimSpace(req.ProjectID), AZName: strings.TrimSpace(req.AZName), InstanceID: strings.TrimSpace(req.InstanceID), InstanceName: strings.TrimSpace(req.InstanceName), PublicIP: strings.TrimSpace(req.PublicIP), ManagementMode: "manual_import", LifecycleMode: "external", Source: "manual", Status: "unverified"}
+	if err := data.UpsertExternalCloudWorkerBinding(record); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "failed to import cloud worker binding"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"binding": record})
 }
 
 // HandleAdminOverview is kept separate from the public cloud-worker routes;

@@ -34,6 +34,9 @@ type CommercialOpsHandler struct {
 	cloudWorkerProvisioner interface {
 		HandleAdminProvision(http.ResponseWriter, *http.Request)
 	}
+	cloudWorkerImporter interface {
+		HandleAdminImport(http.ResponseWriter, *http.Request)
+	}
 }
 
 func NewCommercialOpsHandler(admin *AccountAdminHandler, services AccountServiceVerifier, store CommercialOperationsStore) *CommercialOpsHandler {
@@ -50,6 +53,11 @@ func (h *CommercialOpsHandler) SetCloudWorkerAdmin(handler CloudWorkerAdminOverv
 			HandleAdminProvision(http.ResponseWriter, *http.Request)
 		}); ok {
 			h.cloudWorkerProvisioner = provisioner
+		}
+		if importer, ok := handler.(interface {
+			HandleAdminImport(http.ResponseWriter, *http.Request)
+		}); ok {
+			h.cloudWorkerImporter = importer
 		}
 	}
 }
@@ -204,6 +212,32 @@ func (h *CommercialOpsHandler) HandleCloudWorkers(w http.ResponseWriter, r *http
 			Service: service.Slug, Action: "cloud_workers.read", TargetType: "cloud_worker_roster", StatusCode: status,
 		}); err != nil {
 			log.Printf("failed to record commercial operator event service=%s action=cloud_workers.read: %v", service.Slug, err)
+		}
+	}
+}
+
+func (h *CommercialOpsHandler) HandleCloudWorkerImport(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.cloudWorkerImporter == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker importer unavailable"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	service, ok := h.requireService(w, r, true)
+	if !ok {
+		return
+	}
+	tracked := &commercialOpsResponseWriter{ResponseWriter: w}
+	h.cloudWorkerImporter.HandleAdminImport(tracked, withCommercialOpsService(r, service))
+	status := tracked.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if h.store != nil {
+		if err := h.store.RecordCommercialOperatorEvent(&types.CommercialOperatorEvent{Service: service.Slug, Action: "cloud_worker.import", TargetType: "cloud_worker_binding", StatusCode: status}); err != nil {
+			log.Printf("failed to record commercial operator event service=%s action=cloud_worker.import: %v", service.Slug, err)
 		}
 	}
 }

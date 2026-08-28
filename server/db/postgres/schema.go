@@ -50,6 +50,7 @@ func (a *Adapter) CreateSchema() error {
 		createCloudWorkerCreditsTable,
 		migrateCloudWorkerCreditsEntitlement,
 		createCloudWorkerLifecyclesTable,
+		createCloudWorkerBindingsTable,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,
@@ -1074,6 +1075,37 @@ CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_due ON cloud_worker_lifec
 CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_owner ON cloud_worker_lifecycles(owner_uid, state);
 `
 
+// Manually deployed workers are inventory records only. They deliberately do
+// not reference cloud_worker_lifecycles, so expiry/reconcile jobs cannot act
+// on them until an operator explicitly changes their management mode.
+const createCloudWorkerBindingsTable = `
+CREATE TABLE IF NOT EXISTS cloud_worker_bindings (
+    id BIGSERIAL PRIMARY KEY,
+    worker_uid BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+    owner_uid BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+    tenant_name VARCHAR(80) NOT NULL DEFAULT '',
+    provider VARCHAR(32) NOT NULL DEFAULT 'ctyun',
+    region_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(128) NOT NULL DEFAULT '',
+    az_name VARCHAR(128) NOT NULL DEFAULT '',
+    instance_id VARCHAR(128) NOT NULL,
+    instance_name VARCHAR(128) NOT NULL,
+    public_ip VARCHAR(64) NOT NULL DEFAULT '',
+    management_mode VARCHAR(32) NOT NULL DEFAULT 'manual_import',
+    lifecycle_mode VARCHAR(32) NOT NULL DEFAULT 'external',
+    source VARCHAR(32) NOT NULL DEFAULT 'manual',
+    status VARCHAR(32) NOT NULL DEFAULT 'unverified',
+    last_verified_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_cloud_worker_bindings_instance UNIQUE (provider, instance_id),
+    CONSTRAINT chk_cloud_worker_bindings_management CHECK (management_mode IN ('manual_import','managed')),
+    CONSTRAINT chk_cloud_worker_bindings_lifecycle CHECK (lifecycle_mode IN ('external','platform'))
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_bindings_owner ON cloud_worker_bindings(owner_uid);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_bindings_region ON cloud_worker_bindings(region_id, status);
+`
+
 const createCommercialManagedRelayBudgetsTable = `
 CREATE TABLE IF NOT EXISTS commercial_managed_relay_budgets (
 	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1515,6 +1547,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_entitlements_updated_at BEFORE UPDATE ON commercial_entitlements
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_orders_updated_at BEFORE UPDATE ON commercial_orders
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_cloud_worker_bindings_updated_at BEFORE UPDATE ON cloud_worker_bindings
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_managed_relay_budgets_updated_at BEFORE UPDATE ON commercial_managed_relay_budgets
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

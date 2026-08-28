@@ -347,6 +347,40 @@ type CloudWorkerAdminRecord struct {
 	CreditState        string
 	CreditSourceRef    string
 	CreditExpiresAt    *time.Time
+	Provider           string
+	RegionID           string
+	ProjectID          string
+	AZName             string
+	InstanceID         string
+	InstanceName       string
+	PublicIP           string
+	ManagementMode     string
+	LifecycleMode      string
+	BindingSource      string
+	BindingStatus      string
+	LastVerifiedAt     *time.Time
+}
+
+// CloudWorkerBindingRecord describes a manually imported provider instance.
+// It intentionally carries no credentials and defaults to external lifecycle
+// management so imported machines cannot enter the platform destroy/renew
+// workers by accident.
+type CloudWorkerBindingRecord struct {
+	WorkerUID      *int64
+	OwnerUID       *int64
+	TenantName     string
+	Provider       string
+	RegionID       string
+	ProjectID      string
+	AZName         string
+	InstanceID     string
+	InstanceName   string
+	PublicIP       string
+	ManagementMode string
+	LifecycleMode  string
+	Source         string
+	Status         string
+	LastVerifiedAt *time.Time
 }
 
 // FriendStatus represents the state of a friend relationship.

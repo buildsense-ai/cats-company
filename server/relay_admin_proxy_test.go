@@ -64,6 +64,7 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/local/commercial-ops/api/order-refunds",
 		"/local/commercial-ops/api/cloud-worker-credits",
 		"/local/commercial-ops/api/cloud-workers",
+		"/local/commercial-ops/api/cloud-workers/import",
 		"/local/users/38/key/state",
 		"/local/users/38/key/limits",
 		"/local/users/38/key/usage-reset",
