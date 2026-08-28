@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
@@ -979,8 +979,8 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
 function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
+  const [messageActionsOpen, setMessageActionsOpen] = useState(false);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
-  const longPressTimerRef = useRef(null);
   const moreActionsTriggerRef = useRef(null);
   const moreActionsMenuRef = useRef(null);
   const moreActionsMenuId = `message-more-actions-${useId().replace(/:/g, '')}`;
@@ -1119,16 +1119,19 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
   const handleReplyClick = (event) => {
     event.stopPropagation();
+    setMoreActionsOpen(false);
     onReply?.();
   };
 
   const handleEditClick = (event) => {
     event.stopPropagation();
+    setMoreActionsOpen(false);
     onEdit?.(message);
   };
 
   const handleCopyClick = async (event) => {
     event.stopPropagation();
+    setMoreActionsOpen(false);
     try {
       await copyTextToClipboard(copyText);
       setCopyState('copied');
@@ -1140,6 +1143,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const handleRegenerateClick = async (event) => {
     event.stopPropagation();
     if (!onRegenerate || regenerateState === 'pending') return;
+    setMoreActionsOpen(false);
     setRegenerateState('pending');
     try {
       await onRegenerate(message);
@@ -1151,6 +1155,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
   const handleMoreActionsToggle = (event) => {
     event.stopPropagation();
+    setMessageActionsOpen(true);
     setMoreActionsOpen((current) => !current);
   };
 
@@ -1160,25 +1165,10 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     onCreateConversationShare?.();
   };
 
-  const clearLongPressTimer = useCallback(() => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  }, []);
-
-  const handleMessagePointerDown = (event) => {
-    const isMobileViewport = window.matchMedia?.('(max-width: 768px)').matches;
-    if ((event.pointerType === 'mouse' && !isMobileViewport) || event.button > 0) return;
-    clearLongPressTimer();
-    longPressTimerRef.current = setTimeout(() => {
-      longPressTimerRef.current = null;
-      setMoreActionsOpen(true);
-    }, 1000);
-  };
-
-  const handleMessagePointerEnd = () => {
-    clearLongPressTimer();
+  const handleMessageClick = () => {
+    if (!window.matchMedia?.('(max-width: 768px)').matches) return;
+    setMessageActionsOpen(true);
+    setMoreActionsOpen(false);
   };
 
   const handleMessageContextMenu = (event) => {
@@ -1186,21 +1176,25 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   };
 
   useEffect(() => {
-    if (!moreActionsOpen) return undefined;
+    if (!messageActionsOpen && !moreActionsOpen) return undefined;
 
     const closeOnOutsidePointer = (event) => {
       const target = event.target;
       if (
         target instanceof Node
-        && (moreActionsMenuRef.current?.contains(target) || moreActionsTriggerRef.current?.contains(target))
+        && (moreActionsMenuRef.current?.contains(target)
+          || moreActionsTriggerRef.current?.contains(target)
+          || target.closest?.('.v3-message-actions'))
       ) {
         return;
       }
+      setMessageActionsOpen(false);
       setMoreActionsOpen(false);
     };
     const closeOnEscape = (event) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
+      setMessageActionsOpen(false);
       setMoreActionsOpen(false);
       moreActionsTriggerRef.current?.focus({ preventScroll: true });
     };
@@ -1211,9 +1205,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
       document.removeEventListener('keydown', closeOnEscape);
     };
-  }, [moreActionsOpen]);
-
-  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+  }, [messageActionsOpen, moreActionsOpen]);
 
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
@@ -1240,10 +1232,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       <div className="v3-msg-body">
           <div
             className="v3-message-bubble"
-            onPointerDown={handleMessagePointerDown}
-            onPointerUp={handleMessagePointerEnd}
-            onPointerCancel={handleMessagePointerEnd}
-            onPointerLeave={handleMessagePointerEnd}
+            onClick={handleMessageClick}
             onContextMenu={handleMessageContextMenu}
           >
           {!isConsecutive && (
@@ -1323,7 +1312,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
         {!workingOnly && <div className="v3-message-footer">
           <div
-            className={`v3-message-actions${moreActionsOpen ? ' open' : ''}`}
+            className={`v3-message-actions${messageActionsOpen ? ' open' : ''}`}
             onClick={(event) => event.stopPropagation()}
           >
             <button

@@ -562,7 +562,6 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
           <div className="catsco-connect-actions">
             <button className="oc-btn oc-btn-primary" type="button" onClick={startConnect} disabled={busy}>
               {busy && <Loader2 className="catsco-spin" size={16} />}
-              {!busy && <Laptop size={16} />}
               {busy ? '等待连接...' : connectionReady ? '重新打开本机' : '打开 CatsCo 桌面端'}
             </button>
 
@@ -572,7 +571,6 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
               onClick={() => setShowDownloads((value) => !value)}
               aria-expanded={showDownloads}
             >
-              <Download size={16} />
               {showDownloads ? '收起下载' : '下载桌面端'}
             </button>
           </div>
@@ -591,8 +589,8 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
                   onClick={() => setShowAdvancedDownloads((value) => !value)}
                   aria-expanded={showAdvancedDownloads}
                 >
-                  {showAdvancedDownloads ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
                   {showAdvancedDownloads ? '收起其他版本' : '其他系统版本'}
+                  {showAdvancedDownloads ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
                 </button>
                 {showAdvancedDownloads && otherDownloads.map((option) => renderDownload(option))}
               </div>
