@@ -53,54 +53,69 @@ type BotModelConfigHandler struct {
 }
 
 type botModelCatalogItem struct {
-	ID                     string             `json:"id"`
-	Label                  string             `json:"label"`
-	Description            string             `json:"description"`
-	Provider               string             `json:"provider"`
-	Protocol               string             `json:"protocol"`
-	ContextWindowTokens    int64              `json:"context_window_tokens"`
-	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
-	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
-	Vision                 bool               `json:"vision,omitempty"`
-	Available              bool               `json:"available"`
-	UnavailableReason      string             `json:"unavailable_reason,omitempty"`
-	Quota                  *relayUsageSummary `json:"quota,omitempty"`
+	ID                     string                     `json:"id"`
+	Label                  string                     `json:"label"`
+	Description            string                     `json:"description"`
+	Provider               string                     `json:"provider"`
+	Protocol               string                     `json:"protocol"`
+	ContextWindowTokens    int64                      `json:"context_window_tokens"`
+	ReasoningEfforts       []string                   `json:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort string                     `json:"default_reasoning_effort,omitempty"`
+	Vision                 bool                       `json:"vision,omitempty"`
+	Available              bool                       `json:"available"`
+	UnavailableReason      string                     `json:"unavailable_reason,omitempty"`
+	Runtime                *botModelRuntimeDescriptor `json:"runtime,omitempty"`
+	Quota                  *relayUsageSummary         `json:"quota,omitempty"`
+	RuntimeModel           string                     `json:"-"`
+}
+
+// botModelRuntimeDescriptor is non-secret metadata consumed by XiaoBa. Relay
+// endpoints and credentials are deliberately excluded and remain device-local.
+type botModelRuntimeDescriptor struct {
+	CatalogModelID      string `json:"catalogModelId"`
+	Model               string `json:"model"`
+	Provider            string `json:"provider"`
+	ContextWindowTokens int64  `json:"contextWindowTokens"`
+	OpenAIAPIMode       string `json:"openaiApiMode,omitempty"`
+	Vision              bool   `json:"vision"`
+	ToolCalling         bool   `json:"toolCalling"`
+	Streaming           bool   `json:"streaming"`
 }
 
 var botModelCatalog = []botModelCatalogItem{
 	{
 		ID: "minimax-m2.7", Label: "MiniMax M2.7", Description: "标准额度，适合日常任务",
-		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 204800,
+		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 204800, RuntimeModel: "MiniMax-M2.7",
 	},
 	{
 		ID: "minimax-m3", Label: "MiniMax M3", Description: "支持多模态与长上下文",
-		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
+		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000, Vision: true, RuntimeModel: "MiniMax-M3",
 	},
 	{
 		ID: "deepseek-v4-flash", Label: "DeepSeek V4 Flash", Description: "低额度 Flash，支持推理强度与视觉理解",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
 		ReasoningEfforts: []string{"high", "max", "disabled"}, DefaultReasoningEffort: "high",
-		Vision: true,
+		Vision: true, RuntimeModel: "deepseek-v4-flash",
 	},
 	{
 		ID: "glm-5.3-flash", Label: "GLM 5.3 Flash", Description: "高性价比多模态模型，适合长上下文与工具任务",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
 		ReasoningEfforts: []string{"max"}, DefaultReasoningEffort: "max",
-		Vision: true,
+		Vision: true, RuntimeModel: "glm-5.3-flash",
 	},
 	{
 		ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000,
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-terra",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
 		ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000,
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-sol",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
 		ID: "gpt-5.6-luna", Label: "GPT-5.6 Luna", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000,
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-luna",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 }
@@ -723,6 +738,7 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		catalog[i].Available = true
 		catalog[i].UnavailableReason = ""
 		catalog[i].Quota = nil
+		catalog[i].Runtime = catalogRuntimeDescriptor(catalog[i])
 	}
 
 	var commercialSummary *types.CommercialSummary
@@ -769,6 +785,27 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		catalog[i].Quota = usage.Summary
 	}
 	return catalog, ""
+}
+
+func catalogRuntimeDescriptor(model botModelCatalogItem) *botModelRuntimeDescriptor {
+	provider := strings.ToLower(strings.TrimSpace(model.Provider))
+	if provider != "anthropic" && provider != "openai" || model.ID == "" || model.ContextWindowTokens <= 0 {
+		return nil
+	}
+	// Relay-facing names are explicit because some providers use case-sensitive
+	// names (for example MiniMax-M3) even when catalog IDs are stable aliases.
+	modelName := strings.TrimSpace(model.RuntimeModel)
+	if modelName == "" {
+		modelName = model.ID
+	}
+	d := &botModelRuntimeDescriptor{
+		CatalogModelID: model.ID, Model: modelName, Provider: provider, ContextWindowTokens: model.ContextWindowTokens,
+		Vision: model.Vision, ToolCalling: true, Streaming: true,
+	}
+	if provider == "openai" {
+		d.OpenAIAPIMode = "responses"
+	}
+	return d
 }
 
 func (h *BotModelConfigHandler) catalogModelAllowed(ownerUID int64, modelID string) (bool, error) {
