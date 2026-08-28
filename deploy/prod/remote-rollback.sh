@@ -58,7 +58,16 @@ PY
 
 cd "$root/compose"
 if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
-  compose -f "$compose_file" --env-file "$env_file" pull server web
+  server_image="${registry}/${owner}/cats-company-server:${previous_revision}"
+  web_image="${registry}/${owner}/cats-company-web:${previous_revision}"
+  # Rollback must work during a registry outage when both immutable images
+  # are already cached on the host.
+  if docker image inspect "$server_image" >/dev/null 2>&1 \
+      && docker image inspect "$web_image" >/dev/null 2>&1; then
+    echo "using locally cached rollback images for $previous_revision"
+  else
+    compose -f "$compose_file" --env-file "$env_file" pull server web
+  fi
 fi
 compose -f "$compose_file" --env-file "$env_file" up -d
 compose -f "$compose_file" --env-file "$env_file" ps
