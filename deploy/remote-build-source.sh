@@ -34,10 +34,11 @@ server_image="ghcr.io/${owner}/cats-company-server:${revision}"
 if docker image inspect "$server_image" >/dev/null 2>&1; then
   echo "Server image already present: ${server_image}"
 else
-  server_build_timeout="${REMOTE_SERVER_BUILD_TIMEOUT_SECONDS:-900}"
+  server_build_timeout="${REMOTE_SERVER_BUILD_TIMEOUT_SECONDS:-1800}"
   echo "Building server image: ${server_image} (timeout ${server_build_timeout}s)"
   timeout "$server_build_timeout" docker build --progress=plain \
     --build-arg GOPROXY="${REMOTE_GOPROXY:-https://goproxy.cn,direct}" \
+    --build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}" \
     -f deploy/Dockerfile.server \
     -t "$server_image" \
     .
