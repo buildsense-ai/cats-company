@@ -109,6 +109,441 @@ describe('EmptyTaskComposer', () => {
     expect(menu.textContent).toContain('手机扫码上传');
   });
 
+  it('restores an unsent new-task draft from the shared store after remounting', async () => {
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+
+    await mountComposer({ composerDraftStore, draftKey: 'new-task' });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '保留这条尚未建立会话的草稿');
+
+    expect(composerDraftStore.inputDrafts.get('new-task'))
+      .toBe('保留这条尚未建立会话的草稿');
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore, draftKey: 'new-task' });
+
+    expect(container.querySelector('textarea.v3-composer-input').value)
+      .toBe('保留这条尚未建立会话的草稿');
+  });
+
+  it('persists uploaded attachments through the shared draft store interface', async () => {
+    const inputDrafts = new Map();
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      getInputDraft: vi.fn((key) => inputDrafts.get(key) || ''),
+      setInputDraft: vi.fn((key, value) => {
+        if (value) inputDrafts.set(key, value);
+        else inputDrafts.delete(key);
+      }),
+      getAttachmentDraft: vi.fn((key) => attachmentDrafts.get(key) || []),
+      setAttachmentDraft: vi.fn((key, value) => {
+        if (value.length > 0) attachmentDrafts.set(key, value);
+        else attachmentDrafts.delete(key);
+      }),
+      persist: vi.fn(),
+    };
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    api.uploadFile.mockResolvedValueOnce({
+      file_key: 'brief.pdf',
+      url: '/uploads/files/brief.pdf',
+      name: 'brief.pdf',
+      size: file.size,
+      mime_type: 'application/pdf',
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.setAttachmentDraft).toHaveBeenCalledWith(
+      'new-task',
+      [expect.objectContaining({ type: 'file', name: 'brief.pdf' })],
+    );
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('persists an attachment when navigation unmounts the composer during upload', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+    expect(api.uploadFile).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('does not overwrite a newer text draft when an old upload finishes late', async () => {
+    const attachmentDrafts = new Map();
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '新的草稿内容',
+    );
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBe('新的草稿内容');
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({ name: 'brief.pdf' }),
+    ]);
+  });
+
+  it('drops an old upload when a newer composer sends and clears the draft', async () => {
+    const attachmentDrafts = new Map();
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '先发送这条新草稿',
+    );
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+
+    expect(inputDrafts.get('new-task')).toBeUndefined();
+    expect(attachmentDrafts.get('new-task')).toBeUndefined();
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBeUndefined();
+    expect(attachmentDrafts.get('new-task')).toBeUndefined();
+  });
+
+  it('clears a sent draft when the send resolves after navigation unmounts the composer', async () => {
+    const attachmentDrafts = new Map([[
+      'new-task',
+      [{ type: 'file', name: 'brief.pdf' }],
+    ]]);
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '发送后不应再次恢复',
+    );
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('textarea.v3-composer-input'), {
+        key: 'Enter',
+        shiftKey: false,
+      });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 111 });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBeUndefined();
+    expect(attachmentDrafts.get('new-task')).toBeUndefined();
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('keeps a newer draft written while the previous send is in flight', async () => {
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '第一条任务',
+    );
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '发送期间新写的任务',
+    );
+
+    await act(async () => {
+      resolveSend({ seq_id: 112 });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBe('发送期间新写的任务');
+  });
+
+  it('persists phone-uploaded attachments when navigation unmounts the composer during polling', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolvePoll;
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'draft-upload',
+      upload_url: '/mobile-upload/draft-upload',
+    });
+    api.getMobileUploadSession.mockReturnValueOnce(new Promise((resolve) => {
+      resolvePoll = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('draft-upload'));
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolvePoll({
+        session_id: 'draft-upload',
+        files: [{
+          file_key: 'phone-brief.pdf',
+          url: '/uploads/files/phone-brief.pdf',
+          name: 'phone-brief.pdf',
+          size: 2048,
+          type: 'file',
+          mime_type: 'application/pdf',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'phone-brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'phone-brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('resumes a persisted phone upload session after the new-task composer remounts', async () => {
+    const attachmentDrafts = new Map();
+    const phoneUploadSessions = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions,
+      persist: vi.fn(),
+    };
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'new-task-resume',
+      upload_url: '/mobile-upload/new-task-resume',
+    });
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'new-task-resume',
+      files: [],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(phoneUploadSessions.get('new-task')).toMatchObject({
+      session_id: 'new-task-resume',
+    }));
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    api.getMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'new-task-resume',
+      files: [{
+        file_key: 'new-task-resume.pdf',
+        url: '/uploads/files/new-task-resume.pdf',
+        name: 'new-task-resume.pdf',
+        size: 19,
+        type: 'file',
+        mime_type: 'application/pdf',
+      }],
+    });
+    await mountComposer({ composerDraftStore });
+    await vi.waitFor(() => expect(attachmentDrafts.get('new-task')).toHaveLength(1));
+
+    expect(attachmentDrafts.get('new-task')[0].content.payload.file_key)
+      .toBe('new-task-resume.pdf');
+  });
+
   it('shows voice input on the new task composer and inserts the final transcript', async () => {
     let callbacks;
     const session = {

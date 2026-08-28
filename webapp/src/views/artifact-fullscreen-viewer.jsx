@@ -30,6 +30,7 @@ import {
 import { createArtifactTaskHost } from '../artifact-task-host';
 import { createArtifactRuntimeHost } from '../artifact-runtime-host';
 import { useFeedback } from '../components/feedback-system';
+import { clearPersistedComposerDrafts } from '../utils/composer-draft-storage';
 import { createCloudArtifactPreviewFile, previewFileDescriptor } from '../widgets/chat-message';
 import ControlledArtifactPreview from '../widgets/controlled-artifact-preview';
 import './artifact-fullscreen-viewer.css';
@@ -405,6 +406,7 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
       if (message?._type === 'ws_auth_expired') {
         suspendViewerSession();
         setToken(null);
+        clearPersistedComposerDrafts();
         setError('artifact_viewer_connection');
         return;
       }

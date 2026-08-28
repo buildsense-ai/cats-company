@@ -262,6 +262,10 @@ import {
   ARTIFACT_PREVIEW_COORDINATION_CONTRACT,
   createArtifactPreviewMessage,
 } from '../artifact-preview-coordinator';
+import {
+  createComposerDraftStore,
+  writeComposerInputDraft,
+} from '../utils/composer-draft-storage';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -1040,6 +1044,381 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.querySelector('textarea.v3-composer-input').value)
       .toBe('keep this draft while browsing skills');
+  });
+
+  it('persists a real composer draft as soon as its text changes', async () => {
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, 'persist this before opening SkillHub');
+    });
+
+    expect(composerDraftStore.inputDrafts.get('p2p_1_2'))
+      .toBe('persist this before opening SkillHub');
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('reflects a shared-store clear in a composer that is already mounted', async () => {
+    const composerDraftStore = createComposerDraftStore('messages-subscription-test');
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+
+    await act(async () => {
+      typeDraft(textarea, '待清除的对话草稿');
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('待清除的对话草稿');
+
+    await act(async () => {
+      writeComposerInputDraft(composerDraftStore, 'p2p_1_2', '');
+      await Promise.resolve();
+    });
+
+    expect(textarea.value).toBe('');
+  });
+
+  it('does not let an old upload resurrect a sent conversation draft', async () => {
+    const attachmentDrafts = new Map();
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const image = new File(['draft image'], 'draft.png', { type: 'image/png' });
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    const imageInput = container.querySelector('input[accept*="image/jpeg"]');
+    await act(async () => {
+      Simulate.change(imageInput, {
+        target: {
+          files: [image],
+          value: 'C:\\fakepath\\draft.png',
+        },
+      });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '发送后不恢复旧附件');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    expect(inputDrafts.get('p2p_1_2')).toBeUndefined();
+    expect(attachmentDrafts.get('p2p_1_2')).toBeUndefined();
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'draft.png',
+        url: '/uploads/images/draft.png',
+        name: image.name,
+        size: image.size,
+        mime_type: image.type,
+      });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('p2p_1_2')).toBeUndefined();
+    expect(attachmentDrafts.get('p2p_1_2')).toBeUndefined();
+  });
+
+  it('does not restore stale long-paste text after a newer send', async () => {
+    const attachmentDrafts = new Map();
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let rejectUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((_resolve, reject) => {
+      rejectUpload = reject;
+    }));
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    const oldTextarea = container.querySelector('textarea.v3-composer-input');
+    pasteInto(oldTextarea, { text: '长文本'.repeat(1400) });
+    await vi.waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '发送后不恢复旧粘贴文本');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      rejectUpload(new Error('upload cancelled'));
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('p2p_1_2')).toBeUndefined();
+    expect(attachmentDrafts.get('p2p_1_2')).toBeUndefined();
+  });
+
+  it('keeps a newer conversation draft written while the previous send is in flight', async () => {
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '第一条消息');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '发送期间的新消息');
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      resolveSend({ seq_id: 120 });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('p2p_1_2')).toBe('发送期间的新消息');
+  });
+
+  it('does not clear a newer draft written before an old send reaches its clear step', async () => {
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+    let resolveSend;
+    let resolvePoll;
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'send-delay',
+      upload_url: '/mobile-upload/send-delay',
+    });
+    api.getMobileUploadSession.mockReturnValueOnce(new Promise((resolve) => {
+      resolvePoll = resolve;
+    }));
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '旧消息');
+      await Promise.resolve();
+    });
+    await openPhoneUploadFromComposer(container);
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '切换期间的新消息');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolvePoll({ session_id: 'send-delay', files: [] });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    expect(inputDrafts.get('p2p_1_2')).toBe('切换期间的新消息');
+    await act(async () => {
+      resolveSend({ seq_id: 121 });
+      await flushPromises();
+    });
+    expect(inputDrafts.get('p2p_1_2')).toBe('切换期间的新消息');
+  });
+
+  it('includes a phone upload that resolves while Send is waiting for the final poll', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions: new Map(),
+      persist: vi.fn(),
+    };
+    const pendingPoll = deferred();
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'send-file',
+      upload_url: '/mobile-upload/send-file',
+    });
+    api.getMobileUploadSession.mockReturnValueOnce(pendingPoll.promise);
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '请把手机文件一起发送');
+      await Promise.resolve();
+    });
+    await openPhoneUploadFromComposer(container);
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingPoll.resolve({
+        session_id: 'send-file',
+        files: [{
+          file_key: 'phone-report.pdf',
+          url: '/uploads/files/phone-report.pdf',
+          name: 'phone-report.pdf',
+          size: 42,
+          type: 'file',
+        }],
+      });
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    const payload = api.sendMessage.mock.calls[0][1];
+    expect(payload.content_blocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'file',
+        payload: expect.objectContaining({ file_key: 'phone-report.pdf' }),
+      }),
+    ]));
+    expect(attachmentDrafts.get('p2p_1_2')).toBeUndefined();
+  });
+
+  it('keeps newer typing after a failed long paste completes across a remount', async () => {
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      phoneUploadSessions: new Map(),
+      persist: vi.fn(),
+    };
+    const pendingUpload = deferred();
+    api.uploadFile.mockReturnValueOnce(pendingUpload.promise);
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    pasteInto(container.querySelector('textarea.v3-composer-input'), {
+      text: '长文本'.repeat(1400),
+    });
+    await vi.waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(1));
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '切换后继续输入的新草稿');
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      pendingUpload.reject(new Error('upload cancelled'));
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('p2p_1_2')).toBe('切换后继续输入的新草稿');
+    expect(container.querySelector('textarea.v3-composer-input').value)
+      .toBe('切换后继续输入的新草稿');
+  });
+
+  it('resumes a persisted phone upload session after the composer remounts', async () => {
+    const attachmentDrafts = new Map();
+    const phoneUploadSessions = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions,
+      persist: vi.fn(),
+    };
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'resume-file',
+      upload_url: '/mobile-upload/resume-file',
+    });
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await openPhoneUploadFromComposer(container);
+    await vi.waitFor(() => expect(phoneUploadSessions.get('p2p_1_2')).toMatchObject({
+      session_id: 'resume-file',
+    }));
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    api.getMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'resume-file',
+      files: [{
+        file_key: 'resume-file.txt',
+        url: '/uploads/files/resume-file.txt',
+        name: 'resume-file.txt',
+        size: 18,
+        type: 'file',
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await vi.waitFor(() => expect(attachmentDrafts.get('p2p_1_2')).toHaveLength(1));
+
+    expect(attachmentDrafts.get('p2p_1_2')[0].content.payload.file_key)
+      .toBe('resume-file.txt');
   });
 
   it('adapts the composer placeholder to agent groups, agent chats, and human chats', async () => {

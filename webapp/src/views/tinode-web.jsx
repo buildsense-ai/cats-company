@@ -78,6 +78,11 @@ import {
   writeStorageValue,
 } from '../utils/storage-access';
 import {
+  clearPersistedComposerDrafts,
+  createComposerDraftStore,
+  NEW_TASK_DRAFT_KEY,
+} from '../utils/composer-draft-storage';
+import {
   authenticationRedirectPath,
   isNameOnboardingPathname,
   navigateBrowserPath,
@@ -220,15 +225,8 @@ function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
-function createComposerDraftStore() {
-  return {
-    inputDrafts: new Map(),
-    structuredMentionDrafts: new Map(),
-    attachmentDrafts: new Map(),
-  };
-}
-
 export function resetComposerDraftStore(draftStoreRef) {
+  draftStoreRef.current?.deactivate?.();
   const nextStore = createComposerDraftStore();
   draftStoreRef.current = nextStore;
   return nextStore;
@@ -276,10 +274,22 @@ function TinodeWebApp({ location }) {
   const messageLocationSequenceRef = useRef(0);
   const taskDraftSequenceRef = useRef(0);
   const composerDraftStoreRef = useRef(null);
+  const composerDraftOwnerRef = useRef('');
+  const composerDraftOwner = String(user?.uid || '');
 
-  if (composerDraftStoreRef.current === null) {
-    resetComposerDraftStore(composerDraftStoreRef);
+  if (composerDraftStoreRef.current === null
+    || (composerDraftOwner && composerDraftOwner !== composerDraftOwnerRef.current)) {
+    composerDraftStoreRef.current?.deactivate?.();
+    composerDraftOwnerRef.current = composerDraftOwner;
+    composerDraftStoreRef.current = createComposerDraftStore(composerDraftOwner);
   }
+
+  useEffect(() => {
+    composerDraftStoreRef.current?.activate?.();
+    return () => {
+      composerDraftStoreRef.current?.deactivate?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!user) return undefined;
@@ -746,7 +756,10 @@ function TinodeWebApp({ location }) {
     setCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsTab('active');
+    composerDraftStoreRef.current?.clearPersisted?.();
+    clearPersistedComposerDrafts();
     resetComposerDraftStore(composerDraftStoreRef);
+    composerDraftOwnerRef.current = '';
     setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
@@ -1429,6 +1442,7 @@ function TinodeWebApp({ location }) {
               <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
             ) : activeTopic ? (
               <MessagesView
+                key={composerDraftOwner || 'anonymous'}
                 topBar={localAssistantBar}
                 topic={activeTopic.topicId}
                 topicName={activeTopic.name}
@@ -1454,9 +1468,11 @@ function TinodeWebApp({ location }) {
                 {localAssistantBar}
                 <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
                   <NoActiveTask
-                    key={taskDraft?.key || 'new-task'}
+                    key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    initialAgent={taskDraft?.agent}
+                    initialAgent={taskDraft?.agent || emptyTaskSelectedAgent}
+                    composerDraftStore={composerDraftStoreRef.current}
+                    draftKey={NEW_TASK_DRAFT_KEY}
                     onSelectedAgentChange={setEmptyTaskSelectedAgent}
                     onResolveAgentTopic={createDraftAgentTaskTopic}
                     onActivateTopic={activateResolvedTopic}
@@ -1757,7 +1773,16 @@ function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft,
   };
 }
 
-function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic, modelInfo = null }) {
+function NoActiveTask({
+  user,
+  initialAgent,
+  composerDraftStore,
+  draftKey,
+  onSelectedAgentChange,
+  onResolveAgentTopic,
+  onActivateTopic,
+  modelInfo = null,
+}) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -1767,6 +1792,8 @@ function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgen
         </div>
         <EmptyTaskComposer
           initialAgent={initialAgent}
+          composerDraftStore={composerDraftStore}
+          draftKey={draftKey}
           onSelectedAgentChange={onSelectedAgentChange}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}

@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   frameWindow: null,
   requestArtifactPageContext: vi.fn(),
   requestArtifactResultApply: vi.fn(),
+  clearPersistedComposerDrafts: vi.fn(),
   runtimeResume: vi.fn(),
   runtimeSuspend: vi.fn(),
   runtimeDeactivate: vi.fn(),
@@ -55,6 +56,10 @@ vi.mock('../api', () => ({
 
 vi.mock('../components/feedback-system', () => ({
   useFeedback: () => ({ confirm: mocks.feedbackConfirm }),
+}));
+
+vi.mock('../utils/composer-draft-storage', () => ({
+  clearPersistedComposerDrafts: mocks.clearPersistedComposerDrafts,
 }));
 
 vi.mock('../artifact-runtime-host', () => ({
@@ -236,6 +241,7 @@ describe('ArtifactFullscreenViewer', () => {
       result_id: `arr_${'r'.repeat(43)}`,
       status: 'applied',
     });
+    mocks.clearPersistedComposerDrafts.mockClear();
     mocks.connectWS.mockImplementation((handler) => {
       mocks.wsHandler = handler;
       return true;
@@ -303,6 +309,22 @@ describe('ArtifactFullscreenViewer', () => {
       { type: 'catsco.artifact.host.connect.v1' },
       'https://artifacts.example.test',
     );
+  });
+
+  it('clears composer drafts when the standalone viewer loses authentication', async () => {
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={location} />);
+      await flushPromises();
+    });
+
+    await act(async () => {
+      mocks.wsHandler?.({ _type: 'ws_auth_expired' });
+      await flushPromises();
+    });
+
+    expect(mocks.setToken).toHaveBeenCalledWith(null);
+    expect(mocks.clearPersistedComposerDrafts).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('暂时无法连接');
   });
 
   it('resumes Runtime when the fullscreen iframe binding is recreated', async () => {
