@@ -3,6 +3,14 @@ import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
+  NEW_TASK_DRAFT_KEY,
+  persistComposerDraftStore,
+  readComposerAttachmentDraft,
+  readComposerInputDraft,
+  writeComposerAttachmentDraft,
+  writeComposerInputDraft,
+} from '../utils/composer-draft-storage';
+import {
   IMAGE_UPLOAD_ACCEPT,
   MAX_ATTACHMENT_SIZE,
   MAX_ATTACHMENT_SIZE_MB,
@@ -15,31 +23,21 @@ import QRCode from './qr-code';
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
 
-function readDraftInput(composerDraftStore, draftKey) {
-  const value = composerDraftStore?.inputDrafts?.get?.(draftKey);
-  return typeof value === 'string' ? value : '';
-}
-
-function readDraftAttachments(composerDraftStore, draftKey) {
-  const value = composerDraftStore?.attachmentDrafts?.get?.(draftKey);
-  return Array.isArray(value) ? [...value] : [];
-}
-
 export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
   placeholder = '输入指令，我帮您完成',
   initialAgent,
   composerDraftStore,
-  draftKey = 'new-task',
+  draftKey = NEW_TASK_DRAFT_KEY,
   onSelectedAgentChange,
   onResolveAgentTopic,
   onActivateTopic,
   voiceInputAvailable,
   createVoiceSession,
 }) {
-  const normalizedDraftKey = String(draftKey || 'new-task');
-  const initialDraftInput = readDraftInput(composerDraftStore, normalizedDraftKey);
-  const initialDraftAttachments = readDraftAttachments(composerDraftStore, normalizedDraftKey);
+  const normalizedDraftKey = String(draftKey || NEW_TASK_DRAFT_KEY);
+  const initialDraftInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
+  const initialDraftAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
   const [input, setInput] = useState(initialDraftInput);
   const initialAgentId = agentKey(initialAgent);
   const [agents, setAgents] = useState(() => initialAgentId ? [initialAgent] : []);
@@ -73,28 +71,22 @@ export default function EmptyTaskComposer({
   const phoneUploadSyncRef = useRef(null);
 
   const persistDraft = useCallback(() => {
-    const inputDrafts = composerDraftStore?.inputDrafts;
-    if (typeof inputDrafts?.set === 'function' && typeof inputDrafts?.delete === 'function') {
-      const value = String(inputValueRef.current || '');
-      if (value) inputDrafts.set(normalizedDraftKey, value);
-      else inputDrafts.delete(normalizedDraftKey);
-    }
-
-    const attachmentDrafts = composerDraftStore?.attachmentDrafts;
-    if (typeof attachmentDrafts?.set === 'function' && typeof attachmentDrafts?.delete === 'function') {
-      const attachments = Array.isArray(pendingAttachmentsRef.current)
-        ? pendingAttachmentsRef.current
-        : [];
-      if (attachments.length > 0) attachmentDrafts.set(normalizedDraftKey, [...attachments]);
-      else attachmentDrafts.delete(normalizedDraftKey);
-    }
-
-    composerDraftStore?.persist?.();
+    writeComposerInputDraft(
+      composerDraftStore,
+      normalizedDraftKey,
+      String(inputValueRef.current || ''),
+    );
+    writeComposerAttachmentDraft(
+      composerDraftStore,
+      normalizedDraftKey,
+      Array.isArray(pendingAttachmentsRef.current) ? pendingAttachmentsRef.current : [],
+    );
+    persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
 
   useEffect(() => {
-    const nextInput = readDraftInput(composerDraftStore, normalizedDraftKey);
-    const nextAttachments = readDraftAttachments(composerDraftStore, normalizedDraftKey);
+    const nextInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
+    const nextAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
     inputValueRef.current = nextInput;
     pendingAttachmentsRef.current = nextAttachments;
     setInput(nextInput);

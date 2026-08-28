@@ -135,6 +135,59 @@ describe('EmptyTaskComposer', () => {
       .toBe('保留这条尚未建立会话的草稿');
   });
 
+  it('persists uploaded attachments through the shared draft store interface', async () => {
+    const inputDrafts = new Map();
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      getInputDraft: vi.fn((key) => inputDrafts.get(key) || ''),
+      setInputDraft: vi.fn((key, value) => {
+        if (value) inputDrafts.set(key, value);
+        else inputDrafts.delete(key);
+      }),
+      getAttachmentDraft: vi.fn((key) => attachmentDrafts.get(key) || []),
+      setAttachmentDraft: vi.fn((key, value) => {
+        if (value.length > 0) attachmentDrafts.set(key, value);
+        else attachmentDrafts.delete(key);
+      }),
+      persist: vi.fn(),
+    };
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    api.uploadFile.mockResolvedValueOnce({
+      file_key: 'brief.pdf',
+      url: '/uploads/files/brief.pdf',
+      name: 'brief.pdf',
+      size: file.size,
+      mime_type: 'application/pdf',
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.setAttachmentDraft).toHaveBeenCalledWith(
+      'new-task',
+      [expect.objectContaining({ type: 'file', name: 'brief.pdf' })],
+    );
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
   it('shows voice input on the new task composer and inserts the final transcript', async () => {
     let callbacks;
     const session = {

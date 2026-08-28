@@ -22,6 +22,7 @@ import {
 import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
 import { shouldMountPwaForPathname } from './utils/auth-routes';
 import { readStorageValue } from './utils/storage-access';
+import { clearPersistedComposerDrafts } from './utils/composer-draft-storage';
 import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
 import { startPwaInstallLifecycle } from './utils/pwa-install';
 import './css/auth-critical.css';
@@ -232,6 +233,7 @@ export function App() {
     const token = getToken();
     if (auth.loggedIn || (token && !isTokenExpired(token))) return;
     if (token) setToken(null);
+    clearPersistedComposerDrafts();
     if (readStoredUserProfile()) clearStoredUserProfile();
   }, [auth.loggedIn, auth.revision]);
 

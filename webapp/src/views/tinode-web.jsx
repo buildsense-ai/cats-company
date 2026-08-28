@@ -74,9 +74,13 @@ import {
 } from '../utils/theme-access';
 import {
   readStorageValue,
-  removeStorageValue,
   writeStorageValue,
 } from '../utils/storage-access';
+import {
+  clearPersistedComposerDrafts,
+  createComposerDraftStore,
+  NEW_TASK_DRAFT_KEY,
+} from '../utils/composer-draft-storage';
 import {
   authenticationRedirectPath,
   isNameOnboardingPathname,
@@ -90,9 +94,6 @@ const TABS = {
   CHATS: 'chats'
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
-const COMPOSER_DRAFT_STORAGE_PREFIX = 'catsco_composer_drafts:v1:';
-// A new task has no topic yet; keep its draft on a stable key across agent selection.
-const NEW_TASK_DRAFT_KEY = 'new-task';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
@@ -200,75 +201,6 @@ function todayKey() {
 
 function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
-}
-
-function composerDraftStorageKey(userID) {
-  const normalizedUserID = String(userID || '').trim();
-  return normalizedUserID ? `${COMPOSER_DRAFT_STORAGE_PREFIX}${normalizedUserID}` : '';
-}
-
-function draftEntries(entries, acceptsValue) {
-  if (!Array.isArray(entries)) return [];
-  return entries.flatMap((entry) => {
-    if (!Array.isArray(entry) || entry.length !== 2) return [];
-    const [topic, value] = entry;
-    return typeof topic === 'string' && topic && acceptsValue(value) ? [[topic, value]] : [];
-  });
-}
-
-function readComposerDraftSnapshot(storageKey) {
-  if (!storageKey) return {};
-  try {
-    const stored = JSON.parse(readStorageValue(storageKey, 'sessionStorage') || '{}');
-    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
-  } catch {
-    return {};
-  }
-}
-
-function createComposerDraftStore(userID) {
-  const storageKey = composerDraftStorageKey(userID);
-  const snapshot = readComposerDraftSnapshot(storageKey);
-  const draftStore = {
-    inputDrafts: new Map(draftEntries(snapshot.inputDrafts, (value) => typeof value === 'string' && value)),
-    structuredMentionDrafts: new Map(draftEntries(snapshot.structuredMentionDrafts, (value) => (
-      Array.isArray(value) && value.length > 0
-    ))),
-    attachmentDrafts: new Map(draftEntries(snapshot.attachmentDrafts, (value) => (
-      Array.isArray(value) && value.length > 0
-    ))),
-  };
-  let active = true;
-
-  draftStore.persist = () => {
-    if (!active || !storageKey) return;
-    if (draftStore.inputDrafts.size === 0
-      && draftStore.structuredMentionDrafts.size === 0
-      && draftStore.attachmentDrafts.size === 0) {
-      removeStorageValue(storageKey, 'sessionStorage');
-      return;
-    }
-    try {
-      writeStorageValue(storageKey, JSON.stringify({
-        inputDrafts: [...draftStore.inputDrafts],
-        structuredMentionDrafts: [...draftStore.structuredMentionDrafts],
-        attachmentDrafts: [...draftStore.attachmentDrafts],
-      }), 'sessionStorage');
-    } catch {
-      // Keep the in-memory draft when a browser cannot serialize or store it.
-    }
-  };
-  draftStore.deactivate = () => {
-    active = false;
-  };
-  draftStore.activate = () => {
-    active = true;
-  };
-  draftStore.clearPersisted = () => {
-    active = false;
-    if (storageKey) removeStorageValue(storageKey, 'sessionStorage');
-  };
-  return draftStore;
 }
 
 export function resetComposerDraftStore(draftStoreRef) {
@@ -744,6 +676,7 @@ function TinodeWebApp({ location }) {
     setStandaloneCloudArtifactsRequest(null);
     setStandaloneCloudArtifactsTab('active');
     composerDraftStoreRef.current?.clearPersisted?.();
+    clearPersistedComposerDrafts();
     resetComposerDraftStore(composerDraftStoreRef);
     composerDraftOwnerRef.current = '';
     setActiveView('chats');

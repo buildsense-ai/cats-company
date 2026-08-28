@@ -13,6 +13,15 @@ import ChatComposer from '../widgets/chat-composer';
 import PwaDownloadLink from '../widgets/pwa-download-link';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
+import {
+  persistComposerDraftStore as persistComposerDraftStoreValue,
+  readComposerAttachmentDraft,
+  readComposerInputDraft,
+  readComposerMentionDraft,
+  writeComposerAttachmentDraft,
+  writeComposerInputDraft,
+  writeComposerMentionDraft,
+} from '../utils/composer-draft-storage';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
@@ -551,9 +560,7 @@ export default function MessagesView({
   const questionIndexLoadingRef = useRef(false);
   const questionIndexAbortControllerRef = useRef(null);
   const questionJumpAbortControllerRef = useRef(null);
-  const composerDraftsRef = useRef(null);
-  const structuredMentionDraftsRef = useRef(null);
-  const attachmentDraftsRef = useRef(null);
+  const composerDraftStoreRef = useRef(null);
   const pendingAttachmentsRef = useRef([]);
   const previewWidthRef = useRef(previewWidth);
   const phoneUploadFileKeysRef = useRef(new Set());
@@ -566,10 +573,12 @@ export default function MessagesView({
   const conversationSharePreviewRef = useRef(null);
   const conversationSharePreviewCloseRef = useRef(null);
 
-  if (composerDraftsRef.current === null) {
-    composerDraftsRef.current = composerDraftStore?.inputDrafts || new Map();
-    structuredMentionDraftsRef.current = composerDraftStore?.structuredMentionDrafts || new Map();
-    attachmentDraftsRef.current = composerDraftStore?.attachmentDrafts || new Map();
+  if (composerDraftStoreRef.current === null) {
+    composerDraftStoreRef.current = composerDraftStore || {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+    };
   }
 
   if (artifactTopicRef.current !== topic) {
@@ -622,39 +631,27 @@ export default function MessagesView({
   }, [topic]);
 
   const persistComposerDraftStore = useCallback(() => {
-    composerDraftStore?.persist?.();
-  }, [composerDraftStore]);
+    persistComposerDraftStoreValue(composerDraftStoreRef.current);
+  }, []);
 
   const updateComposerDraft = useCallback((draftTopic, value) => {
     if (!draftTopic) return;
-    if (value) {
-      composerDraftsRef.current.set(draftTopic, value);
-    } else {
-      composerDraftsRef.current.delete(draftTopic);
-    }
+    writeComposerInputDraft(composerDraftStoreRef.current, draftTopic, value);
     persistComposerDraftStore();
   }, [persistComposerDraftStore]);
 
   const updateStructuredMentionDraft = useCallback((draftTopic, selections) => {
     if (!draftTopic) return;
-    if (Array.isArray(selections) && selections.length > 0) {
-      structuredMentionDraftsRef.current.set(draftTopic, selections);
-    } else {
-      structuredMentionDraftsRef.current.delete(draftTopic);
-    }
+    writeComposerMentionDraft(composerDraftStoreRef.current, draftTopic, selections);
     persistComposerDraftStore();
   }, [persistComposerDraftStore]);
 
   const updateAttachmentDraft = useCallback((draftTopic, nextValue) => {
     if (!draftTopic) return [];
-    const current = attachmentDraftsRef.current.get(draftTopic) || [];
+    const current = readComposerAttachmentDraft(composerDraftStoreRef.current, draftTopic);
     const next = typeof nextValue === 'function' ? nextValue(current) : nextValue;
     const normalized = Array.isArray(next) ? next : [];
-    if (normalized.length > 0) {
-      attachmentDraftsRef.current.set(draftTopic, normalized);
-    } else {
-      attachmentDraftsRef.current.delete(draftTopic);
-    }
+    writeComposerAttachmentDraft(composerDraftStoreRef.current, draftTopic, normalized);
     if (activeTopicRef.current === draftTopic) {
       pendingAttachmentsRef.current = normalized;
       setPendingAttachments(normalized);
@@ -1121,7 +1118,7 @@ export default function MessagesView({
     activeTopicRef.current = topic;
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
-    setInput(composerDraftsRef.current.get(topic) || '');
+    setInput(readComposerInputDraft(composerDraftStoreRef.current, topic));
     const cacheKey = historyCacheKey(user.uid, topic);
     const cachedHistory = historyCacheRef.current.get(cacheKey);
     const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
@@ -1131,7 +1128,7 @@ export default function MessagesView({
     setQuestionIndexLimitReached(Boolean(cachedQuestionIndex?.limitReached));
     setQuestionIndexLoading(false);
     questionIndexLoadingRef.current = false;
-    const attachmentDraft = attachmentDraftsRef.current.get(topic) || [];
+    const attachmentDraft = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
     pendingAttachmentsRef.current = attachmentDraft;
     setPendingAttachments(attachmentDraft);
     setIsDragActive(false);
@@ -1986,7 +1983,10 @@ export default function MessagesView({
   const handleSend = useCallback(async () => {
     const originalInput = input;
     const initialText = originalInput.trim();
-    const initialAttachments = attachmentDraftsRef.current.get(topic) || pendingAttachmentsRef.current;
+    const storedAttachments = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
+    const initialAttachments = storedAttachments.length > 0
+      ? storedAttachments
+      : pendingAttachmentsRef.current;
     if (!initialText && initialAttachments.length === 0) return;
     if (isUploadingAttachment || sendInFlightRef.current) return;
 
@@ -2004,7 +2004,7 @@ export default function MessagesView({
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
-    const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const originalStructuredMentions = readComposerMentionDraft(composerDraftStoreRef.current, topic);
     const protocolText = isGroup
       ? canonicalizeStructuredMentionText(originalInput, originalStructuredMentions).trim()
       : text;
@@ -2021,7 +2021,7 @@ export default function MessagesView({
       switchesTopic = sendTopic !== topic;
 
       await syncPhoneUploads({ final: true });
-      attachmentsToSend = [...(attachmentDraftsRef.current.get(topic) || [])];
+      attachmentsToSend = [...readComposerAttachmentDraft(composerDraftStoreRef.current, topic)];
       if (!text && attachmentsToSend.length === 0) {
         setAwaitingAgentReply(false);
         return;
@@ -2231,7 +2231,7 @@ export default function MessagesView({
     const nextStructuredMentions = reconcileStructuredMentionSelections(
       input,
       val,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     setInput(val);
     updateComposerDraft(topic, val);
@@ -2278,7 +2278,7 @@ export default function MessagesView({
     const nextStructuredMentions = reconcileStructuredMentionSelections(
       result.baseValue,
       result.value,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     setInput(result.value);
     updateComposerDraft(topic, result.value);
@@ -2303,7 +2303,7 @@ export default function MessagesView({
     const reconciledSelections = reconcileStructuredMentionSelections(
       input,
       newText,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     updateStructuredMentionDraft(topic, [
       ...reconciledSelections,
@@ -2331,7 +2331,7 @@ export default function MessagesView({
     const nextStructuredMentions = reconcileStructuredMentionSelections(
       input,
       nextInput,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     setInput(nextInput);
     updateComposerDraft(topic, nextInput);
@@ -2602,14 +2602,14 @@ export default function MessagesView({
 
     const currentText = pasteTopic === activeTopicRef.current
       ? (textareaRef.current?.value ?? input)
-      : (composerDraftsRef.current.get(pasteTopic) || '');
+      : readComposerInputDraft(composerDraftStoreRef.current, pasteTopic);
     const start = Math.min(Math.max(selectionStart, 0), currentText.length);
     const end = Math.min(Math.max(selectionEnd, start), currentText.length);
     const restoredText = `${currentText.slice(0, start)}${pastedText}${currentText.slice(end)}`;
     const restoredMentions = reconcileStructuredMentionSelections(
       currentText,
       restoredText,
-      structuredMentionDraftsRef.current.get(pasteTopic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, pasteTopic),
     );
     updateComposerDraft(pasteTopic, restoredText);
     updateStructuredMentionDraft(pasteTopic, restoredMentions);
