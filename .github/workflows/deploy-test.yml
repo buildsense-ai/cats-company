@@ -99,19 +99,21 @@ jobs:
             echo "Source bundle already cached for ${GITHUB_SHA}."
           else
             source_tree="$(mktemp -d)"
-            trap 'rm -rf "${source_tree}"' EXIT
+            source_bundle="cats-company-source-${GITHUB_SHA}.tar.gz"
+            remote_source="${DEPLOY_CACHE_ROOT}/releases/${source_bundle}"
+            remote_temp="${remote_source}.upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            trap 'rm -rf "${source_tree}" "${source_bundle}"' EXIT
             git archive --format=tar HEAD | tar -xf - -C "${source_tree}"
-            remote_mirror="${DEPLOY_CACHE_ROOT}/source-mirror"
             # Website media is delivered by the separately built/pushed OCI
             # website image. Keep it out of the remote source bundle so normal
             # code-only deploys do not re-upload videos and avatars.
             rm -rf "${source_tree}/website/public"
-            tar -C "${source_tree}" -czf - . | \
-              ssh ${SSH_OPTS} "${REMOTE}" \
-                "rm -rf '${remote_mirror}' && mkdir -p '${remote_mirror}' && tar -xzf - -C '${remote_mirror}'"
+            tar -C "${source_tree}" -czf "${source_bundle}" .
             ssh ${SSH_OPTS} "${REMOTE}" \
-              "bash '${cache_script}' pack '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}' '${remote_mirror}'"
-            rm -rf "${source_tree}"
+              "rm -f '${remote_temp}' && timeout 180 cat > '${remote_temp}'" < "${source_bundle}"
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "tar -tzf '${remote_temp}' >/dev/null && mv '${remote_temp}' '${remote_source}' && bash '${cache_script}' seal '${DEPLOY_CACHE_ROOT}' '${GITHUB_SHA}'"
+            rm -rf "${source_tree}" "${source_bundle}"
             trap - EXIT
           fi
 
