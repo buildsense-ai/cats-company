@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
+  buildMobileModelInfo,
   cloudArtifactNotificationToast,
   commitPreviewSession,
   describeModelApplyError,
@@ -20,6 +21,10 @@ import { api } from '../api';
 
 const topbarCss = readFileSync(
   resolve(process.cwd(), 'src/css/catsco-topbar.css'),
+  'utf8',
+);
+const tinodeWebSource = readFileSync(
+  resolve(process.cwd(), 'src/views/tinode-web.jsx'),
   'utf8',
 );
 
@@ -296,6 +301,36 @@ describe('ProfilePopover', () => {
 
     await act(async () => root.unmount());
     sidebar.remove();
+  });
+});
+
+describe('mobile model context wiring', () => {
+  it('omits the mobile model fallback when the conversation has no responsible Agent', () => {
+    expect(buildMobileModelInfo('MiniMax-M2.7', {
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    }, {
+      source: 'relay',
+      model: 'MiniMax-M3',
+      remaining_percent: 80,
+    })).toBeNull();
+  });
+
+  it('keeps the account model context for a regular conversation', () => {
+    expect(buildMobileModelInfo('MiniMax-M2.7', null, {
+      source: 'relay',
+      model: 'MiniMax-M2.7',
+      remaining_percent: 80,
+    })).toMatchObject({
+      model: 'MiniMax-M2.7',
+      quota: '剩余 80%',
+    });
+  });
+
+  it('routes profile desktop actions through the modal mode setter', () => {
+    expect(tinodeWebSource).toContain("onOpenDownload={() => openDesktopModal('download')}");
+    expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");
   });
 });
 

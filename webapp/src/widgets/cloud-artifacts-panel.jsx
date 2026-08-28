@@ -46,16 +46,18 @@ function artifactMeta(artifact) {
   const creatorType = String(artifact.creator_type || '').trim();
   const creatorName = String(artifact.creator_name || '').trim();
   const uploaderName = String(artifact.uploader_name || '').trim();
-  if (creatorType === 'agent') {
+  if (creatorType === 'unknown') {
+    items.push('来源未知');
+  } else if (creatorType === 'agent') {
     const agentName = creatorName || String(artifact.agent_name || '').trim();
     if (agentName) items.push(`${agentName} 生成`);
     else items.push('上传用户未知');
-  } else if (creatorType === 'unknown') {
-    items.push('来源未知');
+  } else if (creatorType === 'user') {
+    items.push(creatorName || uploaderName || '上传用户未知');
+  } else if (creatorName) {
+    items.push(creatorName);
   } else if (uploaderName) {
     items.push(uploaderName);
-  } else if (creatorType === 'user' && creatorName) {
-    items.push(creatorName);
   } else {
     items.push('上传用户未知');
   }

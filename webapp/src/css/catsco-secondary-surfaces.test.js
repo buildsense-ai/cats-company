@@ -97,6 +97,7 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('width: 46px;');
     expect(css).toContain('height: 46px;');
     expect(css).toContain('@media (max-width: 640px)');
+    expect(css).toMatch(/\.v3-local-assistant-bar\s*\{\s*padding-inline:\s*max\(10px, env\(safe-area-inset-left\)\)\s+max\(10px, env\(safe-area-inset-right\)\);/s);
     expect(css).toContain('.relay-access-body {');
     expect(css).toContain('padding: 14px 16px calc(20px + env(safe-area-inset-bottom));');
     expect(css).toContain('min-height: 100dvh;');
@@ -118,7 +119,7 @@ describe('secondary surface design contract', () => {
     expect(css).toContain(".oc-profile-editor-modal[data-mobile-pane='home'] .oc-profile-mobile-home");
     expect(css).toContain(".oc-profile-editor-modal[data-mobile-pane='home'] .oc-profile-editor-actions");
 
-    expect(skillHubCss).toContain('@media (max-width: 760px)');
+    expect(skillHubCss).toContain('@media (max-width: 768px)');
     expect(skillHubCss).toMatch(/\.cc-skillhub-page\s*\{[^}]*--cc-mobile-text-body:\s*16px;[^}]*--cc-mobile-text-secondary:\s*14px;[^}]*--cc-mobile-control-height:\s*48px;[^}]*--cc-mobile-card-radius:\s*16px;/s);
     expect(skillHubCss).toMatch(/\.cc-skillhub-card,\s*\.cc-skillhub-local-card\s*\{[^}]*min-height:\s*188px;[^}]*padding:\s*var\(--cc-mobile-card-padding\);/s);
     expect(skillHubCss).toMatch(/\.cc-skillhub-added-actions button,[\s\S]*?min-height:\s*var\(--cc-mobile-control-height\);/s);

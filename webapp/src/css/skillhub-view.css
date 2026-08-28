@@ -894,7 +894,7 @@
 .is-spinning { animation: cc-skillhub-spin 900ms linear infinite; }
 @keyframes cc-skillhub-spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 760px) {
+@media (max-width: 768px) {
   .cc-skillhub-page {
     --cc-mobile-text-display: 30px;
     --cc-mobile-text-title: 20px;

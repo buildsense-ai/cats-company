@@ -227,6 +227,22 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('Cycren');
   });
 
+  test('prefers canonical user provenance over a legacy uploading account name', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'user',
+        creator_name: '规范成员',
+        uploader_name: '旧版成员',
+      }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain('规范成员');
+    expect(container.textContent).not.toContain('旧版成员');
+  });
+
   test('uses the API unknown label for historical results with no provenance', async () => {
     api.getCloudArtifacts.mockResolvedValueOnce({
       artifacts: [{

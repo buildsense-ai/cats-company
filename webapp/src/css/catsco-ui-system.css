@@ -5273,7 +5273,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 768px) {
   :root {
     --cc-sidebar-width: min(86vw, 300px);
   }

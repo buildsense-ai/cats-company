@@ -1099,10 +1099,10 @@ html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 768px) {
   .v3-local-assistant-bar {
-    padding-inline: max(10px, env(safe-area-inset-right))
-      max(10px, env(safe-area-inset-left));
+    padding-inline: max(10px, env(safe-area-inset-left))
+      max(10px, env(safe-area-inset-right));
   }
 
   .v3-composer-row {

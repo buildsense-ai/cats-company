@@ -1149,6 +1149,11 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('padding: 8px 8px calc(12px + env(safe-area-inset-bottom));');
   });
 
+  it('keeps the core mobile composer contract aligned with the 768px shell breakpoint', () => {
+    expect(css).toContain('@media (max-width: 768px) {\n  :root {\n    --cc-sidebar-width: min(86vw, 300px);');
+    expect(css).toContain('  .v3-timeline {\n    padding: 14px 10px 128px;');
+  });
+
   it('makes top-level sidebar section titles distinct from expanded items', () => {
     expect(ruleFor('.cc-top-level-section')).toContain('font-weight: 600;');
     expect(ruleFor('.cc-history-section')).toContain('font-weight: 500;');
