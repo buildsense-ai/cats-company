@@ -221,16 +221,51 @@ test("destroy-worker: removes the saved Agent route without making gateway failu
   fs.mkdirSync(st, { recursive: true });
   fs.writeFileSync(path.join(st, "inject.env"), "CATSCO_BOT_UID=42\n");
   const routeScript = path.join(sb.bin, "remove-artifact-route.sh");
+  const syncScript = path.join(sb.bin, "sync-artifact-routes.sh");
   const calls = path.join(sb.sandbox, "route.calls");
+  const syncCalls = path.join(sb.sandbox, "sync.calls");
+  const cleanupDir = path.join(sb.sandbox, "route-cleanup");
   fs.writeFileSync(routeScript, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > '${toMsys(calls)}'\nexit 1\n`);
+  fs.writeFileSync(syncScript, `#!/usr/bin/env bash\nprintf 'sync\\n' > '${toMsys(syncCalls)}'\n`);
   fs.chmodSync(routeScript, 0o755);
+  fs.chmodSync(syncScript, 0o755);
   const r = run(sb, ["--name", "bot-a"], {
     CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
     CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
+    CATSCO_ARTIFACT_GATEWAY_SYNC_SCRIPT: toMsys(syncScript),
+    CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR: toMsys(cleanupDir),
   });
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stderr, /Artifact route cleanup failed/);
   assert.equal(fs.readFileSync(calls, "utf8").trim(), "remove 42");
+  assert.equal(fs.readFileSync(syncCalls, "utf8").trim(), "sync");
+  assert.equal(fs.existsSync(path.join(cleanupDir, "42.pending")), false);
+});
+
+test("destroy-worker: keeps a cleanup marker when route repair is unavailable", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const st = path.join(sb.sandbox, "state");
+  fs.mkdirSync(st, { recursive: true });
+  fs.writeFileSync(path.join(st, "inject.env"), "CATSCO_BOT_UID=42\n");
+  const routeScript = path.join(sb.bin, "remove-artifact-route.sh");
+  const syncScript = path.join(sb.bin, "sync-artifact-routes.sh");
+  const cleanupDir = path.join(sb.sandbox, "route-cleanup");
+  fs.writeFileSync(routeScript, "#!/usr/bin/env bash\nexit 1\n");
+  fs.writeFileSync(syncScript, "#!/usr/bin/env bash\nexit 1\n");
+  fs.chmodSync(routeScript, 0o755);
+  fs.chmodSync(syncScript, 0o755);
+  const r = run(sb, ["--name", "bot-a"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
+    CATSCO_ARTIFACT_GATEWAY_SYNC_SCRIPT: toMsys(syncScript),
+    CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR: toMsys(cleanupDir),
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /cleanup remains pending/);
+  assert.equal(fs.readFileSync(path.join(cleanupDir, "42.pending"), "utf8"), "42\n");
 });
 
 test("destroy-worker: keypair still cleaned when instance already gone", () => {

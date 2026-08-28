@@ -9,6 +9,7 @@ done
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_ROOT="${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
+CLEANUP_DIR="${CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR:-$STATE_ROOT/.artifact-route-cleanup}"
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 [[ -n "$REGION_ID" ]] || { echo "error: CTYUN_WORKER_REGION_ID is required" >&2; exit 2; }
@@ -42,3 +43,10 @@ for state_dir in "$STATE_ROOT"/*; do
 done
 
 printf '%s\n' "$routes" | "$OPS_DIR/artifact-gateway-route.sh" sync
+
+# A successful full replacement also resolves any cleanup markers left by a
+# destroy operation that could not reach the gateway at the time.
+if [[ -d "$CLEANUP_DIR" ]]; then
+  cleanup_markers=("$CLEANUP_DIR"/*.pending)
+  ((${#cleanup_markers[@]} == 0)) || rm -f -- "${cleanup_markers[@]}"
+fi

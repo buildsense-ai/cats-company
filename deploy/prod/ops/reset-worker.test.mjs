@@ -295,6 +295,7 @@ test("reset-worker: forwarded Artifact route is rebuilt without changing the ins
   const artifact = artifactConfigureStub(sb);
   const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY",
     "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
     CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
     CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
   });
@@ -305,6 +306,22 @@ test("reset-worker: forwarded Artifact route is rebuilt without changing the ins
   assert.match(fs.readFileSync(artifact.calls, "utf8"), /--worker-ip 10\.0\.0\.9 --agent-uid 42/);
   assert.ok(state.instances.some(instance => instance.instanceID === "i-old"));
   assert.equal((state.deletedInstances || []).length, 0);
+});
+
+test("reset-worker: disabled gateway does not inject or configure forwarded Artifact", () => {
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", keypairName: "worker-key-bot-a", floatingIP: "10.0.0.9" }], keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }] });
+  const artifact = artifactConfigureStub(sb);
+  const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "0",
+    CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
+    CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(JSON.parse(r.stdout).artifact_status, "disabled");
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.doesNotMatch(state.injectedEnv, /CATSCO_ARTIFACT_/);
+  assert.equal(fs.existsSync(artifact.calls), false);
 });
 
 test("reset-worker: refuses an absent instance instead of creating a replacement", () => {

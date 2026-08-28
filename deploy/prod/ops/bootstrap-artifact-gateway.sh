@@ -37,6 +37,7 @@ ssh_opts=(-i "$JUMP_KEY" -p "$JUMP_PORT" -o BatchMode=yes -o ConnectTimeout=10
 ssh_run() { timeout -s TERM -k 30 1200s ssh "${ssh_opts[@]}" "$JUMP_USER@$JUMP_IP" "$@"; }
 
 ssh_run "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq nginx certbot nodejs curl jq openssl util-linux >/dev/null"
+ssh_run "systemctl enable --now certbot.timer >/dev/null && systemctl is-enabled --quiet certbot.timer && systemctl is-active --quiet certbot.timer"
 ssh_run "install -d -m 0755 '$REMOTE_ROOT' /etc/catsco-artifact-gateway /var/lib/catsco-artifact-gateway /var/lib/catsco-artifact-gateway/dns01-state"
 
 for file in artifact-gateway-route.mjs volcengine-dns.mjs dns01-certbot-hook.mjs; do

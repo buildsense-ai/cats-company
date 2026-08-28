@@ -103,6 +103,7 @@ JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
 HTTP_BASE_URL="${CATSCO_WORKER_HTTP_BASE_URL:-https://app.catsco.cc}"
 SERVER_URL="${CATSCO_WORKER_SERVER_URL:-wss://app.catsco.cc/v0/channels}"
 ARTIFACT_HOST_MODE="${CATSCO_WORKER_ARTIFACT_HOST_MODE:-}"
+ARTIFACT_GATEWAY_ENABLED="${CATSCO_ARTIFACT_GATEWAY_ENABLED:-0}"
 ARTIFACT_HOST_SUFFIX="${CATSCO_ARTIFACT_HOST_SUFFIX:-artifacts.catsco.fun}"
 ARTIFACT_DATA_DIR="${CATSCO_WORKER_ARTIFACT_DATA_DIR:-/srv/catsco-agent/.local/share/catsco/cloud-html-artifact}"
 ARTIFACT_HTTPS_PORT="${CATSCO_ARTIFACT_GATEWAY_HTTPS_PORT:-19991}"
@@ -112,6 +113,10 @@ ARTIFACT_CONFIGURE_SCRIPT="${CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT:-$OPS_DIR/c
 if [[ -n "$ARTIFACT_HOST_MODE" && "$ARTIFACT_HOST_MODE" != "forwarded" && "$ARTIFACT_HOST_MODE" != "direct-https" ]]; then
   echo "error: CATSCO_WORKER_ARTIFACT_HOST_MODE must be forwarded, direct-https, or empty" >&2
   exit 2
+fi
+FORWARDED_ARTIFACT_ENABLED=0
+if [[ "$ARTIFACT_GATEWAY_ENABLED" == "1" && "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+  FORWARDED_ARTIFACT_ENABLED=1
 fi
 for port in "$ARTIFACT_HTTPS_PORT" "$ARTIFACT_BACKEND_PORT"; do
   [[ "$port" =~ ^[1-9][0-9]{0,4}$ && "$port" -le 65535 ]] \
@@ -256,7 +261,7 @@ if [[ -n "$existing" ]]; then
   artifact_status="disabled"
   existing_ip="$(jq -r '(.fixedIPList[0] // .privateIP // "")' <<<"$existing")"
   existing_key="$STATE_DIR/id_rsa"
-  if [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+  if [[ "$FORWARDED_ARTIFACT_ENABLED" == "1" ]]; then
     artifact_status="warning"
     if [[ "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ && -n "$existing_ip" && -f "$existing_key" ]]; then
       if "$ARTIFACT_CONFIGURE_SCRIPT" --worker-ip "$existing_ip" --agent-uid "$BOT_UID" \
@@ -418,14 +423,14 @@ done
 # 用 printf 逐行生成（heredoc 会在值内二次展开 $ 反引号，破坏含特殊字符的
 # api-key/token）；%s 只做一次展开，值原样保留
 ARTIFACT_ENV_LINES=()
-if [[ "$ARTIFACT_HOST_MODE" == "forwarded" && "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]]; then
+if [[ "$FORWARDED_ARTIFACT_ENABLED" == "1" && "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]]; then
   ARTIFACT_ENV_LINES=(
     "CATSCO_ARTIFACT_HOST_MODE=forwarded"
     "CATSCO_ARTIFACT_PUBLIC_BASE_URL=https://agent-${BOT_UID}.${ARTIFACT_HOST_SUFFIX}:${ARTIFACT_HTTPS_PORT}/artifacts"
     "CATSCO_ARTIFACT_LOCAL_BASE_URL=http://127.0.0.1:${ARTIFACT_BACKEND_PORT}/artifacts"
     "CATSCO_ARTIFACT_DATA_DIR=${ARTIFACT_DATA_DIR}"
   )
-elif [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+elif [[ "$FORWARDED_ARTIFACT_ENABLED" == "1" ]]; then
   echo "warning: forwarded Artifact mode cannot be configured without a numeric Agent UID" >&2
 fi
 ENV_CONTENT="$(printf '%s\n' \
@@ -476,7 +481,7 @@ ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/cat
 ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1
 
 ARTIFACT_STATUS="disabled"
-if [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+if [[ "$FORWARDED_ARTIFACT_ENABLED" == "1" ]]; then
   ARTIFACT_STATUS="warning"
   if [[ "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]] && \
     "$ARTIFACT_CONFIGURE_SCRIPT" --worker-ip "$INSTANCE_IP" --agent-uid "$BOT_UID" \

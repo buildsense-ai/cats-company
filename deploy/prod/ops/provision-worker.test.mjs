@@ -319,6 +319,7 @@ test("provision-worker: forwarded Artifact contract is injected and reconciled",
   const artifact = artifactConfigureStub(sb);
   const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
     "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
     CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
     CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
   });
@@ -332,11 +333,28 @@ test("provision-worker: forwarded Artifact contract is injected and reconciled",
   assert.match(fs.readFileSync(artifact.calls, "utf8"), /--worker-ip 10\.0\.0\.1 --agent-uid 42/);
 });
 
+test("provision-worker: disabled gateway does not inject or configure forwarded Artifact", () => {
+  const sb = setupSandbox({});
+  const artifact = artifactConfigureStub(sb);
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "0",
+    CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
+    CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(JSON.parse(r.stdout).artifact_status, "disabled");
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.doesNotMatch(state.injectedEnv, /CATSCO_ARTIFACT_/);
+  assert.equal(fs.existsSync(artifact.calls), false);
+});
+
 test("provision-worker: Artifact reconciliation failure does not delete the worker", () => {
   const sb = setupSandbox({});
   const artifact = artifactConfigureStub(sb, 1);
   const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
     "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
     CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
     CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
   });

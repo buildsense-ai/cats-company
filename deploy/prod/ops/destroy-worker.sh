@@ -58,6 +58,8 @@ else
 fi
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARTIFACT_ROUTE_SCRIPT="${CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT:-$OPS_DIR/artifact-gateway-route.sh}"
+ARTIFACT_SYNC_SCRIPT="${CATSCO_ARTIFACT_GATEWAY_SYNC_SCRIPT:-$OPS_DIR/sync-artifact-gateway-routes.sh}"
+ARTIFACT_ROUTE_CLEANUP_DIR="${CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR:-$(dirname "$STATE_DIR")/.artifact-route-cleanup}"
 BOT_UID="$(sed -n 's/^CATSCO_BOT_UID=//p' "$STATE_DIR/inject.env" 2>/dev/null | tail -n1 || true)"
 
 # --- 工具 ---
@@ -199,7 +201,19 @@ fi
 # worker destroy operation.
 if [[ "${CATSCO_ARTIFACT_GATEWAY_ENABLED:-0}" == "1" && "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]]; then
   if ! "$ARTIFACT_ROUTE_SCRIPT" remove "$BOT_UID" >/dev/null; then
-    echo "warning: Artifact route cleanup failed for Agent $BOT_UID" >&2
+    cleanup_marker="$ARTIFACT_ROUTE_CLEANUP_DIR/$BOT_UID.pending"
+    if mkdir -p "$ARTIFACT_ROUTE_CLEANUP_DIR" && printf '%s\n' "$BOT_UID" > "$cleanup_marker"; then
+      echo "warning: Artifact route cleanup failed for Agent $BOT_UID; attempting full route sync" >&2
+      if "$ARTIFACT_SYNC_SCRIPT" >/dev/null 2>&1; then
+        rm -f "$cleanup_marker"
+      else
+        echo "warning: Artifact route cleanup remains pending for Agent $BOT_UID" >&2
+      fi
+    else
+      echo "warning: Artifact route cleanup failed for Agent $BOT_UID and could not be recorded" >&2
+    fi
+  else
+    rm -f "$ARTIFACT_ROUTE_CLEANUP_DIR/$BOT_UID.pending"
   fi
 fi
 
