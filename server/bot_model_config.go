@@ -93,8 +93,8 @@ var botModelCatalog = []botModelCatalogItem{
 	},
 	{
 		ID: "deepseek-v4-flash", Label: "DeepSeek V4 Flash", Description: "低额度 Flash，支持推理强度与视觉理解",
-		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
-		ReasoningEfforts: []string{"high", "max", "disabled"}, DefaultReasoningEffort: "high",
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 1000000,
+		ReasoningEfforts: []string{"low", "high", "max", "disabled"}, DefaultReasoningEffort: "high",
 		Vision: true, RuntimeModel: "deepseek-v4-flash",
 	},
 	{
