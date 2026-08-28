@@ -69,6 +69,12 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('.v3-composer-row.has-content .v3-voice-button');
     expect(css).toContain('.v3-composer-model-info {');
     expect(css).toContain('display: flex;');
+    expect(css).toContain('.v3-composer-model-quota.warning { color: var(--cc-warning-text); }');
+    expect(css).toContain('.v3-composer-model-quota.danger { color: var(--cc-danger-text); }');
+    expect(css).toContain('.v3-mobile-model-quota.warning { color: var(--cc-warning-text); }');
+    expect(css).toContain('.v3-mobile-model-quota.danger { color: var(--cc-danger-text); }');
+    expect(css).not.toContain('#f8d477');
+    expect(css).not.toContain('#f2a0a0');
     expect(css).toContain('.v3-mobile-model-info {');
     expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 36px);');
     expect(css).toMatch(/\.v3-shell-title,\s*\.v3-shell-title-input\s*\{/);

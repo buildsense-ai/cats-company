@@ -210,6 +210,24 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('上传用户未知');
   });
 
+  test('keeps Agent provenance when both Agent names are unavailable', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'agent',
+        creator_name: '',
+        uploader_name: '旧版成员',
+        agent_name: '',
+      }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain('Agent 生成');
+    expect(container.textContent).not.toContain('旧版成员');
+    expect(container.textContent).not.toContain('上传用户未知');
+  });
+
   test('shows Agent provenance ahead of a legacy uploading account name', async () => {
     api.getCloudArtifacts.mockResolvedValueOnce({
       artifacts: [{
