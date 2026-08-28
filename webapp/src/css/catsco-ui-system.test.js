@@ -975,6 +975,19 @@ describe('CatsCo shell styling', () => {
     expect(css).not.toContain('.cc-task-status-icon');
   });
 
+  it('uses the logo brand green for completed task dots on desktop without changing mobile geometry', () => {
+    expect(css).toContain(`@media (min-width: 769px) {
+  .cc-task-row-status.completed,
+  .cc-compact-task-status.completed {
+    color: var(--cc-brand-text-start);
+  }
+
+  .cc-task-status-dot--completed {
+    width: 7px;
+    height: 7px;
+  }`);
+  });
+
   it('keeps terminal state dots at least 3:1 against every sidebar theme', () => {
     const root = ruleFor(':root');
     const dark = ruleFor('html[data-theme="dark"]');
@@ -1134,6 +1147,11 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain(`  .v3-composer.cc-empty-composer-wrap {
     position: fixed;`);
     expect(css).toContain('padding: 8px 8px calc(12px + env(safe-area-inset-bottom));');
+  });
+
+  it('keeps the core mobile composer contract aligned with the 768px shell breakpoint', () => {
+    expect(css).toContain('@media (max-width: 768px) {\n  :root {\n    --cc-sidebar-width: min(86vw, 300px);');
+    expect(css).toContain('  .v3-timeline {\n    padding: 14px 10px 128px;');
   });
 
   it('makes top-level sidebar section titles distinct from expanded items', () => {

@@ -830,6 +830,51 @@
   margin-left: 0;
 }
 
+.v3-mobile-actions {
+  position: relative;
+  display: none;
+}
+
+.v3-mobile-actions-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  width: max-content;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-panel-raised);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, .28);
+}
+
+.v3-mobile-actions-menu button {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.v3-mobile-actions-menu button:hover:not(:disabled),
+.v3-mobile-actions-menu button:focus-visible {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.v3-mobile-actions-menu button:disabled {
+  color: var(--cc-muted);
+  cursor: not-allowed;
+}
+
 .v3-action-btn {
   flex: 0 0 auto;
   border-radius: var(--cc-radius-md);
@@ -923,33 +968,50 @@
     width: 32px;
     height: 32px;
   }
+
+  .v3-shell-action-desktop {
+    display: none;
+  }
+
+  .v3-mobile-actions {
+    display: block;
+  }
+
+  .v3-mobile-actions-trigger {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 @media (max-width: 520px) {
   .v3-local-assistant-bar {
-    grid-template-areas:
-      "model actions"
-      "title title";
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 38px 24px;
+    position: relative;
+    display: block;
     min-height: 70px;
-    gap: 0 6px;
     padding-top: 4px;
     padding-bottom: 4px;
   }
 
   .v3-model-select {
-    grid-area: model;
+    display: none;
   }
 
-  .v3-shell-title {
-    grid-area: title;
-    max-width: calc(100vw - 24px);
+  .v3-shell-title,
+  .v3-shell-title-input {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    z-index: 1;
+    width: auto;
+    max-width: calc(100vw - 120px);
+    transform: translateX(-50%);
     font-size: 12px;
   }
 
   .v3-shell-actions {
-    grid-area: actions;
+    position: absolute;
+    top: 4px;
+    right: 10px;
     min-width: max-content;
     overflow: visible;
   }

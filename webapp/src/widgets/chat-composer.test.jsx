@@ -76,8 +76,8 @@ describe('ChatComposer', () => {
     return event;
   }
 
-  it('renders the shared control row and keeps the hint outside the pill', async () => {
-    await renderComposer();
+	it('renders the shared control row and keeps the hint outside the pill', async () => {
+		await renderComposer();
 
     const composer = container.querySelector('.v3-composer');
     const box = composer.querySelector('.v3-composer-box');
@@ -90,8 +90,29 @@ describe('ChatComposer', () => {
     expect(row.querySelector('button.v3-send')).not.toBeNull();
     expect(hint.textContent).toBe(CHAT_COMPOSER_HINT);
     expect(hint.parentElement).toBe(composer);
-    expect(box.contains(hint)).toBe(false);
-  });
+		expect(box.contains(hint)).toBe(false);
+	});
+
+	it('places model information in the composer and marks content state for mobile controls', async () => {
+		await renderComposer({
+			modelInfo: {
+				model: 'MiniMax-M2.7',
+				quota: '剩余 95%',
+				tone: 'warning',
+				title: '当前使用的模型：MiniMax-M2.7',
+			},
+		});
+
+		const info = container.querySelector('.v3-composer-model-info');
+		const row = container.querySelector('.v3-composer-row');
+		expect(info?.textContent).toContain('MiniMax-M2.7');
+		expect(info?.textContent).toContain('剩余 95%');
+		expect(info?.getAttribute('aria-label')).toContain('剩余 95%');
+		expect(row?.classList.contains('is-empty')).toBe(true);
+
+		await renderComposer({ value: '测试消息', modelInfo: { model: 'MiniMax-M2.7' } });
+		expect(container.querySelector('.v3-composer-row')?.classList.contains('has-content')).toBe(true);
+	});
 
   it('renders the optional Agent selector only when a caller provides it', async () => {
     const onAgentToggle = vi.fn();

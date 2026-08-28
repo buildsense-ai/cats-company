@@ -41,6 +41,7 @@ import BotModelSelector, {
   describeModelConfigRequestError,
 } from '../widgets/bot-model-selector';
 import {
+  formatRelayUsagePill,
   relayUsageTone,
   resolveConversationModelDisplay,
   resolveCurrentModelName,
@@ -82,7 +83,7 @@ import {
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
 } from '../utils/auth-routes';
-import { Cloud, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import './workspace-styles';
 
 const TABS = {
@@ -108,6 +109,27 @@ const DEV_PREVIEW_USER = {
   avatar_url: '',
   account_type: 'human',
 };
+
+export function shouldOpenProfileSettingsDirectly(viewportWidth) {
+  return Number(viewportWidth) <= 768;
+}
+
+export function buildMobileModelInfo(currentModelName, agentModelState, relayUsageSummary) {
+  const modelDisplay = resolveConversationModelDisplay(currentModelName, agentModelState);
+  if (!modelDisplay) return null;
+
+  const summary = agentModelState?.isBot ? agentModelState.summary : relayUsageSummary;
+  return {
+    model: modelDisplay.model || currentModelName,
+    quota: formatRelayUsagePill(summary, { customLabel: '自备模型', showModel: false }),
+    tone: relayUsageTone(summary),
+    title: modelDisplay.title || `当前使用的模型：${currentModelName}`,
+  };
+}
+
+export function getMobileSidebarWidth(viewportWidth) {
+  return Math.min(Number(viewportWidth) * 0.78, 320);
+}
 
 export function resolveInitialUser({
   themePreview = '',
@@ -334,11 +356,13 @@ function TinodeWebApp({ location }) {
   }, []);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
+  const mobileGestureRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
   const [appSidebarPreferredWidth, setAppSidebarPreferredWidth] = useState(() => loadSidebarWidth());
   const [sidebarViewportWidth, setSidebarViewportWidth] = useState(() => window.innerWidth);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [newTaskRequest, setNewTaskRequest] = useState(0);
   const [theme, setTheme] = useState(() => (
     DEV_THEME_PREVIEW || normalizeTheme(readStorageValue(THEME_STORAGE_KEY))
   ));
@@ -347,6 +371,7 @@ function TinodeWebApp({ location }) {
     unlocked: isLiquidTheme(DEV_THEME_PREVIEW) || isLiquidThemeUnlocked(),
   }));
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
+  const [relayUsageSummary, setRelayUsageSummary] = useState(null);
   const [activeAgentModel, setActiveAgentModel] = useState(null);
   const [activeAgentState, setActiveAgentState] = useState(null);
   const activeTopicId = activeTopic?.topicId || '';
@@ -377,6 +402,11 @@ function TinodeWebApp({ location }) {
     activeAgentState,
     taskDraft,
     emptyTaskSelectedAgent,
+  );
+  const mobileModelInfo = buildMobileModelInfo(
+    currentModelName,
+    displayedAgentModel,
+    relayUsageSummary,
   );
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const openCloudArtifactsForAgent = useCallback((agentUid) => {
@@ -415,6 +445,7 @@ function TinodeWebApp({ location }) {
     setEmptyTaskSelectedAgent(null);
   }, [activeTopicId]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
+  const mobileProfileSettingsDirect = shouldOpenProfileSettingsDirectly(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
     MIN_APP_SIDEBAR_WIDTH,
@@ -426,6 +457,55 @@ function TinodeWebApp({ location }) {
   const commitAppSidebarWidth = useCallback((nextWidth) => {
     setAppSidebarPreferredWidth(nextWidth);
     saveSidebarWidth(nextWidth);
+  }, []);
+
+  // Mobile navigation uses a discrete swipe: the panel opens or closes after
+  // the gesture crosses the threshold, without exposing drag progress.
+  const onMobileTouchStart = useCallback((event) => {
+    if (window.innerWidth > 768 || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const target = event.target;
+    const sidebarWidth = getMobileSidebarWidth(window.innerWidth);
+    if (!mobileSidebarOpen) {
+      const fromMain = target?.closest?.('.v3-main');
+      const fromEdge = touch.clientX <= 28;
+      if (!fromMain || target.closest('button, input, textarea, a, [contenteditable="true"]')) {
+        if (!fromEdge) return;
+      }
+      mobileGestureRef.current = { startX: touch.clientX, startY: touch.clientY, mode: 'open' };
+      return;
+    }
+    if (touch.clientX > sidebarWidth && !target?.closest?.('.v3-sidebar')) return;
+    mobileGestureRef.current = { startX: touch.clientX, startY: touch.clientY, mode: 'close' };
+  }, [mobileSidebarOpen]);
+
+  const onMobileTouchMove = useCallback((event) => {
+    const gesture = mobileGestureRef.current;
+    if (!gesture || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const dx = touch.clientX - gesture.startX;
+    const dy = touch.clientY - gesture.startY;
+    if (Math.abs(dy) > Math.abs(dx) * 1.15) {
+      mobileGestureRef.current = null;
+      return;
+    }
+    if (Math.abs(dx) > 8) event.preventDefault();
+  }, []);
+
+  const onMobileTouchEnd = useCallback((event) => {
+    const gesture = mobileGestureRef.current;
+    mobileGestureRef.current = null;
+    if (!gesture) return;
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - gesture.startX;
+    if (Math.abs(dx) < 56) return;
+    if (gesture.mode === 'open' && dx > 0) {
+      setAppSidebarCollapsed(false);
+      saveAppSidebarCollapsed(false);
+      setMobileSidebarOpen(true);
+    } else if (gesture.mode === 'close' && dx < 0) {
+      setMobileSidebarOpen(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -485,6 +565,7 @@ function TinodeWebApp({ location }) {
       if (cancelled) return;
       const usage = usageResult.status === 'fulfilled' ? usageResult.value?.summary : null;
       const config = configResult.status === 'fulfilled' ? configResult.value : null;
+      setRelayUsageSummary(usage);
       setCurrentModelName(resolveCurrentModelName(usage, config?.default_model || DEFAULT_MODEL_NAME));
     };
     const handleVisibilityChange = () => {
@@ -1169,6 +1250,8 @@ function TinodeWebApp({ location }) {
       onDownload={() => openDesktopModal('download')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
       title={activeTopic?.name || taskDraftTitle(taskDraft)}
+      mobileModelInfo={mobileModelInfo}
+      onNewTask={() => setNewTaskRequest((request) => request + 1)}
       onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
       relayAdminAllowed={relayAdminAllowed}
       onOpenRelayAdmin={() => setRelayAdminOpen(true)}
@@ -1178,8 +1261,12 @@ function TinodeWebApp({ location }) {
   return (
     <div
       ref={appShellRef}
-      className={`v3-app${isSidebarResizing ? ' sidebar-resizing' : ''}`}
+      className={`v3-app${isSidebarResizing ? ' sidebar-resizing' : ''}${mobileSidebarOpen ? ' mobile-sidebar-open' : ''}`}
       style={{ '--cc-sidebar-user-width': `${appSidebarWidth}px` }}
+      onTouchStart={onMobileTouchStart}
+      onTouchMove={onMobileTouchMove}
+      onTouchEnd={onMobileTouchEnd}
+      onTouchCancel={() => { mobileGestureRef.current = null; }}
     >
       {mobileSidebarOpen && (
         <button
@@ -1213,7 +1300,7 @@ function TinodeWebApp({ location }) {
               </button>
             )}
             <button
-              className="v3-sidebar-collapse-btn"
+              className="v3-sidebar-collapse-btn v3-sidebar-desktop-collapse-btn"
               type="button"
               onClick={toggleAppSidebar}
               aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
@@ -1248,6 +1335,7 @@ function TinodeWebApp({ location }) {
               setMobileSidebarOpen(false);
             }}
             onOpenCloudArtifacts={handleOpenManagedAgentArtifacts}
+            newTaskRequest={newTaskRequest}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
@@ -1273,11 +1361,19 @@ function TinodeWebApp({ location }) {
         <ProfileFooter
           user={user}
           wsStatus={wsStatus}
-          popoverOpen={showProfilePopover}
-          onTogglePopover={() => setShowProfilePopover((open) => !open)}
+          directSettings={mobileProfileSettingsDirect}
+          popoverOpen={showProfilePopover && !mobileProfileSettingsDirect}
+          onTogglePopover={() => {
+            if (mobileProfileSettingsDirect) {
+              setShowProfilePopover(false);
+              setShowProfileEditor(true);
+              return;
+            }
+            setShowProfilePopover((open) => !open);
+          }}
         />
 
-        {showProfilePopover && (
+        {showProfilePopover && !mobileProfileSettingsDirect && (
           <ProfilePopover
             compact={appSidebarCollapsed}
             popoverRef={profilePopoverRef}
@@ -1318,12 +1414,14 @@ function TinodeWebApp({ location }) {
           onClick={() => {
             setAppSidebarCollapsed(false);
             saveAppSidebarCollapsed(false);
-            setMobileSidebarOpen(true);
+            setMobileSidebarOpen((open) => !open);
           }}
-          aria-label="打开左侧栏"
+          aria-label={mobileSidebarOpen ? '关闭左侧栏' : '打开左侧栏'}
           aria-expanded={mobileSidebarOpen}
         >
-          <PanelLeftOpen size={18} />
+          {mobileSidebarOpen
+            ? <PanelLeftClose size={18} aria-hidden="true" />
+            : <PanelLeftOpen size={18} aria-hidden="true" />}
         </button>
         <div className="v3-main-body">
           <div className="v3-main-content">
@@ -1349,6 +1447,7 @@ function TinodeWebApp({ location }) {
                 messageLocationRequest={messageLocationRequest}
                 onBackToSearch={() => setSearchOpen(true)}
                 composerDraftStore={composerDraftStoreRef.current}
+                modelInfo={mobileModelInfo}
               />
             ) : (
               <>
@@ -1361,14 +1460,15 @@ function TinodeWebApp({ location }) {
                     onSelectedAgentChange={setEmptyTaskSelectedAgent}
                     onResolveAgentTopic={createDraftAgentTaskTopic}
                     onActivateTopic={activateResolvedTopic}
+                    modelInfo={mobileModelInfo}
                   />
                   {standaloneCloudArtifactsRequest && (
                     <div className="v3-file-preview-shell">
-                      <CloudArtifactsPanel
-                        key={standaloneCloudArtifactsRequest.requestId}
-                        agentUid={standaloneCloudArtifactsRequest.agentUid}
-                        topicId={standaloneCloudArtifactsRequest.topicId}
-                        initialTab={standaloneCloudArtifactsRequest.initialTab}
+                        <CloudArtifactsPanel
+                          key={standaloneCloudArtifactsRequest.requestId}
+                          agentUid={standaloneCloudArtifactsRequest.agentUid}
+                          topicId={standaloneCloudArtifactsRequest.topicId}
+                          initialTab={standaloneCloudArtifactsRequest.initialTab}
                         tab={standaloneCloudArtifactsTab}
                         onTabChange={setStandaloneCloudArtifactsTab}
                         onClose={() => setStandaloneCloudArtifactsRequest(null)}
@@ -1403,6 +1503,10 @@ function TinodeWebApp({ location }) {
           onClose={() => setShowProfileEditor(false)}
           onSaved={handleUserUpdated}
           onOpenRelay={() => setShowRelayModal(true)}
+          onOpenFeedback={() => setShowFeedbackModal(true)}
+          onOpenDownload={() => openDesktopModal('download')}
+          onOpenDesktopConnect={() => openDesktopModal('connect')}
+          onLogout={handleLogout}
         />
       )}
 
@@ -1453,8 +1557,11 @@ function TinodeWebApp({ location }) {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, mobileModelInfo = null, onNewTask }) {
   const barRef = useRef(null);
+  const mobileActionsRef = useRef(null);
+  const mobileActionsTriggerRef = useRef(null);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
 
   useEffect(() => {
     const bar = barRef.current;
@@ -1481,6 +1588,57 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
     };
   }, []);
 
+  useEffect(() => {
+    if (!mobileActionsOpen) return undefined;
+
+    mobileActionsRef.current
+      ?.querySelector('[role="menuitem"]:not(:disabled)')
+      ?.focus({ preventScroll: true });
+
+    const closeOnOutsidePointer = (event) => {
+      const root = mobileActionsRef.current;
+      if (!root) return;
+      const eventPath = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      if (!eventPath.includes(root) && !root.contains(event.target)) setMobileActionsOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') {
+        setMobileActionsOpen(false);
+        mobileActionsTriggerRef.current?.focus({ preventScroll: true });
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [mobileActionsOpen]);
+
+  const closeMobileActions = () => setMobileActionsOpen(false);
+  const handleMobileActionsKeyDown = (event) => {
+    const items = Array.from(
+      mobileActionsRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') || [],
+    );
+    if (items.length === 0) return;
+
+    if (event.key === 'Tab') {
+      closeMobileActions();
+      return;
+    }
+
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1 + items.length) % items.length;
+    else if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = items.length - 1;
+    else return;
+
+    event.preventDefault();
+    items[nextIndex]?.focus({ preventScroll: true });
+  };
+
   return (
     <header ref={barRef} className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -1491,15 +1649,25 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         />
       </div>
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
+      {mobileModelInfo && (
+        <div
+          className="v3-mobile-model-info"
+          title={mobileModelInfo.title || undefined}
+          aria-label={`${mobileModelInfo.model || '模型'}${mobileModelInfo.quota ? `，${mobileModelInfo.quota}` : ''}`}
+        >
+          <span className="v3-mobile-model-name">{mobileModelInfo.model || '模型未知'}</span>
+          {mobileModelInfo.quota && <span className={`v3-mobile-model-quota${mobileModelInfo.tone ? ` ${mobileModelInfo.tone}` : ''}`}>{mobileModelInfo.quota}</span>}
+        </div>
+      )}
       <div className="v3-shell-actions">
         {relayAdminAllowed && (
-          <button type="button" className="v3-action-btn" onClick={onOpenRelayAdmin} aria-label="模型用量" title="模型用量管理">
+          <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenRelayAdmin} aria-label="模型用量" title="模型用量管理">
             <Settings2 size={17} />
           </button>
         )}
         <button
           type="button"
-          className="v3-action-btn v3-cloud-action"
+          className="v3-action-btn v3-cloud-action v3-shell-action-desktop"
           onClick={onOpenCloudArtifacts}
           disabled={!onOpenCloudArtifacts}
           aria-label={onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}
@@ -1507,9 +1675,56 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         >
           <Cloud size={17} aria-hidden="true" />
         </button>
-        <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="打开桌面端" title="桌面端">
+        <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onDownload} aria-label="打开桌面端" title="桌面端">
           <Laptop size={17} />
         </button>
+        <div ref={mobileActionsRef} className="v3-mobile-actions">
+          <button
+            ref={mobileActionsTriggerRef}
+            type="button"
+            className="v3-action-btn v3-mobile-actions-trigger"
+            aria-label="更多操作"
+            aria-haspopup="menu"
+            aria-expanded={mobileActionsOpen}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setMobileActionsOpen((open) => !open)}
+          >
+            <MoreHorizontal size={18} aria-hidden="true" />
+          </button>
+          {mobileActionsOpen && (
+            <div
+              className="v3-mobile-actions-menu"
+              role="menu"
+              aria-label="更多操作"
+              onKeyDown={handleMobileActionsKeyDown}
+            >
+              <button type="button" role="menuitem" aria-label="新建任务" onClick={() => { closeMobileActions(); onNewTask?.(); }}>
+                <Plus size={16} aria-hidden="true" />
+                <span>新建任务</span>
+              </button>
+              {relayAdminAllowed && (
+                <button type="button" role="menuitem" aria-label="模型用量" onClick={() => { closeMobileActions(); onOpenRelayAdmin?.(); }}>
+                  <Settings2 size={16} aria-hidden="true" />
+                  <span>模型用量</span>
+                </button>
+              )}
+              <button
+                type="button"
+                role="menuitem"
+                aria-label={onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}
+                disabled={!onOpenCloudArtifacts}
+                onClick={() => { closeMobileActions(); onOpenCloudArtifacts?.(); }}
+              >
+                <Cloud size={16} aria-hidden="true" />
+                <span>{onOpenCloudArtifacts ? '打开产物' : '产物暂不可用'}</span>
+              </button>
+              <button type="button" role="menuitem" aria-label="下载桌面端" onClick={() => { closeMobileActions(); onDownload?.(); }}>
+                <Download size={16} aria-hidden="true" />
+                <span>下载桌面端</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
@@ -1542,7 +1757,7 @@ function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft,
   };
 }
 
-function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic }) {
+function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic, modelInfo = null }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -1555,6 +1770,7 @@ function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgen
           onSelectedAgentChange={onSelectedAgentChange}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}
+          modelInfo={modelInfo}
         />
       </div>
     </main>
@@ -1569,6 +1785,7 @@ function SidebarContent({
   onStartAgentTask,
   onOpenSkillHub,
   onOpenCloudArtifacts,
+  newTaskRequest,
   user,
   onlineUsers,
   compact,
@@ -1583,6 +1800,7 @@ function SidebarContent({
       onStartAgentTask={onStartAgentTask}
       onOpenSkillHub={onOpenSkillHub}
       onOpenCloudArtifacts={onOpenCloudArtifacts}
+      newTaskRequest={newTaskRequest}
       user={user}
       onlineUsers={onlineUsers}
       compact={compact}
@@ -1633,7 +1851,7 @@ export function ProfilePopover({ compact = false, popoverRef, children, onLogout
   );
 }
 
-function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
+function ProfileFooter({ user, wsStatus, popoverOpen, directSettings = false, onTogglePopover }) {
   const connected = wsStatus === 'connected';
   const reconnecting = wsStatus === 'connecting' || wsStatus === 'reconnecting';
   const statusClass = connected ? 'online' : reconnecting ? 'reconnecting' : 'offline';
@@ -1644,7 +1862,7 @@ function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
       type="button"
       className="v3-profile-footer"
       onClick={onTogglePopover}
-      aria-label={`${displayName}，打开个人菜单`}
+      aria-label={`${displayName}，${directSettings ? '打开设置' : '打开个人菜单'}`}
       aria-expanded={popoverOpen}
     >
       <Avatar name={displayName} src={user.avatar_url} size={32} className="v3-profile-avatar" />

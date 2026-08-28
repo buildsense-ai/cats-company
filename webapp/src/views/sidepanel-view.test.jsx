@@ -2502,6 +2502,15 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeFalsy();
   });
 
+  it('opens the existing new-task picker when the mobile header requests it', async () => {
+    await mount({ newTaskRequest: 0 });
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeFalsy();
+
+    await mount({ newTaskRequest: 1 });
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
+    expect(document.body.querySelector('.cc-new-task-dialog')?.textContent).toContain('选择 AI 助手开始任务');
+  });
+
   it('does not duplicate global search inside the expanded sidebar tools', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
@@ -4032,7 +4041,8 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="选择历史任务"]'));
     });
 
-    expect(container.querySelector('[aria-label="完成选择任务"]')).toBeTruthy();
+    expect(container.querySelector('.cc-history-batch-exit-actions [aria-label="确认选择任务"]')).toBeTruthy();
+    expect(container.querySelector('.cc-history-batch-exit-actions [aria-label="取消批量选择"]')).toBeTruthy();
     const inboxTask = container.querySelector('[aria-label="选择任务 Inbox Task"]');
     expect(inboxTask).toBeTruthy();
     expect(inboxTask.getAttribute('role')).toBe('checkbox');
@@ -4054,7 +4064,7 @@ describe('ChatListView sidebar sections', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(container.querySelector('[role="menu"][aria-label="批量项目操作"]')).toBeFalsy();
-    expect(container.querySelector('[aria-label="完成选择任务"]')).toBeTruthy();
+    expect(container.querySelector('.cc-history-batch-exit-actions [aria-label="确认选择任务"]')).toBeTruthy();
 
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="打开项目 Website Launch"]'));

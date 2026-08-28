@@ -55,6 +55,52 @@ describe('ProfileEditor appearance settings', () => {
     expect(onThemeChange).toHaveBeenCalledWith('dark');
   });
 
+  it('renders the mobile-native profile hierarchy without removing desktop controls', async () => {
+    await renderEditor({ onThemeChange: vi.fn(), onOpenRelay: vi.fn() });
+
+    expect(container.querySelector('.oc-profile-editor-overlay')).toBeTruthy();
+    expect(container.querySelector('.oc-profile-avatar-wrap')).toBeTruthy();
+    expect(container.querySelector('.oc-profile-mobile-name')?.textContent).toBe('Bruce');
+    expect(container.querySelector('.oc-profile-details-section')).toBeTruthy();
+    expect(container.querySelector('.oc-profile-account-section')).toBeTruthy();
+    expect(container.querySelector('.oc-profile-behavior-section')).toBeTruthy();
+    expect(container.querySelector('[aria-label="选择头像"]')).toBeTruthy();
+    expect(container.querySelector('.oc-profile-avatar-desktop-action')).toBeTruthy();
+  });
+
+  it('uses a grouped mobile settings home while preserving access to existing destinations', async () => {
+    const onOpenFeedback = vi.fn();
+    const onLogout = vi.fn();
+    await renderEditor({
+      onThemeChange: vi.fn(),
+      onOpenRelay: vi.fn(),
+      onOpenFeedback,
+      onOpenDownload: vi.fn(),
+      onOpenDesktopConnect: vi.fn(),
+      onLogout,
+    });
+
+    const dialog = container.querySelector('.oc-profile-editor-modal');
+    expect(dialog?.dataset.mobilePane).toBe('home');
+    expect(container.querySelector('.oc-profile-mobile-home')?.textContent).toContain('账户');
+    expect(container.querySelector('.oc-profile-mobile-home')?.textContent).toContain('应用');
+    expect(container.querySelector('.oc-profile-mobile-home')?.textContent).toContain('连接与支持');
+
+    const personalProfile = Array.from(container.querySelectorAll('.oc-profile-mobile-home button'))
+      .find((button) => button.textContent.includes('个人资料'));
+    await act(async () => Simulate.click(personalProfile));
+    expect(dialog?.dataset.mobilePane).toBe('profile');
+
+    const back = container.querySelector('[aria-label="返回设置"]');
+    await act(async () => Simulate.click(back));
+    expect(dialog?.dataset.mobilePane).toBe('home');
+
+    const feedback = Array.from(container.querySelectorAll('.oc-profile-mobile-home button'))
+      .find((button) => button.textContent.includes('意见反馈'));
+    await act(async () => Simulate.click(feedback));
+    expect(onOpenFeedback).toHaveBeenCalledTimes(1);
+  });
+
   it('opens password verification instead of selecting a locked liquid theme', async () => {
     const onThemeChange = vi.fn();
     const onUnlockLiquidTheme = vi.fn().mockResolvedValue({ ok: true });

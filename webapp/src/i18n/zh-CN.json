@@ -196,6 +196,10 @@
 
   "sidebar_batch_select_done": "完成选择",
   "sidebar_batch_select_done_aria": "完成选择任务",
+  "sidebar_batch_confirm": "确认",
+  "sidebar_batch_confirm_selection_aria": "确认选择任务",
+  "sidebar_batch_cancel_selection_aria": "取消批量选择",
+  "sidebar_batch_exit_actions_aria": "退出批量选择",
   "sidebar_batch_select_task": "选择任务 {name}",
   "sidebar_batch_deselect_task": "取消选择任务 {name}",
   "sidebar_batch_select_history": "选择历史任务",
