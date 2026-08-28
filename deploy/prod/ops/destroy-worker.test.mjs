@@ -40,7 +40,9 @@ if (op === "ecs ListEcsInstances") {
   if (state.failDeleteInstance) { json({ statusCode: "900", errorCode: "E.DEL", message: "boom" }); process.exit(0); }
   state.deletedInstances = state.deletedInstances || [];
   state.deletedInstances.push(val("--instanceID"));
-  state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  if (!state.deferDeleteInstance) {
+    state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  }
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DestroyEcsInstance") {
@@ -266,6 +268,42 @@ test("destroy-worker: keeps a cleanup marker when route repair is unavailable", 
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stderr, /cleanup remains pending/);
   assert.equal(fs.readFileSync(path.join(cleanupDir, "42.pending"), "utf8"), "42\n");
+});
+
+test("destroy-worker: full sync excludes a pending route while async deletion remains visible", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+    deferDeleteInstance: true,
+  });
+  const stateRoot = path.join(sb.sandbox, "worker-state");
+  const workerState = path.join(stateRoot, "bot-a");
+  const cleanupDir = path.join(stateRoot, ".artifact-route-cleanup");
+  const routeScript = path.join(sb.bin, "artifact-route.sh");
+  const syncedRoutes = path.join(sb.sandbox, "synced-routes.json");
+  fs.mkdirSync(workerState, { recursive: true });
+  fs.writeFileSync(path.join(workerState, "inject.env"), "CATSCO_BOT_UID=42\n");
+  fs.writeFileSync(routeScript, `#!/usr/bin/env bash
+case "$1" in
+  remove) exit 1 ;;
+  sync) cat > '${toMsys(syncedRoutes)}' ;;
+  *) exit 2 ;;
+esac
+`);
+  fs.chmodSync(routeScript, 0o755);
+
+  const r = run(sb, ["--name", "bot-a"], {
+    CTYUN_WORKER_STATE_ROOT: toMsys(stateRoot),
+    CTYUN_WORKER_STATE_DIR: "",
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
+    CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR: toMsys(cleanupDir),
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(syncedRoutes, "utf8")), {});
+  assert.equal(fs.existsSync(path.join(cleanupDir, "42.pending")), false);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.instances[0].state, "running", "the cloud API still exposes the asynchronously deleting instance");
 });
 
 test("destroy-worker: keypair still cleaned when instance already gone", () => {

@@ -8,6 +8,7 @@ for command in ctyun-cli jq; do
 done
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARTIFACT_ROUTE_SCRIPT="${CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT:-$OPS_DIR/artifact-gateway-route.sh}"
 STATE_ROOT="${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
 CLEANUP_DIR="${CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR:-$STATE_ROOT/.artifact-route-cleanup}"
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
@@ -31,6 +32,7 @@ for state_dir in "$STATE_ROOT"/*; do
   tenant="$(basename "$state_dir")"
   agent_uid="$(sed -n 's/^CATSCO_BOT_UID=//p' "$state_dir/inject.env" | tail -n1)"
   [[ "$agent_uid" =~ ^[1-9][0-9]{0,18}$ ]] || continue
+  [[ ! -f "$CLEANUP_DIR/$agent_uid.pending" ]] || continue
   response="$(ctyun ecs ListEcsInstances --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
     --instanceName "worker-$tenant" --pageNo 1 --pageSize 10)"
   instance="$(jq -c --arg name "worker-$tenant" '.returnObj.results[]? | select(.instanceName == $name)' <<<"$response" | head -n1)"
@@ -42,7 +44,7 @@ for state_dir in "$STATE_ROOT"/*; do
   routes="$(jq -c --arg uid "$agent_uid" --arg ip "$private_ip" '. + {($uid):$ip}' <<<"$routes")"
 done
 
-printf '%s\n' "$routes" | "$OPS_DIR/artifact-gateway-route.sh" sync
+printf '%s\n' "$routes" | "$ARTIFACT_ROUTE_SCRIPT" sync
 
 # A successful full replacement also resolves any cleanup markers left by a
 # destroy operation that could not reach the gateway at the time.
