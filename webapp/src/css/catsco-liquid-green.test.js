@@ -13,6 +13,7 @@ describe('restored green liquid theme', () => {
     expect(css).toContain('--cc-brand-text-end: #29bc95;');
     expect(css).toContain('--cc-online-icon: #29bc95;');
     expect(css).toContain('--cc-offline-icon: #7f8b88;');
+    expect(css).toContain('--cc-danger-text: #ff8a80;');
     expect(css).toContain('--cc-liquid-blue: #29bc95;');
     expect(css).toContain('--cc-liquid-violet: #29bc95;');
     expect(css).toContain('--cc-border: rgba(184, 229, 216, 0.12);');

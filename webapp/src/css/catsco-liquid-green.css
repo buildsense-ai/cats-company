@@ -26,6 +26,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] {
   --cc-focus-ring: #aeb2b9;
   --cc-success-text: #7be0c1;
   --cc-warning-text: #f3c76b;
+  --cc-danger-text: #ff8a80;
   --cc-online-icon: #29bc95;
   --cc-offline-icon: #7f8b88;
   --cc-code: rgba(2, 14, 12, 0.78);
