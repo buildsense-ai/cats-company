@@ -135,26 +135,56 @@ func (a *Adapter) PutArtifactRuntimeState(
 		return nil, nil, fmt.Errorf("write artifact runtime state: %w", err)
 	}
 	state.Value = append(json.RawMessage(nil), state.Value...)
+	eventID, err := postgresNextArtifactRuntimeEventID(
+		ctx, tx, state.AgentUID, state.ArtifactID,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
 	event := &store.ArtifactRuntimeEvent{
-		EventType: "state.updated", AgentUID: state.AgentUID, ArtifactID: state.ArtifactID,
+		EventID: eventID, EventType: "state.updated", AgentUID: state.AgentUID, ArtifactID: state.ArtifactID,
 		Namespace: state.Namespace, Key: state.Key, Revision: state.Revision,
 		UpdatedByUID: state.UpdatedByUID, UpdatedBy: state.UpdatedBy,
 	}
 	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO artifact_runtime_events (
-			event_type, agent_uid, artifact_id, namespace, document_key,
+			artifact_event_id, event_type, agent_uid, artifact_id, namespace, document_key,
 			revision, updated_by_uid, updated_by_type
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, created_at`,
-		event.EventType, event.AgentUID, event.ArtifactID, event.Namespace,
-		event.Key, event.Revision, event.UpdatedByUID, event.UpdatedBy,
-	).Scan(&event.EventID, &event.CreatedAt); err != nil {
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING created_at`,
+		event.EventID, event.EventType, event.AgentUID, event.ArtifactID,
+		event.Namespace, event.Key, event.Revision, event.UpdatedByUID, event.UpdatedBy,
+	).Scan(&event.CreatedAt); err != nil {
 		return nil, nil, fmt.Errorf("append artifact runtime event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("commit artifact runtime state write: %w", err)
 	}
 	return state, event, nil
+}
+
+// postgresNextArtifactRuntimeEventID serializes sequence allocation per
+// Artifact inside the State transaction. A later writer cannot obtain its ID
+// until the previous holder commits or rolls back, so cursor order follows
+// commit visibility instead of BIGSERIAL allocation time.
+func postgresNextArtifactRuntimeEventID(
+	ctx context.Context,
+	tx *sql.Tx,
+	agentUID int64,
+	artifactID string,
+) (int64, error) {
+	var eventID int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO artifact_runtime_event_sequences (
+			agent_uid, artifact_id, last_event_id
+		) VALUES ($1, $2, 1)
+		ON CONFLICT (agent_uid, artifact_id) DO UPDATE
+		SET last_event_id = artifact_runtime_event_sequences.last_event_id + 1,
+			updated_at = CURRENT_TIMESTAMP
+		RETURNING last_event_id`, agentUID, artifactID).Scan(&eventID); err != nil {
+		return 0, fmt.Errorf("allocate artifact runtime event id: %w", err)
+	}
+	return eventID, nil
 }
 
 func postgresArtifactRuntimeRevision(
@@ -186,11 +216,11 @@ func (a *Adapter) ListArtifactRuntimeEvents(
 	limit int,
 ) ([]*store.ArtifactRuntimeEvent, error) {
 	rows, err := a.db.QueryContext(ctx, `
-		SELECT id, event_type, namespace, document_key, revision,
+		SELECT artifact_event_id, event_type, namespace, document_key, revision,
 			updated_by_uid, updated_by_type, created_at
 		FROM artifact_runtime_events
-		WHERE agent_uid = $1 AND artifact_id = $2 AND id > $3
-		ORDER BY id
+		WHERE agent_uid = $1 AND artifact_id = $2 AND artifact_event_id > $3
+		ORDER BY artifact_event_id
 		LIMIT $4`, agentUID, artifactID, afterEventID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list artifact runtime events: %w", err)
@@ -226,9 +256,10 @@ func (a *Adapter) LatestArtifactRuntimeEventID(
 ) (int64, error) {
 	var eventID int64
 	if err := a.db.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(id), 0)
-		FROM artifact_runtime_events
-		WHERE agent_uid = $1 AND artifact_id = $2`, agentUID, artifactID).Scan(&eventID); err != nil {
+		SELECT COALESCE((
+			SELECT last_event_id FROM artifact_runtime_event_sequences
+			WHERE agent_uid = $1 AND artifact_id = $2
+		), 0)`, agentUID, artifactID).Scan(&eventID); err != nil {
 		return 0, fmt.Errorf("read latest artifact runtime event: %w", err)
 	}
 	return eventID, nil

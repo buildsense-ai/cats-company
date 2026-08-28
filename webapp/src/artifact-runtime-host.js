@@ -284,16 +284,9 @@ export function createArtifactRuntimeHost({
       }
       const response = await apiRequest(session, request.operation, request.payload);
       if (!sessionMatches(currentSession(), session)) return;
-      if (response?.event && subscription && sessionMatches(session, subscription)) {
-        const eventID = Number(response.event.event_id || 0);
-        if (Number.isSafeInteger(eventID) && eventID > subscription.cursor) {
-          subscription.cursor = eventID;
-          postBridgeMessage(session.binding, {
-            type: ARTIFACT_RUNTIME_EVENT_TYPE,
-            event: response.event,
-          });
-        }
-      }
+      // A write response may commit after an older event that this Viewer has
+      // not consumed yet. Only the ordered events.list stream may advance the
+      // subscription cursor; the write caller already receives the new State.
       postResponse(session, request.requestId, response);
     } catch (error) {
       if (sessionMatches(currentSession(), session)) postError(session, request.requestId, error);

@@ -145,20 +145,22 @@ func (a *Adapter) PutArtifactRuntimeState(
 	if err != nil {
 		return nil, nil, err
 	}
-	result, err := tx.ExecContext(ctx, `
+	eventID, err := mysqlNextArtifactRuntimeEventID(
+		ctx, tx, state.AgentUID, state.ArtifactID,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO artifact_runtime_events (
-			event_type, agent_uid, artifact_id, namespace, document_key,
+			artifact_event_id, event_type, agent_uid, artifact_id, namespace, document_key,
 			revision, updated_by_uid, updated_by_type
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		"state.updated", state.AgentUID, state.ArtifactID, state.Namespace,
-		state.Key, state.Revision, state.UpdatedByUID, state.UpdatedBy,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		eventID, "state.updated", state.AgentUID, state.ArtifactID,
+		state.Namespace, state.Key, state.Revision, state.UpdatedByUID, state.UpdatedBy,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("append artifact runtime event: %w", err)
-	}
-	eventID, err := result.LastInsertId()
-	if err != nil {
-		return nil, nil, fmt.Errorf("read artifact runtime event id: %w", err)
 	}
 	event := &store.ArtifactRuntimeEvent{
 		EventID: eventID, EventType: "state.updated", AgentUID: state.AgentUID,
@@ -166,7 +168,9 @@ func (a *Adapter) PutArtifactRuntimeState(
 		Revision: state.Revision, UpdatedByUID: state.UpdatedByUID, UpdatedBy: state.UpdatedBy,
 	}
 	if err := tx.QueryRowContext(ctx,
-		`SELECT created_at FROM artifact_runtime_events WHERE id = ?`, eventID,
+		`SELECT created_at FROM artifact_runtime_events
+		 WHERE agent_uid = ? AND artifact_id = ? AND artifact_event_id = ?`,
+		state.AgentUID, state.ArtifactID, eventID,
 	).Scan(&event.CreatedAt); err != nil {
 		return nil, nil, fmt.Errorf("read artifact runtime event: %w", err)
 	}
@@ -174,6 +178,35 @@ func (a *Adapter) PutArtifactRuntimeState(
 		return nil, nil, fmt.Errorf("commit artifact runtime state write: %w", err)
 	}
 	return state, event, nil
+}
+
+// mysqlNextArtifactRuntimeEventID locks one sequence row until the State
+// transaction commits. This makes the cursor order match commit visibility,
+// unlike AUTO_INCREMENT IDs allocated before commit.
+func mysqlNextArtifactRuntimeEventID(
+	ctx context.Context,
+	tx *sql.Tx,
+	agentUID int64,
+	artifactID string,
+) (int64, error) {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO artifact_runtime_event_sequences (
+			agent_uid, artifact_id, last_event_id
+		) VALUES (?, ?, 1)
+		ON DUPLICATE KEY UPDATE
+			last_event_id = last_event_id + 1,
+			updated_at = CURRENT_TIMESTAMP(6)`, agentUID, artifactID); err != nil {
+		return 0, fmt.Errorf("allocate artifact runtime event id: %w", err)
+	}
+	var eventID int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT last_event_id FROM artifact_runtime_event_sequences
+		WHERE agent_uid = ? AND artifact_id = ? FOR UPDATE`,
+		agentUID, artifactID,
+	).Scan(&eventID); err != nil {
+		return 0, fmt.Errorf("read artifact runtime event id: %w", err)
+	}
+	return eventID, nil
 }
 
 func mysqlArtifactRuntimeRevision(
@@ -234,11 +267,11 @@ func (a *Adapter) ListArtifactRuntimeEvents(
 	limit int,
 ) ([]*store.ArtifactRuntimeEvent, error) {
 	rows, err := a.db.QueryContext(ctx, `
-		SELECT id, event_type, namespace, document_key, revision,
+		SELECT artifact_event_id, event_type, namespace, document_key, revision,
 			updated_by_uid, updated_by_type, created_at
 		FROM artifact_runtime_events
-		WHERE agent_uid = ? AND artifact_id = ? AND id > ?
-		ORDER BY id
+		WHERE agent_uid = ? AND artifact_id = ? AND artifact_event_id > ?
+		ORDER BY artifact_event_id
 		LIMIT ?`, agentUID, artifactID, afterEventID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list artifact runtime events: %w", err)
@@ -274,9 +307,10 @@ func (a *Adapter) LatestArtifactRuntimeEventID(
 ) (int64, error) {
 	var eventID int64
 	if err := a.db.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(id), 0)
-		FROM artifact_runtime_events
-		WHERE agent_uid = ? AND artifact_id = ?`, agentUID, artifactID).Scan(&eventID); err != nil {
+		SELECT COALESCE((
+			SELECT last_event_id FROM artifact_runtime_event_sequences
+			WHERE agent_uid = ? AND artifact_id = ?
+		), 0)`, agentUID, artifactID).Scan(&eventID); err != nil {
 		return 0, fmt.Errorf("read latest artifact runtime event: %w", err)
 	}
 	return eventID, nil

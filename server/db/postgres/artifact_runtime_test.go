@@ -33,9 +33,12 @@ func TestPostgresArtifactRuntimeStateAndEventShareTransaction(t *testing.T) {
 		WithArgs(int64(440), "risk-register", "risks", "main", string(value), int64(7), "viewer").
 		WillReturnRows(sqlmock.NewRows([]string{"value_json", "revision", "created_at", "updated_at"}).
 			AddRow(value, int64(1), createdAt, updatedAt))
+	mock.ExpectQuery(`INSERT INTO artifact_runtime_event_sequences`).
+		WithArgs(int64(440), "risk-register").
+		WillReturnRows(sqlmock.NewRows([]string{"last_event_id"}).AddRow(int64(19)))
 	mock.ExpectQuery(`INSERT INTO artifact_runtime_events`).
-		WithArgs("state.updated", int64(440), "risk-register", "risks", "main", int64(1), int64(7), "viewer").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(19), updatedAt))
+		WithArgs(int64(19), "state.updated", int64(440), "risk-register", "risks", "main", int64(1), int64(7), "viewer").
+		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(updatedAt))
 	mock.ExpectCommit()
 
 	state, event, err := adapter.PutArtifactRuntimeState(context.Background(), candidate, 0)

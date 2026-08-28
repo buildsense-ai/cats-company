@@ -22,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
+		createArtifactRuntimeEventSequencesTable,
 		createArtifactRuntimeEventsTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
@@ -108,7 +109,6 @@ func (a *Adapter) CreateSchema() error {
 		createProjectIndexes,
 		createMessagesIndexes,
 		createConversationTaskStatusIndexes,
-		createArtifactRuntimeIndexes,
 		createBotConfigIndexes,
 		createGroupMembersIndexes,
 		createFeedbackIndexes,
@@ -334,9 +334,20 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_states (
 );
 `
 
+const createArtifactRuntimeEventSequencesTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_event_sequences (
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    last_event_id BIGINT NOT NULL CHECK (last_event_id > 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_uid, artifact_id)
+);
+`
+
 const createArtifactRuntimeEventsTable = `
 CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     id BIGSERIAL PRIMARY KEY,
+    artifact_event_id BIGINT NOT NULL CHECK (artifact_event_id > 0),
     event_type VARCHAR(64) NOT NULL CHECK (event_type = 'state.updated'),
     agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     artifact_id VARCHAR(64) NOT NULL,
@@ -345,7 +356,8 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     revision BIGINT NOT NULL CHECK (revision > 0),
     updated_by_uid BIGINT NOT NULL,
     updated_by_type VARCHAR(16) NOT NULL CHECK (updated_by_type IN ('viewer','agent')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (agent_uid, artifact_id, artifact_event_id)
 );
 `
 
@@ -1394,10 +1406,6 @@ CREATE INDEX IF NOT EXISTS idx_conversation_task_statuses_updated_at ON conversa
 CREATE INDEX IF NOT EXISTS idx_conversation_task_statuses_state ON conversation_task_statuses (state);
 CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_updated_at ON conversation_task_status_sources (updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_state ON conversation_task_status_sources (state);
-`
-const createArtifactRuntimeIndexes = `
-CREATE INDEX IF NOT EXISTS idx_artifact_runtime_events_artifact
-    ON artifact_runtime_events (agent_uid, artifact_id, id);
 `
 const createBotConfigIndexes = `
 CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_config_api_key ON bot_config (api_key) WHERE api_key IS NOT NULL;

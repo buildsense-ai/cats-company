@@ -86,7 +86,7 @@ export default function ControlledArtifactPreview({
     lifecycle.loadCount += 1;
     lifecycle.controller?.abort();
     lifecycle.controller = new AbortController();
-    if (sameOrigin && lifecycle.loadCount !== 1) {
+    if (lifecycle.loadCount !== 1) {
       fail('artifact_frame_navigated');
       return;
     }

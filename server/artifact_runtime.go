@@ -170,7 +170,7 @@ func (h *ArtifactRuntimeHandler) handleBotObserve(w http.ResponseWriter, r *http
 		"contract_version": artifactRuntimeObservationContract,
 		"status":           "ok",
 		"trusted": map[string]interface{}{
-			"artifact": artifactRuntimeArtifactResponse(access),
+			"artifact": artifactRuntimeArtifactResponse(access, true),
 			"runtime":  access.Manifest,
 		},
 		"untrusted": map[string]interface{}{
@@ -241,7 +241,7 @@ func (h *ArtifactRuntimeHandler) handleOperation(
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ok": true, "contract_version": artifactRuntimeResponseContract,
-			"operation": operation, "artifact": artifactRuntimeArtifactResponse(access),
+			"operation": operation, "artifact": artifactRuntimeArtifactResponse(access, false),
 			"runtime": access.Manifest, "event_cursor": cursor,
 		})
 	case "state.get":
@@ -574,18 +574,21 @@ func artifactRuntimeEventResponse(event *store.ArtifactRuntimeEvent) map[string]
 	}
 }
 
-func artifactRuntimeArtifactResponse(access artifactRuntimeAccess) map[string]interface{} {
-	return map[string]interface{}{
+func artifactRuntimeArtifactResponse(access artifactRuntimeAccess, includeTopic bool) map[string]interface{} {
+	response := map[string]interface{}{
 		"id":                access.Artifact.ID,
 		"agent_uid":         strconv.FormatInt(access.AgentUID, 10),
 		"title":             strings.TrimSpace(access.Artifact.Title),
 		"kind":              access.Artifact.Kind,
 		"url":               strings.TrimSpace(access.Artifact.URL),
-		"topic_id":          access.TopicID,
 		"displayed_version": access.DisplayedVersion,
 		"latest_version":    access.Artifact.PublishVersion,
 		"currently_visible": true,
 	}
+	if includeTopic {
+		response["topic_id"] = access.TopicID
+	}
+	return response
 }
 
 func artifactRuntimeViewFromPageContext(pageContext map[string]interface{}) interface{} {

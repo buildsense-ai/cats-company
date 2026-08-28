@@ -252,7 +252,7 @@ describe('createArtifactRuntimeHost', () => {
     ))).toBe(true);
   });
 
-  it('keeps the cursor after a transient poll failure and forwards a write event immediately', async () => {
+  it('keeps the cursor after a transient poll failure and lets the ordered poll deliver a write event', async () => {
     const harness = createHarness();
     harness.host.handleWindowMessage(harness.event(runtimeRequest(
       'events.subscribe',
@@ -273,11 +273,19 @@ describe('createArtifactRuntimeHost', () => {
       patch: [{ op: 'replace', path: '/status', value: 'closed' }],
     }, 'patch-main')));
     await flush();
-    const tail = harness.posted.slice(-2).map(({ message }) => message.type);
-    expect(tail).toEqual([ARTIFACT_RUNTIME_EVENT_TYPE, ARTIFACT_RUNTIME_RESPONSE_TYPE]);
+    expect(harness.posted.at(-1).message.type).toBe(ARTIFACT_RUNTIME_RESPONSE_TYPE);
+    expect(harness.posted.some(({ message }) => (
+      message.type === ARTIFACT_RUNTIME_EVENT_TYPE && message.event.event_id === 8
+    ))).toBe(false);
+
+    await runTimer(harness.timers.at(-1));
+    expect(harness.calls.at(-1).request.after_event_id).toBe(7);
+    expect(harness.posted.some(({ message }) => (
+      message.type === ARTIFACT_RUNTIME_EVENT_TYPE && message.event.event_id === 8
+    ))).toBe(true);
   });
 
-  it('does not forward an in-flight polled event twice after the write response delivered it', async () => {
+  it('does not let a newer write response skip an older in-flight event', async () => {
     const harness = createHarness();
     harness.host.handleWindowMessage(harness.event(runtimeRequest(
       'events.subscribe',
@@ -289,6 +297,8 @@ describe('createArtifactRuntimeHost', () => {
     harness.timers.at(-1).callback();
     await flush();
 
+    harness.setEventCursor(8);
+
     harness.host.handleWindowMessage(harness.event(runtimeRequest('state.patch', {
       namespace: 'risks',
       key: 'main',
@@ -296,6 +306,9 @@ describe('createArtifactRuntimeHost', () => {
       patch: [{ op: 'replace', path: '/status', value: 'closed' }],
     }, 'patch-race')));
     await flush();
+    expect(harness.posted.filter(({ message }) => (
+      message.type === ARTIFACT_RUNTIME_EVENT_TYPE
+    ))).toHaveLength(0);
     harness.resolveHeldPoll({
       ok: true,
       event_cursor: 8,
@@ -310,10 +323,13 @@ describe('createArtifactRuntimeHost', () => {
     });
     await flush();
 
-    const delivered = harness.posted.filter(({ message }) => (
-      message.type === ARTIFACT_RUNTIME_EVENT_TYPE && message.event.event_id === 8
-    ));
-    expect(delivered).toHaveLength(1);
+    await runTimer(harness.timers.at(-1));
+
+    const delivered = harness.posted
+      .filter(({ message }) => message.type === ARTIFACT_RUNTIME_EVENT_TYPE)
+      .map(({ message }) => message.event.event_id);
+    expect(delivered).toEqual([8, 9]);
+    expect(harness.calls.at(-1).request.after_event_id).toBe(8);
   });
 
   it('drops a paused subscription when the active Artifact identity changes', async () => {

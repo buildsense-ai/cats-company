@@ -43,7 +43,8 @@ type ArtifactRuntimeState struct {
 }
 
 // ArtifactRuntimeEvent is appended in the same transaction as a successful
-// State write. EventID supplies ordering; the State document remains truth.
+// State write. EventID is commit-serialized within one Artifact; the State
+// document remains truth.
 type ArtifactRuntimeEvent struct {
 	EventID      int64
 	EventType    string

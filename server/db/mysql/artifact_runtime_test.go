@@ -36,11 +36,17 @@ func TestMySQLArtifactRuntimeStateAndEventShareTransaction(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"value_json", "revision", "updated_by_uid", "updated_by_type", "created_at", "updated_at",
 		}).AddRow(value, int64(1), int64(7), "viewer", createdAt, updatedAt))
+	mock.ExpectExec(`INSERT INTO artifact_runtime_event_sequences`).
+		WithArgs(int64(440), "risk-register").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT last_event_id FROM artifact_runtime_event_sequences`).
+		WithArgs(int64(440), "risk-register").
+		WillReturnRows(sqlmock.NewRows([]string{"last_event_id"}).AddRow(int64(19)))
 	mock.ExpectExec(`INSERT INTO artifact_runtime_events`).
-		WithArgs("state.updated", int64(440), "risk-register", "risks", "main", int64(1), int64(7), "viewer").
-		WillReturnResult(sqlmock.NewResult(19, 1))
+		WithArgs(int64(19), "state.updated", int64(440), "risk-register", "risks", "main", int64(1), int64(7), "viewer").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`SELECT created_at FROM artifact_runtime_events`).
-		WithArgs(int64(19)).
+		WithArgs(int64(440), "risk-register", int64(19)).
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(updatedAt))
 	mock.ExpectCommit()
 

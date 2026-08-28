@@ -22,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
+		createArtifactRuntimeEventSequencesTable,
 		createArtifactRuntimeEventsTable,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
@@ -376,9 +377,22 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_states (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createArtifactRuntimeEventSequencesTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_event_sequences (
+    agent_uid BIGINT NOT NULL,
+    artifact_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    last_event_id BIGINT NOT NULL,
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (agent_uid, artifact_id),
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
+    CHECK (last_event_id > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createArtifactRuntimeEventsTable = `
 CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    artifact_event_id BIGINT NOT NULL,
     event_type ENUM('state.updated') NOT NULL,
     agent_uid BIGINT NOT NULL,
     artifact_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
@@ -388,9 +402,10 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     updated_by_uid BIGINT NOT NULL,
     updated_by_type ENUM('viewer','agent') NOT NULL,
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    INDEX idx_artifact_runtime_events_artifact (agent_uid, artifact_id, id),
+    UNIQUE KEY uk_artifact_runtime_event_sequence (agent_uid, artifact_id, artifact_event_id),
     FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
-    CHECK (revision > 0)
+    CHECK (revision > 0),
+    CHECK (artifact_event_id > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

@@ -54,6 +54,31 @@ test('reports a bound cross-origin Artifact only after its iframe loads', async 
   }));
 });
 
+test('invalidates a cross-origin binding after a second document load', async () => {
+  const onBindingChange = vi.fn();
+  const onError = vi.fn();
+  await act(async () => {
+    root.render(
+      <ControlledArtifactPreview
+        file={file}
+        descriptor={{ isRemoteArtifact: true, isSameOriginRemoteArtifact: false, url: file.url }}
+        onBindingChange={onBindingChange}
+        onError={onError}
+      />,
+    );
+  });
+
+  const frame = container.querySelector('iframe');
+  await act(async () => Simulate.load(frame));
+  const firstBinding = onBindingChange.mock.calls.at(-1)?.[0];
+  expect(firstBinding?.signal?.aborted).toBe(false);
+
+  await act(async () => Simulate.load(frame));
+  expect(firstBinding.signal.aborted).toBe(true);
+  expect(onError).toHaveBeenCalledWith('artifact_frame_navigated');
+  expect(onBindingChange).toHaveBeenLastCalledWith(null);
+});
+
 test('uses the opaque bridge once and rejects a later same-origin document load', async () => {
   const sameOriginFile = {
     ...file,

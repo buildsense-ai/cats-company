@@ -356,6 +356,9 @@ func TestArtifactRuntimeViewerRequiresConnectedPreview(t *testing.T) {
 		runtime["version"] != "0.1" {
 		t.Fatalf("unexpected Runtime connect response: %#v", connected)
 	}
+	if _, leaked := artifact["topic_id"]; leaked {
+		t.Fatalf("Runtime page received internal topic identity: %#v", artifact)
+	}
 
 	handler.hub.removeClient(human)
 	disconnectedRequest := httptest.NewRequest(http.MethodPost, "/api/artifact-runtime", strings.NewReader(string(body)))
