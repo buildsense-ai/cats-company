@@ -334,8 +334,8 @@ var relayAdminAllowedPrefixes = []string{
 
 var relayAdminUserKeyPath = regexp.MustCompile(`^/local/users/[0-9]+/key/(state|limits|usage-reset)/?$`)
 var relayAdminUserKeyLimitsPath = regexp.MustCompile(`^/local/users/([0-9]+)/key/limits/?$`)
-var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers|users|orders|order-refunds|relay-dry-run|relay-sync))?/?$`)
-var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|order-refunds|relay-sync)/?$`)
+var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers(?:/import)?|users|orders|order-refunds|relay-dry-run|relay-sync))?/?$`)
+var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers/import|order-refunds|relay-sync)/?$`)
 
 func relayAdminLimitsTargetUID(path string) (int64, bool) {
 	matches := relayAdminUserKeyLimitsPath.FindStringSubmatch(path)
