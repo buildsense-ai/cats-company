@@ -102,6 +102,21 @@ JUMP_USER="${CTYUN_JUMP_USER:-root}"
 JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
 HTTP_BASE_URL="${CATSCO_WORKER_HTTP_BASE_URL:-https://app.catsco.cc}"
 SERVER_URL="${CATSCO_WORKER_SERVER_URL:-wss://app.catsco.cc/v0/channels}"
+ARTIFACT_HOST_MODE="${CATSCO_WORKER_ARTIFACT_HOST_MODE:-}"
+ARTIFACT_HOST_SUFFIX="${CATSCO_ARTIFACT_HOST_SUFFIX:-artifacts.catsco.fun}"
+ARTIFACT_DATA_DIR="${CATSCO_WORKER_ARTIFACT_DATA_DIR:-/srv/catsco-agent/.local/share/catsco/cloud-html-artifact}"
+ARTIFACT_HTTPS_PORT="${CATSCO_ARTIFACT_GATEWAY_HTTPS_PORT:-19991}"
+ARTIFACT_BACKEND_PORT="${CATSCO_ARTIFACT_BACKEND_PORT:-19990}"
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARTIFACT_CONFIGURE_SCRIPT="${CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT:-$OPS_DIR/configure-worker-artifact.sh}"
+if [[ -n "$ARTIFACT_HOST_MODE" && "$ARTIFACT_HOST_MODE" != "forwarded" && "$ARTIFACT_HOST_MODE" != "direct-https" ]]; then
+  echo "error: CATSCO_WORKER_ARTIFACT_HOST_MODE must be forwarded, direct-https, or empty" >&2
+  exit 2
+fi
+for port in "$ARTIFACT_HTTPS_PORT" "$ARTIFACT_BACKEND_PORT"; do
+  [[ "$port" =~ ^[1-9][0-9]{0,4}$ && "$port" -le 65535 ]] \
+    || { echo "error: Artifact gateway/backend port is invalid" >&2; exit 2; }
+done
 
 # --- 校验 ---
 if [[ -z "$NAME" || -z "$LOGIN_TOKEN" || -z "$BOT_API_KEY" ]]; then
@@ -238,14 +253,30 @@ if [[ -n "$existing" ]]; then
     echo "error: instance $INSTANCE_NAME already exists but is not running (state=$existing_state); handle it first" >&2
     exit 1
   fi
-  echo "{\"status\":\"exists\",\"instance_id\":\"$(jq -r '.instanceID // ""' <<<"$existing")\",\"instance_name\":\"$INSTANCE_NAME\",\"state\":\"$existing_state\"}"
+  artifact_status="disabled"
+  existing_ip="$(jq -r '(.fixedIPList[0] // .privateIP // "")' <<<"$existing")"
+  existing_key="$STATE_DIR/id_rsa"
+  if [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+    artifact_status="warning"
+    if [[ "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ && -n "$existing_ip" && -f "$existing_key" ]]; then
+      if "$ARTIFACT_CONFIGURE_SCRIPT" --worker-ip "$existing_ip" --agent-uid "$BOT_UID" \
+        --ssh-key "$existing_key" --known-hosts "$STATE_DIR/known_hosts" >/dev/null; then
+        artifact_status="ready"
+      else
+        echo "warning: existing worker Artifact reconciliation failed; worker remains available" >&2
+      fi
+    else
+      echo "warning: existing worker Artifact reconciliation lacks UID, private IP, or SSH key" >&2
+    fi
+  fi
+  echo "{\"status\":\"exists\",\"instance_id\":\"$(jq -r '.instanceID // ""' <<<"$existing")\",\"instance_name\":\"$INSTANCE_NAME\",\"state\":\"$existing_state\",\"artifact_status\":\"$artifact_status\"}"
   exit 0
 fi
 
 # --- 2. resolve 镜像（指定或最新） ---
 if [[ -z "$IMAGE_ID" ]]; then
   # list 输出 TSV，第 5 列为 createdTime（数字毫秒）→ 按最新排序取第一
-  IMAGE_ID="$(timeout -s TERM -k 15 90s /opt/catsco/ops/list-worker-images.sh 2>/dev/null \
+  IMAGE_ID="$(timeout -s TERM -k 15 90s "$OPS_DIR/list-worker-images.sh" 2>/dev/null \
     | sort -t $'\t' -k5,5nr | head -n1 | cut -f1)"
 fi
 [[ -n "$IMAGE_ID" ]] || { echo "error: no worker image resolved (set --image-id or run list-worker-images)" >&2; exit 1; }
@@ -386,6 +417,17 @@ done
 # --- 6. 注入 .env（创建者登录凭证 + bot 连接凭证） ---
 # 用 printf 逐行生成（heredoc 会在值内二次展开 $ 反引号，破坏含特殊字符的
 # api-key/token）；%s 只做一次展开，值原样保留
+ARTIFACT_ENV_LINES=()
+if [[ "$ARTIFACT_HOST_MODE" == "forwarded" && "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]]; then
+  ARTIFACT_ENV_LINES=(
+    "CATSCO_ARTIFACT_HOST_MODE=forwarded"
+    "CATSCO_ARTIFACT_PUBLIC_BASE_URL=https://agent-${BOT_UID}.${ARTIFACT_HOST_SUFFIX}:${ARTIFACT_HTTPS_PORT}/artifacts"
+    "CATSCO_ARTIFACT_LOCAL_BASE_URL=http://127.0.0.1:${ARTIFACT_BACKEND_PORT}/artifacts"
+    "CATSCO_ARTIFACT_DATA_DIR=${ARTIFACT_DATA_DIR}"
+  )
+elif [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+  echo "warning: forwarded Artifact mode cannot be configured without a numeric Agent UID" >&2
+fi
 ENV_CONTENT="$(printf '%s\n' \
   "CATSCO_HTTP_BASE_URL=${HTTP_BASE_URL}" \
   "CATSCO_SERVER_URL=${SERVER_URL}" \
@@ -397,7 +439,8 @@ ENV_CONTENT="$(printf '%s\n' \
   "CATSCO_USER_UID=${USER_UID}" \
   "CATSCO_USER_NAME=${USER_NAME}" \
   "CATSCO_USER_DISPLAY_NAME=${USER_DISPLAY}" \
-  "CATSCO_LOG_UPLOAD_ENABLED=true")"
+  "CATSCO_LOG_UPLOAD_ENABLED=true" \
+  "${ARTIFACT_ENV_LINES[@]}")"
 ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/catsco-agent && cat > /srv/catsco-agent/.env && chown catsco-agent:catsco-agent /srv/catsco-agent/.env && chmod 600 /srv/catsco-agent/.env" <<<"$ENV_CONTENT"
 
 # 保存注入快照（供 reset-worker.sh 无参数重建时复用身份），chmod 600
@@ -432,6 +475,18 @@ ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/cat
 # 输出重定向：is-active 的 stdout（"active"）会污染下方 JSON 约定，仅保留退出码
 ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1
 
+ARTIFACT_STATUS="disabled"
+if [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+  ARTIFACT_STATUS="warning"
+  if [[ "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]] && \
+    "$ARTIFACT_CONFIGURE_SCRIPT" --worker-ip "$INSTANCE_IP" --agent-uid "$BOT_UID" \
+      --ssh-key "$PRIVATE_KEY" --known-hosts "$STATE_DIR/known_hosts" >/dev/null; then
+    ARTIFACT_STATUS="ready"
+  else
+    echo "warning: Artifact host or gateway registration failed; worker provisioning remains successful" >&2
+  fi
+fi
+
 APP_VERSION="$(ssh_run "root@$INSTANCE_IP" \
   "cat /opt/catsco/current/worker-release.json 2>/dev/null" 2>/dev/null \
   | jq -r '.version // empty' 2>/dev/null || true)"
@@ -442,5 +497,5 @@ else
   echo "warning: provisioned application version could not be persisted" >&2
 fi
 
-echo "{\"status\":\"provisioned\",\"instance_id\":\"$CREATED_INSTANCE_ID\",\"instance_name\":\"$INSTANCE_NAME\",\"ip\":\"$INSTANCE_IP\",\"image_id\":\"$IMAGE_ID\"}"
+echo "{\"status\":\"provisioned\",\"instance_id\":\"$CREATED_INSTANCE_ID\",\"instance_name\":\"$INSTANCE_NAME\",\"ip\":\"$INSTANCE_IP\",\"image_id\":\"$IMAGE_ID\",\"artifact_status\":\"$ARTIFACT_STATUS\"}"
 trap - EXIT

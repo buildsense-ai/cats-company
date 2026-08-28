@@ -218,6 +218,14 @@ function run(sandbox, args, extra = {}) {
   };
 }
 
+function artifactConfigureStub(sandbox, exitCode = 0) {
+  const script = path.join(sandbox.bin, "configure-artifact.sh");
+  const calls = path.join(sandbox.sandbox, "artifact-configure.calls");
+  fs.writeFileSync(script, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> '${toMsys(calls)}'\nexit ${exitCode}\n`);
+  fs.chmodSync(script, 0o755);
+  return { script: toMsys(script), calls };
+}
+
 const SNAPSHOT = [
   "CATSCO_HTTP_BASE_URL=https://app.catsco.cc",
   "CATSCO_SERVER_URL=wss://app.catsco.cc/v0/channels",
@@ -280,6 +288,23 @@ test("reset-worker: happy path rebuilds the existing instance in place", () => {
   assert.equal((state.deletedInstances || []).length, 0, "reset must never unsubscribe/delete");
   assert.equal(state.rebuilds.length, 1);
   assert.equal(state.rebuilds[0].imageID, "img-1");
+});
+
+test("reset-worker: forwarded Artifact route is rebuilt without changing the instance", () => {
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", keypairName: "worker-key-bot-a", floatingIP: "10.0.0.9" }], keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-legacy" }] });
+  const artifact = artifactConfigureStub(sb);
+  const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
+    CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(JSON.parse(r.stdout).artifact_status, "ready");
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.injectedEnv, /CATSCO_ARTIFACT_HOST_MODE=forwarded/);
+  assert.match(fs.readFileSync(artifact.calls, "utf8"), /--worker-ip 10\.0\.0\.9 --agent-uid 42/);
+  assert.ok(state.instances.some(instance => instance.instanceID === "i-old"));
+  assert.equal((state.deletedInstances || []).length, 0);
 });
 
 test("reset-worker: refuses an absent instance instead of creating a replacement", () => {

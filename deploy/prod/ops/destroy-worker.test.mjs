@@ -212,6 +212,27 @@ test("destroy-worker: deletes instance + keypair + state dir", () => {
   assert.ok(!fs.existsSync(st), "state dir should be cleaned up");
 });
 
+test("destroy-worker: removes the saved Agent route without making gateway failure fatal", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const st = path.join(sb.sandbox, "state");
+  fs.mkdirSync(st, { recursive: true });
+  fs.writeFileSync(path.join(st, "inject.env"), "CATSCO_BOT_UID=42\n");
+  const routeScript = path.join(sb.bin, "remove-artifact-route.sh");
+  const calls = path.join(sb.sandbox, "route.calls");
+  fs.writeFileSync(routeScript, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > '${toMsys(calls)}'\nexit 1\n`);
+  fs.chmodSync(routeScript, 0o755);
+  const r = run(sb, ["--name", "bot-a"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /Artifact route cleanup failed/);
+  assert.equal(fs.readFileSync(calls, "utf8").trim(), "remove 42");
+});
+
 test("destroy-worker: keypair still cleaned when instance already gone", () => {
   const sb = setupSandbox({
     keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],

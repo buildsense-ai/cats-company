@@ -96,6 +96,19 @@ JUMP_USER="${CTYUN_JUMP_USER:-root}"
 JUMP_KEY="${CTYUN_JUMP_KEY:-$STATE_ROOT/jump_host_ed25519}"
 HTTP_BASE_URL="${CATSCO_WORKER_HTTP_BASE_URL:-https://app.catsco.cc}"
 SERVER_URL="${CATSCO_WORKER_SERVER_URL:-wss://app.catsco.cc/v0/channels}"
+ARTIFACT_HOST_MODE="${CATSCO_WORKER_ARTIFACT_HOST_MODE:-}"
+ARTIFACT_HOST_SUFFIX="${CATSCO_ARTIFACT_HOST_SUFFIX:-artifacts.catsco.fun}"
+ARTIFACT_DATA_DIR="${CATSCO_WORKER_ARTIFACT_DATA_DIR:-/srv/catsco-agent/.local/share/catsco/cloud-html-artifact}"
+ARTIFACT_HTTPS_PORT="${CATSCO_ARTIFACT_GATEWAY_HTTPS_PORT:-19991}"
+ARTIFACT_BACKEND_PORT="${CATSCO_ARTIFACT_BACKEND_PORT:-19990}"
+if [[ -n "$ARTIFACT_HOST_MODE" && "$ARTIFACT_HOST_MODE" != "forwarded" && "$ARTIFACT_HOST_MODE" != "direct-https" ]]; then
+  echo "error: CATSCO_WORKER_ARTIFACT_HOST_MODE must be forwarded, direct-https, or empty" >&2
+  exit 2
+fi
+for port in "$ARTIFACT_HTTPS_PORT" "$ARTIFACT_BACKEND_PORT"; do
+  [[ "$port" =~ ^[1-9][0-9]{0,4}$ && "$port" -le 65535 ]] \
+    || { echo "error: Artifact gateway/backend port is invalid" >&2; exit 2; }
+done
 
 # Older production deployments stored a single tenant's state directly under
 # CTYUN_WORKER_STATE_ROOT rather than in a tenant subdirectory. Reuse that
@@ -128,6 +141,7 @@ for cmd in ctyun-cli jq ssh ssh-keygen timeout; do
 done
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARTIFACT_CONFIGURE_SCRIPT="${CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT:-$OPS_DIR/configure-worker-artifact.sh}"
 if [[ -n "$VERSION" ]]; then
   [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "error: --version must match ^[A-Za-z0-9._-]+\$" >&2; exit 2; }
   if [[ -z "$IMAGE_ID" ]]; then
@@ -254,6 +268,17 @@ done
 
 BODY_ID="${BODY_ID:-$(sed -n 's/^CATSCO_BODY_ID=//p' "$STATE_DIR/inject.env" 2>/dev/null | tail -n1 || true)}"
 INSTALLATION_ID="${INSTALLATION_ID:-$(sed -n 's/^CATSCO_INSTALLATION_ID=//p' "$STATE_DIR/inject.env" 2>/dev/null | tail -n1 || true)}"
+ARTIFACT_ENV_LINES=()
+if [[ "$ARTIFACT_HOST_MODE" == "forwarded" && "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]]; then
+  ARTIFACT_ENV_LINES=(
+    "CATSCO_ARTIFACT_HOST_MODE=forwarded"
+    "CATSCO_ARTIFACT_PUBLIC_BASE_URL=https://agent-${BOT_UID}.${ARTIFACT_HOST_SUFFIX}:${ARTIFACT_HTTPS_PORT}/artifacts"
+    "CATSCO_ARTIFACT_LOCAL_BASE_URL=http://127.0.0.1:${ARTIFACT_BACKEND_PORT}/artifacts"
+    "CATSCO_ARTIFACT_DATA_DIR=${ARTIFACT_DATA_DIR}"
+  )
+elif [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+  echo "warning: forwarded Artifact mode cannot be configured without a numeric Agent UID" >&2
+fi
 ENV_CONTENT="$(printf '%s\n' \
   "CATSCO_HTTP_BASE_URL=${HTTP_BASE_URL}" \
   "CATSCO_SERVER_URL=${SERVER_URL}" \
@@ -265,7 +290,8 @@ ENV_CONTENT="$(printf '%s\n' \
   "CATSCO_USER_UID=${USER_UID}" \
   "CATSCO_USER_NAME=${USER_NAME}" \
   "CATSCO_USER_DISPLAY_NAME=${USER_DISPLAY}" \
-  "CATSCO_LOG_UPLOAD_ENABLED=true")"
+  "CATSCO_LOG_UPLOAD_ENABLED=true" \
+  "${ARTIFACT_ENV_LINES[@]}")"
 ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/catsco-agent && cat > /srv/catsco-agent/.env && chown catsco-agent:catsco-agent /srv/catsco-agent/.env && chmod 600 /srv/catsco-agent/.env" <<<"$ENV_CONTENT"
 mkdir -p "$STATE_DIR"
 printf '%s\n' "$ENV_CONTENT" > "$STATE_DIR/inject.env"
@@ -281,11 +307,23 @@ LOCAL_CONFIG_JSON="$(jq -n \
 ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/catsco-agent/.xiaoba && cat > /srv/catsco-agent/.xiaoba/catsco.json && chown catsco-agent:catsco-agent /srv/catsco-agent/.xiaoba/catsco.json && chmod 600 /srv/catsco-agent/.xiaoba/catsco.json" <<<"$LOCAL_CONFIG_JSON"
 ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1
 
+ARTIFACT_STATUS="disabled"
+if [[ "$ARTIFACT_HOST_MODE" == "forwarded" ]]; then
+  ARTIFACT_STATUS="warning"
+  if [[ "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]] && \
+    "$ARTIFACT_CONFIGURE_SCRIPT" --worker-ip "$INSTANCE_IP" --agent-uid "$BOT_UID" \
+      --ssh-key "$PRIVATE_KEY" --known-hosts "$STATE_DIR/known_hosts" >/dev/null; then
+    ARTIFACT_STATUS="ready"
+  else
+    echo "warning: Artifact host or gateway registration failed; worker reset remains successful" >&2
+  fi
+fi
+
 APP_VERSION="$(ssh_run "root@$INSTANCE_IP" "cat /opt/catsco/current/worker-release.json 2>/dev/null" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)"
 if [[ "$APP_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
   printf '%s\n' "$APP_VERSION" > "$STATE_DIR/app_version.tmp"
   mv -f "$STATE_DIR/app_version.tmp" "$STATE_DIR/app_version"
 fi
 
-printf '{"status":"reinitialized","instance_id":"%s","instance_name":"%s","ip":"%s","image_id":"%s"}\n' \
-  "$instance_id" "$INSTANCE_NAME" "$INSTANCE_IP" "$IMAGE_ID"
+printf '{"status":"reinitialized","instance_id":"%s","instance_name":"%s","ip":"%s","image_id":"%s","artifact_status":"%s"}\n' \
+  "$instance_id" "$INSTANCE_NAME" "$INSTANCE_IP" "$IMAGE_ID" "$ARTIFACT_STATUS"

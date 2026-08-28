@@ -16,6 +16,10 @@
 | `deploy-worker-version.sh` | 安装指定应用版本（保数据） | 更新 / 本地版本缺失时回滚 |
 | `rollback-worker.sh` | 切换 `/opt/catsco/current`（保数据） | 版本回滚 |
 | `status-worker.sh` | 批量读取实例、镜像与版本状态 | 云员工管理页状态 |
+| `bootstrap-artifact-gateway.sh` | 初始化共享 HTTPS 网关 | 一次性安装 Nginx、通配符证书和路由器 |
+| `ensure-artifact-gateway-network.sh` | 对齐网关公网网络 | 创建或复用 DNAT、安全组规则和通配符 DNS |
+| `configure-worker-artifact.sh` | 配置单个私网 worker | 安装静态服务并注册 Agent UID 路由 |
+| `sync-artifact-gateway-routes.sh` | 重建全部 Artifact 路由 | 网关恢复或路由表校正 |
 
 ## 部署配置（B4-2 对接）
 
@@ -87,9 +91,63 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 - 私网 worker 默认不申请公网 IP（`CTYUN_WORKER_EXT_IP=0`），SSH 注入依赖
   `CTYUN_JUMP_IP` 跳板/NAT；只有旧的直连公网路径显式设置 `CTYUN_WORKER_EXT_IP=1`。
 
+## 私网 Artifact 转发
+
+私网 worker 不再为每台机器申请公网 IP。页面文件仍由对应 worker 本地保存和
+提供，只把公网入口集中到跳板机：
+
+```text
+https://agent-<uid>.artifacts.catsco.fun:19991/artifacts/...
+  -> 通配符 DNS / DNAT
+  -> 跳板机 Nginx（按 Host 查 Agent UID）
+  -> worker-private-ip:19990/artifacts/...
+```
+
+启用前，在生产 `prod.env` 填写 `env.prod.example` 中的 Artifact gateway 参数。
+DNS Access Key 只供网关初始化和证书续签使用，不会注入 worker。然后在 server
+容器中执行一次：
+
+```bash
+/opt/catsco/ops/bootstrap-artifact-gateway.sh
+```
+
+该命令幂等地完成 DNAT、安全组、通配符 DNS、Let's Encrypt 通配符证书、
+Nginx 和路由命令安装。成功后将以下开关保持为：
+
+```env
+CATSCO_ARTIFACT_GATEWAY_ENABLED=1
+CATSCO_WORKER_ARTIFACT_HOST_MODE=forwarded
+```
+
+此后 `provision-worker.sh` 和 `reset-worker.sh` 会自动完成三件事：在 worker
+安装 `catsco-artifact-host.service`，向 `/srv/catsco-agent/.env` 注入
+`forwarded` 发布参数，以真实 Agent UID 注册网关路由。Artifact 配置失败只返回
+`artifact_status=warning`，不会回滚已经可用的虚拟员工。`destroy-worker.sh` 会
+尽力删除对应路由。
+
+网关路由表丢失或从备份恢复后，运行：
+
+```bash
+/opt/catsco/ops/sync-artifact-gateway-routes.sh
+```
+
+它只从持久化 worker state 和当前运行实例重建路由，不从实例名猜 Agent UID。
+排障时依次检查：
+
+```bash
+curl --fail https://gateway-probe.artifacts.catsco.fun:19991/__artifact_gateway_health
+/opt/catsco/ops/artifact-gateway-route.sh status <agent-uid>
+curl --fail http://<worker-private-ip>:19990/__artifact_health
+curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
+```
+
+回滚时将 `CATSCO_ARTIFACT_GATEWAY_ENABLED=0` 且
+`CATSCO_WORKER_ARTIFACT_HOST_MODE=`，重新创建 server 容器。旧的公网 worker
+继续使用 Skill 的 `direct-https` 模式；关闭开关不会删除已有 Artifact 文件。
+
 ## 脚本依赖（Dockerfile 已装）
 
-`bash`、`openssh-client`（ssh/ssh-keygen）、`jq`、GNU `timeout`、`ctyun-cli`
+`bash`、`openssh-client`（ssh/ssh-keygen）、`jq`、Node.js、GNU `timeout`、`ctyun-cli`
 和镜像内单独构建的 `tos-fetch`。脚本全部 `set -Eeuo pipefail` + shebang 可执行。
 
 ## 安全注意事项
@@ -115,6 +173,7 @@ export CATSCO_JQ=/path/to/jq
 cd deploy/prod/ops && node --test *.test.mjs
 ```
 
-测试覆盖 list / status / provision / update / destroy / reset / rollback
+测试覆盖 list / status / provision / update / destroy / reset / rollback，及 Artifact
+网关路由、DNS、静态服务和 lifecycle 的非阻塞接入
 （fake ctyun-cli + fake ssh + fake timeout），包含包月、按量、到期退订、
 失败回收、版本安装与状态同步路径。
