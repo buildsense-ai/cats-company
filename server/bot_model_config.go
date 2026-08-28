@@ -72,6 +72,7 @@ type botModelCatalogItem struct {
 // botModelRuntimeDescriptor is non-secret metadata consumed by XiaoBa. Relay
 // endpoints and credentials are deliberately excluded and remain device-local.
 type botModelRuntimeDescriptor struct {
+	CatalogModelID      string `json:"catalogModelId"`
 	Model               string `json:"model"`
 	Provider            string `json:"provider"`
 	ContextWindowTokens int64  `json:"contextWindowTokens"`
@@ -798,7 +799,7 @@ func catalogRuntimeDescriptor(model botModelCatalogItem) *botModelRuntimeDescrip
 		modelName = model.ID
 	}
 	d := &botModelRuntimeDescriptor{
-		Model: modelName, Provider: provider, ContextWindowTokens: model.ContextWindowTokens,
+		CatalogModelID: model.ID, Model: modelName, Provider: provider, ContextWindowTokens: model.ContextWindowTokens,
 		Vision: model.Vision, ToolCalling: true, Streaming: true,
 	}
 	if provider == "openai" {
