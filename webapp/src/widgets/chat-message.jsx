@@ -2688,7 +2688,7 @@ export function FilePreviewPanel({
     seed.bridgeLoadCount += 1;
     seed.bridgeController?.abort();
     seed.bridgeController = new AbortController();
-    seed.bridgeReady = !seed.bridgeNonce || seed.bridgeLoadCount === 1;
+    seed.bridgeReady = seed.bridgeLoadCount === 1;
     seed.loaded = true;
     seed.frame = frame || seed.frame;
     const attempt = pendingRemoteArtifactAttemptRef.current;
@@ -2719,7 +2719,7 @@ export function FilePreviewPanel({
     state.frame = frame;
     state.controller?.abort();
     state.controller = new AbortController();
-    const isFirstDocument = !bridgeNonce || state.loadCount === 1;
+    const isFirstDocument = state.loadCount === 1;
     state.loaded = isFirstDocument;
     setRemoteArtifactDocumentEpoch((value) => value + 1);
     setRemoteFrameState(isFirstDocument ? 'ready' : 'error');
@@ -2763,13 +2763,18 @@ export function FilePreviewPanel({
       return undefined;
     }
     const bridgeState = remoteArtifactBridgeStateRef.current;
-    const isOpaqueBridgeReady = descriptor?.isSameOriginRemoteArtifact
-      && Boolean(currentRemoteArtifactBridgeNonce)
-      && bridgeState.key === currentRemoteArtifactKey
-      && bridgeState.nonce === currentRemoteArtifactBridgeNonce
+    const isCurrentDocumentReady = bridgeState.key === currentRemoteArtifactKey
       && bridgeState.frame === frame
       && bridgeState.loaded
       && bridgeState.loadCount === 1;
+    if (!isCurrentDocumentReady) {
+      onRemoteArtifactFrameChange?.(null);
+      return undefined;
+    }
+    const isOpaqueBridgeReady = descriptor?.isSameOriginRemoteArtifact
+      && Boolean(currentRemoteArtifactBridgeNonce)
+      && bridgeState.nonce === currentRemoteArtifactBridgeNonce
+      && isCurrentDocumentReady;
     if (descriptor?.isSameOriginRemoteArtifact && !isOpaqueBridgeReady) {
       onRemoteArtifactFrameChange?.(null);
       return undefined;

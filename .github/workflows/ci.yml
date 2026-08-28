@@ -28,6 +28,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: cats_test
+          MYSQL_USER: catsco
+          MYSQL_PASSWORD: catsco_test
+          MYSQL_ROOT_PASSWORD: catsco_root_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ucatsco -pcatsco_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -65,7 +79,12 @@ jobs:
       - name: Test PostgreSQL store contract
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: go test ./server/db/postgres -run 'TestPostgres(StoreContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack)' -count=1 -v
+        run: go test ./server/db/postgres -run 'TestPostgres(StoreContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|ArtifactRuntimeEventSequenceFollowsCommitOrder)' -count=1 -v
+
+      - name: Test MySQL Artifact Runtime event ordering
+        env:
+          CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
+        run: go test ./server/db/mysql -run 'TestMySQLArtifactRuntimeEventSequenceFollowsCommitOrder' -count=1 -v
 
       - name: Install TypeScript SDK dependencies
         working-directory: bot-sdk/typescript
