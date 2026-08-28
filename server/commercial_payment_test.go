@@ -1434,6 +1434,41 @@ func TestCommercialRelayBootstrapPagesEveryConfiguredKey(t *testing.T) {
 	}
 }
 
+func TestCommercialRelayRequiredModelsIsolatesMissingCatalogEntries(t *testing.T) {
+	modelLimits := []commercialRelayModelLimit{{
+		Provider: "minimax-m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"},
+	}}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		ModelLimits:          modelLimits,
+		AvailableModelLimits: modelLimits,
+	}}
+	summary := &types.CommercialSummary{TotalsByModel: map[string]float64{
+		"MiniMax-M3":    500,
+		"glm-5.3-flash": 100,
+	}, Grants: []*types.CommercialQuotaGrant{
+		{GrantType: "order", Model: "MiniMax-M3", AmountCNY: 500},
+		{GrantType: "order", Model: "glm-5.3-flash", AmountCNY: 100},
+	}}
+	missing := commercialRelayMissingRequiredModels(summary, relayUser, nil)
+	if len(missing) != 1 || missing[0] != "glm-5.3-flash" {
+		t.Fatalf("missing model isolation returned %v", missing)
+	}
+	if !commercialRelayCatalogHasModel(relayUser, "MiniMax-M3") || commercialRelayCatalogHasModel(relayUser, "glm-5.3-flash") {
+		t.Fatal("model capability registry returned the wrong availability")
+	}
+}
+
+func TestCommercialRelayCatalogMatchesAliasesAndAllowedModels(t *testing.T) {
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{AvailableModelLimits: []commercialRelayModelLimit{{
+		Provider: "deepseek-openai", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"},
+	}}}}
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
+		if !commercialRelayCatalogHasModel(relayUser, model) {
+			t.Fatalf("catalog did not expose model alias %s", model)
+		}
+	}
+}
+
 func TestCommercialRelaySharedPolicyUsesEarliestActiveEntitlement(t *testing.T) {
 	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	latest := time.Date(2026, 8, 14, 7, 32, 8, 0, time.UTC)

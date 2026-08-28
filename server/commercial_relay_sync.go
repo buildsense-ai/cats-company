@@ -13,7 +13,10 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-const commercialRelayBlockedLimit = 0.000001
+const (
+	commercialRelayBlockedLimit           = 0.000001
+	commercialRelayCatalogWarningInterval = 30 * time.Minute
+)
 
 type CommercialRelayManagedStore interface {
 	GetCommercialSummary(uid int64) (*types.CommercialSummary, error)
@@ -48,16 +51,18 @@ type commercialRelayPendingState struct {
 }
 
 type CommercialRelaySyncer struct {
-	store          CommercialRelayManagedStore
-	relayAdmin     *RelayAdminClient
-	enforceEnabled bool
-	enforceUIDs    map[int64]bool
-	interval       time.Duration
-	retryDelays    []time.Duration
-	queue          chan commercialRelaySyncRequest
-	reconcileQueue chan struct{}
-	pendingMu      sync.Mutex
-	pendingUIDs    map[int64]*commercialRelayPendingState
+	store            CommercialRelayManagedStore
+	relayAdmin       *RelayAdminClient
+	enforceEnabled   bool
+	enforceUIDs      map[int64]bool
+	interval         time.Duration
+	retryDelays      []time.Duration
+	queue            chan commercialRelaySyncRequest
+	reconcileQueue   chan struct{}
+	pendingMu        sync.Mutex
+	pendingUIDs      map[int64]*commercialRelayPendingState
+	catalogWarningMu sync.Mutex
+	catalogWarnings  map[string]time.Time
 }
 
 func NewCommercialRelaySyncer(store CommercialRelayManagedStore, relayAdmin *RelayAdminClient, opts CommercialRelaySyncerOptions) *CommercialRelaySyncer {
@@ -71,15 +76,16 @@ func NewCommercialRelaySyncer(store CommercialRelayManagedStore, relayAdmin *Rel
 	}
 	retryDelays = append([]time.Duration(nil), retryDelays...)
 	return &CommercialRelaySyncer{
-		store:          store,
-		relayAdmin:     relayAdmin,
-		enforceEnabled: opts.EnforceEnabled,
-		enforceUIDs:    copyCommercialUIDSet(opts.EnforceUIDs),
-		interval:       interval,
-		retryDelays:    retryDelays,
-		queue:          make(chan commercialRelaySyncRequest, 256),
-		reconcileQueue: make(chan struct{}, 1),
-		pendingUIDs:    map[int64]*commercialRelayPendingState{},
+		store:           store,
+		relayAdmin:      relayAdmin,
+		enforceEnabled:  opts.EnforceEnabled,
+		enforceUIDs:     copyCommercialUIDSet(opts.EnforceUIDs),
+		interval:        interval,
+		retryDelays:     retryDelays,
+		queue:           make(chan commercialRelaySyncRequest, 256),
+		reconcileQueue:  make(chan struct{}, 1),
+		pendingUIDs:     map[int64]*commercialRelayPendingState{},
+		catalogWarnings: map[string]time.Time{},
 	}
 }
 
@@ -483,9 +489,7 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 			}
 		}
 	}
-	if err := validateCommercialRelayRequiredModels(summary, relayUser, managed); err != nil {
-		return nil, err
-	}
+	s.logMissingRelayModels(uid, commercialRelayMissingRequiredModels(summary, relayUser, managed))
 	updates, nextManaged := commercialRelayManagedPlan(uid, summary, relayUser, managed)
 	modelScopes := commercialRelayModelScopes(summary, relayUser, managed)
 	scopesChanged := !commercialRelayModelScopesMatch(relayUser.Limits.ModelScopes, modelScopes)
@@ -773,6 +777,15 @@ func validateCommercialRelayModels(budgets map[string]float64, relayUser *commer
 }
 
 func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) error {
+	for _, model := range commercialRelayRequiredModels(summary, managed) {
+		if !commercialRelayCatalogHasExactModel(relayUser, model) {
+			return fmt.Errorf("commercial relay model mapping is unavailable for %s", model)
+		}
+	}
+	return nil
+}
+
+func commercialRelayRequiredModels(summary *types.CommercialSummary, managed []*types.CommercialManagedRelayBudget) []string {
 	required := map[string]bool{}
 	legacyManual := map[string]bool{}
 	if summary != nil {
@@ -801,21 +814,79 @@ func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, rel
 			}
 		}
 	}
+	models := make([]string, 0, len(required))
 	for model := range required {
-		matched := false
-		if relayUser != nil {
-			for _, limit := range commercialRelayCatalogLimits(relayUser) {
-				if strings.TrimSpace(limit.Model) == model && strings.TrimSpace(limit.Provider) != "" && len(limit.AllowedModels) > 0 {
-					matched = true
-					break
-				}
-			}
-		}
-		if !matched {
-			return fmt.Errorf("commercial relay model mapping is unavailable for %s", model)
+		models = append(models, model)
+	}
+	sort.Slice(models, func(i, j int) bool { return normalizeRelayModelName(models[i]) < normalizeRelayModelName(models[j]) })
+	return models
+}
+
+func commercialRelayMissingRequiredModels(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) []string {
+	missing := []string{}
+	for _, model := range commercialRelayRequiredModels(summary, managed) {
+		if !commercialRelayCatalogHasModel(relayUser, model) {
+			missing = append(missing, model)
 		}
 	}
-	return nil
+	return missing
+}
+
+func (s *CommercialRelaySyncer) logMissingRelayModels(uid int64, models []string) {
+	if s == nil || len(models) == 0 {
+		return
+	}
+	now := time.Now()
+	newWarnings := make([]string, 0, len(models))
+	s.catalogWarningMu.Lock()
+	for _, model := range models {
+		key := normalizeRelayModelName(model)
+		if last := s.catalogWarnings[key]; last.IsZero() || now.Sub(last) >= commercialRelayCatalogWarningInterval {
+			s.catalogWarnings[key] = now
+			newWarnings = append(newWarnings, model)
+		}
+	}
+	s.catalogWarningMu.Unlock()
+	if len(newWarnings) > 0 {
+		log.Printf(
+			"commercial relay model mappings unavailable; isolated_models=%s sample_uid=%d healthy models continue syncing",
+			strings.Join(newWarnings, ","), uid,
+		)
+	}
+}
+
+func commercialRelayCatalogHasExactModel(relayUser *commercialRelayUsageUser, model string) bool {
+	wanted := normalizeRelayModelName(model)
+	if wanted == "" || wanted == "*" || relayUser == nil {
+		return false
+	}
+	for _, limit := range commercialRelayCatalogLimits(relayUser) {
+		if strings.TrimSpace(limit.Provider) != "" && len(limit.AllowedModels) > 0 && normalizeRelayModelName(limit.Model) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func commercialRelayCatalogHasModel(relayUser *commercialRelayUsageUser, model string) bool {
+	wanted := normalizeRelayModelName(model)
+	if wanted == "" || wanted == "*" || relayUser == nil {
+		return false
+	}
+	for _, limit := range commercialRelayCatalogLimits(relayUser) {
+		if strings.TrimSpace(limit.Provider) == "" || len(limit.AllowedModels) == 0 {
+			continue
+		}
+		if normalizeRelayModelName(limit.Model) == wanted {
+			return true
+		}
+		for _, allowed := range limit.AllowedModels {
+			if normalizeRelayModelName(allowed) == wanted {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func verifyCommercialRelayUpdates(updates []commercialRelayProviderBudgetUpdate, relayUser *commercialRelayUsageUser) error {
@@ -1149,7 +1220,7 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 		for _, limit := range commercialRelayCatalogLimits(relayUser) {
 			model := strings.TrimSpace(limit.Model)
 			if model != "" && model != "*" && limit.Provider != "" && len(limit.AllowedModels) > 0 {
-				relayByModel[model] = append(relayByModel[model], limit)
+				relayByModel[normalizeRelayModelName(model)] = append(relayByModel[normalizeRelayModelName(model)], limit)
 			}
 		}
 	}
@@ -1167,7 +1238,7 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 	sharedLimit := commercialRelaySharedLimit(summary)
 	for model, amount := range totals {
 		candidateByKey := map[string]*types.CommercialManagedRelayBudget{}
-		for _, limit := range relayByModel[model] {
+		for _, limit := range relayByModel[normalizeRelayModelName(model)] {
 			allowedModels := commercialRelayScopedAllowedModels(limit.AllowedModels, normalizedTotals)
 			if len(allowedModels) == 0 {
 				continue
