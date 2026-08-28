@@ -14,13 +14,20 @@ import PwaDownloadLink from '../widgets/pwa-download-link';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
+  invalidateComposerDraftRevision,
+  isComposerDraftRevisionCurrent,
   persistComposerDraftStore as persistComposerDraftStoreValue,
   readComposerAttachmentDraft,
+  readComposerDraftMutationRevision,
+  readComposerDraftRevision,
   readComposerInputDraft,
   readComposerMentionDraft,
+  readComposerPhoneUploadSession,
+  subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
   writeComposerInputDraft,
   writeComposerMentionDraft,
+  writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
@@ -578,8 +585,34 @@ export default function MessagesView({
       inputDrafts: new Map(),
       structuredMentionDrafts: new Map(),
       attachmentDrafts: new Map(),
+      phoneUploadSessions: new Map(),
     };
   }
+
+  useEffect(() => {
+    const syncDraftFromStore = ({ key } = {}) => {
+      if (key !== undefined && key !== topic) return;
+      if (activeTopicRef.current !== topic) return;
+      const nextInput = readComposerInputDraft(composerDraftStoreRef.current, topic);
+      const nextAttachments = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
+      const nextPhoneUploadSession = readComposerPhoneUploadSession(
+        composerDraftStoreRef.current,
+        topic,
+      );
+      if (phoneUploadSessionRef.current?.session_id !== nextPhoneUploadSession?.session_id) {
+        phoneUploadFileKeysRef.current = new Set();
+      }
+      setInput(nextInput);
+      pendingAttachmentsRef.current = nextAttachments;
+      setPendingAttachments(nextAttachments);
+      phoneUploadSessionRef.current = nextPhoneUploadSession;
+      phoneUploadTopicRef.current = nextPhoneUploadSession ? topic : '';
+      setPhoneUploadSession(nextPhoneUploadSession);
+    };
+
+    syncDraftFromStore();
+    return subscribeComposerDraftStore(composerDraftStoreRef.current, syncDraftFromStore);
+  }, [composerDraftStore, topic]);
 
   if (artifactTopicRef.current !== topic) {
     artifactTopicRef.current = topic;
@@ -646,8 +679,13 @@ export default function MessagesView({
     persistComposerDraftStore();
   }, [persistComposerDraftStore]);
 
-  const updateAttachmentDraft = useCallback((draftTopic, nextValue) => {
+  const updateAttachmentDraft = useCallback((draftTopic, nextValue, expectedRevision) => {
     if (!draftTopic) return [];
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      draftTopic,
+      expectedRevision,
+    )) return null;
     const current = readComposerAttachmentDraft(composerDraftStoreRef.current, draftTopic);
     const next = typeof nextValue === 'function' ? nextValue(current) : nextValue;
     const normalized = Array.isArray(next) ? next : [];
@@ -1178,10 +1216,14 @@ export default function MessagesView({
     setAttachmentStatus(null);
     setAttachmentMenuOpen(false);
     setPhoneUploadDialogOpen(false);
-    setPhoneUploadSession(null);
+    const restoredPhoneUploadSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      topic,
+    );
+    setPhoneUploadSession(restoredPhoneUploadSession);
     setPhoneUploadError('');
-    phoneUploadSessionRef.current = null;
-    phoneUploadTopicRef.current = '';
+    phoneUploadSessionRef.current = restoredPhoneUploadSession;
+    phoneUploadTopicRef.current = restoredPhoneUploadSession ? topic : '';
     phoneUploadSyncRef.current = null;
     phoneUploadFileKeysRef.current = new Set();
     const targetMessageId = messageLocationRequest?.topicId === topic
@@ -1895,8 +1937,21 @@ export default function MessagesView({
     const sessionTopic = phoneUploadTopicRef.current;
     if (!sessionId || !sessionTopic || activeTopicRef.current !== sessionTopic) return [];
 
+    if (final && phoneUploadSyncRef.current) {
+      const inFlightOperation = phoneUploadSyncRef.current;
+      try {
+        await inFlightOperation;
+      } catch {
+        // The fresh final read below gets one more chance to collect the latest files.
+      }
+      if (phoneUploadSyncRef.current === inFlightOperation) {
+        phoneUploadSyncRef.current = null;
+      }
+    }
+
     let operation = phoneUploadSyncRef.current;
     if (!operation) {
+      const draftRevision = readComposerDraftRevision(composerDraftStoreRef.current, sessionTopic);
       operation = (async () => {
         const data = await api.getMobileUploadSession(sessionId);
         if (
@@ -1906,15 +1961,31 @@ export default function MessagesView({
         ) {
           return [];
         }
+        if (!isComposerDraftRevisionCurrent(
+          composerDraftStoreRef.current,
+          sessionTopic,
+          draftRevision,
+        )) return [];
         if (data?.topic && data.topic !== sessionTopic) {
           throw new Error('手机上传会话与当前对话不匹配，请重新打开二维码。');
         }
 
         const nextAttachments = [];
+        const existingAttachmentKeys = new Set(
+          readComposerAttachmentDraft(composerDraftStoreRef.current, sessionTopic)
+            .map(attachmentFileKey)
+            .filter(Boolean),
+        );
+        const nextAttachmentKeys = [];
         for (const file of Array.isArray(data?.files) ? data.files : []) {
           const fileKey = file.file_key || file.url || file.name;
-          if (!fileKey || phoneUploadFileKeysRef.current.has(fileKey)) continue;
-          phoneUploadFileKeysRef.current.add(fileKey);
+          if (
+            !fileKey
+            || phoneUploadFileKeysRef.current.has(fileKey)
+            || existingAttachmentKeys.has(fileKey)
+          ) continue;
+          existingAttachmentKeys.add(fileKey);
+          nextAttachmentKeys.push(fileKey);
           const type = file.type === 'image' ? 'image' : 'file';
           const payload = {
             file_key: file.file_key,
@@ -1933,10 +2004,16 @@ export default function MessagesView({
         }
 
         if (nextAttachments.length > 0) {
-          const updated = updateAttachmentDraft(sessionTopic, (current) => [...current, ...nextAttachments]);
-          if (activeTopicRef.current === sessionTopic) {
+          const updated = updateAttachmentDraft(
+            sessionTopic,
+            (current) => [...current, ...nextAttachments],
+            draftRevision,
+          );
+          if (updated && activeTopicRef.current === sessionTopic) {
             setAttachmentStatus({ tone: 'success', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
           }
+          if (!updated) return [];
+          nextAttachmentKeys.forEach((fileKey) => phoneUploadFileKeysRef.current.add(fileKey));
         }
         if (activeTopicRef.current === sessionTopic) setPhoneUploadError('');
         return nextAttachments;
@@ -1953,12 +2030,24 @@ export default function MessagesView({
       ) {
         setPhoneUploadError(error?.message || '读取手机上传结果失败');
       }
+      if (/session not found|not found|expired/i.test(String(error?.message || ''))) {
+        writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, null);
+        persistComposerDraftStore();
+        if (
+          activeTopicRef.current === sessionTopic
+          && phoneUploadSessionRef.current?.session_id === sessionId
+        ) {
+          phoneUploadSessionRef.current = null;
+          phoneUploadTopicRef.current = '';
+          setPhoneUploadSession(null);
+        }
+      }
       if (final) throw error;
       return [];
     } finally {
       if (phoneUploadSyncRef.current === operation) phoneUploadSyncRef.current = null;
     }
-  }, [updateAttachmentDraft]);
+  }, [persistComposerDraftStore, updateAttachmentDraft]);
 
   const finalizeOptimisticMessage = useCallback((tempId, result) => {
     if (!result || (!result.seq_id && !result.id)) return;
@@ -1987,7 +2076,16 @@ export default function MessagesView({
     const initialAttachments = storedAttachments.length > 0
       ? storedAttachments
       : pendingAttachmentsRef.current;
-    if (!initialText && initialAttachments.length === 0) return;
+    const storedPhoneUploadSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      topic,
+    );
+    if (
+      !initialText
+      && initialAttachments.length === 0
+      && !storedPhoneUploadSession?.session_id
+      && !phoneUploadSessionRef.current?.session_id
+    ) return;
     if (isUploadingAttachment || sendInFlightRef.current) return;
 
     sendInFlightRef.current = true;
@@ -1999,12 +2097,17 @@ export default function MessagesView({
     let topicToActivate = null;
     let switchesTopic = false;
     let stateCleared = false;
+    let sendClearMutationRevision = null;
     let messageSent = false;
     let optimisticMessageAdded = false;
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
     const originalStructuredMentions = readComposerMentionDraft(composerDraftStoreRef.current, topic);
+    const originalPhoneUploadSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      topic,
+    );
     const protocolText = isGroup
       ? canonicalizeStructuredMentionText(originalInput, originalStructuredMentions).trim()
       : text;
@@ -2026,6 +2129,15 @@ export default function MessagesView({
         setAwaitingAgentReply(false);
         return;
       }
+      const snapshotMutationRevision = readComposerDraftMutationRevision(
+        composerDraftStoreRef.current,
+        topic,
+      );
+
+      // Phone polling above is part of message preparation. Invalidate the
+      // callback generation only after its final read so a file that arrived
+      // while Send was starting is still included in this message.
+      invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
       const contentBlocks = buildAtomicContentBlocks(protocolText, attachmentsToSend);
@@ -2042,15 +2154,44 @@ export default function MessagesView({
         : await captureArtifactMessageContext();
       const sendPayload = withArtifactContextRef(payload, artifactContext.contextRef);
 
-      updateComposerDraft(topic, '');
-      updateStructuredMentionDraft(topic, []);
-      updateAttachmentDraft(topic, []);
-      stateCleared = true;
+      // If a newer composer wrote text/mentions while this send was being
+      // prepared, leave that draft alone. Attachment polling above is part of
+      // the message preparation, so its writes are represented by the
+      // snapshot revision and do not count as a newer draft here.
+      const currentInputDraft = readComposerInputDraft(composerDraftStoreRef.current, topic);
+      const currentMentionDraft = readComposerMentionDraft(composerDraftStoreRef.current, topic);
+      const draftChangedBeforeClear = (
+        currentInputDraft !== originalInput
+        || JSON.stringify(currentMentionDraft) !== JSON.stringify(originalStructuredMentions)
+        || readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+          !== snapshotMutationRevision
+      );
+      if (!draftChangedBeforeClear) {
+        // Close the generation again immediately before clearing. This also
+        // rejects callbacks that started after the send began but still belong
+        // to the draft being consumed.
+        invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
+        updateComposerDraft(topic, '');
+        updateStructuredMentionDraft(topic, []);
+        updateAttachmentDraft(topic, []);
+        writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
+        persistComposerDraftStore();
+        sendClearMutationRevision = readComposerDraftMutationRevision(
+          composerDraftStoreRef.current,
+          topic,
+        );
+        stateCleared = true;
+      }
       if (activeTopicRef.current === topic) {
-        clearRuntimePlan();
-        setAttachmentStatus(null);
-        setInput('');
-        setReplyTo(null);
+        if (stateCleared) {
+          clearRuntimePlan();
+          setAttachmentStatus(null);
+          setInput('');
+          setReplyTo(null);
+          phoneUploadSessionRef.current = null;
+          phoneUploadTopicRef.current = '';
+          setPhoneUploadSession(null);
+        }
       }
 
       stickToBottomRef.current = true;
@@ -2098,10 +2239,26 @@ export default function MessagesView({
       setAwaitingAgentReply(false);
 
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
-      if (stateCleared) {
+      const draftHasChangesAfterClear = (
+        readComposerInputDraft(composerDraftStoreRef.current, topic) !== ''
+        || readComposerMentionDraft(composerDraftStoreRef.current, topic).length > 0
+        || readComposerAttachmentDraft(composerDraftStoreRef.current, topic).length > 0
+      );
+      if (
+        stateCleared
+        && !draftHasChangesAfterClear
+        && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+          === sendClearMutationRevision
+      ) {
         updateComposerDraft(topic, originalInput);
         updateStructuredMentionDraft(topic, originalStructuredMentions);
         updateAttachmentDraft(topic, attachmentsToSend);
+        writeComposerPhoneUploadSession(
+          composerDraftStoreRef.current,
+          topic,
+          originalPhoneUploadSession,
+        );
+        persistComposerDraftStore();
       }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
@@ -2117,7 +2274,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -2346,7 +2503,17 @@ export default function MessagesView({
     }, 0);
   };
 
-  const uploadAttachmentFile = async (file, requestedType, uploadTopic = activeTopicRef.current) => {
+  const uploadAttachmentFile = async (
+    file,
+    requestedType,
+    uploadTopic = activeTopicRef.current,
+    uploadRevision = readComposerDraftRevision(composerDraftStoreRef.current, uploadTopic),
+  ) => {
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      uploadTopic,
+      uploadRevision,
+    )) return null;
     const type = inferAttachmentType(file, requestedType);
     const validationError = validateAttachmentBeforeUpload(file, type);
     if (validationError) {
@@ -2378,33 +2545,59 @@ export default function MessagesView({
         size: data.size,
         content,
       };
-      updateAttachmentDraft(uploadTopic, (current) => [...current, attachment]);
+      const updated = updateAttachmentDraft(
+        uploadTopic,
+        (current) => [...current, attachment],
+        uploadRevision,
+      );
+      if (!updated) return null;
       if (activeTopicRef.current === uploadTopic) {
         setAttachmentStatus({ tone: 'success', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
         setTimeout(() => textareaRef.current?.focus(), 0);
       }
       return attachment;
     } catch (err) {
-      if (activeTopicRef.current === uploadTopic) {
+      if (
+        activeTopicRef.current === uploadTopic
+        && isComposerDraftRevisionCurrent(
+          composerDraftStoreRef.current,
+          uploadTopic,
+          uploadRevision,
+        )
+      ) {
         setAttachmentStatus({ tone: 'error', message: formatUploadError(err) });
       }
       return null;
     }
   };
 
-  const uploadAttachmentFiles = async (files, requestedType) => {
+  const uploadAttachmentFiles = async (files, requestedType, expectedRevision) => {
     const fileList = Array.from(files || []).filter(Boolean);
     if (fileList.length === 0 || sendInFlightRef.current) return;
     const uploadTopic = activeTopicRef.current;
+    const uploadRevision = expectedRevision ?? readComposerDraftRevision(
+      composerDraftStoreRef.current,
+      uploadTopic,
+    );
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      uploadTopic,
+      uploadRevision,
+    )) return;
     let uploadedCount = 0;
     let failedCount = 0;
     setIsUploadingAttachment(true);
     try {
       for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
-        const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
+        const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic, uploadRevision);
         if (uploaded) {
           uploadedCount += 1;
         } else {
+          if (!isComposerDraftRevisionCurrent(
+            composerDraftStoreRef.current,
+            uploadTopic,
+            uploadRevision,
+          )) return;
           failedCount += 1;
         }
       }
@@ -2445,17 +2638,33 @@ export default function MessagesView({
     const sessionTopic = topic;
     setPhoneUploadDialogOpen(true);
     setPhoneUploadError('');
-    setPhoneUploadSession(null);
-    phoneUploadSessionRef.current = null;
-    phoneUploadTopicRef.current = '';
-    phoneUploadSyncRef.current = null;
-    phoneUploadFileKeysRef.current = new Set();
+    const existingSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      sessionTopic,
+    );
+    if (existingSession?.session_id) {
+      phoneUploadSessionRef.current = existingSession;
+      phoneUploadTopicRef.current = sessionTopic;
+      setPhoneUploadSession(existingSession);
+      return;
+    }
+    const draftRevision = readComposerDraftRevision(composerDraftStoreRef.current, sessionTopic);
     try {
       const session = await api.createMobileUploadSession(sessionTopic);
-      if (activeTopicRef.current !== sessionTopic) return;
-      phoneUploadSessionRef.current = session;
-      phoneUploadTopicRef.current = sessionTopic;
-      setPhoneUploadSession(session);
+      if (
+        !isComposerDraftRevisionCurrent(
+          composerDraftStoreRef.current,
+          sessionTopic,
+          draftRevision,
+        )
+      ) return;
+      writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, session);
+      persistComposerDraftStore();
+      if (activeTopicRef.current === sessionTopic) {
+        phoneUploadSessionRef.current = session;
+        phoneUploadTopicRef.current = sessionTopic;
+        setPhoneUploadSession(session);
+      }
     } catch (err) {
       if (activeTopicRef.current === sessionTopic) {
         setPhoneUploadError(err.message || '手机上传入口创建失败');
@@ -2544,13 +2753,23 @@ export default function MessagesView({
       return;
     }
 
+    const dropTopic = activeTopicRef.current;
+    const dropRevision = readComposerDraftRevision(composerDraftStoreRef.current, dropTopic);
     const files = await collectDroppedFiles(e.dataTransfer);
+    if (
+      activeTopicRef.current !== dropTopic
+      || !isComposerDraftRevisionCurrent(
+        composerDraftStoreRef.current,
+        dropTopic,
+        dropRevision,
+      )
+    ) return;
     if (files.length === 0) {
       setAttachmentStatus({ tone: 'error', message: '这次拖入没有识别到可上传的文件。' });
       return;
     }
 
-    await uploadAttachmentFiles(files);
+    await uploadAttachmentFiles(files, undefined, dropRevision);
   };
 
   const handlePaste = async (e) => {
@@ -2575,6 +2794,11 @@ export default function MessagesView({
     }
 
     const pasteTopic = activeTopicRef.current;
+    const pasteRevision = readComposerDraftRevision(composerDraftStoreRef.current, pasteTopic);
+    const pasteMutationRevision = readComposerDraftMutationRevision(
+      composerDraftStoreRef.current,
+      pasteTopic,
+    );
     const textarea = e.currentTarget;
     const selectionStart = Number.isInteger(textarea?.selectionStart) ? textarea.selectionStart : input.length;
     const selectionEnd = Number.isInteger(textarea?.selectionEnd) ? textarea.selectionEnd : selectionStart;
@@ -2585,7 +2809,7 @@ export default function MessagesView({
     setIsUploadingAttachment(true);
     let uploaded = null;
     try {
-      uploaded = await uploadAttachmentFile(documentFile, 'file', pasteTopic);
+      uploaded = await uploadAttachmentFile(documentFile, 'file', pasteTopic, pasteRevision);
     } finally {
       setIsUploadingAttachment(false);
     }
@@ -2599,6 +2823,18 @@ export default function MessagesView({
       }
       return;
     }
+
+    // A failed upload and an intentionally ignored stale upload both return
+    // null. Do not restore the old clipboard text after a newer draft has
+    // already been sent or replaced.
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      pasteTopic,
+      pasteRevision,
+    ) || readComposerDraftMutationRevision(
+      composerDraftStoreRef.current,
+      pasteTopic,
+    ) !== pasteMutationRevision) return;
 
     const currentText = pasteTopic === activeTopicRef.current
       ? (textareaRef.current?.value ?? input)
@@ -4594,6 +4830,15 @@ function tutorialDismissStorageKey(uid, topic) {
 function hasFileDrag(dataTransfer) {
   if (!dataTransfer?.types) return false;
   return Array.from(dataTransfer.types).includes('Files');
+}
+
+function attachmentFileKey(attachment) {
+  return attachment?.content?.payload?.file_key
+    || attachment?.content?.payload?.url
+    || attachment?.file_key
+    || attachment?.url
+    || attachment?.name
+    || '';
 }
 
 
