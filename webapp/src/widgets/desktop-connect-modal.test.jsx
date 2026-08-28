@@ -62,6 +62,9 @@ describe('DesktopConnectModal', () => {
       'macOS Intel',
       'Linux AppImage',
     ].some((platform) => recommended.textContent.includes(platform))).toBe(true);
+    const moreDownloads = container.querySelector('.catsco-download-more');
+    expect(moreDownloads.firstChild.textContent).toBe('其他系统版本');
+    expect(moreDownloads.lastElementChild?.tagName).toBe('svg');
   });
 
   test('keeps connected device management in the unified modal', async () => {

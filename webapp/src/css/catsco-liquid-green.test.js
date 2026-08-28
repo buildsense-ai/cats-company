@@ -30,6 +30,9 @@ describe('restored green liquid theme', () => {
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-sidebar\.collapsed \.v3-sidebar-collapse-btn,[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/,
     );
     expect(css).toMatch(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] :is\([\s\S]*?\.v3-sidebar-header-actions \.v3-sidebar-collapse-btn,[\s\S]*?\.v3-chat-list \.cc-section-add[\s\S]*?\)\s*\{[^}]*border-color: transparent;[^}]*background: transparent;[^}]*box-shadow: none;/,
+    );
+    expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.relay-access-current-quota\.active\s*\{[^}]*background: rgba\(41, 188, 149, 0\.08\);/,
     );
     expect(css).toMatch(/\.relay-access-quota-bar i\s*\{[^}]*background: #29bc95;/);

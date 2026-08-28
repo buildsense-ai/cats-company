@@ -1062,16 +1062,17 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
-  it('opens the existing message actions after a one-second mobile long press', async () => {
-    vi.useFakeTimers();
+  it('opens message actions after a mobile tap and keeps buttons clickable', async () => {
+    const onReply = vi.fn();
     await act(async () => {
       root.render(
         <ChatMessage
-          message={{ id: 21, from_uid: 2, content: '长按查看操作', created_at: '2026-06-09T00:00:00Z' }}
+          message={{ id: 21, from_uid: 2, content: '点击查看操作', created_at: '2026-06-09T00:00:00Z' }}
           isSelf={false}
           isGroup={false}
           senderName="CatsCo"
-          onReply={vi.fn()}
+          onReply={onReply}
+          onCreateConversationShare={vi.fn()}
         />,
       );
       await Promise.resolve();
@@ -1081,20 +1082,26 @@ describe('ChatMessage rich file rendering', () => {
     const actions = container.querySelector('.v3-message-actions');
     expect(actions?.classList.contains('open')).toBe(false);
 
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true, addListener: vi.fn(), removeListener: vi.fn() });
     await act(async () => {
-      Simulate.pointerDown(bubble, { pointerType: 'touch', button: 0 });
-      vi.advanceTimersByTime(999);
-    });
-    expect(actions?.classList.contains('open')).toBe(false);
-
-    await act(async () => {
-      vi.advanceTimersByTime(1);
+      Simulate.click(bubble);
+      await Promise.resolve();
     });
     expect(container.querySelector('.v3-message-actions')?.classList.contains('open')).toBe(true);
 
     await act(async () => {
-      Simulate.pointerUp(bubble, { pointerType: 'touch', button: 0 });
+      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
+      await Promise.resolve();
     });
+    expect(container.querySelector('.v3-message-action-menu')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="回复"]'));
+      await Promise.resolve();
+    });
+    expect(onReply).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.v3-message-actions')?.classList.contains('open')).toBe(true);
+    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
   it('shows a direct edit action for the current user message', async () => {
