@@ -578,6 +578,7 @@ export default function MessagesView({
   artifactTaskFeedbackRef.current = feedback;
   const phoneUploadTopicRef = useRef('');
   const phoneUploadSyncRef = useRef(null);
+  const phoneUploadSyncSessionIdRef = useRef('');
   const sendInFlightRef = useRef(false);
   const conversationShareGenerateButtonRef = useRef(null);
   const conversationSharePreviewRef = useRef(null);
@@ -1960,6 +1961,7 @@ export default function MessagesView({
       }
       if (phoneUploadSyncRef.current === inFlightOperation) {
         phoneUploadSyncRef.current = null;
+        phoneUploadSyncSessionIdRef.current = '';
       }
     }
 
@@ -2033,7 +2035,9 @@ export default function MessagesView({
         return nextAttachments;
       })();
       phoneUploadSyncRef.current = operation;
+      phoneUploadSyncSessionIdRef.current = sessionId;
     }
+    const operationSessionId = phoneUploadSyncSessionIdRef.current;
 
     try {
       return await operation;
@@ -2045,8 +2049,18 @@ export default function MessagesView({
         setPhoneUploadError(error?.message || '读取手机上传结果失败');
       }
       if (/session not found|not found|expired/i.test(String(error?.message || ''))) {
-        writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, null);
-        persistComposerDraftStore();
+        const currentDraftSession = readComposerPhoneUploadSession(
+          composerDraftStoreRef.current,
+          sessionTopic,
+        );
+        // This request may belong to a composer that was unmounted and later
+        // replaced. Only clear the persisted session if it is still the one
+        // that produced this error; a newer QR session must survive the stale
+        // callback.
+        if (operationSessionId === sessionId && currentDraftSession?.session_id === sessionId) {
+          writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, null);
+          persistComposerDraftStore();
+        }
         if (
           activeTopicRef.current === sessionTopic
           && phoneUploadSessionRef.current?.session_id === sessionId
@@ -2059,7 +2073,10 @@ export default function MessagesView({
       if (final) throw error;
       return [];
     } finally {
-      if (phoneUploadSyncRef.current === operation) phoneUploadSyncRef.current = null;
+      if (phoneUploadSyncRef.current === operation) {
+        phoneUploadSyncRef.current = null;
+        phoneUploadSyncSessionIdRef.current = '';
+      }
     }
   }, [persistComposerDraftStore, updateAttachmentDraft]);
 

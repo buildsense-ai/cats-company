@@ -95,6 +95,50 @@ function isPhoneUploadSession(value) {
     && typeof value.session_id === 'string' && value.session_id.length > 0;
 }
 
+const draftAgentFields = [
+  'uid',
+  'id',
+  'username',
+  'display_name',
+  'topic_id',
+  'avatar_url',
+  'is_bot',
+  'is_owner',
+  'isOwner',
+  'relation',
+  'account_type',
+];
+
+function normalizeDraftAgent(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const identity = value.uid ?? value.id;
+  if (identity === undefined || identity === null || String(identity).trim() === '') return null;
+
+  const agent = {};
+  draftAgentFields.forEach((field) => {
+    const candidate = value[field];
+    if (candidate === null || ['string', 'number', 'boolean'].includes(typeof candidate)) {
+      agent[field] = candidate;
+    }
+  });
+  if (agent.uid === undefined || agent.uid === null || String(agent.uid).trim() === '') {
+    agent.uid = identity;
+  }
+  return agent;
+}
+
+function normalizeTaskContext(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const agent = normalizeDraftAgent(value.agent);
+  const candidateProjectId = Number(value.projectId);
+  const projectId = Number.isFinite(candidateProjectId) && candidateProjectId > 0
+    ? candidateProjectId
+    : 0;
+  const projectName = projectId > 0 ? String(value.projectName || '') : '';
+  if (!agent && projectId <= 0) return null;
+  return { agent, projectId, projectName };
+}
+
 const draftFieldDefinitions = {
   input: {
     mapName: 'inputDrafts',
@@ -139,6 +183,13 @@ const draftFieldDefinitions = {
     read(value) {
       return isPhoneUploadSession(value) ? { ...value } : null;
     },
+  },
+  taskContext: {
+    mapName: 'taskContextDrafts',
+    getter: 'getTaskContextDraft',
+    setter: 'setTaskContextDraft',
+    normalize: normalizeTaskContext,
+    read: normalizeTaskContext,
   },
 };
 
@@ -292,6 +343,7 @@ function readDraftSnapshots(storageKey, storage, logoutFenceUpdatedAt = null) {
       selectedDraft = newestSnapshot(selectedDraft, {
         snapshot: draft,
         updatedAt: normalizedUpdatedAt(draft.updatedAt),
+        logoutFenceAt: normalizedUpdatedAt(draft.logoutFenceAt),
       }, index);
     }
     const state = readDraftSnapshot(stateStorageKey, target);
@@ -302,6 +354,7 @@ function readDraftSnapshots(storageKey, storage, logoutFenceUpdatedAt = null) {
           ? COMPOSER_DRAFT_CLEAR_REASON_LOGOUT
           : '',
         updatedAt: normalizedUpdatedAt(state.updatedAt),
+        logoutFenceAt: normalizedUpdatedAt(state.logoutFenceAt),
       }, index);
     }
   });
@@ -319,6 +372,7 @@ function readDraftSnapshots(storageKey, storage, logoutFenceUpdatedAt = null) {
       updatedAt: stateUpdatedAt,
       cleared: selectedState.cleared,
       clearReason: selectedState.clearReason,
+      logoutFenceAt: selectedState.logoutFenceAt,
     };
   }
   return {
@@ -326,7 +380,56 @@ function readDraftSnapshots(storageKey, storage, logoutFenceUpdatedAt = null) {
     updatedAt: draftUpdatedAt,
     cleared: false,
     clearReason: '',
+    logoutFenceAt: selectedDraft?.logoutFenceAt || currentLogoutFenceAt,
   };
+}
+
+function mirrorHydratedSnapshotToLocalStorage(storageKey, stateStorageKey, snapshotRecord, logoutFenceAt) {
+  if (!storageKey || !stateStorageKey || !snapshotRecord?.updatedAt) return;
+  const localRecord = readDraftSnapshots(storageKey, 'localStorage', logoutFenceAt);
+  const sourceIsNewer = snapshotRecord.updatedAt > localRecord.updatedAt;
+  const sourceWinsTie = snapshotRecord.updatedAt === localRecord.updatedAt
+    && snapshotRecord.cleared
+    && !localRecord.cleared;
+  if (!sourceIsNewer && !sourceWinsTie) return;
+
+  const normalizedFenceAt = Math.max(
+    normalizedUpdatedAt(logoutFenceAt),
+    normalizedUpdatedAt(snapshotRecord.logoutFenceAt),
+  );
+  if (snapshotRecord.cleared) {
+    writeStorageValue(
+      stateStorageKey,
+      JSON.stringify({
+        updatedAt: snapshotRecord.updatedAt,
+        cleared: true,
+        ...(snapshotRecord.clearReason ? { clearReason: snapshotRecord.clearReason } : {}),
+        logoutFenceAt: normalizedFenceAt,
+      }),
+      'localStorage',
+    );
+    removeStorageValue(storageKey, 'localStorage');
+    return;
+  }
+
+  writeStorageValue(
+    storageKey,
+    JSON.stringify({
+      ...(snapshotRecord.snapshot || {}),
+      updatedAt: snapshotRecord.updatedAt,
+      logoutFenceAt: normalizedFenceAt,
+    }),
+    'localStorage',
+  );
+  writeStorageValue(
+    stateStorageKey,
+    JSON.stringify({
+      updatedAt: snapshotRecord.updatedAt,
+      cleared: false,
+      logoutFenceAt: normalizedFenceAt,
+    }),
+    'localStorage',
+  );
 }
 
 function readDraftFieldFromMap(store, kind, key) {
@@ -451,12 +554,21 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const previousStore = registry?.get(storageKey);
   const logoutFence = readLogoutFence(storage);
   const snapshotRecord = readDraftSnapshots(storageKey, storage, logoutFence.updatedAt);
+  if (storage === 'sessionStorage') {
+    mirrorHydratedSnapshotToLocalStorage(
+      storageKey,
+      stateStorageKey,
+      snapshotRecord,
+      logoutFence.updatedAt,
+    );
+  }
   const snapshot = snapshotRecord.snapshot;
   const draftMaps = draftMapsFromSnapshot(snapshot);
   const inputDrafts = draftMaps.input;
   const structuredMentionDrafts = draftMaps.mention;
   const attachmentDrafts = draftMaps.attachment;
   const phoneUploadSessions = draftMaps.phoneUpload;
+  const taskContextDrafts = draftMaps.taskContext;
   let active = true;
   let closed = false;
   let handoffTarget = null;
@@ -474,6 +586,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     structuredMentionDrafts.clear();
     attachmentDrafts.clear();
     phoneUploadSessions.clear();
+    taskContextDrafts.clear();
     listeners.clear();
     if (registry?.get(storageKey) === draftStore) registry.delete(storageKey);
   };
@@ -557,6 +670,12 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     },
     setPhoneUploadSession(key, value) {
       setDraftField('phoneUpload', key, value);
+    },
+    getTaskContextDraft(key) {
+      return getDraftField('taskContext', key);
+    },
+    setTaskContextDraft(key, value) {
+      setDraftField('taskContext', key, value);
     },
     persist() {
       if (logoutFenced) return;
@@ -733,6 +852,14 @@ export function readComposerPhoneUploadSession(store, key) {
 
 export function writeComposerPhoneUploadSession(store, key, value) {
   writeComposerDraftField(store, 'phoneUpload', key, value);
+}
+
+export function readComposerTaskContextDraft(store, key) {
+  return readComposerDraftField(store, 'taskContext', key);
+}
+
+export function writeComposerTaskContextDraft(store, key, value) {
+  writeComposerDraftField(store, 'taskContext', key, value);
 }
 
 export function writeComposerAttachmentDraft(store, key, value) {

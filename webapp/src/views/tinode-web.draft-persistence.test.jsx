@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   connectWS: vi.fn(),
   disconnectWS: vi.fn(),
   agents: [],
+  createGroup: vi.fn(),
+  assignProjectTopic: vi.fn(),
+  sendMessage: vi.fn(),
 }));
 
 vi.mock('../api', () => {
@@ -29,6 +32,9 @@ vi.mock('../api', () => {
     updateConversationTitle: vi.fn(),
     updateGroup: vi.fn(),
     updateMe: vi.fn(),
+    createGroup: mocks.createGroup,
+    assignProjectTopic: mocks.assignProjectTopic,
+    sendMessage: mocks.sendMessage,
   };
   return {
     api,
@@ -94,6 +100,15 @@ vi.mock('./sidepanel-view', () => ({
           onClick={() => onStartAgentTask({ uid: 7, display_name: '测试 Agent' })}
         >
           选择 Agent 返回新任务
+        </button>
+        <button
+          type="button"
+          onClick={() => onStartAgentTask(
+            { uid: 8, display_name: '运营 Agent', username: 'ops-agent', avatar_url: '/ops.png' },
+            { projectId: 12, projectName: 'Website' },
+          )}
+        >
+          选择带项目的 Agent 返回新任务
         </button>
         {showNewTask && (
           <button
@@ -169,6 +184,9 @@ beforeEach(() => {
   mocks.token = 'session-token';
   mocks.sessionRevision = 1;
   mocks.agents = [];
+  mocks.createGroup.mockReset();
+  mocks.assignProjectTopic.mockReset();
+  mocks.sendMessage.mockReset();
   window.matchMedia = vi.fn(() => ({ matches: false }));
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   container = document.createElement('div');
@@ -460,4 +478,66 @@ test('restores a new-task draft after leaving the current tab context', async ()
 
   expect(container.querySelector('textarea.v3-composer-input').value)
     .toBe('draft survives leaving the current tab context');
+});
+
+test('restores the selected Agent and project when a new-task draft opens in a fresh context', async () => {
+  mocks.agents = [
+    { uid: 7, display_name: '默认 Agent', username: 'default-agent' },
+    { uid: 8, display_name: '运营 Agent', username: 'ops-agent', avatar_url: '/ops.png' },
+  ];
+  mocks.createGroup.mockResolvedValue({
+    group: { id: 88, name: '运营任务' },
+    topic: 'grp_88',
+  });
+  mocks.assignProjectTopic.mockResolvedValue({});
+  mocks.sendMessage.mockResolvedValue({ seq_id: 188 });
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择带项目的 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  await act(async () => {
+    textarea.value = '继续处理 Website 数据';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+    await Promise.resolve();
+  });
+
+  const stored = JSON.parse(localStorage.getItem('catsco_composer_drafts:v1:1'));
+  expect(stored.taskContextDrafts).toEqual([[
+    'new-task',
+    expect.objectContaining({
+      agent: expect.objectContaining({ uid: 8 }),
+      projectId: 12,
+      projectName: 'Website',
+    }),
+  ]]);
+
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  sessionStorage.clear();
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea.v3-composer-input').value)
+    .toBe('继续处理 Website 数据');
+  await act(async () => {
+    Simulate.click(container.querySelector('button[aria-label="发送"]'));
+    await Promise.resolve();
+  });
+
+  expect(mocks.createGroup).toHaveBeenCalledWith(
+    '继续处理 Website 数据',
+    [8],
+    { kind: 'agent_task' },
+  );
+  expect(mocks.assignProjectTopic).toHaveBeenCalledWith(12, 'grp_88');
 });

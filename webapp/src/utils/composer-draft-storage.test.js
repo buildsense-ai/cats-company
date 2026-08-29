@@ -5,12 +5,14 @@ import {
   createComposerDraftStore,
   invalidateComposerDraftRevision,
   isComposerDraftRevisionCurrent,
+  readComposerTaskContextDraft,
   readComposerPhoneUploadSession,
   readComposerDraftMutationRevision,
   readComposerDraftRevision,
   subscribeComposerDraftStore,
   writeComposerPhoneUploadSession,
   writeComposerInputDraft,
+  writeComposerTaskContextDraft,
 } from './composer-draft-storage';
 
 function sharedStorage(values = new Map(), { onGetItem } = {}) {
@@ -76,6 +78,22 @@ describe('composer draft storage', () => {
 
     const restored = createComposerDraftStore('42');
     expect(restored.getInputDraft('new-task')).toBe('跨工作区草稿');
+  });
+
+  test('backfills a session-only snapshot to localStorage during hydrate', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}42`;
+    sessionStorage.setItem(key, JSON.stringify({
+      inputDrafts: [['new-task', '旧版本留下的草稿']],
+      updatedAt: 10,
+    }));
+
+    const restored = createComposerDraftStore('42');
+
+    expect(restored.getInputDraft('new-task')).toBe('旧版本留下的草稿');
+    expect(localStorage.getItem(key)).toContain('旧版本留下的草稿');
+    sessionStorage.clear();
+    expect(createComposerDraftStore('42').getInputDraft('new-task'))
+      .toBe('旧版本留下的草稿');
   });
 
   test('hydrates the most recent copy when both storage areas are present', () => {
@@ -275,6 +293,28 @@ describe('composer draft storage', () => {
 
     const restored = createComposerDraftStore('42');
     expect(readComposerPhoneUploadSession(restored, 'new-task')).toEqual(session);
+  });
+
+  test('round-trips the selected Agent and project context with a new-task draft', () => {
+    const store = createComposerDraftStore('42');
+    const context = {
+      agent: {
+        uid: 22,
+        username: 'ops-agent',
+        display_name: '运营数据助手',
+        topic_id: 'p2p_42_22',
+        avatar_url: '/avatars/22.png',
+        is_bot: true,
+      },
+      projectId: 12,
+      projectName: 'Website',
+    };
+
+    writeComposerTaskContextDraft(store, 'new-task', context);
+    store.persist();
+
+    const restored = createComposerDraftStore('42');
+    expect(readComposerTaskContextDraft(restored, 'new-task')).toEqual(context);
   });
 
   test('notifies subscribers when a draft is changed through the public helpers', () => {

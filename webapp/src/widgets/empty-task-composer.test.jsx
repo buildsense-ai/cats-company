@@ -21,6 +21,7 @@ vi.mock('./qr-code', () => ({
 
 import { api } from '../api';
 import EmptyTaskComposer from './empty-task-composer';
+import { writeComposerPhoneUploadSession } from '../utils/composer-draft-storage';
 
 const agents = [
   {
@@ -84,6 +85,16 @@ describe('EmptyTaskComposer', () => {
     });
 
     return { onResolveAgentTopic, onActivateTopic };
+  }
+
+  function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+    return { promise, resolve, reject };
   }
 
   it('renders a real textarea in the shared composer and keeps all upload actions under plus', async () => {
@@ -585,6 +596,48 @@ describe('EmptyTaskComposer', () => {
 
     expect(attachmentDrafts.get('new-task')[0].content.payload.file_key)
       .toBe('new-task-resume.pdf');
+  });
+
+  it('does not clear a replacement phone upload session when the old poll expires', async () => {
+    const phoneUploadSessions = new Map([['new-task', { session_id: 'phone-A' }]]);
+    const listeners = new Set();
+    const stalePoll = deferred();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      phoneUploadSessions,
+      getPhoneUploadSession: (key) => phoneUploadSessions.get(key) || null,
+      setPhoneUploadSession: (key, value) => {
+        if (value) phoneUploadSessions.set(key, value);
+        else phoneUploadSessions.delete(key);
+        listeners.forEach((listener) => listener({ key }));
+      },
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      persist: vi.fn(),
+    };
+    api.getMobileUploadSession.mockReset();
+    api.getMobileUploadSession.mockReturnValueOnce(stalePoll.promise);
+    api.getMobileUploadSession.mockImplementation(() => new Promise(() => {}));
+
+    await mountComposer({ composerDraftStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('phone-A'));
+
+    await act(async () => {
+      writeComposerPhoneUploadSession(composerDraftStore, 'new-task', { session_id: 'phone-B' });
+      await flushPromises();
+    });
+    expect(phoneUploadSessions.get('new-task')).toEqual({ session_id: 'phone-B' });
+
+    await act(async () => {
+      stalePoll.reject(new Error('session not found'));
+      await flushPromises();
+    });
+
+    expect(phoneUploadSessions.get('new-task')).toEqual({ session_id: 'phone-B' });
   });
 
   it('shows voice input on the new task composer and inserts the final transcript', async () => {

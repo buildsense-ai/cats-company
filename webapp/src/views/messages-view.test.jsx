@@ -1421,6 +1421,37 @@ describe('MessagesView composer draft isolation', () => {
       .toBe('resume-file.txt');
   });
 
+  it('does not clear a replacement phone upload session after a stale poll expires', async () => {
+    const topic = 'p2p_1_2';
+    const stalePoll = deferred();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      phoneUploadSessions: new Map([[topic, { session_id: 'phone-A' }]]),
+      persist: vi.fn(),
+    };
+    api.getMobileUploadSession.mockReset();
+    api.getMobileUploadSession.mockReturnValueOnce(stalePoll.promise);
+    api.getMobileUploadSession.mockImplementation(() => new Promise(() => {}));
+
+    await mountTopic(root, topic, { composerDraftStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledTimes(1));
+
+    await act(async () => root.unmount());
+    composerDraftStore.phoneUploadSessions.set(topic, { session_id: 'phone-B' });
+    root = createRoot(container);
+    await mountTopic(root, topic, { composerDraftStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      stalePoll.reject(new Error('session not found'));
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.phoneUploadSessions.get(topic)).toEqual({ session_id: 'phone-B' });
+  });
+
   it('adapts the composer placeholder to agent groups, agent chats, and human chats', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       members: [

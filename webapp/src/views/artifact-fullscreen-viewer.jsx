@@ -3,11 +3,13 @@ import {
   api,
   connectWS,
   disconnectWS,
+  getToken,
   hasArtifactPreviewSession,
   reconnectWS,
   sendWSActiveTopic,
   sendWSPageFocus,
   sendWSPageVisibility,
+  setToken,
   wsSendArtifactResultReceipt,
 } from '../api';
 import {
@@ -31,6 +33,7 @@ import { createArtifactRuntimeHost } from '../artifact-runtime-host';
 import { useFeedback } from '../components/feedback-system';
 import { createCloudArtifactPreviewFile, previewFileDescriptor } from '../widgets/chat-message';
 import ControlledArtifactPreview from '../widgets/controlled-artifact-preview';
+import { readStorageValue } from '../utils/storage-access';
 import './artifact-fullscreen-viewer.css';
 
 const VIEWER_HEARTBEAT_MS = 2000;
@@ -403,9 +406,12 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     const handleWSMessage = (message) => {
       if (message?._type === 'ws_auth_expired') {
         suspendViewerSession();
-        // The fullscreen viewer is opened as an independent document. Its
-        // auth failure must not mutate the shared workspace token: another
-        // tab may still be using that token and its drafts/session.
+        // The fullscreen viewer is opened as an independent document. Only
+        // clear auth when this document still owns the persisted token; a
+        // different workspace may have rotated it while this viewer was open.
+        const viewerToken = getToken();
+        const persistedToken = readStorageValue('oc_token');
+        if (!persistedToken || persistedToken === viewerToken) setToken(null);
         setError('artifact_viewer_connection');
         return;
       }

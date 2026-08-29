@@ -12,6 +12,7 @@ import {
   readComposerDraftMutationRevision,
   readComposerInputDraft,
   readComposerPhoneUploadSession,
+  writeComposerTaskContextDraft,
   subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
   writeComposerInputDraft,
@@ -86,6 +87,7 @@ export default function EmptyTaskComposer({
   const phoneUploadSessionRef = useRef(initialPhoneUploadSession);
   const phoneUploadFileKeysRef = useRef(new Set());
   const phoneUploadSyncRef = useRef(null);
+  const phoneUploadSyncSessionIdRef = useRef('');
 
   const persistDraft = useCallback(() => {
     writeComposerInputDraft(
@@ -162,6 +164,7 @@ export default function EmptyTaskComposer({
     pendingAttachmentsRef.current = [];
     phoneUploadSessionRef.current = null;
     writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
+    writeComposerTaskContextDraft(composerDraftStore, normalizedDraftKey, null);
     persistDraft();
     if (mountedRef.current) setPhoneUploadSession(null);
     return true;
@@ -322,7 +325,10 @@ export default function EmptyTaskComposer({
       } catch {
         // A dedicated final read below gets one more chance to collect the latest files.
       }
-      if (phoneUploadSyncRef.current === inFlightOperation) phoneUploadSyncRef.current = null;
+      if (phoneUploadSyncRef.current === inFlightOperation) {
+        phoneUploadSyncRef.current = null;
+        phoneUploadSyncSessionIdRef.current = '';
+      }
     }
 
     let operation = phoneUploadSyncRef.current;
@@ -367,12 +373,21 @@ export default function EmptyTaskComposer({
         return nextAttachments;
       })();
       phoneUploadSyncRef.current = operation;
+      phoneUploadSyncSessionIdRef.current = sessionId;
     }
+    const operationSessionId = phoneUploadSyncSessionIdRef.current;
 
     try {
       return await operation;
     } catch (error) {
-      if (mountedRef.current) {
+      const currentDraftSession = readComposerPhoneUploadSession(
+        composerDraftStore,
+        normalizedDraftKey,
+      );
+      const isCurrentSession = operationSessionId === sessionId
+        && phoneUploadSessionRef.current?.session_id === sessionId
+        && currentDraftSession?.session_id === sessionId;
+      if (mountedRef.current && isCurrentSession) {
         const message = error?.message || '读取手机上传结果失败';
         setPhoneUploadError(message);
         if (/session not found|not found|expired/i.test(message)) {
@@ -385,7 +400,10 @@ export default function EmptyTaskComposer({
       if (final) throw error;
       return [];
     } finally {
-      if (phoneUploadSyncRef.current === operation) phoneUploadSyncRef.current = null;
+      if (phoneUploadSyncRef.current === operation) {
+        phoneUploadSyncRef.current = null;
+        phoneUploadSyncSessionIdRef.current = '';
+      }
     }
   }, [appendAttachments, composerDraftStore, normalizedDraftKey, revisionStore]);
 
