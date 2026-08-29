@@ -158,6 +158,7 @@ jobs:
       - name: Validate deploy env updates
         run: |
           python3 deploy/cloud-worker-project-config_test.py
+          python3 deploy/deploy-prod-workflow_test.py
           python3 deploy/deploy-test-workflow_test.py
           bash -n deploy/shared/ensure-build-cache.sh
           bash deploy/tests/ensure-build-cache.sh
