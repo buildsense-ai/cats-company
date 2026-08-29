@@ -47,17 +47,25 @@ class SyncVapidEnvTest(unittest.TestCase):
         ):
             with self.subTest(workflow=workflow_name):
                 workflow = (WORKFLOWS_DIR / workflow_name).read_text(encoding="utf-8")
-                bootstrap = (
-                    f'"bash ${{{stack_root}}}/compose/bootstrap-server.sh '
-                    f'${{{stack_root}}}"'
+                bootstrap_candidates = (
+                    f'"bash ${{{stack_root}}}/compose/bootstrap-server.sh ${{{stack_root}}}"',
+                    f'"sudo -n bash ${{{stack_root}}}/compose/bootstrap-server.sh ${{{stack_root}}}"',
                 )
-                sync = (
-                    f'"python3 ${{{stack_root}}}/compose/sync-vapid-env.py '
-                    f'${{{stack_root}}}/env/{environment}.env"'
+                sync_candidates = (
+                    f'"python3 ${{{stack_root}}}/compose/sync-vapid-env.py ${{{stack_root}}}/env/{environment}.env"',
+                    f'"sudo -n python3 ${{{stack_root}}}/compose/sync-vapid-env.py ${{{stack_root}}}/env/{environment}.env"',
+                )
+                bootstrap = next(
+                    (candidate for candidate in bootstrap_candidates if candidate in workflow),
+                    None,
+                )
+                sync = next(
+                    (candidate for candidate in sync_candidates if candidate in workflow),
+                    None,
                 )
 
-                self.assertIn(bootstrap, workflow)
-                self.assertIn(sync, workflow)
+                self.assertIsNotNone(bootstrap)
+                self.assertIsNotNone(sync)
                 self.assertLess(workflow.index(bootstrap), workflow.index(sync))
                 self.assertIn("CATSCO_PUSH_RELAY_URL", workflow)
                 self.assertIn("CATSCO_PUSH_RELAY_TOKEN", workflow)
