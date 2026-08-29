@@ -49,8 +49,10 @@ class SyncSttEnvTest(unittest.TestCase):
             ("deploy-test.yml", "TEST_STACK_ROOT", "test"),
         ):
             workflow = (WORKFLOWS_DIR / workflow_name).read_text(encoding="utf-8")
-            bootstrap = f'"bash ${{{stack_root}}}/compose/bootstrap-server.sh ${{{stack_root}}}"'
-            command = f'"python3 ${{{stack_root}}}/compose/sync-stt-env.py ${{{stack_root}}}/env/{environment}.env"'
+            bootstrap_prefix = "sudo -n bash" if environment == "prod" else "bash"
+            bootstrap = f'"{bootstrap_prefix} ${{{stack_root}}}/compose/bootstrap-server.sh ${{{stack_root}}}"'
+            command_prefix = "sudo -n python3" if environment == "prod" else "python3"
+            command = f'"{command_prefix} ${{{stack_root}}}/compose/sync-stt-env.py ${{{stack_root}}}/env/{environment}.env"'
             self.assertIn('VOLCENGINE_STT_API_KEY: ${{ secrets.VOLCENGINE_STT_API_KEY }}', workflow)
             self.assertNotIn('secrets.VOLCENGINE_STT_APP_ID', workflow)
             self.assertIn(command, workflow)
@@ -60,7 +62,7 @@ class SyncSttEnvTest(unittest.TestCase):
         workflow = (WORKFLOWS_DIR / "deploy-prod.yml").read_text(encoding="utf-8")
         self.assertIn('cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"', workflow)
         self.assertIn('cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"', workflow)
-        self.assertIn('sudo "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app', workflow)
+        self.assertIn('sudo -n "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app', workflow)
 
     def test_reads_exactly_one_nul_delimited_key(self) -> None:
         self.assertEqual(sync.read_value(io.BytesIO(b"api-key\0")), "api-key")
