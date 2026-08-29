@@ -153,6 +153,8 @@ jobs:
           # Pull it on the test host instead of rebuilding Dockerfile.nginx
           # there, where the external nginx-brotli base may be unavailable.
           export REMOTE_WEB_IMAGE_MODE=pull
+          export REMOTE_WEB_PULL_TIMEOUT_SECONDS=600
+          export REMOTE_WEB_PULL_FALLBACK_LOCAL=0
           export REMOTE_WEBSITE_IMAGE_MODE=pull
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1

@@ -60,6 +60,7 @@ web_image="ghcr.io/${owner}/cats-company-web:${revision}"
 pull_timeout="${REMOTE_WEB_PULL_TIMEOUT_SECONDS:-120}"
 login_timeout="${REMOTE_GHCR_LOGIN_TIMEOUT_SECONDS:-20}"
 web_image_mode="${REMOTE_WEB_IMAGE_MODE:-pull}"
+web_pull_fallback_local="${REMOTE_WEB_PULL_FALLBACK_LOCAL:-1}"
 
 build_web_image() {
   fallback_build_timeout="${REMOTE_WEB_BUILD_TIMEOUT_SECONDS:-900}"
@@ -88,8 +89,13 @@ else
         fi
       fi
       if [ "$pull_ready" -ne 1 ] || ! timeout "$pull_timeout" docker pull "$web_image"; then
-        echo "Web image pull failed or timed out after ${pull_timeout}s; falling back to the local build cache."
-        build_web_image
+        if [ "$web_pull_fallback_local" = "1" ]; then
+          echo "Web image pull failed or timed out after ${pull_timeout}s; falling back to the local build cache."
+          build_web_image
+        else
+          echo "Web image pull failed or timed out after ${pull_timeout}s; local fallback is disabled." >&2
+          exit 1
+        fi
       fi
       ;;
     *)
