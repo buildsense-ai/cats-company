@@ -325,7 +325,7 @@ describe('ArtifactFullscreenViewer', () => {
     expect(container.textContent).toContain('暂时无法连接');
   });
 
-  it('clears the token when the viewer owns the current session', async () => {
+  it('does not mutate shared auth when the viewer token expires', async () => {
     localStorage.setItem('oc_token', 'viewer-token');
     await act(async () => {
       root.render(<ArtifactFullscreenViewer location={location} />);
@@ -337,7 +337,8 @@ describe('ArtifactFullscreenViewer', () => {
       await flushPromises();
     });
 
-    expect(mocks.setToken).toHaveBeenCalledWith(null);
+    expect(mocks.setToken).not.toHaveBeenCalled();
+    expect(localStorage.getItem('oc_token')).toBe('viewer-token');
   });
 
   it('resumes Runtime when the fullscreen iframe binding is recreated', async () => {

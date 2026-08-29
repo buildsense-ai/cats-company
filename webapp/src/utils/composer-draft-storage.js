@@ -171,6 +171,64 @@ function draftEntries(entries, normalizeValue) {
   });
 }
 
+function draftMapsFromSnapshot(snapshot = {}) {
+  const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  return Object.fromEntries(Object.entries(draftFieldDefinitions).map(([kind, definition]) => [
+    kind,
+    new Map(draftEntries(source[definition.mapName], definition.normalize)),
+  ]));
+}
+
+function draftSnapshotFromMaps(draftMaps = {}) {
+  return Object.fromEntries(Object.entries(draftFieldDefinitions).map(([kind, definition]) => [
+    definition.mapName,
+    [...(draftMaps[kind] || [])],
+  ]));
+}
+
+function draftValueEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function draftMapsEqual(leftMaps = {}, rightMaps = {}) {
+  return Object.keys(draftFieldDefinitions).every((kind) => {
+    const left = leftMaps[kind] || new Map();
+    const right = rightMaps[kind] || new Map();
+    const keys = new Set([...left.keys(), ...right.keys()]);
+    return [...keys].every((key) => {
+      if (left.has(key) !== right.has(key)) return false;
+      return !left.has(key) || draftValueEqual(left.get(key), right.get(key));
+    });
+  });
+}
+
+// Apply local changes made since the last accepted snapshot on top of a
+// newer snapshot from another browsing context. Untouched keys take the
+// remote value; changed keys (including local deletions) take the local value.
+function mergeDraftMaps(localMaps, baselineMaps, latestMaps) {
+  return Object.fromEntries(Object.keys(draftFieldDefinitions).map((kind) => {
+    const local = localMaps[kind] || new Map();
+    const baseline = baselineMaps[kind] || new Map();
+    const merged = new Map(latestMaps[kind] || []);
+    const changedKeys = new Set([...local.keys(), ...baseline.keys()]);
+
+    changedKeys.forEach((key) => {
+      const localChanged = local.has(key) !== baseline.has(key)
+        || (local.has(key) && !draftValueEqual(local.get(key), baseline.get(key)));
+      if (!localChanged) return;
+      if (local.has(key)) merged.set(key, local.get(key));
+      else merged.delete(key);
+    });
+
+    return [kind, merged];
+  }));
+}
+
 function normalizedUpdatedAt(value) {
   const candidate = Number(value);
   return Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
@@ -235,11 +293,12 @@ function readDraftSnapshots(storageKey, storage) {
       || (stateUpdatedAt === draftUpdatedAt && selectedState.cleared)
     )
   ) {
-    return { snapshot: {}, updatedAt: stateUpdatedAt };
+    return { snapshot: {}, updatedAt: stateUpdatedAt, cleared: selectedState.cleared };
   }
   return {
     snapshot: selectedDraft?.snapshot || {},
     updatedAt: draftUpdatedAt,
+    cleared: false,
   };
 }
 
@@ -350,33 +409,17 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const previousStore = registry?.get(storageKey);
   const snapshotRecord = readDraftSnapshots(storageKey, storage);
   const snapshot = snapshotRecord.snapshot;
-  const inputDrafts = new Map(draftEntries(
-    snapshot.inputDrafts,
-    draftFieldDefinitions.input.normalize,
-  ));
-  const structuredMentionDrafts = new Map(draftEntries(
-    snapshot.structuredMentionDrafts,
-    draftFieldDefinitions.mention.normalize,
-  ));
-  const attachmentDrafts = new Map(draftEntries(
-    snapshot.attachmentDrafts,
-    draftFieldDefinitions.attachment.normalize,
-  ));
-  const phoneUploadSessions = new Map(draftEntries(
-    snapshot.phoneUploadSessions,
-    draftFieldDefinitions.phoneUpload.normalize,
-  ));
+  const draftMaps = draftMapsFromSnapshot(snapshot);
+  const inputDrafts = draftMaps.input;
+  const structuredMentionDrafts = draftMaps.mention;
+  const attachmentDrafts = draftMaps.attachment;
+  const phoneUploadSessions = draftMaps.phoneUpload;
   let active = true;
   let closed = false;
   let handoffTarget = null;
   let persistedUpdatedAt = snapshotRecord.updatedAt;
+  let persistedSnapshot = draftSnapshotFromMaps(draftMaps);
   const listeners = new Set();
-  const draftMaps = {
-    input: inputDrafts,
-    mention: structuredMentionDrafts,
-    attachment: attachmentDrafts,
-    phoneUpload: phoneUploadSessions,
-  };
 
   const close = () => {
     active = false;
@@ -402,24 +445,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   };
 
   const replaceDraftMaps = (nextSnapshot = {}) => {
-    const nextMaps = {
-      input: new Map(draftEntries(
-        nextSnapshot.inputDrafts,
-        draftFieldDefinitions.input.normalize,
-      )),
-      mention: new Map(draftEntries(
-        nextSnapshot.structuredMentionDrafts,
-        draftFieldDefinitions.mention.normalize,
-      )),
-      attachment: new Map(draftEntries(
-        nextSnapshot.attachmentDrafts,
-        draftFieldDefinitions.attachment.normalize,
-      )),
-      phoneUpload: new Map(draftEntries(
-        nextSnapshot.phoneUploadSessions,
-        draftFieldDefinitions.phoneUpload.normalize,
-      )),
-    };
+    const nextMaps = draftMapsFromSnapshot(nextSnapshot);
     const changedKeys = new Set([
       ...Object.values(draftMaps).flatMap((map) => [...map.keys()]),
       ...Object.values(nextMaps).flatMap((map) => [...map.keys()]),
@@ -499,31 +525,57 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       // Storage events are not delivered to the context that performed the
       // write. Re-read before every write so a stale tab cannot overwrite a
       // newer draft (including a cross-tab deletion tombstone).
+      let mapsToPersist = draftMaps;
       if (latest.updatedAt > persistedUpdatedAt) {
-        replaceDraftMaps(latest.snapshot);
+        if (latest.cleared) {
+          replaceDraftMaps({});
+          persistedSnapshot = draftSnapshotFromMaps({});
+          persistedUpdatedAt = latest.updatedAt;
+          return;
+        }
+        const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps));
+        const baselineMaps = draftMapsFromSnapshot(persistedSnapshot);
+        const latestMaps = draftMapsFromSnapshot(latest.snapshot);
+        const mergedMaps = mergeDraftMaps(localMaps, baselineMaps, latestMaps);
+
+        // No local changes are pending. Accept the newer snapshot without
+        // writing it back, preserving deletion tombstones and newer values.
+        if (draftMapsEqual(mergedMaps, latestMaps)) {
+          replaceDraftMaps(draftSnapshotFromMaps(mergedMaps));
+          persistedSnapshot = draftSnapshotFromMaps(mergedMaps);
+          persistedUpdatedAt = latest.updatedAt;
+          return;
+        }
+
+        // Local changes made since the baseline win for their keys while
+        // untouched keys from the newer browsing context remain intact.
+        replaceDraftMaps(draftSnapshotFromMaps(mergedMaps));
+        // The remote snapshot is now the baseline for any retry. Otherwise
+        // untouched remote keys would look like local edits if this write
+        // fails and a later snapshot arrives.
+        persistedSnapshot = draftSnapshotFromMaps(latestMaps);
         persistedUpdatedAt = latest.updatedAt;
-        return;
+        mapsToPersist = mergedMaps;
       }
       const updatedAt = nextDraftUpdatedAt(persistedUpdatedAt, latest.updatedAt);
-      if (inputDrafts.size === 0
-        && structuredMentionDrafts.size === 0
-        && attachmentDrafts.size === 0
-        && phoneUploadSessions.size === 0) {
+      const snapshotToPersist = draftSnapshotFromMaps(mapsToPersist);
+      const hasDraft = Object.values(mapsToPersist).some((map) => map.size > 0);
+      if (!hasDraft) {
         const stateWritten = writeStorageTargets(
           stateStorageKey,
           JSON.stringify({ updatedAt, cleared: true }),
           storage,
         );
-        const draftRemoved = removeStorageTargets(storageKey, storage);
-        if (stateWritten || draftRemoved) persistedUpdatedAt = updatedAt;
+        removeStorageTargets(storageKey, storage);
+        if (stateWritten) {
+          persistedSnapshot = draftSnapshotFromMaps({});
+          persistedUpdatedAt = updatedAt;
+        }
         return;
       }
       try {
         const serialized = JSON.stringify({
-          inputDrafts: [...inputDrafts],
-          structuredMentionDrafts: [...structuredMentionDrafts],
-          attachmentDrafts: [...attachmentDrafts],
-          phoneUploadSessions: [...phoneUploadSessions],
+          ...snapshotToPersist,
           updatedAt,
         });
         const draftWritten = writeStorageTargets(storageKey, serialized, storage);
@@ -532,7 +584,10 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
           JSON.stringify({ updatedAt, cleared: false }),
           storage,
         );
-        if (draftWritten || stateWritten) persistedUpdatedAt = updatedAt;
+        if (draftWritten || stateWritten) {
+          persistedSnapshot = snapshotToPersist;
+          persistedUpdatedAt = updatedAt;
+        }
       } catch {
         // Keep the in-memory draft when a browser cannot serialize or store it.
       }

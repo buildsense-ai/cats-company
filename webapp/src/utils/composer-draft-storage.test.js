@@ -90,6 +90,31 @@ describe('composer draft storage', () => {
     expect(restored.getInputDraft('new-task')).toBe('最新 tab 草稿');
   });
 
+  test('merges local edits with a newer snapshot from another browsing context', () => {
+    const sharedValues = new Map();
+    const tabAStorage = sharedStorage(sharedValues);
+    const tabBStorage = sharedStorage(sharedValues);
+    const tabA = createComposerDraftStore('42', tabAStorage);
+    const tabB = createComposerDraftStore('42', tabBStorage);
+
+    writeComposerInputDraft(tabA, 'new-task', '初始草稿');
+    tabA.persist();
+
+    writeComposerInputDraft(tabB, 'p2p_1_2', '另一个 tab 的新增草稿');
+    tabB.persist();
+
+    // Tab A has a local edit that has not been persisted since tab B wrote a
+    // newer snapshot. It must retain that edit while keeping tab B's key.
+    writeComposerInputDraft(tabA, 'new-task', '本地 tab 的最新输入');
+    tabA.persist();
+
+    const stored = JSON.parse(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`));
+    expect(stored.inputDrafts).toEqual([
+      ['new-task', '本地 tab 的最新输入'],
+      ['p2p_1_2', '另一个 tab 的新增草稿'],
+    ]);
+  });
+
   test('does not let a stale browsing context resurrect a cleared draft', () => {
     const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}42`;
     const staleStore = createComposerDraftStore('42');
