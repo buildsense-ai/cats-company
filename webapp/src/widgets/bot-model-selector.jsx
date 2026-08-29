@@ -568,6 +568,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const hasOptions = hasReasoning || hasVision;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
                 const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
+                const defaultReasoningEffort = model.default_reasoning_effort || efforts[0] || '';
 
                 return (
                   <div
@@ -583,7 +584,14 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                       aria-haspopup={hasOptions ? 'menu' : undefined}
                       aria-expanded={hasOptions ? expandedModelID === model.id : undefined}
                       onFocus={() => hasOptions && setExpandedModelID(model.id)}
-                      onClick={() => hasOptions ? setExpandedModelID(model.id) : available && saveCatalogSelection(model.id)}
+                      onClick={() => {
+                        if (!available) return;
+                        if (hasOptions && selected) {
+                          setExpandedModelID(model.id);
+                          return;
+                        }
+                        saveCatalogSelection(model.id, defaultReasoningEffort);
+                      }}
                       disabled={transitioning || !available}
                     >
                       <span>
