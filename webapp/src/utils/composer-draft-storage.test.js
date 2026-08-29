@@ -13,7 +13,7 @@ import {
   writeComposerInputDraft,
 } from './composer-draft-storage';
 
-function sharedStorage(values = new Map()) {
+function sharedStorage(values = new Map(), { onGetItem } = {}) {
   return {
     get length() {
       return values.size;
@@ -22,7 +22,10 @@ function sharedStorage(values = new Map()) {
       return [...values.keys()][index] || null;
     },
     getItem(key) {
-      return values.has(String(key)) ? values.get(String(key)) : null;
+      const normalizedKey = String(key);
+      const value = values.has(normalizedKey) ? values.get(normalizedKey) : null;
+      onGetItem?.(normalizedKey);
+      return value;
     },
     setItem(key, value) {
       values.set(String(key), String(value));
@@ -177,6 +180,32 @@ describe('composer draft storage', () => {
 
     expect(JSON.parse(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).inputDrafts)
       .toEqual([['new-task', '重新登录后的新草稿']]);
+  });
+
+  test('does not restore a draft written after logout began while persist was in flight', () => {
+    const sharedValues = new Map();
+    const tabAStorage = sharedStorage(sharedValues);
+    const stateKey = `catsco_composer_draft_state:v1:42`;
+    let logoutDuringRead = false;
+    const tabBStorage = sharedStorage(sharedValues, {
+      onGetItem(key) {
+        if (logoutDuringRead && key === stateKey) {
+          logoutDuringRead = false;
+          clearPersistedComposerDrafts(tabAStorage);
+        }
+      },
+    });
+    const staleStore = createComposerDraftStore('42', tabBStorage);
+    writeComposerInputDraft(staleStore, 'new-task', '登出前的进行中写入');
+    staleStore.persist();
+
+    logoutDuringRead = true;
+    staleStore.persist();
+
+    // The stale writer can still leave a physical snapshot behind, but its
+    // pre-logout fence metadata must prevent a new store from hydrating it.
+    expect(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).not.toBeNull();
+    expect(createComposerDraftStore('42', tabAStorage).getInputDraft('new-task')).toBe('');
   });
 
   test('does not treat a normal draft clear as a logout fence', () => {

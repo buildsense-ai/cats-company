@@ -279,20 +279,23 @@ function readLogoutFence(storage) {
   return { updatedAt: selectedFence?.updatedAt || 0 };
 }
 
-function readDraftSnapshots(storageKey, storage) {
+function readDraftSnapshots(storageKey, storage, logoutFenceUpdatedAt = null) {
   const stateStorageKey = stateStorageKeyForDraftStorageKey(storageKey);
+  const currentLogoutFenceAt = logoutFenceUpdatedAt === null
+    ? readLogoutFence(storage).updatedAt
+    : normalizedUpdatedAt(logoutFenceUpdatedAt);
   let selectedDraft = null;
   let selectedState = null;
   storageTargets(storage).forEach((target, index) => {
     const draft = readDraftSnapshot(storageKey, target);
-    if (draft) {
+    if (draft && currentLogoutFenceAt <= normalizedUpdatedAt(draft.logoutFenceAt)) {
       selectedDraft = newestSnapshot(selectedDraft, {
         snapshot: draft,
         updatedAt: normalizedUpdatedAt(draft.updatedAt),
       }, index);
     }
     const state = readDraftSnapshot(stateStorageKey, target);
-    if (state) {
+    if (state && currentLogoutFenceAt <= normalizedUpdatedAt(state.logoutFenceAt)) {
       selectedState = newestSnapshot(selectedState, {
         cleared: state.cleared === true,
         clearReason: state.clearReason === COMPOSER_DRAFT_CLEAR_REASON_LOGOUT
@@ -432,6 +435,7 @@ export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
         updatedAt,
         cleared: true,
         clearReason: COMPOSER_DRAFT_CLEAR_REASON_LOGOUT,
+        logoutFenceAt: logoutUpdatedAt,
       }),
       storage,
     );
@@ -445,11 +449,9 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const stateStorageKey = composerDraftStateStorageKey(userID);
   const registry = storageKey ? registryFor(storage) : null;
   const previousStore = registry?.get(storageKey);
-  const snapshotRecord = readDraftSnapshots(storageKey, storage);
   const logoutFence = readLogoutFence(storage);
-  const snapshot = logoutFence.updatedAt > snapshotRecord.updatedAt
-    ? {}
-    : snapshotRecord.snapshot;
+  const snapshotRecord = readDraftSnapshots(storageKey, storage, logoutFence.updatedAt);
+  const snapshot = snapshotRecord.snapshot;
   const draftMaps = draftMapsFromSnapshot(snapshot);
   const inputDrafts = draftMaps.input;
   const structuredMentionDrafts = draftMaps.mention;
@@ -459,6 +461,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   let closed = false;
   let handoffTarget = null;
   let logoutFenced = false;
+  let logoutFenceAt = logoutFence.updatedAt;
   let persistedUpdatedAt = Math.max(snapshotRecord.updatedAt, logoutFence.updatedAt);
   let persistedSnapshot = draftSnapshotFromMaps(draftMaps);
   const listeners = new Set();
@@ -565,14 +568,15 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       // Keep inactive stores writable until logout closes them so a replacement
       // store can hydrate the late result from either persisted storage copy.
       if (closed || logoutFenced || !storageKey) return;
-      const latest = readDraftSnapshots(storageKey, storage);
       const latestLogoutFence = readLogoutFence(storage);
+      const latest = readDraftSnapshots(storageKey, storage, latestLogoutFence.updatedAt);
       // Storage events are not delivered to the context that performed the
       // write. Re-read before every write so a stale tab cannot overwrite a
       // newer draft (including a cross-tab deletion tombstone).
       let mapsToPersist = draftMaps;
-      if (latestLogoutFence.updatedAt > persistedUpdatedAt) {
+      if (latestLogoutFence.updatedAt > logoutFenceAt) {
         logoutFenced = true;
+        logoutFenceAt = latestLogoutFence.updatedAt;
         replaceDraftMaps({});
         persistedSnapshot = draftSnapshotFromMaps({});
         persistedUpdatedAt = latestLogoutFence.updatedAt;
@@ -584,6 +588,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
           persistedSnapshot = draftSnapshotFromMaps({});
           persistedUpdatedAt = latest.updatedAt;
           logoutFenced = latest.clearReason === COMPOSER_DRAFT_CLEAR_REASON_LOGOUT;
+          if (logoutFenced) logoutFenceAt = Math.max(logoutFenceAt, latest.updatedAt);
           return;
         }
         const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps));
@@ -616,7 +621,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       if (!hasDraft) {
         const stateWritten = writeStorageTargets(
           stateStorageKey,
-          JSON.stringify({ updatedAt, cleared: true }),
+          JSON.stringify({ updatedAt, cleared: true, logoutFenceAt }),
           storage,
         );
         removeStorageTargets(storageKey, storage);
@@ -630,11 +635,12 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
         const serialized = JSON.stringify({
           ...snapshotToPersist,
           updatedAt,
+          logoutFenceAt,
         });
         const draftWritten = writeStorageTargets(storageKey, serialized, storage);
         const stateWritten = writeStorageTargets(
           stateStorageKey,
-          JSON.stringify({ updatedAt, cleared: false }),
+          JSON.stringify({ updatedAt, cleared: false, logoutFenceAt }),
           storage,
         );
         if (draftWritten || stateWritten) {
@@ -664,6 +670,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
             updatedAt,
             cleared: true,
             clearReason: COMPOSER_DRAFT_CLEAR_REASON_LOGOUT,
+            logoutFenceAt,
           }),
           storage,
         );
