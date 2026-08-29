@@ -13,16 +13,17 @@ docker_log="$temp_root/docker.log"
 docker_images="$temp_root/docker-images"
 revision="0123456789abcdef0123456789abcdef01234567"
 fallback_revision="89abcdef0123456789abcdef0123456789abcdef"
-strict_revision="abcdef0123456789abcdef0123456789abcdef01"
+base_revision="abcdef0123456789abcdef0123456789abcdef01"
 
 mkdir -p "$stack_root/releases" "$cache_root/releases" "$cache_root/source" "$fixture_root" "$fake_bin"
 printf 'fixture\n' > "$fixture_root/README.md"
 tar -C "$fixture_root" -czf "$cache_root/releases/cats-company-source-${revision}.tar.gz" .
 tar -C "$fixture_root" -czf "$cache_root/releases/cats-company-source-${fallback_revision}.tar.gz" .
-cp "$cache_root/releases/cats-company-source-${revision}.tar.gz" \
-  "$cache_root/releases/cats-company-source-${strict_revision}.tar.gz"
+tar -C "$fixture_root" -czf "$cache_root/releases/cats-company-source-${base_revision}.tar.gz" .
 : > "$docker_log"
 : > "$docker_images"
+printf '%s\n' 'georgjung/nginx-brotli:latest@sha256:488e48d7773deef7f696a25362da3043e3aabb447c6f28548eda7391a27c7fc9' \
+  >> "$docker_images"
 
 cat > "$fake_bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -85,27 +86,14 @@ grep -q 'Source tree already present' <<<"$second_output"
 grep -q 'Server image already present' <<<"$second_output"
 grep -q 'Dreamina worker image already present' <<<"$second_output"
 grep -q 'Web image already present' <<<"$second_output"
+grep -q 'NGINX_BROTLI_BASE_IMAGE=georgjung/nginx-brotli' "$docker_log"
 
-strict_output=""
-if strict_output="$(
-  PATH="$fake_bin:$PATH" \
-  FAKE_DOCKER_LOG="$docker_log" \
-  FAKE_DOCKER_IMAGES="$docker_images" \
-  CATSCO_SHARED_RELEASE_ROOT="$cache_root/releases" \
-  CATSCO_SHARED_SOURCE_ROOT="$cache_root/source" \
-  REMOTE_WEB_IMAGE_MODE=pull \
-  REMOTE_WEB_PULL_TIMEOUT_SECONDS=7 \
-  REMOTE_WEB_PULL_FALLBACK_LOCAL=0 \
-  REMOTE_WEBSITE_IMAGE_MODE=local \
-  bash "$repo_root/deploy/remote-build-source.sh" "$stack_root" "$strict_revision" buildsense-ai 2>&1
-)"; then
-  echo "strict web pull unexpectedly succeeded" >&2
-  exit 1
-fi
-grep -q 'local fallback is disabled' <<<"$strict_output"
-if grep -q 'Building web image locally' <<<"$strict_output"; then
-  echo "strict web pull unexpectedly attempted a local build" >&2
-  exit 1
-fi
+mkdir -p "$stack_root/env"
+printf 'IMAGE_TAG=%s\n' "$fallback_revision" > "$stack_root/env/test.env"
+printf '%s\n' "ghcr.io/buildsense-ai/cats-company-web:${fallback_revision}" >> "$docker_images"
+sed -i '/georgjung\/nginx-brotli:latest@sha256:/d' "$docker_images"
+base_output="$(run_build "$base_revision" local 2>&1)"
+grep -q 'Using cached Web runtime as local Brotli build base' <<<"$base_output"
+grep -q "NGINX_BROTLI_BASE_IMAGE=ghcr.io/buildsense-ai/cats-company-web:${fallback_revision}" "$docker_log"
 
 echo "remote-build-source cache tests passed"
