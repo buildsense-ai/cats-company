@@ -149,7 +149,10 @@ jobs:
           chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
-          export REMOTE_WEB_IMAGE_MODE=local
+          # The web image was built and pushed by the preceding Actions step.
+          # Pull it on the test host instead of rebuilding Dockerfile.nginx
+          # there, where the external nginx-brotli base may be unavailable.
+          export REMOTE_WEB_IMAGE_MODE=pull
           export REMOTE_WEBSITE_IMAGE_MODE=pull
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
