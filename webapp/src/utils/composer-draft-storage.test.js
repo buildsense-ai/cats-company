@@ -16,6 +16,7 @@ import {
 describe('composer draft storage', () => {
   afterEach(() => {
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   test('clears every account draft when the auth session ends', () => {
@@ -40,6 +41,43 @@ describe('composer draft storage', () => {
     expect(restored.getInputDraft('new-task')).toBe('未发送的任务');
     expect(restored.getStructuredMentionDraft('p2p_1_2')).toEqual([{ target: 'usr7' }]);
     expect(restored.getAttachmentDraft('new-task')).toEqual([{ name: 'brief.pdf', type: 'file' }]);
+  });
+
+  test('mirrors drafts to localStorage so a fresh browsing context can restore them', () => {
+    const store = createComposerDraftStore('42');
+    store.setInputDraft('new-task', '跨工作区草稿');
+    store.persist();
+
+    expect(localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).toContain('跨工作区草稿');
+    sessionStorage.clear();
+
+    const restored = createComposerDraftStore('42');
+    expect(restored.getInputDraft('new-task')).toBe('跨工作区草稿');
+  });
+
+  test('hydrates the most recent copy when both storage areas are present', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}42`;
+    sessionStorage.setItem(key, JSON.stringify({
+      inputDrafts: [['new-task', '旧 tab 草稿']],
+      updatedAt: 10,
+    }));
+    localStorage.setItem(key, JSON.stringify({
+      inputDrafts: [['new-task', '最新 tab 草稿']],
+      updatedAt: 20,
+    }));
+
+    const restored = createComposerDraftStore('42');
+    expect(restored.getInputDraft('new-task')).toBe('最新 tab 草稿');
+  });
+
+  test('clears both draft storage copies on logout', () => {
+    const store = createComposerDraftStore('42');
+    store.setInputDraft('new-task', '退出后应清除');
+    store.persist();
+
+    expect(clearPersistedComposerDrafts()).toBe(1);
+    expect(sessionStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).toBeNull();
+    expect(localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).toBeNull();
   });
 
   test('invalidates async callbacks per draft key without persisting the revision', () => {

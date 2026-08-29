@@ -135,6 +135,49 @@ describe('EmptyTaskComposer', () => {
       .toBe('保留这条尚未建立会话的草稿');
   });
 
+  it('flushes the native textarea value when it loses focus before navigation', async () => {
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+
+    await mountComposer({ composerDraftStore });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    textarea.value = '失焦前仍要保留的草稿';
+
+    await act(async () => {
+      Simulate.blur(textarea);
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBe('失焦前仍要保留的草稿');
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('flushes a native textarea value when navigation unmounts the composer', async () => {
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+
+    await mountComposer({ composerDraftStore });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    textarea.value = '卸载时仍要保留的草稿';
+
+    await act(async () => {
+      root.unmount();
+    });
+
+    expect(inputDrafts.get('new-task')).toBe('卸载时仍要保留的草稿');
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
   it('persists uploaded attachments through the shared draft store interface', async () => {
     const inputDrafts = new Map();
     const attachmentDrafts = new Map();

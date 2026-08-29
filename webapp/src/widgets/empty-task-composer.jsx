@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -101,6 +101,29 @@ export default function EmptyTaskComposer({
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
 
+  const flushDraft = useCallback((event) => {
+    // The shared composer is controlled, but a browser can update the native
+    // textarea during an IME/composition or page handoff before React delivers
+    // its change event. Read the live value at the boundary before persisting.
+    const nextValue = event?.currentTarget?.value;
+    if (typeof nextValue === 'string' && !event.currentTarget.readOnly) {
+      inputValueRef.current = nextValue;
+    }
+    persistDraft();
+  }, [persistDraft]);
+
+  const persistDraftOnUnmount = useCallback(() => {
+    // Once a send is in flight, its completion owns draft cleanup. Writing
+    // here would look like newer user input to the send race guard and could
+    // prevent a successfully sent draft from being cleared.
+    if (sendInFlightRef.current) return;
+    const textarea = textareaRef.current;
+    if (textarea && !textarea.readOnly && typeof textarea.value === 'string') {
+      inputValueRef.current = textarea.value;
+    }
+    persistDraft();
+  }, [persistDraft]);
+
   const persistAttachmentDraft = useCallback((attachments) => {
     writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, attachments);
     persistComposerDraftStore(composerDraftStore);
@@ -175,6 +198,9 @@ export default function EmptyTaskComposer({
       mountedRef.current = false;
     };
   }, []);
+
+  // Persist once more when navigation removes the composer.
+  useLayoutEffect(() => persistDraftOnUnmount, [persistDraftOnUnmount]);
 
   useEffect(() => {
     initialAgentRef.current = initialAgent;
@@ -796,6 +822,7 @@ export default function EmptyTaskComposer({
         placeholder={placeholder}
         disabled={isSubmitting}
         onChange={handleInputChange}
+        textareaProps={{ onBlur: flushDraft }}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
         onVoiceFinal={handleVoiceFinal}

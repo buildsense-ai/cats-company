@@ -8,13 +8,14 @@ const mocks = vi.hoisted(() => ({
   sessionRevision: 1,
   connectWS: vi.fn(),
   disconnectWS: vi.fn(),
+  agents: [],
 }));
 
 vi.mock('../api', () => {
   const api = {
     createRelaySession: vi.fn(),
     getAgentQuota: vi.fn().mockResolvedValue({}),
-    getAgents: vi.fn().mockResolvedValue({ agents: [] }),
+    getAgents: vi.fn(() => Promise.resolve({ agents: mocks.agents })),
     getConversations: vi.fn().mockResolvedValue({ conversations: [] }),
     getDevices: vi.fn().mockResolvedValue({ devices: [] }),
     getGroupInfo: vi.fn().mockResolvedValue({}),
@@ -64,28 +65,50 @@ vi.mock('../utils/theme-access', () => ({
 }));
 
 vi.mock('./sidepanel-view', () => ({
-  default: ({ additionalSidebarTools, onSelectTopic, onStartAgentTask }) => (
-    <nav>
-      {additionalSidebarTools}
-      <button
-        type="button"
-        onClick={() => onSelectTopic({
-          topicId: 'p2p_1_2',
-          name: 'Draft test',
-          isGroup: false,
-          groupId: undefined,
-        })}
-      >
-        打开测试会话
-      </button>
-      <button
-        type="button"
-        onClick={() => onStartAgentTask({ uid: 7, display_name: '测试 Agent' })}
-      >
-        选择 Agent 返回新任务
-      </button>
-    </nav>
-  ),
+  default: function MockSidepanel({
+    additionalSidebarTools,
+    onSelectTopic,
+    onStartAgentTask,
+    newTaskRequest = 0,
+  }) {
+    const [showNewTask, setShowNewTask] = React.useState(false);
+    React.useEffect(() => {
+      if (newTaskRequest > 0) setShowNewTask(true);
+    }, [newTaskRequest]);
+    return (
+      <nav>
+        {additionalSidebarTools}
+        <button
+          type="button"
+          onClick={() => onSelectTopic({
+            topicId: 'p2p_1_2',
+            name: 'Draft test',
+            isGroup: false,
+            groupId: undefined,
+          })}
+        >
+          打开测试会话
+        </button>
+        <button
+          type="button"
+          onClick={() => onStartAgentTask({ uid: 7, display_name: '测试 Agent' })}
+        >
+          选择 Agent 返回新任务
+        </button>
+        {showNewTask && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowNewTask(false);
+              onStartAgentTask({ uid: 7, display_name: '测试 Agent' });
+            }}
+          >
+            对话框中选择 Agent
+          </button>
+        )}
+      </nav>
+    );
+  },
 }));
 
 vi.mock('./skillhub-view', () => ({
@@ -93,38 +116,24 @@ vi.mock('./skillhub-view', () => ({
 }));
 
 vi.mock('./messages-view', () => ({
-  default: ({ composerDraftStore, topic }) => (
-    <textarea
-      aria-label="消息草稿"
-      defaultValue={composerDraftStore.inputDrafts.get(topic) || ''}
-      onChange={(event) => {
-        const value = event.target.value;
-        if (value) composerDraftStore.inputDrafts.set(topic, value);
-        else composerDraftStore.inputDrafts.delete(topic);
-        composerDraftStore.persist?.();
-      }}
-    />
+  default: ({ composerDraftStore, topic, topBar }) => (
+    <>
+      {topBar}
+      <textarea
+        aria-label="消息草稿"
+        defaultValue={composerDraftStore.inputDrafts.get(topic) || ''}
+        onChange={(event) => {
+          const value = event.target.value;
+          if (value) composerDraftStore.inputDrafts.set(topic, value);
+          else composerDraftStore.inputDrafts.delete(topic);
+          composerDraftStore.persist?.();
+        }}
+      />
+    </>
   ),
 }));
 
-vi.mock('../widgets/empty-task-composer', () => ({
-  default: ({ composerDraftStore, draftKey = 'new-task' }) => {
-    const key = String(draftKey || 'new-task');
-    const inputDrafts = composerDraftStore?.inputDrafts;
-    return (
-      <textarea
-        aria-label="新任务草稿"
-        defaultValue={inputDrafts?.get?.(key) || ''}
-        onChange={(event) => {
-          const value = event.target.value;
-          if (value) inputDrafts?.set?.(key, value);
-          else inputDrafts?.delete?.(key);
-          composerDraftStore?.persist?.();
-        }}
-      />
-    );
-  },
-}));
+vi.mock('../widgets/empty-task-composer', async (importOriginal) => importOriginal());
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
 vi.mock('../widgets/desktop-connect-modal', () => ({ default: () => null }));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
@@ -140,6 +149,14 @@ function renderWorkspace() {
   root.render(<TinodeWeb location={{ pathname: '/', search: '', hash: '' }} />);
 }
 
+function renderStrictWorkspace() {
+  root.render(
+    <React.StrictMode>
+      <TinodeWeb location={{ pathname: '/', search: '', hash: '' }} />
+    </React.StrictMode>,
+  );
+}
+
 async function selectTestConversation() {
   await act(async () => {
     Simulate.click([...container.querySelectorAll('button')]
@@ -151,6 +168,7 @@ async function selectTestConversation() {
 beforeEach(() => {
   mocks.token = 'session-token';
   mocks.sessionRevision = 1;
+  mocks.agents = [];
   window.matchMedia = vi.fn(() => ({ matches: false }));
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   container = document.createElement('div');
@@ -202,7 +220,7 @@ test('restores a new-task draft when returning from SkillHub before a session ex
     await Promise.resolve();
   });
 
-  const textarea = container.querySelector('textarea[aria-label="新任务草稿"]');
+  const textarea = container.querySelector('textarea.v3-composer-input');
   expect(textarea).not.toBeNull();
   await act(async () => {
     textarea.value = 'new task draft survives SkillHub navigation';
@@ -226,7 +244,7 @@ test('restores a new-task draft when returning from SkillHub before a session ex
     await Promise.resolve();
   });
 
-  expect(container.querySelector('textarea[aria-label="新任务草稿"]').value)
+  expect(container.querySelector('textarea.v3-composer-input').value)
     .toBe('new task draft survives SkillHub navigation');
 
   await act(async () => root.unmount());
@@ -236,6 +254,210 @@ test('restores a new-task draft when returning from SkillHub before a session ex
     await Promise.resolve();
   });
 
-  expect(container.querySelector('textarea[aria-label="新任务草稿"]').value)
+  expect(container.querySelector('textarea.v3-composer-input').value)
     .toBe('new task draft survives SkillHub navigation');
+});
+
+test('restores a new-task draft after selecting an Agent, leaving, and starting again', async () => {
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  expect(textarea).not.toBeNull();
+  await act(async () => {
+    textarea.value = 'draft after selecting an Agent';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+  });
+
+  await act(async () => {
+    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
+    await Promise.resolve();
+  });
+  expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
+
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea.v3-composer-input').value)
+    .toBe('draft after selecting an Agent');
+});
+
+test('restores a new-task draft under the production StrictMode lifecycle', async () => {
+  await act(async () => {
+    renderStrictWorkspace();
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  expect(textarea).not.toBeNull();
+  await act(async () => {
+    textarea.value = 'draft under StrictMode';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+  });
+
+  await act(async () => {
+    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
+    await Promise.resolve();
+  });
+  expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
+
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea.v3-composer-input').value)
+    .toBe('draft under StrictMode');
+});
+
+test('restores a new-task draft when the account has an available Agent', async () => {
+  mocks.agents = [{ uid: 7, display_name: '测试 Agent' }];
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  expect(textarea).not.toBeNull();
+  await act(async () => {
+    textarea.value = 'draft with an available Agent';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+    await Promise.resolve();
+  });
+  expect(JSON.parse(sessionStorage.getItem('catsco_composer_drafts:v1:1')))
+    .toMatchObject({
+      inputDrafts: [['new-task', 'draft with an available Agent']],
+    });
+
+  await act(async () => {
+    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea.v3-composer-input').value)
+    .toBe('draft with an available Agent');
+});
+
+test('restores a new-task draft when starting from an existing session', async () => {
+  localStorage.setItem('v3_last_topic:1', JSON.stringify({
+    topicId: 'p2p_1_2',
+    name: '已有会话',
+    isGroup: false,
+  }));
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+  expect(container.querySelector('textarea[aria-label="消息草稿"]')).not.toBeNull();
+
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  expect(textarea).not.toBeNull();
+  await act(async () => {
+    textarea.value = 'draft started from an existing session';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+  });
+
+  await act(async () => {
+    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea.v3-composer-input').value)
+    .toBe('draft started from an existing session');
+});
+
+test('restores a new-task draft through the real new-task request path', async () => {
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  await act(async () => {
+    textarea.value = 'draft through new-task request path';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+  });
+
+  // Leave the draft, then return through the same mobile header request that
+  // the production sidebar uses to open its new-task picker.
+  await selectTestConversation();
+  const moreButton = container.querySelector('[aria-label="更多操作"]');
+  expect(moreButton).not.toBeNull();
+  await act(async () => {
+    Simulate.click(moreButton);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click(container.querySelector('[role="menuitem"][aria-label="新建任务"]'));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '对话框中选择 Agent'));
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea.v3-composer-input').value)
+    .toBe('draft through new-task request path');
+});
+
+test('restores a new-task draft after leaving the current tab context', async () => {
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  await act(async () => {
+    textarea.value = 'draft survives leaving the current tab context';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+  });
+
+  // A UHub handoff may return to the app in a fresh browsing context. This
+  // models that storage boundary while keeping the authenticated profile; it
+  // was the red regression case before drafts gained a durable mirror.
+  sessionStorage.clear();
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('textarea.v3-composer-input').value)
+    .toBe('draft survives leaving the current tab context');
 });

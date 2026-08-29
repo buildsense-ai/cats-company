@@ -16,6 +16,18 @@ const draftMutationStores = new WeakMap();
 const draftStoreRegistries = new Map();
 const objectDraftStoreRegistries = new WeakMap();
 
+// A SkillHub handoff can resume the workspace in a new document or tab. Keep
+// sessionStorage as the fast, tab-scoped copy and mirror it to localStorage so
+// that a fresh browsing context can hydrate the same draft. Both copies are
+// still keyed by the authenticated user and are cleared on logout.
+function storageTargets(storage) {
+  if (storage && typeof storage === 'object') return [storage];
+  const storageType = String(storage || 'sessionStorage');
+  return storageType === 'sessionStorage'
+    ? ['sessionStorage', 'localStorage']
+    : [storageType];
+}
+
 function normalizeDraftKey(key) {
   return String(key || '');
 }
@@ -82,13 +94,36 @@ function draftEntries(entries, acceptsValue) {
 }
 
 function readDraftSnapshot(storageKey, storage) {
-  if (!storageKey) return {};
+  if (!storageKey) return null;
   try {
-    const stored = JSON.parse(readStorageValue(storageKey, storage) || '{}');
-    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+    const serialized = readStorageValue(storageKey, storage);
+    if (!serialized) return null;
+    const stored = JSON.parse(serialized);
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : null;
   } catch {
-    return {};
+    return null;
   }
+}
+
+function readDraftSnapshots(storageKey, storage) {
+  let selected = null;
+  let selectedUpdatedAt = -1;
+  let selectedIndex = Number.POSITIVE_INFINITY;
+  storageTargets(storage).forEach((target, index) => {
+    const candidate = readDraftSnapshot(storageKey, target);
+    if (!candidate) return;
+    const candidateUpdatedAt = Number(candidate.updatedAt) || 0;
+    if (
+      selected === null
+      || candidateUpdatedAt > selectedUpdatedAt
+      || (candidateUpdatedAt === selectedUpdatedAt && index < selectedIndex)
+    ) {
+      selected = candidate;
+      selectedUpdatedAt = candidateUpdatedAt;
+      selectedIndex = index;
+    }
+  });
+  return selected || {};
 }
 
 export function composerDraftStorageKey(userID) {
@@ -97,30 +132,34 @@ export function composerDraftStorageKey(userID) {
 }
 
 export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
-  const target = getStorage(storage);
-  if (!target) return 0;
-  const registry = registryFor(storage);
+  const targets = storageTargets(storage);
+  const targetObjects = targets.map((target) => getStorage(target)).filter(Boolean);
+  if (targetObjects.length === 0) return 0;
+  const registries = new Set(targets.map((target) => registryFor(target)));
 
-  const keys = [];
-  try {
-    for (let index = 0; index < target.length; index += 1) {
-      const key = target.key(index);
-      if (typeof key === 'string' && key.startsWith(COMPOSER_DRAFT_STORAGE_PREFIX)) {
-        keys.push(key);
+  const keys = new Set();
+  targetObjects.forEach((target) => {
+    try {
+      for (let index = 0; index < target.length; index += 1) {
+        const key = target.key(index);
+        if (typeof key === 'string' && key.startsWith(COMPOSER_DRAFT_STORAGE_PREFIX)) {
+          keys.add(key);
+        }
       }
+    } catch {
+      // A blocked storage area should not prevent another area from clearing.
     }
-  } catch {
-    return 0;
-  }
+  });
 
   // Close every known account store, including stores that have not written a
   // snapshot yet. This prevents a late callback from recreating a draft after
   // logout has cleared the storage keys.
-  new Set(registry.values()).forEach((store) => store.close?.());
-  registry.clear();
-  return keys.reduce((removed, key) => {
-    const removedFromStorage = removeStorageValue(key, storage);
-    return removedFromStorage ? removed + 1 : removed;
+  new Set([...registries].flatMap((registry) => [...registry.values()]))
+    .forEach((store) => store.close?.());
+  registries.forEach((registry) => registry.clear());
+  return [...keys].reduce((removed, key) => {
+    targetObjects.forEach((target) => removeStorageValue(key, target));
+    return removed + 1;
   }, 0);
 }
 
@@ -128,7 +167,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const storageKey = composerDraftStorageKey(userID);
   const registry = storageKey ? registryFor(storage) : null;
   const previousStore = registry?.get(storageKey);
-  const snapshot = readDraftSnapshot(storageKey, storage);
+  const snapshot = readDraftSnapshots(storageKey, storage);
   const inputDrafts = new Map(draftEntries(
     snapshot.inputDrafts,
     (value) => typeof value === 'string' && value,
@@ -255,22 +294,28 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
       // A composer can finish an upload after its workspace has unmounted.
       // Keep inactive stores writable until logout closes them so a replacement
-      // store can hydrate the late result from sessionStorage.
+      // store can hydrate the late result from either persisted storage copy.
       if (closed || !storageKey) return;
       if (inputDrafts.size === 0
         && structuredMentionDrafts.size === 0
         && attachmentDrafts.size === 0
         && phoneUploadSessions.size === 0) {
-        removeStorageValue(storageKey, storage);
+        storageTargets(storage).forEach((target) => removeStorageValue(storageKey, target));
         return;
       }
       try {
-        writeStorageValue(storageKey, JSON.stringify({
+        const serialized = JSON.stringify({
           inputDrafts: [...inputDrafts],
           structuredMentionDrafts: [...structuredMentionDrafts],
           attachmentDrafts: [...attachmentDrafts],
           phoneUploadSessions: [...phoneUploadSessions],
-        }), storage);
+          updatedAt: Date.now(),
+        });
+        storageTargets(storage).forEach((target) => writeStorageValue(
+          storageKey,
+          serialized,
+          target,
+        ));
       } catch {
         // Keep the in-memory draft when a browser cannot serialize or store it.
       }
@@ -286,7 +331,9 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     },
     clearPersisted() {
       close();
-      if (storageKey) removeStorageValue(storageKey, storage);
+      if (storageKey) {
+        storageTargets(storage).forEach((target) => removeStorageValue(storageKey, target));
+      }
     },
     close,
     subscribe(listener) {
