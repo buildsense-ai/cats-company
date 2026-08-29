@@ -13,6 +13,26 @@ import {
   writeComposerInputDraft,
 } from './composer-draft-storage';
 
+function sharedStorage(values = new Map()) {
+  return {
+    get length() {
+      return values.size;
+    },
+    key(index) {
+      return [...values.keys()][index] || null;
+    },
+    getItem(key) {
+      return values.has(String(key)) ? values.get(String(key)) : null;
+    },
+    setItem(key, value) {
+      values.set(String(key), String(value));
+    },
+    removeItem(key) {
+      values.delete(String(key));
+    },
+  };
+}
+
 describe('composer draft storage', () => {
   afterEach(() => {
     sessionStorage.clear();
@@ -68,6 +88,41 @@ describe('composer draft storage', () => {
 
     const restored = createComposerDraftStore('42');
     expect(restored.getInputDraft('new-task')).toBe('最新 tab 草稿');
+  });
+
+  test('does not let a stale browsing context resurrect a cleared draft', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}42`;
+    const staleStore = createComposerDraftStore('42');
+    writeComposerInputDraft(staleStore, 'new-task', '旧 tab 草稿');
+    staleStore.persist();
+
+    const activeStore = createComposerDraftStore('42');
+    writeComposerInputDraft(activeStore, 'new-task', '');
+    activeStore.persist();
+
+    // A writer that has not received a storage event must not overwrite the
+    // newer clear marker with its in-memory snapshot.
+    staleStore.persist();
+
+    expect(sessionStorage.getItem(key)).toBeNull();
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(createComposerDraftStore('42').getInputDraft('new-task')).toBe('');
+  });
+
+  test('fences a stale context after logout clears the shared storage', () => {
+    const sharedValues = new Map();
+    const tabAStorage = sharedStorage(sharedValues);
+    const tabBStorage = sharedStorage(sharedValues);
+
+    const staleStore = createComposerDraftStore('42', tabBStorage);
+    writeComposerInputDraft(staleStore, 'new-task', '旧 tab 草稿');
+    staleStore.persist();
+
+    expect(clearPersistedComposerDrafts(tabAStorage)).toBe(1);
+    staleStore.persist();
+
+    expect(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).toBeNull();
+    expect(createComposerDraftStore('42', tabBStorage).getInputDraft('new-task')).toBe('');
   });
 
   test('clears both draft storage copies on logout', () => {

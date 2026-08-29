@@ -7,6 +7,7 @@ import {
 
 export const COMPOSER_DRAFT_STORAGE_PREFIX = 'catsco_composer_drafts:v1:';
 export const NEW_TASK_DRAFT_KEY = 'new-task';
+const COMPOSER_DRAFT_STATE_STORAGE_PREFIX = 'catsco_composer_draft_state:v1:';
 
 // Async upload callbacks can outlive the composer that created them. Keep a
 // process-local revision per store/key so a sent or explicitly replaced draft
@@ -26,6 +27,34 @@ function storageTargets(storage) {
   return storageType === 'sessionStorage'
     ? ['sessionStorage', 'localStorage']
     : [storageType];
+}
+
+function composerDraftStateStorageKey(userID) {
+  const normalizedUserID = String(userID || '').trim();
+  return normalizedUserID
+    ? `${COMPOSER_DRAFT_STATE_STORAGE_PREFIX}${normalizedUserID}`
+    : '';
+}
+
+function stateStorageKeyForDraftStorageKey(storageKey) {
+  if (!storageKey || !storageKey.startsWith(COMPOSER_DRAFT_STORAGE_PREFIX)) return '';
+  return `${COMPOSER_DRAFT_STATE_STORAGE_PREFIX}${storageKey.slice(COMPOSER_DRAFT_STORAGE_PREFIX.length)}`;
+}
+
+function writeStorageTargets(key, value, storage) {
+  let wrote = false;
+  storageTargets(storage).forEach((target) => {
+    if (writeStorageValue(key, value, target)) wrote = true;
+  });
+  return wrote;
+}
+
+function removeStorageTargets(key, storage) {
+  let removed = false;
+  storageTargets(storage).forEach((target) => {
+    if (removeStorageValue(key, target)) removed = true;
+  });
+  return removed;
 }
 
 function normalizeDraftKey(key) {
@@ -64,6 +93,53 @@ function isPhoneUploadSession(value) {
     && typeof value.session_id === 'string' && value.session_id.length > 0;
 }
 
+const draftFieldDefinitions = {
+  input: {
+    mapName: 'inputDrafts',
+    getter: 'getInputDraft',
+    setter: 'setInputDraft',
+    normalize(value) {
+      return typeof value === 'string' && value ? value : null;
+    },
+    read(value) {
+      return typeof value === 'string' ? value : '';
+    },
+  },
+  mention: {
+    mapName: 'structuredMentionDrafts',
+    getter: 'getStructuredMentionDraft',
+    setter: 'setStructuredMentionDraft',
+    normalize(value) {
+      return Array.isArray(value) && value.length > 0 ? [...value] : null;
+    },
+    read(value) {
+      return Array.isArray(value) ? [...value] : [];
+    },
+  },
+  attachment: {
+    mapName: 'attachmentDrafts',
+    getter: 'getAttachmentDraft',
+    setter: 'setAttachmentDraft',
+    normalize(value) {
+      return Array.isArray(value) && value.length > 0 ? [...value] : null;
+    },
+    read(value) {
+      return Array.isArray(value) ? [...value] : [];
+    },
+  },
+  phoneUpload: {
+    mapName: 'phoneUploadSessions',
+    getter: 'getPhoneUploadSession',
+    setter: 'setPhoneUploadSession',
+    normalize(value) {
+      return isPhoneUploadSession(value) ? { ...value } : null;
+    },
+    read(value) {
+      return isPhoneUploadSession(value) ? { ...value } : null;
+    },
+  },
+};
+
 function revisionMapFor(store) {
   if (!store || (typeof store !== 'object' && typeof store !== 'function')) return null;
   let revisions = draftRevisionStores.get(store);
@@ -84,13 +160,38 @@ function mutationMapFor(store) {
   return mutations;
 }
 
-function draftEntries(entries, acceptsValue) {
+function draftEntries(entries, normalizeValue) {
   if (!Array.isArray(entries)) return [];
   return entries.flatMap((entry) => {
     if (!Array.isArray(entry) || entry.length !== 2) return [];
     const [key, value] = entry;
-    return typeof key === 'string' && key && acceptsValue(value) ? [[key, value]] : [];
+    if (typeof key !== 'string' || !key) return [];
+    const normalizedValue = normalizeValue(value);
+    return normalizedValue === null ? [] : [[key, normalizedValue]];
   });
+}
+
+function normalizedUpdatedAt(value) {
+  const candidate = Number(value);
+  return Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
+}
+
+function nextDraftUpdatedAt(...values) {
+  const latest = values.reduce(
+    (current, value) => Math.max(current, normalizedUpdatedAt(value)),
+    0,
+  );
+  return Math.max(Number(Date.now()) || 0, latest + 1);
+}
+
+function newestSnapshot(current, candidate, index) {
+  if (!candidate) return current;
+  if (!current) return { ...candidate, index };
+  if (
+    candidate.updatedAt > current.updatedAt
+    || (candidate.updatedAt === current.updatedAt && index < current.index)
+  ) return { ...candidate, index };
+  return current;
 }
 
 function readDraftSnapshot(storageKey, storage) {
@@ -106,24 +207,81 @@ function readDraftSnapshot(storageKey, storage) {
 }
 
 function readDraftSnapshots(storageKey, storage) {
-  let selected = null;
-  let selectedUpdatedAt = -1;
-  let selectedIndex = Number.POSITIVE_INFINITY;
+  const stateStorageKey = stateStorageKeyForDraftStorageKey(storageKey);
+  let selectedDraft = null;
+  let selectedState = null;
   storageTargets(storage).forEach((target, index) => {
-    const candidate = readDraftSnapshot(storageKey, target);
-    if (!candidate) return;
-    const candidateUpdatedAt = Number(candidate.updatedAt) || 0;
-    if (
-      selected === null
-      || candidateUpdatedAt > selectedUpdatedAt
-      || (candidateUpdatedAt === selectedUpdatedAt && index < selectedIndex)
-    ) {
-      selected = candidate;
-      selectedUpdatedAt = candidateUpdatedAt;
-      selectedIndex = index;
+    const draft = readDraftSnapshot(storageKey, target);
+    if (draft) {
+      selectedDraft = newestSnapshot(selectedDraft, {
+        snapshot: draft,
+        updatedAt: normalizedUpdatedAt(draft.updatedAt),
+      }, index);
+    }
+    const state = readDraftSnapshot(stateStorageKey, target);
+    if (state) {
+      selectedState = newestSnapshot(selectedState, {
+        cleared: state.cleared === true,
+        updatedAt: normalizedUpdatedAt(state.updatedAt),
+      }, index);
     }
   });
-  return selected || {};
+  const draftUpdatedAt = selectedDraft?.updatedAt || 0;
+  const stateUpdatedAt = selectedState?.updatedAt || 0;
+  if (
+    selectedState
+    && (
+      stateUpdatedAt > draftUpdatedAt
+      || (stateUpdatedAt === draftUpdatedAt && selectedState.cleared)
+    )
+  ) {
+    return { snapshot: {}, updatedAt: stateUpdatedAt };
+  }
+  return {
+    snapshot: selectedDraft?.snapshot || {},
+    updatedAt: draftUpdatedAt,
+  };
+}
+
+function readDraftFieldFromMap(store, kind, key) {
+  const definition = draftFieldDefinitions[kind];
+  const normalizedKey = normalizeDraftKey(key);
+  const map = definition && (store?.[definition.mapName] || store?.[kind]);
+  return definition && normalizedKey
+    ? definition.read(map?.get?.(normalizedKey))
+    : (definition?.read?.(undefined) ?? null);
+}
+
+function writeDraftFieldToMap(store, kind, key, value) {
+  const definition = draftFieldDefinitions[kind];
+  const normalizedKey = normalizeDraftKey(key);
+  const map = definition && (store?.[definition.mapName] || store?.[kind]);
+  if (!definition || !normalizedKey || typeof map?.set !== 'function') return '';
+  const normalizedValue = definition.normalize(value);
+  if (normalizedValue === null) map.delete?.(normalizedKey);
+  else map.set(normalizedKey, normalizedValue);
+  return normalizedKey;
+}
+
+function readComposerDraftField(store, kind, key) {
+  const definition = draftFieldDefinitions[kind];
+  if (!definition) return null;
+  const getter = store?.[definition.getter];
+  if (typeof getter === 'function') return definition.read(getter.call(store, key));
+  return readDraftFieldFromMap(store, kind, key);
+}
+
+function writeComposerDraftField(store, kind, key, value) {
+  const definition = draftFieldDefinitions[kind];
+  if (!definition) return;
+  const setter = store?.[definition.setter];
+  if (typeof setter === 'function') {
+    setter.call(store, key, value);
+    markComposerDraftMutation(store, key);
+    return;
+  }
+  const normalizedKey = writeDraftFieldToMap(store, kind, key, value);
+  if (normalizedKey) markComposerDraftMutation(store, normalizedKey);
 }
 
 export function composerDraftStorageKey(userID) {
@@ -134,10 +292,10 @@ export function composerDraftStorageKey(userID) {
 export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
   const targets = storageTargets(storage);
   const targetObjects = targets.map((target) => getStorage(target)).filter(Boolean);
-  if (targetObjects.length === 0) return 0;
   const registries = new Set(targets.map((target) => registryFor(target)));
 
   const keys = new Set();
+  const stateKeys = new Set();
   targetObjects.forEach((target) => {
     try {
       for (let index = 0; index < target.length; index += 1) {
@@ -145,11 +303,24 @@ export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
         if (typeof key === 'string' && key.startsWith(COMPOSER_DRAFT_STORAGE_PREFIX)) {
           keys.add(key);
         }
+        if (typeof key === 'string' && key.startsWith(COMPOSER_DRAFT_STATE_STORAGE_PREFIX)) {
+          stateKeys.add(key);
+        }
       }
     } catch {
       // A blocked storage area should not prevent another area from clearing.
     }
   });
+
+  // A store may have received a draft that has not reached storage yet. Keep
+  // a deletion marker for every known key so a different browsing context
+  // cannot later recreate that stale in-memory snapshot.
+  const knownDraftKeys = new Set([
+    ...keys,
+    ...[...stateKeys]
+      .map((key) => `${COMPOSER_DRAFT_STORAGE_PREFIX}${key.slice(COMPOSER_DRAFT_STATE_STORAGE_PREFIX.length)}`),
+    ...[...registries].flatMap((registry) => [...registry.keys()]),
+  ]);
 
   // Close every known account store, including stores that have not written a
   // snapshot yet. This prevents a late callback from recreating a draft after
@@ -157,37 +328,55 @@ export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
   new Set([...registries].flatMap((registry) => [...registry.values()]))
     .forEach((store) => store.close?.());
   registries.forEach((registry) => registry.clear());
-  return [...keys].reduce((removed, key) => {
-    targetObjects.forEach((target) => removeStorageValue(key, target));
-    return removed + 1;
-  }, 0);
+
+  knownDraftKeys.forEach((key) => {
+    const stateKey = stateStorageKeyForDraftStorageKey(key);
+    const current = readDraftSnapshots(key, storage);
+    const updatedAt = nextDraftUpdatedAt(current.updatedAt);
+    writeStorageTargets(
+      stateKey,
+      JSON.stringify({ updatedAt, cleared: true }),
+      storage,
+    );
+    removeStorageTargets(key, storage);
+  });
+  return keys.size;
 }
 
 export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const storageKey = composerDraftStorageKey(userID);
+  const stateStorageKey = composerDraftStateStorageKey(userID);
   const registry = storageKey ? registryFor(storage) : null;
   const previousStore = registry?.get(storageKey);
-  const snapshot = readDraftSnapshots(storageKey, storage);
+  const snapshotRecord = readDraftSnapshots(storageKey, storage);
+  const snapshot = snapshotRecord.snapshot;
   const inputDrafts = new Map(draftEntries(
     snapshot.inputDrafts,
-    (value) => typeof value === 'string' && value,
+    draftFieldDefinitions.input.normalize,
   ));
   const structuredMentionDrafts = new Map(draftEntries(
     snapshot.structuredMentionDrafts,
-    (value) => Array.isArray(value) && value.length > 0,
+    draftFieldDefinitions.mention.normalize,
   ));
   const attachmentDrafts = new Map(draftEntries(
     snapshot.attachmentDrafts,
-    (value) => Array.isArray(value) && value.length > 0,
+    draftFieldDefinitions.attachment.normalize,
   ));
   const phoneUploadSessions = new Map(draftEntries(
     snapshot.phoneUploadSessions,
-    isPhoneUploadSession,
-  ).map(([key, value]) => [key, { ...value }]));
+    draftFieldDefinitions.phoneUpload.normalize,
+  ));
   let active = true;
   let closed = false;
   let handoffTarget = null;
+  let persistedUpdatedAt = snapshotRecord.updatedAt;
   const listeners = new Set();
+  const draftMaps = {
+    input: inputDrafts,
+    mention: structuredMentionDrafts,
+    attachment: attachmentDrafts,
+    phoneUpload: phoneUploadSessions,
+  };
 
   const close = () => {
     active = false;
@@ -197,6 +386,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     structuredMentionDrafts.clear();
     attachmentDrafts.clear();
     phoneUploadSessions.clear();
+    listeners.clear();
     if (registry?.get(storageKey) === draftStore) registry.delete(storageKey);
   };
 
@@ -211,6 +401,61 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     });
   };
 
+  const replaceDraftMaps = (nextSnapshot = {}) => {
+    const nextMaps = {
+      input: new Map(draftEntries(
+        nextSnapshot.inputDrafts,
+        draftFieldDefinitions.input.normalize,
+      )),
+      mention: new Map(draftEntries(
+        nextSnapshot.structuredMentionDrafts,
+        draftFieldDefinitions.mention.normalize,
+      )),
+      attachment: new Map(draftEntries(
+        nextSnapshot.attachmentDrafts,
+        draftFieldDefinitions.attachment.normalize,
+      )),
+      phoneUpload: new Map(draftEntries(
+        nextSnapshot.phoneUploadSessions,
+        draftFieldDefinitions.phoneUpload.normalize,
+      )),
+    };
+    const changedKeys = new Set([
+      ...Object.values(draftMaps).flatMap((map) => [...map.keys()]),
+      ...Object.values(nextMaps).flatMap((map) => [...map.keys()]),
+    ]);
+    Object.entries(draftMaps).forEach(([kind, map]) => {
+      map.clear();
+      nextMaps[kind].forEach((value, key) => map.set(key, value));
+    });
+    changedKeys.forEach(notify);
+  };
+
+  const getDraftField = (kind, key) => {
+    const definition = draftFieldDefinitions[kind];
+    if (!definition) return null;
+    if (handoffTarget) {
+      const getter = handoffTarget[definition.getter];
+      return typeof getter === 'function'
+        ? getter.call(handoffTarget, key)
+        : readDraftFieldFromMap(handoffTarget, kind, key);
+    }
+    return readDraftFieldFromMap(draftMaps, kind, key);
+  };
+
+  const setDraftField = (kind, key, value) => {
+    const definition = draftFieldDefinitions[kind];
+    if (!definition) return;
+    if (handoffTarget) {
+      const setter = handoffTarget[definition.setter];
+      if (typeof setter === 'function') setter.call(handoffTarget, key, value);
+      return;
+    }
+    if (closed) return;
+    const normalizedKey = writeDraftFieldToMap(draftMaps, kind, key, value);
+    if (normalizedKey) notify(normalizedKey);
+  };
+
   const draftStore = {
     // Maps remain exposed for read-only compatibility with older consumers.
     inputDrafts,
@@ -218,74 +463,28 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     attachmentDrafts,
     phoneUploadSessions,
     getInputDraft(key) {
-      if (handoffTarget) return handoffTarget.getInputDraft(key);
-      const value = inputDrafts.get(normalizeDraftKey(key));
-      return typeof value === 'string' ? value : '';
+      return getDraftField('input', key);
     },
     setInputDraft(key, value) {
-      if (handoffTarget) {
-        handoffTarget.setInputDraft(key, value);
-        return;
-      }
-      const normalizedKey = normalizeDraftKey(key);
-      if (!normalizedKey || closed) return;
-      if (typeof value === 'string' && value) inputDrafts.set(normalizedKey, value);
-      else inputDrafts.delete(normalizedKey);
-      notify(normalizedKey);
+      setDraftField('input', key, value);
     },
     getStructuredMentionDraft(key) {
-      if (handoffTarget) return handoffTarget.getStructuredMentionDraft(key);
-      const value = structuredMentionDrafts.get(normalizeDraftKey(key));
-      return Array.isArray(value) ? [...value] : [];
+      return getDraftField('mention', key);
     },
     setStructuredMentionDraft(key, value) {
-      if (handoffTarget) {
-        handoffTarget.setStructuredMentionDraft(key, value);
-        return;
-      }
-      const normalizedKey = normalizeDraftKey(key);
-      if (!normalizedKey || closed) return;
-      if (Array.isArray(value) && value.length > 0) {
-        structuredMentionDrafts.set(normalizedKey, [...value]);
-      } else {
-        structuredMentionDrafts.delete(normalizedKey);
-      }
-      notify(normalizedKey);
+      setDraftField('mention', key, value);
     },
     getAttachmentDraft(key) {
-      if (handoffTarget) return handoffTarget.getAttachmentDraft(key);
-      const value = attachmentDrafts.get(normalizeDraftKey(key));
-      return Array.isArray(value) ? [...value] : [];
+      return getDraftField('attachment', key);
     },
     setAttachmentDraft(key, value) {
-      if (handoffTarget) {
-        handoffTarget.setAttachmentDraft(key, value);
-        return;
-      }
-      const normalizedKey = normalizeDraftKey(key);
-      if (!normalizedKey || closed) return;
-      if (Array.isArray(value) && value.length > 0) {
-        attachmentDrafts.set(normalizedKey, [...value]);
-      } else {
-        attachmentDrafts.delete(normalizedKey);
-      }
-      notify(normalizedKey);
+      setDraftField('attachment', key, value);
     },
     getPhoneUploadSession(key) {
-      if (handoffTarget) return handoffTarget.getPhoneUploadSession(key);
-      const value = phoneUploadSessions.get(normalizeDraftKey(key));
-      return isPhoneUploadSession(value) ? { ...value } : null;
+      return getDraftField('phoneUpload', key);
     },
     setPhoneUploadSession(key, value) {
-      if (handoffTarget) {
-        handoffTarget.setPhoneUploadSession(key, value);
-        return;
-      }
-      const normalizedKey = normalizeDraftKey(key);
-      if (!normalizedKey || closed) return;
-      if (isPhoneUploadSession(value)) phoneUploadSessions.set(normalizedKey, { ...value });
-      else phoneUploadSessions.delete(normalizedKey);
-      notify(normalizedKey);
+      setDraftField('phoneUpload', key, value);
     },
     persist() {
       if (handoffTarget) {
@@ -296,11 +495,27 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       // Keep inactive stores writable until logout closes them so a replacement
       // store can hydrate the late result from either persisted storage copy.
       if (closed || !storageKey) return;
+      const latest = readDraftSnapshots(storageKey, storage);
+      // Storage events are not delivered to the context that performed the
+      // write. Re-read before every write so a stale tab cannot overwrite a
+      // newer draft (including a cross-tab deletion tombstone).
+      if (latest.updatedAt > persistedUpdatedAt) {
+        replaceDraftMaps(latest.snapshot);
+        persistedUpdatedAt = latest.updatedAt;
+        return;
+      }
+      const updatedAt = nextDraftUpdatedAt(persistedUpdatedAt, latest.updatedAt);
       if (inputDrafts.size === 0
         && structuredMentionDrafts.size === 0
         && attachmentDrafts.size === 0
         && phoneUploadSessions.size === 0) {
-        storageTargets(storage).forEach((target) => removeStorageValue(storageKey, target));
+        const stateWritten = writeStorageTargets(
+          stateStorageKey,
+          JSON.stringify({ updatedAt, cleared: true }),
+          storage,
+        );
+        const draftRemoved = removeStorageTargets(storageKey, storage);
+        if (stateWritten || draftRemoved) persistedUpdatedAt = updatedAt;
         return;
       }
       try {
@@ -309,13 +524,15 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
           structuredMentionDrafts: [...structuredMentionDrafts],
           attachmentDrafts: [...attachmentDrafts],
           phoneUploadSessions: [...phoneUploadSessions],
-          updatedAt: Date.now(),
+          updatedAt,
         });
-        storageTargets(storage).forEach((target) => writeStorageValue(
-          storageKey,
-          serialized,
-          target,
-        ));
+        const draftWritten = writeStorageTargets(storageKey, serialized, storage);
+        const stateWritten = writeStorageTargets(
+          stateStorageKey,
+          JSON.stringify({ updatedAt, cleared: false }),
+          storage,
+        );
+        if (draftWritten || stateWritten) persistedUpdatedAt = updatedAt;
       } catch {
         // Keep the in-memory draft when a browser cannot serialize or store it.
       }
@@ -330,10 +547,17 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
     },
     clearPersisted() {
-      close();
       if (storageKey) {
-        storageTargets(storage).forEach((target) => removeStorageValue(storageKey, target));
+        const current = readDraftSnapshots(storageKey, storage);
+        const updatedAt = nextDraftUpdatedAt(current.updatedAt, persistedUpdatedAt);
+        writeStorageTargets(
+          stateStorageKey,
+          JSON.stringify({ updatedAt, cleared: true }),
+          storage,
+        );
+        removeStorageTargets(storageKey, storage);
       }
+      close();
     },
     close,
     subscribe(listener) {
@@ -365,89 +589,35 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
 }
 
 export function readComposerInputDraft(store, key) {
-  const value = typeof store?.getInputDraft === 'function'
-    ? store.getInputDraft(key)
-    : store?.inputDrafts?.get?.(key);
-  return typeof value === 'string' ? value : '';
+  return readComposerDraftField(store, 'input', key);
 }
 
 export function writeComposerInputDraft(store, key, value) {
-  if (typeof store?.setInputDraft === 'function') {
-    store.setInputDraft(key, value);
-    markComposerDraftMutation(store, key);
-    return;
-  }
-  const normalizedKey = normalizeDraftKey(key);
-  if (!normalizedKey || typeof store?.inputDrafts?.set !== 'function') return;
-  if (typeof value === 'string' && value) store.inputDrafts.set(normalizedKey, value);
-  else store.inputDrafts.delete?.(normalizedKey);
-  markComposerDraftMutation(store, normalizedKey);
+  writeComposerDraftField(store, 'input', key, value);
 }
 
 export function readComposerMentionDraft(store, key) {
-  const value = typeof store?.getStructuredMentionDraft === 'function'
-    ? store.getStructuredMentionDraft(key)
-    : store?.structuredMentionDrafts?.get?.(key);
-  return Array.isArray(value) ? [...value] : [];
+  return readComposerDraftField(store, 'mention', key);
 }
 
 export function writeComposerMentionDraft(store, key, value) {
-  if (typeof store?.setStructuredMentionDraft === 'function') {
-    store.setStructuredMentionDraft(key, value);
-    markComposerDraftMutation(store, key);
-    return;
-  }
-  const normalizedKey = normalizeDraftKey(key);
-  if (!normalizedKey || typeof store?.structuredMentionDrafts?.set !== 'function') return;
-  if (Array.isArray(value) && value.length > 0) {
-    store.structuredMentionDrafts.set(normalizedKey, [...value]);
-  } else {
-    store.structuredMentionDrafts.delete?.(normalizedKey);
-  }
-  markComposerDraftMutation(store, normalizedKey);
+  writeComposerDraftField(store, 'mention', key, value);
 }
 
 export function readComposerAttachmentDraft(store, key) {
-  const value = typeof store?.getAttachmentDraft === 'function'
-    ? store.getAttachmentDraft(key)
-    : store?.attachmentDrafts?.get?.(key);
-  return Array.isArray(value) ? [...value] : [];
+  return readComposerDraftField(store, 'attachment', key);
 }
 
 export function readComposerPhoneUploadSession(store, key) {
-  const value = typeof store?.getPhoneUploadSession === 'function'
-    ? store.getPhoneUploadSession(key)
-    : store?.phoneUploadSessions?.get?.(key);
-  return isPhoneUploadSession(value) ? { ...value } : null;
+  return readComposerDraftField(store, 'phoneUpload', key);
 }
 
 export function writeComposerPhoneUploadSession(store, key, value) {
-  if (typeof store?.setPhoneUploadSession === 'function') {
-    store.setPhoneUploadSession(key, value);
-    markComposerDraftMutation(store, key);
-    return;
-  }
-  const normalizedKey = normalizeDraftKey(key);
-  if (!normalizedKey || typeof store?.phoneUploadSessions?.set !== 'function') return;
-  if (isPhoneUploadSession(value)) store.phoneUploadSessions.set(normalizedKey, { ...value });
-  else store.phoneUploadSessions.delete?.(normalizedKey);
-  markComposerDraftMutation(store, normalizedKey);
+  writeComposerDraftField(store, 'phoneUpload', key, value);
 }
 
 export function writeComposerAttachmentDraft(store, key, value) {
-  if (typeof store?.setAttachmentDraft === 'function') {
-    store.setAttachmentDraft(key, value);
-    markComposerDraftMutation(store, key);
-    return;
-  }
-  const normalizedKey = normalizeDraftKey(key);
-  if (!normalizedKey || typeof store?.attachmentDrafts?.set !== 'function') return;
-  if (Array.isArray(value) && value.length > 0) {
-    store.attachmentDrafts.set(normalizedKey, [...value]);
-  } else {
-    store.attachmentDrafts.delete?.(normalizedKey);
-  }
-  markComposerDraftMutation(store, normalizedKey);
+  writeComposerDraftField(store, 'attachment', key, value);
 }
 
 export function persistComposerDraftStore(store) {

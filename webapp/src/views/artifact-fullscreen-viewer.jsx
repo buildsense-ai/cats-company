@@ -3,6 +3,7 @@ import {
   api,
   connectWS,
   disconnectWS,
+  getToken,
   hasArtifactPreviewSession,
   reconnectWS,
   sendWSActiveTopic,
@@ -30,7 +31,7 @@ import {
 import { createArtifactTaskHost } from '../artifact-task-host';
 import { createArtifactRuntimeHost } from '../artifact-runtime-host';
 import { useFeedback } from '../components/feedback-system';
-import { clearPersistedComposerDrafts } from '../utils/composer-draft-storage';
+import { readStorageValue } from '../utils/storage-access';
 import { createCloudArtifactPreviewFile, previewFileDescriptor } from '../widgets/chat-message';
 import ControlledArtifactPreview from '../widgets/controlled-artifact-preview';
 import './artifact-fullscreen-viewer.css';
@@ -405,8 +406,12 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
     const handleWSMessage = (message) => {
       if (message?._type === 'ws_auth_expired') {
         suspendViewerSession();
-        setToken(null);
-        clearPersistedComposerDrafts();
+        // A fullscreen viewer commonly lives in a separate tab. Its module
+        // can still hold an older token after the workspace has refreshed the
+        // shared token; do not log out that newer session or clear its drafts.
+        const viewerToken = getToken();
+        const currentToken = readStorageValue('oc_token');
+        if (!currentToken || currentToken === viewerToken) setToken(null);
         setError('artifact_viewer_connection');
         return;
       }
