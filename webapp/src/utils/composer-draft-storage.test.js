@@ -145,9 +145,53 @@ describe('composer draft storage', () => {
 
     expect(clearPersistedComposerDrafts(tabAStorage)).toBe(1);
     staleStore.persist();
+    writeComposerInputDraft(staleStore, 'new-task', '登出后不应复活');
+    staleStore.persist();
 
     expect(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).toBeNull();
     expect(createComposerDraftStore('42', tabBStorage).getInputDraft('new-task')).toBe('');
+  });
+
+  test('fences an unsnapshotted browsing context after logout', () => {
+    const sharedValues = new Map();
+    const tabAStorage = sharedStorage(sharedValues);
+    const tabBStorage = sharedStorage(sharedValues);
+    const staleStore = createComposerDraftStore('42', tabBStorage);
+
+    expect(clearPersistedComposerDrafts(tabAStorage)).toBe(0);
+    writeComposerInputDraft(staleStore, 'new-task', '登出前尚未落盘');
+    staleStore.persist();
+
+    expect(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).toBeNull();
+  });
+
+  test('allows a newly created store to write after a logout fence', () => {
+    const sharedValues = new Map();
+    const tabAStorage = sharedStorage(sharedValues);
+    const tabBStorage = sharedStorage(sharedValues);
+
+    clearPersistedComposerDrafts(tabAStorage);
+    const freshStore = createComposerDraftStore('42', tabBStorage);
+    writeComposerInputDraft(freshStore, 'new-task', '重新登录后的新草稿');
+    freshStore.persist();
+
+    expect(JSON.parse(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).inputDrafts)
+      .toEqual([['new-task', '重新登录后的新草稿']]);
+  });
+
+  test('does not treat a normal draft clear as a logout fence', () => {
+    const storage = sharedStorage();
+    const store = createComposerDraftStore('42', storage);
+
+    writeComposerInputDraft(store, 'new-task', '发送前草稿');
+    store.persist();
+    writeComposerInputDraft(store, 'new-task', '');
+    store.persist();
+    writeComposerInputDraft(store, 'new-task', '清空后重新输入');
+    store.persist();
+
+    expect(JSON.parse(storage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).inputDrafts)
+      .toEqual([['new-task', '清空后重新输入']]);
   });
 
   test('clears both draft storage copies on logout', () => {

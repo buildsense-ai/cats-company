@@ -8,6 +8,8 @@ import {
 export const COMPOSER_DRAFT_STORAGE_PREFIX = 'catsco_composer_drafts:v1:';
 export const NEW_TASK_DRAFT_KEY = 'new-task';
 const COMPOSER_DRAFT_STATE_STORAGE_PREFIX = 'catsco_composer_draft_state:v1:';
+const COMPOSER_DRAFT_LOGOUT_STORAGE_KEY = 'catsco_composer_draft_logout:v1';
+const COMPOSER_DRAFT_CLEAR_REASON_LOGOUT = 'logout';
 
 // Async upload callbacks can outlive the composer that created them. Keep a
 // process-local revision per store/key so a sent or explicitly replaced draft
@@ -264,6 +266,19 @@ function readDraftSnapshot(storageKey, storage) {
   }
 }
 
+function readLogoutFence(storage) {
+  let selectedFence = null;
+  storageTargets(storage).forEach((target, index) => {
+    const fence = readDraftSnapshot(COMPOSER_DRAFT_LOGOUT_STORAGE_KEY, target);
+    if (fence) {
+      selectedFence = newestSnapshot(selectedFence, {
+        updatedAt: normalizedUpdatedAt(fence.updatedAt),
+      }, index);
+    }
+  });
+  return { updatedAt: selectedFence?.updatedAt || 0 };
+}
+
 function readDraftSnapshots(storageKey, storage) {
   const stateStorageKey = stateStorageKeyForDraftStorageKey(storageKey);
   let selectedDraft = null;
@@ -280,6 +295,9 @@ function readDraftSnapshots(storageKey, storage) {
     if (state) {
       selectedState = newestSnapshot(selectedState, {
         cleared: state.cleared === true,
+        clearReason: state.clearReason === COMPOSER_DRAFT_CLEAR_REASON_LOGOUT
+          ? COMPOSER_DRAFT_CLEAR_REASON_LOGOUT
+          : '',
         updatedAt: normalizedUpdatedAt(state.updatedAt),
       }, index);
     }
@@ -293,12 +311,18 @@ function readDraftSnapshots(storageKey, storage) {
       || (stateUpdatedAt === draftUpdatedAt && selectedState.cleared)
     )
   ) {
-    return { snapshot: {}, updatedAt: stateUpdatedAt, cleared: selectedState.cleared };
+    return {
+      snapshot: {},
+      updatedAt: stateUpdatedAt,
+      cleared: selectedState.cleared,
+      clearReason: selectedState.clearReason,
+    };
   }
   return {
     snapshot: selectedDraft?.snapshot || {},
     updatedAt: draftUpdatedAt,
     cleared: false,
+    clearReason: '',
   };
 }
 
@@ -388,13 +412,27 @@ export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
     .forEach((store) => store.close?.());
   registries.forEach((registry) => registry.clear());
 
+  // Keep a cross-context logout fence even when another browsing context has
+  // an in-memory draft that has never reached storage and therefore cannot be
+  // discovered by the key scan above.
+  const logoutUpdatedAt = nextDraftUpdatedAt(readLogoutFence(storage).updatedAt);
+  writeStorageTargets(
+    COMPOSER_DRAFT_LOGOUT_STORAGE_KEY,
+    JSON.stringify({ updatedAt: logoutUpdatedAt }),
+    storage,
+  );
+
   knownDraftKeys.forEach((key) => {
     const stateKey = stateStorageKeyForDraftStorageKey(key);
     const current = readDraftSnapshots(key, storage);
-    const updatedAt = nextDraftUpdatedAt(current.updatedAt);
+    const updatedAt = nextDraftUpdatedAt(current.updatedAt, logoutUpdatedAt);
     writeStorageTargets(
       stateKey,
-      JSON.stringify({ updatedAt, cleared: true }),
+      JSON.stringify({
+        updatedAt,
+        cleared: true,
+        clearReason: COMPOSER_DRAFT_CLEAR_REASON_LOGOUT,
+      }),
       storage,
     );
     removeStorageTargets(key, storage);
@@ -408,7 +446,10 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const registry = storageKey ? registryFor(storage) : null;
   const previousStore = registry?.get(storageKey);
   const snapshotRecord = readDraftSnapshots(storageKey, storage);
-  const snapshot = snapshotRecord.snapshot;
+  const logoutFence = readLogoutFence(storage);
+  const snapshot = logoutFence.updatedAt > snapshotRecord.updatedAt
+    ? {}
+    : snapshotRecord.snapshot;
   const draftMaps = draftMapsFromSnapshot(snapshot);
   const inputDrafts = draftMaps.input;
   const structuredMentionDrafts = draftMaps.mention;
@@ -417,7 +458,8 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   let active = true;
   let closed = false;
   let handoffTarget = null;
-  let persistedUpdatedAt = snapshotRecord.updatedAt;
+  let logoutFenced = false;
+  let persistedUpdatedAt = Math.max(snapshotRecord.updatedAt, logoutFence.updatedAt);
   let persistedSnapshot = draftSnapshotFromMaps(draftMaps);
   const listeners = new Set();
 
@@ -472,6 +514,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const setDraftField = (kind, key, value) => {
     const definition = draftFieldDefinitions[kind];
     if (!definition) return;
+    if (logoutFenced) return;
     if (handoffTarget) {
       const setter = handoffTarget[definition.setter];
       if (typeof setter === 'function') setter.call(handoffTarget, key, value);
@@ -513,6 +556,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       setDraftField('phoneUpload', key, value);
     },
     persist() {
+      if (logoutFenced) return;
       if (handoffTarget) {
         handoffTarget.persist();
         return;
@@ -520,17 +564,26 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       // A composer can finish an upload after its workspace has unmounted.
       // Keep inactive stores writable until logout closes them so a replacement
       // store can hydrate the late result from either persisted storage copy.
-      if (closed || !storageKey) return;
+      if (closed || logoutFenced || !storageKey) return;
       const latest = readDraftSnapshots(storageKey, storage);
+      const latestLogoutFence = readLogoutFence(storage);
       // Storage events are not delivered to the context that performed the
       // write. Re-read before every write so a stale tab cannot overwrite a
       // newer draft (including a cross-tab deletion tombstone).
       let mapsToPersist = draftMaps;
+      if (latestLogoutFence.updatedAt > persistedUpdatedAt) {
+        logoutFenced = true;
+        replaceDraftMaps({});
+        persistedSnapshot = draftSnapshotFromMaps({});
+        persistedUpdatedAt = latestLogoutFence.updatedAt;
+        return;
+      }
       if (latest.updatedAt > persistedUpdatedAt) {
         if (latest.cleared) {
           replaceDraftMaps({});
           persistedSnapshot = draftSnapshotFromMaps({});
           persistedUpdatedAt = latest.updatedAt;
+          logoutFenced = latest.clearReason === COMPOSER_DRAFT_CLEAR_REASON_LOGOUT;
           return;
         }
         const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps));
@@ -607,7 +660,11 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
         const updatedAt = nextDraftUpdatedAt(current.updatedAt, persistedUpdatedAt);
         writeStorageTargets(
           stateStorageKey,
-          JSON.stringify({ updatedAt, cleared: true }),
+          JSON.stringify({
+            updatedAt,
+            cleared: true,
+            clearReason: COMPOSER_DRAFT_CLEAR_REASON_LOGOUT,
+          }),
           storage,
         );
         removeStorageTargets(storageKey, storage);
