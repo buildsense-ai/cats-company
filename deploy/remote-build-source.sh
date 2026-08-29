@@ -34,10 +34,11 @@ server_image="ghcr.io/${owner}/cats-company-server:${revision}"
 if docker image inspect "$server_image" >/dev/null 2>&1; then
   echo "Server image already present: ${server_image}"
 else
-  server_build_timeout="${REMOTE_SERVER_BUILD_TIMEOUT_SECONDS:-900}"
+  server_build_timeout="${REMOTE_SERVER_BUILD_TIMEOUT_SECONDS:-1800}"
   echo "Building server image: ${server_image} (timeout ${server_build_timeout}s)"
   timeout "$server_build_timeout" docker build --progress=plain \
     --build-arg GOPROXY="${REMOTE_GOPROXY:-https://goproxy.cn,direct}" \
+    --build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}" \
     -f deploy/Dockerfile.server \
     -t "$server_image" \
     .
@@ -60,11 +61,43 @@ pull_timeout="${REMOTE_WEB_PULL_TIMEOUT_SECONDS:-120}"
 login_timeout="${REMOTE_GHCR_LOGIN_TIMEOUT_SECONDS:-20}"
 web_image_mode="${REMOTE_WEB_IMAGE_MODE:-pull}"
 
+resolve_web_base_image() {
+  local default_base="georgjung/nginx-brotli:latest@sha256:488e48d7773deef7f696a25362da3043e3aabb447c6f28548eda7391a27c7fc9"
+  local configured_base="${REMOTE_WEB_BASE_IMAGE:-$default_base}"
+  local previous_tag=""
+  local previous_image=""
+
+  if docker image inspect "$configured_base" >/dev/null 2>&1; then
+    printf '%s\n' "$configured_base"
+    return 0
+  fi
+
+  if [ -f "$root/env/test.env" ]; then
+    previous_tag="$(sed -n 's/^IMAGE_TAG=//p' "$root/env/test.env" | tail -n 1)"
+  elif [ -f "$root/env/prod.env" ]; then
+    previous_tag="$(sed -n 's/^IMAGE_TAG=//p' "$root/env/prod.env" | tail -n 1)"
+  fi
+  if [[ "$previous_tag" =~ ^[0-9a-f]{40,64}$ ]]; then
+    previous_image="ghcr.io/${owner}/cats-company-web:${previous_tag}"
+    if docker image inspect "$previous_image" >/dev/null 2>&1; then
+      echo "Using cached Web runtime as local Brotli build base: ${previous_image}" >&2
+      printf '%s\n' "$previous_image"
+      return 0
+    fi
+  fi
+
+  echo "missing local nginx-brotli base image and no cached Web runtime is available" >&2
+  echo "seed the pinned base image or set REMOTE_WEB_BASE_IMAGE to a local image" >&2
+  return 1
+}
+
 build_web_image() {
   fallback_build_timeout="${REMOTE_WEB_BUILD_TIMEOUT_SECONDS:-900}"
+  web_base_image="$(resolve_web_base_image)"
   echo "Building web image locally (timeout ${fallback_build_timeout}s)."
   timeout "$fallback_build_timeout" docker build --progress=plain \
     --build-arg REACT_APP_API_BASE="${REMOTE_WEB_REACT_APP_API_BASE:-}" \
+    --build-arg NGINX_BROTLI_BASE_IMAGE="$web_base_image" \
     -f deploy/Dockerfile.nginx \
     -t "$web_image" \
     .

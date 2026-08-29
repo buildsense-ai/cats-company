@@ -71,6 +71,24 @@ const baseConfig = {
   ],
 };
 
+const capabilityModelConfig = {
+  ...baseConfig,
+  desired: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 2 },
+  applied: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 2 },
+  models: [
+    ...baseConfig.models,
+    {
+      id: 'glm-5.3-flash',
+      label: 'GLM 5.3 Flash',
+      description: '高性价比多模态模型',
+      context_window_tokens: 1000000,
+      reasoning_efforts: ['max'],
+      default_reasoning_effort: 'max',
+      vision: true,
+    },
+  ],
+};
+
 const relayState = {
   isBot: true,
   state: 'ready',
@@ -674,7 +692,10 @@ describe('LocalAssistantBar model selector', () => {
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const terra = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('GPT-5.6 Terra'));
-    await act(async () => terra.click());
+    await act(async () => {
+      terra.focus();
+      await Promise.resolve();
+    });
     const xhigh = [...container.querySelectorAll('.v3-model-reasoning-item')]
       .find((item) => item.textContent.includes('xhigh'));
     await act(async () => {
@@ -686,8 +707,77 @@ describe('LocalAssistantBar model selector', () => {
     });
   });
 
+  it('switches capability models from the parent item using their default strength', async () => {
+    const config = capabilityModelConfig;
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(config);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...config,
+      status: 'pending',
+      desired: { kind: 'catalog', model_id: 'minimax-m3', reasoning_effort: '', revision: 3 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+
+    const m3 = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('MiniMax M3'));
+    await act(async () => {
+      m3.click();
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, {
+      kind: 'catalog', model_id: 'minimax-m3', reasoning_effort: '',
+    });
+  });
+
+  it('switches the DeepSeek parent item with its default reasoning strength', async () => {
+    const config = capabilityModelConfig;
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(config);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...config,
+      status: 'pending',
+      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 3 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+    await act(async () => {
+      deepseek.click();
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, {
+      kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high',
+    });
+  });
+
+  it('switches the GLM parent item with its default reasoning strength', async () => {
+    const config = capabilityModelConfig;
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(config);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...config,
+      status: 'pending',
+      desired: { kind: 'catalog', model_id: 'glm-5.3-flash', reasoning_effort: 'max', revision: 3 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const glm = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('GLM 5.3 Flash'));
+    await act(async () => {
+      glm.click();
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, {
+      kind: 'catalog', model_id: 'glm-5.3-flash', reasoning_effort: 'max',
+    });
+  });
+
   it('shows vision beside reasoning strength as a read-only automatic capability', async () => {
-    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    const deepseekConfig = {
+      ...baseConfig,
+      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 2 },
+      applied: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 2 },
+    };
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(deepseekConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]

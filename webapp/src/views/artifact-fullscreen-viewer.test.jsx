@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   sendWSPageVisibility: vi.fn(),
   getToken: vi.fn(() => 'viewer-token'),
   setToken: vi.fn(),
+  clearPersistedComposerDrafts: vi.fn(),
   wsSendArtifactResultReceipt: vi.fn(),
   createArtifactTask: vi.fn(),
   getArtifactTask: vi.fn(),
@@ -57,6 +58,10 @@ vi.mock('../api', () => ({
 
 vi.mock('../components/feedback-system', () => ({
   useFeedback: () => ({ confirm: mocks.feedbackConfirm }),
+}));
+
+vi.mock('../utils/composer-draft-storage', () => ({
+  clearPersistedComposerDrafts: mocks.clearPersistedComposerDrafts,
 }));
 
 vi.mock('../artifact-runtime-host', () => ({
@@ -239,6 +244,7 @@ describe('ArtifactFullscreenViewer', () => {
       result_id: `arr_${'r'.repeat(43)}`,
       status: 'applied',
     });
+    mocks.clearPersistedComposerDrafts.mockClear();
     mocks.connectWS.mockImplementation((handler) => {
       mocks.wsHandler = handler;
       return true;
@@ -322,6 +328,7 @@ describe('ArtifactFullscreenViewer', () => {
     });
 
     expect(mocks.setToken).not.toHaveBeenCalled();
+    expect(mocks.clearPersistedComposerDrafts).not.toHaveBeenCalled();
     expect(container.textContent).toContain('暂时无法连接');
   });
 
@@ -341,6 +348,7 @@ describe('ArtifactFullscreenViewer', () => {
     });
 
     expect(mocks.setToken).toHaveBeenCalledWith(null);
+    expect(mocks.clearPersistedComposerDrafts).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('oc_token')).toBeNull();
   });
 

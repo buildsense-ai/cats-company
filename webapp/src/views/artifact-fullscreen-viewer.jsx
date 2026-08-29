@@ -31,6 +31,7 @@ import {
 import { createArtifactTaskHost } from '../artifact-task-host';
 import { createArtifactRuntimeHost } from '../artifact-runtime-host';
 import { useFeedback } from '../components/feedback-system';
+import { clearPersistedComposerDrafts } from '../utils/composer-draft-storage';
 import { createCloudArtifactPreviewFile, previewFileDescriptor } from '../widgets/chat-message';
 import ControlledArtifactPreview from '../widgets/controlled-artifact-preview';
 import { readStorageValue } from '../utils/storage-access';
@@ -411,7 +412,10 @@ export default function ArtifactFullscreenViewer({ location = window.location } 
         // different workspace may have rotated it while this viewer was open.
         const viewerToken = getToken();
         const persistedToken = readStorageValue('oc_token');
-        if (!persistedToken || persistedToken === viewerToken) setToken(null);
+        if (!persistedToken || persistedToken === viewerToken) {
+          setToken(null);
+          clearPersistedComposerDrafts();
+        }
         setError('artifact_viewer_connection');
         return;
       }

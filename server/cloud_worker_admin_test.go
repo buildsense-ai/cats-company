@@ -43,7 +43,45 @@ func TestCloudWorkerAdminOverviewUsesSafeProjectionAndProviderSnapshot(t *testin
 	}
 }
 
+func TestCloudWorkerAdminOverviewKeepsExternalBindingUnverified(t *testing.T) {
+	h, store := newCloudWorkerTestHandler("")
+	store.adminRecords = []types.CloudWorkerAdminRecord{{
+		InstanceID: "i-fs7", InstanceName: "dh1987", Provider: "ctyun",
+		RegionID: "200000004421", ManagementMode: "manual_import",
+		LifecycleMode: "external", BindingStatus: "unverified", TenantName: "dh1987",
+	}}
+	h.statusLoaded = true
+	h.statusSnapshot = map[string]cloudInstanceInfo{"dh1987": {Status: "running"}}
+	overview, err := h.CloudWorkerAdminOverview(time.Now())
+	if err != nil || overview.StatusCounts["unverified"] != 1 {
+		t.Fatalf("external binding must not use platform snapshot: overview=%+v err=%v", overview, err)
+	}
+}
+
 func ptrTime(value time.Time) *time.Time { return &value }
+
+func TestCloudWorkerAdminImportForcesExternalLifecycle(t *testing.T) {
+	h, store := newCloudWorkerTestHandler("")
+	req := httptest.NewRequest(http.MethodPost, "/api/account/commercial-ops/cloud-workers/import", strings.NewReader(`{
+		"owner_uid":404,"worker_uid":405,"provider":"ctyun",
+		"region_id":"200000002530","instance_id":"i-1","instance_name":"worker1"
+	}`))
+	rec := httptest.NewRecorder()
+	h.HandleAdminImport(rec, req)
+	if rec.Code != http.StatusOK || store.importedBinding == nil {
+		t.Fatalf("status=%d body=%s binding=%+v", rec.Code, rec.Body.String(), store.importedBinding)
+	}
+	if got := store.importedBinding; got.ManagementMode != "manual_import" || got.LifecycleMode != "external" || got.TenantName != "worker1" {
+		t.Fatalf("unsafe import defaults: %+v", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/account/commercial-ops/cloud-workers/import", strings.NewReader(`{"region_id":"r","instance_id":"i","instance_name":"n"}`))
+	rec = httptest.NewRecorder()
+	h.HandleAdminImport(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing owner status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
 
 type cloudWorkerAdminEndpointStub struct{}
 

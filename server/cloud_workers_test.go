@@ -93,6 +93,7 @@ type cloudWorkerTestStore struct {
 	botBodyIDs        map[int64]string
 	botDefinitions    map[int64]*types.BotDefinitionRecord
 	adminRecords      []types.CloudWorkerAdminRecord
+	importedBinding   *types.CloudWorkerBindingRecord
 }
 
 // quotaCreditStub lets quota presentation tests exercise the durable credit
@@ -121,6 +122,11 @@ func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error    {
 
 func (s *cloudWorkerTestStore) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord, error) {
 	return append([]types.CloudWorkerAdminRecord(nil), s.adminRecords...), nil
+}
+
+func (s *cloudWorkerTestStore) UpsertExternalCloudWorkerBinding(record types.CloudWorkerBindingRecord) error {
+	s.importedBinding = &record
+	return nil
 }
 
 func (s *cloudWorkerTestStore) GetUser(id int64) (*types.User, error) {
