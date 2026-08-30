@@ -21,7 +21,10 @@ vi.mock('./qr-code', () => ({
 
 import { api } from '../api';
 import EmptyTaskComposer from './empty-task-composer';
-import { writeComposerPhoneUploadSession } from '../utils/composer-draft-storage';
+import {
+  createComposerDraftStore,
+  writeComposerPhoneUploadSession,
+} from '../utils/composer-draft-storage';
 
 const agents = [
   {
@@ -242,6 +245,65 @@ describe('EmptyTaskComposer', () => {
     expect(composerDraftStore.persist).toHaveBeenCalled();
   });
 
+  it('removes a restored attachment without the draft subscription restoring it', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const composerDraftStore = createComposerDraftStore('remove-restored-attachment');
+    composerDraftStore.setInputDraft('new-task', '已有的 prompt');
+    composerDraftStore.setAttachmentDraft('new-task', [{
+      type: 'file',
+      name: 'brief.pdf',
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'brief.pdf',
+          url: '/uploads/files/brief.pdf',
+          name: 'brief.pdf',
+        },
+      },
+    }]);
+    composerDraftStore.persist();
+
+    await mountComposer({ composerDraftStore });
+    const removeButton = container.querySelector('[aria-label="移除附件：brief.pdf"]');
+    expect(removeButton).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(removeButton);
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：brief.pdf"]')).toBeNull();
+  });
+
+  it('persists text removal without changing restored attachments', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const composerDraftStore = createComposerDraftStore('remove-restored-text');
+    composerDraftStore.setInputDraft('new-task', '待删除的 prompt');
+    composerDraftStore.setAttachmentDraft('new-task', [{
+      type: 'file',
+      name: 'brief.pdf',
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'brief.pdf',
+          url: '/uploads/files/brief.pdf',
+          name: 'brief.pdf',
+        },
+      },
+    }]);
+    composerDraftStore.persist();
+
+    await mountComposer({ composerDraftStore });
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '');
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('');
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toHaveLength(1);
+    expect(container.querySelector('.v3-composer-attachment-chip')).not.toBeNull();
+  });
+
   it('persists an attachment when navigation unmounts the composer during upload', async () => {
     const attachmentDrafts = new Map();
     const composerDraftStore = {
@@ -447,6 +509,42 @@ describe('EmptyTaskComposer', () => {
     expect(inputDrafts.get('new-task')).toBeUndefined();
     expect(attachmentDrafts.get('new-task')).toBeUndefined();
     expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('does not restore sent text or attachments when a new task composer opens', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const composerDraftStore = createComposerDraftStore('sent-draft-cleanup');
+    composerDraftStore.setInputDraft('new-task', '这条消息已经发送');
+    composerDraftStore.setAttachmentDraft('new-task', [{
+      type: 'file',
+      name: 'brief.pdf',
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'brief.pdf',
+          url: '/uploads/files/brief.pdf',
+          name: 'brief.pdf',
+        },
+      },
+    }]);
+    composerDraftStore.persist();
+
+    await mountComposer({ composerDraftStore });
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('');
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
+    expect(container.querySelector('.v3-composer-attachment-chip')).toBeNull();
   });
 
   it('keeps a newer draft written while the previous send is in flight', async () => {

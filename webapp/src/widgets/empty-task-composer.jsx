@@ -90,16 +90,22 @@ export default function EmptyTaskComposer({
   const phoneUploadSyncSessionIdRef = useRef('');
 
   const persistDraft = useCallback(() => {
-    writeComposerInputDraft(
-      composerDraftStore,
-      normalizedDraftKey,
-      String(inputValueRef.current || ''),
-    );
-    writeComposerAttachmentDraft(
-      composerDraftStore,
-      normalizedDraftKey,
-      Array.isArray(pendingAttachmentsRef.current) ? pendingAttachmentsRef.current : [],
-    );
+    // Capture both values before writing either field. The shared draft store
+    // notifies subscribers synchronously; a subscriber may refresh these refs
+    // between the two writes, so never let that notification change what this
+    // persistence operation is committing.
+    const nextInput = String(inputValueRef.current || '');
+    const nextAttachments = Array.isArray(pendingAttachmentsRef.current)
+      ? [...pendingAttachmentsRef.current]
+      : [];
+    const currentInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
+    const currentAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
+    if (currentInput !== nextInput) {
+      writeComposerInputDraft(composerDraftStore, normalizedDraftKey, nextInput);
+    }
+    if (JSON.stringify(currentAttachments) !== JSON.stringify(nextAttachments)) {
+      writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, nextAttachments);
+    }
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
 
@@ -163,9 +169,14 @@ export default function EmptyTaskComposer({
     inputValueRef.current = '';
     pendingAttachmentsRef.current = [];
     phoneUploadSessionRef.current = null;
+    persistDraft();
+    // Clear fields that are not part of persistDraft after the input and
+    // attachment snapshot has been committed. Otherwise their synchronous
+    // subscriber notification can repopulate the refs with the old draft
+    // before persistDraft reads them.
     writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
     writeComposerTaskContextDraft(composerDraftStore, normalizedDraftKey, null);
-    persistDraft();
+    persistComposerDraftStore(composerDraftStore);
     if (mountedRef.current) setPhoneUploadSession(null);
     return true;
   }, [composerDraftStore, normalizedDraftKey, persistDraft, revisionStore]);
