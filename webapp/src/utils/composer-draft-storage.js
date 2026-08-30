@@ -2007,6 +2007,7 @@ function readAttachmentDraftIntents(
       intents: new Map(),
       removalIds: new Set(),
       restoredRemovalIds,
+      activeSupersedeIds: new Set(),
       supersededRemovalIds: new Set(),
       updatedAt,
       logoutFenceAt,
@@ -2077,15 +2078,22 @@ function readAttachmentDraftIntents(
     byIdentity.set(marker.attachmentIdentity, current);
     intents.set(marker.key, byIdentity);
   });
+  const activeSupersedeIds = new Set();
   const supersededRemovalIds = new Set();
   supersedes.forEach((removalIds, id) => {
     if (abandonedSupersedeIds.has(id)) return;
-    removalIds.forEach((removeId) => supersededRemovalIds.add(removeId));
+    let hasUnrestoredRemoval = false;
+    removalIds.forEach((removeId) => {
+      if (!restoredRemovalIds.has(removeId)) hasUnrestoredRemoval = true;
+      supersededRemovalIds.add(removeId);
+    });
+    if (hasUnrestoredRemoval) activeSupersedeIds.add(id);
   });
   return {
     intents,
     removalIds: new Set(removals.keys()),
     restoredRemovalIds,
+    activeSupersedeIds,
     supersededRemovalIds,
     updatedAt,
     logoutFenceAt,
@@ -2172,9 +2180,9 @@ function pendingAttachmentIntentIdsFromFastPath(storageKey, storage) {
 }
 
 // Attachment intent records are immutable by design, but remove/restore
-// gestures can otherwise grow without bound. Retain all active removals and
-// a bounded recent window of the remaining lifecycle records; inactive older
-// records no longer affect hydration.
+// gestures can otherwise grow without bound. Retain active removals and
+// unresolved supersede records (a queued re-add still depends on them), plus
+// a bounded recent window of the remaining lifecycle records.
 function compactAttachmentDraftIntents(
   storageKey,
   storage,
@@ -2184,6 +2192,7 @@ function compactAttachmentDraftIntents(
   if (!prefix || maxPerKey < 1) return;
   const metadata = readAttachmentDraftIntents(storageKey, storage);
   const pendingIntentIds = pendingAttachmentIntentIdsFromFastPath(storageKey, storage);
+  const activeSupersedeIds = metadata.activeSupersedeIds || new Set();
   const activeRemovalIds = new Set(
     [...(metadata.removalIds || [])].filter((id) => !metadata.restoredRemovalIds?.has(id)),
   );
@@ -2222,7 +2231,9 @@ function compactAttachmentDraftIntents(
         // even when a burst of unrelated lifecycle records would otherwise
         // evict it; the session fast path still references its id and needs it
         // to remain authoritative after a document handoff.
-        if (pendingIntentIds.has(record.id)) retained.add(record.markerStorageKey);
+        if (pendingIntentIds.has(record.id) || activeSupersedeIds.has(record.id)) {
+          retained.add(record.markerStorageKey);
+        }
       });
       records.forEach((record) => {
         if (!retained.has(record.markerStorageKey)) keysToRemove.push(record.markerStorageKey);
