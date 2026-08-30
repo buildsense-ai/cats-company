@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   COMPOSER_DRAFT_STORAGE_PREFIX,
   clearPersistedComposerDrafts,
@@ -38,6 +38,26 @@ function sharedStorage(values = new Map(), { onGetItem } = {}) {
     removeItem(key) {
       values.delete(String(key));
     },
+  };
+}
+
+function installSerializedWebLocks() {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+  const queues = new Map();
+  Object.defineProperty(globalThis.navigator, 'locks', {
+    configurable: true,
+    value: {
+      request(name, _options, callback) {
+        const previous = queues.get(name) || Promise.resolve();
+        const next = previous.catch(() => {}).then(callback);
+        queues.set(name, next.catch(() => {}));
+        return next;
+      },
+    },
+  });
+  return () => {
+    if (descriptor) Object.defineProperty(globalThis.navigator, 'locks', descriptor);
+    else delete globalThis.navigator.locks;
   };
 }
 
@@ -180,6 +200,99 @@ describe('composer draft storage', () => {
 
     expect(createComposerDraftStore('42', verifierStorage).getInputDraft('new-task'))
       .toBe('同一段草稿');
+  });
+
+  test('serializes a late send cleanup behind a fresh context write', async () => {
+    const restoreLocks = installSerializedWebLocks();
+    try {
+      const tabA = createComposerDraftStore('42');
+      writeComposerInputDraft(tabA, 'new-task', '发送中的旧草稿');
+      await tabA.persist();
+      const sentVersion = readComposerDraftVersion(tabA, 'new-task');
+
+      const tabB = createComposerDraftStore('42');
+      writeComposerInputDraft(tabB, 'new-task', '新上下文的草稿');
+
+      // Both operations start together. The old send owns the lock first;
+      // the new writer must run afterwards and revive its own fresh draft.
+      const cleanup = clearComposerDraftIfVersion(tabA, 'new-task', sentVersion);
+      const freshWrite = tabB.persist();
+
+      await expect(cleanup).resolves.toBe(true);
+      await expect(freshWrite).resolves.toBe(true);
+      expect(createComposerDraftStore('42').getInputDraft('new-task'))
+        .toBe('新上下文的草稿');
+    } finally {
+      restoreLocks();
+    }
+  });
+
+  test('keeps a dirty fresh context when it receives an older send tombstone', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}42`;
+    const tabA = createComposerDraftStore('42');
+    writeComposerInputDraft(tabA, 'new-task', '发送中的旧草稿');
+    tabA.persist();
+    const sentVersion = readComposerDraftVersion(tabA, 'new-task');
+
+    const freshContext = createComposerDraftStore('42');
+    writeComposerAttachmentDraft(freshContext, 'new-task', [{ name: 'new-context.pdf', type: 'file' }]);
+
+    expect(clearComposerDraftIfVersion(tabA, 'new-task', sentVersion)).toBe(true);
+
+    const storageEvent = new Event('storage');
+    Object.defineProperties(storageEvent, {
+      key: { value: key },
+      newValue: { value: localStorage.getItem(key) },
+      storageArea: { value: localStorage },
+    });
+    window.dispatchEvent(storageEvent);
+
+    expect(freshContext.getAttachmentDraft('new-task'))
+      .toEqual([{ name: 'new-context.pdf', type: 'file' }]);
+    freshContext.persist();
+    expect(createComposerDraftStore('42').getAttachmentDraft('new-task'))
+      .toEqual([{ name: 'new-context.pdf', type: 'file' }]);
+  });
+
+  test('orders concurrent same-millisecond writes through the shared lock', async () => {
+    const restoreLocks = installSerializedWebLocks();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const tabA = createComposerDraftStore('42');
+      const tabB = createComposerDraftStore('42');
+      writeComposerInputDraft(tabA, 'new-task', '第一个上下文');
+      writeComposerInputDraft(tabB, 'p2p_1_2', '第二个上下文');
+
+      await Promise.all([tabA.persist(), tabB.persist()]);
+
+      const stored = JSON.parse(sessionStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`));
+      expect(stored.updatedAt).toBe(1_001);
+      expect(stored.inputDrafts).toEqual([
+        ['new-task', '第一个上下文'],
+        ['p2p_1_2', '第二个上下文'],
+      ]);
+    } finally {
+      clock.mockRestore();
+      restoreLocks();
+    }
+  });
+
+  test('carries a queued write through a remount before the lock runs', async () => {
+    const restoreLocks = installSerializedWebLocks();
+    try {
+      const source = createComposerDraftStore('42');
+      writeComposerInputDraft(source, 'new-task', '切换前尚未落盘');
+      const queuedWrite = source.persist();
+
+      source.deactivate();
+      const replacement = createComposerDraftStore('42');
+
+      await expect(queuedWrite).resolves.toBe(true);
+      expect(replacement.getInputDraft('new-task')).toBe('切换前尚未落盘');
+      expect(createComposerDraftStore('42').getInputDraft('new-task')).toBe('切换前尚未落盘');
+    } finally {
+      restoreLocks();
+    }
   });
 
   test('notifies an already-open fresh context when the mirrored draft changes', () => {

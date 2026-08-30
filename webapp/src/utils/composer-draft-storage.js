@@ -11,6 +11,7 @@ const COMPOSER_DRAFT_STATE_STORAGE_PREFIX = 'catsco_composer_draft_state:v1:';
 const COMPOSER_DRAFT_LOGOUT_STORAGE_KEY = 'catsco_composer_draft_logout:v1';
 const COMPOSER_DRAFT_CLEAR_REASON_LOGOUT = 'logout';
 const COMPOSER_DRAFT_VERSION_MAP_NAME = 'draftVersions';
+const COMPOSER_DRAFT_WRITE_LOCK_PREFIX = 'catsco-composer-draft-write:';
 
 // Async upload callbacks can outlive the composer that created them. Keep a
 // process-local revision per store/key so a sent or explicitly replaced draft
@@ -59,6 +60,31 @@ function removeStorageTargets(key, storage) {
     if (removeStorageValue(key, target)) removed = true;
   });
   return removed;
+}
+
+// A fresh SkillHub workspace can live in a different document. In browsers
+// that implement the Web Locks API, serialize every shared-snapshot write for
+// an account. This gives a conditional send cleanup a real critical section:
+// a newer context either commits first (so the cleanup rejects) or commits
+// afterwards (so its draft wins). Custom storage adapters retain the
+// synchronous path used by tests and non-browser callers.
+function supportsComposerDraftWriteLock(storage) {
+  return typeof storage === 'string'
+    && storageTargets(storage).includes('localStorage')
+    && typeof globalThis.navigator?.locks?.request === 'function';
+}
+
+function withComposerDraftWriteLock(storageKey, storage, operation) {
+  if (!storageKey || !supportsComposerDraftWriteLock(storage)) return operation();
+  try {
+    return globalThis.navigator.locks.request(
+      `${COMPOSER_DRAFT_WRITE_LOCK_PREFIX}${storageKey}`,
+      { mode: 'exclusive' },
+      operation,
+    ).catch(() => false);
+  } catch {
+    return operation();
+  }
 }
 
 function normalizeDraftKey(key) {
@@ -652,12 +678,17 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const logoutFence = readLogoutFence(storage);
   const snapshotRecord = readDraftSnapshots(storageKey, storage, logoutFence.updatedAt);
   if (storage === 'sessionStorage') {
-    mirrorHydratedSnapshotToLocalStorage(
-      storageKey,
-      stateStorageKey,
-      snapshotRecord,
-      logoutFence.updatedAt,
-    );
+    const mirrored = withComposerDraftWriteLock(storageKey, storage, () => (
+      mirrorHydratedSnapshotToLocalStorage(
+        storageKey,
+        stateStorageKey,
+        snapshotRecord,
+        logoutFence.updatedAt,
+      )
+    ));
+    // A failed optional mirror must not prevent the tab-scoped snapshot from
+    // hydrating. The next successful write will retry the shared copy.
+    mirrored?.catch?.(() => {});
   }
   const snapshot = snapshotRecord.snapshot;
   const draftMaps = draftMapsFromSnapshot(snapshot);
@@ -676,6 +707,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   let persistedSnapshot = draftSnapshotFromMaps(draftMaps, draftVersions);
   const listeners = new Set();
   let storageListener = null;
+  let draftStore;
 
   const close = () => {
     active = false;
@@ -753,6 +785,13 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     return true;
   };
 
+  const hasUnpersistedDraftChanges = () => {
+    const baselineMaps = draftMapsFromSnapshot(persistedSnapshot);
+    const baselineVersions = draftVersionsFromSnapshot(persistedSnapshot, baselineMaps);
+    return !draftMapsEqual(draftMaps, baselineMaps)
+      || !draftVersionsEqual(draftVersions, baselineVersions);
+  };
+
   const synchronizeFromStorage = () => {
     if (closed || logoutFenced || handoffTarget || !storageKey) return;
     const latestLogoutFence = readLogoutFence(storage);
@@ -766,7 +805,17 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       return;
     }
     const latest = readDraftSnapshots(storageKey, storage, latestLogoutFence.updatedAt);
-    if (latest.updatedAt > persistedUpdatedAt) applyLatestSnapshot(latest);
+    if (latest.updatedAt > persistedUpdatedAt) {
+      // A non-logout tombstone may belong to an older send that was serialized
+      // immediately before this context's queued write. Keep the local change
+      // until persist() runs under the same write lock and revives it.
+      if (
+        latest.cleared
+        && latest.clearReason !== COMPOSER_DRAFT_CLEAR_REASON_LOGOUT
+        && hasUnpersistedDraftChanges()
+      ) return;
+      applyLatestSnapshot(latest);
+    }
   };
 
   const getDraftField = (kind, key) => {
@@ -798,7 +847,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     return normalizedKey;
   };
 
-  const draftStore = {
+  draftStore = {
     // Maps remain exposed for read-only compatibility with older consumers.
     inputDrafts,
     structuredMentionDrafts,
@@ -840,9 +889,14 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       if (handoffTarget) return handoffTarget.getDraftVersion?.(normalizedKey) || '';
       return draftVersions.get(normalizedKey) || '';
     },
-    persist({ expectedDraftVersions = null } = {}) {
+    persist({ expectedDraftVersions = null, skipWriteLock = false } = {}) {
       if (logoutFenced) return false;
-      if (handoffTarget) return handoffTarget.persist({ expectedDraftVersions });
+      if (handoffTarget) return handoffTarget.persist({ expectedDraftVersions, skipWriteLock });
+      if (!skipWriteLock) {
+        return withComposerDraftWriteLock(storageKey, storage, () => (
+          draftStore.persist({ expectedDraftVersions, skipWriteLock: true })
+        ));
+      }
       // A composer can finish an upload after its workspace has unmounted.
       // Keep inactive stores writable until logout closes them so a replacement
       // store can hydrate the late result from either persisted storage copy.
@@ -880,43 +934,55 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       let versionsToPersist = draftVersions;
       if (latest.updatedAt > persistedUpdatedAt) {
         if (latest.cleared) {
-          applyLatestSnapshot(latest);
-          return false;
-        }
-        const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps, draftVersions));
-        const localVersions = new Map(draftVersions);
-        const baselineMaps = draftMapsFromSnapshot(persistedSnapshot);
-        const baselineVersions = draftVersionsFromSnapshot(persistedSnapshot, baselineMaps);
-        const latestMaps = draftMapsFromSnapshot(latest.snapshot);
-        const latestVersions = draftVersionsFromSnapshot(latest.snapshot, latestMaps);
-        const mergedMaps = mergeDraftMaps(localMaps, baselineMaps, latestMaps);
-        const mergedVersions = mergeDraftVersions(
-          localMaps,
-          baselineMaps,
-          mergedMaps,
-          localVersions,
-          baselineVersions,
-          latestVersions,
-        );
+          if (
+            latest.clearReason === COMPOSER_DRAFT_CLEAR_REASON_LOGOUT
+            || !hasUnpersistedDraftChanges()
+          ) {
+            applyLatestSnapshot(latest);
+            return false;
+          }
 
-        // No local changes are pending. Accept the newer snapshot without
-        // writing it back, preserving deletion tombstones and newer values.
-        if (draftMapsEqual(mergedMaps, latestMaps)
-          && draftVersionsEqual(mergedVersions, latestVersions)) {
-          applyLatestSnapshot(latest);
-          return true;
-        }
+          // A newer context changed this logical draft while an older send was
+          // completing. Its queued write runs after the send tombstone, so its
+          // whole local snapshot is the new draft and must revive the key.
+          persistedSnapshot = draftSnapshotFromMaps({}, new Map());
+          persistedUpdatedAt = latest.updatedAt;
+        } else {
+          const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps, draftVersions));
+          const localVersions = new Map(draftVersions);
+          const baselineMaps = draftMapsFromSnapshot(persistedSnapshot);
+          const baselineVersions = draftVersionsFromSnapshot(persistedSnapshot, baselineMaps);
+          const latestMaps = draftMapsFromSnapshot(latest.snapshot);
+          const latestVersions = draftVersionsFromSnapshot(latest.snapshot, latestMaps);
+          const mergedMaps = mergeDraftMaps(localMaps, baselineMaps, latestMaps);
+          const mergedVersions = mergeDraftVersions(
+            localMaps,
+            baselineMaps,
+            mergedMaps,
+            localVersions,
+            baselineVersions,
+            latestVersions,
+          );
 
-        // Local changes made since the baseline win for their keys while
-        // untouched keys from the newer browsing context remain intact.
-        replaceDraftMaps(draftSnapshotFromMaps(mergedMaps, mergedVersions));
-        // The remote snapshot is now the baseline for any retry. Otherwise
-        // untouched remote keys would look like local edits if this write
-        // fails and a later snapshot arrives.
-        persistedSnapshot = draftSnapshotFromMaps(latestMaps, latestVersions);
-        persistedUpdatedAt = latest.updatedAt;
-        mapsToPersist = mergedMaps;
-        versionsToPersist = mergedVersions;
+          // No local changes are pending. Accept the newer snapshot without
+          // writing it back, preserving deletion tombstones and newer values.
+          if (draftMapsEqual(mergedMaps, latestMaps)
+            && draftVersionsEqual(mergedVersions, latestVersions)) {
+            applyLatestSnapshot(latest);
+            return true;
+          }
+
+          // Local changes made since the baseline win for their keys while
+          // untouched keys from the newer browsing context remain intact.
+          replaceDraftMaps(draftSnapshotFromMaps(mergedMaps, mergedVersions));
+          // The remote snapshot is now the baseline for any retry. Otherwise
+          // untouched remote keys would look like local edits if this write
+          // fails and a later snapshot arrives.
+          persistedSnapshot = draftSnapshotFromMaps(latestMaps, latestVersions);
+          persistedUpdatedAt = latest.updatedAt;
+          mapsToPersist = mergedMaps;
+          versionsToPersist = mergedVersions;
+        }
       }
       const updatedAt = nextDraftUpdatedAt(persistedUpdatedAt, latest.updatedAt);
       const snapshotToPersist = draftSnapshotFromMaps(mapsToPersist, versionsToPersist);
@@ -957,12 +1023,42 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
       return false;
     },
-    clearDraftIfVersion(key, expectedVersion) {
+    clearDraftIfVersion(key, expectedVersion, skipWriteLock = false) {
       const normalizedKey = normalizeDraftKey(key);
       if (!normalizedKey || !expectedVersion || logoutFenced || closed) return false;
       if (handoffTarget) {
-        return handoffTarget.clearDraftIfVersion?.(normalizedKey, expectedVersion) || false;
+        return handoffTarget.clearDraftIfVersion?.(
+          normalizedKey,
+          expectedVersion,
+          skipWriteLock,
+        ) || false;
       }
+      if (!skipWriteLock) {
+        return withComposerDraftWriteLock(storageKey, storage, () => (
+          draftStore.clearDraftIfVersion(normalizedKey, expectedVersion, true)
+        ));
+      }
+      if (logoutFenced || closed || draftVersions.get(normalizedKey) !== expectedVersion) {
+        return false;
+      }
+      const latestLogoutFence = readLogoutFence(storage);
+      if (latestLogoutFence.updatedAt > logoutFenceAt) {
+        applyLatestSnapshot({
+          snapshot: {},
+          updatedAt: latestLogoutFence.updatedAt,
+          cleared: true,
+          clearReason: COMPOSER_DRAFT_CLEAR_REASON_LOGOUT,
+        });
+        return false;
+      }
+      const latest = readDraftSnapshots(storageKey, storage, latestLogoutFence.updatedAt);
+      const latestMaps = draftMapsFromSnapshot(latest.snapshot);
+      const latestVersions = draftVersionsFromSnapshot(latest.snapshot, latestMaps);
+      if (latest.cleared || latestVersions.get(normalizedKey) !== expectedVersion) {
+        applyLatestSnapshot(latest);
+        return false;
+      }
+
       let changed = false;
       Object.values(draftMaps).forEach((map) => {
         if (map.delete(normalizedKey)) changed = true;
@@ -974,6 +1070,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
       return draftStore.persist({
         expectedDraftVersions: new Map([[normalizedKey, expectedVersion]]),
+        skipWriteLock: true,
       });
     },
     deactivate() {
@@ -1022,8 +1119,54 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     canHandoff() {
       return !active && !closed;
     },
+    acceptHandoffDrafts(sourceSnapshot, sourceBaselineSnapshot) {
+      if (closed || !sourceSnapshot || !sourceBaselineSnapshot) return;
+      const sourceMaps = draftMapsFromSnapshot(sourceSnapshot);
+      const sourceVersions = draftVersionsFromSnapshot(sourceSnapshot, sourceMaps);
+      const sourceBaselineMaps = draftMapsFromSnapshot(sourceBaselineSnapshot);
+      const sourceBaselineVersions = draftVersionsFromSnapshot(
+        sourceBaselineSnapshot,
+        sourceBaselineMaps,
+      );
+      const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps, draftVersions));
+      const localVersions = new Map(draftVersions);
+      const localBaselineMaps = draftMapsFromSnapshot(persistedSnapshot);
+      const localBaselineVersions = draftVersionsFromSnapshot(
+        persistedSnapshot,
+        localBaselineMaps,
+      );
+
+      // First carry the old composer's unsaved changes into this store. Then
+      // reapply any edits already made by this newly mounted context, which
+      // are necessarily newer than the handoff.
+      const sourceMergedMaps = mergeDraftMaps(sourceMaps, sourceBaselineMaps, localMaps);
+      const sourceMergedVersions = mergeDraftVersions(
+        sourceMaps,
+        sourceBaselineMaps,
+        sourceMergedMaps,
+        sourceVersions,
+        sourceBaselineVersions,
+        localVersions,
+      );
+      const mergedMaps = mergeDraftMaps(localMaps, localBaselineMaps, sourceMergedMaps);
+      const mergedVersions = mergeDraftVersions(
+        localMaps,
+        localBaselineMaps,
+        mergedMaps,
+        localVersions,
+        localBaselineVersions,
+        sourceMergedVersions,
+      );
+      replaceDraftMaps(draftSnapshotFromMaps(mergedMaps, mergedVersions));
+    },
     handoffTo(nextStore) {
       if (!nextStore || nextStore === draftStore || closed) return;
+      if (hasUnpersistedDraftChanges()) {
+        nextStore.acceptHandoffDrafts?.(
+          draftSnapshotFromMaps(draftMaps, draftVersions),
+          persistedSnapshot,
+        );
+      }
       copyCounterState(draftStore, mutationStoreFor(nextStore), draftMutationStores);
       copyCounterState(draftStore, revisionStoreFor(nextStore), draftRevisionStores);
       handoffTarget = nextStore;

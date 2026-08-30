@@ -139,7 +139,7 @@ export default function EmptyTaskComposer({
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
 
-  const clearDraftAfterSend = useCallback((
+  const clearDraftAfterSend = useCallback(async (
     expectedMutationRevision = null,
     expectedInput,
     expectedAttachments,
@@ -167,7 +167,7 @@ export default function EmptyTaskComposer({
         !== JSON.stringify(expectedAttachments)
     ) return false;
 
-    const durablyCleared = clearComposerDraftIfVersion(
+    const durablyCleared = await clearComposerDraftIfVersion(
       composerDraftStore,
       normalizedDraftKey,
       expectedDraftVersion,
@@ -718,7 +718,7 @@ export default function EmptyTaskComposer({
       messageSent = true;
       // The shared store must be cleared even when navigation already
       // unmounted this view while the request was in flight.
-      const draftCleared = clearDraftAfterSend(
+      const draftCleared = await clearDraftAfterSend(
         sentDraftMutationRevision,
         sentDraftInput,
         attachments,

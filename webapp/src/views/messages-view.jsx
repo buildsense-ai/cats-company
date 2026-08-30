@@ -2252,7 +2252,7 @@ export default function MessagesView({
         : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       if (stateCleared) {
-        const durablyCleared = clearComposerDraftIfVersion(
+        const durablyCleared = await clearComposerDraftIfVersion(
           composerDraftStoreRef.current,
           topic,
           snapshotDraftVersion,
