@@ -263,7 +263,10 @@ import {
   createArtifactPreviewMessage,
 } from '../artifact-preview-coordinator';
 import {
+  COMPOSER_DRAFT_STORAGE_PREFIX,
   createComposerDraftStore,
+  readComposerPhoneUploadSession,
+  writeComposerAttachmentDraft,
   writeComposerPhoneUploadSession,
   writeComposerInputDraft,
 } from '../utils/composer-draft-storage';
@@ -1149,6 +1152,85 @@ describe('MessagesView composer draft isolation', () => {
     expect(attachmentDrafts.get('p2p_1_2')).toBeUndefined();
   });
 
+  it('invalidates an in-flight upload when editing a message into a replacement draft', async () => {
+    const composerDraftStore = createComposerDraftStore('edit-upload-race');
+    const oldAttachment = {
+      type: 'file',
+      name: 'old.pdf',
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'old.pdf',
+          url: '/uploads/files/old.pdf',
+          name: 'old.pdf',
+        },
+      },
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 401,
+        seq_id: 401,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: '原始指令',
+        content_blocks: [
+          { type: 'text', text: '原始指令' },
+          { type: 'file', payload: oldAttachment.content.payload },
+        ],
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await vi.waitFor(() => expect(container.querySelector('.mock-edit-message')).not.toBeNull());
+
+    const image = new File(['late upload'], 'late.png', { type: 'image/png' });
+    const imageInput = container.querySelector('input[accept*="image/jpeg"]');
+    await act(async () => {
+      Simulate.change(imageInput, {
+        target: {
+          files: [image],
+          value: 'C:\\fakepath\\late.png',
+        },
+      });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      container.querySelector('.mock-edit-message').click();
+      await flushPromises();
+    });
+    expect(composerDraftStore.getAttachmentDraft('p2p_1_2')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'old.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'old.pdf' }),
+        }),
+      }),
+    ]);
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'late.png',
+        url: '/uploads/images/late.png',
+        name: 'late.png',
+        size: image.size,
+        mime_type: image.type,
+      });
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getAttachmentDraft('p2p_1_2')).toEqual([
+      expect.objectContaining({ name: 'old.pdf' }),
+    ]);
+  });
+
   it('does not restore stale long-paste text after a newer send', async () => {
     const attachmentDrafts = new Map();
     const inputDrafts = new Map();
@@ -1295,6 +1377,49 @@ describe('MessagesView composer draft isolation', () => {
     sourceStore.close();
     freshStore.close();
     verifier.close();
+  });
+
+  it('does not visibly restore old text when a newer context intentionally empties the draft', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const topic = 'p2p_1_2';
+    const sourceStore = createComposerDraftStore('failed-send-empty-draft');
+    writeComposerInputDraft(sourceStore, topic, '旧页面发送失败的内容');
+    sourceStore.persist();
+    const failedSend = deferred();
+    api.sendMessage.mockReturnValueOnce(failedSend.promise);
+
+    await mountTopic(root, topic, { composerDraftStore: sourceStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    const freshStore = createComposerDraftStore('failed-send-empty-draft');
+    writeComposerInputDraft(freshStore, topic, '');
+    freshStore.persist();
+    const storageEvent = new Event('storage');
+    Object.defineProperties(storageEvent, {
+      key: { value: `${COMPOSER_DRAFT_STORAGE_PREFIX}failed-send-empty-draft` },
+      newValue: { value: localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}failed-send-empty-draft`) },
+      storageArea: { value: localStorage },
+    });
+    await act(async () => {
+      window.dispatchEvent(storageEvent);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      failedSend.reject(new Error('send failed'));
+      await flushPromises();
+    });
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
+    expect(sourceStore.getInputDraft(topic)).toBe('');
+
+    sourceStore.close();
+    freshStore.close();
   });
 
   it('does not clear a newer draft written before an old send reaches its clear step', async () => {
@@ -1481,6 +1606,45 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(attachmentDrafts.get('p2p_1_2')[0].content.payload.file_key)
       .toBe('resume-file.txt');
+  });
+
+  it('marks a same-session attachment synchronized from another context as removed', async () => {
+    const topic = 'p2p_1_2';
+    const composerDraftStore = createComposerDraftStore('remove-synced-message-phone-upload');
+    writeComposerPhoneUploadSession(composerDraftStore, topic, { session_id: 'phone-sync' });
+    composerDraftStore.persist();
+    api.getMobileUploadSession.mockResolvedValue({ session_id: 'phone-sync', files: [] });
+
+    await mountTopic(root, topic, { composerDraftStore });
+
+    // This emits the same store subscription update a storage event from a
+    // sibling context would emit, while the phone session itself is unchanged.
+    await act(async () => {
+      writeComposerAttachmentDraft(composerDraftStore, topic, [{
+        type: 'file',
+        name: 'phone.pdf',
+        content: {
+          type: 'file',
+          payload: {
+            file_key: 'phone.pdf',
+            url: '/uploads/files/phone.pdf',
+            name: 'phone.pdf',
+          },
+        },
+      }]);
+      await flushPromises();
+    });
+    expect(container.querySelector('[aria-label="移除附件：phone.pdf"]')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：phone.pdf"]'));
+      await flushPromises();
+    });
+
+    expect(readComposerPhoneUploadSession(composerDraftStore, topic)).toMatchObject({
+      removed_file_keys: ['phone.pdf'],
+    });
+    expect(container.querySelector('[aria-label="移除附件：phone.pdf"]')).toBeNull();
   });
 
   it('does not clear a replacement phone upload session after a stale poll expires', async () => {

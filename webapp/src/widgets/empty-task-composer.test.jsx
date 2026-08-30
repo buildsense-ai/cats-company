@@ -23,6 +23,7 @@ import { api } from '../api';
 import EmptyTaskComposer from './empty-task-composer';
 import {
   createComposerDraftStore,
+  readComposerPhoneUploadSession,
   writeComposerAttachmentDraft,
   writeComposerInputDraft,
   writeComposerPhoneUploadSession,
@@ -297,6 +298,110 @@ describe('EmptyTaskComposer', () => {
 
     expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
     expect(container.querySelector('[aria-label="移除附件：brief.pdf"]')).toBeNull();
+  });
+
+  it('keeps a restored phone upload deleted when the server reports it again', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const composerDraftStore = createComposerDraftStore('remove-restored-phone-upload');
+    writeComposerPhoneUploadSession(composerDraftStore, 'new-task', { session_id: 'phone-remove' });
+    writeComposerAttachmentDraft(composerDraftStore, 'new-task', [{
+      type: 'file',
+      name: 'phone.pdf',
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'phone.pdf',
+          url: '/uploads/files/phone.pdf',
+          name: 'phone.pdf',
+        },
+      },
+    }]);
+    composerDraftStore.persist();
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'phone-remove',
+      files: [{
+        file_key: 'phone.pdf',
+        url: '/uploads/files/phone.pdf',
+        name: 'phone.pdf',
+        type: 'file',
+      }],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('phone-remove'));
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：phone.pdf"]'));
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledTimes(2));
+
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：phone.pdf"]')).toBeNull();
+    expect(readComposerPhoneUploadSession(composerDraftStore, 'new-task')).toMatchObject({
+      removed_file_keys: ['phone.pdf'],
+    });
+  });
+
+  it('keeps a same-session attachment received from another context deleted', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const composerDraftStore = createComposerDraftStore('remove-synced-phone-upload');
+    writeComposerPhoneUploadSession(composerDraftStore, 'new-task', { session_id: 'phone-sync' });
+    composerDraftStore.persist();
+    api.getMobileUploadSession.mockResolvedValue({ session_id: 'phone-sync', files: [] });
+
+    await mountComposer({ composerDraftStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('phone-sync'));
+
+    // This setter emits the same subscriber notification a storage sync from
+    // another browsing context produces, without changing session_id.
+    await act(async () => {
+      writeComposerAttachmentDraft(composerDraftStore, 'new-task', [{
+        type: 'file',
+        name: 'phone.pdf',
+        content: {
+          type: 'file',
+          payload: {
+            file_key: 'phone.pdf',
+            url: '/uploads/files/phone.pdf',
+            name: 'phone.pdf',
+          },
+        },
+      }]);
+      await flushPromises();
+    });
+    expect(container.querySelector('[aria-label="移除附件：phone.pdf"]')).not.toBeNull();
+
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'phone-sync',
+      files: [{
+        file_key: 'phone.pdf',
+        url: '/uploads/files/phone.pdf',
+        name: 'phone.pdf',
+        type: 'file',
+      }],
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：phone.pdf"]'));
+      await flushPromises();
+    });
+    expect(readComposerPhoneUploadSession(composerDraftStore, 'new-task')).toMatchObject({
+      removed_file_keys: ['phone.pdf'],
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+      await flushPromises();
+    });
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：phone.pdf"]')).toBeNull();
   });
 
   it('persists text removal without changing restored attachments', async () => {

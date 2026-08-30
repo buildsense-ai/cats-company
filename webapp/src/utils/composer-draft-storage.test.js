@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   COMPOSER_DRAFT_STORAGE_PREFIX,
+  appendComposerDraftAttachments,
+  captureComposerDraftAttachmentRestoreTokens,
   clearPersistedComposerDrafts,
   createComposerDraftStore,
   invalidateComposerDraftRevision,
@@ -11,6 +13,7 @@ import {
   readComposerDraftRevision,
   readComposerDraftVersion,
   clearComposerDraftIfVersion,
+  removeComposerDraftAttachment,
   subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
   writeComposerPhoneUploadSession,
@@ -18,7 +21,7 @@ import {
   writeComposerTaskContextDraft,
 } from './composer-draft-storage';
 
-function sharedStorage(values = new Map(), { onGetItem } = {}) {
+function sharedStorage(values = new Map(), { onGetItem, onSetItem } = {}) {
   return {
     get length() {
       return values.size;
@@ -33,7 +36,10 @@ function sharedStorage(values = new Map(), { onGetItem } = {}) {
       return value;
     },
     setItem(key, value) {
-      values.set(String(key), String(value));
+      const normalizedKey = String(key);
+      const normalizedValue = String(value);
+      onSetItem?.(normalizedKey, normalizedValue);
+      values.set(normalizedKey, normalizedValue);
     },
     removeItem(key) {
       values.delete(String(key));
@@ -58,6 +64,72 @@ function installSerializedWebLocks() {
   return () => {
     if (descriptor) Object.defineProperty(globalThis.navigator, 'locks', descriptor);
     else delete globalThis.navigator.locks;
+  };
+}
+
+function installSerializedIndexedDBLocks() {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+  const objectStoreNames = new Set();
+  let opened = false;
+  let transactionQueue = Promise.resolve();
+  const database = {
+    objectStoreNames: {
+      contains(name) {
+        return objectStoreNames.has(name);
+      },
+    },
+    createObjectStore(name) {
+      objectStoreNames.add(name);
+      return {};
+    },
+    transaction() {
+      const transaction = {
+        aborted: false,
+        abort() {
+          this.aborted = true;
+        },
+        objectStore() {
+          return {
+            put() {
+              const request = {};
+              transactionQueue = transactionQueue.catch(() => {}).then(() => new Promise((resolve) => {
+                queueMicrotask(() => {
+                  if (!transaction.aborted) request.onsuccess?.({ target: request });
+                  queueMicrotask(() => {
+                    if (transaction.aborted) transaction.onabort?.({ target: transaction });
+                    else transaction.oncomplete?.({ target: transaction });
+                    resolve();
+                  });
+                });
+              }));
+              return request;
+            },
+          };
+        },
+      };
+      return transaction;
+    },
+  };
+  Object.defineProperty(globalThis, 'indexedDB', {
+    configurable: true,
+    value: {
+      open() {
+        const request = {};
+        queueMicrotask(() => {
+          request.result = database;
+          if (!opened) {
+            opened = true;
+            request.onupgradeneeded?.({ target: request });
+          }
+          request.onsuccess?.({ target: request });
+        });
+        return request;
+      },
+    },
+  });
+  return () => {
+    if (descriptor) Object.defineProperty(globalThis, 'indexedDB', descriptor);
+    else delete globalThis.indexedDB;
   };
 }
 
@@ -117,6 +189,54 @@ describe('composer draft storage', () => {
     sessionStorage.clear();
     expect(createComposerDraftStore('42').getInputDraft('new-task'))
       .toBe('旧版本留下的草稿');
+  });
+
+  test('mirrors the journals needed by a session snapshot before a fresh local hydrate', () => {
+    const storageKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}mirror-journals`;
+    const store = createComposerDraftStore('mirror-journals');
+    const attachment = {
+      type: 'file',
+      name: 'remove-me.pdf',
+      content: { type: 'file', payload: { file_key: 'remove-me' } },
+    };
+    writeComposerInputDraft(store, 'new-task', '跨上下文镜像');
+    writeComposerAttachmentDraft(store, 'new-task', [attachment]);
+    expect(store.persist()).toBe(true);
+    expect(removeComposerDraftAttachment(store, 'new-task', attachment)?.removed).toBe(true);
+
+    // Simulate a partial localStorage copy: the session source still has the
+    // field/attachment journals, but the compatibility record and its local
+    // metadata were lost before the next UHub document mounted.
+    const prefixes = [
+      'catsco_composer_draft_field:v1:',
+      'catsco_composer_draft_attachment_intent:v1:',
+      'catsco_composer_draft_lineage:v1:',
+      'catsco_composer_draft_sent:v1:',
+      'catsco_composer_draft_fast:v1:',
+      'catsco_composer_draft_state:v1:',
+    ];
+    const localKeys = [...Array(localStorage.length)]
+      .map((_, index) => localStorage.key(index))
+      .filter(Boolean);
+    localKeys.forEach((key) => {
+      if (key === storageKey || prefixes.some((prefix) => key?.startsWith(prefix))) {
+        localStorage.removeItem(key);
+      }
+    });
+    expect(localStorage.getItem(storageKey)).toBeNull();
+
+    const mirrored = createComposerDraftStore('mirror-journals');
+    expect(mirrored.getInputDraft('new-task')).toBe('跨上下文镜像');
+    expect(mirrored.getAttachmentDraft('new-task')).toEqual([]);
+
+    // The next document may only have localStorage (the old session is gone),
+    // yet both the text and the deletion intent must remain authoritative.
+    mirrored.close();
+    sessionStorage.clear();
+    expect(localStorage.getItem(storageKey)).toContain('跨上下文镜像');
+    const localOnly = createComposerDraftStore('mirror-journals');
+    expect(localOnly.getInputDraft('new-task')).toBe('跨上下文镜像');
+    expect(localOnly.getAttachmentDraft('new-task')).toEqual([]);
   });
 
   test('hydrates the most recent copy when both storage areas are present', () => {
@@ -202,6 +322,1194 @@ describe('composer draft storage', () => {
       .toBe('同一段草稿');
   });
 
+  test('preserves an equal-valued fresh draft when a send clear leaves a sibling draft', () => {
+    const sharedValues = new Map();
+    const tabAStorage = sharedStorage(sharedValues);
+    const tabBStorage = sharedStorage(sharedValues);
+    const verifierStorage = sharedStorage(sharedValues);
+    const tabA = createComposerDraftStore('version-merge', tabAStorage);
+
+    writeComposerInputDraft(tabA, 'new-task', '同一段草稿');
+    writeComposerInputDraft(tabA, 'p2p_1_2', '不相关的会话草稿');
+    tabA.persist();
+    const sentVersion = readComposerDraftVersion(tabA, 'new-task');
+
+    const tabB = createComposerDraftStore('version-merge', tabBStorage);
+    // This is a new logical draft even though the field value is identical.
+    // Keep it dirty until the old send removes only new-task from the shared
+    // snapshot, leaving the sibling key behind.
+    writeComposerInputDraft(tabB, 'new-task', '同一段草稿');
+
+    expect(clearComposerDraftIfVersion(tabA, 'new-task', sentVersion)).toBe(true);
+    expect(tabB.persist()).toBe(true);
+
+    const verifier = createComposerDraftStore('version-merge', verifierStorage);
+    expect(verifier.getInputDraft('new-task')).toBe('同一段草稿');
+    expect(verifier.getInputDraft('p2p_1_2')).toBe('不相关的会话草稿');
+  });
+
+  test('does not revive a remotely removed attachment when only text changed locally', () => {
+    const sharedValues = new Map();
+    const staleStorage = sharedStorage(sharedValues);
+    const activeStorage = sharedStorage(sharedValues);
+    const verifierStorage = sharedStorage(sharedValues);
+    const stale = createComposerDraftStore('field-merge', staleStorage);
+
+    writeComposerInputDraft(stale, 'new-task', '保持相同文字');
+    writeComposerAttachmentDraft(stale, 'new-task', [{ name: 'obsolete.pdf', type: 'file' }]);
+    expect(stale.persist()).toBe(true);
+
+    const active = createComposerDraftStore('field-merge', activeStorage);
+    expect(removeComposerDraftAttachment(active, 'new-task', { name: 'obsolete.pdf' })?.removed)
+      .toBe(true);
+
+    // This creates a fresh logical text draft with an equal value. It must not
+    // turn the stale attachment map into an edit as well.
+    writeComposerInputDraft(stale, 'new-task', '保持相同文字');
+    expect(stale.persist()).toBe(true);
+
+    const verifier = createComposerDraftStore('field-merge', verifierStorage);
+    expect(verifier.getInputDraft('new-task')).toBe('保持相同文字');
+    expect(verifier.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  test('keeps a removed attachment hidden when an unlocked stale snapshot writes later', () => {
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const indexedDBDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+    const storageTagDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis.localStorage,
+      Symbol.toStringTag,
+    );
+    Object.defineProperty(globalThis.navigator, 'locks', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, {
+      configurable: true,
+      value: 'Storage',
+    });
+    try {
+      const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}unlocked-attachment-delete`;
+      const attachment = {
+        type: 'file',
+        name: 'remove-me.pdf',
+        content: { type: 'file', payload: { file_key: 'remove-me' } },
+      };
+      const source = createComposerDraftStore('unlocked-attachment-delete');
+      writeComposerInputDraft(source, 'new-task', '原始文字');
+      writeComposerAttachmentDraft(source, 'new-task', [attachment]);
+      expect(source.persist()).toBe(true);
+      const staleSnapshot = JSON.parse(localStorage.getItem(key));
+
+      const remover = createComposerDraftStore('unlocked-attachment-delete');
+      expect(removeComposerDraftAttachment(remover, 'new-task', attachment)?.removed).toBe(true);
+
+      // Model a second document that read the old full record before the X,
+      // then commits only its text edit after the delete has completed.
+      localStorage.setItem(key, JSON.stringify({
+        ...staleSnapshot,
+        inputDrafts: [['new-task', '另一上下文的文字']],
+        draftVersions: [['new-task', 'stale-text-write-version']],
+        updatedAt: Math.max(Number(staleSnapshot.updatedAt) || 0, Date.now()) + 100,
+      }));
+
+      const intentKeys = [...Array(localStorage.length)]
+        .map((_, index) => localStorage.key(index))
+        .filter((markerKey) => markerKey?.startsWith('catsco_composer_draft_attachment_intent:v1:'));
+      expect(intentKeys).toHaveLength(1);
+      expect(JSON.parse(localStorage.getItem(intentKeys[0]))).toMatchObject({
+        action: 'remove',
+        key: 'new-task',
+      });
+
+      const restored = createComposerDraftStore('unlocked-attachment-delete');
+      expect(restored.getInputDraft('new-task')).toBe('另一上下文的文字');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+      if (indexedDBDescriptor) Object.defineProperty(globalThis, 'indexedDB', indexedDBDescriptor);
+      else delete globalThis.indexedDB;
+      if (storageTagDescriptor) {
+        Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, storageTagDescriptor);
+      } else {
+        delete globalThis.localStorage[Symbol.toStringTag];
+      }
+    }
+  });
+
+  test('only restores a removed attachment for an add gesture that observed its delete', () => {
+    const attachment = {
+      type: 'file',
+      name: 'observed-remove.pdf',
+      content: { type: 'file', payload: { file_key: 'observed-remove' } },
+    };
+    const store = createComposerDraftStore('observed-remove');
+    writeComposerAttachmentDraft(store, 'new-task', [attachment]);
+    expect(store.persist()).toBe(true);
+
+    // An upload that began before the X holds no restore token. Its late
+    // completion must remain hidden instead of reviving the old file.
+    const staleUploadTokens = captureComposerDraftAttachmentRestoreTokens(store, 'new-task');
+    expect(staleUploadTokens).toEqual([]);
+    expect(removeComposerDraftAttachment(store, 'new-task', attachment)?.removed).toBe(true);
+    expect(appendComposerDraftAttachments(
+      store,
+      'new-task',
+      [attachment],
+      { attachmentRestoreTokens: staleUploadTokens },
+    )?.attachments).toEqual([]);
+
+    // A new user gesture after the X observes exactly that remove token and
+    // can intentionally put the attachment back into the composer.
+    const explicitReaddTokens = captureComposerDraftAttachmentRestoreTokens(store, 'new-task');
+    expect(explicitReaddTokens).toHaveLength(1);
+    expect(appendComposerDraftAttachments(
+      store,
+      'new-task',
+      [attachment],
+      { attachmentRestoreTokens: explicitReaddTokens },
+    )?.attachments).toEqual([attachment]);
+    expect(createComposerDraftStore('observed-remove').getAttachmentDraft('new-task'))
+      .toEqual([attachment]);
+  });
+
+  test('does not mask a concurrent replacement that reuses a removed file key', async () => {
+    const attachment = {
+      type: 'file',
+      name: 'before-replace.pdf',
+      content: { type: 'file', payload: { file_key: 'shared-file-key' } },
+    };
+    const replacement = {
+      type: 'file',
+      name: 'after-replace.pdf',
+      content: { type: 'file', payload: { file_key: 'shared-file-key' } },
+    };
+    const remover = createComposerDraftStore('same-key-replacement');
+    writeComposerAttachmentDraft(remover, 'new-task', [attachment]);
+    expect(remover.persist()).toBe(true);
+    const replacer = createComposerDraftStore('same-key-replacement');
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const callbacks = [];
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: {
+        request(_name, _options, callback) {
+          return new Promise((resolve, reject) => {
+            callbacks.push(() => {
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+        },
+      },
+    });
+    try {
+      const removal = removeComposerDraftAttachment(remover, 'new-task', attachment);
+      expect(remover.getAttachmentDraft('new-task')).toEqual([]);
+
+      writeComposerAttachmentDraft(replacer, 'new-task', [replacement]);
+      const replaceWrite = replacer.persist();
+      expect(callbacks).toHaveLength(2);
+
+      // Let the other context win the durable write while the X is queued.
+      callbacks[1]();
+      await expect(replaceWrite).resolves.toBe(true);
+      callbacks[0]();
+      await expect(removal).resolves.toBeNull();
+
+      expect(createComposerDraftStore('same-key-replacement').getAttachmentDraft('new-task'))
+        .toEqual([replacement]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('keeps a delete intent when a queued re-add becomes stale before it commits', async () => {
+    const attachment = {
+      type: 'file',
+      name: 'canceled-readd.pdf',
+      content: { type: 'file', payload: { file_key: 'canceled-readd' } },
+    };
+    const storageKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}canceled-queued-readd`;
+    const store = createComposerDraftStore('canceled-queued-readd');
+    writeComposerAttachmentDraft(store, 'new-task', [attachment]);
+    expect(store.persist()).toBe(true);
+    const staleSnapshot = JSON.parse(localStorage.getItem(storageKey));
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const callbacks = [];
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: {
+        request(_name, _options, callback) {
+          return new Promise((resolve, reject) => {
+            callbacks.push(() => {
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+        },
+      },
+    });
+    try {
+      let readdIsCurrent = true;
+      const removal = removeComposerDraftAttachment(store, 'new-task', attachment);
+      const readdTokens = captureComposerDraftAttachmentRestoreTokens(store, 'new-task');
+      const readd = appendComposerDraftAttachments(store, 'new-task', [attachment], {
+        attachmentRestoreTokens: readdTokens,
+        shouldContinue: () => readdIsCurrent,
+      });
+      expect(callbacks).toHaveLength(2);
+
+      // The upload is canceled while it waits. The canceled callback must not
+      // write a restore marker. The X may already have stood down for the
+      // pending re-add; its original remove marker remains active either way.
+      readdIsCurrent = false;
+      callbacks[0]();
+      await expect(removal).resolves.toBeNull();
+      callbacks[1]();
+      await expect(readd).resolves.toBeNull();
+
+      localStorage.setItem(storageKey, JSON.stringify({
+        ...staleSnapshot,
+        updatedAt: Math.max(Number(staleSnapshot.updatedAt) || 0, Date.now()) + 100,
+      }));
+      expect(createComposerDraftStore('canceled-queued-readd').getAttachmentDraft('new-task'))
+        .toEqual([]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('uses the complete attachment snapshot for a queued partial-key removal', () => {
+    const attachment = {
+      type: 'file',
+      name: 'full-upload.pdf',
+      content: {
+        type: 'file',
+        payload: { file_key: 'partial-key-delete', mime: 'application/pdf' },
+      },
+    };
+    const storageKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}partial-key-delete`;
+    const store = createComposerDraftStore('partial-key-delete');
+    writeComposerAttachmentDraft(store, 'new-task', [attachment]);
+    expect(store.persist()).toBe(true);
+    const staleSnapshot = JSON.parse(localStorage.getItem(storageKey));
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const callbacks = [];
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: {
+        request(_name, _options, callback) {
+          return new Promise((resolve, reject) => {
+            callbacks.push(() => {
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+        },
+      },
+    });
+    try {
+      const removal = removeComposerDraftAttachment(store, 'new-task', {
+        content: { payload: { file_key: 'partial-key-delete' } },
+      });
+      expect(callbacks).toHaveLength(1);
+      expect(store.getAttachmentDraft('new-task')).toEqual([]);
+
+      const removeMarker = [...Array(localStorage.length)]
+        .map((_, index) => localStorage.key(index))
+        .map((markerKey) => JSON.parse(localStorage.getItem(markerKey) || 'null'))
+        .find((marker) => marker?.action === 'remove');
+      expect(removeMarker?.attachment).toEqual(attachment);
+
+      store.close();
+      localStorage.setItem(storageKey, JSON.stringify({
+        ...staleSnapshot,
+        updatedAt: Math.max(Number(staleSnapshot.updatedAt) || 0, Date.now()) + 100,
+      }));
+      expect(createComposerDraftStore('partial-key-delete').getAttachmentDraft('new-task'))
+        .toEqual([]);
+      void removal;
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('keeps a pending explicit re-add visible after a lock-delayed handoff', () => {
+    const attachment = {
+      type: 'file',
+      name: 'handoff-readd.pdf',
+      content: { type: 'file', payload: { file_key: 'handoff-readd' } },
+    };
+    const store = createComposerDraftStore('handoff-pending-readd');
+    writeComposerAttachmentDraft(store, 'new-task', [attachment]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const callbacks = [];
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: {
+        request(_name, _options, callback) {
+          return new Promise((resolve, reject) => {
+            callbacks.push(() => {
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+        },
+      },
+    });
+    try {
+      const removal = removeComposerDraftAttachment(store, 'new-task', attachment);
+      const readd = appendComposerDraftAttachments(store, 'new-task', [attachment], {
+        attachmentRestoreTokens: captureComposerDraftAttachmentRestoreTokens(store, 'new-task'),
+      });
+      expect(callbacks).toHaveLength(2);
+      expect(store.getAttachmentDraft('new-task')).toEqual([attachment]);
+
+      store.close();
+      expect(createComposerDraftStore('handoff-pending-readd').getAttachmentDraft('new-task'))
+        .toEqual([attachment]);
+      void removal;
+      void readd;
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('retains a queued re-add marker during attachment intent compaction', () => {
+    const firstAttachment = {
+      type: 'file',
+      name: 'compaction-readd.pdf',
+      content: { type: 'file', payload: { file_key: 'compaction-readd' } },
+    };
+    const secondAttachment = {
+      type: 'file',
+      name: 'compaction-keep.pdf',
+      content: { type: 'file', payload: { file_key: 'compaction-keep' } },
+    };
+    const store = createComposerDraftStore('compaction-readd');
+    writeComposerAttachmentDraft(store, 'new-task', [firstAttachment, secondAttachment]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: {
+        request() {
+          return new Promise(() => {});
+        },
+      },
+    });
+    try {
+      void removeComposerDraftAttachment(store, 'new-task', firstAttachment);
+      const restoreTokens = captureComposerDraftAttachmentRestoreTokens(store, 'new-task');
+      void appendComposerDraftAttachments(store, 'new-task', [firstAttachment], {
+        attachmentRestoreTokens: restoreTokens,
+      });
+
+      const fastPath = JSON.parse(sessionStorage.getItem(
+        'catsco_composer_draft_fast:v1:compaction-readd',
+      ));
+      const pendingReadd = fastPath.pendingAttachmentMutations
+        .find((mutation) => mutation.type === 'append')
+        ?.pendingReaddIntents?.[0];
+      expect(pendingReadd?.id).toBeTruthy();
+
+      // Push the re-add marker outside the normal 64-record retention window.
+      // The marker is still referenced by the session fast path and must stay
+      // available when a fresh document replays that pending mutation.
+      const baseUpdatedAt = Date.now() + 100;
+      for (let index = 0; index < 70; index += 1) {
+        const id = `compaction-noise-${index}`;
+        sessionStorage.setItem(
+          `catsco_composer_draft_attachment_intent:v1:${encodeURIComponent(
+            'catsco_composer_drafts:v1:compaction-readd',
+          )}:new-task:${id}`,
+          JSON.stringify({
+            id,
+            storageKey: 'catsco_composer_drafts:v1:compaction-readd',
+            key: 'new-task',
+            attachmentIdentity: `key:${id}`,
+            action: 'restore',
+            restores: [`unused-${id}`],
+            updatedAt: baseUpdatedAt + index,
+            logoutFenceAt: 0,
+          }),
+        );
+      }
+
+      // Any new lifecycle write runs compaction. Without the pending-id
+      // exception this removes the supersede record above.
+      void removeComposerDraftAttachment(store, 'new-task', secondAttachment);
+      const supersedeKey = [...Array(sessionStorage.length)]
+        .map((_, index) => sessionStorage.key(index))
+        .filter(Boolean)
+        .find((key) => {
+          if (!key.startsWith('catsco_composer_draft_attachment_intent:v1:')) return false;
+          try {
+            return JSON.parse(sessionStorage.getItem(key))?.id === pendingReadd.id;
+          } catch {
+            return false;
+          }
+        });
+      expect(supersedeKey).toBeTruthy();
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('uses a versioned send marker when browser locks are unavailable', () => {
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const indexedDBDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+    const storageTagDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis.localStorage,
+      Symbol.toStringTag,
+    );
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(globalThis, 'indexedDB', {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, {
+      configurable: true,
+      value: 'Storage',
+    });
+    try {
+      const store = createComposerDraftStore('no-browser-locks');
+      writeComposerInputDraft(store, 'new-task', '已经发送的草稿');
+      writeComposerInputDraft(store, 'p2p_1_2', '另一个已发送草稿');
+      expect(store.persist()).toBe(true);
+      const sentVersion = readComposerDraftVersion(store, 'new-task');
+      const siblingSentVersion = readComposerDraftVersion(store, 'p2p_1_2');
+
+      expect(clearComposerDraftIfVersion(store, 'new-task', sentVersion)).toBe(true);
+      expect(clearComposerDraftIfVersion(store, 'p2p_1_2', siblingSentVersion)).toBe(true);
+      const markerKeys = [...Array(localStorage.length)]
+        .map((_, index) => localStorage.key(index))
+        .filter((key) => key?.startsWith('catsco_composer_draft_sent:v1:'));
+      expect(markerKeys).toHaveLength(2);
+      expect(markerKeys.map((key) => JSON.parse(localStorage.getItem(key)))).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'new-task', version: sentVersion }),
+          expect.objectContaining({ key: 'p2p_1_2', version: siblingSentVersion }),
+        ]),
+      );
+
+      store.close();
+      const freshContext = createComposerDraftStore('no-browser-locks');
+      expect(freshContext.getInputDraft('new-task')).toBe('');
+      expect(freshContext.getInputDraft('p2p_1_2')).toBe('');
+
+      writeComposerInputDraft(freshContext, 'new-task', '下一次的新草稿');
+      expect(freshContext.persist()).toBe(true);
+      freshContext.close();
+
+      expect(createComposerDraftStore('no-browser-locks').getInputDraft('new-task'))
+        .toBe('下一次的新草稿');
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+      if (indexedDBDescriptor) Object.defineProperty(globalThis, 'indexedDB', indexedDBDescriptor);
+      else delete globalThis.indexedDB;
+      if (storageTagDescriptor) {
+        Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, storageTagDescriptor);
+      } else {
+        delete globalThis.localStorage[Symbol.toStringTag];
+      }
+    }
+  });
+
+  test('clears every observed field marker when sending a no-lock merged frontier', () => {
+    const sharedValues = new Map();
+    const draftKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}merged-send-frontier`;
+    const seedStorage = sharedStorage(sharedValues);
+    const seed = createComposerDraftStore('merged-send-frontier', seedStorage);
+    writeComposerInputDraft(seed, 'new-task', '基线文字');
+    expect(seed.persist()).toBe(true);
+
+    const tabBStorage = sharedStorage(sharedValues);
+    const tabB = createComposerDraftStore('merged-send-frontier', tabBStorage);
+    let interleaved = true;
+    const tabAStorage = sharedStorage(sharedValues, {
+      onSetItem(key) {
+        if (interleaved && key === draftKey) {
+          interleaved = false;
+          expect(tabB.persist()).toBe(true);
+        }
+      },
+    });
+    const tabA = createComposerDraftStore('merged-send-frontier', tabAStorage);
+    writeComposerInputDraft(tabA, 'new-task', 'A 的文字');
+    writeComposerAttachmentDraft(tabB, 'new-task', [{ name: 'B 的文件' }]);
+
+    // The two whole-snapshot writes overlap. Field records must retain both
+    // branches even though the last compatibility snapshot contains one.
+    expect(tabA.persist()).toBe(true);
+    const merged = createComposerDraftStore('merged-send-frontier', sharedStorage(sharedValues));
+    expect(merged.getInputDraft('new-task')).toBe('A 的文字');
+    expect(merged.getAttachmentDraft('new-task')).toEqual([{ name: 'B 的文件' }]);
+
+    // A follow-up text-only write can have the same logical timestamp as the
+    // sibling field marker in an unlocked renderer. It must not prune that
+    // marker from the compatibility snapshot.
+    writeComposerInputDraft(tabA, 'new-task', 'A 的后续文字');
+    expect(tabA.persist()).toBe(true);
+    const afterFollowUp = createComposerDraftStore(
+      'merged-send-frontier',
+      sharedStorage(sharedValues),
+    );
+    expect(afterFollowUp.getAttachmentDraft('new-task')).toEqual([
+      { name: 'B 的文件' },
+    ]);
+
+    const sentVersion = readComposerDraftVersion(afterFollowUp, 'new-task');
+    expect(clearComposerDraftIfVersion(afterFollowUp, 'new-task', sentVersion)).toBe(true);
+    const restored = createComposerDraftStore('merged-send-frontier', sharedStorage(sharedValues));
+    expect(restored.getInputDraft('new-task')).toBe('');
+    expect(restored.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  test('keeps the newest same-field mutation when unlocked marker writes overlap', () => {
+    const sharedValues = new Map();
+    const fieldPrefix = 'catsco_composer_draft_field:v1:';
+    const seed = createComposerDraftStore('same-field-overlap', sharedStorage(sharedValues));
+    writeComposerInputDraft(seed, 'new-task', '基线');
+    expect(seed.persist()).toBe(true);
+
+    const tabB = createComposerDraftStore('same-field-overlap', sharedStorage(sharedValues));
+    const tabAStorage = sharedStorage(sharedValues, {
+      onSetItem(key) {
+        // Let B commit after A has appended its immutable journal entry but
+        // before A writes the legacy stable marker. A stable-key CAS alone
+        // would leave A's stale value as the only visible record.
+        if (!interleaved && key.startsWith(fieldPrefix) && key.split(':').length >= 6) {
+          interleaved = true;
+          expect(tabB.persist()).toBe(true);
+        }
+      },
+    });
+    const tabA = createComposerDraftStore('same-field-overlap', tabAStorage);
+    writeComposerInputDraft(tabA, 'new-task', 'A 的较早输入');
+    writeComposerInputDraft(tabB, 'new-task', 'B 的较新输入');
+    let interleaved = false;
+
+    expect(tabA.persist()).toBe(true);
+    expect(interleaved).toBe(true);
+    // The sibling can commit after this renderer's field marker read but
+    // before its compatibility snapshot/state write. The live store must
+    // reconcile to the marker winner instead of clearing its local dirty
+    // value and silently continuing to display stale text.
+    expect(tabA.getInputDraft('new-task')).toBe('B 的较新输入');
+
+    const verifier = createComposerDraftStore(
+      'same-field-overlap',
+      sharedStorage(sharedValues),
+    );
+    expect(verifier.getInputDraft('new-task')).toBe('B 的较新输入');
+  });
+
+  test('reconciles a same-field winner without dropping unrelated local edits', () => {
+    const sharedValues = new Map();
+    const fieldPrefix = 'catsco_composer_draft_field:v1:';
+    const seed = createComposerDraftStore('same-field-unrelated-edit', sharedStorage(sharedValues));
+    writeComposerInputDraft(seed, 'new-task', '基线');
+    expect(seed.persist()).toBe(true);
+
+    const tabB = createComposerDraftStore('same-field-unrelated-edit', sharedStorage(sharedValues));
+    let interleaved = false;
+    const tabAStorage = sharedStorage(sharedValues, {
+      onSetItem(key) {
+        if (!interleaved && key.startsWith(fieldPrefix) && key.split(':').length >= 6) {
+          interleaved = true;
+          expect(tabB.persist()).toBe(true);
+        }
+      },
+    });
+    const tabA = createComposerDraftStore('same-field-unrelated-edit', tabAStorage);
+    writeComposerInputDraft(tabA, 'new-task', 'A 的输入');
+    writeComposerAttachmentDraft(tabA, 'new-task', [{ name: 'A 的文件' }]);
+    writeComposerInputDraft(tabB, 'new-task', 'B 的输入');
+
+    expect(tabA.persist()).toBe(false);
+    expect(interleaved).toBe(true);
+    expect(tabA.getInputDraft('new-task')).toBe('B 的输入');
+    expect(tabA.getAttachmentDraft('new-task')).toEqual([{ name: 'A 的文件' }]);
+
+    expect(tabA.persist()).toBe(true);
+    const verifier = createComposerDraftStore(
+      'same-field-unrelated-edit',
+      sharedStorage(sharedValues),
+    );
+    expect(verifier.getInputDraft('new-task')).toBe('B 的输入');
+    expect(verifier.getAttachmentDraft('new-task')).toEqual([{ name: 'A 的文件' }]);
+  });
+
+  test('orders an unlocked deletion by its mutation version, not persist time', () => {
+    const sharedValues = new Map();
+    const seed = createComposerDraftStore('delete-version-order', sharedStorage(sharedValues));
+    writeComposerInputDraft(seed, 'new-task', '基线');
+    expect(seed.persist()).toBe(true);
+
+    const stale = createComposerDraftStore('delete-version-order', sharedStorage(sharedValues));
+    const fresh = createComposerDraftStore('delete-version-order', sharedStorage(sharedValues));
+    writeComposerInputDraft(stale, 'new-task', '');
+    writeComposerInputDraft(fresh, 'new-task', '新上下文文字');
+    expect(fresh.persist()).toBe(true);
+    expect(stale.persist()).toBe(true);
+
+    const verifier = createComposerDraftStore(
+      'delete-version-order',
+      sharedStorage(sharedValues),
+    );
+    expect(verifier.getInputDraft('new-task')).toBe('新上下文文字');
+  });
+
+  test('keeps an attachment added by an interleaved no-lock writer when text clears', () => {
+    const sharedValues = new Map();
+    const stateKey = 'catsco_composer_draft_state:v1:clear-frontier-merge';
+    const seed = createComposerDraftStore('clear-frontier-merge', sharedStorage(sharedValues));
+    writeComposerInputDraft(seed, 'new-task', '待清空文字');
+    expect(seed.persist()).toBe(true);
+
+    const tabBStorage = sharedStorage(sharedValues);
+    const tabB = createComposerDraftStore('clear-frontier-merge', tabBStorage);
+    let interleaved = true;
+    const tabAStorage = sharedStorage(sharedValues, {
+      onSetItem(key) {
+        if (interleaved && key === stateKey) {
+          interleaved = false;
+          expect(tabB.persist()).toBe(true);
+        }
+      },
+    });
+    const tabA = createComposerDraftStore('clear-frontier-merge', tabAStorage);
+    writeComposerInputDraft(tabA, 'new-task', '');
+    writeComposerAttachmentDraft(tabB, 'new-task', [{ name: '并发文件' }]);
+
+    expect(tabA.persist()).toBe(true);
+    const restored = createComposerDraftStore('clear-frontier-merge', sharedStorage(sharedValues));
+    expect(restored.getInputDraft('new-task')).toBe('');
+    expect(restored.getAttachmentDraft('new-task')).toEqual([{ name: '并发文件' }]);
+  });
+
+  test('does not revive a stale field marker that was delayed across a clear', () => {
+    const sharedValues = new Map();
+    const stateKey = 'catsco_composer_draft_state:v1:delayed-clear-marker';
+    const seed = createComposerDraftStore('delayed-clear-marker', sharedStorage(sharedValues));
+    writeComposerInputDraft(seed, 'new-task', '原始文字');
+    expect(seed.persist()).toBe(true);
+
+    const remover = createComposerDraftStore('delayed-clear-marker', sharedStorage(sharedValues));
+    let clearDuringRead = false;
+    const staleStorage = sharedStorage(sharedValues, {
+      onGetItem(key) {
+        if (clearDuringRead && key === stateKey) {
+          clearDuringRead = false;
+          writeComposerInputDraft(remover, 'new-task', '');
+          expect(remover.persist()).toBe(true);
+        }
+      },
+    });
+    const stale = createComposerDraftStore('delayed-clear-marker', staleStorage);
+    writeComposerInputDraft(stale, 'new-task', '旧 tab 的迟到文字');
+    clearDuringRead = true;
+    const staleResult = stale.persist();
+    expect(staleResult).toBe(false);
+
+    const restored = createComposerDraftStore(
+      'delayed-clear-marker',
+      sharedStorage(sharedValues),
+    );
+    expect(restored.getInputDraft('new-task')).toBe('');
+  });
+
+  test('keeps another local draft dirty while a send marker clears its sibling', () => {
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const indexedDBDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+    const storageTagDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis.localStorage,
+      Symbol.toStringTag,
+    );
+    Object.defineProperty(globalThis.navigator, 'locks', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, {
+      configurable: true,
+      value: 'Storage',
+    });
+    try {
+      const store = createComposerDraftStore('marker-sibling');
+      writeComposerInputDraft(store, 'new-task', '即将发送');
+      writeComposerInputDraft(store, 'p2p_1_2', '旧的另一份草稿');
+      expect(store.persist()).toBe(true);
+      const sentVersion = readComposerDraftVersion(store, 'new-task');
+
+      writeComposerInputDraft(store, 'p2p_1_2', '尚未落盘的另一份草稿');
+      expect(clearComposerDraftIfVersion(store, 'new-task', sentVersion)).toBe(true);
+      expect(store.getInputDraft('p2p_1_2')).toBe('尚未落盘的另一份草稿');
+      expect(store.persist()).toBe(true);
+
+      const restored = createComposerDraftStore('marker-sibling');
+      expect(restored.getInputDraft('new-task')).toBe('');
+      expect(restored.getInputDraft('p2p_1_2')).toBe('尚未落盘的另一份草稿');
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+      if (indexedDBDescriptor) Object.defineProperty(globalThis, 'indexedDB', indexedDBDescriptor);
+      else delete globalThis.indexedDB;
+      if (storageTagDescriptor) {
+        Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, storageTagDescriptor);
+      } else {
+        delete globalThis.localStorage[Symbol.toStringTag];
+      }
+    }
+  });
+
+  test('does not let a stale attachment callback revive a marker-cleared draft', () => {
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const indexedDBDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+    const storageTagDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis.localStorage,
+      Symbol.toStringTag,
+    );
+    Object.defineProperty(globalThis.navigator, 'locks', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, {
+      configurable: true,
+      value: 'Storage',
+    });
+    try {
+      const stale = createComposerDraftStore('stale-marker-upload');
+      writeComposerInputDraft(stale, 'new-task', '发送中的文字');
+      expect(stale.persist()).toBe(true);
+      const sentVersion = readComposerDraftVersion(stale, 'new-task');
+
+      const sender = createComposerDraftStore('stale-marker-upload');
+      expect(clearComposerDraftIfVersion(sender, 'new-task', sentVersion)).toBe(true);
+      expect(appendComposerDraftAttachments(
+        stale,
+        'new-task',
+        [{ name: 'late.pdf', type: 'file' }],
+      )).toBeNull();
+
+      const restored = createComposerDraftStore('stale-marker-upload');
+      expect(restored.getInputDraft('new-task')).toBe('');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+      if (indexedDBDescriptor) Object.defineProperty(globalThis, 'indexedDB', indexedDBDescriptor);
+      else delete globalThis.indexedDB;
+      if (storageTagDescriptor) {
+        Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, storageTagDescriptor);
+      } else {
+        delete globalThis.localStorage[Symbol.toStringTag];
+      }
+    }
+  });
+
+  test('writes a synchronous session copy before a browser lock is granted', () => {
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      const store = createComposerDraftStore('pending-browser-lock');
+      writeComposerInputDraft(store, 'new-task', '切换前最后输入的内容');
+      void store.persist();
+
+      expect(sessionStorage.getItem('catsco_composer_draft_fast:v1:pending-browser-lock'))
+        .toContain('切换前最后输入的内容');
+
+      store.close();
+      expect(createComposerDraftStore('pending-browser-lock').getInputDraft('new-task'))
+        .toBe('切换前最后输入的内容');
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('merges a queued text fast copy with a newer remote attachment deletion', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}fast-field-merge`;
+    const store = createComposerDraftStore('fast-field-merge');
+    writeComposerInputDraft(store, 'new-task', '原始文字');
+    writeComposerAttachmentDraft(store, 'new-task', [{ name: 'obsolete.pdf', type: 'file' }]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      writeComposerInputDraft(store, 'new-task', '排队中的新文字');
+      void store.persist();
+
+      const durable = JSON.parse(localStorage.getItem(key));
+      localStorage.setItem(key, JSON.stringify({
+        ...durable,
+        attachmentDrafts: [],
+        draftVersions: [['new-task', 'remote-attachment-deletion']],
+        updatedAt: Math.max(Number(durable.updatedAt) || 0, Date.now()) + 100,
+      }));
+
+      store.close();
+      const restored = createComposerDraftStore('fast-field-merge');
+      expect(restored.getInputDraft('new-task')).toBe('排队中的新文字');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('captures a queued attachment append in the session fast path', () => {
+    const store = createComposerDraftStore('pending-attachment-lock');
+    writeComposerInputDraft(store, 'new-task', '带附件的草稿');
+    writeComposerAttachmentDraft(store, 'new-task', [{ name: 'first.pdf', type: 'file' }]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      void appendComposerDraftAttachments(
+        store,
+        'new-task',
+        [{ name: 'queued.pdf', type: 'file' }],
+      );
+      const fast = JSON.parse(sessionStorage.getItem(
+        'catsco_composer_draft_fast:v1:pending-attachment-lock',
+      ));
+      expect(fast.pendingAttachmentMutations).toEqual([
+        expect.objectContaining({ type: 'append', key: 'new-task' }),
+      ]);
+
+      store.close();
+      const restored = createComposerDraftStore('pending-attachment-lock');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([
+        { name: 'first.pdf', type: 'file' },
+        { name: 'queued.pdf', type: 'file' },
+      ]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('rebases a queued attachment append without restoring a remote deletion', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}pending-attachment-rebase`;
+    const store = createComposerDraftStore('pending-attachment-rebase');
+    writeComposerAttachmentDraft(store, 'new-task', [{ name: 'obsolete.pdf', type: 'file' }]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      void appendComposerDraftAttachments(
+        store,
+        'new-task',
+        [{ name: 'queued.pdf', type: 'file' }],
+      );
+      const durable = JSON.parse(localStorage.getItem(key));
+      localStorage.setItem(key, JSON.stringify({
+        ...durable,
+        attachmentDrafts: [],
+        draftVersions: [['new-task', 'remote-deletion-version']],
+        updatedAt: Math.max(Number(durable.updatedAt) || 0, Date.now()) + 100,
+      }));
+
+      store.close();
+      const restored = createComposerDraftStore('pending-attachment-rebase');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([
+        { name: 'queued.pdf', type: 'file' },
+      ]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('replays a queued attachment deletion across a remote text-only edit', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}pending-removal-text-edit`;
+    const store = createComposerDraftStore('pending-removal-text-edit');
+    writeComposerInputDraft(store, 'new-task', '原始文字');
+    writeComposerAttachmentDraft(store, 'new-task', [{ name: 'delete-me.pdf', type: 'file' }]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      void removeComposerDraftAttachment(
+        store,
+        'new-task',
+        { name: 'delete-me.pdf', type: 'file' },
+      );
+      const durable = JSON.parse(localStorage.getItem(key));
+      localStorage.setItem(key, JSON.stringify({
+        ...durable,
+        inputDrafts: [['new-task', '另一上下文的新文字']],
+        draftVersions: [['new-task', 'remote-text-version']],
+        updatedAt: Math.max(Number(durable.updatedAt) || 0, Date.now()) + 100,
+      }));
+
+      store.close();
+      const restored = createComposerDraftStore('pending-removal-text-edit');
+      expect(restored.getInputDraft('new-task')).toBe('另一上下文的新文字');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('replays a queued attachment deletion when another context appends a file', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}pending-removal-remote-append`;
+    const store = createComposerDraftStore('pending-removal-remote-append');
+    const deletedAttachment = {
+      type: 'file',
+      name: 'delete-me.pdf',
+      content: { type: 'file', payload: { file_key: 'delete-me' } },
+    };
+    const addedElsewhere = {
+      type: 'file',
+      name: 'keep-me.pdf',
+      content: { type: 'file', payload: { file_key: 'keep-me' } },
+    };
+    writeComposerAttachmentDraft(store, 'new-task', [deletedAttachment]);
+    writeComposerPhoneUploadSession(store, 'new-task', { session_id: 'phone-upload' });
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      void removeComposerDraftAttachment(
+        store,
+        'new-task',
+        deletedAttachment,
+        { expectedPhoneUploadSessionId: 'phone-upload' },
+      );
+      const durable = JSON.parse(localStorage.getItem(key));
+      localStorage.setItem(key, JSON.stringify({
+        ...durable,
+        attachmentDrafts: [['new-task', [deletedAttachment, addedElsewhere]]],
+        draftVersions: [['new-task', 'remote-append-version']],
+        updatedAt: Math.max(Number(durable.updatedAt) || 0, Date.now()) + 100,
+      }));
+
+      store.close();
+      const restored = createComposerDraftStore('pending-removal-remote-append');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([addedElsewhere]);
+      expect(readComposerPhoneUploadSession(restored, 'new-task')).toEqual({
+        session_id: 'phone-upload',
+        removed_file_keys: ['delete-me'],
+      });
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('does not record a duplicate append that could revive a deleted attachment', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}duplicate-append`;
+    const store = createComposerDraftStore('duplicate-append');
+    const attachment = { name: 'already-present.pdf', type: 'file' };
+    writeComposerAttachmentDraft(store, 'new-task', [attachment]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      void appendComposerDraftAttachments(store, 'new-task', [attachment]);
+      expect(sessionStorage.getItem('catsco_composer_draft_fast:v1:duplicate-append')).toBeNull();
+
+      const durable = JSON.parse(localStorage.getItem(key));
+      localStorage.setItem(key, JSON.stringify({
+        ...durable,
+        attachmentDrafts: [],
+        draftVersions: [['new-task', 'remote-deletion-version']],
+        updatedAt: Math.max(Number(durable.updatedAt) || 0, Date.now()) + 100,
+      }));
+      store.close();
+      expect(createComposerDraftStore('duplicate-append').getAttachmentDraft('new-task')).toEqual([]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('keeps a queued attachment when its text draft has not reached durable storage', () => {
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request: () => new Promise(() => {}) },
+    });
+    try {
+      const store = createComposerDraftStore('pending-new-draft-attachment');
+      writeComposerInputDraft(store, 'new-task', '尚未落盘的新对话文字');
+      void store.persist();
+      void appendComposerDraftAttachments(
+        store,
+        'new-task',
+        [{ name: 'queued-new.pdf', type: 'file' }],
+      );
+
+      store.close();
+      const restored = createComposerDraftStore('pending-new-draft-attachment');
+      expect(restored.getInputDraft('new-task')).toBe('尚未落盘的新对话文字');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([
+        { name: 'queued-new.pdf', type: 'file' },
+      ]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('replays a later queued attachment mutation after an earlier one commits', async () => {
+    const store = createComposerDraftStore('queued-attachment-chain');
+    writeComposerAttachmentDraft(store, 'new-task', [
+      { name: 'first.pdf', type: 'file' },
+      { name: 'second.pdf', type: 'file' },
+    ]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const callbacks = [];
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: {
+        request(_name, _options, callback) {
+          return new Promise((resolve, reject) => {
+            callbacks.push(() => {
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+        },
+      },
+    });
+    try {
+      const first = removeComposerDraftAttachment(
+        store,
+        'new-task',
+        { name: 'first.pdf', type: 'file' },
+      );
+      const second = removeComposerDraftAttachment(
+        store,
+        'new-task',
+        { name: 'second.pdf', type: 'file' },
+      );
+      expect(callbacks).toHaveLength(2);
+
+      callbacks[0]();
+      await expect(first).resolves.toMatchObject({ removed: true });
+      store.close();
+
+      const restored = createComposerDraftStore('queued-attachment-chain');
+      expect(restored.getAttachmentDraft('new-task')).toEqual([]);
+      void second;
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
+  test('does not let a queued X overtake a later explicit re-add', async () => {
+    const attachment = {
+      type: 'file',
+      name: 'queued-readd.pdf',
+      content: { type: 'file', payload: { file_key: 'queued-readd' } },
+    };
+    const store = createComposerDraftStore('queued-remove-readd');
+    writeComposerAttachmentDraft(store, 'new-task', [attachment]);
+    expect(store.persist()).toBe(true);
+
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const callbacks = [];
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: {
+        request(_name, _options, callback) {
+          return new Promise((resolve, reject) => {
+            callbacks.push(() => {
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+        },
+      },
+    });
+    try {
+      const removal = removeComposerDraftAttachment(store, 'new-task', attachment);
+      expect(store.getAttachmentDraft('new-task')).toEqual([]);
+
+      const readdTokens = captureComposerDraftAttachmentRestoreTokens(store, 'new-task');
+      expect(readdTokens).toHaveLength(1);
+      const readd = appendComposerDraftAttachments(
+        store,
+        'new-task',
+        [attachment],
+        { attachmentRestoreTokens: readdTokens },
+      );
+      expect(callbacks).toHaveLength(2);
+
+      callbacks[0]();
+      await expect(removal).resolves.toBeNull();
+      callbacks[1]();
+      await expect(readd).resolves.toMatchObject({ attachments: [attachment] });
+      expect(store.getAttachmentDraft('new-task')).toEqual([attachment]);
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+    }
+  });
+
   test('serializes a late send cleanup behind a fresh context write', async () => {
     const restoreLocks = installSerializedWebLocks();
     try {
@@ -224,6 +1532,98 @@ describe('composer draft storage', () => {
         .toBe('新上下文的草稿');
     } finally {
       restoreLocks();
+    }
+  });
+
+  test('uses IndexedDB locking when Web Locks is unavailable', async () => {
+    const restoreIndexedDB = installSerializedIndexedDBLocks();
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: undefined,
+    });
+    try {
+      const tabA = createComposerDraftStore('indexeddb-lock');
+      writeComposerInputDraft(tabA, 'new-task', '发送中的旧草稿');
+      await tabA.persist();
+      const sentVersion = readComposerDraftVersion(tabA, 'new-task');
+
+      const tabB = createComposerDraftStore('indexeddb-lock');
+      writeComposerInputDraft(tabB, 'new-task', '新上下文的草稿');
+
+      const cleanup = clearComposerDraftIfVersion(tabA, 'new-task', sentVersion);
+      const freshWrite = tabB.persist();
+
+      await expect(cleanup).resolves.toBe(true);
+      await expect(freshWrite).resolves.toBe(true);
+      expect(createComposerDraftStore('indexeddb-lock').getInputDraft('new-task'))
+        .toBe('新上下文的草稿');
+    } finally {
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+      restoreIndexedDB();
+    }
+  });
+
+  test('uses the send marker when an IndexedDB lock transaction cannot start', async () => {
+    const indexedDBDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+    const webLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
+    const storageTagDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis.localStorage,
+      Symbol.toStringTag,
+    );
+    const database = {
+      transaction() {
+        const transaction = {
+          objectStore() {
+            return {
+              put() {
+                const request = {};
+                queueMicrotask(() => request.onerror?.({ target: request }));
+                return request;
+              },
+            };
+          },
+        };
+        return transaction;
+      },
+    };
+    Object.defineProperty(globalThis.navigator, 'locks', { configurable: true, value: undefined });
+    Object.defineProperty(globalThis, 'indexedDB', {
+      configurable: true,
+      value: {
+        open() {
+          const request = {};
+          queueMicrotask(() => {
+            request.result = database;
+            request.onsuccess?.({ target: request });
+          });
+          return request;
+        },
+      },
+    });
+    Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, {
+      configurable: true,
+      value: 'Storage',
+    });
+    try {
+      const store = createComposerDraftStore('failed-indexeddb-lock');
+      writeComposerInputDraft(store, 'new-task', '已经发送');
+      await expect(store.persist()).resolves.toBe(true);
+      const sentVersion = readComposerDraftVersion(store, 'new-task');
+
+      await expect(clearComposerDraftIfVersion(store, 'new-task', sentVersion)).resolves.toBe(true);
+      expect(createComposerDraftStore('failed-indexeddb-lock').getInputDraft('new-task')).toBe('');
+    } finally {
+      if (indexedDBDescriptor) Object.defineProperty(globalThis, 'indexedDB', indexedDBDescriptor);
+      else delete globalThis.indexedDB;
+      if (webLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', webLocksDescriptor);
+      else delete globalThis.navigator.locks;
+      if (storageTagDescriptor) {
+        Object.defineProperty(globalThis.localStorage, Symbol.toStringTag, storageTagDescriptor);
+      } else {
+        delete globalThis.localStorage[Symbol.toStringTag];
+      }
     }
   });
 
@@ -252,6 +1652,90 @@ describe('composer draft storage', () => {
     freshContext.persist();
     expect(createComposerDraftStore('42').getAttachmentDraft('new-task'))
       .toEqual([{ name: 'new-context.pdf', type: 'file' }]);
+  });
+
+  test('keeps a dirty fresh context when a normal remote snapshot arrives', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}normal-snapshot`;
+    const source = createComposerDraftStore('normal-snapshot');
+    writeComposerInputDraft(source, 'new-task', '旧草稿');
+    source.persist();
+
+    const freshContext = createComposerDraftStore('normal-snapshot');
+    writeComposerInputDraft(freshContext, 'new-task', '尚未落盘的新输入');
+
+    writeComposerAttachmentDraft(source, 'new-task', [{ name: 'late.pdf', type: 'file' }]);
+    source.persist();
+    const storageEvent = new Event('storage');
+    Object.defineProperties(storageEvent, {
+      key: { value: key },
+      newValue: { value: localStorage.getItem(key) },
+      storageArea: { value: localStorage },
+    });
+    window.dispatchEvent(storageEvent);
+
+    expect(freshContext.getInputDraft('new-task')).toBe('尚未落盘的新输入');
+    // The remote attachment is untouched locally, so rebasing the storage
+    // event should hide it immediately even while the text edit remains dirty.
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([{
+      name: 'late.pdf',
+      type: 'file',
+    }]);
+    freshContext.persist();
+    const verifier = createComposerDraftStore('normal-snapshot');
+    expect(verifier.getInputDraft('new-task')).toBe('尚未落盘的新输入');
+    expect(verifier.getAttachmentDraft('new-task')).toEqual([{ name: 'late.pdf', type: 'file' }]);
+  });
+
+  test('keeps a removed phone upload deleted while preserving another late attachment', () => {
+    const source = createComposerDraftStore('phone-removal');
+    const session = { session_id: 'phone-session' };
+    writeComposerPhoneUploadSession(source, 'new-task', session);
+    writeComposerAttachmentDraft(source, 'new-task', [{
+      type: 'file',
+      name: 'phone.pdf',
+      content: { type: 'file', payload: { file_key: 'phone.pdf' } },
+    }]);
+    source.persist();
+
+    const freshContext = createComposerDraftStore('phone-removal');
+    const removed = removeComposerDraftAttachment(
+      freshContext,
+      'new-task',
+      { content: { payload: { file_key: 'phone.pdf' } } },
+      { expectedPhoneUploadSessionId: 'phone-session' },
+    );
+    expect(removed?.removed).toBe(true);
+
+    const lateManualUpload = appendComposerDraftAttachments(
+      source,
+      'new-task',
+      [{
+        type: 'file',
+        name: 'late.pdf',
+        content: { type: 'file', payload: { file_key: 'late.pdf' } },
+      }],
+    );
+    expect(lateManualUpload?.appended).toHaveLength(1);
+
+    const appended = appendComposerDraftAttachments(
+      source,
+      'new-task',
+      [{
+        type: 'file',
+        name: 'phone.pdf',
+        content: { type: 'file', payload: { file_key: 'phone.pdf' } },
+      }],
+      { expectedPhoneUploadSessionId: 'phone-session' },
+    );
+    expect(appended?.appended).toEqual([]);
+
+    const verifier = createComposerDraftStore('phone-removal');
+    expect(verifier.getAttachmentDraft('new-task')).toEqual([
+      expect.objectContaining({ name: 'late.pdf' }),
+    ]);
+    expect(readComposerPhoneUploadSession(verifier, 'new-task')).toMatchObject({
+      removed_file_keys: ['phone.pdf'],
+    });
   });
 
   test('orders concurrent same-millisecond writes through the shared lock', async () => {
@@ -293,6 +1777,23 @@ describe('composer draft storage', () => {
     } finally {
       restoreLocks();
     }
+  });
+
+  test('carries an equal-valued fresh draft version through an in-process handoff', () => {
+    const source = createComposerDraftStore('handoff-version');
+    writeComposerInputDraft(source, 'new-task', '内容相同');
+    expect(source.persist()).toBe(true);
+    const sentVersion = readComposerDraftVersion(source, 'new-task');
+
+    // The value is identical, but this is a new draft made while the old send
+    // is in flight. The handoff must retain its new logical version.
+    writeComposerInputDraft(source, 'new-task', '内容相同');
+    source.deactivate();
+    const replacement = createComposerDraftStore('handoff-version');
+
+    expect(readComposerDraftVersion(replacement, 'new-task')).not.toBe(sentVersion);
+    expect(clearComposerDraftIfVersion(source, 'new-task', sentVersion)).toBe(false);
+    expect(replacement.getInputDraft('new-task')).toBe('内容相同');
   });
 
   test('notifies an already-open fresh context when the mirrored draft changes', () => {
@@ -390,9 +1891,10 @@ describe('composer draft storage', () => {
     logoutDuringRead = true;
     staleStore.persist();
 
-    // The stale writer can still leave a physical snapshot behind, but its
-    // pre-logout fence metadata must prevent a new store from hydrating it.
-    expect(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).not.toBeNull();
+    // The logout fence is checked before the compatibility snapshot write, so
+    // an in-flight stale writer cannot leave an inaccessible physical copy
+    // behind either.
+    expect(tabAStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}42`)).toBeNull();
     expect(createComposerDraftStore('42', tabAStorage).getInputDraft('new-task')).toBe('');
   });
 
