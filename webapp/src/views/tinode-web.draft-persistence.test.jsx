@@ -311,6 +311,58 @@ test('restores a new-task draft after selecting an Agent, leaving, and starting 
     .toBe('draft after selecting an Agent');
 });
 
+test('clears a sent new-task draft after returning from SkillHub during the request', async () => {
+  mocks.agents = [{ uid: 7, display_name: '测试 Agent', username: 'test-agent' }];
+  mocks.createGroup.mockResolvedValue({
+    group: { id: 77, name: '待发送任务' },
+    topic: 'grp_77',
+  });
+  let resolveSend;
+  mocks.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+    resolveSend = resolve;
+  }));
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  const textarea = container.querySelector('textarea.v3-composer-input');
+  await act(async () => {
+    textarea.value = '发送期间切换 SkillHub';
+    Simulate.change(textarea, { target: { value: textarea.value } });
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click(container.querySelector('button[aria-label="发送"]'));
+    await Promise.resolve();
+  });
+  await vi.waitFor(() => expect(mocks.sendMessage).toHaveBeenCalledTimes(1));
+
+  await act(async () => {
+    Simulate.click(container.querySelector('[aria-label="打开 SkillHub"]'));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    Simulate.click([...container.querySelectorAll('button')]
+      .find((button) => button.textContent === '选择 Agent 返回新任务'));
+    await Promise.resolve();
+  });
+
+  await act(async () => {
+    resolveSend({ seq_id: 177 });
+    await Promise.resolve();
+  });
+
+  expect(localStorage.getItem('catsco_composer_drafts:v1:1')).toBeNull();
+  expect(sessionStorage.getItem('catsco_composer_drafts:v1:1')).toBeNull();
+});
+
 test('restores a new-task draft under the production StrictMode lifecycle', async () => {
   await act(async () => {
     renderStrictWorkspace();

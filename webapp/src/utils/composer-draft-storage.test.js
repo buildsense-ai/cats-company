@@ -9,7 +9,10 @@ import {
   readComposerPhoneUploadSession,
   readComposerDraftMutationRevision,
   readComposerDraftRevision,
+  readComposerDraftVersion,
+  clearComposerDraftIfVersion,
   subscribeComposerDraftStore,
+  writeComposerAttachmentDraft,
   writeComposerPhoneUploadSession,
   writeComposerInputDraft,
   writeComposerTaskContextDraft,
@@ -153,6 +156,60 @@ describe('composer draft storage', () => {
     expect(sessionStorage.getItem(key)).toBeNull();
     expect(localStorage.getItem(key)).toBeNull();
     expect(createComposerDraftStore('42').getInputDraft('new-task')).toBe('');
+  });
+
+  test('does not let an old send clear an equal-valued draft rewritten in a fresh context', () => {
+    const sharedValues = new Map();
+    const tabAStorage = sharedStorage(sharedValues);
+    const tabBStorage = sharedStorage(sharedValues);
+    const verifierStorage = sharedStorage(sharedValues);
+    const tabA = createComposerDraftStore('42', tabAStorage);
+
+    writeComposerInputDraft(tabA, 'new-task', '同一段草稿');
+    tabA.persist();
+    const sentVersion = readComposerDraftVersion(tabA, 'new-task');
+
+    const tabB = createComposerDraftStore('42', tabBStorage);
+    writeComposerInputDraft(tabB, 'new-task', '同一段草稿');
+    tabB.persist();
+
+    // This models the late success callback from tab A. It only knows its own
+    // in-memory revision, so the conditional clear must reject tab B's newer
+    // equal-valued snapshot instead of treating the deletion as the winner.
+    expect(clearComposerDraftIfVersion(tabA, 'new-task', sentVersion)).toBe(false);
+
+    expect(createComposerDraftStore('42', verifierStorage).getInputDraft('new-task'))
+      .toBe('同一段草稿');
+  });
+
+  test('notifies an already-open fresh context when the mirrored draft changes', () => {
+    const key = `${COMPOSER_DRAFT_STORAGE_PREFIX}42`;
+    const source = createComposerDraftStore('42');
+    writeComposerInputDraft(source, 'new-task', '上传尚未完成');
+    source.persist();
+
+    const freshContext = createComposerDraftStore('42');
+    const changes = [];
+    const unsubscribe = subscribeComposerDraftStore(freshContext, (change) => changes.push(change));
+
+    writeComposerAttachmentDraft(source, 'new-task', [{ name: 'late.pdf', type: 'file' }]);
+    source.persist();
+
+    const storageEvent = new Event('storage');
+    Object.defineProperties(storageEvent, {
+      key: { value: key },
+      newValue: { value: localStorage.getItem(key) },
+      storageArea: { value: localStorage },
+    });
+    window.dispatchEvent(storageEvent);
+
+    expect(freshContext.getAttachmentDraft('new-task'))
+      .toEqual([{ name: 'late.pdf', type: 'file' }]);
+    expect(changes).toContainEqual(expect.objectContaining({ key: 'new-task' }));
+
+    unsubscribe();
+    source.close();
+    freshContext.close();
   });
 
   test('fences a stale context after logout clears the shared storage', () => {

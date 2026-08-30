@@ -6,10 +6,12 @@ import {
   invalidateComposerDraftRevision,
   isComposerDraftRevisionCurrent,
   NEW_TASK_DRAFT_KEY,
+  clearComposerDraftIfVersion,
   persistComposerDraftStore,
   readComposerAttachmentDraft,
   readComposerDraftRevision,
   readComposerDraftMutationRevision,
+  readComposerDraftVersion,
   readComposerInputDraft,
   readComposerPhoneUploadSession,
   writeComposerTaskContextDraft,
@@ -141,6 +143,7 @@ export default function EmptyTaskComposer({
     expectedMutationRevision = null,
     expectedInput,
     expectedAttachments,
+    expectedDraftVersion = '',
   ) => {
     // A newer composer may have written the same draft key while this send was
     // in flight. In that case only invalidate the old callbacks; never clear
@@ -163,6 +166,21 @@ export default function EmptyTaskComposer({
         : pendingAttachmentsRef.current)
         !== JSON.stringify(expectedAttachments)
     ) return false;
+
+    const durablyCleared = clearComposerDraftIfVersion(
+      composerDraftStore,
+      normalizedDraftKey,
+      expectedDraftVersion,
+    );
+    if (durablyCleared !== null) {
+      if (!durablyCleared) return false;
+      invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
+      inputValueRef.current = '';
+      pendingAttachmentsRef.current = [];
+      phoneUploadSessionRef.current = null;
+      if (mountedRef.current) setPhoneUploadSession(null);
+      return true;
+    }
 
     // Invalidate callbacks from an older composer before removing the draft.
     invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
@@ -679,6 +697,7 @@ export default function EmptyTaskComposer({
         revisionStore,
         normalizedDraftKey,
       );
+      const sentDraftVersion = readComposerDraftVersion(composerDraftStore, normalizedDraftKey);
 
       const contentBlocks = buildAtomicContentBlocks(text, attachments);
       const displayContent = text || summarizeAttachments(attachments);
@@ -703,6 +722,7 @@ export default function EmptyTaskComposer({
         sentDraftMutationRevision,
         sentDraftInput,
         attachments,
+        sentDraftVersion,
       );
       if (!mountedRef.current) return;
       if (draftCleared) {

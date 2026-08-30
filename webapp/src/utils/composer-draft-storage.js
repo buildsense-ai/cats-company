@@ -10,6 +10,7 @@ export const NEW_TASK_DRAFT_KEY = 'new-task';
 const COMPOSER_DRAFT_STATE_STORAGE_PREFIX = 'catsco_composer_draft_state:v1:';
 const COMPOSER_DRAFT_LOGOUT_STORAGE_KEY = 'catsco_composer_draft_logout:v1';
 const COMPOSER_DRAFT_CLEAR_REASON_LOGOUT = 'logout';
+const COMPOSER_DRAFT_VERSION_MAP_NAME = 'draftVersions';
 
 // Async upload callbacks can outlive the composer that created them. Keep a
 // process-local revision per store/key so a sent or explicitly replaced draft
@@ -18,6 +19,7 @@ const draftRevisionStores = new WeakMap();
 const draftMutationStores = new WeakMap();
 const draftStoreRegistries = new Map();
 const objectDraftStoreRegistries = new WeakMap();
+let draftVersionSequence = 0;
 
 // A SkillHub handoff can resume the workspace in a new document or tab. Keep
 // sessionStorage as the fast, tab-scoped copy and mirror it to localStorage so
@@ -236,6 +238,17 @@ function draftEntries(entries, normalizeValue) {
   });
 }
 
+function normalizeDraftVersion(value) {
+  return typeof value === 'string' && value ? value : null;
+}
+
+function nextDraftVersion() {
+  draftVersionSequence += 1;
+  const randomPart = globalThis.crypto?.randomUUID?.()
+    || Math.random().toString(36).slice(2);
+  return `${Date.now().toString(36)}:${draftVersionSequence.toString(36)}:${randomPart}`;
+}
+
 function draftMapsFromSnapshot(snapshot = {}) {
   const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
   return Object.fromEntries(Object.entries(draftFieldDefinitions).map(([kind, definition]) => [
@@ -244,11 +257,34 @@ function draftMapsFromSnapshot(snapshot = {}) {
   ]));
 }
 
-function draftSnapshotFromMaps(draftMaps = {}) {
-  return Object.fromEntries(Object.entries(draftFieldDefinitions).map(([kind, definition]) => [
+function draftKeysFromMaps(draftMaps = {}) {
+  return new Set(Object.values(draftMaps).flatMap((map) => [...(map?.keys?.() || [])]));
+}
+
+function draftVersionsFromSnapshot(snapshot = {}, draftMaps = draftMapsFromSnapshot(snapshot)) {
+  const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const versions = new Map(draftEntries(
+    source[COMPOSER_DRAFT_VERSION_MAP_NAME],
+    normalizeDraftVersion,
+  ));
+  const legacyPrefix = `legacy:${normalizedUpdatedAt(source.updatedAt)}`;
+  draftKeysFromMaps(draftMaps).forEach((key) => {
+    if (!versions.has(key)) versions.set(key, `${legacyPrefix}:${key}`);
+  });
+  return versions;
+}
+
+function draftSnapshotFromMaps(draftMaps = {}, draftVersions = null) {
+  const snapshot = Object.fromEntries(Object.entries(draftFieldDefinitions).map(([kind, definition]) => [
     definition.mapName,
     [...(draftMaps[kind] || [])],
   ]));
+  if (draftVersions) {
+    const liveKeys = draftKeysFromMaps(draftMaps);
+    snapshot[COMPOSER_DRAFT_VERSION_MAP_NAME] = [...draftVersions]
+      .filter(([key]) => liveKeys.has(key));
+  }
+  return snapshot;
 }
 
 function draftValueEqual(left, right) {
@@ -272,6 +308,20 @@ function draftMapsEqual(leftMaps = {}, rightMaps = {}) {
   });
 }
 
+function draftVersionsEqual(leftVersions = new Map(), rightVersions = new Map()) {
+  const keys = new Set([...leftVersions.keys(), ...rightVersions.keys()]);
+  return [...keys].every((key) => leftVersions.get(key) === rightVersions.get(key));
+}
+
+function draftKeyChanged(localMaps, baselineMaps, key) {
+  return Object.keys(draftFieldDefinitions).some((kind) => {
+    const local = localMaps[kind] || new Map();
+    const baseline = baselineMaps[kind] || new Map();
+    return local.has(key) !== baseline.has(key)
+      || (local.has(key) && !draftValueEqual(local.get(key), baseline.get(key)));
+  });
+}
+
 // Apply local changes made since the last accepted snapshot on top of a
 // newer snapshot from another browsing context. Untouched keys take the
 // remote value; changed keys (including local deletions) take the local value.
@@ -292,6 +342,40 @@ function mergeDraftMaps(localMaps, baselineMaps, latestMaps) {
 
     return [kind, merged];
   }));
+}
+
+function mergeDraftVersions(
+  localMaps,
+  baselineMaps,
+  mergedMaps,
+  localVersions,
+  baselineVersions,
+  latestVersions,
+) {
+  const merged = new Map(latestVersions);
+  const keys = new Set([
+    ...draftKeysFromMaps(localMaps),
+    ...draftKeysFromMaps(baselineMaps),
+    ...draftKeysFromMaps(mergedMaps),
+    ...localVersions.keys(),
+    ...baselineVersions.keys(),
+    ...latestVersions.keys(),
+  ]);
+  keys.forEach((key) => {
+    const locallyChanged = draftKeyChanged(localMaps, baselineMaps, key)
+      || localVersions.get(key) !== baselineVersions.get(key);
+    if (!locallyChanged) return;
+    if (draftKeysFromMaps(mergedMaps).has(key)) {
+      merged.set(key, localVersions.get(key) || nextDraftVersion());
+    } else {
+      merged.delete(key);
+    }
+  });
+  const liveKeys = draftKeysFromMaps(mergedMaps);
+  [...merged.keys()].forEach((key) => {
+    if (!liveKeys.has(key)) merged.delete(key);
+  });
+  return merged;
 }
 
 function normalizedUpdatedAt(value) {
@@ -477,7 +561,8 @@ function writeComposerDraftField(store, kind, key, value) {
   if (!definition) return;
   const setter = store?.[definition.setter];
   if (typeof setter === 'function') {
-    setter.call(store, key, value);
+    const result = setter.call(store, key, value);
+    if (result === false || result === '') return;
     markComposerDraftMutation(store, key);
     return;
   }
@@ -576,6 +661,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   }
   const snapshot = snapshotRecord.snapshot;
   const draftMaps = draftMapsFromSnapshot(snapshot);
+  const draftVersions = draftVersionsFromSnapshot(snapshot, draftMaps);
   const inputDrafts = draftMaps.input;
   const structuredMentionDrafts = draftMaps.mention;
   const attachmentDrafts = draftMaps.attachment;
@@ -587,8 +673,9 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   let logoutFenced = false;
   let logoutFenceAt = logoutFence.updatedAt;
   let persistedUpdatedAt = Math.max(snapshotRecord.updatedAt, logoutFence.updatedAt);
-  let persistedSnapshot = draftSnapshotFromMaps(draftMaps);
+  let persistedSnapshot = draftSnapshotFromMaps(draftMaps, draftVersions);
   const listeners = new Set();
+  let storageListener = null;
 
   const close = () => {
     active = false;
@@ -599,7 +686,10 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     attachmentDrafts.clear();
     phoneUploadSessions.clear();
     taskContextDrafts.clear();
+    draftVersions.clear();
     listeners.clear();
+    if (storageListener) window.removeEventListener('storage', storageListener);
+    storageListener = null;
     if (registry?.get(storageKey) === draftStore) registry.delete(storageKey);
   };
 
@@ -616,14 +706,19 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
 
   const replaceDraftMaps = (nextSnapshot = {}) => {
     const nextMaps = draftMapsFromSnapshot(nextSnapshot);
+    const nextVersions = draftVersionsFromSnapshot(nextSnapshot, nextMaps);
     const changedKeys = new Set([
       ...Object.values(draftMaps).flatMap((map) => [...map.keys()]),
       ...Object.values(nextMaps).flatMap((map) => [...map.keys()]),
+      ...draftVersions.keys(),
+      ...nextVersions.keys(),
     ]);
     Object.entries(draftMaps).forEach(([kind, map]) => {
       map.clear();
       nextMaps[kind].forEach((value, key) => map.set(key, value));
     });
+    draftVersions.clear();
+    nextVersions.forEach((value, key) => draftVersions.set(key, value));
     changedKeys.forEach(notify);
   };
 
@@ -631,10 +726,47 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     const knownKeys = new Set([
       ...Object.values(draftMaps).flatMap((map) => [...map.keys()]),
       ...Object.values(draftMapsFromSnapshot(persistedSnapshot)).flatMap((map) => [...map.keys()]),
+      ...draftVersions.keys(),
       ...(draftRevisionStores.get(draftStore)?.keys?.() || []),
       ...(draftMutationStores.get(draftStore)?.keys?.() || []),
     ]);
     knownKeys.forEach((key) => invalidateComposerDraftRevision(draftStore, key));
+  };
+
+  const applyLatestSnapshot = (latest) => {
+    if (latest.cleared) {
+      invalidateKnownDraftRevisions();
+      replaceDraftMaps({});
+      persistedSnapshot = draftSnapshotFromMaps({}, new Map());
+      persistedUpdatedAt = latest.updatedAt;
+      logoutFenced = latest.clearReason === COMPOSER_DRAFT_CLEAR_REASON_LOGOUT;
+      if (logoutFenced) logoutFenceAt = Math.max(logoutFenceAt, latest.updatedAt);
+      return false;
+    }
+
+    const latestMaps = draftMapsFromSnapshot(latest.snapshot);
+    const latestVersions = draftVersionsFromSnapshot(latest.snapshot, latestMaps);
+    const latestSnapshot = draftSnapshotFromMaps(latestMaps, latestVersions);
+    replaceDraftMaps(latestSnapshot);
+    persistedSnapshot = latestSnapshot;
+    persistedUpdatedAt = latest.updatedAt;
+    return true;
+  };
+
+  const synchronizeFromStorage = () => {
+    if (closed || logoutFenced || handoffTarget || !storageKey) return;
+    const latestLogoutFence = readLogoutFence(storage);
+    if (latestLogoutFence.updatedAt > logoutFenceAt) {
+      invalidateKnownDraftRevisions();
+      logoutFenced = true;
+      logoutFenceAt = latestLogoutFence.updatedAt;
+      replaceDraftMaps({});
+      persistedSnapshot = draftSnapshotFromMaps({}, new Map());
+      persistedUpdatedAt = latestLogoutFence.updatedAt;
+      return;
+    }
+    const latest = readDraftSnapshots(storageKey, storage, latestLogoutFence.updatedAt);
+    if (latest.updatedAt > persistedUpdatedAt) applyLatestSnapshot(latest);
   };
 
   const getDraftField = (kind, key) => {
@@ -651,16 +783,19 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
 
   const setDraftField = (kind, key, value) => {
     const definition = draftFieldDefinitions[kind];
-    if (!definition) return;
-    if (logoutFenced) return;
+    if (!definition) return '';
+    if (logoutFenced) return '';
     if (handoffTarget) {
       const setter = handoffTarget[definition.setter];
-      if (typeof setter === 'function') setter.call(handoffTarget, key, value);
-      return;
+      return typeof setter === 'function' ? setter.call(handoffTarget, key, value) : '';
     }
-    if (closed) return;
+    if (closed) return '';
     const normalizedKey = writeDraftFieldToMap(draftMaps, kind, key, value);
-    if (normalizedKey) notify(normalizedKey);
+    if (normalizedKey) {
+      draftVersions.set(normalizedKey, nextDraftVersion());
+      notify(normalizedKey);
+    }
+    return normalizedKey;
   };
 
   const draftStore = {
@@ -673,93 +808,118 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       return getDraftField('input', key);
     },
     setInputDraft(key, value) {
-      setDraftField('input', key, value);
+      return setDraftField('input', key, value);
     },
     getStructuredMentionDraft(key) {
       return getDraftField('mention', key);
     },
     setStructuredMentionDraft(key, value) {
-      setDraftField('mention', key, value);
+      return setDraftField('mention', key, value);
     },
     getAttachmentDraft(key) {
       return getDraftField('attachment', key);
     },
     setAttachmentDraft(key, value) {
-      setDraftField('attachment', key, value);
+      return setDraftField('attachment', key, value);
     },
     getPhoneUploadSession(key) {
       return getDraftField('phoneUpload', key);
     },
     setPhoneUploadSession(key, value) {
-      setDraftField('phoneUpload', key, value);
+      return setDraftField('phoneUpload', key, value);
     },
     getTaskContextDraft(key) {
       return getDraftField('taskContext', key);
     },
     setTaskContextDraft(key, value) {
-      setDraftField('taskContext', key, value);
+      return setDraftField('taskContext', key, value);
     },
-    persist() {
-      if (logoutFenced) return;
-      if (handoffTarget) {
-        handoffTarget.persist();
-        return;
-      }
+    getDraftVersion(key) {
+      const normalizedKey = normalizeDraftKey(key);
+      if (!normalizedKey) return '';
+      if (handoffTarget) return handoffTarget.getDraftVersion?.(normalizedKey) || '';
+      return draftVersions.get(normalizedKey) || '';
+    },
+    persist({ expectedDraftVersions = null } = {}) {
+      if (logoutFenced) return false;
+      if (handoffTarget) return handoffTarget.persist({ expectedDraftVersions });
       // A composer can finish an upload after its workspace has unmounted.
       // Keep inactive stores writable until logout closes them so a replacement
       // store can hydrate the late result from either persisted storage copy.
-      if (closed || logoutFenced || !storageKey) return;
+      if (closed || logoutFenced || !storageKey) return false;
       const latestLogoutFence = readLogoutFence(storage);
       const latest = readDraftSnapshots(storageKey, storage, latestLogoutFence.updatedAt);
-      // Storage events are not delivered to the context that performed the
-      // write. Re-read before every write so a stale tab cannot overwrite a
-      // newer draft (including a cross-tab deletion tombstone).
-      let mapsToPersist = draftMaps;
       if (latestLogoutFence.updatedAt > logoutFenceAt) {
         invalidateKnownDraftRevisions();
         logoutFenced = true;
         logoutFenceAt = latestLogoutFence.updatedAt;
         replaceDraftMaps({});
-        persistedSnapshot = draftSnapshotFromMaps({});
+        persistedSnapshot = draftSnapshotFromMaps({}, new Map());
         persistedUpdatedAt = latestLogoutFence.updatedAt;
-        return;
+        return false;
       }
+
+      const expectedVersions = expectedDraftVersions instanceof Map
+        ? expectedDraftVersions
+        : null;
+      if (expectedVersions?.size) {
+        const latestMaps = draftMapsFromSnapshot(latest.snapshot);
+        const latestVersions = draftVersionsFromSnapshot(latest.snapshot, latestMaps);
+        const expectedStillCurrent = !latest.cleared
+          && [...expectedVersions].every(([key, version]) => latestVersions.get(key) === version);
+        if (!expectedStillCurrent) {
+          applyLatestSnapshot(latest);
+          return false;
+        }
+      }
+
+      // Storage events are not delivered to the context that performed the
+      // write. Re-read before every write so a stale tab cannot overwrite a
+      // newer draft (including a cross-tab deletion tombstone).
+      let mapsToPersist = draftMaps;
+      let versionsToPersist = draftVersions;
       if (latest.updatedAt > persistedUpdatedAt) {
         if (latest.cleared) {
-          invalidateKnownDraftRevisions();
-          replaceDraftMaps({});
-          persistedSnapshot = draftSnapshotFromMaps({});
-          persistedUpdatedAt = latest.updatedAt;
-          logoutFenced = latest.clearReason === COMPOSER_DRAFT_CLEAR_REASON_LOGOUT;
-          if (logoutFenced) logoutFenceAt = Math.max(logoutFenceAt, latest.updatedAt);
-          return;
+          applyLatestSnapshot(latest);
+          return false;
         }
-        const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps));
+        const localMaps = draftMapsFromSnapshot(draftSnapshotFromMaps(draftMaps, draftVersions));
+        const localVersions = new Map(draftVersions);
         const baselineMaps = draftMapsFromSnapshot(persistedSnapshot);
+        const baselineVersions = draftVersionsFromSnapshot(persistedSnapshot, baselineMaps);
         const latestMaps = draftMapsFromSnapshot(latest.snapshot);
+        const latestVersions = draftVersionsFromSnapshot(latest.snapshot, latestMaps);
         const mergedMaps = mergeDraftMaps(localMaps, baselineMaps, latestMaps);
+        const mergedVersions = mergeDraftVersions(
+          localMaps,
+          baselineMaps,
+          mergedMaps,
+          localVersions,
+          baselineVersions,
+          latestVersions,
+        );
 
         // No local changes are pending. Accept the newer snapshot without
         // writing it back, preserving deletion tombstones and newer values.
-        if (draftMapsEqual(mergedMaps, latestMaps)) {
-          replaceDraftMaps(draftSnapshotFromMaps(mergedMaps));
-          persistedSnapshot = draftSnapshotFromMaps(mergedMaps);
-          persistedUpdatedAt = latest.updatedAt;
-          return;
+        if (draftMapsEqual(mergedMaps, latestMaps)
+          && draftVersionsEqual(mergedVersions, latestVersions)) {
+          applyLatestSnapshot(latest);
+          return true;
         }
 
         // Local changes made since the baseline win for their keys while
         // untouched keys from the newer browsing context remain intact.
-        replaceDraftMaps(draftSnapshotFromMaps(mergedMaps));
+        replaceDraftMaps(draftSnapshotFromMaps(mergedMaps, mergedVersions));
         // The remote snapshot is now the baseline for any retry. Otherwise
         // untouched remote keys would look like local edits if this write
         // fails and a later snapshot arrives.
-        persistedSnapshot = draftSnapshotFromMaps(latestMaps);
+        persistedSnapshot = draftSnapshotFromMaps(latestMaps, latestVersions);
         persistedUpdatedAt = latest.updatedAt;
         mapsToPersist = mergedMaps;
+        versionsToPersist = mergedVersions;
       }
       const updatedAt = nextDraftUpdatedAt(persistedUpdatedAt, latest.updatedAt);
-      const snapshotToPersist = draftSnapshotFromMaps(mapsToPersist);
+      const snapshotToPersist = draftSnapshotFromMaps(mapsToPersist, versionsToPersist);
       const hasDraft = Object.values(mapsToPersist).some((map) => map.size > 0);
       if (!hasDraft) {
         const stateWritten = writeStorageTargets(
@@ -769,10 +929,11 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
         );
         removeStorageTargets(storageKey, storage);
         if (stateWritten) {
-          persistedSnapshot = draftSnapshotFromMaps({});
+          draftVersions.clear();
+          persistedSnapshot = draftSnapshotFromMaps({}, new Map());
           persistedUpdatedAt = updatedAt;
         }
-        return;
+        return stateWritten;
       }
       try {
         const serialized = JSON.stringify({
@@ -789,10 +950,31 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
         if (draftWritten || stateWritten) {
           persistedSnapshot = snapshotToPersist;
           persistedUpdatedAt = updatedAt;
+          return true;
         }
       } catch {
         // Keep the in-memory draft when a browser cannot serialize or store it.
       }
+      return false;
+    },
+    clearDraftIfVersion(key, expectedVersion) {
+      const normalizedKey = normalizeDraftKey(key);
+      if (!normalizedKey || !expectedVersion || logoutFenced || closed) return false;
+      if (handoffTarget) {
+        return handoffTarget.clearDraftIfVersion?.(normalizedKey, expectedVersion) || false;
+      }
+      let changed = false;
+      Object.values(draftMaps).forEach((map) => {
+        if (map.delete(normalizedKey)) changed = true;
+      });
+      draftVersions.delete(normalizedKey);
+      if (changed) {
+        markComposerDraftMutation(draftStore, normalizedKey);
+        notify(normalizedKey);
+      }
+      return draftStore.persist({
+        expectedDraftVersions: new Map([[normalizedKey, expectedVersion]]),
+      });
     },
     deactivate() {
       active = false;
@@ -848,6 +1030,21 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     },
   };
 
+  if (
+    storageKey
+    && typeof storage === 'string'
+    && (storage === 'sessionStorage' || storage === 'localStorage')
+    && typeof window !== 'undefined'
+  ) {
+    storageListener = (event) => {
+      if (event?.key && event.key !== storageKey
+        && event.key !== stateStorageKey
+        && event.key !== COMPOSER_DRAFT_LOGOUT_STORAGE_KEY) return;
+      synchronizeFromStorage();
+    };
+    window.addEventListener('storage', storageListener);
+  }
+
   if (previousStore?.canHandoff?.()) previousStore.handoffTo(draftStore);
   registry?.set(storageKey, draftStore);
 
@@ -896,6 +1093,22 @@ export function writeComposerAttachmentDraft(store, key, value) {
 
 export function persistComposerDraftStore(store) {
   store?.persist?.();
+}
+
+// This version is durable for real composer stores, unlike the callback and
+// mutation counters below. A send completion can therefore distinguish a
+// fresh document's replacement draft even when its text is identical.
+export function readComposerDraftVersion(store, key) {
+  const normalizedKey = normalizeDraftKey(key);
+  if (!normalizedKey) return '';
+  return store?.getDraftVersion?.(normalizedKey) || '';
+}
+
+// `null` means a legacy/in-memory store does not implement durable conditional
+// clearing; callers retain their existing local race guard for that seam.
+export function clearComposerDraftIfVersion(store, key, expectedVersion) {
+  if (!expectedVersion || typeof store?.clearDraftIfVersion !== 'function') return null;
+  return store.clearDraftIfVersion(key, expectedVersion);
 }
 
 export function readComposerDraftRevision(store, key) {

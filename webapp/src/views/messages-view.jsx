@@ -18,8 +18,10 @@ import {
   isComposerDraftRevisionCurrent,
   persistComposerDraftStore as persistComposerDraftStoreValue,
   readComposerAttachmentDraft,
+  clearComposerDraftIfVersion,
   readComposerDraftMutationRevision,
   readComposerDraftRevision,
+  readComposerDraftVersion,
   readComposerInputDraft,
   readComposerMentionDraft,
   readComposerPhoneUploadSession,
@@ -2140,17 +2142,14 @@ export default function MessagesView({
     let topicToActivate = null;
     let switchesTopic = false;
     let stateCleared = false;
-    let sendClearMutationRevision = null;
+    let snapshotMutationRevision = null;
+    let snapshotDraftVersion = '';
     let messageSent = false;
     let optimisticMessageAdded = false;
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
     const originalStructuredMentions = readComposerMentionDraft(composerDraftStoreRef.current, topic);
-    const originalPhoneUploadSession = readComposerPhoneUploadSession(
-      composerDraftStoreRef.current,
-      topic,
-    );
     const protocolText = isGroup
       ? canonicalizeStructuredMentionText(originalInput, originalStructuredMentions).trim()
       : text;
@@ -2172,10 +2171,11 @@ export default function MessagesView({
         setAwaitingAgentReply(false);
         return;
       }
-      const snapshotMutationRevision = readComposerDraftMutationRevision(
+      snapshotMutationRevision = readComposerDraftMutationRevision(
         composerDraftStoreRef.current,
         topic,
       );
+      snapshotDraftVersion = readComposerDraftVersion(composerDraftStoreRef.current, topic);
 
       // Phone polling above is part of message preparation. Invalidate the
       // callback generation only after its final read so a file that arrived
@@ -2210,19 +2210,10 @@ export default function MessagesView({
           !== snapshotMutationRevision
       );
       if (!draftChangedBeforeClear) {
-        // Close the generation again immediately before clearing. This also
-        // rejects callbacks that started after the send began but still belong
-        // to the draft being consumed.
+        // Close the generation before sending, but retain the persisted draft
+        // until success. A fresh browsing context can then keep a replacement
+        // draft without a failed send restoring over it.
         invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
-        updateComposerDraft(topic, '');
-        updateStructuredMentionDraft(topic, []);
-        updateAttachmentDraft(topic, []);
-        writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
-        persistComposerDraftStore();
-        sendClearMutationRevision = readComposerDraftMutationRevision(
-          composerDraftStoreRef.current,
-          topic,
-        );
         stateCleared = true;
       }
       if (activeTopicRef.current === topic) {
@@ -2260,6 +2251,31 @@ export default function MessagesView({
         ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
         : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
+      if (stateCleared) {
+        const durablyCleared = clearComposerDraftIfVersion(
+          composerDraftStoreRef.current,
+          topic,
+          snapshotDraftVersion,
+        );
+        if (durablyCleared === null) {
+          const draftStillMatchesSend = (
+            readComposerInputDraft(composerDraftStoreRef.current, topic) === originalInput
+            && JSON.stringify(readComposerMentionDraft(composerDraftStoreRef.current, topic))
+              === JSON.stringify(originalStructuredMentions)
+            && JSON.stringify(readComposerAttachmentDraft(composerDraftStoreRef.current, topic))
+              === JSON.stringify(attachmentsToSend)
+            && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+              === snapshotMutationRevision
+          );
+          if (draftStillMatchesSend) {
+            updateComposerDraft(topic, '');
+            updateStructuredMentionDraft(topic, []);
+            updateAttachmentDraft(topic, []);
+            writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
+            persistComposerDraftStore();
+          }
+        }
+      }
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
           await onActivateTopic?.(topicToActivate);
@@ -2282,30 +2298,25 @@ export default function MessagesView({
       setAwaitingAgentReply(false);
 
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
-      const draftHasChangesAfterClear = (
-        readComposerInputDraft(composerDraftStoreRef.current, topic) !== ''
-        || readComposerMentionDraft(composerDraftStoreRef.current, topic).length > 0
-        || readComposerAttachmentDraft(composerDraftStoreRef.current, topic).length > 0
-      );
-      if (
-        stateCleared
-        && !draftHasChangesAfterClear
-        && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
-          === sendClearMutationRevision
-      ) {
-        updateComposerDraft(topic, originalInput);
-        updateStructuredMentionDraft(topic, originalStructuredMentions);
-        updateAttachmentDraft(topic, attachmentsToSend);
-        writeComposerPhoneUploadSession(
-          composerDraftStoreRef.current,
-          topic,
-          originalPhoneUploadSession,
-        );
-        persistComposerDraftStore();
-      }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
-          setInput(originalInput);
+          // The persistent draft was intentionally left in place until send
+          // success, so a failed request needs only restore the visible state.
+          const restoredInput = readComposerInputDraft(composerDraftStoreRef.current, topic);
+          const restoredAttachments = readComposerAttachmentDraft(
+            composerDraftStoreRef.current,
+            topic,
+          );
+          const restoredPhoneUploadSession = readComposerPhoneUploadSession(
+            composerDraftStoreRef.current,
+            topic,
+          );
+          setInput(restoredInput || originalInput);
+          pendingAttachmentsRef.current = restoredAttachments;
+          setPendingAttachments(restoredAttachments);
+          phoneUploadSessionRef.current = restoredPhoneUploadSession;
+          phoneUploadTopicRef.current = restoredPhoneUploadSession ? topic : '';
+          setPhoneUploadSession(restoredPhoneUploadSession);
           setReplyTo(originalReplyTo);
         }
         setAttachmentStatus({

@@ -1264,6 +1264,39 @@ describe('MessagesView composer draft isolation', () => {
     expect(replacementStore.getInputDraft('p2p_1_2')).toBe('failed send should return');
   });
 
+  it('does not restore an old failed send over a newer fresh-context draft', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const sourceStore = createComposerDraftStore('cross-context-failed-send');
+    writeComposerInputDraft(sourceStore, 'p2p_1_2', '旧页面发送失败的内容');
+    sourceStore.persist();
+    const failedSend = deferred();
+    api.sendMessage.mockReturnValueOnce(failedSend.promise);
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore: sourceStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    const freshStore = createComposerDraftStore('cross-context-failed-send');
+    writeComposerInputDraft(freshStore, 'p2p_1_2', '新页面继续编辑的内容');
+    freshStore.persist();
+
+    await act(async () => {
+      failedSend.reject(new Error('send failed'));
+      await flushPromises();
+    });
+
+    const verifier = createComposerDraftStore('cross-context-failed-send');
+    expect(verifier.getInputDraft('p2p_1_2')).toBe('新页面继续编辑的内容');
+
+    sourceStore.close();
+    freshStore.close();
+    verifier.close();
+  });
+
   it('does not clear a newer draft written before an old send reaches its clear step', async () => {
     const inputDrafts = new Map();
     const composerDraftStore = {

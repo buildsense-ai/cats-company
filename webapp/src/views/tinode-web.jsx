@@ -228,6 +228,18 @@ function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
+function taskDraftAgentIdentity(agent) {
+  const identity = agent?.uid ?? agent?.id;
+  return identity === undefined || identity === null ? '' : String(identity);
+}
+
+function matchesPersistedTaskContext(context, agent, projectId, projectName) {
+  return Boolean(context)
+    && taskDraftAgentIdentity(context.agent) === taskDraftAgentIdentity(agent)
+    && Number(context.projectId || 0) === Number(projectId || 0)
+    && String(context.projectName || '') === String(projectName || '');
+}
+
 export function resetComposerDraftStore(draftStoreRef) {
   draftStoreRef.current?.deactivate?.();
   const nextStore = createComposerDraftStore();
@@ -1171,12 +1183,18 @@ function TinodeWebApp({ location }) {
       projectId: projectId > 0 ? projectId : 0,
       projectName,
     });
-    writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, {
-      agent,
-      projectId,
-      projectName,
-    });
-    persistComposerDraftStore(composerDraftStoreRef.current);
+    const currentContext = readComposerTaskContextDraft(
+      composerDraftStoreRef.current,
+      NEW_TASK_DRAFT_KEY,
+    );
+    if (!matchesPersistedTaskContext(currentContext, agent, projectId, projectName)) {
+      writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, {
+        agent,
+        projectId,
+        projectName,
+      });
+      persistComposerDraftStore(composerDraftStoreRef.current);
+    }
     setMobileSidebarOpen(false);
   }, [setActiveTopic]);
 
@@ -1193,6 +1211,7 @@ function TinodeWebApp({ location }) {
     const projectName = projectId > 0
       ? String(taskDraft?.projectName || currentContext?.projectName || '')
       : '';
+    if (matchesPersistedTaskContext(currentContext, agent, projectId, projectName)) return;
     writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, {
       agent,
       projectId,

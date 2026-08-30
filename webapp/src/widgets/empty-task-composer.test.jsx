@@ -23,6 +23,8 @@ import { api } from '../api';
 import EmptyTaskComposer from './empty-task-composer';
 import {
   createComposerDraftStore,
+  writeComposerAttachmentDraft,
+  writeComposerInputDraft,
   writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
 
@@ -42,6 +44,26 @@ const agents = [
     is_bot: true,
   },
 ];
+
+function sharedStorage(values = new Map()) {
+  return {
+    get length() {
+      return values.size;
+    },
+    key(index) {
+      return [...values.keys()][index] || null;
+    },
+    getItem(key) {
+      return values.get(String(key)) || null;
+    },
+    setItem(key, value) {
+      values.set(String(key), String(value));
+    },
+    removeItem(key) {
+      values.delete(String(key));
+    },
+  };
+}
 
 describe('EmptyTaskComposer', () => {
   let container;
@@ -656,6 +678,82 @@ describe('EmptyTaskComposer', () => {
 
     expect(replacementStore.getInputDraft('new-task')).toBe('');
     expect(replacementStore.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  it('keeps an equal-valued draft written in a fresh context while an old send resolves', async () => {
+    const sharedValues = new Map();
+    const firstStore = createComposerDraftStore('cross-document-send', sharedStorage(sharedValues));
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore: firstStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '两个页面里相同的任务',
+    );
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    const freshStore = createComposerDraftStore('cross-document-send', sharedStorage(sharedValues));
+    writeComposerInputDraft(freshStore, 'new-task', '两个页面里相同的任务');
+    freshStore.persist();
+
+    await act(async () => {
+      resolveSend({ seq_id: 114 });
+      await flushPromises();
+    });
+
+    const verifier = createComposerDraftStore('cross-document-send', sharedStorage(sharedValues));
+    expect(verifier.getInputDraft('new-task')).toBe('两个页面里相同的任务');
+
+    firstStore.close();
+    freshStore.close();
+    verifier.close();
+  });
+
+  it('reflects an attachment persisted by a late upload in an already-open fresh context', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const sourceStore = createComposerDraftStore('late-upload-fresh-context');
+    writeComposerInputDraft(sourceStore, 'new-task', '上传尚未完成');
+    sourceStore.persist();
+    const freshStore = createComposerDraftStore('late-upload-fresh-context');
+
+    await mountComposer({ composerDraftStore: freshStore });
+    expect(container.querySelector('.v3-composer-attachment-chip')).toBeNull();
+
+    writeComposerAttachmentDraft(sourceStore, 'new-task', [{
+      type: 'file',
+      name: 'late.pdf',
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'late.pdf',
+          url: '/uploads/files/late.pdf',
+          name: 'late.pdf',
+        },
+      },
+    }]);
+    sourceStore.persist();
+
+    const key = 'catsco_composer_drafts:v1:late-upload-fresh-context';
+    const storageEvent = new Event('storage');
+    Object.defineProperties(storageEvent, {
+      key: { value: key },
+      newValue: { value: localStorage.getItem(key) },
+      storageArea: { value: localStorage },
+    });
+    await act(async () => {
+      window.dispatchEvent(storageEvent);
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.v3-composer-attachment-chip')?.textContent).toContain('late.pdf');
+
+    sourceStore.close();
+    freshStore.close();
   });
 
   it('persists phone-uploaded attachments when navigation unmounts the composer during polling', async () => {
