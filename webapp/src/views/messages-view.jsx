@@ -1982,6 +1982,18 @@ export default function MessagesView({
           sessionTopic,
           draftRevision,
         )) return [];
+        const currentPhoneUploadSession = readComposerPhoneUploadSession(
+          composerDraftStoreRef.current,
+          sessionTopic,
+        );
+        const hasPhoneUploadDraftStore = Boolean(
+          composerDraftStoreRef.current
+          && (
+            typeof composerDraftStoreRef.current.getPhoneUploadSession === 'function'
+            || typeof composerDraftStoreRef.current.phoneUploadSessions?.get === 'function'
+          )
+        );
+        if (hasPhoneUploadDraftStore && currentPhoneUploadSession?.session_id !== sessionId) return [];
         if (data?.topic && data.topic !== sessionTopic) {
           throw new Error('手机上传会话与当前对话不匹配，请重新打开二维码。');
         }

@@ -349,6 +349,17 @@ export default function EmptyTaskComposer({
         const data = await api.getMobileUploadSession(sessionId);
         if (phoneUploadSessionRef.current?.session_id !== sessionId) return [];
         if (!isComposerDraftRevisionCurrent(revisionStore, normalizedDraftKey, draftRevision)) return [];
+        const hasPhoneUploadDraftStore = Boolean(
+          composerDraftStore
+          && (
+            typeof composerDraftStore.getPhoneUploadSession === 'function'
+            || typeof composerDraftStore.phoneUploadSessions?.get === 'function'
+          )
+        );
+        if (
+          hasPhoneUploadDraftStore
+          && readComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey)?.session_id !== sessionId
+        ) return [];
 
         // Keep the shared draft up to date even if navigation unmounted this
         // view while the polling request was in flight.

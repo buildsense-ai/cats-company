@@ -264,6 +264,7 @@ import {
 } from '../artifact-preview-coordinator';
 import {
   createComposerDraftStore,
+  writeComposerPhoneUploadSession,
   writeComposerInputDraft,
 } from '../utils/composer-draft-storage';
 
@@ -1235,6 +1236,34 @@ describe('MessagesView composer draft isolation', () => {
     expect(inputDrafts.get('p2p_1_2')).toBe('发送期间的新消息');
   });
 
+  it('restores a failed send when its draft store is handed off', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const firstStore = createComposerDraftStore('1');
+    writeComposerInputDraft(firstStore, 'p2p_1_2', 'failed send should return');
+    firstStore.persist();
+    const failedSend = deferred();
+    api.sendMessage.mockReturnValueOnce(failedSend.promise);
+
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore: firstStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => root.unmount());
+    firstStore.deactivate();
+    const replacementStore = createComposerDraftStore('1');
+
+    await act(async () => {
+      failedSend.reject(new Error('send failed'));
+      await flushPromises();
+    });
+
+    expect(replacementStore.getInputDraft('p2p_1_2')).toBe('failed send should return');
+  });
+
   it('does not clear a newer draft written before an old send reaches its clear step', async () => {
     const inputDrafts = new Map();
     const composerDraftStore = {
@@ -1450,6 +1479,42 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(composerDraftStore.phoneUploadSessions.get(topic)).toEqual({ session_id: 'phone-B' });
+  });
+
+  it('ignores stale phone files after the composer store is handed off', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const topic = 'p2p_1_2';
+    const firstStore = createComposerDraftStore('1');
+    writeComposerPhoneUploadSession(firstStore, topic, { session_id: 'phone-A' });
+    firstStore.persist();
+    const stalePoll = deferred();
+    api.getMobileUploadSession.mockReturnValueOnce(stalePoll.promise);
+
+    await mountTopic(root, topic, { composerDraftStore: firstStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('phone-A'));
+
+    await act(async () => root.unmount());
+    firstStore.deactivate();
+    const replacementStore = createComposerDraftStore('1');
+    writeComposerPhoneUploadSession(replacementStore, topic, { session_id: 'phone-B' });
+    replacementStore.persist();
+
+    await act(async () => {
+      stalePoll.resolve({
+        session_id: 'phone-A',
+        files: [{
+          file_key: 'stale.pdf',
+          url: '/uploads/files/stale.pdf',
+          name: 'stale.pdf',
+          size: 1,
+          type: 'file',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(replacementStore.getAttachmentDraft(topic)).toEqual([]);
   });
 
   it('adapts the composer placeholder to agent groups, agent chats, and human chats', async () => {

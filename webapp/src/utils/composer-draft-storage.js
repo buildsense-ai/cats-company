@@ -213,6 +213,18 @@ function mutationMapFor(store) {
   return mutations;
 }
 
+function copyCounterState(sourceStore, targetStore, counterStores) {
+  const source = counterStores.get(sourceStore);
+  if (!source) return;
+  const target = counterStores === draftRevisionStores
+    ? revisionMapFor(targetStore)
+    : mutationMapFor(targetStore);
+  if (!target) return;
+  source.forEach((value, key) => {
+    target.set(key, Math.max(Number(target.get(key)) || 0, Number(value) || 0));
+  });
+}
+
 function draftEntries(entries, normalizeValue) {
   if (!Array.isArray(entries)) return [];
   return entries.flatMap((entry) => {
@@ -615,6 +627,16 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     changedKeys.forEach(notify);
   };
 
+  const invalidateKnownDraftRevisions = () => {
+    const knownKeys = new Set([
+      ...Object.values(draftMaps).flatMap((map) => [...map.keys()]),
+      ...Object.values(draftMapsFromSnapshot(persistedSnapshot)).flatMap((map) => [...map.keys()]),
+      ...(draftRevisionStores.get(draftStore)?.keys?.() || []),
+      ...(draftMutationStores.get(draftStore)?.keys?.() || []),
+    ]);
+    knownKeys.forEach((key) => invalidateComposerDraftRevision(draftStore, key));
+  };
+
   const getDraftField = (kind, key) => {
     const definition = draftFieldDefinitions[kind];
     if (!definition) return null;
@@ -694,6 +716,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       // newer draft (including a cross-tab deletion tombstone).
       let mapsToPersist = draftMaps;
       if (latestLogoutFence.updatedAt > logoutFenceAt) {
+        invalidateKnownDraftRevisions();
         logoutFenced = true;
         logoutFenceAt = latestLogoutFence.updatedAt;
         replaceDraftMaps({});
@@ -703,6 +726,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
       if (latest.updatedAt > persistedUpdatedAt) {
         if (latest.cleared) {
+          invalidateKnownDraftRevisions();
           replaceDraftMaps({});
           persistedSnapshot = draftSnapshotFromMaps({});
           persistedUpdatedAt = latest.updatedAt;
@@ -810,12 +834,16 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       return handoffTarget?.getDraftRevisionStore?.() || handoffTarget || draftStore;
     },
     // Internal lifecycle seam used when a workspace creates a replacement
-    // store while an earlier composer still has asynchronous callbacks.
+    // store while an earlier composer still has asynchronous callbacks. The
+    // callback guards belong to the logical draft, so carry their counters
+    // across the handoff instead of resetting them with the new store.
     canHandoff() {
       return !active && !closed;
     },
     handoffTo(nextStore) {
       if (!nextStore || nextStore === draftStore || closed) return;
+      copyCounterState(draftStore, mutationStoreFor(nextStore), draftMutationStores);
+      copyCounterState(draftStore, revisionStoreFor(nextStore), draftRevisionStores);
       handoffTarget = nextStore;
     },
   };
@@ -873,7 +901,10 @@ export function persistComposerDraftStore(store) {
 export function readComposerDraftRevision(store, key) {
   const normalizedKey = normalizeDraftKey(key);
   if (!normalizedKey) return 0;
-  return revisionMapFor(revisionStoreFor(store))?.get(normalizedKey) || 0;
+  const revisions = revisionMapFor(revisionStoreFor(store));
+  if (!revisions) return 0;
+  if (!revisions.has(normalizedKey)) revisions.set(normalizedKey, 0);
+  return revisions.get(normalizedKey) || 0;
 }
 
 export function invalidateComposerDraftRevision(store, key) {

@@ -91,12 +91,12 @@ describe('EmptyTaskComposer', () => {
   }
 
   function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
     return { promise, resolve, reject };
   }
 
@@ -411,6 +411,48 @@ describe('EmptyTaskComposer', () => {
     ]);
   });
 
+  it('invalidates an upload callback after observing a normal remote draft clear', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const firstStore = createComposerDraftStore('normal-clear-upload');
+    const pendingUpload = deferred();
+    api.uploadFile.mockReturnValueOnce(pendingUpload.promise);
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore: firstStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(1));
+
+    const activeStore = createComposerDraftStore('normal-clear-upload');
+    activeStore.persist();
+    // Storage events do not fire in the writer's own context. Simulate the
+    // stale tab receiving the clear before its upload callback resolves.
+    firstStore.persist();
+
+    await act(async () => {
+      pendingUpload.resolve({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(firstStore.getAttachmentDraft('new-task')).toEqual([]);
+    expect(activeStore.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
   it('drops an old upload when a newer composer sends and clears the draft', async () => {
     const attachmentDrafts = new Map();
     const inputDrafts = new Map();
@@ -586,6 +628,36 @@ describe('EmptyTaskComposer', () => {
     expect(inputDrafts.get('new-task')).toBe('发送期间新写的任务');
   });
 
+  it('clears a sent draft when its store is handed off during the send', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const firstStore = createComposerDraftStore('handoff-send-cleanup');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore: firstStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      'send before handoff',
+    );
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => root.unmount());
+    firstStore.deactivate();
+    const replacementStore = createComposerDraftStore('handoff-send-cleanup');
+
+    await act(async () => {
+      resolveSend({ seq_id: 113 });
+      await flushPromises();
+    });
+
+    expect(replacementStore.getInputDraft('new-task')).toBe('');
+    expect(replacementStore.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
   it('persists phone-uploaded attachments when navigation unmounts the composer during polling', async () => {
     const attachmentDrafts = new Map();
     const composerDraftStore = {
@@ -642,6 +714,41 @@ describe('EmptyTaskComposer', () => {
       }),
     ]);
     expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('ignores a stale phone session result after the draft store is handed off', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    const firstStore = createComposerDraftStore('handoff-phone-session');
+    writeComposerPhoneUploadSession(firstStore, 'new-task', { session_id: 'phone-A' });
+    firstStore.persist();
+    const stalePoll = deferred();
+    api.getMobileUploadSession.mockReturnValueOnce(stalePoll.promise);
+
+    await mountComposer({ composerDraftStore: firstStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('phone-A'));
+
+    await act(async () => root.unmount());
+    firstStore.deactivate();
+    const replacementStore = createComposerDraftStore('handoff-phone-session');
+    writeComposerPhoneUploadSession(replacementStore, 'new-task', { session_id: 'phone-B' });
+    replacementStore.persist();
+
+    await act(async () => {
+      stalePoll.resolve({
+        session_id: 'phone-A',
+        files: [{
+          file_key: 'stale.pdf',
+          url: '/uploads/files/stale.pdf',
+          name: 'stale.pdf',
+          size: 1,
+          type: 'file',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(replacementStore.getAttachmentDraft('new-task')).toEqual([]);
   });
 
   it('resumes a persisted phone upload session after the new-task composer remounts', async () => {
