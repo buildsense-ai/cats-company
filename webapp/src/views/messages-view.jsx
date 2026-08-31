@@ -2260,6 +2260,10 @@ export default function MessagesView({
         !stateCleared
         && inputStillMatches
         && attachmentsStillMatch
+        // The payload counter also moves on mention-draft writes, which the
+        // checks above do not compare; no reachable path writes mentions
+        // mid-send (the composer input is disabled), so an unchanged counter
+        // reliably means "same payload".
         && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
           === sendStartMutationRevision
       ) {

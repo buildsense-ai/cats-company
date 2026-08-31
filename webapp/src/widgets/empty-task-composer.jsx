@@ -144,39 +144,34 @@ export default function EmptyTaskComposer({
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
 
-  const clearDraftAfterSend = useCallback((
-    expectedMutationRevision,
-    expectedInput,
-    expectedAttachments,
-    expectedPhoneUploadSession,
-  ) => {
+  const clearDraftAfterSend = useCallback((expectedDraftState) => {
     // A newer composer may have written the same draft key while this send was
     // in flight. In that case only invalidate the old callbacks; never clear
     // the newer draft. The payload mutation counter ignores Agent-context
-    // writes, so a roster refresh cannot block clearing a sent draft.
+    // writes, so a roster refresh cannot block clearing a sent draft. The
+    // caller always supplies `mutationRevision` for the payload it captured.
     if (
-      expectedMutationRevision !== null
-      && readComposerDraftMutationRevision(revisionStore, normalizedDraftKey)
-        !== expectedMutationRevision
+      readComposerDraftMutationRevision(revisionStore, normalizedDraftKey)
+        !== expectedDraftState.mutationRevision
     ) return false;
     const inputChanged = (
-      expectedInput !== undefined
+      expectedDraftState.input !== undefined
       && (composerDraftStore
         ? readComposerInputDraft(composerDraftStore, normalizedDraftKey)
-        : inputValueRef.current) !== expectedInput
+        : inputValueRef.current) !== expectedDraftState.input
     );
     const attachmentsChanged = (
-      expectedAttachments !== undefined
+      expectedDraftState.attachments !== undefined
       && JSON.stringify(composerDraftStore
         ? readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey)
         : pendingAttachmentsRef.current)
-        !== JSON.stringify(expectedAttachments)
+        !== JSON.stringify(expectedDraftState.attachments)
     );
-    const phoneSessionChanged = expectedPhoneUploadSession !== undefined
+    const phoneSessionChanged = expectedDraftState.phoneUploadSession !== undefined
       && JSON.stringify(readComposerPhoneUploadSession(
         composerDraftStore,
         normalizedDraftKey,
-      )) !== JSON.stringify(expectedPhoneUploadSession);
+      )) !== JSON.stringify(expectedDraftState.phoneUploadSession);
     // Content checks also guard custom stores that do not track the payload
     // mutation counter.
     if (inputChanged || attachmentsChanged || phoneSessionChanged) {
@@ -708,12 +703,12 @@ export default function EmptyTaskComposer({
       messageSent = true;
       // The shared store must be cleared even when navigation already
       // unmounted this view while the request was in flight.
-      const draftCleared = clearDraftAfterSend(
-        sentDraftMutationRevision,
-        sentDraftInput,
+      const draftCleared = clearDraftAfterSend({
+        mutationRevision: sentDraftMutationRevision,
+        input: sentDraftInput,
         attachments,
-        sentDraftPhoneUploadSession,
-      );
+        phoneUploadSession: sentDraftPhoneUploadSession,
+      });
       if (!mountedRef.current) return;
       if (draftCleared) {
         setInput('');

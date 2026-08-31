@@ -1162,8 +1162,7 @@ function TinodeWebApp({ location }) {
     setActiveTopic(nextTopic);
   }, [setActiveTopic]);
 
-  const syncTaskContextDraft = useCallback((agent, projectId, projectName) => {
-    const next = { agent, projectId, projectName };
+  const syncTaskContextDraft = useCallback((next) => {
     const current = readComposerTaskContextDraft(
       composerDraftStoreRef.current,
       NEW_TASK_DRAFT_KEY,
@@ -1189,9 +1188,9 @@ function TinodeWebApp({ location }) {
       projectId: projectId > 0 ? projectId : 0,
       projectName,
     });
-    syncTaskContextDraft(agent, projectId, projectName);
+    syncTaskContextDraft({ agent, projectId, projectName });
     setMobileSidebarOpen(false);
-  }, [setActiveTopic]);
+  }, [setActiveTopic, syncTaskContextDraft]);
 
   const handleEmptyTaskSelectedAgentChange = useCallback((agent) => {
     setEmptyTaskSelectedAgent(agent);
@@ -1206,7 +1205,7 @@ function TinodeWebApp({ location }) {
     const projectName = projectId > 0
       ? String(taskDraft?.projectName || current?.projectName || '')
       : '';
-    syncTaskContextDraft(agent, projectId, projectName);
+    syncTaskContextDraft({ agent, projectId, projectName });
   }, [syncTaskContextDraft, taskDraft]);
 
   const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
