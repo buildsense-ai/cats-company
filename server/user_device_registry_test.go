@@ -269,7 +269,7 @@ func TestUserDeviceRegistrySelectsMentionedDeviceAndRemembersPreference(t *testi
 	}
 }
 
-func TestUserDeviceRegistryGroupSessionKeyScopesActor(t *testing.T) {
+func TestUserDeviceRegistryGroupSessionKeyUsesGroupTopic(t *testing.T) {
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	registry := newUserDeviceRegistry(10 * time.Minute)
 	registry.now = func() time.Time { return now }
@@ -295,14 +295,14 @@ func TestUserDeviceRegistryGroupSessionKeyScopesActor(t *testing.T) {
 	if len(alice.Grants) != 1 || len(bob.Grants) != 1 {
 		t.Fatalf("expected one grant each, alice=%#v bob=%#v", alice.Grants, bob.Grants)
 	}
-	if alice.Grants[0].SessionKey != "session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr42" {
+	if alice.Grants[0].SessionKey != "cc_group:grp_80" {
 		t.Fatalf("unexpected alice group session key: %s", alice.Grants[0].SessionKey)
 	}
-	if bob.Grants[0].SessionKey != "session:v2:catscompany:group:grp_80%3Aactor%3Ausr8:agent:usr42" {
+	if bob.Grants[0].SessionKey != "cc_group:grp_80" {
 		t.Fatalf("unexpected bob group session key: %s", bob.Grants[0].SessionKey)
 	}
-	if alice.Grants[0].SessionKey == bob.Grants[0].SessionKey {
-		t.Fatalf("group grants should be scoped by actor")
+	if alice.Grants[0].SessionKey != bob.Grants[0].SessionKey {
+		t.Fatalf("group grants should share the group session key")
 	}
 	if alice.Selection == nil || alice.Selection.SessionKey != alice.Grants[0].SessionKey {
 		t.Fatalf("alice selection should use the same scoped key as grant: %#v", alice.Selection)

@@ -1023,8 +1023,12 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 func buildCatsCoSessionKey(topicID string, topicType string, agentID string, actorUID int64) string {
 	normalizedTopicType := normalizeTopicTypeForSessionKey(topicType)
 	sessionTopicID := strings.TrimSpace(topicID)
-	if normalizedTopicType == "group" && actorUID > 0 {
-		sessionTopicID = sessionTopicID + ":actor:" + formatUID(actorUID)
+	_ = actorUID
+	if normalizedTopicType == "group" {
+		if sessionTopicID == "" {
+			sessionTopicID = "unknown_group"
+		}
+		return "cc_group:" + sessionTopicID
 	}
 	parts := []string{
 		"session",
