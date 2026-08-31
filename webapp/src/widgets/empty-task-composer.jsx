@@ -10,14 +10,12 @@ import {
   NEW_TASK_DRAFT_KEY,
   persistComposerDraftStore,
   readComposerAttachmentDraft,
-  readComposerDraftMutationRevision,
   readComposerDraftRevision,
   readComposerInputDraft,
   readComposerPhoneUploadIgnoredFileKeys,
   readComposerPhoneUploadSession,
   subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
-  writeComposerTaskContextDraft,
   writeComposerInputDraft,
   writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
@@ -122,6 +120,11 @@ export default function EmptyTaskComposer({
     if (typeof nextValue === 'string' && !event.currentTarget.readOnly) {
       inputValueRef.current = nextValue;
     }
+    if (sentDraftRef.current && !inputValueRef.current) {
+      // A sent draft persists for reuse; flushing the emptied input must not
+      // wipe it.
+      return;
+    }
     persistDraft();
   }, [persistDraft]);
 
@@ -135,6 +138,10 @@ export default function EmptyTaskComposer({
       if (textarea && !textarea.readOnly && typeof textarea.value === 'string') {
         inputValueRef.current = textarea.value;
       }
+      if (sentDraftRef.current && !inputValueRef.current) {
+        // Same as flushDraft: a sent draft must survive the unmount flush.
+        return;
+      }
       persistDraft();
     };
   }, [persistDraft]);
@@ -144,55 +151,22 @@ export default function EmptyTaskComposer({
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
 
-  const clearDraftAfterSend = useCallback((expectedDraftState) => {
-    // A newer composer may have written the same draft key while this send was
-    // in flight. In that case only invalidate the old callbacks; never clear
-    // the newer draft. The payload mutation counter ignores Agent-context
-    // writes, so a roster refresh cannot block clearing a sent draft. The
-    // caller always supplies `mutationRevision` for the payload it captured.
-    if (
-      readComposerDraftMutationRevision(revisionStore, normalizedDraftKey)
-        !== expectedDraftState.mutationRevision
-    ) return false;
-    const inputChanged = (
-      expectedDraftState.input !== undefined
-      && (composerDraftStore
-        ? readComposerInputDraft(composerDraftStore, normalizedDraftKey)
-        : inputValueRef.current) !== expectedDraftState.input
-    );
-    const attachmentsChanged = (
-      expectedDraftState.attachments !== undefined
-      && JSON.stringify(composerDraftStore
-        ? readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey)
-        : pendingAttachmentsRef.current)
-        !== JSON.stringify(expectedDraftState.attachments)
-    );
-    const phoneSessionChanged = expectedDraftState.phoneUploadSession !== undefined
-      && JSON.stringify(readComposerPhoneUploadSession(
-        composerDraftStore,
-        normalizedDraftKey,
-      )) !== JSON.stringify(expectedDraftState.phoneUploadSession);
-    // Content checks also guard custom stores that do not track the payload
-    // mutation counter.
-    if (inputChanged || attachmentsChanged || phoneSessionChanged) {
-      return false;
-    }
-
-    // Invalidate callbacks from an older composer before removing the draft.
+  const finalizeDraftAfterSend = useCallback(() => {
+    // A successful send consumes the draft's phone upload session, but the
+    // drafted text, attachments, and Agent context stay persisted: the next
+    // composer that opens this draft restores them for reuse.
     invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
     sentDraftRef.current = true;
     inputValueRef.current = '';
     pendingAttachmentsRef.current = [];
     phoneUploadSessionRef.current = null;
-    // Persist the visible fields before clearing auxiliary fields; each setter
-    // notifies synchronously and could otherwise repopulate the refs.
-    persistDraft();
+    // Releasing the session notifies subscribers synchronously; until the
+    // caller clears the visible state below, syncDraftFromStore can
+    // legitimately repopulate the refs from the still-persisted draft. The
+    // caller's clear is authoritative.
     writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
-    writeComposerTaskContextDraft(composerDraftStore, normalizedDraftKey, null);
     persistComposerDraftStore(composerDraftStore);
-    if (mountedRef.current) setPhoneUploadSession(null);
-    return true;
-  }, [composerDraftStore, normalizedDraftKey, persistDraft, revisionStore]);
+  }, [composerDraftStore, normalizedDraftKey, revisionStore]);
 
   useEffect(() => {
     const syncDraftFromStore = () => {
@@ -670,20 +644,10 @@ export default function EmptyTaskComposer({
       const text = inputValueRef.current.trim();
       const attachments = [...pendingAttachmentsRef.current];
       if (!text && attachments.length === 0) return;
-      const sentDraftInput = String(inputValueRef.current || '');
-      const sentDraftPhoneUploadSession = readComposerPhoneUploadSession(
-        composerDraftStore,
-        normalizedDraftKey,
-      );
-
       // Stop callbacks that belonged to the draft before this send. Phone
       // polling above is intentionally allowed to finish so its files can be
       // included in this message.
       invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
-      const sentDraftMutationRevision = readComposerDraftMutationRevision(
-        revisionStore,
-        normalizedDraftKey,
-      );
       const contentBlocks = buildAtomicContentBlocks(text, attachments);
       const displayContent = text || summarizeAttachments(attachments);
       const payload = attachments.length > 0
@@ -701,22 +665,17 @@ export default function EmptyTaskComposer({
 
       await api.sendMessage(topicId, payload);
       messageSent = true;
-      // The shared store must be cleared even when navigation already
-      // unmounted this view while the request was in flight.
-      const draftCleared = clearDraftAfterSend({
-        mutationRevision: sentDraftMutationRevision,
-        input: sentDraftInput,
-        attachments,
-        phoneUploadSession: sentDraftPhoneUploadSession,
-      });
+      // The release must happen even when navigation already unmounted this
+      // view while the request was in flight. The visible composer always
+      // resets: a draft re-typed during the flight stays persisted in the
+      // store and is restored the next time this composer opens.
+      finalizeDraftAfterSend();
       if (!mountedRef.current) return;
-      if (draftCleared) {
-        setInput('');
-        setPendingAttachments([]);
-        setPhoneUploadSession(null);
-        setPhoneUploadDialogOpen(false);
-        setAttachmentStatus(null);
-      }
+      setInput('');
+      setPendingAttachments([]);
+      setPhoneUploadSession(null);
+      setPhoneUploadDialogOpen(false);
+      setAttachmentStatus(null);
 
       await onActivateTopic(resolvedTopic);
       window.dispatchEvent(new Event('cc:data-changed'));
@@ -736,7 +695,7 @@ export default function EmptyTaskComposer({
       sendInFlightRef.current = false;
       if (mountedRef.current) setIsSubmitting(false);
     }
-  }, [clearDraftAfterSend, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
+  }, [finalizeDraftAfterSend, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
 
   const handleKeyDown = useCallback((event) => {
     const nativeEvent = event.nativeEvent || event;
@@ -903,7 +862,7 @@ export default function EmptyTaskComposer({
           setAgentPickerOpen(false);
         }}
         attachments={pendingAttachments}
-        attachmentRemovalDisabled={isUploadingAttachment || isSubmitting}
+        attachmentRemovalDisabled={isSubmitting}
         onRemoveAttachment={(index) => {
           const current = pendingAttachmentsRef.current;
           markComposerPhoneUploadIgnoredFileKey(
