@@ -195,33 +195,74 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		resp["content"] = payload.DisplayContent
 	}
 
-	if !result.Duplicate {
-		delivered := h.fanoutMessage(uid, req.TopicID, req.ReplyTo, payload, result.ID)
-		if payload.ArtifactTaskRef != nil && !delivered {
-			h.hub.artifactTasks.failDelivery(
-				payload.ArtifactTaskRef,
-				"turn_delivery_failed",
-				"Artifact task turn could not be delivered to the online Agent",
-			)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "Artifact task turn delivery failed",
-				"code":  "artifact_task_delivery_failed",
+	if payload.ArtifactTaskRef != nil {
+		if failure := h.hub.deliverPersistedArtifactTaskMessage(
+			uid, req.TopicID, req.ReplyTo, payload, result, nil,
+		); failure != nil {
+			writeJSON(w, failure.HTTPStatus, map[string]string{
+				"error": failure.PublicMessage,
+				"code":  failure.PublicCode,
 			})
 			return
 		}
-	} else if payload.ArtifactTaskRef != nil && !payload.ArtifactTaskRef.AlreadyDelivered {
-		h.hub.artifactTasks.failDelivery(
-			payload.ArtifactTaskRef,
-			"turn_delivery_conflict",
-			"Artifact task message identity was already used without a confirmed delivery",
-		)
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": "Artifact task delivery could not be reconciled",
-			"code":  "artifact_task_delivery_conflict",
-		})
-		return
+	} else if !result.Duplicate {
+		h.fanoutMessage(uid, req.TopicID, req.ReplyTo, payload, result.ID)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type artifactTaskMessageDeliveryFailure struct {
+	HTTPStatus    int
+	PublicCode    string
+	PublicMessage string
+}
+
+// deliverPersistedArtifactTaskMessage owns the post-save delivery decision for
+// HTTP and WebSocket ingress. A recovered lease may replay the same persisted
+// message; the Agent deduplicates the stable Artifact task ref before running.
+func (h *Hub) deliverPersistedArtifactTaskMessage(
+	uid int64,
+	topicID string,
+	replyTo int,
+	payload *normalizedMessagePayload,
+	result *savedMessageResult,
+	exclude *Client,
+) *artifactTaskMessageDeliveryFailure {
+	if h == nil || payload == nil || payload.ArtifactTaskRef == nil || result == nil {
+		return &artifactTaskMessageDeliveryFailure{
+			HTTPStatus: http.StatusInternalServerError, PublicCode: "artifact_task_delivery_failed",
+			PublicMessage: "Artifact task turn delivery failed",
+		}
+	}
+	delivery := payload.ArtifactTaskRef
+	if result.Duplicate {
+		if delivery.AlreadyDelivered {
+			return nil
+		}
+		if !delivery.Recovered {
+			h.artifactTasks.failDelivery(
+				delivery,
+				"turn_delivery_conflict",
+				"Artifact task message identity was already used without a recoverable delivery claim",
+			)
+			return &artifactTaskMessageDeliveryFailure{
+				HTTPStatus: http.StatusConflict, PublicCode: "artifact_task_delivery_conflict",
+				PublicMessage: "Artifact task delivery could not be reconciled",
+			}
+		}
+	}
+	if h.fanoutNormalizedMessage(uid, topicID, replyTo, payload, result.ID, exclude) {
+		return nil
+	}
+	h.artifactTasks.failDelivery(
+		delivery,
+		"turn_delivery_failed",
+		"Artifact task turn could not be delivered to the online Agent",
+	)
+	return &artifactTaskMessageDeliveryFailure{
+		HTTPStatus: http.StatusServiceUnavailable, PublicCode: "artifact_task_delivery_failed",
+		PublicMessage: "Artifact task turn delivery failed",
+	}
 }
 
 func (h *MessageHandler) accountTypeForUID(uid int64) types.AccountType {

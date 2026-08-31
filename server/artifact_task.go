@@ -106,6 +106,7 @@ type artifactTaskDeliveryRef struct {
 	AgentUID         int64
 	ClientMessageID  string
 	AlreadyDelivered bool
+	Recovered        bool
 	Persistent       bool
 }
 
@@ -451,7 +452,8 @@ func (s *artifactTaskStore) reservePersistentDelivery(ref string, actorUID int64
 	}
 	return &artifactTaskDeliveryRef{
 		Ref: ref, TaskID: claim.Run.TaskID, AgentUID: claim.Run.AgentUID,
-		ClientMessageID: clientMessageID, AlreadyDelivered: claim.AlreadyDelivered, Persistent: true,
+		ClientMessageID: clientMessageID, AlreadyDelivered: claim.AlreadyDelivered,
+		Recovered: claim.Recovered, Persistent: true,
 	}, nil
 }
 

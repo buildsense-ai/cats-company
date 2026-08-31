@@ -19,11 +19,49 @@ import (
 
 type artifactRuntime02MemoryStore struct {
 	*artifactRuntimeMemoryStore
-	runMu      sync.Mutex
-	runsByTask map[string]*store.ArtifactRuntimeRun
-	taskByRef  map[string]string
-	taskByRun  map[string]string
-	lastPolicy store.ArtifactRuntimeRunCreatePolicy
+	runMu         sync.Mutex
+	runsByTask    map[string]*store.ArtifactRuntimeRun
+	taskByRef     map[string]string
+	taskByRun     map[string]string
+	lastPolicy    store.ArtifactRuntimeRunCreatePolicy
+	messageMu     sync.Mutex
+	messageIDs    map[string]int64
+	nextMessageID int64
+}
+
+func (s *artifactRuntime02MemoryStore) CreateTopic(string, string, int64) error { return nil }
+
+func (s *artifactRuntime02MemoryStore) IsMemberMuted(int64, int64) (bool, error) {
+	return false, nil
+}
+
+func (s *artifactRuntime02MemoryStore) SaveMessageIdempotent(
+	topicID string,
+	fromUID int64,
+	content string,
+	blocks []types.ContentBlock,
+	mode, role, msgType string,
+	replyTo int64,
+	clientMsgID string,
+) (int64, bool, error) {
+	s.messageMu.Lock()
+	defer s.messageMu.Unlock()
+	if s.messageIDs == nil {
+		s.messageIDs = make(map[string]int64)
+	}
+	key := fmt.Sprintf("%s:%d:%s", topicID, fromUID, clientMsgID)
+	if id := s.messageIDs[key]; id > 0 {
+		return id, true, nil
+	}
+	s.nextMessageID++
+	s.messageIDs[key] = s.nextMessageID
+	if s.identityMessageStore != nil {
+		s.identityMessageStore.history = append(s.identityMessageStore.history, &types.Message{
+			ID: s.nextMessageID, TopicID: topicID, FromUID: fromUID, Content: content,
+			ContentBlocks: blocks, Mode: mode, Role: role, MsgType: msgType,
+		})
+	}
+	return s.nextMessageID, false, nil
 }
 
 func cloneRuntime02Run(run *store.ArtifactRuntimeRun) *store.ArtifactRuntimeRun {
@@ -366,12 +404,230 @@ func TestArtifactRuntime02DeliveryLeaseRecoversInterruptedReservation(t *testing
 	if err != nil || recovered == nil || recovered.AlreadyDelivered {
 		t.Fatalf("expired lease recovery: delivery=%#v err=%v", recovered, err)
 	}
+	if !recovered.Recovered {
+		t.Fatal("expired lease recovery did not preserve the recovered claim marker")
+	}
 	if !tasks.confirmDelivery(recovered) {
 		t.Fatal("recovered reservation was not confirmed")
 	}
 	duplicate, err := tasks.reserveDelivery(ref, 7, "p2p_7_440", 440, clientMessageID)
 	if err != nil || duplicate == nil || !duplicate.AlreadyDelivered {
 		t.Fatalf("confirmed retry was not deduplicated: delivery=%#v err=%v", duplicate, err)
+	}
+}
+
+type artifactRuntime02DeliveryFixture struct {
+	db              *artifactRuntime02MemoryStore
+	hub             *Hub
+	bot             *Client
+	ref             string
+	taskID          string
+	runID           string
+	topicID         string
+	clientMessageID string
+}
+
+func newArtifactRuntime02DeliveryFixture(t *testing.T, topicID string) *artifactRuntime02DeliveryFixture {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	identity := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			440: {ID: 440, Username: "artifact-agent", AccountType: types.AccountBot},
+		},
+		owners:      map[int64]int64{440: 7},
+		friendPairs: map[string]bool{agentPairKey(7, 440): true},
+	}
+	if isGroupTopic(topicID) {
+		identity.groupMembers = []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 440, IsBot: true},
+		}
+	}
+	base := &artifactRuntimeMemoryStore{
+		identityMessageStore: identity,
+		states:               make(map[string]*store.ArtifactRuntimeState),
+		now:                  now,
+	}
+	db := &artifactRuntime02MemoryStore{
+		artifactRuntimeMemoryStore: base,
+		runsByTask:                 make(map[string]*store.ArtifactRuntimeRun),
+		taskByRef:                  make(map[string]string),
+		taskByRun:                  make(map[string]string),
+		messageIDs:                 make(map[string]int64),
+	}
+	ref, err := newArtifactTaskOpaque("atr_")
+	if err != nil {
+		t.Fatalf("create task ref: %v", err)
+	}
+	taskID, err := newArtifactTaskOpaque("atk_")
+	if err != nil {
+		t.Fatalf("create task id: %v", err)
+	}
+	runID, err := newArtifactTaskOpaque("run_")
+	if err != nil {
+		t.Fatalf("create run id: %v", err)
+	}
+	if _, err := db.CreateArtifactRuntimeRun(context.Background(), &store.ArtifactRuntimeRun{
+		TaskID: taskID, TaskRefHash: artifactTaskRefHash(ref), RunID: runID,
+		ActorUID: 7, TopicID: topicID, AgentUID: 440,
+		Status: "submitted", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}, store.ArtifactRuntimeRunCreatePolicy{}); err != nil {
+		t.Fatalf("create persistent delivery Run: %v", err)
+	}
+	hub := NewHub(db, nil)
+	bot := &Client{uid: 440, accountType: types.AccountBot, send: make(chan []byte, 8)}
+	hub.addClient(bot)
+	return &artifactRuntime02DeliveryFixture{
+		db: db, hub: hub, bot: bot, ref: ref, taskID: taskID, runID: runID,
+		topicID: topicID, clientMessageID: "artifact-task:" + taskID,
+	}
+}
+
+func (f *artifactRuntime02DeliveryFixture) reserve(t *testing.T) *artifactTaskDeliveryRef {
+	t.Helper()
+	delivery, err := f.hub.artifactTasks.reserveDelivery(
+		f.ref, 7, f.topicID, 440, f.clientMessageID,
+	)
+	if err != nil || delivery == nil {
+		t.Fatalf("reserve delivery: delivery=%#v err=%v", delivery, err)
+	}
+	return delivery
+}
+
+func (f *artifactRuntime02DeliveryFixture) payload(delivery *artifactTaskDeliveryRef) *normalizedMessagePayload {
+	return &normalizedMessagePayload{
+		StoredContent:   `"来自「项目看板」：生成推进建议"`,
+		DisplayContent:  "来自「项目看板」：生成推进建议",
+		StoredType:      "text",
+		DisplayType:     "text",
+		ClientMsgID:     f.clientMessageID,
+		Metadata:        map[string]interface{}{"trace": "runtime-02-recovery"},
+		ArtifactTaskRef: delivery,
+	}
+}
+
+func (f *artifactRuntime02DeliveryFixture) sendHTTP(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(map[string]interface{}{
+		"topic_id": f.topicID, "type": "text", "content": "来自「项目看板」：生成推进建议",
+		"client_msg_id": f.clientMessageID,
+		"metadata":      map[string]interface{}{artifactTaskRefMetadataKey: f.ref, "trace": "runtime-02-recovery"},
+	})
+	if err != nil {
+		t.Fatalf("encode recovered HTTP delivery: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/messages/send", strings.NewReader(string(body)))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(7)))
+	response := httptest.NewRecorder()
+	NewMessageHandler(f.db, f.hub).HandleSendMessage(response, request)
+	return response
+}
+
+func drainArtifactTaskDeliveries(t *testing.T, messages <-chan []byte) []ServerMessage {
+	t.Helper()
+	var delivered []ServerMessage
+	for {
+		select {
+		case raw := <-messages:
+			var message ServerMessage
+			if err := json.Unmarshal(raw, &message); err != nil {
+				t.Fatalf("decode Artifact task delivery: %v", err)
+			}
+			if message.Data != nil {
+				delivered = append(delivered, message)
+			}
+		default:
+			return delivered
+		}
+	}
+}
+
+func assertRuntime02DeliveryCommitted(t *testing.T, fixture *artifactRuntime02DeliveryFixture) {
+	t.Helper()
+	run, found, err := fixture.db.GetArtifactRuntimeRun(context.Background(), fixture.runID, 7, 440, "")
+	if err != nil || !found || !run.Delivered || run.DeliveryClaimed {
+		t.Fatalf("recovered delivery Run=%#v found=%v err=%v", run, found, err)
+	}
+}
+
+func TestArtifactRuntime02HTTPDeliveryRecoversEveryClaimCrashWindow(t *testing.T) {
+	for _, crashWindow := range []string{"after_reserve", "after_save", "after_fanout"} {
+		crashWindow := crashWindow
+		t.Run(crashWindow, func(t *testing.T) {
+			fixture := newArtifactRuntime02DeliveryFixture(t, "p2p_7_440")
+			delivery := fixture.reserve(t)
+			if crashWindow != "after_reserve" {
+				result, err := saveNormalizedMessage(fixture.db, fixture.topicID, 7, 0, fixture.payload(delivery))
+				if err != nil || result.Duplicate {
+					t.Fatalf("save before simulated crash: result=%#v err=%v", result, err)
+				}
+				if crashWindow == "after_fanout" {
+					message := fixture.hub.messageForRecipient(7, 440, fixture.topicID, 0, fixture.payload(delivery), result.ID)
+					if fixture.hub.sendToUserExceptConfirmed(440, message, nil) != 1 {
+						t.Fatal("simulated pre-Confirm fanout did not reach Agent queue")
+					}
+				}
+			}
+
+			fixture.db.now = fixture.db.now.Add(artifactRuntimeDeliveryClaimLease + time.Second)
+			response := fixture.sendHTTP(t)
+			if response.Code != http.StatusOK {
+				t.Fatalf("recovered HTTP status=%d body=%s", response.Code, response.Body.String())
+			}
+			deliveries := drainArtifactTaskDeliveries(t, fixture.bot.send)
+			wantDeliveries := 1
+			if crashWindow == "after_fanout" {
+				wantDeliveries = 2
+			}
+			if len(deliveries) != wantDeliveries {
+				t.Fatalf("Agent deliveries=%d want=%d", len(deliveries), wantDeliveries)
+			}
+			executed := make(map[string]bool)
+			for _, message := range deliveries {
+				ref, _ := message.Data.Metadata[artifactTaskRefMetadataKey].(string)
+				if ref != fixture.ref || message.Data.SeqID <= 0 {
+					t.Fatalf("recovered Agent message=%#v", message.Data)
+				}
+				executed[ref] = true
+			}
+			if len(executed) != 1 {
+				t.Fatalf("stable task identity produced %d executions", len(executed))
+			}
+			assertRuntime02DeliveryCommitted(t, fixture)
+		})
+	}
+}
+
+func TestArtifactRuntime02RecoveredDuplicateUsesSharedWebSocketDelivery(t *testing.T) {
+	for _, topicID := range []string{"p2p_7_440", "grp_80"} {
+		topicID := topicID
+		t.Run(topicID, func(t *testing.T) {
+			fixture := newArtifactRuntime02DeliveryFixture(t, topicID)
+			delivery := fixture.reserve(t)
+			result, err := saveNormalizedMessage(fixture.db, topicID, 7, 0, fixture.payload(delivery))
+			if err != nil || result.Duplicate {
+				t.Fatalf("save before simulated crash: result=%#v err=%v", result, err)
+			}
+			fixture.db.now = fixture.db.now.Add(artifactRuntimeDeliveryClaimLease + time.Second)
+			sender := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+			fixture.hub.addClient(sender)
+			fixture.hub.handlePub(sender, &MsgClientPub{
+				ID: "recovered-pub", Topic: topicID, ClientMsgID: fixture.clientMessageID,
+				Type: "text", Content: json.RawMessage(`"来自「项目看板」：生成推进建议"`),
+				Metadata: map[string]interface{}{artifactTaskRefMetadataKey: fixture.ref, "trace": "runtime-02-recovery"},
+			})
+			var acknowledgement ServerMessage
+			decodeQueuedServerMessage(t, sender.send, &acknowledgement)
+			if acknowledgement.Ctrl == nil || acknowledgement.Ctrl.Code != http.StatusOK {
+				t.Fatalf("recovered WebSocket acknowledgement=%#v", acknowledgement.Ctrl)
+			}
+			deliveries := drainArtifactTaskDeliveries(t, fixture.bot.send)
+			if len(deliveries) != 1 || deliveries[0].Data.Metadata[artifactTaskRefMetadataKey] != fixture.ref {
+				t.Fatalf("recovered WebSocket deliveries=%#v", deliveries)
+			}
+			assertRuntime02DeliveryCommitted(t, fixture)
+		})
 	}
 }
 

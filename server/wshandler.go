@@ -1527,18 +1527,11 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	}
 
 	if payload.ArtifactTaskRef != nil {
-		if result.Duplicate {
-			if !payload.ArtifactTaskRef.AlreadyDelivered {
-				h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_conflict", "Artifact task message identity could not be reconciled")
-				h.SendToClient(client, &ServerMessage{
-					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 409, Text: "Artifact task delivery conflict"},
-				})
-				return
-			}
-		} else if !h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client) {
-			h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_failed", "Artifact task turn could not be delivered to the online Agent")
+		if failure := h.deliverPersistedArtifactTaskMessage(
+			uid, topic, msg.ReplyTo, payload, result, client,
+		); failure != nil {
 			h.SendToClient(client, &ServerMessage{
-				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 503, Text: "Artifact task turn delivery failed"},
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: failure.HTTPStatus, Text: failure.PublicMessage},
 			})
 			return
 		}
@@ -1786,18 +1779,11 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 	}
 
 	if payload.ArtifactTaskRef != nil {
-		if result.Duplicate {
-			if !payload.ArtifactTaskRef.AlreadyDelivered {
-				h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_conflict", "Artifact task message identity could not be reconciled")
-				h.SendToClient(client, &ServerMessage{
-					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 409, Text: "Artifact task delivery conflict"},
-				})
-				return
-			}
-		} else if !h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client) {
-			h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_failed", "Artifact task turn could not be delivered to the online Agent")
+		if failure := h.deliverPersistedArtifactTaskMessage(
+			uid, topic, msg.ReplyTo, payload, result, client,
+		); failure != nil {
 			h.SendToClient(client, &ServerMessage{
-				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 503, Text: "Artifact task turn delivery failed"},
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: failure.HTTPStatus, Text: failure.PublicMessage},
 			})
 			return
 		}
