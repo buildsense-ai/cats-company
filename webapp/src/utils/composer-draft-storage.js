@@ -63,6 +63,14 @@ function isPhoneUploadSession(value) {
     && typeof value.session_id === 'string' && value.session_id.length > 0;
 }
 
+function normalizePhoneUploadSession(value) {
+  if (!isPhoneUploadSession(value)) return null;
+  const ignored = Array.isArray(value.ignored_file_keys)
+    ? [...new Set(value.ignored_file_keys.map(String).filter(Boolean))]
+    : [];
+  return ignored.length ? { ...value, ignored_file_keys: ignored } : { ...value };
+}
+
 function normalizeTaskContext(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const agent = value.agent && typeof value.agent === 'object' && !Array.isArray(value.agent)
@@ -201,7 +209,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   ));
   const phoneUploadSessions = new Map(draftEntries(
     snapshot.phoneUploadSessions,
-    isPhoneUploadSession,
+    normalizePhoneUploadSession,
   ).map(([key, value]) => [key, { ...value }]));
   const taskContextDrafts = new Map(draftEntries(
     snapshot.taskContextDrafts,
@@ -299,7 +307,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     getPhoneUploadSession(key) {
       if (handoffTarget) return handoffTarget.getPhoneUploadSession(key);
       const value = phoneUploadSessions.get(normalizeDraftKey(key));
-      return isPhoneUploadSession(value) ? { ...value } : null;
+      return normalizePhoneUploadSession(value);
     },
     setPhoneUploadSession(key, value) {
       if (handoffTarget) {
@@ -308,7 +316,8 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
       const normalizedKey = normalizeDraftKey(key);
       if (!normalizedKey || closed) return;
-      if (isPhoneUploadSession(value)) phoneUploadSessions.set(normalizedKey, { ...value });
+      const normalizedValue = normalizePhoneUploadSession(value);
+      if (normalizedValue) phoneUploadSessions.set(normalizedKey, normalizedValue);
       else phoneUploadSessions.delete(normalizedKey);
       notify(normalizedKey);
     },
@@ -461,7 +470,11 @@ export function readComposerPhoneUploadSession(store, key) {
   const value = typeof store?.getPhoneUploadSession === 'function'
     ? store.getPhoneUploadSession(key)
     : store?.phoneUploadSessions?.get?.(key);
-  return isPhoneUploadSession(value) ? { ...value } : null;
+  return normalizePhoneUploadSession(value);
+}
+
+export function readComposerPhoneUploadIgnoredFileKeys(store, key) {
+  return readComposerPhoneUploadSession(store, key)?.ignored_file_keys || [];
 }
 
 export function writeComposerPhoneUploadSession(store, key, value) {
@@ -472,7 +485,8 @@ export function writeComposerPhoneUploadSession(store, key, value) {
   }
   const normalizedKey = normalizeDraftKey(key);
   if (!normalizedKey || typeof store?.phoneUploadSessions?.set !== 'function') return;
-  if (isPhoneUploadSession(value)) store.phoneUploadSessions.set(normalizedKey, { ...value });
+  const normalizedValue = normalizePhoneUploadSession(value);
+  if (normalizedValue) store.phoneUploadSessions.set(normalizedKey, normalizedValue);
   else store.phoneUploadSessions.delete?.(normalizedKey);
   markComposerDraftMutation(store, normalizedKey);
 }

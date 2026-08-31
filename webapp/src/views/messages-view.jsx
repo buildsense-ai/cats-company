@@ -22,6 +22,7 @@ import {
   readComposerDraftRevision,
   readComposerInputDraft,
   readComposerMentionDraft,
+  readComposerPhoneUploadIgnoredFileKeys,
   readComposerPhoneUploadSession,
   subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
@@ -1985,6 +1986,9 @@ export default function MessagesView({
         }
 
         const nextAttachments = [];
+        const ignoredFileKeys = new Set(
+          readComposerPhoneUploadIgnoredFileKeys(composerDraftStoreRef.current, sessionTopic),
+        );
         const existingAttachmentKeys = new Set(
           readComposerAttachmentDraft(composerDraftStoreRef.current, sessionTopic)
             .map(attachmentFileKey)
@@ -1995,6 +1999,7 @@ export default function MessagesView({
           const fileKey = file.file_key || file.url || file.name;
           if (
             !fileKey
+            || ignoredFileKeys.has(fileKey)
             || phoneUploadFileKeysRef.current.has(fileKey)
             || existingAttachmentKeys.has(fileKey)
           ) continue;
@@ -2044,7 +2049,10 @@ export default function MessagesView({
       ) {
         setPhoneUploadError(error?.message || '读取手机上传结果失败');
       }
-      if (/session not found|not found|expired/i.test(String(error?.message || ''))) {
+      if (
+        /session not found|not found|expired/i.test(String(error?.message || ''))
+        && phoneUploadSessionRef.current?.session_id === sessionId
+      ) {
         writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, null);
         persistComposerDraftStore();
         if (
@@ -2231,6 +2239,33 @@ export default function MessagesView({
         ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
         : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
+      // If a harmless store update happened while the request was in flight,
+      // finish consuming the same payload after success. Keep a genuinely
+      // newer draft intact.
+      const inputStillMatches = readComposerInputDraft(
+        composerDraftStoreRef.current,
+        topic,
+      ) === originalInput;
+      const attachmentsStillMatch = JSON.stringify(readComposerAttachmentDraft(
+        composerDraftStoreRef.current,
+        topic,
+      )) === JSON.stringify(attachmentsToSend);
+      if (!stateCleared && inputStillMatches && attachmentsStillMatch) {
+        invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
+        updateComposerDraft(topic, '');
+        updateStructuredMentionDraft(topic, []);
+        updateAttachmentDraft(topic, []);
+        writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
+        persistComposerDraftStore();
+        stateCleared = true;
+        if (activeTopicRef.current === topic) {
+          setInput('');
+          setPendingAttachments([]);
+          phoneUploadSessionRef.current = null;
+          phoneUploadTopicRef.current = '';
+          setPhoneUploadSession(null);
+        }
+      }
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
           await onActivateTopic?.(topicToActivate);
@@ -4546,7 +4581,22 @@ export default function MessagesView({
         attachments={pendingAttachments}
         attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
         onRemoveAttachment={(index) => {
-          updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          const current = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
+          const removed = current[index];
+          const fileKey = attachmentFileKey(removed);
+          const session = readComposerPhoneUploadSession(composerDraftStoreRef.current, topic);
+          if (fileKey && session?.session_id) {
+            const ignored = readComposerPhoneUploadIgnoredFileKeys(
+              composerDraftStoreRef.current,
+              topic,
+            );
+            writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, {
+              ...session,
+              ignored_file_keys: [...new Set([...ignored, fileKey])],
+            });
+            persistComposerDraftStore();
+          }
+          updateAttachmentDraft(topic, (items) => items.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}
         overlay={showMentionPicker && isGroup && (
