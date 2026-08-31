@@ -218,6 +218,36 @@ describe('EmptyTaskComposer', () => {
     expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
   });
 
+  it('clears the new-task draft from both storage copies after a successful send', async () => {
+    const composerDraftStore = createComposerDraftStore('sent-draft-context');
+    composerDraftStore.setAttachmentDraft('new-task', [{
+      type: 'file',
+      name: 'brief.pdf',
+      content: { type: 'file', payload: { file_key: 'brief.pdf' } },
+    }]);
+    composerDraftStore.persist();
+
+    const onResolveAgentTopic = vi.fn().mockResolvedValue({ topicId: 'p2p_1_21' });
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic,
+    });
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '发送这条任务');
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+
+    expect(onResolveAgentTopic).toHaveBeenCalledWith(
+      agents[0],
+      expect.objectContaining({ text: '发送这条任务' }),
+    );
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-context')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-context')).toBeNull();
+
+    const freshContext = createComposerDraftStore('sent-draft-context');
+    expect(freshContext.getInputDraft('new-task')).toBe('');
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
   it('persists an attachment when navigation unmounts the composer during upload', async () => {
     const attachmentDrafts = new Map();
     const composerDraftStore = {
