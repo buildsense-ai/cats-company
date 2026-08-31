@@ -157,6 +157,7 @@ CATSCO_WORKER_ARTIFACT_HOST_MODE=forwarded
 curl --fail https://gateway-probe.artifacts.catsco.fun:19991/__artifact_gateway_health
 /opt/catsco/ops/artifact-gateway-route.sh status <agent-uid>
 curl --fail http://<worker-private-ip>:19990/__artifact_health
+curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/__artifact_health
 curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
 ```
 

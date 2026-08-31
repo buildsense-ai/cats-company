@@ -112,6 +112,17 @@ server {
         return 200 '{"ok":true,"contract_version":"catsco.artifact-gateway.v1"}';
     }
 
+    location = /__artifact_health {
+        if (\$catsco_artifact_route_found = 0) { return 404; }
+        proxy_pass http://\$catsco_artifact_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 15s;
+    }
+
     location /artifacts/ {
         if (\$catsco_artifact_route_found = 0) { return 404; }
         proxy_pass http://\$catsco_artifact_backend;
