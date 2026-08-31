@@ -16,6 +16,7 @@ import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
   invalidateComposerDraftRevision,
   isComposerDraftRevisionCurrent,
+  markComposerPhoneUploadIgnoredFileKey,
   persistComposerDraftStore as persistComposerDraftStoreValue,
   readComposerAttachmentDraft,
   readComposerDraftMutationRevision,
@@ -2235,13 +2236,18 @@ export default function MessagesView({
         }]));
       }
 
+      // Snapshot the payload mutation counter after preparation and before the
+      // request. Finish consuming the same payload after success only when
+      // nothing touched the draft in flight; the counter treats an identical
+      // re-typed draft as newer and keeps it intact.
+      const sendStartMutationRevision = readComposerDraftMutationRevision(
+        composerDraftStoreRef.current,
+        topic,
+      );
       const result = mentions.length > 0
         ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
         : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
-      // If a harmless store update happened while the request was in flight,
-      // finish consuming the same payload after success. Keep a genuinely
-      // newer draft intact.
       const inputStillMatches = readComposerInputDraft(
         composerDraftStoreRef.current,
         topic,
@@ -2250,7 +2256,13 @@ export default function MessagesView({
         composerDraftStoreRef.current,
         topic,
       )) === JSON.stringify(attachmentsToSend);
-      if (!stateCleared && inputStillMatches && attachmentsStillMatch) {
+      if (
+        !stateCleared
+        && inputStillMatches
+        && attachmentsStillMatch
+        && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+          === sendStartMutationRevision
+      ) {
         invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
         updateComposerDraft(topic, '');
         updateStructuredMentionDraft(topic, []);
@@ -4582,20 +4594,11 @@ export default function MessagesView({
         attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
         onRemoveAttachment={(index) => {
           const current = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
-          const removed = current[index];
-          const fileKey = attachmentFileKey(removed);
-          const session = readComposerPhoneUploadSession(composerDraftStoreRef.current, topic);
-          if (fileKey && session?.session_id) {
-            const ignored = readComposerPhoneUploadIgnoredFileKeys(
-              composerDraftStoreRef.current,
-              topic,
-            );
-            writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, {
-              ...session,
-              ignored_file_keys: [...new Set([...ignored, fileKey])],
-            });
-            persistComposerDraftStore();
-          }
+          markComposerPhoneUploadIgnoredFileKey(
+            composerDraftStoreRef.current,
+            topic,
+            attachmentFileKey(current[index]),
+          );
           updateAttachmentDraft(topic, (items) => items.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}

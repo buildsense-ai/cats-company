@@ -5,9 +5,12 @@ import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
   invalidateComposerDraftRevision,
   isComposerDraftRevisionCurrent,
+  markComposerDraftMutation,
+  markComposerPhoneUploadIgnoredFileKey,
   NEW_TASK_DRAFT_KEY,
   persistComposerDraftStore,
   readComposerAttachmentDraft,
+  readComposerDraftMutationRevision,
   readComposerDraftRevision,
   readComposerInputDraft,
   readComposerPhoneUploadIgnoredFileKeys,
@@ -101,9 +104,15 @@ export default function EmptyTaskComposer({
     const currentAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
     if (currentInput !== nextInput) {
       writeComposerInputDraft(composerDraftStore, normalizedDraftKey, nextInput);
+    } else {
+      // An identical re-type must still count as a newer draft, or a send
+      // in flight would clear it when the request completes.
+      markComposerDraftMutation(composerDraftStore, normalizedDraftKey);
     }
     if (JSON.stringify(currentAttachments) !== JSON.stringify(nextAttachments)) {
       writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, nextAttachments);
+    } else {
+      markComposerDraftMutation(composerDraftStore, normalizedDraftKey);
     }
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
@@ -136,13 +145,20 @@ export default function EmptyTaskComposer({
   }, [composerDraftStore, normalizedDraftKey]);
 
   const clearDraftAfterSend = useCallback((
+    expectedMutationRevision,
     expectedInput,
     expectedAttachments,
     expectedPhoneUploadSession,
   ) => {
     // A newer composer may have written the same draft key while this send was
     // in flight. In that case only invalidate the old callbacks; never clear
-    // the newer draft.
+    // the newer draft. The payload mutation counter ignores Agent-context
+    // writes, so a roster refresh cannot block clearing a sent draft.
+    if (
+      expectedMutationRevision !== null
+      && readComposerDraftMutationRevision(revisionStore, normalizedDraftKey)
+        !== expectedMutationRevision
+    ) return false;
     const inputChanged = (
       expectedInput !== undefined
       && (composerDraftStore
@@ -161,9 +177,8 @@ export default function EmptyTaskComposer({
         composerDraftStore,
         normalizedDraftKey,
       )) !== JSON.stringify(expectedPhoneUploadSession);
-    // A context-only write (for example an Agent refresh) may advance the
-    // mutation counter without changing the message being sent. Clear that
-    // same payload; preserve only an actually newer draft.
+    // Content checks also guard custom stores that do not track the payload
+    // mutation counter.
     if (inputChanged || attachmentsChanged || phoneSessionChanged) {
       return false;
     }
@@ -670,6 +685,10 @@ export default function EmptyTaskComposer({
       // polling above is intentionally allowed to finish so its files can be
       // included in this message.
       invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
+      const sentDraftMutationRevision = readComposerDraftMutationRevision(
+        revisionStore,
+        normalizedDraftKey,
+      );
       const contentBlocks = buildAtomicContentBlocks(text, attachments);
       const displayContent = text || summarizeAttachments(attachments);
       const payload = attachments.length > 0
@@ -690,6 +709,7 @@ export default function EmptyTaskComposer({
       // The shared store must be cleared even when navigation already
       // unmounted this view while the request was in flight.
       const draftCleared = clearDraftAfterSend(
+        sentDraftMutationRevision,
         sentDraftInput,
         attachments,
         sentDraftPhoneUploadSession,
@@ -891,20 +911,11 @@ export default function EmptyTaskComposer({
         attachmentRemovalDisabled={isUploadingAttachment || isSubmitting}
         onRemoveAttachment={(index) => {
           const current = pendingAttachmentsRef.current;
-          const removed = current[index];
-          const fileKey = attachmentFileKey(removed);
-          const session = readComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey);
-          if (fileKey && session?.session_id) {
-            const ignored = readComposerPhoneUploadIgnoredFileKeys(
-              composerDraftStore,
-              normalizedDraftKey,
-            );
-            writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, {
-              ...session,
-              ignored_file_keys: [...new Set([...ignored, fileKey])],
-            });
-            persistComposerDraftStore(composerDraftStore);
-          }
+          markComposerPhoneUploadIgnoredFileKey(
+            composerDraftStore,
+            normalizedDraftKey,
+            attachmentFileKey(current[index]),
+          );
           replaceAttachments(current.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}

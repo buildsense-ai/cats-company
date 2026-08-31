@@ -228,14 +228,13 @@ function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
-function taskContextMatches(context, agent, projectId = 0, projectName = '') {
-  const contextAgent = context?.agent;
-  const contextAgentID = contextAgent?.uid ?? contextAgent?.id;
-  const agentID = agent?.uid ?? agent?.id;
-  return Boolean(context)
-    && String(contextAgentID || '') === String(agentID || '')
-    && Number(context.projectId || 0) === Number(projectId || 0)
-    && String(context.projectName || '') === String(projectName || '');
+function taskContextMatches(context, next) {
+  const contextAgentID = context?.agent?.uid ?? context?.agent?.id;
+  const nextAgentID = next?.agent?.uid ?? next?.agent?.id;
+  return Boolean(context && next)
+    && String(contextAgentID || '') === String(nextAgentID || '')
+    && Number(context.projectId || 0) === Number(next.projectId || 0)
+    && String(context.projectName || '') === String(next.projectName || '');
 }
 
 export function resetComposerDraftStore(draftStoreRef) {
@@ -1163,6 +1162,17 @@ function TinodeWebApp({ location }) {
     setActiveTopic(nextTopic);
   }, [setActiveTopic]);
 
+  const syncTaskContextDraft = useCallback((agent, projectId, projectName) => {
+    const next = { agent, projectId, projectName };
+    const current = readComposerTaskContextDraft(
+      composerDraftStoreRef.current,
+      NEW_TASK_DRAFT_KEY,
+    );
+    if (taskContextMatches(current, next)) return;
+    writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, next);
+    persistComposerDraftStore(composerDraftStoreRef.current);
+  }, []);
+
   const handleStartAgentTask = useCallback((agent, options = {}) => {
     const agentUid = agent?.uid || agent?.id;
     if (!agentUid) return;
@@ -1179,18 +1189,7 @@ function TinodeWebApp({ location }) {
       projectId: projectId > 0 ? projectId : 0,
       projectName,
     });
-    const currentContext = readComposerTaskContextDraft(
-      composerDraftStoreRef.current,
-      NEW_TASK_DRAFT_KEY,
-    );
-    if (!taskContextMatches(currentContext, agent, projectId, projectName)) {
-      writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, {
-        agent,
-        projectId,
-        projectName,
-      });
-      persistComposerDraftStore(composerDraftStoreRef.current);
-    }
+    syncTaskContextDraft(agent, projectId, projectName);
     setMobileSidebarOpen(false);
   }, [setActiveTopic]);
 
@@ -1207,14 +1206,8 @@ function TinodeWebApp({ location }) {
     const projectName = projectId > 0
       ? String(taskDraft?.projectName || current?.projectName || '')
       : '';
-    if (taskContextMatches(current, agent, projectId, projectName)) return;
-    writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, {
-      agent,
-      projectId,
-      projectName,
-    });
-    persistComposerDraftStore(composerDraftStoreRef.current);
-  }, [taskDraft]);
+    syncTaskContextDraft(agent, projectId, projectName);
+  }, [syncTaskContextDraft, taskDraft]);
 
   const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
     createAgentTaskTopic(agent, {

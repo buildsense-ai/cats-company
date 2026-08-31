@@ -477,6 +477,21 @@ export function readComposerPhoneUploadIgnoredFileKeys(store, key) {
   return readComposerPhoneUploadSession(store, key)?.ignored_file_keys || [];
 }
 
+// Shared by every composer: removing a restored attachment must stay removed
+// even after a SkillHub handoff rehydrates the draft in a fresh document.
+export function markComposerPhoneUploadIgnoredFileKey(store, key, fileKey) {
+  const normalizedKey = normalizeDraftKey(key);
+  if (!normalizedKey || !fileKey) return;
+  const session = readComposerPhoneUploadSession(store, normalizedKey);
+  if (!session?.session_id) return;
+  const ignored = readComposerPhoneUploadIgnoredFileKeys(store, normalizedKey);
+  writeComposerPhoneUploadSession(store, normalizedKey, {
+    ...session,
+    ignored_file_keys: [...new Set([...ignored, fileKey])],
+  });
+  persistComposerDraftStore(store);
+}
+
 export function writeComposerPhoneUploadSession(store, key, value) {
   if (typeof store?.setPhoneUploadSession === 'function') {
     store.setPhoneUploadSession(key, value);

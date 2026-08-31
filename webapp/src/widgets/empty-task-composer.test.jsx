@@ -293,6 +293,58 @@ describe('EmptyTaskComposer', () => {
     );
   });
 
+  it('keeps a draft re-typed identically while the send is in flight', async () => {
+    const composerDraftStore = createComposerDraftStore('retype-in-flight');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic: vi.fn().mockResolvedValue({ topicId: 'p2p_1_22' }),
+    });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '重打同样的话');
+    await pressEnter(textarea);
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await typeInto(textarea, '重打同样的话');
+      await flushPromises();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 114 });
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('重打同样的话');
+    expect(localStorage.getItem('catsco_composer_drafts:v1:retype-in-flight')).not.toBeNull();
+  });
+
+  it('retains the new-task draft in both storage copies when creation fails', async () => {
+    const composerDraftStore = createComposerDraftStore('creation-failure');
+    const onResolveAgentTopic = vi.fn().mockRejectedValue(new Error('创建失败'));
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic,
+    });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '失败后保留草稿');
+    await pressEnter(textarea);
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(onResolveAgentTopic).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('失败后保留草稿');
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:creation-failure')).not.toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:creation-failure')).not.toBeNull();
+  });
+
   it('persists an attachment when navigation unmounts the composer during upload', async () => {
     const attachmentDrafts = new Map();
     const composerDraftStore = {
