@@ -20,6 +20,10 @@ vi.mock('./qr-code', () => ({
 }));
 
 import { api } from '../api';
+import {
+  createComposerDraftStore,
+  writeComposerTaskContextDraft,
+} from '../utils/composer-draft-storage';
 import EmptyTaskComposer from './empty-task-composer';
 
 const agents = [
@@ -52,6 +56,8 @@ describe('EmptyTaskComposer', () => {
     api.uploadFile.mockReset();
     api.createMobileUploadSession.mockReset();
     api.getMobileUploadSession.mockReset();
+    localStorage.clear();
+    sessionStorage.clear();
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -65,6 +71,8 @@ describe('EmptyTaskComposer', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     container.remove();
+    localStorage.clear();
+    sessionStorage.clear();
     vi.clearAllMocks();
   });
 
@@ -186,6 +194,155 @@ describe('EmptyTaskComposer', () => {
       }),
     ]);
     expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('persists removing a restored attachment across a fresh context', async () => {
+    const composerDraftStore = createComposerDraftStore('attachment-removal-context');
+    const attachment = {
+      type: 'file',
+      name: 'brief.pdf',
+      content: {
+        type: 'file',
+        payload: { file_key: 'brief.pdf', url: '/uploads/brief.pdf', name: 'brief.pdf' },
+      },
+    };
+    composerDraftStore.setAttachmentDraft('new-task', [attachment]);
+    composerDraftStore.persist();
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：brief.pdf"]'));
+      await flushPromises();
+    });
+
+    // A new SkillHub document cannot see the old sessionStorage copy.
+    sessionStorage.clear();
+    const freshContext = createComposerDraftStore('attachment-removal-context');
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  it('clears the new-task draft from both storage copies after a successful send', async () => {
+    const composerDraftStore = createComposerDraftStore('sent-draft-context');
+    composerDraftStore.setAttachmentDraft('new-task', [{
+      type: 'file',
+      name: 'brief.pdf',
+      content: { type: 'file', payload: { file_key: 'brief.pdf' } },
+    }]);
+    composerDraftStore.persist();
+
+    const onResolveAgentTopic = vi.fn().mockResolvedValue({ topicId: 'p2p_1_21' });
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic,
+    });
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '发送这条任务');
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+
+    expect(onResolveAgentTopic).toHaveBeenCalledWith(
+      agents[0],
+      expect.objectContaining({ text: '发送这条任务' }),
+    );
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-context')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-context')).toBeNull();
+
+    const freshContext = createComposerDraftStore('sent-draft-context');
+    expect(freshContext.getInputDraft('new-task')).toBe('');
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  it('clears a sent draft when the Agent roster refreshes during the send', async () => {
+    const composerDraftStore = createComposerDraftStore('sent-draft-roster-refresh');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onSelectedAgentChange: (agent) => {
+        if (!agent) return;
+        writeComposerTaskContextDraft(composerDraftStore, 'new-task', { agent });
+        composerDraftStore.persist();
+      },
+    });
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '发送后应清除');
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    api.getAgents.mockResolvedValueOnce({ agents: [{ ...agents[0] }] });
+    await act(async () => {
+      window.dispatchEvent(new Event('cc:data-changed'));
+      await flushPromises();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 113 });
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('');
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+    expect(composerDraftStore.getTaskContextDraft('new-task')).toBeNull();
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh')).toBeNull();
+
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '新的未发送草稿');
+    expect(composerDraftStore.getTaskContextDraft('new-task')).toEqual(
+      expect.objectContaining({ agent: expect.objectContaining({ uid: 21 }) }),
+    );
+  });
+
+  it('keeps a draft re-typed identically while the send is in flight', async () => {
+    const composerDraftStore = createComposerDraftStore('retype-in-flight');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic: vi.fn().mockResolvedValue({ topicId: 'p2p_1_22' }),
+    });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '重打同样的话');
+    await pressEnter(textarea);
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await typeInto(textarea, '重打同样的话');
+      await flushPromises();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 114 });
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('重打同样的话');
+    expect(localStorage.getItem('catsco_composer_drafts:v1:retype-in-flight')).not.toBeNull();
+  });
+
+  it('retains the new-task draft in both storage copies when creation fails', async () => {
+    const composerDraftStore = createComposerDraftStore('creation-failure');
+    const onResolveAgentTopic = vi.fn().mockRejectedValue(new Error('创建失败'));
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic,
+    });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '失败后保留草稿');
+    await pressEnter(textarea);
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(onResolveAgentTopic).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('失败后保留草稿');
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:creation-failure')).not.toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:creation-failure')).not.toBeNull();
   });
 
   it('persists an attachment when navigation unmounts the composer during upload', async () => {

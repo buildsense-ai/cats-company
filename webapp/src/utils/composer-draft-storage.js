@@ -16,6 +16,17 @@ const draftMutationStores = new WeakMap();
 const draftStoreRegistries = new Map();
 const objectDraftStoreRegistries = new WeakMap();
 
+// A SkillHub handoff may mount the workspace in a new document. Keep the
+// session copy for the current tab and mirror it to localStorage so the next
+// document can hydrate the same user-scoped draft.
+function storageTargets(storage) {
+  if (storage && typeof storage === 'object') return [storage];
+  const storageType = String(storage || 'sessionStorage');
+  return storageType === 'sessionStorage'
+    ? ['sessionStorage', 'localStorage']
+    : [storageType];
+}
+
 function normalizeDraftKey(key) {
   return String(key || '');
 }
@@ -52,6 +63,31 @@ function isPhoneUploadSession(value) {
     && typeof value.session_id === 'string' && value.session_id.length > 0;
 }
 
+function normalizePhoneUploadSession(value) {
+  if (!isPhoneUploadSession(value)) return null;
+  const ignored = Array.isArray(value.ignored_file_keys)
+    ? [...new Set(value.ignored_file_keys.map(String).filter(Boolean))]
+    : [];
+  return ignored.length ? { ...value, ignored_file_keys: ignored } : { ...value };
+}
+
+function normalizeTaskContext(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const agent = value.agent && typeof value.agent === 'object' && !Array.isArray(value.agent)
+    ? { ...value.agent }
+    : null;
+  const candidateProjectId = Number(value.projectId);
+  const projectId = Number.isFinite(candidateProjectId) && candidateProjectId > 0
+    ? candidateProjectId
+    : 0;
+  if (!agent && projectId === 0) return null;
+  return {
+    agent,
+    projectId,
+    projectName: projectId > 0 ? String(value.projectName || '') : '',
+  };
+}
+
 function revisionMapFor(store) {
   if (!store || (typeof store !== 'object' && typeof store !== 'function')) return null;
   let revisions = draftRevisionStores.get(store);
@@ -82,13 +118,36 @@ function draftEntries(entries, acceptsValue) {
 }
 
 function readDraftSnapshot(storageKey, storage) {
-  if (!storageKey) return {};
+  if (!storageKey) return null;
   try {
-    const stored = JSON.parse(readStorageValue(storageKey, storage) || '{}');
-    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+    const serialized = readStorageValue(storageKey, storage);
+    if (!serialized) return null;
+    const stored = JSON.parse(serialized);
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : null;
   } catch {
-    return {};
+    return null;
   }
+}
+
+function readDraftSnapshots(storageKey, storage) {
+  let selected = null;
+  let selectedUpdatedAt = -1;
+  let selectedIndex = Number.POSITIVE_INFINITY;
+  storageTargets(storage).forEach((target, index) => {
+    const candidate = readDraftSnapshot(storageKey, target);
+    if (!candidate) return;
+    const candidateUpdatedAt = Number(candidate.updatedAt) || 0;
+    if (
+      selected === null
+      || candidateUpdatedAt > selectedUpdatedAt
+      || (candidateUpdatedAt === selectedUpdatedAt && index < selectedIndex)
+    ) {
+      selected = candidate;
+      selectedUpdatedAt = candidateUpdatedAt;
+      selectedIndex = index;
+    }
+  });
+  return selected || {};
 }
 
 export function composerDraftStorageKey(userID) {
@@ -97,29 +156,36 @@ export function composerDraftStorageKey(userID) {
 }
 
 export function clearPersistedComposerDrafts(storage = 'sessionStorage') {
-  const target = getStorage(storage);
-  if (!target) return 0;
-  const registry = registryFor(storage);
+  const targets = storageTargets(storage);
+  const targetObjects = targets.map((target) => getStorage(target)).filter(Boolean);
+  if (targetObjects.length === 0) return 0;
+  const registries = new Set(targets.map((target) => registryFor(target)));
 
-  const keys = [];
-  try {
-    for (let index = 0; index < target.length; index += 1) {
-      const key = target.key(index);
-      if (typeof key === 'string' && key.startsWith(COMPOSER_DRAFT_STORAGE_PREFIX)) {
-        keys.push(key);
+  const keys = new Set();
+  targetObjects.forEach((target) => {
+    try {
+      for (let index = 0; index < target.length; index += 1) {
+        const key = target.key(index);
+        if (typeof key === 'string' && key.startsWith(COMPOSER_DRAFT_STORAGE_PREFIX)) {
+          keys.add(key);
+        }
       }
+    } catch {
+      // A blocked storage target must not prevent another target from clearing.
     }
-  } catch {
-    return 0;
-  }
+  });
 
   // Close every known account store, including stores that have not written a
   // snapshot yet. This prevents a late callback from recreating a draft after
   // logout has cleared the storage keys.
-  new Set(registry.values()).forEach((store) => store.close?.());
-  registry.clear();
-  return keys.reduce((removed, key) => {
-    const removedFromStorage = removeStorageValue(key, storage);
+  new Set([...registries].flatMap((registry) => [...registry.values()]))
+    .forEach((store) => store.close?.());
+  registries.forEach((registry) => registry.clear());
+  return [...keys].reduce((removed, key) => {
+    let removedFromStorage = false;
+    targetObjects.forEach((target) => {
+      if (removeStorageValue(key, target)) removedFromStorage = true;
+    });
     return removedFromStorage ? removed + 1 : removed;
   }, 0);
 }
@@ -128,7 +194,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   const storageKey = composerDraftStorageKey(userID);
   const registry = storageKey ? registryFor(storage) : null;
   const previousStore = registry?.get(storageKey);
-  const snapshot = readDraftSnapshot(storageKey, storage);
+  const snapshot = readDraftSnapshots(storageKey, storage);
   const inputDrafts = new Map(draftEntries(
     snapshot.inputDrafts,
     (value) => typeof value === 'string' && value,
@@ -143,8 +209,12 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
   ));
   const phoneUploadSessions = new Map(draftEntries(
     snapshot.phoneUploadSessions,
-    isPhoneUploadSession,
+    normalizePhoneUploadSession,
   ).map(([key, value]) => [key, { ...value }]));
+  const taskContextDrafts = new Map(draftEntries(
+    snapshot.taskContextDrafts,
+    normalizeTaskContext,
+  ));
   let active = true;
   let closed = false;
   let handoffTarget = null;
@@ -158,6 +228,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     structuredMentionDrafts.clear();
     attachmentDrafts.clear();
     phoneUploadSessions.clear();
+    taskContextDrafts.clear();
     if (registry?.get(storageKey) === draftStore) registry.delete(storageKey);
   };
 
@@ -178,6 +249,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     structuredMentionDrafts,
     attachmentDrafts,
     phoneUploadSessions,
+    taskContextDrafts,
     getInputDraft(key) {
       if (handoffTarget) return handoffTarget.getInputDraft(key);
       const value = inputDrafts.get(normalizeDraftKey(key));
@@ -235,7 +307,7 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     getPhoneUploadSession(key) {
       if (handoffTarget) return handoffTarget.getPhoneUploadSession(key);
       const value = phoneUploadSessions.get(normalizeDraftKey(key));
-      return isPhoneUploadSession(value) ? { ...value } : null;
+      return normalizePhoneUploadSession(value);
     },
     setPhoneUploadSession(key, value) {
       if (handoffTarget) {
@@ -244,8 +316,25 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
       const normalizedKey = normalizeDraftKey(key);
       if (!normalizedKey || closed) return;
-      if (isPhoneUploadSession(value)) phoneUploadSessions.set(normalizedKey, { ...value });
+      const normalizedValue = normalizePhoneUploadSession(value);
+      if (normalizedValue) phoneUploadSessions.set(normalizedKey, normalizedValue);
       else phoneUploadSessions.delete(normalizedKey);
+      notify(normalizedKey);
+    },
+    getTaskContextDraft(key) {
+      if (handoffTarget) return handoffTarget.getTaskContextDraft(key);
+      return normalizeTaskContext(taskContextDrafts.get(normalizeDraftKey(key)));
+    },
+    setTaskContextDraft(key, value) {
+      if (handoffTarget) {
+        handoffTarget.setTaskContextDraft(key, value);
+        return;
+      }
+      const normalizedKey = normalizeDraftKey(key);
+      if (!normalizedKey || closed) return;
+      const normalizedValue = normalizeTaskContext(value);
+      if (normalizedValue) taskContextDrafts.set(normalizedKey, normalizedValue);
+      else taskContextDrafts.delete(normalizedKey);
       notify(normalizedKey);
     },
     persist() {
@@ -255,22 +344,30 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
       }
       // A composer can finish an upload after its workspace has unmounted.
       // Keep inactive stores writable until logout closes them so a replacement
-      // store can hydrate the late result from sessionStorage.
+      // store can hydrate the late result from either persisted storage copy.
       if (closed || !storageKey) return;
       if (inputDrafts.size === 0
         && structuredMentionDrafts.size === 0
         && attachmentDrafts.size === 0
-        && phoneUploadSessions.size === 0) {
-        removeStorageValue(storageKey, storage);
+        && phoneUploadSessions.size === 0
+        && taskContextDrafts.size === 0) {
+        storageTargets(storage).forEach((target) => removeStorageValue(storageKey, target));
         return;
       }
       try {
-        writeStorageValue(storageKey, JSON.stringify({
+        const serialized = JSON.stringify({
           inputDrafts: [...inputDrafts],
           structuredMentionDrafts: [...structuredMentionDrafts],
           attachmentDrafts: [...attachmentDrafts],
           phoneUploadSessions: [...phoneUploadSessions],
-        }), storage);
+          taskContextDrafts: [...taskContextDrafts],
+          updatedAt: Date.now(),
+        });
+        storageTargets(storage).forEach((target) => writeStorageValue(
+          storageKey,
+          serialized,
+          target,
+        ));
       } catch {
         // Keep the in-memory draft when a browser cannot serialize or store it.
       }
@@ -286,7 +383,9 @@ export function createComposerDraftStore(userID, storage = 'sessionStorage') {
     },
     clearPersisted() {
       close();
-      if (storageKey) removeStorageValue(storageKey, storage);
+      if (storageKey) {
+        storageTargets(storage).forEach((target) => removeStorageValue(storageKey, target));
+      }
     },
     close,
     subscribe(listener) {
@@ -371,7 +470,26 @@ export function readComposerPhoneUploadSession(store, key) {
   const value = typeof store?.getPhoneUploadSession === 'function'
     ? store.getPhoneUploadSession(key)
     : store?.phoneUploadSessions?.get?.(key);
-  return isPhoneUploadSession(value) ? { ...value } : null;
+  return normalizePhoneUploadSession(value);
+}
+
+export function readComposerPhoneUploadIgnoredFileKeys(store, key) {
+  return readComposerPhoneUploadSession(store, key)?.ignored_file_keys || [];
+}
+
+// Shared by every composer: removing a restored attachment must stay removed
+// even after a SkillHub handoff rehydrates the draft in a fresh document.
+export function markComposerPhoneUploadIgnoredFileKey(store, key, fileKey) {
+  const normalizedKey = normalizeDraftKey(key);
+  if (!normalizedKey || !fileKey) return;
+  const session = readComposerPhoneUploadSession(store, normalizedKey);
+  if (!session?.session_id) return;
+  const ignored = readComposerPhoneUploadIgnoredFileKeys(store, normalizedKey);
+  writeComposerPhoneUploadSession(store, normalizedKey, {
+    ...session,
+    ignored_file_keys: [...new Set([...ignored, fileKey])],
+  });
+  persistComposerDraftStore(store);
 }
 
 export function writeComposerPhoneUploadSession(store, key, value) {
@@ -382,9 +500,29 @@ export function writeComposerPhoneUploadSession(store, key, value) {
   }
   const normalizedKey = normalizeDraftKey(key);
   if (!normalizedKey || typeof store?.phoneUploadSessions?.set !== 'function') return;
-  if (isPhoneUploadSession(value)) store.phoneUploadSessions.set(normalizedKey, { ...value });
+  const normalizedValue = normalizePhoneUploadSession(value);
+  if (normalizedValue) store.phoneUploadSessions.set(normalizedKey, normalizedValue);
   else store.phoneUploadSessions.delete?.(normalizedKey);
   markComposerDraftMutation(store, normalizedKey);
+}
+
+export function readComposerTaskContextDraft(store, key) {
+  const value = typeof store?.getTaskContextDraft === 'function'
+    ? store.getTaskContextDraft(key)
+    : store?.taskContextDrafts?.get?.(key);
+  return normalizeTaskContext(value);
+}
+
+export function writeComposerTaskContextDraft(store, key, value) {
+  if (typeof store?.setTaskContextDraft === 'function') {
+    store.setTaskContextDraft(key, value);
+    return;
+  }
+  const normalizedKey = normalizeDraftKey(key);
+  if (!normalizedKey || typeof store?.taskContextDrafts?.set !== 'function') return;
+  const normalizedValue = normalizeTaskContext(value);
+  if (normalizedValue) store.taskContextDrafts.set(normalizedKey, normalizedValue);
+  else store.taskContextDrafts.delete?.(normalizedKey);
 }
 
 export function writeComposerAttachmentDraft(store, key, value) {
@@ -430,9 +568,10 @@ export function isComposerDraftRevisionCurrent(store, key, revision) {
     && readComposerDraftRevision(store, key) === normalizedRevision;
 }
 
-// Unlike the invalidation revision, this counter records every draft write.
-// It lets a send operation distinguish a newer draft typed while its request
-// was in flight, even when the newer value happens to be identical.
+// Unlike the invalidation revision, this counter records every message-payload
+// draft write. It lets a send operation distinguish newer text or attachments
+// typed while its request was in flight, even when the value is identical;
+// selecting or refreshing the Agent context is tracked separately.
 export function readComposerDraftMutationRevision(store, key) {
   const normalizedKey = normalizeDraftKey(key);
   if (!normalizedKey) return 0;

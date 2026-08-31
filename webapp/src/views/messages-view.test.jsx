@@ -1148,6 +1148,24 @@ describe('MessagesView composer draft isolation', () => {
     expect(attachmentDrafts.get('p2p_1_2')).toBeUndefined();
   });
 
+  it('removes the current conversation draft after a successful send', async () => {
+    const composerDraftStore = createComposerDraftStore('sent-conversation-draft');
+    await mountTopic(root, 'p2p_1_2', { composerDraftStore });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '发送后清空');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    expect(createComposerDraftStore('sent-conversation-draft').getInputDraft('p2p_1_2')).toBe('');
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-conversation-draft')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-conversation-draft')).toBeNull();
+  });
+
   it('does not restore stale long-paste text after a newer send', async () => {
     const attachmentDrafts = new Map();
     const inputDrafts = new Map();

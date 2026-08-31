@@ -16,12 +16,14 @@ import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
   invalidateComposerDraftRevision,
   isComposerDraftRevisionCurrent,
+  markComposerPhoneUploadIgnoredFileKey,
   persistComposerDraftStore as persistComposerDraftStoreValue,
   readComposerAttachmentDraft,
   readComposerDraftMutationRevision,
   readComposerDraftRevision,
   readComposerInputDraft,
   readComposerMentionDraft,
+  readComposerPhoneUploadIgnoredFileKeys,
   readComposerPhoneUploadSession,
   subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
@@ -1985,6 +1987,9 @@ export default function MessagesView({
         }
 
         const nextAttachments = [];
+        const ignoredFileKeys = new Set(
+          readComposerPhoneUploadIgnoredFileKeys(composerDraftStoreRef.current, sessionTopic),
+        );
         const existingAttachmentKeys = new Set(
           readComposerAttachmentDraft(composerDraftStoreRef.current, sessionTopic)
             .map(attachmentFileKey)
@@ -1995,6 +2000,7 @@ export default function MessagesView({
           const fileKey = file.file_key || file.url || file.name;
           if (
             !fileKey
+            || ignoredFileKeys.has(fileKey)
             || phoneUploadFileKeysRef.current.has(fileKey)
             || existingAttachmentKeys.has(fileKey)
           ) continue;
@@ -2044,7 +2050,10 @@ export default function MessagesView({
       ) {
         setPhoneUploadError(error?.message || '读取手机上传结果失败');
       }
-      if (/session not found|not found|expired/i.test(String(error?.message || ''))) {
+      if (
+        /session not found|not found|expired/i.test(String(error?.message || ''))
+        && phoneUploadSessionRef.current?.session_id === sessionId
+      ) {
         writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, null);
         persistComposerDraftStore();
         if (
@@ -2227,10 +2236,53 @@ export default function MessagesView({
         }]));
       }
 
+      // Snapshot the payload mutation counter after preparation and before the
+      // request. Finish consuming the same payload after success only when
+      // nothing touched the draft in flight; the counter treats an identical
+      // re-typed draft as newer and keeps it intact.
+      const sendStartMutationRevision = readComposerDraftMutationRevision(
+        composerDraftStoreRef.current,
+        topic,
+      );
       const result = mentions.length > 0
         ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
         : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
+      const inputStillMatches = readComposerInputDraft(
+        composerDraftStoreRef.current,
+        topic,
+      ) === originalInput;
+      const attachmentsStillMatch = JSON.stringify(readComposerAttachmentDraft(
+        composerDraftStoreRef.current,
+        topic,
+      )) === JSON.stringify(attachmentsToSend);
+      if (
+        !stateCleared
+        && inputStillMatches
+        && attachmentsStillMatch
+        // The payload counter also moves on mention-draft writes, which the
+        // checks above do not compare. Mid-send mention writes only happen
+        // alongside an input-draft rewrite (edit-resend, tutorial prompts),
+        // where skipping this clear is correct anyway, so an unchanged
+        // counter reliably means "same payload, no newer draft".
+        && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+          === sendStartMutationRevision
+      ) {
+        invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
+        updateComposerDraft(topic, '');
+        updateStructuredMentionDraft(topic, []);
+        updateAttachmentDraft(topic, []);
+        writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
+        persistComposerDraftStore();
+        stateCleared = true;
+        if (activeTopicRef.current === topic) {
+          setInput('');
+          setPendingAttachments([]);
+          phoneUploadSessionRef.current = null;
+          phoneUploadTopicRef.current = '';
+          setPhoneUploadSession(null);
+        }
+      }
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
           await onActivateTopic?.(topicToActivate);
@@ -4546,7 +4598,13 @@ export default function MessagesView({
         attachments={pendingAttachments}
         attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
         onRemoveAttachment={(index) => {
-          updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          const current = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
+          markComposerPhoneUploadIgnoredFileKey(
+            composerDraftStoreRef.current,
+            topic,
+            attachmentFileKey(current[index]),
+          );
+          updateAttachmentDraft(topic, (items) => items.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}
         overlay={showMentionPicker && isGroup && (

@@ -6,26 +6,31 @@ import {
   invalidateComposerDraftRevision,
   isComposerDraftRevisionCurrent,
   readComposerPhoneUploadSession,
+  readComposerTaskContextDraft,
   readComposerDraftMutationRevision,
   readComposerDraftRevision,
   subscribeComposerDraftStore,
   writeComposerPhoneUploadSession,
+  writeComposerTaskContextDraft,
   writeComposerInputDraft,
 } from './composer-draft-storage';
 
 describe('composer draft storage', () => {
   afterEach(() => {
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   test('clears every account draft when the auth session ends', () => {
     sessionStorage.setItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}1`, '{"inputDrafts":[]}');
     sessionStorage.setItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}2`, '{"inputDrafts":[]}');
+    localStorage.setItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}1`, '{"inputDrafts":[]}');
     sessionStorage.setItem('unrelated-session-state', 'keep');
 
     expect(clearPersistedComposerDrafts()).toBe(2);
     expect(sessionStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}1`)).toBeNull();
     expect(sessionStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}2`)).toBeNull();
+    expect(localStorage.getItem(`${COMPOSER_DRAFT_STORAGE_PREFIX}1`)).toBeNull();
     expect(sessionStorage.getItem('unrelated-session-state')).toBe('keep');
   });
 
@@ -40,6 +45,20 @@ describe('composer draft storage', () => {
     expect(restored.getInputDraft('new-task')).toBe('未发送的任务');
     expect(restored.getStructuredMentionDraft('p2p_1_2')).toEqual([{ target: 'usr7' }]);
     expect(restored.getAttachmentDraft('new-task')).toEqual([{ name: 'brief.pdf', type: 'file' }]);
+  });
+
+  test('hydrates a fresh SkillHub context from the mirrored draft', () => {
+    const store = createComposerDraftStore('skillhub-handoff');
+    writeComposerInputDraft(store, 'new-task', '跨 SkillHub 的草稿');
+    store.setAttachmentDraft('new-task', [{ name: 'brief.pdf', type: 'file' }]);
+    store.persist();
+
+    sessionStorage.clear();
+    const restored = createComposerDraftStore('skillhub-handoff');
+    expect(restored.getInputDraft('new-task')).toBe('跨 SkillHub 的草稿');
+    expect(restored.getAttachmentDraft('new-task')).toEqual([
+      { name: 'brief.pdf', type: 'file' },
+    ]);
   });
 
   test('invalidates async callbacks per draft key without persisting the revision', () => {
@@ -84,6 +103,23 @@ describe('composer draft storage', () => {
 
     const restored = createComposerDraftStore('42');
     expect(readComposerPhoneUploadSession(restored, 'new-task')).toEqual(session);
+  });
+
+  test('round-trips the selected Agent context with the draft', () => {
+    const store = createComposerDraftStore('task-context');
+    writeComposerTaskContextDraft(store, 'new-task', {
+      agent: { uid: 22, display_name: '运营助手' },
+      projectId: 12,
+      projectName: 'Website',
+    });
+    store.persist();
+
+    const restored = createComposerDraftStore('task-context');
+    expect(readComposerTaskContextDraft(restored, 'new-task')).toEqual({
+      agent: { uid: 22, display_name: '运营助手' },
+      projectId: 12,
+      projectName: 'Website',
+    });
   });
 
   test('notifies subscribers when a draft is changed through the public helpers', () => {
