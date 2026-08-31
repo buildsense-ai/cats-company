@@ -196,6 +196,98 @@ describe('EmptyTaskComposer', () => {
     expect(composerDraftStore.persist).toHaveBeenCalled();
   });
 
+  it('removes a just-uploaded attachment when X is clicked', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    const file = new File(['just uploaded'], 'fresh.pdf', { type: 'application/pdf' });
+    api.uploadFile.mockResolvedValueOnce({
+      file_key: 'fresh.pdf',
+      url: '/uploads/files/fresh.pdf',
+      name: 'fresh.pdf',
+      size: file.size,
+      mime_type: 'application/pdf',
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task')).toHaveLength(1);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：fresh.pdf"]'));
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：fresh.pdf"]')).toBeNull();
+  });
+
+  it('keeps a phone-uploaded attachment removed across later polls in the same document', async () => {
+    const attachmentDrafts = new Map();
+    const phoneUploadSessions = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions,
+      persist: vi.fn(),
+    };
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'live-upload',
+      upload_url: '/mobile-upload/live-upload',
+    });
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'live-upload',
+      files: [{
+        file_key: 'live-brief.pdf',
+        url: '/uploads/files/live-brief.pdf',
+        name: 'live-brief.pdf',
+        size: 2048,
+        type: 'file',
+        mime_type: 'application/pdf',
+      }],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(attachmentDrafts.get('new-task')).toHaveLength(1));
+
+    // The file was added through the poll path in THIS document, so the
+    // phone-upload file-key ref knows it; removal must still stick.
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：live-brief.pdf"]'));
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：live-brief.pdf"]')).toBeNull();
+  });
+
   it('persists removing a restored attachment across a fresh context', async () => {
     const composerDraftStore = createComposerDraftStore('attachment-removal-context');
     const attachment = {
@@ -219,6 +311,71 @@ describe('EmptyTaskComposer', () => {
     sessionStorage.clear();
     const freshContext = createComposerDraftStore('attachment-removal-context');
     expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  it('keeps a restored attachment removable while another upload is in flight', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    attachmentDrafts.set('new-task', [{
+      type: 'file',
+      name: 'kept.pdf',
+      content: {
+        type: 'file',
+        payload: { file_key: 'kept.pdf', url: '/uploads/files/kept.pdf', name: 'kept.pdf' },
+      },
+    }]);
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    const file = new File(['second upload'], 'pending.pdf', { type: 'application/pdf' });
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+    // The batch upload is still in flight; the already-uploaded attachment
+    // must stay removable.
+    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]').disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：kept.pdf"]'));
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'pending.pdf',
+        url: '/uploads/files/pending.pdf',
+        name: 'pending.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+    // The in-flight upload must not resurrect the removed attachment.
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
   });
 
   it('keeps a phone-uploaded attachment removed when the session poll re-lists it', async () => {
