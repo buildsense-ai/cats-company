@@ -127,18 +127,30 @@ commands below.
 Every configured provider must set `generation_url`, `edit_url`, and an explicit
 `edit_transport`. Use `json_data_url` for an upstream that accepts the CatsCo
 JSON reference format and `multipart` for an OpenAI-compatible file upload.
+Each provider must use exactly one of `api_key`, `api_key_file`, or
+`api_key_files`. The plural form accepts up to four server-only key files.
+When a credential receives an authentication, payment, rate-limit, or recognized
+quota/balance rejection, the same provider immediately tries its next credential.
+A credential that reaches a non-credential response becomes the preferred key
+for later requests, so an exhausted primary key is not retried first every time.
+Ordinary 5xx responses, network failures, timeouts, and invalid images do not
+rotate credentials.
+
 The gateway removes `async` and accepts only a completed image response, so a
-task ID never wins the race. Both provider lanes start together, which means a
+task ID never wins the race. All three provider lanes start together, which means a
 single user request can create one billable request at each provider even when
 the slower request is cancelled locally. Explicit HTTP 429 and 5xx responses
 can be retried within the configured attempt bound. Network errors, timeouts,
 and invalid 200 responses are not retried because the provider may already have
 accepted or billed the job without returning a trustworthy status.
 `CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER` defaults to 2 and is hard-capped
-at 4. With three providers, the default absolute request bound is six provider
-calls. The race also stops when `CATSCO_IMAGE_RACE_DEADLINE_SECONDS` expires.
-The deadline is capped at 285 seconds so the gateway can return a structured
-failure before the caller's roughly 300-second connection budget ends.
+at 4. The production example has four credentials across three providers, so
+its conservative default bound is eight upstream HTTP calls. In general, the
+bound is the sum of configured credentials multiplied by the per-provider
+attempt limit. The race also stops when
+`CATSCO_IMAGE_RACE_DEADLINE_SECONDS` expires. The deadline is capped at 285
+seconds so the gateway can return a structured failure before the caller's
+roughly 300-second connection budget ends.
 
 For rollback, clear `CATSCO_IMAGE_UPSTREAMS_FILE` and restore the legacy
 `CATSCO_IMAGE_UPSTREAM_URL`, `CATSCO_IMAGE_UPSTREAM_API_KEY` or

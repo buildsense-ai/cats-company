@@ -136,7 +136,7 @@ func NewImageGenerationProxyHandler(upstreamURL string, opts ImageGenerationProx
 		generationURL: handler.upstreamURL,
 		editURL:       handler.editUpstreamURL,
 		model:         handler.model,
-		apiKey:        handler.apiKey,
+		credentials:   newImageProviderCredentials([]string{handler.apiKey}),
 		client:        handler.client,
 		operations:    operations,
 		editTransport: imageEditTransportJSONDataURL,
@@ -310,7 +310,7 @@ func newImageGenerationProxyHandlerWithProviders(providers []imageUpstreamProvid
 		handler.upstreamURL = first.generationURL
 		handler.editUpstreamURL = first.editURL
 		handler.model = first.model
-		handler.apiKey = first.apiKey
+		handler.apiKey = first.credentials.primary()
 		handler.client = first.client
 	}
 	return handler
@@ -460,7 +460,7 @@ func (h *ImageGenerationProxyHandler) forwardImageRequest(
 	ctx, cancel := context.WithTimeout(r.Context(), h.raceDeadline)
 	defer cancel()
 	execution := h.runImageRace(ctx, payload, operation, func(attemptNumber int, attempt imageAttemptResult) {
-		log.Printf("[image-race] attempt operation=%s race_id=%s attempt=%d provider=%s uid=%d category=%s reason=%s status=%d duration_ms=%d", operation, raceID, attemptNumber, attempt.providerID, requesterUID, attempt.category, attempt.reason, attempt.status, attempt.duration.Milliseconds())
+		log.Printf("[image-race] attempt operation=%s race_id=%s attempt=%d provider=%s uid=%d category=%s reason=%s status=%d credential_attempts=%d duration_ms=%d", operation, raceID, attemptNumber, attempt.providerID, requesterUID, attempt.category, attempt.reason, attempt.status, attempt.credentialAttempts, attempt.duration.Milliseconds())
 	})
 	if execution.outcome == imageRaceCancelled {
 		log.Printf("[image-race] cancelled operation=%s race_id=%s attempts=%d uid=%d duration_ms=%d", operation, raceID, execution.totalAttempts, requesterUID, time.Since(startedAt).Milliseconds())

@@ -32,13 +32,14 @@ const (
 )
 
 type imageAttemptResult struct {
-	providerID string
-	status     int
-	headers    http.Header
-	body       []byte
-	category   imageAttemptCategory
-	reason     string
-	duration   time.Duration
+	providerID         string
+	status             int
+	headers            http.Header
+	body               []byte
+	category           imageAttemptCategory
+	reason             string
+	credentialAttempts int
+	duration           time.Duration
 }
 
 type imageRaceOutcome string
@@ -247,56 +248,102 @@ func (h *ImageGenerationProxyHandler) callImageProvider(
 	startedAt := time.Now()
 	result := imageAttemptResult{providerID: provider.id, category: imageAttemptTransient}
 
-	request, err := buildImageProviderRequest(ctx, provider, payload, operation)
-	if err != nil {
-		result.category = imageAttemptRequestFatal
-		result.reason = "request_encode_failed"
+	credentials := provider.credentials.ordered()
+	if len(credentials) == 0 {
+		result.category = imageAttemptProviderFatal
+		result.reason = "provider_credentials_missing"
 		result.duration = time.Since(startedAt)
 		return result
 	}
 
-	response, err := provider.client.Do(request)
-	if err != nil {
-		result.reason = "network_error"
-		if errors.Is(err, context.Canceled) {
-			result.reason = "cancelled"
-		} else if isImageGenerationTimeout(err) {
-			result.reason = "timeout"
-		}
-		result.duration = time.Since(startedAt)
-		return result
-	}
-	defer response.Body.Close()
-
-	result.status = response.StatusCode
-	result.headers = response.Header.Clone()
-	responseBody, readErr := readLimitedImageResponse(response.Body, h.maxResponseBytes)
-	if readErr != nil {
-		result.reason = "response_too_large_or_unreadable"
-		result.duration = time.Since(startedAt)
-		return result
-	}
-	result.body = responseBody
-
-	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		if err := validateCompletedImageResponse(responseBody, h.maxResponseBytes); err != nil {
-			if errors.Is(err, errAsyncImageResponse) {
-				result.category = imageAttemptProviderFatal
-				result.reason = "asynchronous_response_unsupported"
-				result.duration = time.Since(startedAt)
-				return result
-			}
-			result.reason = "invalid_completed_image"
+	for position, credential := range credentials {
+		result.credentialAttempts++
+		result.status = 0
+		result.headers = nil
+		result.body = nil
+		request, err := buildImageProviderRequest(ctx, provider, credential.apiKey, payload, operation)
+		if err != nil {
+			result.category = imageAttemptRequestFatal
+			result.reason = "request_encode_failed"
 			result.duration = time.Since(startedAt)
 			return result
 		}
-		result.category = imageAttemptSuccess
-		result.reason = "completed_image"
+
+		response, err := provider.client.Do(request)
+		if err != nil {
+			result.reason = "network_error"
+			if errors.Is(err, context.Canceled) {
+				result.reason = "cancelled"
+			} else if isImageGenerationTimeout(err) {
+				result.reason = "timeout"
+			}
+			result.duration = time.Since(startedAt)
+			return result
+		}
+
+		result.status = response.StatusCode
+		result.headers = response.Header.Clone()
+		responseBody, readErr := readLimitedImageResponse(response.Body, h.maxResponseBytes)
+		_ = response.Body.Close()
+		if readErr != nil {
+			if shouldRotateImageProviderCredential(response.StatusCode, nil) {
+				if position+1 < len(credentials) {
+					provider.credentials.prefer(credentials[position+1].index)
+					continue
+				}
+				if isImageProviderCredentialExhausted(response.StatusCode, nil) {
+					result.category = imageAttemptProviderFatal
+					result.reason = "provider_credentials_exhausted"
+					result.duration = time.Since(startedAt)
+					return result
+				}
+			}
+			result.reason = "response_too_large_or_unreadable"
+			result.duration = time.Since(startedAt)
+			return result
+		}
+		result.body = responseBody
+
+		if shouldRotateImageProviderCredential(response.StatusCode, responseBody) {
+			if position+1 < len(credentials) {
+				provider.credentials.prefer(credentials[position+1].index)
+				continue
+			}
+			if isImageProviderCredentialExhausted(response.StatusCode, responseBody) {
+				result.category = imageAttemptProviderFatal
+				result.reason = "provider_credentials_exhausted"
+				result.duration = time.Since(startedAt)
+				return result
+			}
+		} else {
+			provider.credentials.prefer(credential.index)
+		}
+
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			if err := validateCompletedImageResponse(responseBody, h.maxResponseBytes); err != nil {
+				if errors.Is(err, errAsyncImageResponse) {
+					result.category = imageAttemptProviderFatal
+					result.reason = "asynchronous_response_unsupported"
+					result.duration = time.Since(startedAt)
+					return result
+				}
+				result.reason = "invalid_completed_image"
+				result.duration = time.Since(startedAt)
+				return result
+			}
+			result.category = imageAttemptSuccess
+			result.reason = "completed_image"
+			result.duration = time.Since(startedAt)
+			return result
+		}
+
+		result.category, result.reason = classifyImageProviderHTTPStatus(response.StatusCode)
 		result.duration = time.Since(startedAt)
 		return result
 	}
 
-	result.category, result.reason = classifyImageProviderHTTPStatus(response.StatusCode)
+	result.category = imageAttemptProviderFatal
+	result.reason = "provider_credentials_exhausted"
 	result.duration = time.Since(startedAt)
 	return result
 }
@@ -304,6 +351,7 @@ func (h *ImageGenerationProxyHandler) callImageProvider(
 func buildImageProviderRequest(
 	ctx context.Context,
 	provider imageUpstreamProvider,
+	apiKey string,
 	payload map[string]interface{},
 	operation imageProviderOperation,
 ) (*http.Request, error) {
@@ -336,11 +384,55 @@ func buildImageProviderRequest(
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+provider.apiKey)
+	request.Header.Set("Authorization", "Bearer "+apiKey)
 	request.Header.Set("Content-Type", contentType)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "cats-company-image-proxy/2.0")
 	return request, nil
+}
+
+func shouldRotateImageProviderCredential(status int, body []byte) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	}
+	return isImageProviderCredentialExhausted(status, body)
+}
+
+func isImageProviderCredentialExhausted(status int, body []byte) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden:
+		return true
+	}
+	if status < 400 || len(body) == 0 {
+		return false
+	}
+	if len(body) > 64<<10 {
+		body = body[:64<<10]
+	}
+	normalized := strings.ToLower(string(body))
+	for _, marker := range []string{
+		"insufficient_quota",
+		"insufficient quota",
+		"insufficient_credit",
+		"insufficient credit",
+		"quota_exceeded",
+		"quota exceeded",
+		"quota exhausted",
+		"credit exhausted",
+		"credit balance",
+		"insufficient balance",
+		"billing_hard_limit_reached",
+		"resource_exhausted",
+		"余额不足",
+		"额度不足",
+		"配额不足",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeMultipartImageEdit(payload map[string]interface{}) ([]byte, string, error) {
