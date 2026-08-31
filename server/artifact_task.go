@@ -33,6 +33,9 @@ const (
 	artifactTaskActorActiveMax        = 32
 	artifactTaskActorRateMax          = 60
 	artifactTaskActorRateWindow       = time.Minute
+	artifactRuntimeRunRetention       = 30 * 24 * time.Hour
+	artifactRuntimeRunCleanupBatch    = 512
+	artifactRuntimeDeliveryClaimLease = 30 * time.Second
 	artifactTaskRequestMaxBody        = 96 * 1024
 	artifactTaskOpaqueRandomBytes     = 32
 	artifactTaskVisibleMessageMaxRune = 700
@@ -362,9 +365,24 @@ func (s *artifactTaskStore) createPersistent(candidate artifactTask) (artifactTa
 			return artifactTask{}, err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		created, createErr := s.runtimeRuns.CreateArtifactRuntimeRun(ctx, run)
+		created, createErr := s.runtimeRuns.CreateArtifactRuntimeRun(ctx, run, store.ArtifactRuntimeRunCreatePolicy{
+			ActorActiveMax:  s.actorActiveMax,
+			ActorRateMax:    s.actorRateMax,
+			ActorRateWindow: s.actorRateWindow,
+			MaxEntries:      s.maxEntries,
+			Retention:       artifactRuntimeRunRetention,
+			CleanupLimit:    artifactRuntimeRunCleanupBatch,
+		})
 		cancel()
 		if createErr != nil {
+			switch {
+			case errors.Is(createErr, store.ErrArtifactRuntimeActorActiveCap):
+				return artifactTask{}, errArtifactTaskActorActiveCap
+			case errors.Is(createErr, store.ErrArtifactRuntimeActorRateLimit):
+				return artifactTask{}, errArtifactTaskActorRateLimit
+			case errors.Is(createErr, store.ErrArtifactRuntimeRunStoreFull):
+				return artifactTask{}, errArtifactTaskStoreFull
+			}
 			if attempts < 7 && strings.Contains(strings.ToLower(createErr.Error()), "unique") {
 				continue
 			}
@@ -422,7 +440,7 @@ func (s *artifactTaskStore) reservePersistentDelivery(ref string, actorUID int64
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	claim, err := s.runtimeRuns.ReserveArtifactRuntimeDelivery(
-		ctx, artifactTaskRefHash(ref), actorUID, topicID, agentUID, clientMessageID,
+		ctx, artifactTaskRefHash(ref), actorUID, topicID, agentUID, clientMessageID, artifactRuntimeDeliveryClaimLease,
 	)
 	cancel()
 	if errors.Is(err, store.ErrArtifactRuntimeDeliveryPending) {

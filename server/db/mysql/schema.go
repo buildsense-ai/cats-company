@@ -23,6 +23,8 @@ func (a *Adapter) CreateSchema() error {
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
 		createArtifactRuntimeRunsTable,
+		createArtifactRuntimeAdmissionLockTable,
+		seedArtifactRuntimeAdmissionLock,
 		createArtifactRuntimeEventSequencesTable,
 		createArtifactRuntimeEventsTable,
 		createBotConnectionGenerationsTable,
@@ -54,6 +56,8 @@ func (a *Adapter) CreateSchema() error {
 
 	// Run migrations (safe to re-run; uses IF NOT EXISTS / column checks)
 	migrations := []string{
+		migrateArtifactRuntimeRunsAddDeliveryClaimedAt,
+		migrateArtifactRuntimeRunsBackfillDeliveryClaimedAt,
 		migrateArtifactRuntimeEventsV2Type,
 		migrateArtifactRuntimeEventsV2TaskID,
 		migrateArtifactRuntimeEventsV2RunID,
@@ -415,6 +419,7 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_runs (
     message VARCHAR(500) NOT NULL DEFAULT '',
     delivery_claimed TINYINT(1) NOT NULL DEFAULT 0,
     delivery_client_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    delivery_claimed_at TIMESTAMP(6) NULL DEFAULT NULL,
     delivered TINYINT(1) NOT NULL DEFAULT 0,
     executor_run_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
     executor_state VARCHAR(32) NOT NULL DEFAULT '',
@@ -432,6 +437,28 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_runs (
     FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
     CHECK (displayed_version > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createArtifactRuntimeAdmissionLockTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_admission_lock (
+    lock_id TINYINT NOT NULL PRIMARY KEY,
+    CHECK (lock_id = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const seedArtifactRuntimeAdmissionLock = `
+INSERT IGNORE INTO artifact_runtime_admission_lock (lock_id) VALUES (1);
+`
+
+const migrateArtifactRuntimeRunsAddDeliveryClaimedAt = `
+ALTER TABLE artifact_runtime_runs
+ADD COLUMN delivery_claimed_at TIMESTAMP(6) NULL DEFAULT NULL AFTER delivery_client_id;
+`
+
+const migrateArtifactRuntimeRunsBackfillDeliveryClaimedAt = `
+UPDATE artifact_runtime_runs
+SET delivery_claimed_at = updated_at
+WHERE delivery_claimed = 1 AND delivery_claimed_at IS NULL;
 `
 
 const createArtifactRuntimeEventSequencesTable = `

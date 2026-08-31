@@ -20,7 +20,7 @@ const mysqlArtifactRuntimeRunColumns = `
 	displayed_version, preview_node_id, preview_connection_id,
 	action_id, action_title, action_description, input_schema, payload_json,
 	page_context_json, completion_mode, status, code, message,
-	delivery_claimed, delivery_client_id, delivered,
+	delivery_claimed, delivery_client_id, delivery_claimed_at, delivered,
 	executor_run_id, executor_state, executor_finished_at,
 	result_id, applied_event_ids, created_at, updated_at, expires_at,
 	started_at, finished_at`
@@ -38,7 +38,7 @@ func scanMySQLArtifactRuntimeRun(scanner mysqlRuntimeRunScanner) (*store.Artifac
 		&run.DisplayedVersion, &run.PreviewNodeID, &run.PreviewConnectionID,
 		&run.ActionID, &run.ActionTitle, &run.ActionDescription, &run.InputSchema, &run.Payload,
 		&run.PageContext, &run.CompletionMode, &run.Status, &run.Code, &run.Message,
-		&run.DeliveryClaimed, &run.DeliveryClientID, &run.Delivered,
+		&run.DeliveryClaimed, &run.DeliveryClientID, &run.DeliveryClaimedAt, &run.Delivered,
 		&run.ExecutorRunID, &run.ExecutorState, &run.ExecutorFinishedAt,
 		&run.ResultID, &appliedJSON, &run.CreatedAt, &run.UpdatedAt, &run.ExpiresAt,
 		&run.StartedAt, &run.FinishedAt,
@@ -54,37 +54,156 @@ func scanMySQLArtifactRuntimeRun(scanner mysqlRuntimeRunScanner) (*store.Artifac
 	return run, nil
 }
 
-func (a *Adapter) CreateArtifactRuntimeRun(ctx context.Context, run *store.ArtifactRuntimeRun) (*store.ArtifactRuntimeRun, error) {
+func (a *Adapter) CreateArtifactRuntimeRun(
+	ctx context.Context,
+	run *store.ArtifactRuntimeRun,
+	policy store.ArtifactRuntimeRunCreatePolicy,
+) (*store.ArtifactRuntimeRun, error) {
 	if run == nil {
 		return nil, errors.New("artifact runtime run is nil")
+	}
+	if policy.ActorActiveMax <= 0 || policy.ActorRateMax <= 0 || policy.ActorRateWindow <= 0 ||
+		policy.MaxEntries <= 0 || policy.Retention <= 0 || policy.CleanupLimit <= 0 {
+		return nil, errors.New("artifact runtime run create policy is invalid")
+	}
+	now := run.CreatedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
 	pageContext := run.PageContext
 	if len(pageContext) == 0 {
 		pageContext = json.RawMessage(`{}`)
 	}
-	_, err := a.db.ExecContext(ctx, `INSERT INTO artifact_runtime_runs (
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin artifact runtime admission: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var admissionLock int
+	if err := tx.QueryRowContext(ctx, `SELECT lock_id FROM artifact_runtime_admission_lock WHERE lock_id = 1 FOR UPDATE`).Scan(&admissionLock); err != nil {
+		return nil, fmt.Errorf("lock artifact runtime admission: %w", err)
+	}
+	if _, err := pruneMySQLArtifactRuntimeRuns(ctx, tx, now.Add(-policy.Retention), policy.CleanupLimit); err != nil {
+		return nil, err
+	}
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_runtime_runs
+		WHERE actor_uid = ? AND status IN ('submitted','running') AND expires_at > ?`,
+		run.ActorUID, now).Scan(&active); err != nil {
+		return nil, fmt.Errorf("count active artifact runtime runs: %w", err)
+	}
+	if active >= policy.ActorActiveMax {
+		return nil, store.ErrArtifactRuntimeActorActiveCap
+	}
+	var recent int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_runtime_runs
+		WHERE actor_uid = ? AND created_at >= ?`, run.ActorUID, now.Add(-policy.ActorRateWindow)).Scan(&recent); err != nil {
+		return nil, fmt.Errorf("count recent artifact runtime runs: %w", err)
+	}
+	if recent >= policy.ActorRateMax {
+		return nil, store.ErrArtifactRuntimeActorRateLimit
+	}
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_runtime_runs`).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count artifact runtime runs: %w", err)
+	}
+	for total >= policy.MaxEntries {
+		needed := total - policy.MaxEntries + 1
+		if needed > policy.CleanupLimit {
+			needed = policy.CleanupLimit
+		}
+		removed, pruneErr := pruneMySQLArtifactRuntimeRuns(
+			ctx, tx, now.Add(-policy.ActorRateWindow), needed,
+		)
+		if pruneErr != nil {
+			return nil, pruneErr
+		}
+		if removed == 0 {
+			return nil, store.ErrArtifactRuntimeRunStoreFull
+		}
+		total -= removed
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO artifact_runtime_runs (
 		task_id, task_ref_hash, run_id, actor_uid, topic_id, agent_uid,
 		artifact_id, artifact_title, artifact_kind, artifact_url, publish_version,
 		displayed_version, preview_node_id, preview_connection_id,
 		action_id, action_title, action_description, input_schema, payload_json,
-		page_context_json, completion_mode, status, expires_at, applied_event_ids
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'submitted',?,JSON_ARRAY())`,
+		page_context_json, completion_mode, status, expires_at, applied_event_ids,
+		created_at, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'submitted',?,JSON_ARRAY(),?,?)`,
 		run.TaskID, run.TaskRefHash, run.RunID, run.ActorUID, run.TopicID, run.AgentUID,
 		run.ArtifactID, run.ArtifactTitle, run.ArtifactKind, run.ArtifactURL, run.PublishVersion,
 		run.DisplayedVersion, run.PreviewNodeID, run.PreviewConnectionID,
 		run.ActionID, run.ActionTitle, run.ActionDescription, string(run.InputSchema), string(run.Payload),
-		string(pageContext), run.CompletionMode, run.ExpiresAt)
+		string(pageContext), run.CompletionMode, run.ExpiresAt, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("create artifact runtime run: %w", err)
 	}
-	created, found, err := a.GetArtifactRuntimeRunByTask(ctx, run.TaskID, run.ActorUID)
-	if err != nil || !found {
-		if err == nil {
-			err = store.ErrArtifactRuntimeRunNotFound
-		}
-		return nil, err
+	created, err := scanMySQLArtifactRuntimeRun(tx.QueryRowContext(ctx,
+		`SELECT `+mysqlArtifactRuntimeRunColumns+` FROM artifact_runtime_runs WHERE task_id = ? AND actor_uid = ?`,
+		run.TaskID, run.ActorUID))
+	if err != nil {
+		return nil, fmt.Errorf("read created artifact runtime run: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit artifact runtime admission: %w", err)
 	}
 	return created, nil
+}
+
+func pruneMySQLArtifactRuntimeRuns(
+	ctx context.Context,
+	tx *sql.Tx,
+	cutoff time.Time,
+	limit int,
+) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	query := `SELECT task_id, run_id FROM artifact_runtime_runs
+		WHERE status IN ('completed','failed')
+			AND COALESCE(finished_at, updated_at) <= ?
+		ORDER BY COALESCE(finished_at, updated_at), task_id LIMIT ? FOR UPDATE`
+	rows, err := tx.QueryContext(ctx, query, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("list retained artifact runtime runs: %w", err)
+	}
+	var taskIDs, runIDs []string
+	for rows.Next() {
+		var taskID, runID string
+		if err := rows.Scan(&taskID, &runID); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan retained artifact runtime run: %w", err)
+		}
+		taskIDs, runIDs = append(taskIDs, taskID), append(runIDs, runID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate retained artifact runtime runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(taskIDs) == 0 {
+		return 0, nil
+	}
+	eventArgs := make([]interface{}, len(runIDs))
+	for index, runID := range runIDs {
+		eventArgs[index] = runID
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_runtime_events WHERE run_id IN (`+
+		strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")+`)`, eventArgs...); err != nil {
+		return 0, fmt.Errorf("delete retained artifact runtime events: %w", err)
+	}
+	taskArgs := make([]interface{}, len(taskIDs))
+	for index, taskID := range taskIDs {
+		taskArgs[index] = taskID
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_runtime_runs WHERE task_id IN (`+
+		strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")+`)`, taskArgs...); err != nil {
+		return 0, fmt.Errorf("delete retained artifact runtime runs: %w", err)
+	}
+	return len(taskIDs), nil
 }
 
 func (a *Adapter) GetArtifactRuntimeRunByTask(ctx context.Context, taskID string, actorUID int64) (*store.ArtifactRuntimeRun, bool, error) {
@@ -136,7 +255,10 @@ func (a *Adapter) ListArtifactRuntimeRuns(ctx context.Context, actorUID, agentUI
 	return runs, rows.Err()
 }
 
-func (a *Adapter) ReserveArtifactRuntimeDelivery(ctx context.Context, taskRefHash string, actorUID int64, topicID string, agentUID int64, clientMessageID string) (*store.ArtifactRuntimeDeliveryClaim, error) {
+func (a *Adapter) ReserveArtifactRuntimeDelivery(ctx context.Context, taskRefHash string, actorUID int64, topicID string, agentUID int64, clientMessageID string, claimLease time.Duration) (*store.ArtifactRuntimeDeliveryClaim, error) {
+	if claimLease <= 0 {
+		claimLease = 30 * time.Second
+	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin artifact runtime delivery: %w", err)
@@ -150,7 +272,8 @@ func (a *Adapter) ReserveArtifactRuntimeDelivery(ctx context.Context, taskRefHas
 	if err != nil {
 		return nil, fmt.Errorf("read artifact runtime delivery: %w", err)
 	}
-	if run.ActorUID != actorUID || run.TopicID != topicID || run.AgentUID != agentUID || mysqlRuntimeRunTerminal(run.Status) || !time.Now().UTC().Before(run.ExpiresAt) {
+	now := time.Now().UTC()
+	if run.ActorUID != actorUID || run.TopicID != topicID || run.AgentUID != agentUID || mysqlRuntimeRunTerminal(run.Status) || !now.Before(run.ExpiresAt) {
 		return nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if run.Delivered {
@@ -159,27 +282,31 @@ func (a *Adapter) ReserveArtifactRuntimeDelivery(ctx context.Context, taskRefHas
 		}
 		return &store.ArtifactRuntimeDeliveryClaim{Run: run, AlreadyDelivered: true}, nil
 	}
+	recovered := false
 	if run.DeliveryClaimed {
-		if run.DeliveryClientID == clientMessageID {
+		if run.DeliveryClientID != clientMessageID {
+			return nil, store.ErrArtifactRuntimeRunConflict
+		}
+		if run.DeliveryClaimedAt != nil && now.Before(run.DeliveryClaimedAt.Add(claimLease)) {
 			return nil, store.ErrArtifactRuntimeDeliveryPending
 		}
-		return nil, store.ErrArtifactRuntimeRunConflict
+		recovered = true
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET delivery_claimed = 1, delivery_client_id = ?, updated_at = CURRENT_TIMESTAMP(6)
-		WHERE task_id = ?`, clientMessageID, run.TaskID); err != nil {
+		SET delivery_claimed = 1, delivery_client_id = ?, delivery_claimed_at = ?, updated_at = ?
+		WHERE task_id = ?`, clientMessageID, now, now, run.TaskID); err != nil {
 		return nil, fmt.Errorf("reserve artifact runtime delivery: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit artifact runtime delivery: %w", err)
 	}
-	run.DeliveryClaimed, run.DeliveryClientID = true, clientMessageID
-	return &store.ArtifactRuntimeDeliveryClaim{Run: run}, nil
+	run.DeliveryClaimed, run.DeliveryClientID, run.DeliveryClaimedAt = true, clientMessageID, &now
+	return &store.ArtifactRuntimeDeliveryClaim{Run: run, Recovered: recovered}, nil
 }
 
 func (a *Adapter) ConfirmArtifactRuntimeDelivery(ctx context.Context, taskID, taskRefHash, clientMessageID string) (bool, error) {
 	result, err := a.db.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET delivery_claimed = 0, delivered = 1, updated_at = CURRENT_TIMESTAMP(6)
+		SET delivery_claimed = 0, delivery_claimed_at = NULL, delivered = 1, updated_at = CURRENT_TIMESTAMP(6)
 		WHERE task_id = ? AND task_ref_hash = ? AND delivery_claimed = 1
 			AND delivery_client_id = ? AND delivered = 0
 			AND status IN ('submitted','running') AND expires_at > CURRENT_TIMESTAMP(6)`,
@@ -193,7 +320,7 @@ func (a *Adapter) ConfirmArtifactRuntimeDelivery(ctx context.Context, taskID, ta
 
 func (a *Adapter) ReleaseArtifactRuntimeDelivery(ctx context.Context, taskID, taskRefHash, clientMessageID string) error {
 	_, err := a.db.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET delivery_claimed = 0, delivery_client_id = '', updated_at = CURRENT_TIMESTAMP(6)
+		SET delivery_claimed = 0, delivery_client_id = '', delivery_claimed_at = NULL, updated_at = CURRENT_TIMESTAMP(6)
 		WHERE task_id = ? AND task_ref_hash = ? AND delivery_claimed = 1
 			AND delivery_client_id = ? AND delivered = 0`, taskID, taskRefHash, clientMessageID)
 	if err != nil {
@@ -225,7 +352,7 @@ func (a *Adapter) FailArtifactRuntimeRun(ctx context.Context, taskID string, act
 	now := time.Now().UTC()
 	code, message = mysqlTruncateRuntimeRunText(code, 64), mysqlTruncateRuntimeRunText(message, 500)
 	if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET status = 'failed', code = ?, message = ?, delivery_claimed = 0,
+		SET status = 'failed', code = ?, message = ?, delivery_claimed = 0, delivery_claimed_at = NULL,
 			updated_at = ?, finished_at = ? WHERE task_id = ?`, code, message, now, now, run.TaskID); err != nil {
 		return nil, nil, fmt.Errorf("fail artifact runtime run: %w", err)
 	}
@@ -269,10 +396,32 @@ func (a *Adapter) ObserveArtifactRuntimeExecutor(ctx context.Context, taskRefHas
 	}
 	now := time.Now().UTC()
 	if mysqlRuntimeRunTerminal(run.Status) {
+		nextExecutorState := run.ExecutorState
+		if mysqlRuntimeExecutorStateCanAdvance(run.ExecutorState, executorState) {
+			nextExecutorState = executorState
+		}
+		nextFinishedAt := run.ExecutorFinishedAt
+		if mysqlRuntimeExecutorStateTerminal(nextExecutorState) && nextFinishedAt == nil {
+			nextFinishedAt = &now
+		}
+		if run.ExecutorRunID != "" && nextExecutorState == run.ExecutorState &&
+			((nextFinishedAt == nil && run.ExecutorFinishedAt == nil) ||
+				(nextFinishedAt != nil && run.ExecutorFinishedAt != nil && nextFinishedAt.Equal(*run.ExecutorFinishedAt))) {
+			return run, nil, nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs SET
+			executor_run_id = ?, executor_state = ?, executor_finished_at = ?, updated_at = ?
+			WHERE task_id = ?`, executorRunID, nextExecutorState, nextFinishedAt, now, run.TaskID); err != nil {
+			return nil, nil, fmt.Errorf("complete terminal artifact runtime executor metadata: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("commit terminal artifact runtime executor metadata: %w", err)
+		}
+		run.ExecutorRunID, run.ExecutorState, run.ExecutorFinishedAt = executorRunID, nextExecutorState, nextFinishedAt
+		run.UpdatedAt = now
 		return run, nil, nil
 	}
-	if mysqlRuntimeExecutorStateTerminal(run.ExecutorState) || run.ExecutorState == executorState ||
-		(run.ExecutorState == "running" && executorState == "waiting") {
+	if !mysqlRuntimeExecutorStateCanAdvance(run.ExecutorState, executorState) {
 		return run, nil, nil
 	}
 	nextStatus := run.Status
@@ -359,11 +508,12 @@ func (a *Adapter) PutArtifactRuntimeStateForRun(ctx context.Context, candidate *
 	if err != nil {
 		return nil, nil, fmt.Errorf("read artifact runtime state run: %w", err)
 	}
-	if run.AgentUID != candidate.AgentUID || run.ArtifactID != candidate.ArtifactID || run.CompletionMode != "runtime_state" || mysqlRuntimeRunTerminal(run.Status) {
+	now := time.Now().UTC()
+	if run.AgentUID != candidate.AgentUID || run.ArtifactID != candidate.ArtifactID || run.CompletionMode != "runtime_state" ||
+		!run.Delivered || !now.Before(run.ExpiresAt) || mysqlRuntimeRunTerminal(run.Status) {
 		return nil, nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if run.Status == "submitted" {
-		now := time.Now().UTC()
 		if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
 			SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
 			WHERE task_id = ?`, now, now, run.TaskID); err != nil {
@@ -458,7 +608,8 @@ func (a *Adapter) CompleteArtifactRuntimeRun(ctx context.Context, taskRefHash st
 	if err != nil {
 		return nil, nil, fmt.Errorf("read artifact runtime completion target: %w", err)
 	}
-	if run.AgentUID != agentUID || run.CompletionMode != "runtime_state" {
+	now := time.Now().UTC()
+	if run.AgentUID != agentUID || run.CompletionMode != "runtime_state" || !run.Delivered || !now.Before(run.ExpiresAt) {
 		return nil, nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if run.Status == "completed" {
@@ -485,7 +636,6 @@ func (a *Adapter) CompleteArtifactRuntimeRun(ctx context.Context, taskRefHash st
 		}
 	}
 	appliedJSON, _ := json.Marshal(appliedEventIDs)
-	now := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
 		SET status = 'completed', result_id = ?, applied_event_ids = ?, code = '', message = '',
 			updated_at = ?, finished_at = ? WHERE task_id = ?`, resultID, string(appliedJSON), now, now, run.TaskID); err != nil {
@@ -614,6 +764,10 @@ func mysqlRuntimeExecutorStateValid(status string) bool {
 
 func mysqlRuntimeExecutorStateTerminal(status string) bool {
 	return status == "completed" || status == "failed" || status == "cancelled" || status == "stale"
+}
+
+func mysqlRuntimeExecutorStateCanAdvance(current, next string) bool {
+	return !mysqlRuntimeExecutorStateTerminal(current) && current != next && !(current == "running" && next == "waiting")
 }
 
 func mysqlTruncateRuntimeRunText(value string, max int) string {

@@ -20,7 +20,7 @@ const postgresArtifactRuntimeRunColumns = `
 	displayed_version, preview_node_id, preview_connection_id,
 	action_id, action_title, action_description, input_schema, payload_json,
 	page_context_json, completion_mode, status, code, message,
-	delivery_claimed, delivery_client_id, delivered,
+	delivery_claimed, delivery_client_id, delivery_claimed_at, delivered,
 	executor_run_id, executor_state, executor_finished_at,
 	result_id, applied_event_ids, created_at, updated_at, expires_at,
 	started_at, finished_at`
@@ -38,7 +38,7 @@ func scanPostgresArtifactRuntimeRun(scanner postgresRuntimeRunScanner) (*store.A
 		&run.DisplayedVersion, &run.PreviewNodeID, &run.PreviewConnectionID,
 		&run.ActionID, &run.ActionTitle, &run.ActionDescription, &run.InputSchema, &run.Payload,
 		&run.PageContext, &run.CompletionMode, &run.Status, &run.Code, &run.Message,
-		&run.DeliveryClaimed, &run.DeliveryClientID, &run.Delivered,
+		&run.DeliveryClaimed, &run.DeliveryClientID, &run.DeliveryClaimedAt, &run.Delivered,
 		&run.ExecutorRunID, &run.ExecutorState, &run.ExecutorFinishedAt,
 		&run.ResultID, &appliedJSON, &run.CreatedAt, &run.UpdatedAt, &run.ExpiresAt,
 		&run.StartedAt, &run.FinishedAt,
@@ -54,43 +54,166 @@ func scanPostgresArtifactRuntimeRun(scanner postgresRuntimeRunScanner) (*store.A
 	return run, nil
 }
 
-func (a *Adapter) CreateArtifactRuntimeRun(ctx context.Context, run *store.ArtifactRuntimeRun) (*store.ArtifactRuntimeRun, error) {
+func (a *Adapter) CreateArtifactRuntimeRun(
+	ctx context.Context,
+	run *store.ArtifactRuntimeRun,
+	policy store.ArtifactRuntimeRunCreatePolicy,
+) (*store.ArtifactRuntimeRun, error) {
 	if run == nil {
 		return nil, errors.New("artifact runtime run is nil")
+	}
+	if policy.ActorActiveMax <= 0 || policy.ActorRateMax <= 0 || policy.ActorRateWindow <= 0 ||
+		policy.MaxEntries <= 0 || policy.Retention <= 0 || policy.CleanupLimit <= 0 {
+		return nil, errors.New("artifact runtime run create policy is invalid")
+	}
+	now := run.CreatedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
 	pageContext := run.PageContext
 	if len(pageContext) == 0 {
 		pageContext = json.RawMessage(`{}`)
 	}
-	_, err := a.db.ExecContext(ctx, `
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin artifact runtime admission: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var admissionLock int
+	if err := tx.QueryRowContext(ctx, `SELECT lock_id FROM artifact_runtime_admission_lock WHERE lock_id = 1 FOR UPDATE`).Scan(&admissionLock); err != nil {
+		return nil, fmt.Errorf("lock artifact runtime admission: %w", err)
+	}
+	if _, err := prunePostgresArtifactRuntimeRuns(ctx, tx, now.Add(-policy.Retention), policy.CleanupLimit); err != nil {
+		return nil, err
+	}
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_runtime_runs
+		WHERE actor_uid = $1 AND status IN ('submitted','running') AND expires_at > $2`,
+		run.ActorUID, now).Scan(&active); err != nil {
+		return nil, fmt.Errorf("count active artifact runtime runs: %w", err)
+	}
+	if active >= policy.ActorActiveMax {
+		return nil, store.ErrArtifactRuntimeActorActiveCap
+	}
+	var recent int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_runtime_runs
+		WHERE actor_uid = $1 AND created_at >= $2`, run.ActorUID, now.Add(-policy.ActorRateWindow)).Scan(&recent); err != nil {
+		return nil, fmt.Errorf("count recent artifact runtime runs: %w", err)
+	}
+	if recent >= policy.ActorRateMax {
+		return nil, store.ErrArtifactRuntimeActorRateLimit
+	}
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_runtime_runs`).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count artifact runtime runs: %w", err)
+	}
+	for total >= policy.MaxEntries {
+		needed := total - policy.MaxEntries + 1
+		if needed > policy.CleanupLimit {
+			needed = policy.CleanupLimit
+		}
+		removed, pruneErr := prunePostgresArtifactRuntimeRuns(
+			ctx, tx, now.Add(-policy.ActorRateWindow), needed,
+		)
+		if pruneErr != nil {
+			return nil, pruneErr
+		}
+		if removed == 0 {
+			return nil, store.ErrArtifactRuntimeRunStoreFull
+		}
+		total -= removed
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO artifact_runtime_runs (
 			task_id, task_ref_hash, run_id, actor_uid, topic_id, agent_uid,
 			artifact_id, artifact_title, artifact_kind, artifact_url, publish_version,
 			displayed_version, preview_node_id, preview_connection_id,
 			action_id, action_title, action_description, input_schema, payload_json,
-			page_context_json, completion_mode, status, expires_at, applied_event_ids
+			page_context_json, completion_mode, status, expires_at, applied_event_ids,
+			created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
 			$13, $14, $15, $16, $17, $18::jsonb, $19::jsonb, $20::jsonb,
-			$21, 'submitted', $22, '[]'::jsonb
+			$21, 'submitted', $22, '[]'::jsonb, $23, $23
 		)`,
 		run.TaskID, run.TaskRefHash, run.RunID, run.ActorUID, run.TopicID, run.AgentUID,
 		run.ArtifactID, run.ArtifactTitle, run.ArtifactKind, run.ArtifactURL, run.PublishVersion,
 		run.DisplayedVersion, run.PreviewNodeID, run.PreviewConnectionID,
 		run.ActionID, run.ActionTitle, run.ActionDescription, string(run.InputSchema), string(run.Payload),
-		string(pageContext), run.CompletionMode, run.ExpiresAt,
+		string(pageContext), run.CompletionMode, run.ExpiresAt, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create artifact runtime run: %w", err)
 	}
-	created, found, err := a.GetArtifactRuntimeRunByTask(ctx, run.TaskID, run.ActorUID)
-	if err != nil || !found {
-		if err == nil {
-			err = store.ErrArtifactRuntimeRunNotFound
-		}
-		return nil, err
+	created, err := scanPostgresArtifactRuntimeRun(tx.QueryRowContext(ctx,
+		`SELECT `+postgresArtifactRuntimeRunColumns+` FROM artifact_runtime_runs WHERE task_id = $1 AND actor_uid = $2`,
+		run.TaskID, run.ActorUID))
+	if err != nil {
+		return nil, fmt.Errorf("read created artifact runtime run: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit artifact runtime admission: %w", err)
 	}
 	return created, nil
+}
+
+func prunePostgresArtifactRuntimeRuns(
+	ctx context.Context,
+	tx *sql.Tx,
+	cutoff time.Time,
+	limit int,
+) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	query := `SELECT task_id, run_id FROM artifact_runtime_runs
+		WHERE status IN ('completed','failed')
+			AND COALESCE(finished_at, updated_at) <= $1
+		ORDER BY COALESCE(finished_at, updated_at), task_id LIMIT $2 FOR UPDATE`
+	rows, err := tx.QueryContext(ctx, query, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("list retained artifact runtime runs: %w", err)
+	}
+	var taskIDs, runIDs []string
+	for rows.Next() {
+		var taskID, runID string
+		if err := rows.Scan(&taskID, &runID); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan retained artifact runtime run: %w", err)
+		}
+		taskIDs, runIDs = append(taskIDs, taskID), append(runIDs, runID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate retained artifact runtime runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(taskIDs) == 0 {
+		return 0, nil
+	}
+	eventArgs := make([]interface{}, len(runIDs))
+	eventPlaceholders := make([]string, len(runIDs))
+	for index, runID := range runIDs {
+		eventArgs[index] = runID
+		eventPlaceholders[index] = fmt.Sprintf("$%d", index+1)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_runtime_events WHERE run_id IN (`+
+		strings.Join(eventPlaceholders, ",")+`)`, eventArgs...); err != nil {
+		return 0, fmt.Errorf("delete retained artifact runtime events: %w", err)
+	}
+	taskArgs := make([]interface{}, len(taskIDs))
+	taskPlaceholders := make([]string, len(taskIDs))
+	for index, taskID := range taskIDs {
+		taskArgs[index] = taskID
+		taskPlaceholders[index] = fmt.Sprintf("$%d", index+1)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_runtime_runs WHERE task_id IN (`+
+		strings.Join(taskPlaceholders, ",")+`)`, taskArgs...); err != nil {
+		return 0, fmt.Errorf("delete retained artifact runtime runs: %w", err)
+	}
+	return len(taskIDs), nil
 }
 
 func (a *Adapter) GetArtifactRuntimeRunByTask(ctx context.Context, taskID string, actorUID int64) (*store.ArtifactRuntimeRun, bool, error) {
@@ -153,7 +276,11 @@ func (a *Adapter) ReserveArtifactRuntimeDelivery(
 	topicID string,
 	agentUID int64,
 	clientMessageID string,
+	claimLease time.Duration,
 ) (*store.ArtifactRuntimeDeliveryClaim, error) {
+	if claimLease <= 0 {
+		claimLease = 30 * time.Second
+	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin artifact runtime delivery: %w", err)
@@ -167,7 +294,8 @@ func (a *Adapter) ReserveArtifactRuntimeDelivery(
 	if err != nil {
 		return nil, fmt.Errorf("read artifact runtime delivery: %w", err)
 	}
-	if run.ActorUID != actorUID || run.TopicID != topicID || run.AgentUID != agentUID || runtimeRunTerminal(run.Status) || !time.Now().UTC().Before(run.ExpiresAt) {
+	now := time.Now().UTC()
+	if run.ActorUID != actorUID || run.TopicID != topicID || run.AgentUID != agentUID || runtimeRunTerminal(run.Status) || !now.Before(run.ExpiresAt) {
 		return nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if run.Delivered {
@@ -176,15 +304,19 @@ func (a *Adapter) ReserveArtifactRuntimeDelivery(
 		}
 		return &store.ArtifactRuntimeDeliveryClaim{Run: run, AlreadyDelivered: true}, nil
 	}
+	recovered := false
 	if run.DeliveryClaimed {
-		if run.DeliveryClientID == clientMessageID {
+		if run.DeliveryClientID != clientMessageID {
+			return nil, store.ErrArtifactRuntimeRunConflict
+		}
+		if run.DeliveryClaimedAt != nil && now.Before(run.DeliveryClaimedAt.Add(claimLease)) {
 			return nil, store.ErrArtifactRuntimeDeliveryPending
 		}
-		return nil, store.ErrArtifactRuntimeRunConflict
+		recovered = true
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET delivery_claimed = TRUE, delivery_client_id = $1, updated_at = CURRENT_TIMESTAMP
-		WHERE task_id = $2`, clientMessageID, run.TaskID); err != nil {
+		SET delivery_claimed = TRUE, delivery_client_id = $1, delivery_claimed_at = $2, updated_at = $2
+		WHERE task_id = $3`, clientMessageID, now, run.TaskID); err != nil {
 		return nil, fmt.Errorf("reserve artifact runtime delivery: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -192,12 +324,13 @@ func (a *Adapter) ReserveArtifactRuntimeDelivery(
 	}
 	run.DeliveryClaimed = true
 	run.DeliveryClientID = clientMessageID
-	return &store.ArtifactRuntimeDeliveryClaim{Run: run}, nil
+	run.DeliveryClaimedAt = &now
+	return &store.ArtifactRuntimeDeliveryClaim{Run: run, Recovered: recovered}, nil
 }
 
 func (a *Adapter) ConfirmArtifactRuntimeDelivery(ctx context.Context, taskID, taskRefHash, clientMessageID string) (bool, error) {
 	result, err := a.db.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET delivery_claimed = FALSE, delivered = TRUE, updated_at = CURRENT_TIMESTAMP
+		SET delivery_claimed = FALSE, delivery_claimed_at = NULL, delivered = TRUE, updated_at = CURRENT_TIMESTAMP
 		WHERE task_id = $1 AND task_ref_hash = $2 AND delivery_claimed = TRUE
 			AND delivery_client_id = $3 AND delivered = FALSE
 			AND status IN ('submitted','running') AND expires_at > CURRENT_TIMESTAMP`,
@@ -211,7 +344,7 @@ func (a *Adapter) ConfirmArtifactRuntimeDelivery(ctx context.Context, taskID, ta
 
 func (a *Adapter) ReleaseArtifactRuntimeDelivery(ctx context.Context, taskID, taskRefHash, clientMessageID string) error {
 	_, err := a.db.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET delivery_claimed = FALSE, delivery_client_id = '', updated_at = CURRENT_TIMESTAMP
+		SET delivery_claimed = FALSE, delivery_client_id = '', delivery_claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
 		WHERE task_id = $1 AND task_ref_hash = $2 AND delivery_claimed = TRUE
 			AND delivery_client_id = $3 AND delivered = FALSE`, taskID, taskRefHash, clientMessageID)
 	if err != nil {
@@ -244,7 +377,7 @@ func (a *Adapter) FailArtifactRuntimeRun(ctx context.Context, taskID string, act
 	code = truncateRuntimeRunText(code, 64)
 	message = truncateRuntimeRunText(message, 500)
 	if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
-		SET status = 'failed', code = $1, message = $2, delivery_claimed = FALSE,
+		SET status = 'failed', code = $1, message = $2, delivery_claimed = FALSE, delivery_claimed_at = NULL,
 			updated_at = $3, finished_at = $3 WHERE task_id = $4`, code, message, now, run.TaskID); err != nil {
 		return nil, nil, fmt.Errorf("fail artifact runtime run: %w", err)
 	}
@@ -295,10 +428,32 @@ func (a *Adapter) ObserveArtifactRuntimeExecutor(
 	}
 	now := time.Now().UTC()
 	if runtimeRunTerminal(run.Status) {
+		nextExecutorState := run.ExecutorState
+		if runtimeExecutorStateCanAdvance(run.ExecutorState, executorState) {
+			nextExecutorState = executorState
+		}
+		nextFinishedAt := run.ExecutorFinishedAt
+		if runtimeExecutorStateTerminal(nextExecutorState) && nextFinishedAt == nil {
+			nextFinishedAt = &now
+		}
+		if run.ExecutorRunID != "" && nextExecutorState == run.ExecutorState &&
+			((nextFinishedAt == nil && run.ExecutorFinishedAt == nil) ||
+				(nextFinishedAt != nil && run.ExecutorFinishedAt != nil && nextFinishedAt.Equal(*run.ExecutorFinishedAt))) {
+			return run, nil, nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs SET
+			executor_run_id = $1, executor_state = $2, executor_finished_at = $3, updated_at = $4
+			WHERE task_id = $5`, executorRunID, nextExecutorState, nextFinishedAt, now, run.TaskID); err != nil {
+			return nil, nil, fmt.Errorf("complete terminal artifact runtime executor metadata: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("commit terminal artifact runtime executor metadata: %w", err)
+		}
+		run.ExecutorRunID, run.ExecutorState, run.ExecutorFinishedAt = executorRunID, nextExecutorState, nextFinishedAt
+		run.UpdatedAt = now
 		return run, nil, nil
 	}
-	if runtimeExecutorStateTerminal(run.ExecutorState) || run.ExecutorState == executorState ||
-		(run.ExecutorState == "running" && executorState == "waiting") {
+	if !runtimeExecutorStateCanAdvance(run.ExecutorState, executorState) {
 		return run, nil, nil
 	}
 	nextStatus := run.Status
@@ -392,12 +547,12 @@ func (a *Adapter) PutArtifactRuntimeStateForRun(
 	if err != nil {
 		return nil, nil, fmt.Errorf("read artifact runtime state run: %w", err)
 	}
+	now := time.Now().UTC()
 	if run.AgentUID != candidate.AgentUID || run.ArtifactID != candidate.ArtifactID ||
-		run.CompletionMode != "runtime_state" || runtimeRunTerminal(run.Status) {
+		run.CompletionMode != "runtime_state" || !run.Delivered || !now.Before(run.ExpiresAt) || runtimeRunTerminal(run.Status) {
 		return nil, nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if run.Status == "submitted" {
-		now := time.Now().UTC()
 		if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
 			SET status = 'running', started_at = COALESCE(started_at, $1), updated_at = $1
 			WHERE task_id = $2`, now, run.TaskID); err != nil {
@@ -503,7 +658,8 @@ func (a *Adapter) CompleteArtifactRuntimeRun(
 	if err != nil {
 		return nil, nil, fmt.Errorf("read artifact runtime completion target: %w", err)
 	}
-	if run.AgentUID != agentUID || run.CompletionMode != "runtime_state" {
+	now := time.Now().UTC()
+	if run.AgentUID != agentUID || run.CompletionMode != "runtime_state" || !run.Delivered || !now.Before(run.ExpiresAt) {
 		return nil, nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if run.Status == "completed" {
@@ -530,7 +686,6 @@ func (a *Adapter) CompleteArtifactRuntimeRun(
 		}
 	}
 	appliedJSON, _ := json.Marshal(appliedEventIDs)
-	now := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx, `UPDATE artifact_runtime_runs
 		SET status = 'completed', result_id = $1, applied_event_ids = $2::jsonb,
 			code = '', message = '', updated_at = $3, finished_at = $3
@@ -660,6 +815,10 @@ func runtimeExecutorStateValid(status string) bool {
 
 func runtimeExecutorStateTerminal(status string) bool {
 	return status == "completed" || status == "failed" || status == "cancelled" || status == "stale"
+}
+
+func runtimeExecutorStateCanAdvance(current, next string) bool {
+	return !runtimeExecutorStateTerminal(current) && current != next && !(current == "running" && next == "waiting")
 }
 
 func truncateRuntimeRunText(value string, max int) string {

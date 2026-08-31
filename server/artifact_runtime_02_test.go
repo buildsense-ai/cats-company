@@ -23,6 +23,7 @@ type artifactRuntime02MemoryStore struct {
 	runsByTask map[string]*store.ArtifactRuntimeRun
 	taskByRef  map[string]string
 	taskByRun  map[string]string
+	lastPolicy store.ArtifactRuntimeRunCreatePolicy
 }
 
 func cloneRuntime02Run(run *store.ArtifactRuntimeRun) *store.ArtifactRuntimeRun {
@@ -34,12 +35,17 @@ func cloneRuntime02Run(run *store.ArtifactRuntimeRun) *store.ArtifactRuntimeRun 
 	clone.Payload = append(json.RawMessage(nil), run.Payload...)
 	clone.PageContext = append(json.RawMessage(nil), run.PageContext...)
 	clone.AppliedEventIDs = append([]int64(nil), run.AppliedEventIDs...)
+	if run.DeliveryClaimedAt != nil {
+		claimedAt := *run.DeliveryClaimedAt
+		clone.DeliveryClaimedAt = &claimedAt
+	}
 	return &clone
 }
 
-func (s *artifactRuntime02MemoryStore) CreateArtifactRuntimeRun(_ context.Context, run *store.ArtifactRuntimeRun) (*store.ArtifactRuntimeRun, error) {
+func (s *artifactRuntime02MemoryStore) CreateArtifactRuntimeRun(_ context.Context, run *store.ArtifactRuntimeRun, policy store.ArtifactRuntimeRunCreatePolicy) (*store.ArtifactRuntimeRun, error) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
+	s.lastPolicy = policy
 	if s.runsByTask[run.TaskID] != nil || s.taskByRef[run.TaskRefHash] != "" || s.taskByRun[run.RunID] != "" {
 		return nil, store.ErrArtifactRuntimeRunConflict
 	}
@@ -101,11 +107,12 @@ func (s *artifactRuntime02MemoryStore) ListArtifactRuntimeRuns(_ context.Context
 	return result, nil
 }
 
-func (s *artifactRuntime02MemoryStore) ReserveArtifactRuntimeDelivery(_ context.Context, taskRefHash string, actorUID int64, topicID string, agentUID int64, clientMessageID string) (*store.ArtifactRuntimeDeliveryClaim, error) {
+func (s *artifactRuntime02MemoryStore) ReserveArtifactRuntimeDelivery(_ context.Context, taskRefHash string, actorUID int64, topicID string, agentUID int64, clientMessageID string, claimLease time.Duration) (*store.ArtifactRuntimeDeliveryClaim, error) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	run := s.runsByTask[s.taskByRef[taskRefHash]]
-	if run == nil || run.ActorUID != actorUID || run.TopicID != topicID || run.AgentUID != agentUID || runtimeRunTerminalStatus(run.Status) {
+	if run == nil || run.ActorUID != actorUID || run.TopicID != topicID || run.AgentUID != agentUID ||
+		runtimeRunTerminalStatus(run.Status) || !s.now.Before(run.ExpiresAt) {
 		return nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if run.Delivered {
@@ -115,20 +122,28 @@ func (s *artifactRuntime02MemoryStore) ReserveArtifactRuntimeDelivery(_ context.
 		return &store.ArtifactRuntimeDeliveryClaim{Run: cloneRuntime02Run(run), AlreadyDelivered: true}, nil
 	}
 	if run.DeliveryClaimed {
-		return nil, store.ErrArtifactRuntimeDeliveryPending
+		if run.DeliveryClientID != clientMessageID {
+			return nil, store.ErrArtifactRuntimeRunConflict
+		}
+		if run.DeliveryClaimedAt != nil && s.now.Before(run.DeliveryClaimedAt.Add(claimLease)) {
+			return nil, store.ErrArtifactRuntimeDeliveryPending
+		}
 	}
-	run.DeliveryClaimed, run.DeliveryClientID = true, clientMessageID
-	return &store.ArtifactRuntimeDeliveryClaim{Run: cloneRuntime02Run(run)}, nil
+	recovered := run.DeliveryClaimed
+	claimedAt := s.now
+	run.DeliveryClaimed, run.DeliveryClientID, run.DeliveryClaimedAt = true, clientMessageID, &claimedAt
+	return &store.ArtifactRuntimeDeliveryClaim{Run: cloneRuntime02Run(run), Recovered: recovered}, nil
 }
 
 func (s *artifactRuntime02MemoryStore) ConfirmArtifactRuntimeDelivery(_ context.Context, taskID, taskRefHash, clientMessageID string) (bool, error) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	run := s.runsByTask[taskID]
-	if run == nil || run.TaskRefHash != taskRefHash || !run.DeliveryClaimed || run.DeliveryClientID != clientMessageID {
+	if run == nil || run.TaskRefHash != taskRefHash || !run.DeliveryClaimed || run.DeliveryClientID != clientMessageID ||
+		runtimeRunTerminalStatus(run.Status) || !s.now.Before(run.ExpiresAt) {
 		return false, nil
 	}
-	run.DeliveryClaimed, run.Delivered = false, true
+	run.DeliveryClaimed, run.DeliveryClaimedAt, run.Delivered = false, nil, true
 	return true, nil
 }
 
@@ -137,7 +152,7 @@ func (s *artifactRuntime02MemoryStore) ReleaseArtifactRuntimeDelivery(_ context.
 	defer s.runMu.Unlock()
 	run := s.runsByTask[taskID]
 	if run != nil && run.TaskRefHash == taskRefHash && run.DeliveryClientID == clientMessageID && !run.Delivered {
-		run.DeliveryClaimed, run.DeliveryClientID = false, ""
+		run.DeliveryClaimed, run.DeliveryClientID, run.DeliveryClaimedAt = false, "", nil
 	}
 	return nil
 }
@@ -192,6 +207,15 @@ func (s *artifactRuntime02MemoryStore) ObserveArtifactRuntimeExecutor(_ context.
 		return nil, nil, store.ErrArtifactRuntimeRunConflict
 	}
 	if runtimeRunTerminalStatus(run.Status) {
+		if !runtime02ExecutorStateTerminal(run.ExecutorState) && run.ExecutorState != executorState &&
+			!(run.ExecutorState == "running" && executorState == "waiting") {
+			run.ExecutorState = executorState
+		}
+		run.ExecutorRunID = executorRunID
+		if runtime02ExecutorStateTerminal(run.ExecutorState) && run.ExecutorFinishedAt == nil {
+			finished := s.now
+			run.ExecutorFinishedAt = &finished
+		}
 		clone := cloneRuntime02Run(run)
 		s.runMu.Unlock()
 		return clone, nil, nil
@@ -239,7 +263,7 @@ func (s *artifactRuntime02MemoryStore) PutArtifactRuntimeStateForRun(ctx context
 	s.runMu.Lock()
 	run := cloneRuntime02Run(s.runsByTask[s.taskByRef[taskRefHash]])
 	s.runMu.Unlock()
-	if run == nil || run.AgentUID != candidate.AgentUID || runtimeRunTerminalStatus(run.Status) {
+	if run == nil || run.AgentUID != candidate.AgentUID || !run.Delivered || !s.now.Before(run.ExpiresAt) || runtimeRunTerminalStatus(run.Status) {
 		return nil, nil, store.ErrArtifactRuntimeRunConflict
 	}
 	state, event, err := s.artifactRuntimeMemoryStore.PutArtifactRuntimeState(ctx, candidate, baseRevision)
@@ -260,7 +284,7 @@ func (s *artifactRuntime02MemoryStore) PutArtifactRuntimeStateForRun(ctx context
 func (s *artifactRuntime02MemoryStore) CompleteArtifactRuntimeRun(_ context.Context, taskRefHash string, agentUID int64, resultID string, appliedEventIDs []int64) (*store.ArtifactRuntimeRun, []*store.ArtifactRuntimeEvent, error) {
 	s.runMu.Lock()
 	run := s.runsByTask[s.taskByRef[taskRefHash]]
-	if run == nil || run.AgentUID != agentUID {
+	if run == nil || run.AgentUID != agentUID || !run.Delivered || !s.now.Before(run.ExpiresAt) {
 		s.runMu.Unlock()
 		return nil, nil, store.ErrArtifactRuntimeRunNotFound
 	}
@@ -298,6 +322,57 @@ func (s *artifactRuntime02MemoryStore) CompleteArtifactRuntimeRun(_ context.Cont
 
 func (s *artifactRuntime02MemoryStore) ConvergeArtifactRuntimeRuns(_ context.Context, _ time.Time, _ time.Duration, _ int) (int, error) {
 	return 0, nil
+}
+
+func TestArtifactRuntime02DeliveryLeaseRecoversInterruptedReservation(t *testing.T) {
+	now := time.Date(2026, 8, 31, 2, 0, 0, 0, time.UTC)
+	base := &artifactRuntimeMemoryStore{
+		states: make(map[string]*store.ArtifactRuntimeState),
+		now:    now,
+	}
+	db := &artifactRuntime02MemoryStore{
+		artifactRuntimeMemoryStore: base,
+		runsByTask:                 make(map[string]*store.ArtifactRuntimeRun),
+		taskByRef:                  make(map[string]string),
+		taskByRun:                  make(map[string]string),
+	}
+	ref, err := newArtifactTaskOpaque("atr_")
+	if err != nil {
+		t.Fatalf("create task ref: %v", err)
+	}
+	_, err = db.CreateArtifactRuntimeRun(context.Background(), &store.ArtifactRuntimeRun{
+		TaskID: "task-1", TaskRefHash: artifactTaskRefHash(ref), RunID: "run-1",
+		ActorUID: 7, TopicID: "p2p_7_440", AgentUID: 440,
+		Status: "submitted", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}, store.ArtifactRuntimeRunCreatePolicy{
+		ActorActiveMax: 32, ActorRateMax: 60, ActorRateWindow: time.Minute,
+		MaxEntries: 4096, Retention: 30 * 24 * time.Hour, CleanupLimit: 512,
+	})
+	if err != nil {
+		t.Fatalf("create persistent Run: %v", err)
+	}
+	tasks := newArtifactTaskStore(0, 0, 0, 0).withRuntimeStore(db)
+	clientMessageID := "artifact-task:task-1"
+	reserved, err := tasks.reserveDelivery(ref, 7, "p2p_7_440", 440, clientMessageID)
+	if err != nil || reserved == nil || reserved.AlreadyDelivered {
+		t.Fatalf("first reservation: delivery=%#v err=%v", reserved, err)
+	}
+	if _, err := tasks.reserveDelivery(ref, 7, "p2p_7_440", 440, clientMessageID); !errors.Is(err, errArtifactTaskDeliveryPending) {
+		t.Fatalf("live lease retry error=%v, want pending", err)
+	}
+
+	base.now = now.Add(artifactRuntimeDeliveryClaimLease + time.Second)
+	recovered, err := tasks.reserveDelivery(ref, 7, "p2p_7_440", 440, clientMessageID)
+	if err != nil || recovered == nil || recovered.AlreadyDelivered {
+		t.Fatalf("expired lease recovery: delivery=%#v err=%v", recovered, err)
+	}
+	if !tasks.confirmDelivery(recovered) {
+		t.Fatal("recovered reservation was not confirmed")
+	}
+	duplicate, err := tasks.reserveDelivery(ref, 7, "p2p_7_440", 440, clientMessageID)
+	if err != nil || duplicate == nil || !duplicate.AlreadyDelivered {
+		t.Fatalf("confirmed retry was not deduplicated: delivery=%#v err=%v", duplicate, err)
+	}
 }
 
 func TestArtifactRuntime02PersistentRunSurvivesPreviewAndHubRestart(t *testing.T) {
@@ -377,6 +452,17 @@ func TestArtifactRuntime02PersistentRunSurvivesPreviewAndHubRestart(t *testing.T
 		!artifactTaskIDPattern.MatchString(created.TaskID) || !artifactTaskRefPattern.MatchString(created.TaskRef) ||
 		!artifactRuntimeRunIDPattern.MatchString(created.RunID) || created.CompletionMode != "runtime_state" {
 		t.Fatalf("created Runtime 0.2 task=%#v err=%v", created, err)
+	}
+	db.runMu.Lock()
+	createPolicy := db.lastPolicy
+	db.runMu.Unlock()
+	if createPolicy.ActorActiveMax != artifactTaskActorActiveMax ||
+		createPolicy.ActorRateMax != artifactTaskActorRateMax ||
+		createPolicy.ActorRateWindow != artifactTaskActorRateWindow ||
+		createPolicy.MaxEntries != artifactTaskStoreMaxEntries ||
+		createPolicy.Retention != artifactRuntimeRunRetention ||
+		createPolicy.CleanupLimit != artifactRuntimeRunCleanupBatch {
+		t.Fatalf("persistent Runtime admission policy=%#v", createPolicy)
 	}
 	delivery, err := hub.artifactTasks.reserveDelivery(created.TaskRef, 7, "p2p_7_440", 440, "artifact-task:"+created.TaskID)
 	if err != nil || !hub.artifactTasks.confirmDelivery(delivery) {

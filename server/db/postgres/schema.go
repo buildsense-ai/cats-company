@@ -23,6 +23,9 @@ func (a *Adapter) CreateSchema() error {
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
 		createArtifactRuntimeRunsTable,
+		migrateArtifactRuntimeRunsAddDeliveryClaimedAt,
+		createArtifactRuntimeAdmissionLockTable,
+		seedArtifactRuntimeAdmissionLock,
 		createArtifactRuntimeEventSequencesTable,
 		createArtifactRuntimeEventsTable,
 		migrateArtifactRuntimeEventsV2,
@@ -365,6 +368,7 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_runs (
     message VARCHAR(500) NOT NULL DEFAULT '',
     delivery_claimed BOOLEAN NOT NULL DEFAULT FALSE,
     delivery_client_id VARCHAR(128) NOT NULL DEFAULT '',
+    delivery_claimed_at TIMESTAMPTZ,
     delivered BOOLEAN NOT NULL DEFAULT FALSE,
     executor_run_id VARCHAR(128) NOT NULL DEFAULT '',
     executor_state VARCHAR(32) NOT NULL DEFAULT '',
@@ -381,6 +385,26 @@ CREATE INDEX IF NOT EXISTS idx_artifact_runtime_runs_artifact
     ON artifact_runtime_runs (agent_uid, artifact_id, actor_uid, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifact_runtime_runs_expires
     ON artifact_runtime_runs (status, expires_at);
+`
+
+const migrateArtifactRuntimeRunsAddDeliveryClaimedAt = `
+ALTER TABLE artifact_runtime_runs
+    ADD COLUMN IF NOT EXISTS delivery_claimed_at TIMESTAMPTZ;
+UPDATE artifact_runtime_runs
+SET delivery_claimed_at = updated_at
+WHERE delivery_claimed = TRUE AND delivery_claimed_at IS NULL;
+`
+
+const createArtifactRuntimeAdmissionLockTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_admission_lock (
+    lock_id SMALLINT PRIMARY KEY CHECK (lock_id = 1)
+);
+`
+
+const seedArtifactRuntimeAdmissionLock = `
+INSERT INTO artifact_runtime_admission_lock (lock_id)
+VALUES (1)
+ON CONFLICT (lock_id) DO NOTHING;
 `
 
 const createArtifactRuntimeEventSequencesTable = `
