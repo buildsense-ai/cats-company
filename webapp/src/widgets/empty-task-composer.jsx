@@ -859,7 +859,7 @@ export default function EmptyTaskComposer({
           setAgentPickerOpen(false);
         }}
         attachments={pendingAttachments}
-        attachmentRemovalDisabled={isUploadingAttachment || isSubmitting}
+        attachmentRemovalDisabled={isSubmitting}
         onRemoveAttachment={(index) => {
           const current = pendingAttachmentsRef.current;
           markComposerPhoneUploadIgnoredFileKey(
