@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -30,6 +33,9 @@ const (
 	artifactTaskActorActiveMax        = 32
 	artifactTaskActorRateMax          = 60
 	artifactTaskActorRateWindow       = time.Minute
+	artifactRuntimeRunRetention       = 30 * 24 * time.Hour
+	artifactRuntimeRunCleanupBatch    = 512
+	artifactRuntimeDeliveryClaimLease = 30 * time.Second
 	artifactTaskRequestMaxBody        = 96 * 1024
 	artifactTaskOpaqueRandomBytes     = 32
 	artifactTaskVisibleMessageMaxRune = 700
@@ -38,6 +44,7 @@ const (
 var (
 	artifactTaskIDPattern          = regexp.MustCompile(`^atk_[A-Za-z0-9_-]{43}$`)
 	artifactTaskRefPattern         = regexp.MustCompile(`^atr_[A-Za-z0-9_-]{43}$`)
+	artifactRuntimeRunIDPattern    = regexp.MustCompile(`^run_[A-Za-z0-9_-]{43}$`)
 	errArtifactTaskStoreFull       = errors.New("Artifact task store is full")
 	errArtifactTaskActorActiveCap  = errors.New("Artifact task active limit exceeded")
 	errArtifactTaskActorRateLimit  = errors.New("Artifact task rate limit exceeded")
@@ -84,6 +91,9 @@ type artifactTask struct {
 	AgentState       string
 	AgentFinishedAt  time.Time
 	ResultID         string
+	RuntimeRunID     string
+	ExecutorRunID    string
+	Persistent       bool
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	ExpiresAt        time.Time
@@ -96,6 +106,8 @@ type artifactTaskDeliveryRef struct {
 	AgentUID         int64
 	ClientMessageID  string
 	AlreadyDelivered bool
+	Recovered        bool
+	Persistent       bool
 }
 
 type artifactTaskActorRate struct {
@@ -120,6 +132,7 @@ type artifactTaskStore struct {
 	actorRateWindow time.Duration
 	actorRates      map[int64]artifactTaskActorRate
 	now             func() time.Time
+	runtimeRuns     store.ArtifactRuntimeRunStore
 }
 
 type ArtifactTaskHandler struct {
@@ -142,7 +155,9 @@ type artifactTaskPublicStatus struct {
 	Code            string `json:"code,omitempty"`
 	Message         string `json:"message,omitempty"`
 	RunID           string `json:"run_id,omitempty"`
+	ExecutorRunID   string `json:"executor_run_id,omitempty"`
 	ResultID        string `json:"result_id,omitempty"`
+	CompletionMode  string `json:"completion_mode,omitempty"`
 	DeliveryStatus  string `json:"delivery_status"`
 	UpdatedAt       string `json:"updated_at"`
 	ExpiresAt       string `json:"expires_at"`
@@ -176,6 +191,13 @@ func newArtifactTaskStore(ttl, tombstoneTTL, agentGrace time.Duration, maxEntrie
 	}
 }
 
+func (s *artifactTaskStore) withRuntimeStore(value interface{}) *artifactTaskStore {
+	if runtimeRuns, ok := value.(store.ArtifactRuntimeRunStore); ok {
+		s.runtimeRuns = runtimeRuns
+	}
+	return s
+}
+
 func NewArtifactTaskHandler(hub *Hub) *ArtifactTaskHandler {
 	return &ArtifactTaskHandler{hub: hub}
 }
@@ -197,16 +219,84 @@ func newArtifactTaskOpaque(prefix string) (string, error) {
 func cloneArtifactTask(value artifactTask) artifactTask {
 	value.Payload = append(json.RawMessage(nil), value.Payload...)
 	value.Intent.InputSchema = append(json.RawMessage(nil), value.Intent.InputSchema...)
+	if value.Intent.Completion != nil {
+		completion := *value.Intent.Completion
+		value.Intent.Completion = &completion
+	}
 	value.PageContext = cloneArtifactPageContext(value.PageContext)
 	return value
+}
+
+func artifactTaskRefHash(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	return hex.EncodeToString(sum[:])
+}
+
+func artifactTaskFromRuntimeRun(run *store.ArtifactRuntimeRun, rawRef string) artifactTask {
+	if run == nil {
+		return artifactTask{}
+	}
+	var pageContext map[string]interface{}
+	if len(run.PageContext) > 0 {
+		_ = json.Unmarshal(run.PageContext, &pageContext)
+	}
+	var inputSchema json.RawMessage
+	inputSchema = append(inputSchema, run.InputSchema...)
+	finished := time.Time{}
+	if run.ExecutorFinishedAt != nil {
+		finished = *run.ExecutorFinishedAt
+	}
+	return artifactTask{
+		ID: run.TaskID, Ref: rawRef, ActorUID: run.ActorUID, TopicID: run.TopicID, AgentUID: run.AgentUID,
+		Artifact: ArtifactContextRecord{
+			ID: run.ArtifactID, Title: run.ArtifactTitle, Kind: run.ArtifactKind,
+			URL: run.ArtifactURL, PublishVersion: run.PublishVersion,
+		},
+		DisplayedVersion: run.DisplayedVersion,
+		PreviewRoute:     runtimeRoute{NodeID: run.PreviewNodeID, ConnectionID: run.PreviewConnectionID},
+		Intent: ArtifactTaskIntent{
+			ID: run.ActionID, Title: run.ActionTitle, Description: run.ActionDescription,
+			InputSchema: inputSchema, Completion: &ArtifactTaskCompletion{Mode: run.CompletionMode},
+		},
+		Payload: append(json.RawMessage(nil), run.Payload...), PageContext: pageContext,
+		Status: artifactTaskState(run.Status), Code: run.Code, Message: run.Message,
+		DeliveryClaimed: run.DeliveryClaimed, DeliveryClientID: run.DeliveryClientID, Delivered: run.Delivered,
+		RunID: run.ExecutorRunID, RuntimeRunID: run.RunID, ExecutorRunID: run.ExecutorRunID,
+		AgentState: run.ExecutorState, AgentFinishedAt: finished, ResultID: run.ResultID,
+		CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, ExpiresAt: run.ExpiresAt,
+		Persistent: true,
+	}
+}
+
+func artifactTaskRuntimeRun(candidate artifactTask, taskID, taskRef, runID string, now time.Time, ttl time.Duration) (*store.ArtifactRuntimeRun, error) {
+	pageContext, err := json.Marshal(candidate.PageContext)
+	if err != nil {
+		return nil, err
+	}
+	return &store.ArtifactRuntimeRun{
+		TaskID: taskID, TaskRefHash: artifactTaskRefHash(taskRef), RunID: runID,
+		ActorUID: candidate.ActorUID, TopicID: candidate.TopicID, AgentUID: candidate.AgentUID,
+		ArtifactID: candidate.Artifact.ID, ArtifactTitle: candidate.Artifact.Title,
+		ArtifactKind: candidate.Artifact.Kind, ArtifactURL: candidate.Artifact.URL,
+		PublishVersion: candidate.Artifact.PublishVersion, DisplayedVersion: candidate.DisplayedVersion,
+		PreviewNodeID: candidate.PreviewRoute.NodeID, PreviewConnectionID: candidate.PreviewRoute.ConnectionID,
+		ActionID: candidate.Intent.ID, ActionTitle: candidate.Intent.Title,
+		ActionDescription: candidate.Intent.Description, InputSchema: append(json.RawMessage(nil), candidate.Intent.InputSchema...),
+		Payload: append(json.RawMessage(nil), candidate.Payload...), PageContext: pageContext,
+		CompletionMode: candidate.Intent.completionMode(), Status: string(artifactTaskSubmitted),
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(ttl),
+	}, nil
 }
 
 func (s *artifactTaskStore) create(candidate artifactTask) (artifactTask, error) {
 	if s == nil || candidate.ActorUID <= 0 || candidate.AgentUID <= 0 || candidate.TopicID == "" ||
 		!validArtifactContextRecord(candidate.Artifact, candidate.Artifact.ID) || candidate.DisplayedVersion <= 0 ||
 		candidate.PreviewRoute.NodeID == "" || candidate.PreviewRoute.ConnectionID == "" ||
-		candidate.Intent.ID == "" || candidate.Intent.ResultSink == "" || len(candidate.Payload) == 0 {
+		candidate.Intent.ID == "" || (candidate.Intent.ResultSink == "" && !candidate.Intent.usesRuntimeStateCompletion()) || len(candidate.Payload) == 0 {
 		return artifactTask{}, errors.New("invalid Artifact task")
+	}
+	if candidate.Intent.usesRuntimeStateCompletion() {
+		return s.createPersistent(candidate)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -253,16 +343,71 @@ func (s *artifactTaskStore) create(candidate artifactTask) (artifactTask, error)
 	return artifactTask{}, errors.New("failed to allocate Artifact task identity")
 }
 
+func (s *artifactTaskStore) createPersistent(candidate artifactTask) (artifactTask, error) {
+	if s == nil || s.runtimeRuns == nil {
+		return artifactTask{}, errors.New("Artifact Runtime 0.2 is unavailable")
+	}
+	now := s.now().UTC()
+	for attempts := 0; attempts < 8; attempts++ {
+		taskID, err := newArtifactTaskOpaque("atk_")
+		if err != nil {
+			return artifactTask{}, err
+		}
+		taskRef, err := newArtifactTaskOpaque("atr_")
+		if err != nil {
+			return artifactTask{}, err
+		}
+		runID, err := newArtifactTaskOpaque("run_")
+		if err != nil {
+			return artifactTask{}, err
+		}
+		run, err := artifactTaskRuntimeRun(candidate, taskID, taskRef, runID, now, s.ttl)
+		if err != nil {
+			return artifactTask{}, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		created, createErr := s.runtimeRuns.CreateArtifactRuntimeRun(ctx, run, store.ArtifactRuntimeRunCreatePolicy{
+			ActorActiveMax:  s.actorActiveMax,
+			ActorRateMax:    s.actorRateMax,
+			ActorRateWindow: s.actorRateWindow,
+			MaxEntries:      s.maxEntries,
+			Retention:       artifactRuntimeRunRetention,
+			CleanupLimit:    artifactRuntimeRunCleanupBatch,
+		})
+		cancel()
+		if createErr != nil {
+			switch {
+			case errors.Is(createErr, store.ErrArtifactRuntimeActorActiveCap):
+				return artifactTask{}, errArtifactTaskActorActiveCap
+			case errors.Is(createErr, store.ErrArtifactRuntimeActorRateLimit):
+				return artifactTask{}, errArtifactTaskActorRateLimit
+			case errors.Is(createErr, store.ErrArtifactRuntimeRunStoreFull):
+				return artifactTask{}, errArtifactTaskStoreFull
+			}
+			if attempts < 7 && strings.Contains(strings.ToLower(createErr.Error()), "unique") {
+				continue
+			}
+			return artifactTask{}, createErr
+		}
+		return artifactTaskFromRuntimeRun(created, taskRef), nil
+	}
+	return artifactTask{}, errors.New("failed to allocate Artifact Runtime Run identity")
+}
+
 func (s *artifactTaskStore) reserveDelivery(ref string, actorUID int64, topicID string, agentUID int64, clientMessageID string) (*artifactTaskDeliveryRef, error) {
 	clientMessageID = strings.TrimSpace(clientMessageID)
 	if s == nil || !artifactTaskRefPattern.MatchString(ref) || clientMessageID == "" || len(clientMessageID) > 128 {
 		return nil, errors.New("Artifact task reference is invalid")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
 	task := s.byRef[ref]
+	if task == nil {
+		s.mu.Unlock()
+		return s.reservePersistentDelivery(ref, actorUID, topicID, agentUID, clientMessageID)
+	}
+	defer s.mu.Unlock()
 	if task == nil || task.ActorUID != actorUID || task.TopicID != topicID || task.AgentUID != agentUID ||
 		artifactTaskTerminal(task.Status) || !now.Before(task.ExpiresAt) {
 		return nil, errors.New("Artifact task reference does not match this message")
@@ -290,9 +435,42 @@ func (s *artifactTaskStore) reserveDelivery(ref string, actorUID int64, topicID 
 	}, nil
 }
 
+func (s *artifactTaskStore) reservePersistentDelivery(ref string, actorUID int64, topicID string, agentUID int64, clientMessageID string) (*artifactTaskDeliveryRef, error) {
+	if s.runtimeRuns == nil {
+		return nil, errors.New("Artifact task reference does not match this message")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	claim, err := s.runtimeRuns.ReserveArtifactRuntimeDelivery(
+		ctx, artifactTaskRefHash(ref), actorUID, topicID, agentUID, clientMessageID, artifactRuntimeDeliveryClaimLease,
+	)
+	cancel()
+	if errors.Is(err, store.ErrArtifactRuntimeDeliveryPending) {
+		return nil, errArtifactTaskDeliveryPending
+	}
+	if err != nil || claim == nil || claim.Run == nil {
+		return nil, errors.New("Artifact task reference does not match this message")
+	}
+	return &artifactTaskDeliveryRef{
+		Ref: ref, TaskID: claim.Run.TaskID, AgentUID: claim.Run.AgentUID,
+		ClientMessageID: clientMessageID, AlreadyDelivered: claim.AlreadyDelivered,
+		Recovered: claim.Recovered, Persistent: true,
+	}, nil
+}
+
 func (s *artifactTaskStore) confirmDelivery(delivery *artifactTaskDeliveryRef) bool {
 	if s == nil || delivery == nil || delivery.AlreadyDelivered {
 		return delivery != nil && delivery.AlreadyDelivered
+	}
+	if delivery.Persistent {
+		if s.runtimeRuns == nil {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		confirmed, err := s.runtimeRuns.ConfirmArtifactRuntimeDelivery(
+			ctx, delivery.TaskID, artifactTaskRefHash(delivery.Ref), delivery.ClientMessageID,
+		)
+		cancel()
+		return err == nil && confirmed
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -314,6 +492,16 @@ func (s *artifactTaskStore) releaseDelivery(delivery *artifactTaskDeliveryRef) {
 	if s == nil || delivery == nil || delivery.AlreadyDelivered {
 		return
 	}
+	if delivery.Persistent {
+		if s.runtimeRuns != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			_ = s.runtimeRuns.ReleaseArtifactRuntimeDelivery(
+				ctx, delivery.TaskID, artifactTaskRefHash(delivery.Ref), delivery.ClientMessageID,
+			)
+			cancel()
+		}
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	task := s.byRef[delivery.Ref]
@@ -329,6 +517,20 @@ func (s *artifactTaskStore) releaseDelivery(delivery *artifactTaskDeliveryRef) {
 func (s *artifactTaskStore) failDelivery(delivery *artifactTaskDeliveryRef, code, message string) bool {
 	if s == nil || delivery == nil || delivery.AlreadyDelivered {
 		return false
+	}
+	if delivery.Persistent {
+		if s.runtimeRuns == nil {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		run, found, err := s.runtimeRuns.GetArtifactRuntimeRunByRef(ctx, artifactTaskRefHash(delivery.Ref), delivery.AgentUID)
+		applied := false
+		if err == nil && found && run.TaskID == delivery.TaskID && run.DeliveryClientID == delivery.ClientMessageID {
+			_, _, err = s.runtimeRuns.FailArtifactRuntimeRun(ctx, run.TaskID, run.ActorUID, code, message)
+			applied = err == nil
+		}
+		cancel()
+		return applied
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -349,6 +551,22 @@ func (s *artifactTaskStore) validateDelivery(delivery *artifactTaskDeliveryRef, 
 	if s == nil || delivery == nil || !artifactTaskRefPattern.MatchString(delivery.Ref) || !artifactTaskIDPattern.MatchString(delivery.TaskID) {
 		return nil
 	}
+	if delivery.Persistent {
+		if s.runtimeRuns == nil {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		run, found, err := s.runtimeRuns.GetArtifactRuntimeRunByRef(ctx, artifactTaskRefHash(delivery.Ref), agentUID)
+		cancel()
+		if err != nil || !found || run.TaskID != delivery.TaskID || run.ActorUID != actorUID ||
+			run.TopicID != topicID || run.AgentUID != agentUID || run.DeliveryClientID != delivery.ClientMessageID ||
+			(!run.Delivered && !run.DeliveryClaimed) || artifactTaskTerminal(artifactTaskState(run.Status)) ||
+			!s.now().UTC().Before(run.ExpiresAt) {
+			return nil
+		}
+		validated := *delivery
+		return &validated
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()
@@ -368,10 +586,23 @@ func (s *artifactTaskStore) forActor(taskID string, actorUID int64) (artifactTas
 		return artifactTask{}, false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
 	task := s.byID[taskID]
+	if task == nil {
+		s.mu.Unlock()
+		if s.runtimeRuns == nil {
+			return artifactTask{}, false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		run, found, err := s.runtimeRuns.GetArtifactRuntimeRunByTask(ctx, taskID, actorUID)
+		cancel()
+		if err != nil || !found {
+			return artifactTask{}, false
+		}
+		return artifactTaskFromRuntimeRun(run, ""), true
+	}
+	defer s.mu.Unlock()
 	if task == nil || task.ActorUID != actorUID {
 		return artifactTask{}, false
 	}
@@ -384,10 +615,23 @@ func (s *artifactTaskStore) forBot(ref string, botUID int64) (artifactTask, bool
 		return artifactTask{}, false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
 	task := s.byRef[ref]
+	if task == nil {
+		s.mu.Unlock()
+		if s.runtimeRuns == nil {
+			return artifactTask{}, false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		run, found, err := s.runtimeRuns.GetArtifactRuntimeRunByRef(ctx, artifactTaskRefHash(ref), botUID)
+		cancel()
+		if err != nil || !found || !run.Delivered || !s.now().UTC().Before(run.ExpiresAt) {
+			return artifactTask{}, false
+		}
+		return artifactTaskFromRuntimeRun(run, ref), true
+	}
+	defer s.mu.Unlock()
 	if task == nil || task.AgentUID != botUID || !task.Delivered || artifactTaskTerminal(task.Status) || !now.Before(task.ExpiresAt) {
 		return artifactTask{}, false
 	}
@@ -415,10 +659,22 @@ func (s *artifactTaskStore) observeRun(ref string, sourceUID int64, topicID stri
 		return false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
 	task := s.byRef[ref]
+	if task == nil {
+		s.mu.Unlock()
+		if s.runtimeRuns == nil {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		_, _, err := s.runtimeRuns.ObserveArtifactRuntimeExecutor(
+			ctx, artifactTaskRefHash(ref), sourceUID, topicID, status.RunID, status.State, status.Error,
+		)
+		cancel()
+		return err == nil
+	}
+	defer s.mu.Unlock()
 	if task == nil || task.AgentUID != sourceUID || task.TopicID != topicID || !task.Delivered || artifactTaskTerminal(task.Status) {
 		return false
 	}
@@ -500,10 +756,38 @@ func (s *artifactTaskStore) failForActorWithClaimPolicy(
 		return artifactTaskFailNotFound
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
 	task := s.byID[taskID]
+	if task == nil {
+		s.mu.Unlock()
+		if s.runtimeRuns == nil {
+			return artifactTaskFailNotFound
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		run, found, err := s.runtimeRuns.GetArtifactRuntimeRunByTask(ctx, taskID, actorUID)
+		if err != nil || !found || runtimeRunTerminalStatus(run.Status) {
+			cancel()
+			return artifactTaskFailNotFound
+		}
+		if preserveClaim {
+			if run.Delivered {
+				cancel()
+				return artifactTaskFailDeliveryCommitted
+			}
+			if run.DeliveryClaimed {
+				cancel()
+				return artifactTaskFailDeliveryPending
+			}
+		}
+		_, _, err = s.runtimeRuns.FailArtifactRuntimeRun(ctx, taskID, actorUID, code, message)
+		cancel()
+		if err != nil {
+			return artifactTaskFailNotFound
+		}
+		return artifactTaskFailApplied
+	}
+	defer s.mu.Unlock()
 	if task == nil || task.ActorUID != actorUID || artifactTaskTerminal(task.Status) {
 		return artifactTaskFailNotFound
 	}
@@ -593,6 +877,10 @@ func artifactTaskTerminal(state artifactTaskState) bool {
 	return state == artifactTaskCompleted || state == artifactTaskFailed
 }
 
+func runtimeRunTerminalStatus(status string) bool {
+	return status == string(artifactTaskCompleted) || status == string(artifactTaskFailed)
+}
+
 func artifactTaskStatus(task artifactTask) artifactTaskPublicStatus {
 	deliveryStatus := "pending"
 	if task.Delivered {
@@ -600,14 +888,20 @@ func artifactTaskStatus(task artifactTask) artifactTaskPublicStatus {
 	} else if task.Status == artifactTaskFailed {
 		deliveryStatus = "failed"
 	}
+	runID := task.RunID
+	if task.Persistent {
+		runID = task.RuntimeRunID
+	}
 	return artifactTaskPublicStatus{
 		ContractVersion: artifactTaskStatusContract,
 		TaskID:          task.ID,
 		Status:          string(task.Status),
 		Code:            task.Code,
 		Message:         task.Message,
-		RunID:           task.RunID,
+		RunID:           runID,
+		ExecutorRunID:   task.ExecutorRunID,
 		ResultID:        task.ResultID,
+		CompletionMode:  task.Intent.completionMode(),
 		DeliveryStatus:  deliveryStatus,
 		UpdatedAt:       task.UpdatedAt.Format(time.RFC3339Nano),
 		ExpiresAt:       task.ExpiresAt.Format(time.RFC3339Nano),
@@ -796,7 +1090,7 @@ func (h *ArtifactTaskHandler) handleCreate(w http.ResponseWriter, r *http.Reques
 		artifactTitle = record.ID
 	}
 	visibleMessage := truncateUTF8(fmt.Sprintf("来自「%s」：%s", artifactTitle, intent.Title), artifactTaskVisibleMessageMaxRune)
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
+	response := map[string]interface{}{
 		"contract_version": artifactTaskRefContract,
 		"task_id":          task.ID,
 		"task_ref":         task.Ref,
@@ -804,7 +1098,12 @@ func (h *ArtifactTaskHandler) handleCreate(w http.ResponseWriter, r *http.Reques
 		"delivery_status":  "pending",
 		"visible_message":  visibleMessage,
 		"expires_at":       task.ExpiresAt.Format(time.RFC3339Nano),
-	})
+	}
+	if task.Persistent {
+		response["run_id"] = task.RuntimeRunID
+		response["completion_mode"] = task.Intent.completionMode()
+	}
+	writeJSON(w, http.StatusCreated, response)
 }
 
 func (h *ArtifactTaskHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -819,7 +1118,7 @@ func (h *ArtifactTaskHandler) handleStatus(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Artifact task not found"})
 		return
 	}
-	if !artifactTaskTerminal(task.Status) && !h.hub.artifactPreviewRouteConnected(actorUID, task.PreviewRoute) {
+	if !task.Persistent && !artifactTaskTerminal(task.Status) && !h.hub.artifactPreviewRouteConnected(actorUID, task.PreviewRoute) {
 		h.hub.artifactTasks.failForActor(task.ID, actorUID, "preview_disconnected", "Artifact preview disconnected before the task completed")
 		task, _ = h.hub.artifactTasks.forActor(taskID, actorUID)
 	}
@@ -893,7 +1192,7 @@ func (h *ArtifactTaskHandler) HandleBotRead(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	currentAgentUID, ok := h.hub.artifactAgentForTopic(task.ActorUID, task.TopicID)
-	if !ok || currentAgentUID != botUID || !h.hub.artifactPreviewRouteConnected(task.ActorUID, task.PreviewRoute) {
+	if !ok || currentAgentUID != botUID || (!task.Persistent && !h.hub.artifactPreviewRouteConnected(task.ActorUID, task.PreviewRoute)) {
 		h.hub.artifactTasks.failForActor(task.ID, task.ActorUID, "preview_disconnected", "Artifact preview is no longer connected")
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "Artifact task target is no longer connected"})
 		return
@@ -906,11 +1205,15 @@ func (h *ArtifactTaskHandler) HandleBotRead(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Artifact task target is unavailable"})
 		return
 	}
-	target, err := h.hub.issueArtifactTaskWritebackIfActive(task.Ref, task.ID)
-	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "Artifact task writeback is unavailable"})
-		return
+	var target artifactWritebackTarget
+	if !task.Persistent {
+		target, err = h.hub.issueArtifactTaskWritebackIfActive(task.Ref, task.ID)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "Artifact task writeback is unavailable"})
+			return
+		}
 	}
+	previewConnected := h.hub.artifactPreviewRouteConnected(task.ActorUID, task.PreviewRoute)
 	artifact := map[string]interface{}{
 		"id":                record.ID,
 		"title":             strings.TrimSpace(record.Title),
@@ -920,27 +1223,34 @@ func (h *ArtifactTaskHandler) HandleBotRead(w http.ResponseWriter, r *http.Reque
 		"topic_id":          task.TopicID,
 		"displayed_version": task.DisplayedVersion,
 		"latest_version":    record.PublishVersion,
-		"currently_visible": true,
+		"currently_visible": previewConnected,
+	}
+	trustedTask := map[string]interface{}{
+		"task_id":    task.ID,
+		"intent_id":  task.Intent.ID,
+		"created_at": task.CreatedAt.Format(time.RFC3339Nano),
+		"expires_at": task.ExpiresAt.Format(time.RFC3339Nano),
+	}
+	trusted := map[string]interface{}{
+		"artifact": artifact,
+		"task":     trustedTask,
+	}
+	if task.Persistent {
+		trustedTask["run_id"] = task.RuntimeRunID
+		trustedTask["completion"] = task.Intent.Completion
+	} else {
+		trustedTask["result_sink"] = task.Intent.ResultSink
+		trusted["writeback_target"] = map[string]interface{}{
+			"contract_version": artifactWritebackTargetContract,
+			"writeback_ref":    target.Ref,
+			"task_id":          task.ID,
+			"expires_at":       target.ExpiresAt.Format(time.RFC3339Nano),
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"contract_version": artifactTaskSnapshotContract,
 		"status":           "ok",
-		"trusted": map[string]interface{}{
-			"artifact": artifact,
-			"task": map[string]interface{}{
-				"task_id":     task.ID,
-				"intent_id":   task.Intent.ID,
-				"result_sink": task.Intent.ResultSink,
-				"created_at":  task.CreatedAt.Format(time.RFC3339Nano),
-				"expires_at":  task.ExpiresAt.Format(time.RFC3339Nano),
-			},
-			"writeback_target": map[string]interface{}{
-				"contract_version": artifactWritebackTargetContract,
-				"writeback_ref":    target.Ref,
-				"task_id":          task.ID,
-				"expires_at":       target.ExpiresAt.Format(time.RFC3339Nano),
-			},
-		},
+		"trusted":          trusted,
 		"untrusted": map[string]interface{}{
 			"intent":       task.Intent,
 			"payload":      json.RawMessage(task.Payload),

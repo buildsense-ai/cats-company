@@ -114,6 +114,14 @@ export function normalizeArtifactRuntimeRequest(value) {
       normalized.value = cloneBounded(payload.value);
       if (normalized.value === null && payload.value !== null) return null;
       break;
+    case 'run.get':
+      if (!exactKeys(payload, new Set(['run_id']))
+        || !/^run_[A-Za-z0-9_-]{43}$/.test(String(payload.run_id || ''))) return null;
+      normalized = { run_id: payload.run_id };
+      break;
+    case 'run.list':
+      normalized = empty();
+      break;
     case 'state.patch':
       if (!exactKeys(payload, new Set(['namespace', 'key', 'base_revision', 'patch']))) return null;
       normalized = runtimeStateTarget(payload);

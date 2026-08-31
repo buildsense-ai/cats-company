@@ -27,6 +27,23 @@ func TestParseArtifactRuntimeManifest(t *testing.T) {
 	}
 }
 
+func TestParseArtifactRuntimeManifestAcceptsRuntime02(t *testing.T) {
+	manifest, err := parseArtifactRuntimeManifest([]byte(`{
+		"contract_version":"catsco.artifact-manifest.v4",
+		"runtime":{
+			"version":"0.2",
+			"surfaces":[{"id":"task-board"}],
+			"state":[{"namespace":"project_tasks","mode":"read-write"}]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parse Runtime 0.2 manifest: %v", err)
+	}
+	if manifest.Version != "0.2" || !manifest.allowsNamespace("project_tasks", true) {
+		t.Fatalf("unexpected Runtime 0.2 manifest: %#v", manifest)
+	}
+}
+
 func TestArtifactRuntimeManifestCacheIsBounded(t *testing.T) {
 	handler := &CloudArtifactHandler{
 		artifactRuntimeManifestTTL: time.Minute,

@@ -22,8 +22,13 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
+		createArtifactRuntimeRunsTable,
+		migrateArtifactRuntimeRunsAddDeliveryClaimedAt,
+		createArtifactRuntimeAdmissionLockTable,
+		seedArtifactRuntimeAdmissionLock,
 		createArtifactRuntimeEventSequencesTable,
 		createArtifactRuntimeEventsTable,
+		migrateArtifactRuntimeEventsV2,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createBotInviteCodesTable,
@@ -335,6 +340,73 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_states (
 );
 `
 
+const createArtifactRuntimeRunsTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_runs (
+    task_id VARCHAR(64) PRIMARY KEY,
+    task_ref_hash CHAR(64) NOT NULL UNIQUE,
+    run_id VARCHAR(64) NOT NULL UNIQUE,
+    actor_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id VARCHAR(128) NOT NULL,
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    artifact_title VARCHAR(256) NOT NULL DEFAULT '',
+    artifact_kind VARCHAR(64) NOT NULL DEFAULT '',
+    artifact_url TEXT NOT NULL,
+    publish_version INTEGER NOT NULL DEFAULT 0,
+    displayed_version BIGINT NOT NULL CHECK (displayed_version > 0),
+    preview_node_id VARCHAR(128) NOT NULL DEFAULT '',
+    preview_connection_id VARCHAR(128) NOT NULL DEFAULT '',
+    action_id VARCHAR(128) NOT NULL,
+    action_title VARCHAR(256) NOT NULL,
+    action_description VARCHAR(500) NOT NULL,
+    input_schema JSONB NOT NULL,
+    payload_json JSONB NOT NULL,
+    page_context_json JSONB NOT NULL,
+    completion_mode VARCHAR(32) NOT NULL CHECK (completion_mode = 'runtime_state'),
+    status VARCHAR(16) NOT NULL CHECK (status IN ('submitted','running','completed','failed')),
+    code VARCHAR(64) NOT NULL DEFAULT '',
+    message VARCHAR(500) NOT NULL DEFAULT '',
+    delivery_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+    delivery_client_id VARCHAR(128) NOT NULL DEFAULT '',
+    delivery_claimed_at TIMESTAMPTZ,
+    delivered BOOLEAN NOT NULL DEFAULT FALSE,
+    executor_run_id VARCHAR(128) NOT NULL DEFAULT '',
+    executor_state VARCHAR(32) NOT NULL DEFAULT '',
+    executor_finished_at TIMESTAMPTZ,
+    result_id VARCHAR(64) NOT NULL DEFAULT '',
+    applied_event_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_runtime_runs_artifact
+    ON artifact_runtime_runs (agent_uid, artifact_id, actor_uid, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifact_runtime_runs_expires
+    ON artifact_runtime_runs (status, expires_at);
+`
+
+const migrateArtifactRuntimeRunsAddDeliveryClaimedAt = `
+ALTER TABLE artifact_runtime_runs
+    ADD COLUMN IF NOT EXISTS delivery_claimed_at TIMESTAMPTZ;
+UPDATE artifact_runtime_runs
+SET delivery_claimed_at = updated_at
+WHERE delivery_claimed = TRUE AND delivery_claimed_at IS NULL;
+`
+
+const createArtifactRuntimeAdmissionLockTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_admission_lock (
+    lock_id SMALLINT PRIMARY KEY CHECK (lock_id = 1)
+);
+`
+
+const seedArtifactRuntimeAdmissionLock = `
+INSERT INTO artifact_runtime_admission_lock (lock_id)
+VALUES (1)
+ON CONFLICT (lock_id) DO NOTHING;
+`
+
 const createArtifactRuntimeEventSequencesTable = `
 CREATE TABLE IF NOT EXISTS artifact_runtime_event_sequences (
     agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -349,7 +421,7 @@ const createArtifactRuntimeEventsTable = `
 CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     id BIGSERIAL PRIMARY KEY,
     artifact_event_id BIGINT NOT NULL CHECK (artifact_event_id > 0),
-    event_type VARCHAR(64) NOT NULL CHECK (event_type = 'state.updated'),
+    event_type VARCHAR(64) NOT NULL CHECK (event_type IN ('state.updated','run.started','result.applied','run.finished','run.error')),
     agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     artifact_id VARCHAR(64) NOT NULL,
     namespace VARCHAR(64) NOT NULL,
@@ -357,9 +429,30 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     revision BIGINT NOT NULL CHECK (revision > 0),
     updated_by_uid BIGINT NOT NULL,
     updated_by_type VARCHAR(16) NOT NULL CHECK (updated_by_type IN ('viewer','agent')),
+    task_id VARCHAR(64),
+    run_id VARCHAR(64),
+    executor_run_id VARCHAR(128),
+    result_id VARCHAR(64),
+    event_data JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (agent_uid, artifact_id, artifact_event_id)
 );
+`
+
+const migrateArtifactRuntimeEventsV2 = `
+ALTER TABLE artifact_runtime_events
+    ADD COLUMN IF NOT EXISTS task_id VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS run_id VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS executor_run_id VARCHAR(128),
+    ADD COLUMN IF NOT EXISTS result_id VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS event_data JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE artifact_runtime_events
+    DROP CONSTRAINT IF EXISTS artifact_runtime_events_event_type_check;
+ALTER TABLE artifact_runtime_events
+    ADD CONSTRAINT artifact_runtime_events_event_type_check
+    CHECK (event_type IN ('state.updated','run.started','result.applied','run.finished','run.error'));
+CREATE INDEX IF NOT EXISTS idx_artifact_runtime_events_run
+    ON artifact_runtime_events (agent_uid, artifact_id, run_id, artifact_event_id);
 `
 
 const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `

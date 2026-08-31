@@ -121,7 +121,7 @@ export function createArtifactTaskHost({
   const cancelActiveTasks = () => {
     for (const record of activeTasks.values()) {
       if (record.timer) clearTimer(record.timer);
-      failServerTask(record.taskId);
+      if (!record.persistent) failServerTask(record.taskId);
     }
     activeTasks.clear();
     connectedBinding = null;
@@ -146,7 +146,7 @@ export function createArtifactTaskHost({
       }
       if (!recordIsCurrent(record)) {
         activeTasks.delete(record.taskId);
-        failServerTask(record.taskId);
+        if (!record.persistent) failServerTask(record.taskId);
         return;
       }
       try {
@@ -169,6 +169,10 @@ export function createArtifactTaskHost({
             return;
           }
           if (status.status === 'completed') {
+            if (record.persistent) {
+              activeTasks.delete(record.taskId);
+              return;
+            }
             record.awaitingResult = true;
             record.timer = setTimer(() => {
               if (activeTasks.get(record.taskId) === record) {
@@ -258,6 +262,8 @@ export function createArtifactTaskHost({
         timer: null,
         pollFailures: 0,
         expiresAt: created.expiresAt,
+        runId: created.runId || '',
+        persistent: created.completionMode === 'runtime_state',
       };
       activeTasks.set(record.taskId, record);
 
@@ -357,6 +363,8 @@ export function createArtifactTaskHost({
           delivery_status: delivered ? 'delivered' : 'pending',
           expires_at: created.expiresAt,
           updated_at: new Date().toISOString(),
+          ...(record.runId ? { run_id: record.runId } : {}),
+          ...(record.persistent ? { completion_mode: 'runtime_state' } : {}),
         },
       });
       beginPolling(record);
@@ -460,7 +468,7 @@ export function createArtifactTaskHost({
     for (const record of [...activeTasks.values()]) {
       if (!recordIsCurrent(record)) {
         activeTasks.delete(record.taskId);
-        failServerTask(record.taskId);
+        if (!record.persistent) failServerTask(record.taskId);
         continue;
       }
       record.awaitingResult = false;

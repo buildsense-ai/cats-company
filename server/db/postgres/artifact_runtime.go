@@ -217,7 +217,9 @@ func (a *Adapter) ListArtifactRuntimeEvents(
 ) ([]*store.ArtifactRuntimeEvent, error) {
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT artifact_event_id, event_type, namespace, document_key, revision,
-			updated_by_uid, updated_by_type, created_at
+			updated_by_uid, updated_by_type,
+			COALESCE(task_id, ''), COALESCE(run_id, ''),
+			COALESCE(executor_run_id, ''), COALESCE(result_id, ''), event_data, created_at
 		FROM artifact_runtime_events
 		WHERE agent_uid = $1 AND artifact_id = $2 AND artifact_event_id > $3
 		ORDER BY artifact_event_id
@@ -237,6 +239,11 @@ func (a *Adapter) ListArtifactRuntimeEvents(
 			&event.Revision,
 			&event.UpdatedByUID,
 			&event.UpdatedBy,
+			&event.TaskID,
+			&event.RunID,
+			&event.ExecutorRunID,
+			&event.ResultID,
+			&event.Data,
 			&event.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan artifact runtime event: %w", err)

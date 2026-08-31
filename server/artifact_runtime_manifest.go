@@ -16,7 +16,8 @@ import (
 
 const (
 	artifactRuntimeManifestContract = "catsco.artifact-manifest.v4"
-	artifactRuntimeVersion          = "0.1"
+	artifactRuntimeVersion01        = "0.1"
+	artifactRuntimeVersion02        = "0.2"
 	artifactRuntimeManifestMaxBytes = 64 * 1024
 	artifactRuntimeManifestTTL      = 5 * time.Minute
 	artifactRuntimeManifestCacheMax = 1024
@@ -90,7 +91,7 @@ func (h *CloudArtifactHandler) ResolveArtifactRuntimeManifest(
 		return ArtifactRuntimeManifest{}, err
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "catsco-artifact-runtime/0.1")
+	request.Header.Set("User-Agent", "catsco-artifact-runtime/0.2")
 	client := h.httpClient
 	if client == nil {
 		client = http.DefaultClient
@@ -203,8 +204,12 @@ func parseArtifactRuntimeManifest(body []byte) (ArtifactRuntimeManifest, error) 
 		}
 	}
 	version, ok := artifactRuntimeText(runtimeValue["version"], 16)
-	if !ok || version != artifactRuntimeVersion {
-		return ArtifactRuntimeManifest{}, fmt.Errorf("Artifact Runtime version must be %s", artifactRuntimeVersion)
+	if !ok || (version != artifactRuntimeVersion01 && version != artifactRuntimeVersion02) {
+		return ArtifactRuntimeManifest{}, fmt.Errorf(
+			"Artifact Runtime version must be %s or %s",
+			artifactRuntimeVersion01,
+			artifactRuntimeVersion02,
+		)
 	}
 	surfaces, err := parseArtifactRuntimeSurfaces(runtimeValue["surfaces"])
 	if err != nil {

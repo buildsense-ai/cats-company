@@ -46,16 +46,21 @@ type ArtifactRuntimeState struct {
 // State write. EventID is commit-serialized within one Artifact; the State
 // document remains truth.
 type ArtifactRuntimeEvent struct {
-	EventID      int64
-	EventType    string
-	AgentUID     int64
-	ArtifactID   string
-	Namespace    string
-	Key          string
-	Revision     int64
-	UpdatedByUID int64
-	UpdatedBy    string
-	CreatedAt    time.Time
+	EventID       int64
+	EventType     string
+	AgentUID      int64
+	ArtifactID    string
+	Namespace     string
+	Key           string
+	Revision      int64
+	UpdatedByUID  int64
+	UpdatedBy     string
+	TaskID        string
+	RunID         string
+	ExecutorRunID string
+	ResultID      string
+	Data          json.RawMessage
+	CreatedAt     time.Time
 }
 
 // ArtifactRuntimeStateStore is intentionally optional instead of widening the
