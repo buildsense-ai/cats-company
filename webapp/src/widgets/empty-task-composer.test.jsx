@@ -599,6 +599,10 @@ describe('EmptyTaskComposer', () => {
       await flushPromises();
     });
 
+    // The visible composer resets on success; the re-typed draft itself stays
+    // persisted and is restored the next time the composer opens.
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
+
     expect(composerDraftStore.getInputDraft('new-task')).toBe('重打同样的话');
     expect(localStorage.getItem('catsco_composer_drafts:v1:retype-in-flight')).not.toBeNull();
   });

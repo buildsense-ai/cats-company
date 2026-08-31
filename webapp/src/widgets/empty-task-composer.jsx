@@ -160,9 +160,12 @@ export default function EmptyTaskComposer({
     inputValueRef.current = '';
     pendingAttachmentsRef.current = [];
     phoneUploadSessionRef.current = null;
+    // Releasing the session notifies subscribers synchronously; until the
+    // caller clears the visible state below, syncDraftFromStore can
+    // legitimately repopulate the refs from the still-persisted draft. The
+    // caller's clear is authoritative.
     writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
     persistComposerDraftStore(composerDraftStore);
-    return true;
   }, [composerDraftStore, normalizedDraftKey, revisionStore]);
 
   useEffect(() => {
@@ -663,16 +666,16 @@ export default function EmptyTaskComposer({
       await api.sendMessage(topicId, payload);
       messageSent = true;
       // The release must happen even when navigation already unmounted this
-      // view while the request was in flight.
-      const draftFinalized = finalizeDraftAfterSend();
+      // view while the request was in flight. The visible composer always
+      // resets: a draft re-typed during the flight stays persisted in the
+      // store and is restored the next time this composer opens.
+      finalizeDraftAfterSend();
       if (!mountedRef.current) return;
-      if (draftFinalized) {
-        setInput('');
-        setPendingAttachments([]);
-        setPhoneUploadSession(null);
-        setPhoneUploadDialogOpen(false);
-        setAttachmentStatus(null);
-      }
+      setInput('');
+      setPendingAttachments([]);
+      setPhoneUploadSession(null);
+      setPhoneUploadDialogOpen(false);
+      setAttachmentStatus(null);
 
       await onActivateTopic(resolvedTopic);
       window.dispatchEvent(new Event('cc:data-changed'));
