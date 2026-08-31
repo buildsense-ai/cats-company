@@ -42,7 +42,7 @@ func TestMySQLCreateArtifactRuntimeRunEnforcesDatabaseAdmissionLimits(t *testing
 				t.Fatalf("create mock database: %v", err)
 			}
 			defer db.Close()
-			now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+			now := time.Now().UTC()
 			policy := mysqlRuntimeRunCreatePolicy()
 			mock.ExpectBegin()
 			mock.ExpectQuery(`SELECT lock_id FROM artifact_runtime_admission_lock`).
@@ -78,7 +78,7 @@ func TestMySQLCreateArtifactRuntimeRunPrunesRetainedRunAndEvents(t *testing.T) {
 		t.Fatalf("create mock database: %v", err)
 	}
 	defer db.Close()
-	now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	policy := mysqlRuntimeRunCreatePolicy()
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT lock_id FROM artifact_runtime_admission_lock`).
@@ -118,7 +118,7 @@ func TestMySQLCreateArtifactRuntimeRunPrunesCapacityAcrossBatches(t *testing.T) 
 		t.Fatalf("create mock database: %v", err)
 	}
 	defer db.Close()
-	now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	policy := mysqlRuntimeRunCreatePolicy()
 	policy.MaxEntries, policy.CleanupLimit = 2, 1
 	mock.ExpectBegin()
@@ -165,7 +165,7 @@ func TestMySQLCreateArtifactRuntimeRunRejectsFullPersistentStoreWithoutTerminalV
 		t.Fatalf("create mock database: %v", err)
 	}
 	defer db.Close()
-	now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	policy := mysqlRuntimeRunCreatePolicy()
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT lock_id FROM artifact_runtime_admission_lock`).
@@ -200,7 +200,7 @@ func TestMySQLObserveArtifactRuntimeExecutorDoesNotMutateTerminalRun(t *testing.
 		t.Fatalf("create mock database: %v", err)
 	}
 	defer db.Close()
-	now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT .* FROM artifact_runtime_runs WHERE task_ref_hash = \? FOR UPDATE`).
 		WithArgs("ref-hash").
@@ -224,7 +224,7 @@ func TestMySQLObserveArtifactRuntimeExecutorDoesNotRegressCompletedExecutor(t *t
 		t.Fatalf("create mock database: %v", err)
 	}
 	defer db.Close()
-	now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT .* FROM artifact_runtime_runs WHERE task_ref_hash = \? FOR UPDATE`).
 		WithArgs("ref-hash").
@@ -276,7 +276,7 @@ func TestMySQLPutArtifactRuntimeStateStartsRunBeforeStateEvent(t *testing.T) {
 		t.Fatalf("create mock database: %v", err)
 	}
 	defer db.Close()
-	now := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	value := json.RawMessage(`{"items":[]}`)
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT .* FROM artifact_runtime_runs WHERE task_ref_hash = \? FOR UPDATE`).
