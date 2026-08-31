@@ -44,6 +44,31 @@ func (s *artifactRuntime02MemoryStore) SaveMessageIdempotent(
 	replyTo int64,
 	clientMsgID string,
 ) (int64, bool, error) {
+	return s.saveMessageWithMetadata(topicID, fromUID, content, blocks, mode, role, msgType, clientMsgID, nil)
+}
+
+func (s *artifactRuntime02MemoryStore) SaveMessageWithMetadata(
+	topicID string,
+	fromUID int64,
+	content string,
+	blocks []types.ContentBlock,
+	mode, role, msgType string,
+	replyTo int64,
+	clientMsgID string,
+	metadata map[string]interface{},
+) (int64, bool, error) {
+	return s.saveMessageWithMetadata(topicID, fromUID, content, blocks, mode, role, msgType, clientMsgID, metadata)
+}
+
+func (s *artifactRuntime02MemoryStore) saveMessageWithMetadata(
+	topicID string,
+	fromUID int64,
+	content string,
+	blocks []types.ContentBlock,
+	mode, role, msgType string,
+	clientMsgID string,
+	metadata map[string]interface{},
+) (int64, bool, error) {
 	s.messageMu.Lock()
 	defer s.messageMu.Unlock()
 	if s.messageIDs == nil {
@@ -58,7 +83,7 @@ func (s *artifactRuntime02MemoryStore) SaveMessageIdempotent(
 	if s.identityMessageStore != nil {
 		s.identityMessageStore.history = append(s.identityMessageStore.history, &types.Message{
 			ID: s.nextMessageID, TopicID: topicID, FromUID: fromUID, Content: content,
-			ContentBlocks: blocks, Mode: mode, Role: role, MsgType: msgType,
+			ContentBlocks: blocks, Metadata: sanitizeMessageMap(metadata), Mode: mode, Role: role, MsgType: msgType,
 		})
 	}
 	return s.nextMessageID, false, nil
@@ -507,12 +532,12 @@ func (f *artifactRuntime02DeliveryFixture) payload(delivery *artifactTaskDeliver
 	}
 }
 
-func (f *artifactRuntime02DeliveryFixture) sendHTTP(t *testing.T) *httptest.ResponseRecorder {
+func (f *artifactRuntime02DeliveryFixture) sendHTTP(t *testing.T, content, trace string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(map[string]interface{}{
-		"topic_id": f.topicID, "type": "text", "content": "来自「项目看板」：生成推进建议",
+		"topic_id": f.topicID, "type": "text", "content": content,
 		"client_msg_id": f.clientMessageID,
-		"metadata":      map[string]interface{}{artifactTaskRefMetadataKey: f.ref, "trace": "runtime-02-recovery"},
+		"metadata":      map[string]interface{}{artifactTaskRefMetadataKey: f.ref, "trace": trace},
 	})
 	if err != nil {
 		t.Fatalf("encode recovered HTTP delivery: %v", err)
@@ -552,6 +577,7 @@ func assertRuntime02DeliveryCommitted(t *testing.T, fixture *artifactRuntime02De
 }
 
 func TestArtifactRuntime02HTTPDeliveryRecoversEveryClaimCrashWindow(t *testing.T) {
+	const originalContent = "来自「项目看板」：生成推进建议"
 	for _, crashWindow := range []string{"after_reserve", "after_save", "after_fanout"} {
 		crashWindow := crashWindow
 		t.Run(crashWindow, func(t *testing.T) {
@@ -571,7 +597,13 @@ func TestArtifactRuntime02HTTPDeliveryRecoversEveryClaimCrashWindow(t *testing.T
 			}
 
 			fixture.db.now = fixture.db.now.Add(artifactRuntimeDeliveryClaimLease + time.Second)
-			response := fixture.sendHTTP(t)
+			retryContent := originalContent
+			retryTrace := "runtime-02-recovery"
+			if crashWindow != "after_reserve" {
+				retryContent = "重试请求不得覆盖已经持久化的任务消息"
+				retryTrace = "runtime-02-mutated-retry"
+			}
+			response := fixture.sendHTTP(t, retryContent, retryTrace)
 			if response.Code != http.StatusOK {
 				t.Fatalf("recovered HTTP status=%d body=%s", response.Code, response.Body.String())
 			}
@@ -583,16 +615,22 @@ func TestArtifactRuntime02HTTPDeliveryRecoversEveryClaimCrashWindow(t *testing.T
 			if len(deliveries) != wantDeliveries {
 				t.Fatalf("Agent deliveries=%d want=%d", len(deliveries), wantDeliveries)
 			}
-			executed := make(map[string]bool)
+			seenRefs := make(map[string]bool)
 			for _, message := range deliveries {
 				ref, _ := message.Data.Metadata[artifactTaskRefMetadataKey].(string)
 				if ref != fixture.ref || message.Data.SeqID <= 0 {
 					t.Fatalf("recovered Agent message=%#v", message.Data)
 				}
-				executed[ref] = true
+				if message.Data.Content != originalContent {
+					t.Fatalf("recovered Agent content=%#v want persisted %q", message.Data.Content, originalContent)
+				}
+				if trace, _ := message.Data.Metadata["trace"].(string); trace != "runtime-02-recovery" {
+					t.Fatalf("recovered Agent trace=%q want persisted metadata", trace)
+				}
+				seenRefs[ref] = true
 			}
-			if len(executed) != 1 {
-				t.Fatalf("stable task identity produced %d executions", len(executed))
+			if len(seenRefs) != 1 {
+				t.Fatalf("recovered delivery produced %d task identities", len(seenRefs))
 			}
 			assertRuntime02DeliveryCommitted(t, fixture)
 		})
@@ -614,8 +652,8 @@ func TestArtifactRuntime02RecoveredDuplicateUsesSharedWebSocketDelivery(t *testi
 			fixture.hub.addClient(sender)
 			fixture.hub.handlePub(sender, &MsgClientPub{
 				ID: "recovered-pub", Topic: topicID, ClientMsgID: fixture.clientMessageID,
-				Type: "text", Content: json.RawMessage(`"来自「项目看板」：生成推进建议"`),
-				Metadata: map[string]interface{}{artifactTaskRefMetadataKey: fixture.ref, "trace": "runtime-02-recovery"},
+				Type: "text", Content: json.RawMessage(`"重试请求不得覆盖已经持久化的任务消息"`),
+				Metadata: map[string]interface{}{artifactTaskRefMetadataKey: fixture.ref, "trace": "runtime-02-mutated-retry"},
 			})
 			var acknowledgement ServerMessage
 			decodeQueuedServerMessage(t, sender.send, &acknowledgement)
@@ -623,7 +661,9 @@ func TestArtifactRuntime02RecoveredDuplicateUsesSharedWebSocketDelivery(t *testi
 				t.Fatalf("recovered WebSocket acknowledgement=%#v", acknowledgement.Ctrl)
 			}
 			deliveries := drainArtifactTaskDeliveries(t, fixture.bot.send)
-			if len(deliveries) != 1 || deliveries[0].Data.Metadata[artifactTaskRefMetadataKey] != fixture.ref {
+			if len(deliveries) != 1 || deliveries[0].Data.Metadata[artifactTaskRefMetadataKey] != fixture.ref ||
+				deliveries[0].Data.Content != "来自「项目看板」：生成推进建议" ||
+				deliveries[0].Data.Metadata["trace"] != "runtime-02-recovery" {
 				t.Fatalf("recovered WebSocket deliveries=%#v", deliveries)
 			}
 			assertRuntime02DeliveryCommitted(t, fixture)

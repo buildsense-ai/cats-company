@@ -251,7 +251,18 @@ func (h *Hub) deliverPersistedArtifactTaskMessage(
 			}
 		}
 	}
-	if h.fanoutNormalizedMessage(uid, topicID, replyTo, payload, result.ID, exclude) {
+	deliveryPayload := payload
+	if result.Duplicate && delivery.Recovered {
+		persisted, err := h.persistedArtifactTaskReplayPayload(uid, topicID, result.ID, delivery)
+		if err != nil {
+			return &artifactTaskMessageDeliveryFailure{
+				HTTPStatus: http.StatusServiceUnavailable, PublicCode: "artifact_task_delivery_recovery_failed",
+				PublicMessage: "Artifact task delivery could not be recovered",
+			}
+		}
+		deliveryPayload = persisted
+	}
+	if h.fanoutNormalizedMessage(uid, topicID, replyTo, deliveryPayload, result.ID, exclude) {
 		return nil
 	}
 	h.artifactTasks.failDelivery(
@@ -263,6 +274,49 @@ func (h *Hub) deliverPersistedArtifactTaskMessage(
 		HTTPStatus: http.StatusServiceUnavailable, PublicCode: "artifact_task_delivery_failed",
 		PublicMessage: "Artifact task turn delivery failed",
 	}
+}
+
+func (h *Hub) persistedArtifactTaskReplayPayload(
+	uid int64,
+	topicID string,
+	messageID int64,
+	delivery *artifactTaskDeliveryRef,
+) (*normalizedMessagePayload, error) {
+	if h == nil || h.db == nil || uid <= 0 || topicID == "" || messageID <= 0 || delivery == nil {
+		return nil, errors.New("persisted Artifact task message is unavailable")
+	}
+	messages, err := h.db.GetMessagesSince(topicID, messageID-1, 1)
+	if err != nil {
+		return nil, err
+	}
+	var message *types.Message
+	for _, candidate := range messages {
+		if candidate != nil && candidate.ID == messageID && candidate.TopicID == topicID && candidate.FromUID == uid {
+			message = candidate
+			break
+		}
+	}
+	if message == nil {
+		return nil, errors.New("persisted Artifact task message was not found")
+	}
+	metadata := metadataWithoutArtifactContext(message.Metadata)
+	mentions := structuredMentionsFromMessage(map[string]interface{}{
+		"content_blocks": message.ContentBlocks,
+		"metadata":       metadata,
+	})
+	return &normalizedMessagePayload{
+		StoredContent:   message.Content,
+		DisplayContent:  decodeStoredContent(message.Content),
+		StoredType:      message.MsgType,
+		DisplayType:     inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
+		ClientMsgID:     delivery.ClientMessageID,
+		ContentBlocks:   message.ContentBlocks,
+		Metadata:        metadata,
+		Mode:            message.Mode,
+		Role:            message.Role,
+		Mentions:        mentions,
+		ArtifactTaskRef: delivery,
+	}, nil
 }
 
 func (h *MessageHandler) accountTypeForUID(uid int64) types.AccountType {
