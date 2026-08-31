@@ -291,7 +291,23 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
-# --- 3. key pair（固定名 worker-key-<tenant>，已存在则复用） ---
+# --- 3. 计费资源创建前预检跳板凭据 ---
+# NAT 架构下实例只有内网地址，后续所有 SSH 操作都依赖跳板机。缺少或
+# 损坏的私钥会让实例创建成功后才失败，既给用户造成“创建后自动释放”的
+# 错误体验，也可能留下需要人工清理的计费资源。因此必须在任何 key pair
+# 或 ECS 创建前 fail-closed。
+if [[ -n "$JUMP_IP" ]]; then
+  if [[ ! -f "$JUMP_KEY" || ! -r "$JUMP_KEY" ]]; then
+    echo "error: jump host private key is missing or unreadable: $JUMP_KEY" >&2
+    exit 1
+  fi
+  if ! ssh-keygen -y -P "" -f "$JUMP_KEY" >/dev/null 2>&1; then
+    echo "error: jump host private key is invalid or requires a passphrase: $JUMP_KEY" >&2
+    exit 1
+  fi
+fi
+
+# --- 4. key pair（固定名 worker-key-<tenant>，已存在则复用） ---
 KEYPAIR_NAME="worker-key-${NAME}"
 mkdir -p "$STATE_DIR"
 PRIVATE_KEY="$STATE_DIR/id_rsa"

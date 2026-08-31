@@ -273,6 +273,19 @@ test("provision-worker: dry-run resolves image and creates nothing", () => {
   assert.equal((state.instances || []).length, 0);
 });
 
+test("provision-worker: missing jump key fails before creating billable resources", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"], {
+    CTYUN_JUMP_IP: "121.11.232.177",
+    CTYUN_JUMP_KEY: "/definitely/missing/jump_host_ed25519",
+  });
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /jump host private key is missing or unreadable/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.instances || []).length, 0, "jump preflight must run before ECS creation");
+  assert.equal((state.keypairs || []).length, 0, "jump preflight must run before key-pair creation");
+});
+
 test("provision-worker: happy path creates instance, injects env, enables service", () => {
   const sb = setupSandbox({});
   const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
