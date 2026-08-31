@@ -87,6 +87,7 @@ export default function EmptyTaskComposer({
   const phoneUploadSessionRef = useRef(initialPhoneUploadSession);
   const phoneUploadFileKeysRef = useRef(new Set());
   const phoneUploadSyncRef = useRef(null);
+  const sentDraftRef = useRef(false);
 
   const persistDraft = useCallback(() => {
     // Capture both values before either write. Store subscribers are notified
@@ -163,6 +164,7 @@ export default function EmptyTaskComposer({
 
     // Invalidate callbacks from an older composer before removing the draft.
     invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
+    sentDraftRef.current = true;
     inputValueRef.current = '';
     pendingAttachmentsRef.current = [];
     phoneUploadSessionRef.current = null;
@@ -307,10 +309,20 @@ export default function EmptyTaskComposer({
     () => agents.find((agent) => agentKey(agent) === String(selectedAgentId || '')) || null,
     [agents, selectedAgentId],
   );
+  const hasDraftPayload = Boolean(
+    input.trim()
+    || pendingAttachments.length > 0
+    || phoneUploadSession?.session_id,
+  );
 
   useEffect(() => {
+    // A successful send ends this draft. Do not let an Agent roster refresh
+    // re-persist context-only state; resume context persistence when the user
+    // starts a new draft in the still-mounted composer.
+    if (sentDraftRef.current && !hasDraftPayload) return;
+    if (hasDraftPayload) sentDraftRef.current = false;
     onSelectedAgentChange?.(selectedAgent);
-  }, [onSelectedAgentChange, selectedAgent]);
+  }, [hasDraftPayload, onSelectedAgentChange, selectedAgent]);
 
   const selectedAgentName = selectedAgent
     ? (selectedAgent.display_name || selectedAgent.username || 'Agent')

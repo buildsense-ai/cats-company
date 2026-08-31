@@ -487,7 +487,6 @@ export function readComposerTaskContextDraft(store, key) {
 export function writeComposerTaskContextDraft(store, key, value) {
   if (typeof store?.setTaskContextDraft === 'function') {
     store.setTaskContextDraft(key, value);
-    markComposerDraftMutation(store, key);
     return;
   }
   const normalizedKey = normalizeDraftKey(key);
@@ -495,7 +494,6 @@ export function writeComposerTaskContextDraft(store, key, value) {
   const normalizedValue = normalizeTaskContext(value);
   if (normalizedValue) store.taskContextDrafts.set(normalizedKey, normalizedValue);
   else store.taskContextDrafts.delete?.(normalizedKey);
-  markComposerDraftMutation(store, normalizedKey);
 }
 
 export function writeComposerAttachmentDraft(store, key, value) {
@@ -541,9 +539,10 @@ export function isComposerDraftRevisionCurrent(store, key, revision) {
     && readComposerDraftRevision(store, key) === normalizedRevision;
 }
 
-// Unlike the invalidation revision, this counter records every draft write.
-// It lets a send operation distinguish a newer draft typed while its request
-// was in flight, even when the newer value happens to be identical.
+// Unlike the invalidation revision, this counter records every message-payload
+// draft write. It lets a send operation distinguish newer text or attachments
+// typed while its request was in flight, even when the value is identical;
+// selecting or refreshing the Agent context is tracked separately.
 export function readComposerDraftMutationRevision(store, key) {
   const normalizedKey = normalizeDraftKey(key);
   if (!normalizedKey) return 0;

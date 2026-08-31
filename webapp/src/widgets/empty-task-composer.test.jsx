@@ -20,7 +20,10 @@ vi.mock('./qr-code', () => ({
 }));
 
 import { api } from '../api';
-import { createComposerDraftStore } from '../utils/composer-draft-storage';
+import {
+  createComposerDraftStore,
+  writeComposerTaskContextDraft,
+} from '../utils/composer-draft-storage';
 import EmptyTaskComposer from './empty-task-composer';
 
 const agents = [
@@ -246,6 +249,48 @@ describe('EmptyTaskComposer', () => {
     const freshContext = createComposerDraftStore('sent-draft-context');
     expect(freshContext.getInputDraft('new-task')).toBe('');
     expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  it('clears a sent draft when the Agent roster refreshes during the send', async () => {
+    const composerDraftStore = createComposerDraftStore('sent-draft-roster-refresh');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onSelectedAgentChange: (agent) => {
+        if (!agent) return;
+        writeComposerTaskContextDraft(composerDraftStore, 'new-task', { agent });
+        composerDraftStore.persist();
+      },
+    });
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '发送后应清除');
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    api.getAgents.mockResolvedValueOnce({ agents: [{ ...agents[0] }] });
+    await act(async () => {
+      window.dispatchEvent(new Event('cc:data-changed'));
+      await flushPromises();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 113 });
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('');
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+    expect(composerDraftStore.getTaskContextDraft('new-task')).toBeNull();
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh')).toBeNull();
+
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '新的未发送草稿');
+    expect(composerDraftStore.getTaskContextDraft('new-task')).toEqual(
+      expect.objectContaining({ agent: expect.objectContaining({ uid: 21 }) }),
+    );
   });
 
   it('persists an attachment when navigation unmounts the composer during upload', async () => {
