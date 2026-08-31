@@ -154,8 +154,8 @@ func (a *Adapter) PutArtifactRuntimeState(
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO artifact_runtime_events (
 			artifact_event_id, event_type, agent_uid, artifact_id, namespace, document_key,
-			revision, updated_by_uid, updated_by_type
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			revision, updated_by_uid, updated_by_type, event_data
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, JSON_OBJECT())`,
 		eventID, "state.updated", state.AgentUID, state.ArtifactID,
 		state.Namespace, state.Key, state.Revision, state.UpdatedByUID, state.UpdatedBy,
 	)
@@ -268,7 +268,9 @@ func (a *Adapter) ListArtifactRuntimeEvents(
 ) ([]*store.ArtifactRuntimeEvent, error) {
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT artifact_event_id, event_type, namespace, document_key, revision,
-			updated_by_uid, updated_by_type, created_at
+			updated_by_uid, updated_by_type,
+			COALESCE(task_id, ''), COALESCE(run_id, ''),
+			COALESCE(executor_run_id, ''), COALESCE(result_id, ''), event_data, created_at
 		FROM artifact_runtime_events
 		WHERE agent_uid = ? AND artifact_id = ? AND artifact_event_id > ?
 		ORDER BY artifact_event_id
@@ -288,6 +290,11 @@ func (a *Adapter) ListArtifactRuntimeEvents(
 			&event.Revision,
 			&event.UpdatedByUID,
 			&event.UpdatedBy,
+			&event.TaskID,
+			&event.RunID,
+			&event.ExecutorRunID,
+			&event.ResultID,
+			&event.Data,
 			&event.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan artifact runtime event: %w", err)

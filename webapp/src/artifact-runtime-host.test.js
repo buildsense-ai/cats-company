@@ -176,6 +176,15 @@ describe('normalizeArtifactRuntimeRequest', () => {
       namespace: '../other',
       key: 'main',
     }))).toBeNull();
+    expect(normalizeArtifactRuntimeRequest(runtimeRequest('run.list'))).toEqual(
+      expect.objectContaining({ operation: 'run.list', payload: {} }),
+    );
+    expect(normalizeArtifactRuntimeRequest(runtimeRequest('run.get', {
+      run_id: `run_${'r'.repeat(43)}`,
+    }))).toEqual(expect.objectContaining({ operation: 'run.get' }));
+    expect(normalizeArtifactRuntimeRequest(runtimeRequest('run.get', {
+      run_id: 'xiaoba-executor-id',
+    }))).toBeNull();
   });
 });
 

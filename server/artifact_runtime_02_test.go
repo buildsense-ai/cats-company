@@ -1,0 +1,542 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
+)
+
+type artifactRuntime02MemoryStore struct {
+	*artifactRuntimeMemoryStore
+	runMu      sync.Mutex
+	runsByTask map[string]*store.ArtifactRuntimeRun
+	taskByRef  map[string]string
+	taskByRun  map[string]string
+}
+
+func cloneRuntime02Run(run *store.ArtifactRuntimeRun) *store.ArtifactRuntimeRun {
+	if run == nil {
+		return nil
+	}
+	clone := *run
+	clone.InputSchema = append(json.RawMessage(nil), run.InputSchema...)
+	clone.Payload = append(json.RawMessage(nil), run.Payload...)
+	clone.PageContext = append(json.RawMessage(nil), run.PageContext...)
+	clone.AppliedEventIDs = append([]int64(nil), run.AppliedEventIDs...)
+	return &clone
+}
+
+func (s *artifactRuntime02MemoryStore) CreateArtifactRuntimeRun(_ context.Context, run *store.ArtifactRuntimeRun) (*store.ArtifactRuntimeRun, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runsByTask[run.TaskID] != nil || s.taskByRef[run.TaskRefHash] != "" || s.taskByRun[run.RunID] != "" {
+		return nil, store.ErrArtifactRuntimeRunConflict
+	}
+	clone := cloneRuntime02Run(run)
+	clone.Status = "submitted"
+	if clone.CreatedAt.IsZero() {
+		clone.CreatedAt = s.now
+	}
+	clone.UpdatedAt = clone.CreatedAt
+	s.runsByTask[clone.TaskID] = clone
+	s.taskByRef[clone.TaskRefHash] = clone.TaskID
+	s.taskByRun[clone.RunID] = clone.TaskID
+	return cloneRuntime02Run(clone), nil
+}
+
+func (s *artifactRuntime02MemoryStore) GetArtifactRuntimeRunByTask(_ context.Context, taskID string, actorUID int64) (*store.ArtifactRuntimeRun, bool, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	run := s.runsByTask[taskID]
+	if run == nil || run.ActorUID != actorUID {
+		return nil, false, nil
+	}
+	return cloneRuntime02Run(run), true, nil
+}
+
+func (s *artifactRuntime02MemoryStore) GetArtifactRuntimeRunByRef(_ context.Context, taskRefHash string, agentUID int64) (*store.ArtifactRuntimeRun, bool, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	run := s.runsByTask[s.taskByRef[taskRefHash]]
+	if run == nil || run.AgentUID != agentUID {
+		return nil, false, nil
+	}
+	return cloneRuntime02Run(run), true, nil
+}
+
+func (s *artifactRuntime02MemoryStore) GetArtifactRuntimeRun(_ context.Context, runID string, actorUID, agentUID int64, artifactID string) (*store.ArtifactRuntimeRun, bool, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	run := s.runsByTask[s.taskByRun[runID]]
+	if run == nil || run.ActorUID != actorUID || run.AgentUID != agentUID || run.ArtifactID != artifactID {
+		return nil, false, nil
+	}
+	return cloneRuntime02Run(run), true, nil
+}
+
+func (s *artifactRuntime02MemoryStore) ListArtifactRuntimeRuns(_ context.Context, actorUID, agentUID int64, artifactID string, limit int) ([]*store.ArtifactRuntimeRun, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	var result []*store.ArtifactRuntimeRun
+	for _, run := range s.runsByTask {
+		if run.ActorUID == actorUID && run.AgentUID == agentUID && run.ArtifactID == artifactID {
+			result = append(result, cloneRuntime02Run(run))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+func (s *artifactRuntime02MemoryStore) ReserveArtifactRuntimeDelivery(_ context.Context, taskRefHash string, actorUID int64, topicID string, agentUID int64, clientMessageID string) (*store.ArtifactRuntimeDeliveryClaim, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	run := s.runsByTask[s.taskByRef[taskRefHash]]
+	if run == nil || run.ActorUID != actorUID || run.TopicID != topicID || run.AgentUID != agentUID || runtimeRunTerminalStatus(run.Status) {
+		return nil, store.ErrArtifactRuntimeRunConflict
+	}
+	if run.Delivered {
+		if run.DeliveryClientID != clientMessageID {
+			return nil, store.ErrArtifactRuntimeRunConflict
+		}
+		return &store.ArtifactRuntimeDeliveryClaim{Run: cloneRuntime02Run(run), AlreadyDelivered: true}, nil
+	}
+	if run.DeliveryClaimed {
+		return nil, store.ErrArtifactRuntimeDeliveryPending
+	}
+	run.DeliveryClaimed, run.DeliveryClientID = true, clientMessageID
+	return &store.ArtifactRuntimeDeliveryClaim{Run: cloneRuntime02Run(run)}, nil
+}
+
+func (s *artifactRuntime02MemoryStore) ConfirmArtifactRuntimeDelivery(_ context.Context, taskID, taskRefHash, clientMessageID string) (bool, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	run := s.runsByTask[taskID]
+	if run == nil || run.TaskRefHash != taskRefHash || !run.DeliveryClaimed || run.DeliveryClientID != clientMessageID {
+		return false, nil
+	}
+	run.DeliveryClaimed, run.Delivered = false, true
+	return true, nil
+}
+
+func (s *artifactRuntime02MemoryStore) ReleaseArtifactRuntimeDelivery(_ context.Context, taskID, taskRefHash, clientMessageID string) error {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	run := s.runsByTask[taskID]
+	if run != nil && run.TaskRefHash == taskRefHash && run.DeliveryClientID == clientMessageID && !run.Delivered {
+		run.DeliveryClaimed, run.DeliveryClientID = false, ""
+	}
+	return nil
+}
+
+func (s *artifactRuntime02MemoryStore) appendRunEvent(run *store.ArtifactRuntimeRun, eventType string, data map[string]interface{}) *store.ArtifactRuntimeEvent {
+	s.artifactRuntimeMemoryStore.mu.Lock()
+	defer s.artifactRuntimeMemoryStore.mu.Unlock()
+	s.nextID++
+	encoded, _ := json.Marshal(data)
+	event := &store.ArtifactRuntimeEvent{
+		EventID: s.nextID, EventType: eventType, AgentUID: run.AgentUID, ArtifactID: run.ArtifactID,
+		Namespace: "runtime", Key: run.RunID, Revision: 1, UpdatedByUID: run.AgentUID,
+		UpdatedBy: "agent", TaskID: run.TaskID, RunID: run.RunID,
+		ExecutorRunID: run.ExecutorRunID, ResultID: run.ResultID, Data: encoded,
+		CreatedAt: s.now.Add(time.Duration(s.nextID) * time.Second),
+	}
+	s.events = append(s.events, event)
+	return event
+}
+
+func (s *artifactRuntime02MemoryStore) FailArtifactRuntimeRun(_ context.Context, taskID string, actorUID int64, code, message string) (*store.ArtifactRuntimeRun, *store.ArtifactRuntimeEvent, error) {
+	s.runMu.Lock()
+	run := s.runsByTask[taskID]
+	if run == nil || run.ActorUID != actorUID {
+		s.runMu.Unlock()
+		return nil, nil, store.ErrArtifactRuntimeRunNotFound
+	}
+	if run.Status == "completed" {
+		s.runMu.Unlock()
+		return nil, nil, store.ErrArtifactRuntimeRunConflict
+	}
+	if run.Status == "failed" {
+		clone := cloneRuntime02Run(run)
+		s.runMu.Unlock()
+		return clone, nil, nil
+	}
+	run.Status, run.Code, run.Message = "failed", code, message
+	finished := s.now
+	run.FinishedAt, run.UpdatedAt = &finished, finished
+	clone := cloneRuntime02Run(run)
+	s.runMu.Unlock()
+	event := s.appendRunEvent(clone, "run.error", map[string]interface{}{"status": "failed", "code": code})
+	return clone, event, nil
+}
+
+func (s *artifactRuntime02MemoryStore) ObserveArtifactRuntimeExecutor(_ context.Context, taskRefHash string, agentUID int64, topicID, executorRunID, executorState, executorError string) (*store.ArtifactRuntimeRun, *store.ArtifactRuntimeEvent, error) {
+	s.runMu.Lock()
+	run := s.runsByTask[s.taskByRef[taskRefHash]]
+	if run == nil || run.AgentUID != agentUID || run.TopicID != topicID || !run.Delivered ||
+		(run.ExecutorRunID != "" && run.ExecutorRunID != executorRunID) {
+		s.runMu.Unlock()
+		return nil, nil, store.ErrArtifactRuntimeRunConflict
+	}
+	if runtimeRunTerminalStatus(run.Status) {
+		clone := cloneRuntime02Run(run)
+		s.runMu.Unlock()
+		return clone, nil, nil
+	}
+	if runtime02ExecutorStateTerminal(run.ExecutorState) || run.ExecutorState == executorState ||
+		(run.ExecutorState == "running" && executorState == "waiting") {
+		clone := cloneRuntime02Run(run)
+		s.runMu.Unlock()
+		return clone, nil, nil
+	}
+	run.ExecutorRunID, run.ExecutorState = executorRunID, executorState
+	var eventType string
+	if (executorState == "running" || executorState == "waiting") && run.Status == "submitted" {
+		run.Status = "running"
+		started := s.now
+		run.StartedAt = &started
+		eventType = "run.started"
+	} else if executorState == "completed" {
+		finished := s.now
+		run.ExecutorFinishedAt = &finished
+		if run.Status == "submitted" {
+			run.Status = "running"
+			run.StartedAt = &finished
+			eventType = "run.started"
+		}
+	} else if executorState == "failed" || executorState == "cancelled" || executorState == "stale" {
+		run.Status, run.Code, run.Message = "failed", "agent_"+executorState, executorError
+		finished := s.now
+		run.ExecutorFinishedAt, run.FinishedAt = &finished, &finished
+		eventType = "run.error"
+	}
+	clone := cloneRuntime02Run(run)
+	s.runMu.Unlock()
+	if eventType == "" {
+		return clone, nil, nil
+	}
+	return clone, s.appendRunEvent(clone, eventType, map[string]interface{}{"status": clone.Status}), nil
+}
+
+func runtime02ExecutorStateTerminal(status string) bool {
+	return status == "completed" || status == "failed" || status == "cancelled" || status == "stale"
+}
+
+func (s *artifactRuntime02MemoryStore) PutArtifactRuntimeStateForRun(ctx context.Context, candidate *store.ArtifactRuntimeState, baseRevision int64, taskRefHash string) (*store.ArtifactRuntimeState, *store.ArtifactRuntimeEvent, error) {
+	s.runMu.Lock()
+	run := cloneRuntime02Run(s.runsByTask[s.taskByRef[taskRefHash]])
+	s.runMu.Unlock()
+	if run == nil || run.AgentUID != candidate.AgentUID || runtimeRunTerminalStatus(run.Status) {
+		return nil, nil, store.ErrArtifactRuntimeRunConflict
+	}
+	state, event, err := s.artifactRuntimeMemoryStore.PutArtifactRuntimeState(ctx, candidate, baseRevision)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.artifactRuntimeMemoryStore.mu.Lock()
+	event.TaskID, event.RunID, event.ExecutorRunID = run.TaskID, run.RunID, run.ExecutorRunID
+	event.Data, _ = json.Marshal(map[string]interface{}{
+		"namespace": event.Namespace, "key": event.Key, "revision": event.Revision,
+	})
+	last := s.events[len(s.events)-1]
+	last.TaskID, last.RunID, last.ExecutorRunID, last.Data = event.TaskID, event.RunID, event.ExecutorRunID, event.Data
+	s.artifactRuntimeMemoryStore.mu.Unlock()
+	return state, event, nil
+}
+
+func (s *artifactRuntime02MemoryStore) CompleteArtifactRuntimeRun(_ context.Context, taskRefHash string, agentUID int64, resultID string, appliedEventIDs []int64) (*store.ArtifactRuntimeRun, []*store.ArtifactRuntimeEvent, error) {
+	s.runMu.Lock()
+	run := s.runsByTask[s.taskByRef[taskRefHash]]
+	if run == nil || run.AgentUID != agentUID {
+		s.runMu.Unlock()
+		return nil, nil, store.ErrArtifactRuntimeRunNotFound
+	}
+	if run.Status == "completed" {
+		clone := cloneRuntime02Run(run)
+		s.runMu.Unlock()
+		if run.ResultID == resultID {
+			return clone, nil, nil
+		}
+		return nil, nil, store.ErrArtifactRuntimeRunConflict
+	}
+	s.artifactRuntimeMemoryStore.mu.Lock()
+	valid := len(appliedEventIDs) > 0
+	for _, id := range appliedEventIDs {
+		matched := false
+		for _, event := range s.events {
+			matched = matched || (event.EventID == id && event.EventType == "state.updated" && event.RunID == run.RunID)
+		}
+		valid = valid && matched
+	}
+	s.artifactRuntimeMemoryStore.mu.Unlock()
+	if !valid {
+		s.runMu.Unlock()
+		return nil, nil, store.ErrArtifactRuntimeEvidenceInvalid
+	}
+	run.Status, run.ResultID, run.AppliedEventIDs = "completed", resultID, append([]int64(nil), appliedEventIDs...)
+	finished := s.now
+	run.FinishedAt, run.UpdatedAt = &finished, finished
+	clone := cloneRuntime02Run(run)
+	s.runMu.Unlock()
+	resultEvent := s.appendRunEvent(clone, "result.applied", map[string]interface{}{"applied_event_ids": appliedEventIDs})
+	finishedEvent := s.appendRunEvent(clone, "run.finished", map[string]interface{}{"status": "completed"})
+	return clone, []*store.ArtifactRuntimeEvent{resultEvent, finishedEvent}, nil
+}
+
+func (s *artifactRuntime02MemoryStore) ConvergeArtifactRuntimeRuns(_ context.Context, _ time.Time, _ time.Duration, _ int) (int, error) {
+	return 0, nil
+}
+
+func TestArtifactRuntime02PersistentRunSurvivesPreviewAndHubRestart(t *testing.T) {
+	identity := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:   {ID: 7, AccountType: types.AccountHuman},
+			440: {ID: 440, AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{440: 7},
+	}
+	base := &artifactRuntimeMemoryStore{
+		identityMessageStore: identity, states: make(map[string]*store.ArtifactRuntimeState),
+		now: time.Date(2026, 8, 31, 2, 0, 0, 0, time.UTC),
+	}
+	db := &artifactRuntime02MemoryStore{
+		artifactRuntimeMemoryStore: base, runsByTask: make(map[string]*store.ArtifactRuntimeRun),
+		taskByRef: make(map[string]string), taskByRun: make(map[string]string),
+	}
+	record := ArtifactContextRecord{
+		ID: "project-board", Title: "项目看板", Kind: "mini_app",
+		URL: "https://agent-440.artifacts.catsco.fun:19991/artifacts/project-board/latest/", PublishVersion: 8,
+	}
+	configure := func(hub *Hub) {
+		hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, agentUID int64, artifactID string) (ArtifactContextRecord, error) {
+			if agentUID != 440 || artifactID != record.ID {
+				return ArtifactContextRecord{}, errors.New("unexpected Artifact")
+			}
+			return record, nil
+		}))
+		hub.SetArtifactRuntimeManifestResolver(artifactRuntimeManifestResolverFunc(func(_ context.Context, _ ArtifactContextRecord, _ int64) (ArtifactRuntimeManifest, error) {
+			return ArtifactRuntimeManifest{
+				Version:  artifactRuntimeVersion02,
+				Surfaces: []ArtifactRuntimeSurface{{ID: "task-board"}},
+				State:    []ArtifactRuntimeStateDeclaration{{Namespace: "project_tasks", Mode: "read-write"}},
+			}, nil
+		}))
+		hub.SetArtifactTaskIntentResolver(artifactTaskIntentResolverFunc(func(_ context.Context, _ ArtifactContextRecord, _ int64, _ string) (ArtifactTaskIntent, error) {
+			return ArtifactTaskIntent{
+				ID: "tasks.plan.v1", Title: "生成推进建议", Description: "修改任务数据。",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+				Completion:  &ArtifactTaskCompletion{Mode: "runtime_state"},
+			}, nil
+		}))
+	}
+	hub := NewHub(db, nil)
+	configure(hub)
+	human := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 2)}
+	hub.ensureClientRuntimeRoute(human)
+	hub.addClient(human)
+	previewSession, err := hub.artifactPreviewSessions.issue(7, hub.clientRoute(human))
+	if err != nil {
+		t.Fatalf("issue preview session: %v", err)
+	}
+	createBody, _ := json.Marshal(map[string]interface{}{
+		"topic_id": "p2p_7_440",
+		"artifact_ref": map[string]interface{}{
+			"contract_version": artifactRefContract, "id": record.ID,
+			"displayed_version": 8, "currently_visible": true,
+		},
+		"intent_id": "tasks.plan.v1", "payload": map[string]interface{}{"scope": "week"},
+		"preview_session": previewSession,
+	})
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/artifact-tasks", strings.NewReader(string(createBody)))
+	createRequest = createRequest.WithContext(context.WithValue(createRequest.Context(), uidKey, int64(7)))
+	createResponse := httptest.NewRecorder()
+	NewArtifactTaskHandler(hub).HandleUserTasks(createResponse, createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create Runtime 0.2 task status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var created struct {
+		TaskID         string `json:"task_id"`
+		TaskRef        string `json:"task_ref"`
+		RunID          string `json:"run_id"`
+		CompletionMode string `json:"completion_mode"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil ||
+		!artifactTaskIDPattern.MatchString(created.TaskID) || !artifactTaskRefPattern.MatchString(created.TaskRef) ||
+		!artifactRuntimeRunIDPattern.MatchString(created.RunID) || created.CompletionMode != "runtime_state" {
+		t.Fatalf("created Runtime 0.2 task=%#v err=%v", created, err)
+	}
+	delivery, err := hub.artifactTasks.reserveDelivery(created.TaskRef, 7, "p2p_7_440", 440, "artifact-task:"+created.TaskID)
+	if err != nil || !hub.artifactTasks.confirmDelivery(delivery) {
+		t.Fatalf("deliver Runtime 0.2 task delivery=%#v err=%v", delivery, err)
+	}
+	if !hub.artifactTasks.observeRun(created.TaskRef, 440, "p2p_7_440", &types.ConversationTaskStatus{
+		RunID: "xiaoba-runtime-02", State: "running",
+	}) {
+		t.Fatal("XiaoBa running status was not attached")
+	}
+	if !hub.artifactTasks.observeRun(created.TaskRef, 440, "p2p_7_440", &types.ConversationTaskStatus{
+		RunID: "xiaoba-runtime-02", State: "completed",
+	}) || !hub.artifactTasks.observeRun(created.TaskRef, 440, "p2p_7_440", &types.ConversationTaskStatus{
+		RunID: "xiaoba-runtime-02", State: "waiting",
+	}) {
+		t.Fatal("XiaoBa terminal executor status was not accepted monotonically")
+	}
+	executorFinished, found, err := db.GetArtifactRuntimeRun(context.Background(), created.RunID, 7, 440, record.ID)
+	if err != nil || !found || executorFinished.Status != "running" || executorFinished.ExecutorState != "completed" ||
+		executorFinished.ExecutorFinishedAt == nil {
+		t.Fatalf("late executor status regressed completed executor: run=%#v found=%v err=%v", executorFinished, found, err)
+	}
+
+	// Runtime 0.2 remains writable after the Viewer leaves.
+	hub.removeClient(human)
+	runtimeHandler := NewArtifactRuntimeHandler(hub, db)
+	observeRequest := httptest.NewRequest(http.MethodGet, "/api/bot/artifact-runtime?task_ref="+created.TaskRef, nil)
+	observeRequest = observeRequest.WithContext(context.WithValue(observeRequest.Context(), uidKey, int64(440)))
+	observeResponse := httptest.NewRecorder()
+	runtimeHandler.HandleBot(observeResponse, observeRequest)
+	if observeResponse.Code != http.StatusOK || !strings.Contains(observeResponse.Body.String(), `"currently_visible":false`) {
+		t.Fatalf("disconnected persistent Runtime observation status=%d body=%s", observeResponse.Code, observeResponse.Body.String())
+	}
+	put := `{"contract_version":"catsco.artifact-runtime-request.v1","operation":"state.put","task_ref":"` + created.TaskRef + `","namespace":"project_tasks","key":"main","base_revision":0,"value":{"items":[{"id":"t1","status":"doing"}]}}`
+	putRequest := httptest.NewRequest(http.MethodPost, "/api/bot/artifact-runtime", strings.NewReader(put))
+	putRequest = putRequest.WithContext(context.WithValue(putRequest.Context(), uidKey, int64(440)))
+	putResponse := httptest.NewRecorder()
+	runtimeHandler.HandleBot(putResponse, putRequest)
+	if putResponse.Code != http.StatusOK {
+		t.Fatalf("persistent State write status=%d body=%s", putResponse.Code, putResponse.Body.String())
+	}
+	var putResult struct {
+		Event struct {
+			EventID int64  `json:"event_id"`
+			RunID   string `json:"run_id"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(putResponse.Body.Bytes(), &putResult); err != nil || putResult.Event.EventID <= 0 || putResult.Event.RunID != created.RunID {
+		t.Fatalf("persistent State event=%#v err=%v body=%s", putResult, err, putResponse.Body.String())
+	}
+	patch := `{"contract_version":"catsco.artifact-runtime-request.v1","operation":"state.patch","task_ref":"` + created.TaskRef + `","namespace":"project_tasks","key":"main","base_revision":1,"patch":[{"op":"replace","path":"/items/0/status","value":"done"}]}`
+	patchRequest := httptest.NewRequest(http.MethodPost, "/api/bot/artifact-runtime", strings.NewReader(patch))
+	patchRequest = patchRequest.WithContext(context.WithValue(patchRequest.Context(), uidKey, int64(440)))
+	patchResponse := httptest.NewRecorder()
+	runtimeHandler.HandleBot(patchResponse, patchRequest)
+	if patchResponse.Code != http.StatusOK {
+		t.Fatalf("persistent State patch status=%d body=%s", patchResponse.Code, patchResponse.Body.String())
+	}
+	var patchResult struct {
+		Event struct {
+			EventID int64 `json:"event_id"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(patchResponse.Body.Bytes(), &patchResult); err != nil || patchResult.Event.EventID <= putResult.Event.EventID {
+		t.Fatalf("persistent State patch event=%#v err=%v body=%s", patchResult, err, patchResponse.Body.String())
+	}
+	resultID := "arr_" + strings.Repeat("r", 43)
+	complete := fmt.Sprintf(
+		`{"contract_version":"catsco.artifact-runtime-request.v1","operation":"run.complete","task_ref":"%s","result_id":"%s","applied_event_ids":[%d,%d]}`,
+		created.TaskRef, resultID, patchResult.Event.EventID, putResult.Event.EventID,
+	)
+	completeRequest := httptest.NewRequest(http.MethodPost, "/api/bot/artifact-runtime", strings.NewReader(complete))
+	completeRequest = completeRequest.WithContext(context.WithValue(completeRequest.Context(), uidKey, int64(440)))
+	completeResponse := httptest.NewRecorder()
+	runtimeHandler.HandleBot(completeResponse, completeRequest)
+	if completeResponse.Code != http.StatusOK || !strings.Contains(completeResponse.Body.String(), `"status":"completed"`) {
+		t.Fatalf("complete Runtime Run status=%d body=%s", completeResponse.Code, completeResponse.Body.String())
+	}
+	duplicateComplete := fmt.Sprintf(
+		`{"contract_version":"catsco.artifact-runtime-request.v1","operation":"run.complete","task_ref":"%s","result_id":"%s","applied_event_ids":[%d,%d]}`,
+		created.TaskRef, resultID, putResult.Event.EventID, patchResult.Event.EventID,
+	)
+	duplicateCompleteRequest := httptest.NewRequest(http.MethodPost, "/api/bot/artifact-runtime", strings.NewReader(duplicateComplete))
+	duplicateCompleteRequest = duplicateCompleteRequest.WithContext(context.WithValue(duplicateCompleteRequest.Context(), uidKey, int64(440)))
+	duplicateCompleteResponse := httptest.NewRecorder()
+	runtimeHandler.HandleBot(duplicateCompleteResponse, duplicateCompleteRequest)
+	if duplicateCompleteResponse.Code != http.StatusOK ||
+		!strings.Contains(duplicateCompleteResponse.Body.String(), `"events":[]`) {
+		t.Fatalf("idempotent Runtime completion status=%d body=%s", duplicateCompleteResponse.Code, duplicateCompleteResponse.Body.String())
+	}
+	db.mu.Lock()
+	db.runsByTask[created.TaskID].ExpiresAt = time.Now().UTC().Add(-time.Second)
+	db.mu.Unlock()
+	if _, ok := hub.artifactTasks.forBot(created.TaskRef, 440); ok {
+		t.Fatal("expired persistent Task Ref remained readable after terminal completion")
+	}
+	db.mu.Lock()
+	db.runsByTask[created.TaskID].ExpiresAt = time.Now().UTC().Add(time.Hour)
+	db.mu.Unlock()
+	if !hub.artifactTasks.observeRun(created.TaskRef, 440, "p2p_7_440", &types.ConversationTaskStatus{
+		RunID: "xiaoba-runtime-02", State: "waiting",
+	}) {
+		t.Fatal("late executor status should be accepted as a terminal no-op")
+	}
+	terminalRun, found, err := db.GetArtifactRuntimeRun(context.Background(), created.RunID, 7, 440, record.ID)
+	if err != nil || !found || terminalRun.Status != "completed" || terminalRun.ExecutorState != "completed" {
+		t.Fatalf("late executor status regressed terminal Run: run=%#v found=%v err=%v", terminalRun, found, err)
+	}
+
+	// A fresh Hub has an empty V4.1 memory store but recovers the durable Run.
+	restartedHub := NewHub(db, nil)
+	configure(restartedHub)
+	statusRequest := httptest.NewRequest(http.MethodGet, "/api/artifact-tasks?task_id="+created.TaskID, nil)
+	statusRequest = statusRequest.WithContext(context.WithValue(statusRequest.Context(), uidKey, int64(7)))
+	statusResponse := httptest.NewRecorder()
+	NewArtifactTaskHandler(restartedHub).HandleUserTasks(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"status":"completed"`) ||
+		!strings.Contains(statusResponse.Body.String(), created.RunID) || !strings.Contains(statusResponse.Body.String(), "xiaoba-runtime-02") {
+		t.Fatalf("recovered Runtime Run status=%d body=%s", statusResponse.Code, statusResponse.Body.String())
+	}
+
+	reopened := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 2)}
+	restartedHub.ensureClientRuntimeRoute(reopened)
+	restartedHub.addClient(reopened)
+	reopenedSession, err := restartedHub.artifactPreviewSessions.issue(7, restartedHub.clientRoute(reopened))
+	if err != nil {
+		t.Fatalf("issue reopened preview session: %v", err)
+	}
+	viewerRequest := func(operation string, extra map[string]interface{}) *httptest.ResponseRecorder {
+		body := map[string]interface{}{
+			"contract_version": artifactRuntimeRequestContract,
+			"operation":        operation,
+			"topic_id":         "p2p_7_440",
+			"artifact_ref": map[string]interface{}{
+				"contract_version": artifactRefContract, "id": record.ID,
+				"displayed_version": 8, "currently_visible": true,
+			},
+			"preview_session": reopenedSession,
+		}
+		for key, value := range extra {
+			body[key] = value
+		}
+		encoded, _ := json.Marshal(body)
+		request := httptest.NewRequest(http.MethodPost, "/api/artifact-runtime", strings.NewReader(string(encoded)))
+		request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(7)))
+		response := httptest.NewRecorder()
+		NewArtifactRuntimeHandler(restartedHub, db).HandleUser(response, request)
+		return response
+	}
+	connectResponse := viewerRequest("connect", nil)
+	if connectResponse.Code != http.StatusOK || !strings.Contains(connectResponse.Body.String(), created.RunID) ||
+		!strings.Contains(connectResponse.Body.String(), `"status":"completed"`) {
+		t.Fatalf("reopened Runtime snapshot status=%d body=%s", connectResponse.Code, connectResponse.Body.String())
+	}
+	eventsResponse := viewerRequest("events.list", map[string]interface{}{"after_event_id": 0, "limit": 20})
+	for _, expected := range []string{
+		artifactRuntimeEventContractV2, "run.started", "state.updated", "result.applied", "run.finished",
+	} {
+		if eventsResponse.Code != http.StatusOK || !strings.Contains(eventsResponse.Body.String(), expected) {
+			t.Fatalf("replayed Runtime events missing %q status=%d body=%s", expected, eventsResponse.Code, eventsResponse.Body.String())
+		}
+	}
+}

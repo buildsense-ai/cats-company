@@ -22,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
+		createArtifactRuntimeRunsTable,
 		createArtifactRuntimeEventSequencesTable,
 		createArtifactRuntimeEventsTable,
 		createBotConnectionGenerationsTable,
@@ -53,6 +54,15 @@ func (a *Adapter) CreateSchema() error {
 
 	// Run migrations (safe to re-run; uses IF NOT EXISTS / column checks)
 	migrations := []string{
+		migrateArtifactRuntimeEventsV2Type,
+		migrateArtifactRuntimeEventsV2TaskID,
+		migrateArtifactRuntimeEventsV2RunID,
+		migrateArtifactRuntimeEventsV2ExecutorRunID,
+		migrateArtifactRuntimeEventsV2ResultID,
+		migrateArtifactRuntimeEventsV2Data,
+		migrateArtifactRuntimeEventsV2DataBackfill,
+		migrateArtifactRuntimeEventsV2DataNotNull,
+		migrateArtifactRuntimeEventsV2RunIndex,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -377,6 +387,53 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_states (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createArtifactRuntimeRunsTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_runs (
+    task_id VARCHAR(64) COLLATE utf8mb4_bin PRIMARY KEY,
+    task_ref_hash CHAR(64) COLLATE utf8mb4_bin NOT NULL UNIQUE,
+    run_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL UNIQUE,
+    actor_uid BIGINT NOT NULL,
+    topic_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+    agent_uid BIGINT NOT NULL,
+    artifact_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    artifact_title VARCHAR(256) NOT NULL DEFAULT '',
+    artifact_kind VARCHAR(64) NOT NULL DEFAULT '',
+    artifact_url TEXT NOT NULL,
+    publish_version INT NOT NULL DEFAULT 0,
+    displayed_version BIGINT NOT NULL,
+    preview_node_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    preview_connection_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    action_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+    action_title VARCHAR(256) NOT NULL,
+    action_description VARCHAR(500) NOT NULL,
+    input_schema JSON NOT NULL,
+    payload_json JSON NOT NULL,
+    page_context_json JSON NOT NULL,
+    completion_mode ENUM('runtime_state') NOT NULL,
+    status ENUM('submitted','running','completed','failed') NOT NULL,
+    code VARCHAR(64) NOT NULL DEFAULT '',
+    message VARCHAR(500) NOT NULL DEFAULT '',
+    delivery_claimed TINYINT(1) NOT NULL DEFAULT 0,
+    delivery_client_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    delivered TINYINT(1) NOT NULL DEFAULT 0,
+    executor_run_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    executor_state VARCHAR(32) NOT NULL DEFAULT '',
+    executor_finished_at TIMESTAMP(6) NULL DEFAULT NULL,
+    result_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    applied_event_ids JSON NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    expires_at TIMESTAMP(6) NOT NULL,
+    started_at TIMESTAMP(6) NULL DEFAULT NULL,
+    finished_at TIMESTAMP(6) NULL DEFAULT NULL,
+    INDEX idx_artifact_runtime_runs_artifact (agent_uid, artifact_id, actor_uid, created_at),
+    INDEX idx_artifact_runtime_runs_expires (status, expires_at),
+    FOREIGN KEY (actor_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
+    CHECK (displayed_version > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createArtifactRuntimeEventSequencesTable = `
 CREATE TABLE IF NOT EXISTS artifact_runtime_event_sequences (
     agent_uid BIGINT NOT NULL,
@@ -393,7 +450,7 @@ const createArtifactRuntimeEventsTable = `
 CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     artifact_event_id BIGINT NOT NULL,
-    event_type ENUM('state.updated') NOT NULL,
+    event_type ENUM('state.updated','run.started','result.applied','run.finished','run.error') NOT NULL,
     agent_uid BIGINT NOT NULL,
     artifact_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
     namespace VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
@@ -401,13 +458,33 @@ CREATE TABLE IF NOT EXISTS artifact_runtime_events (
     revision BIGINT NOT NULL,
     updated_by_uid BIGINT NOT NULL,
     updated_by_type ENUM('viewer','agent') NOT NULL,
+    task_id VARCHAR(64) COLLATE utf8mb4_bin NULL,
+    run_id VARCHAR(64) COLLATE utf8mb4_bin NULL,
+    executor_run_id VARCHAR(128) COLLATE utf8mb4_bin NULL,
+    result_id VARCHAR(64) COLLATE utf8mb4_bin NULL,
+    event_data JSON NOT NULL,
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_artifact_runtime_event_sequence (agent_uid, artifact_id, artifact_event_id),
+    INDEX idx_artifact_runtime_events_run (agent_uid, artifact_id, run_id, artifact_event_id),
     FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
     CHECK (revision > 0),
     CHECK (artifact_event_id > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
+
+const migrateArtifactRuntimeEventsV2Type = `
+ALTER TABLE artifact_runtime_events
+MODIFY COLUMN event_type ENUM('state.updated','run.started','result.applied','run.finished','run.error') NOT NULL;
+`
+
+const migrateArtifactRuntimeEventsV2TaskID = `ALTER TABLE artifact_runtime_events ADD COLUMN task_id VARCHAR(64) COLLATE utf8mb4_bin NULL;`
+const migrateArtifactRuntimeEventsV2RunID = `ALTER TABLE artifact_runtime_events ADD COLUMN run_id VARCHAR(64) COLLATE utf8mb4_bin NULL;`
+const migrateArtifactRuntimeEventsV2ExecutorRunID = `ALTER TABLE artifact_runtime_events ADD COLUMN executor_run_id VARCHAR(128) COLLATE utf8mb4_bin NULL;`
+const migrateArtifactRuntimeEventsV2ResultID = `ALTER TABLE artifact_runtime_events ADD COLUMN result_id VARCHAR(64) COLLATE utf8mb4_bin NULL;`
+const migrateArtifactRuntimeEventsV2Data = `ALTER TABLE artifact_runtime_events ADD COLUMN event_data JSON NULL;`
+const migrateArtifactRuntimeEventsV2DataBackfill = `UPDATE artifact_runtime_events SET event_data = JSON_OBJECT() WHERE event_data IS NULL;`
+const migrateArtifactRuntimeEventsV2DataNotNull = `ALTER TABLE artifact_runtime_events MODIFY COLUMN event_data JSON NOT NULL;`
+const migrateArtifactRuntimeEventsV2RunIndex = `CREATE INDEX idx_artifact_runtime_events_run ON artifact_runtime_events (agent_uid, artifact_id, run_id, artifact_event_id);`
 
 const createBotConnectionGenerationsTable = `
 CREATE TABLE IF NOT EXISTS bot_connection_generations (

@@ -161,7 +161,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 			artifactTaskTombstoneTTLDefault,
 			artifactTaskAgentFinishGrace,
 			artifactTaskStoreMaxEntries,
-		),
+		).withRuntimeStore(db),
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
@@ -177,6 +177,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	// or a transient DB error; the reaper re-scans durable rows so a missed
 	// timer still converges to stale (review 2026-08-05).
 	go hub.runConversationTaskReaper()
+	go hub.runArtifactRuntimeRunReaper()
 	return hub
 }
 

@@ -32,6 +32,7 @@ const ARTIFACT_WRITEBACK_REF_PATTERN = /^awr_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_RESULT_ID_PATTERN = /^arr_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_TASK_ID_PATTERN = /^atk_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_TASK_REF_PATTERN = /^atr_[A-Za-z0-9_-]{43}$/;
+const ARTIFACT_RUNTIME_RUN_ID_PATTERN = /^run_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_RESULT_SINK_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9]\d*$/;
 const ARTIFACT_RUNTIME_NODE_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const ARTIFACT_ID_MAX_LENGTH = 64;
@@ -406,12 +407,18 @@ export function normalizeArtifactTaskStatus(value) {
   const code = value.code === undefined ? '' : String(value.code);
   const message = value.message === undefined ? '' : String(value.message);
   const runId = value.run_id === undefined ? '' : String(value.run_id);
+  const executorRunId = value.executor_run_id === undefined ? '' : String(value.executor_run_id);
   const resultId = value.result_id === undefined ? '' : String(value.result_id);
+  const completionMode = value.completion_mode === undefined ? '' : String(value.completion_mode);
   const deliveryStatus = value.delivery_status === undefined ? '' : String(value.delivery_status);
   if ((code && !/^[a-z][a-z0-9_]{0,63}$/.test(code))
     || (message && (message !== message.trim() || message.length > 500 || /[\0\r\n]/.test(message)))
     || (runId && (runId !== runId.trim() || runId.length > 128 || /[\0\r\n]/.test(runId)))
+    || (executorRunId && (executorRunId !== executorRunId.trim()
+      || executorRunId.length > 128 || /[\0\r\n]/.test(executorRunId)))
     || (resultId && !ARTIFACT_RESULT_ID_PATTERN.test(resultId))
+    || (completionMode && completionMode !== 'runtime_state')
+    || (completionMode === 'runtime_state' && !ARTIFACT_RUNTIME_RUN_ID_PATTERN.test(runId))
     || (deliveryStatus && !new Set(['pending', 'delivered', 'failed']).has(deliveryStatus))) return null;
   const normalized = {
     contract_version: ARTIFACT_TASK_STATUS_CONTRACT,
@@ -423,7 +430,9 @@ export function normalizeArtifactTaskStatus(value) {
   if (code) normalized.code = code;
   if (message) normalized.message = message;
   if (runId) normalized.run_id = runId;
+  if (executorRunId) normalized.executor_run_id = executorRunId;
   if (resultId) normalized.result_id = resultId;
+  if (completionMode) normalized.completion_mode = completionMode;
   if (deliveryStatus) normalized.delivery_status = deliveryStatus;
   return normalized;
 }
@@ -462,13 +471,20 @@ export function normalizeArtifactTaskCreated(value) {
     || !ARTIFACT_TASK_REF_PATTERN.test(String(value.task_ref || ''))
     || value.status !== 'submitted') return null;
   const visibleMessage = String(value.visible_message || '').trim();
+  const runId = value.run_id === undefined ? '' : String(value.run_id);
+  const completionMode = value.completion_mode === undefined ? '' : String(value.completion_mode);
   if (!visibleMessage || visibleMessage.length > 700 || /[\0\r\n]/.test(visibleMessage)) return null;
+  if ((completionMode && completionMode !== 'runtime_state')
+    || (completionMode === 'runtime_state' && !ARTIFACT_RUNTIME_RUN_ID_PATTERN.test(runId))
+    || (!completionMode && runId)) return null;
   return {
     taskId: value.task_id,
     taskRef: value.task_ref,
     status: value.status,
     visibleMessage,
     expiresAt: String(value.expires_at || ''),
+    ...(runId ? { runId } : {}),
+    ...(completionMode ? { completionMode } : {}),
   };
 }
 

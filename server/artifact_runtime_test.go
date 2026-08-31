@@ -379,6 +379,10 @@ func TestArtifactRuntimeEventCursorAdvancesPastUndeclaredNamespace(t *testing.T)
 		EventID: 11, EventType: "state.updated", AgentUID: 440,
 		ArtifactID: "risk-register", Namespace: "legacy", Key: "main", Revision: 3,
 		UpdatedByUID: 440, UpdatedBy: "agent", CreatedAt: memoryStore.now,
+	}, &store.ArtifactRuntimeEvent{
+		EventID: 12, EventType: "run.started", AgentUID: 440,
+		ArtifactID: "risk-register", Namespace: "runtime", Key: "run_hidden", Revision: 1,
+		UpdatedByUID: 440, UpdatedBy: "agent", CreatedAt: memoryStore.now,
 	})
 	request := httptest.NewRequest(http.MethodPost, "/api/artifact-runtime", nil)
 	response := httptest.NewRecorder()
@@ -390,7 +394,7 @@ func TestArtifactRuntimeEventCursorAdvancesPastUndeclaredNamespace(t *testing.T)
 			Surfaces: []ArtifactRuntimeSurface{{ID: "risk-list"}},
 			State:    []ArtifactRuntimeStateDeclaration{{Namespace: "risks", Mode: "read-write"}},
 		},
-	}, "events.list", "", "", nil, nil, nil, 0, 50, "viewer")
+	}, "events.list", "", "", nil, nil, nil, 0, 50, "", "viewer")
 	if response.Code != http.StatusOK {
 		t.Fatalf("event list status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -398,8 +402,8 @@ func TestArtifactRuntimeEventCursorAdvancesPastUndeclaredNamespace(t *testing.T)
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode event list: %v", err)
 	}
-	if result["event_cursor"] != float64(11) || len(result["events"].([]interface{})) != 0 {
-		t.Fatalf("event cursor did not pass retired namespace: %#v", result)
+	if result["event_cursor"] != float64(12) || len(result["events"].([]interface{})) != 0 {
+		t.Fatalf("event cursor did not pass retired or newer-version events: %#v", result)
 	}
 }
 

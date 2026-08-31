@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ const (
 	artifactRuntimeObservationContract = "catsco.artifact-runtime-observation.v1"
 	artifactRuntimeStateContract       = "catsco.artifact-runtime-state.v1"
 	artifactRuntimeEventContract       = "catsco.artifact-runtime-event.v1"
+	artifactRuntimeEventContractV2     = "catsco.artifact-runtime-event.v2"
+	artifactRuntimeRunContract         = "catsco.artifact-runtime-run.v1"
 	artifactRuntimeRequestMaxBody      = 512 * 1024
 	artifactRuntimeStateMaxBytes       = 256 * 1024
 	artifactRuntimeStateMaxNodes       = 32_768
@@ -32,8 +35,9 @@ const (
 var artifactRuntimeDocumentKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 type ArtifactRuntimeHandler struct {
-	hub   *Hub
-	store store.ArtifactRuntimeStateStore
+	hub      *Hub
+	store    store.ArtifactRuntimeStateStore
+	runStore store.ArtifactRuntimeRunStore
 }
 
 type artifactRuntimeUserRequest struct {
@@ -49,6 +53,7 @@ type artifactRuntimeUserRequest struct {
 	Patch           json.RawMessage           `json:"patch,omitempty"`
 	AfterEventID    int64                     `json:"after_event_id,omitempty"`
 	Limit           int                       `json:"limit,omitempty"`
+	RunID           string                    `json:"run_id,omitempty"`
 }
 
 type artifactRuntimeAgentRequest struct {
@@ -61,6 +66,8 @@ type artifactRuntimeAgentRequest struct {
 	BaseRevision    *int64          `json:"base_revision"`
 	Value           json.RawMessage `json:"value,omitempty"`
 	Patch           json.RawMessage `json:"patch,omitempty"`
+	ResultID        string          `json:"result_id,omitempty"`
+	AppliedEventIDs []int64         `json:"applied_event_ids,omitempty"`
 }
 
 type artifactRuntimeAccess struct {
@@ -71,12 +78,20 @@ type artifactRuntimeAccess struct {
 	Artifact         ArtifactContextRecord
 	Manifest         ArtifactRuntimeManifest
 	PageContext      map[string]interface{}
+	TaskID           string
+	TaskRefHash      string
+	RunID            string
+	CompletionMode   string
+	CurrentlyVisible bool
 }
 
 func NewArtifactRuntimeHandler(hub *Hub, db store.Store) *ArtifactRuntimeHandler {
 	handler := &ArtifactRuntimeHandler{hub: hub}
 	if runtimeStore, ok := db.(store.ArtifactRuntimeStateStore); ok {
 		handler.store = runtimeStore
+	}
+	if runStore, ok := db.(store.ArtifactRuntimeRunStore); ok {
+		handler.runStore = runStore
 	}
 	return handler
 }
@@ -115,7 +130,7 @@ func (h *ArtifactRuntimeHandler) HandleUser(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	h.handleOperation(w, r, access, request.Operation, request.Namespace, request.Key,
-		request.BaseRevision, request.Value, request.Patch, request.AfterEventID, request.Limit, "viewer")
+		request.BaseRevision, request.Value, request.Patch, request.AfterEventID, request.Limit, request.RunID, "viewer")
 }
 
 func (h *ArtifactRuntimeHandler) HandleBot(w http.ResponseWriter, r *http.Request) {
@@ -206,8 +221,7 @@ func (h *ArtifactRuntimeHandler) handleBotApply(w http.ResponseWriter, r *http.R
 		writeArtifactRuntimeError(w, http.StatusBadRequest, "invalid_request", "invalid Artifact Runtime request", 0)
 		return
 	}
-	if request.ContractVersion != artifactRuntimeRequestContract ||
-		(request.Operation != "state.put" && request.Operation != "state.patch") {
+	if request.ContractVersion != artifactRuntimeRequestContract {
 		writeArtifactRuntimeError(w, http.StatusBadRequest, "invalid_request", "invalid Artifact Runtime operation", 0)
 		return
 	}
@@ -218,8 +232,61 @@ func (h *ArtifactRuntimeHandler) handleBotApply(w http.ResponseWriter, r *http.R
 		writeArtifactRuntimeError(w, status, code, err.Error(), 0)
 		return
 	}
+	if request.Operation == "run.complete" {
+		h.handleBotComplete(w, r, access, request)
+		return
+	}
+	if request.Operation != "state.put" && request.Operation != "state.patch" {
+		writeArtifactRuntimeError(w, http.StatusBadRequest, "invalid_request", "invalid Artifact Runtime operation", 0)
+		return
+	}
 	h.handleOperation(w, r, access, request.Operation, request.Namespace, request.Key,
-		request.BaseRevision, request.Value, request.Patch, 0, 0, "agent")
+		request.BaseRevision, request.Value, request.Patch, 0, 0, "", "agent")
+}
+
+func (h *ArtifactRuntimeHandler) handleBotComplete(
+	w http.ResponseWriter,
+	r *http.Request,
+	access artifactRuntimeAccess,
+	request artifactRuntimeAgentRequest,
+) {
+	if h.runStore == nil || access.CompletionMode != "runtime_state" || access.TaskRefHash == "" ||
+		!artifactResultIDPattern.MatchString(strings.TrimSpace(request.ResultID)) ||
+		len(request.AppliedEventIDs) == 0 || len(request.AppliedEventIDs) > 32 ||
+		len(request.Value) != 0 || len(request.Patch) != 0 || request.BaseRevision != nil ||
+		request.Namespace != "" || request.Key != "" {
+		writeArtifactRuntimeError(w, http.StatusBadRequest, "invalid_run_completion", "Artifact Runtime completion is invalid", 0)
+		return
+	}
+	appliedEventIDs := append([]int64(nil), request.AppliedEventIDs...)
+	sort.Slice(appliedEventIDs, func(left, right int) bool { return appliedEventIDs[left] < appliedEventIDs[right] })
+	for index, eventID := range appliedEventIDs {
+		if eventID <= 0 || (index > 0 && eventID == appliedEventIDs[index-1]) {
+			writeArtifactRuntimeError(w, http.StatusBadRequest, "invalid_run_completion", "Artifact Runtime completion is invalid", 0)
+			return
+		}
+	}
+	run, events, err := h.runStore.CompleteArtifactRuntimeRun(
+		r.Context(), access.TaskRefHash, access.AgentUID, strings.TrimSpace(request.ResultID), appliedEventIDs,
+	)
+	if err != nil {
+		status, code := http.StatusConflict, "run_completion_conflict"
+		if errors.Is(err, store.ErrArtifactRuntimeEvidenceInvalid) {
+			status, code = http.StatusUnprocessableEntity, "applied_event_invalid"
+		} else if errors.Is(err, store.ErrArtifactRuntimeRunNotFound) {
+			status, code = http.StatusGone, "run_unavailable"
+		}
+		writeArtifactRuntimeError(w, status, code, err.Error(), 0)
+		return
+	}
+	encodedEvents := make([]map[string]interface{}, 0, len(events))
+	for _, event := range events {
+		encodedEvents = append(encodedEvents, artifactRuntimeEventResponse(event, artifactRuntimeVersion02))
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true, "applied": true, "contract_version": artifactRuntimeResponseContract,
+		"operation": "run.complete", "run": artifactRuntimeRunResponse(run), "events": encodedEvents,
+	})
 }
 
 func (h *ArtifactRuntimeHandler) handleOperation(
@@ -231,6 +298,7 @@ func (h *ArtifactRuntimeHandler) handleOperation(
 	value, patch json.RawMessage,
 	afterEventID int64,
 	limit int,
+	runID string,
 	updatedBy string,
 ) {
 	switch operation {
@@ -240,11 +308,22 @@ func (h *ArtifactRuntimeHandler) handleOperation(
 			writeArtifactRuntimeError(w, http.StatusServiceUnavailable, "events_unavailable", "Artifact Runtime events are unavailable", 0)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		response := map[string]interface{}{
 			"ok": true, "contract_version": artifactRuntimeResponseContract,
 			"operation": operation, "artifact": artifactRuntimeArtifactResponse(access, false),
 			"runtime": access.Manifest, "event_cursor": cursor,
-		})
+		}
+		if access.Manifest.Version == artifactRuntimeVersion02 && h.runStore != nil {
+			runs, listErr := h.runStore.ListArtifactRuntimeRuns(
+				r.Context(), access.ActorUID, access.AgentUID, access.Artifact.ID, 20,
+			)
+			if listErr != nil {
+				writeArtifactRuntimeError(w, http.StatusServiceUnavailable, "runs_unavailable", "Artifact Runtime Runs are unavailable", 0)
+				return
+			}
+			response["runs"] = artifactRuntimeRunResponses(runs)
+		}
+		writeJSON(w, http.StatusOK, response)
 	case "state.get":
 		if !h.validateStateTarget(w, access, namespace, key, false) {
 			return
@@ -317,11 +396,24 @@ func (h *ArtifactRuntimeHandler) handleOperation(
 			writeArtifactRuntimeError(w, http.StatusUnprocessableEntity, "invalid_state_change", err.Error(), 0)
 			return
 		}
-		state, event, err := h.store.PutArtifactRuntimeState(r.Context(), &store.ArtifactRuntimeState{
+		candidate := &store.ArtifactRuntimeState{
 			AgentUID: access.AgentUID, ArtifactID: access.Artifact.ID,
 			Namespace: namespace, Key: key, Value: nextValue,
 			UpdatedByUID: access.ActorUID, UpdatedBy: updatedBy,
-		}, *baseRevision)
+		}
+		var state *store.ArtifactRuntimeState
+		var event *store.ArtifactRuntimeEvent
+		if access.TaskRefHash != "" && access.CompletionMode == "runtime_state" {
+			if h.runStore == nil {
+				writeArtifactRuntimeError(w, http.StatusServiceUnavailable, "runs_unavailable", "Artifact Runtime Run is unavailable", 0)
+				return
+			}
+			state, event, err = h.runStore.PutArtifactRuntimeStateForRun(
+				r.Context(), candidate, *baseRevision, access.TaskRefHash,
+			)
+		} else {
+			state, event, err = h.store.PutArtifactRuntimeState(r.Context(), candidate, *baseRevision)
+		}
 		if err != nil {
 			var conflict *store.ArtifactRuntimeRevisionConflict
 			if errors.As(err, &conflict) {
@@ -334,7 +426,7 @@ func (h *ArtifactRuntimeHandler) handleOperation(
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ok": true, "applied": true, "contract_version": artifactRuntimeResponseContract,
 			"operation": operation, "state": artifactRuntimeStateResponse(state, true),
-			"event": artifactRuntimeEventResponse(event),
+			"event": artifactRuntimeEventResponse(event, access.Manifest.Version),
 		})
 	case "events.list":
 		if afterEventID < 0 {
@@ -358,14 +450,53 @@ func (h *ArtifactRuntimeHandler) handleOperation(
 			if event.EventID > cursor {
 				cursor = event.EventID
 			}
-			if !access.Manifest.allowsNamespace(event.Namespace, false) {
+			if access.Manifest.Version != artifactRuntimeVersion02 && event.EventType != "state.updated" {
 				continue
 			}
-			encoded = append(encoded, artifactRuntimeEventResponse(event))
+			if event.EventType == "state.updated" && !access.Manifest.allowsNamespace(event.Namespace, false) {
+				continue
+			}
+			encoded = append(encoded, artifactRuntimeEventResponse(event, access.Manifest.Version))
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ok": true, "contract_version": artifactRuntimeResponseContract,
 			"operation": operation, "events": encoded, "event_cursor": cursor,
+		})
+	case "run.get":
+		if access.Manifest.Version != artifactRuntimeVersion02 || h.runStore == nil || !artifactRuntimeRunIDPattern.MatchString(runID) {
+			writeArtifactRuntimeError(w, http.StatusBadRequest, "invalid_run", "Artifact Runtime Run is invalid", 0)
+			return
+		}
+		run, found, err := h.runStore.GetArtifactRuntimeRun(
+			r.Context(), runID, access.ActorUID, access.AgentUID, access.Artifact.ID,
+		)
+		if err != nil {
+			writeArtifactRuntimeError(w, http.StatusServiceUnavailable, "runs_unavailable", "Artifact Runtime Run is unavailable", 0)
+			return
+		}
+		if !found {
+			writeArtifactRuntimeError(w, http.StatusNotFound, "run_not_found", "Artifact Runtime Run was not found", 0)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok": true, "contract_version": artifactRuntimeResponseContract,
+			"operation": operation, "run": artifactRuntimeRunResponse(run),
+		})
+	case "run.list":
+		if access.Manifest.Version != artifactRuntimeVersion02 || h.runStore == nil {
+			writeArtifactRuntimeError(w, http.StatusBadRequest, "runs_not_enabled", "Artifact Runtime Runs are not enabled", 0)
+			return
+		}
+		runs, err := h.runStore.ListArtifactRuntimeRuns(
+			r.Context(), access.ActorUID, access.AgentUID, access.Artifact.ID, 20,
+		)
+		if err != nil {
+			writeArtifactRuntimeError(w, http.StatusServiceUnavailable, "runs_unavailable", "Artifact Runtime Runs are unavailable", 0)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok": true, "contract_version": artifactRuntimeResponseContract,
+			"operation": operation, "runs": artifactRuntimeRunResponses(runs),
 		})
 	default:
 		writeArtifactRuntimeError(w, http.StatusBadRequest, "unsupported_operation", "Artifact Runtime operation is unsupported", 0)
@@ -418,6 +549,7 @@ func (h *ArtifactRuntimeHandler) resolveViewerAccess(
 	return artifactRuntimeAccess{
 		ActorUID: actorUID, AgentUID: agentUID, TopicID: strings.TrimSpace(request.TopicID),
 		DisplayedVersion: candidate.DisplayedVersion, Artifact: record, Manifest: manifest,
+		CurrentlyVisible: true,
 	}, http.StatusOK, "", nil
 }
 
@@ -449,6 +581,7 @@ func (h *ArtifactRuntimeHandler) resolveAgentAccess(
 		access.DisplayedVersion = snapshot.DisplayedVersion
 		access.PageContext = cloneArtifactPageContext(snapshot.PageContext)
 		access.Artifact = snapshot.Artifact
+		access.CurrentlyVisible = true
 	} else {
 		ref, ok := normalizeArtifactTaskRef(taskRef)
 		if !ok || h.hub.artifactTasks == nil {
@@ -466,6 +599,13 @@ func (h *ArtifactRuntimeHandler) resolveAgentAccess(
 		access.DisplayedVersion = task.DisplayedVersion
 		access.PageContext = cloneArtifactPageContext(task.PageContext)
 		access.Artifact = task.Artifact
+		access.CurrentlyVisible = h.hub.artifactPreviewRouteConnected(task.ActorUID, task.PreviewRoute)
+		if task.Persistent {
+			access.TaskID = task.ID
+			access.TaskRefHash = artifactTaskRefHash(ref)
+			access.RunID = task.RuntimeRunID
+			access.CompletionMode = task.Intent.completionMode()
+		}
 	}
 	if access.DisplayedVersion <= 0 || !validArtifactContextRecord(access.Artifact, access.Artifact.ID) {
 		return artifactRuntimeAccess{}, http.StatusGone, "runtime_ref_expired", errors.New("Artifact Runtime reference has no current version")
@@ -498,7 +638,7 @@ func (h *ArtifactRuntimeHandler) resolveArtifactRuntime(
 	manifest, err := h.hub.artifactRuntimeResolver.ResolveArtifactRuntimeManifest(resolutionCtx, record, displayedVersion)
 	if err != nil {
 		return ArtifactContextRecord{}, ArtifactRuntimeManifest{}, http.StatusUnprocessableEntity,
-			"runtime_not_enabled", errors.New("this Artifact version has not enabled Runtime 0.1")
+			"runtime_not_enabled", errors.New("this Artifact version has not enabled a supported Runtime")
 	}
 	return record, manifest, http.StatusOK, "", nil
 }
@@ -575,13 +715,84 @@ func artifactRuntimeMissingStateResponse(namespace, key string) map[string]inter
 	}
 }
 
-func artifactRuntimeEventResponse(event *store.ArtifactRuntimeEvent) map[string]interface{} {
-	return map[string]interface{}{
-		"contract_version": artifactRuntimeEventContract,
-		"event_id":         event.EventID, "type": event.EventType,
-		"namespace": event.Namespace, "key": event.Key, "revision": event.Revision,
-		"updated_by": event.UpdatedBy, "created_at": event.CreatedAt.Format(time.RFC3339Nano),
+func artifactRuntimeEventResponse(event *store.ArtifactRuntimeEvent, runtimeVersion string) map[string]interface{} {
+	if runtimeVersion != artifactRuntimeVersion02 {
+		return map[string]interface{}{
+			"contract_version": artifactRuntimeEventContract,
+			"event_id":         event.EventID, "type": event.EventType,
+			"namespace": event.Namespace, "key": event.Key, "revision": event.Revision,
+			"updated_by": event.UpdatedBy, "created_at": event.CreatedAt.Format(time.RFC3339Nano),
+		}
 	}
+	data := event.Data
+	if len(data) == 0 || string(data) == "{}" {
+		data, _ = json.Marshal(map[string]interface{}{
+			"namespace": event.Namespace, "key": event.Key, "revision": event.Revision,
+		})
+	}
+	response := map[string]interface{}{
+		"contract_version": artifactRuntimeEventContractV2,
+		"event_id":         event.EventID, "type": event.EventType,
+		"artifact_id": event.ArtifactID, "created_at": event.CreatedAt.Format(time.RFC3339Nano),
+		"data": json.RawMessage(append([]byte(nil), data...)),
+	}
+	if event.TaskID != "" {
+		response["task_id"] = event.TaskID
+	}
+	if event.RunID != "" {
+		response["run_id"] = event.RunID
+	}
+	if event.ExecutorRunID != "" {
+		response["executor_run_id"] = event.ExecutorRunID
+	}
+	if event.ResultID != "" {
+		response["result_id"] = event.ResultID
+	}
+	return response
+}
+
+func artifactRuntimeRunResponse(run *store.ArtifactRuntimeRun) map[string]interface{} {
+	response := map[string]interface{}{
+		"contract_version": artifactRuntimeRunContract,
+		"task_id":          run.TaskID, "run_id": run.RunID, "action_id": run.ActionID,
+		"status": run.Status, "artifact_id": run.ArtifactID,
+		"displayed_version": run.DisplayedVersion, "topic_id": run.TopicID,
+		"created_at": run.CreatedAt.Format(time.RFC3339Nano),
+		"updated_at": run.UpdatedAt.Format(time.RFC3339Nano),
+		"expires_at": run.ExpiresAt.Format(time.RFC3339Nano),
+	}
+	if run.ExecutorRunID != "" {
+		response["executor_run_id"] = run.ExecutorRunID
+	}
+	if run.ExecutorState != "" {
+		response["executor_state"] = run.ExecutorState
+	}
+	if run.ResultID != "" {
+		response["result_id"] = run.ResultID
+	}
+	if run.Code != "" {
+		response["code"] = run.Code
+	}
+	if run.Message != "" {
+		response["message"] = run.Message
+	}
+	if run.StartedAt != nil {
+		response["started_at"] = run.StartedAt.Format(time.RFC3339Nano)
+	}
+	if run.FinishedAt != nil {
+		response["finished_at"] = run.FinishedAt.Format(time.RFC3339Nano)
+	}
+	return response
+}
+
+func artifactRuntimeRunResponses(runs []*store.ArtifactRuntimeRun) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(runs))
+	for _, run := range runs {
+		if run != nil {
+			result = append(result, artifactRuntimeRunResponse(run))
+		}
+	}
+	return result
 }
 
 func artifactRuntimeArtifactResponse(access artifactRuntimeAccess, includeTopic bool) map[string]interface{} {
@@ -593,7 +804,7 @@ func artifactRuntimeArtifactResponse(access artifactRuntimeAccess, includeTopic 
 		"url":               strings.TrimSpace(access.Artifact.URL),
 		"displayed_version": access.DisplayedVersion,
 		"latest_version":    access.Artifact.PublishVersion,
-		"currently_visible": true,
+		"currently_visible": access.CurrentlyVisible,
 	}
 	if includeTopic {
 		response["topic_id"] = access.TopicID

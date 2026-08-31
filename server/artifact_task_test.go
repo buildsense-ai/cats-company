@@ -184,6 +184,68 @@ func TestArtifactTaskManifestAndPayloadStayVersionBounded(t *testing.T) {
 	}
 }
 
+func TestArtifactTaskManifestRuntimeStateCompletionIsExplicitAndExclusive(t *testing.T) {
+	body := []byte(`{
+		"contract_version":"catsco.artifact-manifest.v4",
+		"runtime":{
+			"version":"0.2",
+			"surfaces":[{"id":"task-board"}],
+			"state":[{"namespace":"project_tasks","mode":"read-write"}]
+		},
+		"task_intents":[{
+			"id":"tasks.plan.v1",
+			"title":"生成推进建议",
+			"description":"写入项目任务数据。",
+			"input_schema":{"type":"object"},
+			"completion":{"mode":"runtime_state"}
+		}]
+	}`)
+	intent, err := parseArtifactTaskIntentManifest(body, "tasks.plan.v1")
+	if err != nil {
+		t.Fatalf("parse Runtime State task intent: %v", err)
+	}
+	if !intent.usesRuntimeStateCompletion() || intent.ResultSink != "" {
+		t.Fatalf("unexpected Runtime State intent: %#v", intent)
+	}
+
+	for name, invalid := range map[string]string{
+		"Runtime 0.1":      strings.Replace(string(body), `"version":"0.2"`, `"version":"0.1"`, 1),
+		"both authorities": strings.Replace(string(body), `"completion":{"mode":"runtime_state"}`, `"result_sink":"tasks.upsert.v1","completion":{"mode":"runtime_state"}`, 1),
+		"unknown mode":     strings.Replace(string(body), `"runtime_state"`, `"page_receipt"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseArtifactTaskIntentManifest([]byte(invalid), "tasks.plan.v1"); err == nil {
+				t.Fatal("invalid Runtime State completion was accepted")
+			}
+		})
+	}
+}
+
+func TestArtifactTaskIntentOmitsUnusedCompletionAuthority(t *testing.T) {
+	legacy, err := json.Marshal(ArtifactTaskIntent{
+		ID: "tasks.plan.v1", Title: "Plan", Description: "Plan tasks.",
+		InputSchema: json.RawMessage(`{"type":"object"}`), ResultSink: "tasks.apply.v1",
+	})
+	if err != nil {
+		t.Fatalf("marshal V4.1 intent: %v", err)
+	}
+	if strings.Contains(string(legacy), `"completion"`) {
+		t.Fatalf("V4.1 intent leaked an empty completion authority: %s", legacy)
+	}
+	persistent, err := json.Marshal(ArtifactTaskIntent{
+		ID: "tasks.plan.v1", Title: "Plan", Description: "Plan tasks.",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Completion:  &ArtifactTaskCompletion{Mode: "runtime_state"},
+	})
+	if err != nil {
+		t.Fatalf("marshal Runtime 0.2 intent: %v", err)
+	}
+	if strings.Contains(string(persistent), `"result_sink"`) ||
+		!strings.Contains(string(persistent), `"completion":{"mode":"runtime_state"}`) {
+		t.Fatalf("Runtime 0.2 intent completion authority is not exclusive: %s", persistent)
+	}
+}
+
 func TestArtifactTaskStoreCorrelatesRunAndRequiresAppliedResult(t *testing.T) {
 	now := time.Date(2026, 8, 26, 3, 0, 0, 0, time.UTC)
 	store := newArtifactTaskStore(time.Hour, time.Minute, 5*time.Second, 8)
