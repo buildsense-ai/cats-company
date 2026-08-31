@@ -81,6 +81,9 @@ import {
   clearPersistedComposerDrafts,
   createComposerDraftStore,
   NEW_TASK_DRAFT_KEY,
+  persistComposerDraftStore,
+  readComposerTaskContextDraft,
+  writeComposerTaskContextDraft,
 } from '../utils/composer-draft-storage';
 import {
   authenticationRedirectPath,
@@ -225,6 +228,16 @@ function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
 
+function taskContextMatches(context, agent, projectId = 0, projectName = '') {
+  const contextAgent = context?.agent;
+  const contextAgentID = contextAgent?.uid ?? contextAgent?.id;
+  const agentID = agent?.uid ?? agent?.id;
+  return Boolean(context)
+    && String(contextAgentID || '') === String(agentID || '')
+    && Number(context.projectId || 0) === Number(projectId || 0)
+    && String(context.projectName || '') === String(projectName || '');
+}
+
 export function resetComposerDraftStore(draftStoreRef) {
   draftStoreRef.current?.deactivate?.();
   const nextStore = createComposerDraftStore();
@@ -283,6 +296,10 @@ function TinodeWebApp({ location }) {
     composerDraftOwnerRef.current = composerDraftOwner;
     composerDraftStoreRef.current = createComposerDraftStore(composerDraftOwner);
   }
+  const persistedTaskContext = readComposerTaskContextDraft(
+    composerDraftStoreRef.current,
+    NEW_TASK_DRAFT_KEY,
+  );
 
   useEffect(() => {
     composerDraftStoreRef.current?.activate?.();
@@ -385,7 +402,7 @@ function TinodeWebApp({ location }) {
   const [activeAgentModel, setActiveAgentModel] = useState(null);
   const [activeAgentState, setActiveAgentState] = useState(null);
   const activeTopicId = activeTopic?.topicId || '';
-  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent;
+  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent;
   const draftAgentUID = Number(draftAgent?.uid || draftAgent?.id || 0);
   const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
   const modelContext = activeTopic || (modelContextId ? { topicId: modelContextId, isGroup: false } : null);
@@ -412,6 +429,7 @@ function TinodeWebApp({ location }) {
     activeAgentState,
     taskDraft,
     emptyTaskSelectedAgent,
+    persistedTaskContext?.agent,
   );
   const mobileModelInfo = buildMobileModelInfo(
     currentModelName,
@@ -1149,6 +1167,7 @@ function TinodeWebApp({ location }) {
     const agentUid = agent?.uid || agent?.id;
     if (!agentUid) return;
     const projectId = Number(options?.projectId || 0);
+    const projectName = projectId > 0 ? String(options?.projectName || '') : '';
     taskDraftSequenceRef.current += 1;
     setStandaloneCloudArtifactsRequest(null);
     setEmptyTaskSelectedAgent(agent);
@@ -1158,18 +1177,56 @@ function TinodeWebApp({ location }) {
       agent,
       key: `${agentUid}:${taskDraftSequenceRef.current}`,
       projectId: projectId > 0 ? projectId : 0,
-      projectName: projectId > 0 ? String(options?.projectName || '') : '',
+      projectName,
     });
+    const currentContext = readComposerTaskContextDraft(
+      composerDraftStoreRef.current,
+      NEW_TASK_DRAFT_KEY,
+    );
+    if (!taskContextMatches(currentContext, agent, projectId, projectName)) {
+      writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, {
+        agent,
+        projectId,
+        projectName,
+      });
+      persistComposerDraftStore(composerDraftStoreRef.current);
+    }
     setMobileSidebarOpen(false);
   }, [setActiveTopic]);
+
+  const handleEmptyTaskSelectedAgentChange = useCallback((agent) => {
+    setEmptyTaskSelectedAgent(agent);
+    if (!agent) return;
+    const current = readComposerTaskContextDraft(
+      composerDraftStoreRef.current,
+      NEW_TASK_DRAFT_KEY,
+    );
+    const projectId = taskDraft
+      ? Number(taskDraft.projectId || 0)
+      : Number(current?.projectId || 0);
+    const projectName = projectId > 0
+      ? String(taskDraft?.projectName || current?.projectName || '')
+      : '';
+    if (taskContextMatches(current, agent, projectId, projectName)) return;
+    writeComposerTaskContextDraft(composerDraftStoreRef.current, NEW_TASK_DRAFT_KEY, {
+      agent,
+      projectId,
+      projectName,
+    });
+    persistComposerDraftStore(composerDraftStoreRef.current);
+  }, [taskDraft]);
 
   const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
     createAgentTaskTopic(agent, {
       ...draft,
-      projectId: taskDraft?.projectId || 0,
-      projectName: taskDraft?.projectName || '',
+      projectId: taskDraft
+        ? Number(taskDraft.projectId || 0)
+        : Number(persistedTaskContext?.projectId || 0),
+      projectName: taskDraft
+        ? String(taskDraft.projectName || '')
+        : String(persistedTaskContext?.projectName || ''),
     })
-  ), [createAgentTaskTopic, taskDraft?.projectId, taskDraft?.projectName]);
+  ), [createAgentTaskTopic, persistedTaskContext?.projectId, persistedTaskContext?.projectName, taskDraft]);
 
   const activateAgentTopic = useCallback(async (agent) => {
     const nextTopic = await resolveAgentTopic(agent);
@@ -1262,7 +1319,7 @@ function TinodeWebApp({ location }) {
       currentModelName={currentModelName}
       onDownload={() => openDesktopModal('download')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
-      title={activeTopic?.name || taskDraftTitle(taskDraft)}
+      title={activeTopic?.name || taskDraftTitle(taskDraft || persistedTaskContext)}
       mobileModelInfo={mobileModelInfo}
       onNewTask={() => setNewTaskRequest((request) => request + 1)}
       onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
@@ -1470,10 +1527,10 @@ function TinodeWebApp({ location }) {
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    initialAgent={taskDraft?.agent || emptyTaskSelectedAgent}
+                    initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
                     composerDraftStore={composerDraftStoreRef.current}
                     draftKey={NEW_TASK_DRAFT_KEY}
-                    onSelectedAgentChange={setEmptyTaskSelectedAgent}
+                    onSelectedAgentChange={handleEmptyTaskSelectedAgentChange}
                     onResolveAgentTopic={createDraftAgentTaskTopic}
                     onActivateTopic={activateResolvedTopic}
                     modelInfo={mobileModelInfo}
@@ -1753,12 +1810,18 @@ function canOpenCloudArtifacts(activeTopic, activeAgent) {
   return Boolean(activeTopic?.topicId) || agentUID > 0;
 }
 
-function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft, emptyTaskSelectedAgent) {
+function resolveDisplayedActiveAgent(
+  activeTopicId,
+  activeAgentState,
+  taskDraft,
+  emptyTaskSelectedAgent,
+  persistedTaskAgent,
+) {
   if (activeTopicId) {
     return activeAgentState?.topicId === activeTopicId ? activeAgentState.agent : null;
   }
 
-  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent;
+  const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskAgent;
   const uid = Number(draftAgent?.uid || draftAgent?.id || 0);
   if (uid <= 0) return null;
 

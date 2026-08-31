@@ -20,6 +20,7 @@ vi.mock('./qr-code', () => ({
 }));
 
 import { api } from '../api';
+import { createComposerDraftStore } from '../utils/composer-draft-storage';
 import EmptyTaskComposer from './empty-task-composer';
 
 const agents = [
@@ -52,6 +53,8 @@ describe('EmptyTaskComposer', () => {
     api.uploadFile.mockReset();
     api.createMobileUploadSession.mockReset();
     api.getMobileUploadSession.mockReset();
+    localStorage.clear();
+    sessionStorage.clear();
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -65,6 +68,8 @@ describe('EmptyTaskComposer', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     container.remove();
+    localStorage.clear();
+    sessionStorage.clear();
     vi.clearAllMocks();
   });
 
@@ -186,6 +191,31 @@ describe('EmptyTaskComposer', () => {
       }),
     ]);
     expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('persists removing a restored attachment across a fresh context', async () => {
+    const composerDraftStore = createComposerDraftStore('attachment-removal-context');
+    const attachment = {
+      type: 'file',
+      name: 'brief.pdf',
+      content: {
+        type: 'file',
+        payload: { file_key: 'brief.pdf', url: '/uploads/brief.pdf', name: 'brief.pdf' },
+      },
+    };
+    composerDraftStore.setAttachmentDraft('new-task', [attachment]);
+    composerDraftStore.persist();
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：brief.pdf"]'));
+      await flushPromises();
+    });
+
+    // A new SkillHub document cannot see the old sessionStorage copy.
+    sessionStorage.clear();
+    const freshContext = createComposerDraftStore('attachment-removal-context');
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
   });
 
   it('persists an attachment when navigation unmounts the composer during upload', async () => {

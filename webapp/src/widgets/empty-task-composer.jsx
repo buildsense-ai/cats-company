@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -14,6 +14,7 @@ import {
   readComposerPhoneUploadSession,
   subscribeComposerDraftStore,
   writeComposerAttachmentDraft,
+  writeComposerTaskContextDraft,
   writeComposerInputDraft,
   writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
@@ -88,18 +89,45 @@ export default function EmptyTaskComposer({
   const phoneUploadSyncRef = useRef(null);
 
   const persistDraft = useCallback(() => {
-    writeComposerInputDraft(
-      composerDraftStore,
-      normalizedDraftKey,
-      String(inputValueRef.current || ''),
-    );
-    writeComposerAttachmentDraft(
-      composerDraftStore,
-      normalizedDraftKey,
-      Array.isArray(pendingAttachmentsRef.current) ? pendingAttachmentsRef.current : [],
-    );
+    // Capture both values before either write. Store subscribers are notified
+    // synchronously and can otherwise replace the refs between field writes,
+    // making an attachment removal look like a no-op.
+    const nextInput = String(inputValueRef.current || '');
+    const nextAttachments = Array.isArray(pendingAttachmentsRef.current)
+      ? [...pendingAttachmentsRef.current]
+      : [];
+    const currentInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
+    const currentAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
+    if (currentInput !== nextInput) {
+      writeComposerInputDraft(composerDraftStore, normalizedDraftKey, nextInput);
+    }
+    if (JSON.stringify(currentAttachments) !== JSON.stringify(nextAttachments)) {
+      writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, nextAttachments);
+    }
     persistComposerDraftStore(composerDraftStore);
   }, [composerDraftStore, normalizedDraftKey]);
+
+  const flushDraft = useCallback((event) => {
+    const nextValue = event?.currentTarget?.value;
+    if (typeof nextValue === 'string' && !event.currentTarget.readOnly) {
+      inputValueRef.current = nextValue;
+    }
+    persistDraft();
+  }, [persistDraft]);
+
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      // Capture a controlled textarea value before a navigation unmount.
+      mountedRef.current = false;
+      if (sendInFlightRef.current) return;
+      const textarea = textareaRef.current;
+      if (textarea && !textarea.readOnly && typeof textarea.value === 'string') {
+        inputValueRef.current = textarea.value;
+      }
+      persistDraft();
+    };
+  }, [persistDraft]);
 
   const persistAttachmentDraft = useCallback((attachments) => {
     writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, attachments);
@@ -138,8 +166,12 @@ export default function EmptyTaskComposer({
     inputValueRef.current = '';
     pendingAttachmentsRef.current = [];
     phoneUploadSessionRef.current = null;
-    writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
+    // Persist the visible fields before clearing auxiliary fields; each setter
+    // notifies synchronously and could otherwise repopulate the refs.
     persistDraft();
+    writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
+    writeComposerTaskContextDraft(composerDraftStore, normalizedDraftKey, null);
+    persistComposerDraftStore(composerDraftStore);
     if (mountedRef.current) setPhoneUploadSession(null);
     return true;
   }, [composerDraftStore, normalizedDraftKey, persistDraft, revisionStore]);
@@ -796,6 +828,7 @@ export default function EmptyTaskComposer({
         placeholder={placeholder}
         disabled={isSubmitting}
         onChange={handleInputChange}
+        textareaProps={{ onBlur: flushDraft }}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
         onVoiceFinal={handleVoiceFinal}
