@@ -138,6 +138,20 @@ test("renew-worker: dry-run selects resubscribe for a freezing instance", () => 
   assert.match(result.stdout, /"operation":"resubscribe"/);
 });
 
+test("renew-worker: provider-expired and frozen states remain recoverable", () => {
+  for (const providerState of ["expired", "frozen"]) {
+    const sb = setup({
+      instanceName: "worker-bot-a",
+      instanceID: `i-${providerState}`,
+      instanceStatus: providerState,
+      state: providerState,
+    });
+    const result = run(sb, ["--name", "bot-a", "--dry-run"]);
+    assert.equal(result.status, 0, `${providerState}: ${result.stderr}`);
+    assert.match(result.stdout, /"operation":"resubscribe"/);
+  }
+});
+
 test("renew-worker: resubscribes a freezing instance and disables automatic renewal", () => {
   const sb = setup({ instanceName: "worker-bot-a", instanceID: "i-freezing", instanceStatus: "freezing", state: "freezing" });
   const result = run(sb, ["--name", "bot-a"]);
@@ -159,6 +173,22 @@ test("renew-worker: refuses an unsubscribed instance", () => {
   assert.match(result.stderr, /cannot resubscribe or recover/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.equal(state.resubscribeCalls || 0, 0);
+});
+
+test("renew-worker: terminal provider states are never recoverable", () => {
+  for (const providerState of ["released", "deleted", "bootdiskexpired", "nobootdisk"]) {
+    const sb = setup({
+      instanceName: "worker-bot-a",
+      instanceID: `i-${providerState}`,
+      instanceStatus: providerState,
+      state: providerState,
+    });
+    const result = run(sb, ["--name", "bot-a"]);
+    assert.equal(result.status, 1, `${providerState} should fail renewal`);
+    assert.match(result.stderr, new RegExp(`is ${providerState}`));
+    const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+    assert.equal(state.resubscribeCalls || 0, 0, `${providerState} must not call resubscribe`);
+  }
 });
 
 test("renew-worker: reports operator reconciliation when automatic renewal cannot be disabled", () => {

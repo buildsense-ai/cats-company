@@ -78,6 +78,23 @@ ctyun() {
   printf '%s' "$raw"
 }
 
+# Provider delete APIs can return a transient error after accepting the
+# request. Reuse the same client token across retries so an accepted request
+# remains idempotent and we do not issue duplicate destructive operations.
+ctyun_retry() {
+  local attempts="$1" delay_seconds="$2" attempt
+  shift 2
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if ctyun "$@"; then
+      return 0
+    fi
+    if ((attempt < attempts)); then
+      sleep "$delay_seconds"
+    fi
+  done
+  return 1
+}
+
 find_instance() {
   local resp name
   name="$1"
@@ -163,8 +180,9 @@ if [[ -n "$inst" ]]; then
         exit 1
       fi
       if [[ "$destroy_ready" -eq 1 ]]; then
-        ctyun ecs DestroyEcsInstance \
-          --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+        destroy_token="$(gen_uuid)"
+        ctyun_retry 3 5 ecs DestroyEcsInstance \
+          --regionID "$REGION_ID" --clientToken "$destroy_token" --instanceID "$instance_id" >/dev/null 2>&1 \
           || { echo "error: instance permanent destroy failed (instance_id=$instance_id)" >&2; exit 1; }
         removed=0
         for _ in $(seq 1 60); do
@@ -185,8 +203,9 @@ if [[ -n "$inst" ]]; then
         fi
       fi
     else
-      ctyun ecs DeleteEcsInstance \
-        --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+      delete_token="$(gen_uuid)"
+      ctyun_retry 3 5 ecs DeleteEcsInstance \
+        --regionID "$REGION_ID" --clientToken "$delete_token" --instanceID "$instance_id" >/dev/null 2>&1 \
         || { echo "error: instance delete failed (instance_id=$instance_id)" >&2; exit 1; }
     fi
   fi

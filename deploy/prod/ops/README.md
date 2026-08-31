@@ -91,6 +91,25 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 - 私网 worker 默认不申请公网 IP（`CTYUN_WORKER_EXT_IP=0`），SSH 注入依赖
   `CTYUN_JUMP_IP` 跳板/NAT；只有旧的直连公网路径显式设置 `CTYUN_WORKER_EXT_IP=1`。
 
+### 续费与到期边界
+
+续费链路只恢复仍属于当前天翼云区域生命周期的实例，并且不会创建替代实例：
+
+| Provider 状态 | 续费行为 |
+|---|---|
+| `running` / `active` / `stopped` / `shutoff` / `error` | 调用 `ResubscribeEcsInstance` 延长套餐 |
+| `expired` / `freezing` / `frozen` | 仍在 15 天保留窗口内，调用 `ResubscribeEcsInstance` 恢复 |
+| `unsubscribed` | 已离开可恢复生命周期，拒绝续费并要求人工核对 |
+| `released` / `deleted` / `bootdiskexpired` / `nobootdisk` | 终态，拒绝续费 |
+
+套餐支付成功后，控制面以天翼云返回的 `expires_at` 更新单个 worker 的生命周期，
+并尝试关闭云侧自动续费。关闭失败不会伪造成功，日志会标记为需要运维核对。
+到期后先进入 `delete_pending`，只有 `delete_after = package_expires_at + 15d`
+到达后才会 claim 为 `delete_running` 并永久销毁；已进入 `delete_running` 的记录
+不会被后续支付重新激活，避免和进行中的云端销毁竞态。销毁 API 使用相同
+`clientToken` 做有限重试，瞬时 API 错误不会留下未清理的实例，也不会重复提交
+非幂等请求。
+
 ## 私网 Artifact 转发
 
 私网 worker 不再为每台机器申请公网 IP。页面文件仍由对应 worker 本地保存和
