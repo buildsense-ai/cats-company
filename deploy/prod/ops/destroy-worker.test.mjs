@@ -46,6 +46,14 @@ if (op === "ecs ListEcsInstances") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DestroyEcsInstance") {
+  state.destroyAttempts = (state.destroyAttempts || 0) + 1;
+  state.destroyTokens = state.destroyTokens || [];
+  state.destroyTokens.push(val("--clientToken"));
+  if (state.failDestroyAttempts >= state.destroyAttempts) {
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    json({ statusCode: "900", errorCode: "E.DESTROY", message: "retry" });
+    process.exit(0);
+  }
   if (state.failDestroyInstance) { json({ statusCode: "900", errorCode: "E.DESTROY", message: "boom" }); process.exit(0); }
   state.destroyedInstances = state.destroyedInstances || [];
   state.destroyedInstances.push(val("--instanceID"));
@@ -345,6 +353,19 @@ test("destroy-worker: already-unsubscribed monthly instance is destroyed directl
   assert.equal((state.stopCalls || []).length, 0);
   assert.deepEqual(state.destroyedInstances, ["i-1"]);
   assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+});
+
+test("destroy-worker: retries transient permanent-destroy failure with one client token", () => {
+  const sb = setupSandbox({
+    failDestroyAttempts: 2,
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "unsubscribed", instanceStatus: "unsubscribed" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.destroyAttempts, 3);
+  assert.deepEqual(state.destroyedInstances, ["i-1"]);
+  assert.equal(new Set(state.destroyTokens).size, 1, "retries must reuse the idempotency token");
 });
 
 test("destroy-worker: on-demand instance (no expiredTime) still uses DeleteEcsInstance", () => {
