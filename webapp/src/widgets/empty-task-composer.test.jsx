@@ -196,6 +196,60 @@ describe('EmptyTaskComposer', () => {
     expect(composerDraftStore.persist).toHaveBeenCalled();
   });
 
+  it('clears the draft even when the composer blurs mid-flight', async () => {
+    const composerDraftStore = createComposerDraftStore('midflight-blur');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore, initialAgent: agents[0] });
+    const ta = container.querySelector('textarea.v3-composer-input');
+    await typeInto(ta, '发送后应清除（失焦场景）');
+    await pressEnter(ta);
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    // 真实浏览器在提交时禁用输入框并触发失焦；这次失焦 flush 不得记为
+    // payload 变更，否则发送后的清除会被跳过、已发送内容残留为草稿。
+    await act(async () => {
+      Simulate.blur(ta);
+      await flushPromises();
+    });
+
+    await act(async () => {
+      resolveSend({ seq_id: 130 });
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('');
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:midflight-blur')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:midflight-blur')).toBeNull();
+  });
+
+  it('keeps the draft cleared when a late blur fires after the send', async () => {
+    const composerDraftStore = createComposerDraftStore('post-send-blur');
+    const onResolveAgentTopic = vi.fn().mockResolvedValue({ topicId: 'p2p_1_21' });
+
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic,
+    });
+    const ta = container.querySelector('textarea.v3-composer-input');
+    await typeInto(ta, '发送后迟到的失焦不得复活草稿');
+    await pressEnter(ta);
+    await vi.waitFor(() => expect(onResolveAgentTopic).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      Simulate.blur(ta);
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('');
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:post-send-blur')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:post-send-blur')).toBeNull();
+  });
+
   it('persists removing a restored attachment across a fresh context', async () => {
     const composerDraftStore = createComposerDraftStore('attachment-removal-context');
     const attachment = {

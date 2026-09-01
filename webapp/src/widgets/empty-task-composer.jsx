@@ -118,6 +118,10 @@ export default function EmptyTaskComposer({
   }, [composerDraftStore, normalizedDraftKey]);
 
   const flushDraft = useCallback((event) => {
+    // 提交中或已发送的窗口内，失焦 flush 不携带新信息：发送已快照过 payload，
+    // 此时刷新会把未变的文本记一次 payload 变更，令发送后的清除被误跳过，
+    // 已发送内容就以草稿的形式永远留在存储里。
+    if (sendInFlightRef.current || sentDraftRef.current) return;
     const nextValue = event?.currentTarget?.value;
     if (typeof nextValue === 'string' && !event.currentTarget.readOnly) {
       inputValueRef.current = nextValue;
@@ -130,7 +134,7 @@ export default function EmptyTaskComposer({
     return () => {
       // Capture a controlled textarea value before a navigation unmount.
       mountedRef.current = false;
-      if (sendInFlightRef.current) return;
+      if (sendInFlightRef.current || sentDraftRef.current) return;
       const textarea = textareaRef.current;
       if (textarea && !textarea.readOnly && typeof textarea.value === 'string') {
         inputValueRef.current = textarea.value;
