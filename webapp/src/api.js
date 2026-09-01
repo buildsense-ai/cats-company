@@ -644,7 +644,7 @@ export const api = {
     request('POST', '/api/bots', { username, display_name, role, description }),
 
   // Cloud virtual employee control plane (云托管)
-  getCloudWorkers: () => request('GET', '/api/cloud-workers'),
+  getCloudWorkers: (options = {}) => request('GET', '/api/cloud-workers', undefined, options),
   getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
   createCloudWorker: ({ username, display_name, role, description }) =>
     request('POST', '/api/cloud-workers', { username, display_name, role, description }, { timeoutMs: 630_000 }),
