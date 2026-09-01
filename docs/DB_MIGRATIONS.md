@@ -45,12 +45,16 @@ export CATS_MIGRATION_DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/DB?sslmod
 
 ## 之后怎么处理 schema 变更
 
-普通的新表、新列、索引、约束和 trigger 由 `server/db/postgres/schema.go` 的 `CreateSchema()` 统一管理，必须保持幂等。这让新环境和既有环境都从同一个 schema 模块获得相同结果，不再为同一项 DDL 维护两套真相。
+`server/db/postgres/schema.go` 的 `CreateSchema()` 是运行时权威的幂等 schema 来源：新环境和既有环境都从同一个 schema 模块获得相同结果，服务启动时自动补齐缺失的表、列、索引、约束和 trigger。
 
-只有在需要单独编排、审核或回滚的数据转换中，才添加新的 PostgreSQL SQL migration。此时：
+同时，每一项 schema 变更（包括新表、新列、索引、约束、trigger）都要配套一对唯一编号的 `up` / `down` SQL migration，镜像 `CreateSchema()` 完成的同一套 DDL（含 `CREATE TABLE` 建新表）。这样外部 migration 工具（`scripts/db-migrate.sh`、`migrate` CLI）拥有稳定、可审核、可回滚的变更历史，生产如走 migration 通道也能按序执行到与 `CreateSchema()` 一致的结果。
 
-1. 添加一对唯一编号的 `up` / `down` 文件。
-2. 不要在 `CreateSchema()` 重复同一个数据转换。
+即仓库采用“双轨”：`CreateSchema()` 负责启动时幂等补齐，migration 文件负责可编排、可审核、可回滚的变更历史。二者描述同一份 DDL，必须保持一致；若出现偏差，以 `CreateSchema()` 为准，并同步修正 migration。
+
+但数据回填/数据转换属于 DML，无法表达为 `CreateSchema()` 的幂等 DDL，因此这类步骤只保留在 migration 的 `up`（`down`）文件中，是该数据变更的唯一权威来源（顺序遵循发布门禁第 4 条：表 -> 列 -> 数据回填 -> 约束/索引/trigger）。此时：
+
+1. 添加一对唯一编号的 `up` / `down` 文件（沿用本仓库现有编号序列，如 `000019_agent_artifact_tags`）。
+2. 在 `CreateSchema()` 中添加对应的幂等 DDL，migration 文件中的 DDL 要与之一致。
 3. 生产执行前仍需备份，先记录 `version` / `dirty`，再执行 `up`。
 
 ## 发布门禁

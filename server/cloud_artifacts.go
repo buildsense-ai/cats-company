@@ -389,8 +389,8 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		case http.MethodGet:
 			h.handleAgentArtifactTagsRead(w, route.agentUID, route.artifactID)
 		case http.MethodPut:
-			if route.viewerRelation != "owner" {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner"})
+			if route.viewerRelation != "owner" && route.viewerRelation != "friend" {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
 				return
 			}
 			h.handleAgentArtifactTagsReplace(w, r, viewerUID, route.agentUID, route.artifactID)
@@ -404,8 +404,8 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if route.viewerRelation != "owner" {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner"})
+		if route.viewerRelation != "owner" && route.viewerRelation != "friend" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
 			return
 		}
 		h.handleAgentArtifactTagDelete(w, route.agentUID, route.artifactID, route.tag)
@@ -1286,6 +1286,10 @@ func writeArtifactError(w http.ResponseWriter, status int, code string) {
 		"artifact_publish_request_invalid": "成果发布信息无效",
 		"artifact_publish_unsupported":     "当前成果服务还不支持成员发布",
 		"artifact_publish_invalid":         "成果服务无法导入这个文件",
+		"artifact_tag_request_invalid":     "标签请求无效",
+		"artifact_tag_limit_exceeded":      "标签数量超出限制",
+		"artifact_tag_invalid":             "标签格式无效",
+		"artifact_tag_not_found":           "标签不存在",
 	}
 	message := messages[code]
 	if message == "" {

@@ -725,15 +725,47 @@ describe('CloudArtifactsPanel', () => {
     expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', ['演示']);
   });
 
-  test('members cannot edit tags', async () => {
+  test('friend can edit tags', async () => {
     api.getCloudArtifacts.mockResolvedValue({
       artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
       viewer_relation: 'friend',
     });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '游戏', count: 1 }] });
     await renderPanel();
 
-    expect(container.querySelector('button[aria-label="编辑 课堂小游戏 的标签"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="移除标签 游戏"]')).toBeNull();
-    expect(container.textContent).toContain('游戏');
+    const editButton = container.querySelector('button[aria-label="编辑 课堂小游戏 的标签"]');
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton.click();
+    });
+    await flush();
+
+    const input = container.querySelector('.cloud-artifact-tag-editor input');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      ).set;
+      valueSetter.call(input, '演示');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      [...container.querySelectorAll('.cloud-artifact-tag-editor > button')]
+        .find((button) => button.textContent === '添加')
+        .click();
+    });
+    await flush();
+
+    expect(api.setCloudArtifactTags).toHaveBeenCalledWith(440, 'lesson-game', ['游戏', '演示']);
+    const removeButtons = [...container.querySelectorAll('button[aria-label="移除标签 游戏"]')];
+    expect(removeButtons).toHaveLength(1);
+
+    await act(async () => {
+      removeButtons[0].click();
+    });
+    await flush();
+    expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', ['演示']);
   });
 });

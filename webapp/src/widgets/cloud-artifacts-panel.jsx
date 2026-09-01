@@ -404,6 +404,7 @@ export default function CloudArtifactsPanel({
     : visibleArtifacts.length;
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
   const isOwner = viewerRelation === 'owner';
+  const canManageTags = viewerRelation === 'owner' || viewerRelation === 'friend';
   const artifactRoleLabel = isOwner ? '所有者' : viewerRelation ? '成员' : '';
   const artifactAccessText = !viewerRelation
     ? '正在读取成果权限…'
@@ -604,7 +605,7 @@ export default function CloudArtifactsPanel({
                   <div className="cloud-artifact-actions">
                     {tab === 'active' && (
                       <>
-                        {isOwner && (
+                        {canManageTags && (
                           <button
                             type="button"
                             onClick={() => setTagEditorID(tagEditorID === artifact.id ? '' : artifact.id)}
@@ -656,7 +657,7 @@ export default function CloudArtifactsPanel({
                       {artifactTagList(artifact).map((tag) => (
                         <span className="cloud-artifact-tag" key={tag}>
                           {tag}
-                          {isOwner && (
+                          {canManageTags && (
                             <button
                               type="button"
                               onClick={() => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => item !== tag))}

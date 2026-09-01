@@ -220,7 +220,7 @@ func TestAgentArtifactTagCollectionRequiresGet(t *testing.T) {
 	}
 }
 
-func TestAgentArtifactTagsReplaceRequiresOwner(t *testing.T) {
+func TestAgentArtifactTagsReplaceAllowsFriendWrite(t *testing.T) {
 	tagStore := newArtifactTagTestStore()
 	handler := tagTestHandler(t, tagStore)
 
@@ -228,11 +228,28 @@ func TestAgentArtifactTagsReplaceRequiresOwner(t *testing.T) {
 	req.Body = io.NopCloser(strings.NewReader(`{"tags":["游戏"]}`))
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("member status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("friend status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if len(tagStore.tags[440]["alpha"]) != 0 {
-		t.Fatalf("member write changed tags: %#v", tagStore.tags[440])
+	if len(tagStore.tags[440]["alpha"]) != 1 || tagStore.tags[440]["alpha"][0] != "游戏" {
+		t.Fatalf("friend write tags = %#v", tagStore.tags[440])
+	}
+}
+
+func TestAgentArtifactTagDeleteAllowsFriendWrite(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏", "演示"})
+	handler := tagTestHandler(t, tagStore)
+
+	req := authenticatedArtifactRequestPath(http.MethodDelete, "/api/agents/440/artifacts/alpha/tags/%E6%B8%B8%E6%88%8F")
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("friend status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	remaining := tagStore.tags[440]["alpha"]
+	if len(remaining) != 1 || remaining[0] != "演示" {
+		t.Fatalf("remaining tags = %#v", remaining)
 	}
 }
 
