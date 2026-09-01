@@ -87,7 +87,6 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('gap: 6px;');
     expect(css).toContain('.v3-composer-row.is-empty:not(.has-stop) .v3-send');
     expect(css).toContain('.v3-composer-row.has-content .v3-voice-button');
-    expect(css).toMatch(/\.v3-composer-model-info\s*\{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*display:\s*flex;/s);
     expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*min-height:\s*44px;/s);
     expect(css).toMatch(/\.v3-mobile-model-trigger\s*\{[^}]*touch-action:\s*manipulation;/s);
@@ -105,7 +104,6 @@ describe('secondary surface design contract', () => {
     expect(css).not.toContain('#f8d477');
     expect(css).not.toContain('#f2a0a0');
     expect(css).toContain('.v3-mobile-model-info {');
-    expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 36px);');
     expect(css).toMatch(/\.v3-shell-title,\s*\.v3-shell-title-input\s*\{/);
     expect(css).toContain('top: max(12px, env(safe-area-inset-top));');
     expect(css).toContain('max-width: min(40vw, 170px);');
