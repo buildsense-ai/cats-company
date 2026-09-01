@@ -18,6 +18,11 @@ for arg in "$@"; do
   esac
 done
 
+if [[ "$APPLY" -eq 1 && "${CATSCO_WORKER_RELEASE_DELETE_CONFIRM:-}" != "I_UNDERSTAND_DELETE_WORKER_RELEASES" ]]; then
+  echo "error: --apply requires CATSCO_WORKER_RELEASE_DELETE_CONFIRM=I_UNDERSTAND_DELETE_WORKER_RELEASES" >&2
+  exit 2
+fi
+
 [[ "$KEEP_COUNT" =~ ^[1-9][0-9]*$ ]] || { echo "error: CATSCO_WORKER_RELEASE_KEEP_COUNT must be positive" >&2; exit 2; }
 [[ -n "$BUCKET" ]] || { echo "error: CATSCO_WORKER_ARTIFACT_BUCKET is required" >&2; exit 2; }
 for cmd in tos-fetch awk sort head sed timeout grep; do command -v "$cmd" >/dev/null 2>&1 || { echo "error: missing required command: $cmd" >&2; exit 2; }; done
