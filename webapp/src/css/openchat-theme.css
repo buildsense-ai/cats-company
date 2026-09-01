@@ -1754,6 +1754,158 @@ body {
   cursor: pointer;
 }
 
+.cloud-artifacts-tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px 0;
+}
+
+.cloud-artifact-tag-chip,
+.cloud-artifact-tag-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--v3-border);
+  border-radius: 999px;
+  color: var(--v3-text-muted);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cloud-artifact-tag-chip span {
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.cloud-artifact-tag-chip:hover,
+.cloud-artifact-tag-clear:hover {
+  color: var(--v3-text-main);
+  border-color: #55585B;
+}
+
+.cloud-artifact-tag-chip.active {
+  color: var(--v3-text-main);
+  border-color: var(--accent, #4ade80);
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.cloud-artifact-tags-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--v3-border);
+}
+
+.cloud-artifact-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--v3-text-main);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--v3-border);
+  font-size: 12px;
+}
+
+.cloud-artifact-tag button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--v3-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.cloud-artifact-tag button:hover {
+  color: var(--v3-text-main);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cloud-artifact-tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.cloud-artifact-tag-editor input {
+  flex: 1 1 140px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--v3-border);
+  border-radius: 6px;
+  color: var(--v3-text-main);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
+
+.cloud-artifact-tag-editor > button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--v3-border);
+  border-radius: 6px;
+  color: var(--v3-text-muted);
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cloud-artifact-tag-editor > button:hover:not(:disabled) {
+  color: var(--v3-text-main);
+  border-color: #55585B;
+}
+
+.cloud-artifact-tag-editor > button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cloud-artifact-tag-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+
+.cloud-artifact-tag-suggestions button {
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px dashed var(--v3-border);
+  border-radius: 999px;
+  color: var(--v3-text-muted);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cloud-artifact-tag-suggestions button:hover:not(:disabled) {
+  color: var(--v3-text-main);
+  border-color: #55585B;
+}
+
+.cloud-artifact-tag-suggestions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .cloud-artifacts-load-more:hover:not(:disabled) {
   color: var(--v3-text-main);
   background: var(--v3-bg-message-hover);

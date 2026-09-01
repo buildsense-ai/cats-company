@@ -122,6 +122,9 @@ type cloudArtifact struct {
 	DeletedAt      string `json:"deleted_at,omitempty"`
 	CanDelete      bool   `json:"can_delete,omitempty"`
 	CanRestore     bool   `json:"can_restore,omitempty"`
+	// Tags carries agent-scoped management annotations stored in CatsCo's own
+	// database. They never come from the upstream artifact contract.
+	Tags []string `json:"tags,omitempty"`
 }
 
 type artifactUpstreamError struct {
@@ -379,6 +382,33 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			return
 		}
 		h.handleMutation(w, r, route.artifactID, "/restore", viewerUID, route.viewerRelation, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
+	case "tag-collection":
+		h.handleAgentArtifactTagCollection(w, r, route.agentUID)
+	case "tags":
+		switch r.Method {
+		case http.MethodGet:
+			h.handleAgentArtifactTagsRead(w, route.agentUID, route.artifactID)
+		case http.MethodPut:
+			if route.viewerRelation != "owner" {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner"})
+				return
+			}
+			h.handleAgentArtifactTagsReplace(w, r, viewerUID, route.agentUID, route.artifactID)
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	case "tag-delete":
+		if r.Method != http.MethodDelete {
+			w.Header().Set("Allow", http.MethodDelete)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if route.viewerRelation != "owner" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner"})
+			return
+		}
+		h.handleAgentArtifactTagDelete(w, route.agentUID, route.artifactID, route.tag)
 	default:
 		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 	}
@@ -472,6 +502,7 @@ func (h *CloudArtifactHandler) handleManagedList(
 			list.PublishMode = ""
 		}
 		h.enrichArtifactCreators(list.Artifacts, agentUID, false)
+		h.mergeAgentArtifactTags(agentUID, list.Artifacts)
 		for i := range list.Artifacts {
 			list.Artifacts[i].UploadedByMe = list.Artifacts[i].UploaderUID != "" &&
 				list.Artifacts[i].UploaderUID == strconv.FormatInt(viewerUID, 10)
@@ -639,6 +670,7 @@ func (h *CloudArtifactHandler) handleNodePublicIndexList(
 
 	list.Artifacts = append(list.Artifacts, index.Artifacts...)
 	h.enrichArtifactCreators(list.Artifacts, agentUID, true)
+	h.mergeAgentArtifactTags(agentUID, list.Artifacts)
 	for i := range list.Artifacts {
 		list.Artifacts[i].Status = "active"
 		list.Artifacts[i].AgentUID = agentID
@@ -1077,6 +1109,7 @@ type agentArtifactAPIRoute struct {
 	agentUID       int64
 	artifactID     string
 	action         string
+	tag            string
 	viewerRelation string
 }
 
@@ -1123,7 +1156,7 @@ func parseAgentArtifactAPIPath(value string) (agentArtifactAPIRoute, bool) {
 		return agentArtifactAPIRoute{}, false
 	}
 	parts := strings.Split(strings.Trim(relative, "/"), "/")
-	if len(parts) < 2 || len(parts) > 4 || parts[1] != "artifacts" {
+	if len(parts) < 2 || len(parts) > 5 || parts[1] != "artifacts" {
 		return agentArtifactAPIRoute{}, false
 	}
 	agentUID, err := strconv.ParseInt(parts[0], 10, 64)
@@ -1133,9 +1166,33 @@ func parseAgentArtifactAPIPath(value string) (agentArtifactAPIRoute, bool) {
 	if len(parts) == 2 {
 		return agentArtifactAPIRoute{agentUID: agentUID, action: "list"}, true
 	}
+	if len(parts) == 3 && parts[2] == "tags" {
+		// The tag collection intentionally shadows a hypothetical artifact with
+		// the ID "tags": published IDs are generated content hashes, so the
+		// collision is theoretical while the collection route is core UX.
+		return agentArtifactAPIRoute{agentUID: agentUID, action: "tag-collection"}, true
+	}
 	artifactID, err := url.PathUnescape(parts[2])
 	if err != nil || !validArtifactID(artifactID) {
 		return agentArtifactAPIRoute{}, false
+	}
+	if len(parts) == 4 && parts[3] == "tags" {
+		return agentArtifactAPIRoute{
+			agentUID: agentUID, artifactID: artifactID, action: "tags",
+		}, true
+	}
+	if len(parts) == 5 && parts[3] == "tags" {
+		tag, err := url.PathUnescape(parts[4])
+		if err != nil {
+			return agentArtifactAPIRoute{}, false
+		}
+		normalized, tagErr := normalizeAgentArtifactTags([]string{tag})
+		if tagErr != nil || len(normalized) != 1 {
+			return agentArtifactAPIRoute{}, false
+		}
+		return agentArtifactAPIRoute{
+			agentUID: agentUID, artifactID: artifactID, action: "tag-delete", tag: normalized[0],
+		}, true
 	}
 	if len(parts) == 3 {
 		return agentArtifactAPIRoute{
