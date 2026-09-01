@@ -3,7 +3,7 @@
 # /api/cloud-workers 列表实时显示状态/版本/镜像）。
 #
 # 输出：每行 TSV
-# `instanceName<TAB>instanceStatus<TAB>imageID<TAB>imageVersion<TAB>appVersion`
+# `instanceName<TAB>instanceStatus<TAB>imageID<TAB>imageVersion<TAB>appVersion<TAB>privateIP<TAB>publicIP`
 # instanceStatus 为天翼云 ListEcsInstances 的 instanceStatus
 # （creating/running/stopped/error/...，不存在 = 无此行，控制面按 missing 处理）。
 # imageVersion 由 bake 镜像列表按 imageID 关联；appVersion 来自控制面在
@@ -132,7 +132,8 @@ while :; do
         .instanceName,
         (.instanceStatus // ""),
         (.image.imageID // ""),
-        (.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")
+        (.fixedIPList[0] // .privateIP // ""),
+        (.floatingIP // .publicIP // "")
       ]
     | @tsv
   ' <<<"$resp" 2>/dev/null | tr -d '\r' || true)"
@@ -165,14 +166,14 @@ version_map="$(printf '%s' "$TRIMMED_IMAGES" | awk -F'\t' '{ print $1 "\t" $3 }'
 # --- 3. 关联版本并输出 TSV ---
 # bash 逐行处理（awk 对行尾连续空字段的行为在不同实现间不一致，
 # 无 imageID 的实例需要保留尾部的空列）。
-while IFS=$'\t' read -r name st img ip; do
+while IFS=$'\t' read -r name st img private_ip public_ip; do
   [[ -n "$name" ]] || continue
   ver=""
   if [[ -n "$img" ]]; then
     ver="$(awk -F'\t' -v id="$img" '$1 == id { print $2; exit }' <<<"$version_map")"
   fi
-  app_ver="$(read_app_version "$name" "$st" "$ip")"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$st" "$img" "$ver" "$app_ver"
+  app_ver="$(read_app_version "$name" "$st" "$private_ip")"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$st" "$img" "$ver" "$app_ver" "$private_ip" "$public_ip"
 done <<<"$instance_rows"
 
 exit 0

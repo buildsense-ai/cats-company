@@ -163,6 +163,8 @@ services:
       CTYUN_WORKER_SUBNET_ID: "${CTYUN_WORKER_SUBNET_ID:-}"
       CTYUN_WORKER_SECURITY_GROUP_ID: "${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
       CTYUN_WORKER_STATE_ROOT: "${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
+      # Host path used in SSH commands copied from the internal admin page.
+      CTYUN_WORKER_SSH_STATE_ROOT: "${CTYUN_WORKER_SSH_STATE_ROOT:-/srv/catscompany-prod/data/catsco-worker}"
       # Must be explicitly set to the dedicated worker artifact bucket; never
       # fall back to the application release bucket.
       CATSCO_WORKER_ARTIFACT_BUCKET: "${CATSCO_WORKER_ARTIFACT_BUCKET:-}"
@@ -181,6 +183,7 @@ services:
       CTYUN_JUMP_PORT: "${CTYUN_JUMP_PORT:-22}"
       CTYUN_JUMP_USER: "${CTYUN_JUMP_USER:-root}"
       CTYUN_JUMP_KEY: "${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
+      CTYUN_WORKER_SSH_JUMP_KEY: "${CTYUN_WORKER_SSH_JUMP_KEY:-/srv/catscompany-prod/data/catsco-worker/jump_host_ed25519}"
       CATSCO_ARTIFACT_GATEWAY_ENABLED: "${CATSCO_ARTIFACT_GATEWAY_ENABLED:-0}"
       CATSCO_WORKER_ARTIFACT_HOST_MODE: "${CATSCO_WORKER_ARTIFACT_HOST_MODE:-}"
       CATSCO_WORKER_ARTIFACT_DATA_DIR: "${CATSCO_WORKER_ARTIFACT_DATA_DIR:-/srv/catsco-agent/.local/share/catsco/cloud-html-artifact}"

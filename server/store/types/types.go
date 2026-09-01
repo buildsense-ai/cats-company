@@ -353,6 +353,7 @@ type CloudWorkerAdminRecord struct {
 	AZName             string
 	InstanceID         string
 	InstanceName       string
+	PrivateIP          string
 	PublicIP           string
 	ManagementMode     string
 	LifecycleMode      string
