@@ -1265,8 +1265,12 @@ html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
     height: 46px;
   }
 
+  /* Keep record and send buttons visible side by side. When the composer
+     has content, still allow voice input so the user can keep recording
+     (e.g. appending another segment) without the mic disappearing. Only
+     the empty-composer send button and the agent-working stop state stay
+     exclusive. */
   .v3-composer-row.is-empty:not(.has-stop) .v3-send,
-  .v3-composer-row.has-content .v3-voice-button,
   .v3-composer-row.has-stop .v3-voice-button {
     display: none;
   }
