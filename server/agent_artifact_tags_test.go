@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -61,6 +62,14 @@ func (s *artifactTagTestStore) ListAgentArtifactTagCounts(agentUID int64) ([]sto
 	for tag, count := range totals {
 		counts = append(counts, store.AgentArtifactTagCount{Tag: tag, Count: count})
 	}
+	// Mirror the production adapter's ordering (count DESC, tag ASC) so the
+	// fixture does not inherit Go map iteration randomness.
+	sort.Slice(counts, func(i, j int) bool {
+		if counts[i].Count != counts[j].Count {
+			return counts[i].Count > counts[j].Count
+		}
+		return counts[i].Tag < counts[j].Tag
+	})
 	return counts, nil
 }
 
@@ -85,6 +94,11 @@ func (s *artifactTagTestStore) DeleteAgentArtifactTag(agentUID int64, artifactID
 		}
 	}
 	return false, nil
+}
+
+func (s *artifactTagTestStore) PurgeAgentArtifactTags(agentUID int64, artifactID string) error {
+	delete(s.tags[agentUID], artifactID)
+	return nil
 }
 
 func overTagLimitFixture() []string {
@@ -174,6 +188,56 @@ func tagTestHandler(t *testing.T, tagStore *artifactTagTestStore) *CloudArtifact
 	return handler
 }
 
+// tagActiveArtifactsJSON builds a management-list response the same way
+// managedAgentListJSONWithUploader does, but with caller-chosen artifact IDs,
+// so tag-write tests can serve exactly the artifacts that should resolve.
+func tagActiveArtifactsJSON(ids ...string) string {
+	artifacts := make([]cloudArtifact, 0, len(ids))
+	for _, id := range ids {
+		artifacts = append(artifacts, cloudArtifact{
+			ID:        id,
+			Title:     "Artifact " + id,
+			Kind:      "html",
+			URL:       "https://example.test/by-agent/440/" + id + "/latest/",
+			Status:    "active",
+			CreatedAt: "2026-07-22T05:00:00.000Z",
+			UpdatedAt: "2026-07-22T07:00:00.000Z",
+			AgentUID:  "440",
+		})
+	}
+	payload := cloudArtifactManagementList{
+		ContractVersion: artifactManagementContract,
+		Status:          "active",
+		Count:           len(artifacts),
+		Artifacts:       artifacts,
+	}
+	body, _ := json.Marshal(payload)
+	return string(body)
+}
+
+// newTagUpstream stubs the artifact management upstream with an active list
+// containing exactly ids, so tag-write routing can resolve its targets.
+func newTagUpstream(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(tagActiveArtifactsJSON(ids...)))
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+func tagTestHandlerWithUpstream(t *testing.T, tagStore *artifactTagTestStore, upstream *httptest.Server) *CloudArtifactHandler {
+	t.Helper()
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		"test-management-token-abcdefghijklmnopqrstuvwxyz",
+		upstream.Client(),
+	)
+	handler.SetStore(tagStore)
+	return handler
+}
+
 func ownerArtifactRequest(method, target string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
 	return req.WithContext(context.WithValue(req.Context(), uidKey, int64(8)))
@@ -222,7 +286,8 @@ func TestAgentArtifactTagCollectionRequiresGet(t *testing.T) {
 
 func TestAgentArtifactTagsReplaceAllowsFriendWrite(t *testing.T) {
 	tagStore := newArtifactTagTestStore()
-	handler := tagTestHandler(t, tagStore)
+	upstream := newTagUpstream(t, "alpha")
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
 
 	req := authenticatedArtifactRequestPath(http.MethodPut, "/api/agents/440/artifacts/alpha/tags")
 	req.Body = io.NopCloser(strings.NewReader(`{"tags":["游戏"]}`))
@@ -234,12 +299,46 @@ func TestAgentArtifactTagsReplaceAllowsFriendWrite(t *testing.T) {
 	if len(tagStore.tags[440]["alpha"]) != 1 || tagStore.tags[440]["alpha"][0] != "游戏" {
 		t.Fatalf("friend write tags = %#v", tagStore.tags[440])
 	}
+	if tagStore.storedBy[440] != 7 {
+		t.Fatalf("created_by = %d, want friend uid 7", tagStore.storedBy[440])
+	}
+}
+
+func TestAgentArtifactTagsReplaceRejectsUnknownArtifact(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	upstream := newTagUpstream(t, "alpha")
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/does-not-exist/tags")
+	req.Body = io.NopCloser(strings.NewReader(`{"tags":["游戏"]}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "artifact_not_found") {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(tagStore.tags[440]) != 0 || tagStore.storedBy[440] != 0 {
+		t.Fatalf("unknown artifact write changed store: tags=%#v storedBy=%d", tagStore.tags[440], tagStore.storedBy[440])
+	}
+}
+
+func TestAgentArtifactTagDeleteRejectsUnknownArtifact(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	upstream := newTagUpstream(t, "alpha")
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
+
+	req := ownerArtifactRequest(http.MethodDelete, "/api/agents/440/artifacts/does-not-exist/tags/%E6%B8%B8%E6%88%8F")
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "artifact_not_found") {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestAgentArtifactTagDeleteAllowsFriendWrite(t *testing.T) {
 	tagStore := newArtifactTagTestStore()
 	tagStore.set(440, "alpha", []string{"游戏", "演示"})
-	handler := tagTestHandler(t, tagStore)
+	upstream := newTagUpstream(t, "alpha")
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
 
 	req := authenticatedArtifactRequestPath(http.MethodDelete, "/api/agents/440/artifacts/alpha/tags/%E6%B8%B8%E6%88%8F")
 	rec := httptest.NewRecorder()
@@ -255,7 +354,8 @@ func TestAgentArtifactTagDeleteAllowsFriendWrite(t *testing.T) {
 
 func TestAgentArtifactTagsReplaceStoresNormalizedSet(t *testing.T) {
 	tagStore := newArtifactTagTestStore()
-	handler := tagTestHandler(t, tagStore)
+	upstream := newTagUpstream(t, "alpha")
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
 
 	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/alpha/tags")
 	req.Body = io.NopCloser(strings.NewReader(`{"tags":[" 游戏 ","演示","游戏"]}`))
@@ -278,7 +378,8 @@ func TestAgentArtifactTagsReplaceStoresNormalizedSet(t *testing.T) {
 
 func TestAgentArtifactTagsReplaceRejectsInvalidPayload(t *testing.T) {
 	tagStore := newArtifactTagTestStore()
-	handler := tagTestHandler(t, tagStore)
+	upstream := newTagUpstream(t, "alpha")
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
 
 	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/alpha/tags")
 	req.Body = io.NopCloser(strings.NewReader(`{"tags":["a/b"]}`))
@@ -292,7 +393,8 @@ func TestAgentArtifactTagsReplaceRejectsInvalidPayload(t *testing.T) {
 func TestAgentArtifactTagDeleteRemovesOneTag(t *testing.T) {
 	tagStore := newArtifactTagTestStore()
 	tagStore.set(440, "alpha", []string{"游戏", "演示"})
-	handler := tagTestHandler(t, tagStore)
+	upstream := newTagUpstream(t, "alpha")
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
 
 	req := ownerArtifactRequest(http.MethodDelete, "/api/agents/440/artifacts/alpha/tags/%E6%B8%B8%E6%88%8F")
 	rec := httptest.NewRecorder()
@@ -312,6 +414,38 @@ func TestAgentArtifactTagDeleteRejectsInvalidTagPath(t *testing.T) {
 	handler.HandleAgentArtifacts(rec, authenticatedArtifactRequestPath(http.MethodDelete, "/api/agents/440/artifacts/alpha/tags/a%2Fb"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentArtifactDeletePurgesArtifactTags(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Query().Get("status") == "active":
+			_, _ = w.Write([]byte(tagActiveArtifactsJSON("alpha")))
+		case r.Method == http.MethodDelete && r.URL.Path == "/internal/agents/440/artifacts/alpha":
+			_, _ = w.Write([]byte(managedAgentOperationJSON("440", "alpha", "deleted")))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏", "演示"})
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodDelete, "/api/agents/440/artifacts/alpha"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(tagStore.tags[440]["alpha"]) != 0 {
+		t.Fatalf("tags survived artifact delete: %#v", tagStore.tags[440]["alpha"])
+	}
+
+	// Purging an artifact without tags is an idempotent no-op.
+	if err := tagStore.PurgeAgentArtifactTags(440, "beta"); err != nil {
+		t.Fatalf("purge without tags: %v", err)
 	}
 }
 

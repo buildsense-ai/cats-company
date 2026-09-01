@@ -129,3 +129,15 @@ func (a *Adapter) DeleteAgentArtifactTag(agentUID int64, artifactID, tag string)
 	}
 	return affected > 0, nil
 }
+
+// PurgeAgentArtifactTags removes every tag row for one artifact. It is
+// idempotent: purging an artifact without tags is a no-op.
+func (a *Adapter) PurgeAgentArtifactTags(agentUID int64, artifactID string) error {
+	if _, err := a.db.Exec(`
+		DELETE FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND artifact_id = $2`,
+		agentUID, artifactID); err != nil {
+		return fmt.Errorf("purge agent artifact tags: %w", err)
+	}
+	return nil
+}

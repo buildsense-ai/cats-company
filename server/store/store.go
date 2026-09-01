@@ -328,6 +328,9 @@ type AgentArtifactTagStore interface {
 	// DeleteAgentArtifactTag removes one tag from one artifact and reports
 	// whether a row was removed.
 	DeleteAgentArtifactTag(agentUID int64, artifactID, tag string) (bool, error)
+	// PurgeAgentArtifactTags removes every tag row for one artifact, used
+	// when the artifact is deleted so counts match the active panel.
+	PurgeAgentArtifactTags(agentUID int64, artifactID string) error
 }
 
 // BotSkillMutationPolicyStore persists the opt-in policy for the dedicated

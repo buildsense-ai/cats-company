@@ -366,7 +366,13 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 				return
 			}
 		}
-		h.handleMutation(w, r, route.artifactID, "", viewerUID, route.viewerRelation, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
+		if ok := h.handleMutation(w, r, route.artifactID, "", viewerUID, route.viewerRelation, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID); ok {
+			// Best-effort purge: a deleted artifact must stop feeding the
+			// agent tag counts; a failed purge self-heals on the next write.
+			if tags, okStore := agentArtifactTagStore(h); okStore {
+				_ = tags.PurgeAgentArtifactTags(route.agentUID, route.artifactID)
+			}
+		}
 	case "restore":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -393,6 +399,9 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
 				return
 			}
+			if !h.agentArtifactTagTargetFound(w, r, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, route.artifactID) {
+				return
+			}
 			h.handleAgentArtifactTagsReplace(w, r, viewerUID, route.agentUID, route.artifactID)
 		default:
 			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
@@ -406,6 +415,9 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		}
 		if route.viewerRelation != "owner" && route.viewerRelation != "friend" {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
+			return
+		}
+		if !h.agentArtifactTagTargetFound(w, r, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, route.artifactID) {
 			return
 		}
 		h.handleAgentArtifactTagDelete(w, route.agentUID, route.artifactID, route.tag)
@@ -759,30 +771,30 @@ func (h *CloudArtifactHandler) handleMutation(
 	collectionURL string,
 	managementToken, publicBaseURL string,
 	agentUID int64,
-) {
+) bool {
 	payload, _ := json.Marshal(map[string]string{"actor_uid": strconv.FormatInt(uid, 10)})
 	target := collectionURL + "/" + url.PathEscape(artifactID) + suffix
 	body, err := h.requestManagement(r, r.Method, target, payload, managementToken)
 	if err != nil {
 		writeArtifactUpstreamError(w, err)
-		return
+		return false
 	}
 	var operation cloudArtifactOperation
 	if err := json.Unmarshal(body, &operation); err != nil || !operation.OK || validateManagedArtifact(operation.Artifact) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
+		return false
 	}
 	if operation.Artifact.ID != artifactID {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
+		return false
 	}
 	if agentUID > 0 && operation.Artifact.AgentUID != strconv.FormatInt(agentUID, 10) {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
+		return false
 	}
 	if validateArtifactNodeURL(operation.Artifact.URL, publicBaseURL, agentUID) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
+		return false
 	}
 	h.invalidateArtifactContextCache(agentUID, artifactID)
 	artifacts := []cloudArtifact{operation.Artifact}
@@ -790,6 +802,7 @@ func (h *CloudArtifactHandler) handleMutation(
 	operation.Artifact = artifacts[0]
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, operation)
+	return true
 }
 
 func (h *CloudArtifactHandler) handlePublish(

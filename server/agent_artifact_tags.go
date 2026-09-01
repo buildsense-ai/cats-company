@@ -87,6 +87,12 @@ func (h *CloudArtifactHandler) mergeAgentArtifactTags(agentUID int64, artifacts 
 	if len(artifacts) == 0 {
 		return
 	}
+	// Tags are CatsCo-local annotations: never surface a value this process
+	// did not read from the tag store, even on degradation or if upstream
+	// ever adds a same-named field.
+	for i := range artifacts {
+		artifacts[i].Tags = nil
+	}
 	tags, ok := agentArtifactTagStore(h)
 	if !ok {
 		return
@@ -140,6 +146,42 @@ func (h *CloudArtifactHandler) handleAgentArtifactTagsRead(w http.ResponseWriter
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, cloudArtifactTagsResponse{Tags: byArtifact[artifactID]})
+}
+
+// agentArtifactTagTargetFound confirms the tag target resolves to an active
+// artifact in this agent's managed collection before any local tag row is
+// written. Tag writes must never outlive the resolver: rows for unknown,
+// recycled, or foreign artifact IDs would pollute ListAgentArtifactTagCounts
+// and the editor suggestions. The check mirrors the managed active list the
+// panel renders (same endpoint, validation, and node-URL acceptance), so a
+// tag can only be written to an artifact the panel would actually display.
+func (h *CloudArtifactHandler) agentArtifactTagTargetFound(w http.ResponseWriter, r *http.Request, collectionURL, managementToken, publicBaseURL string, agentUID int64, artifactID string) bool {
+	if collectionURL == "" {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return false
+	}
+	target := collectionURL + "?status=active"
+	body, err := h.requestManagement(r, http.MethodGet, target, nil, managementToken)
+	if err != nil {
+		writeArtifactUpstreamError(w, err)
+		return false
+	}
+	var list cloudArtifactManagementList
+	if err := json.Unmarshal(body, &list); err != nil || validateManagedArtifactList(list, "active") != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return false
+	}
+	if validateManagedArtifactNodeURLs(list.Artifacts, publicBaseURL, agentUID) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return false
+	}
+	for _, artifact := range list.Artifacts {
+		if artifact.ID == artifactID {
+			return true
+		}
+	}
+	writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
+	return false
 }
 
 func (h *CloudArtifactHandler) handleAgentArtifactTagsReplace(w http.ResponseWriter, r *http.Request, viewerUID int64, agentUID int64, artifactID string) {
