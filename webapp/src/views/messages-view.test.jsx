@@ -222,6 +222,7 @@ vi.mock('../api', () => ({
     createMobileUploadSession: vi.fn(),
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
+    getCloudWorkers: vi.fn(),
     getCloudArtifacts: vi.fn(),
     getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
@@ -244,6 +245,7 @@ import MessagesView, {
   collectStructuredMentionTargets,
   mergeOwnServerEcho,
   ImageGalleryPreview,
+  mergeCloudWorkerSnapshots,
   reconcileRenderedGroupConsecutiveness,
   reconcileStructuredMentionSelections,
   shouldConvertPastedTextToDocument,
@@ -281,6 +283,33 @@ const user = {
 };
 const ARTIFACT_REGISTRY_POLL_MS_FOR_TEST = 5000;
 const artifactPreviewChannels = [];
+
+describe('cloud-worker update snapshots', () => {
+  it('preserves a known update while a refresh omits release metadata', () => {
+    const previous = [{ uid: 42, latest_release: 'v1.5.3', update_available: true }];
+    const next = [{ uid: 42, app_version: 'v1.5.2' }];
+    expect(mergeCloudWorkerSnapshots(previous, next)).toEqual([{
+      uid: 42,
+      app_version: 'v1.5.2',
+      latest_release: 'v1.5.3',
+      update_available: true,
+    }]);
+  });
+
+  it('uses a complete refresh snapshot when release metadata is present', () => {
+    const previous = [{ uid: 42, latest_release: 'v1.5.3', update_available: true }];
+    const next = [{ uid: 42, latest_release: 'v1.5.4', update_available: false }];
+    expect(mergeCloudWorkerSnapshots(previous, next)).toEqual(next);
+  });
+
+  it('does not turn malformed worker entries into an update', () => {
+    const previous = [{ uid: 42, latest_release: 'v1.5.3', update_available: true }];
+    expect(mergeCloudWorkerSnapshots(previous, null)).toEqual([]);
+    expect(mergeCloudWorkerSnapshots(previous, [{ username: 'missing-uid' }])).toEqual([
+      { username: 'missing-uid' },
+    ]);
+  });
+});
 
 class MockArtifactPreviewChannel {
   constructor(name) {
@@ -618,6 +647,7 @@ describe('MessagesView composer draft isolation', () => {
     api.failArtifactTask.mockResolvedValue({ ok: true });
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
+    api.getCloudWorkers.mockResolvedValue({ workers: [] });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
     feedbackConfirm.mockReset();
     feedbackConfirm.mockResolvedValue(true);

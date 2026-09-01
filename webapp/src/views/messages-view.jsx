@@ -97,6 +97,28 @@ const ARTIFACT_REGISTRY_POLL_MS = 5000;
 const ARTIFACT_SNAPSHOT_TIMEOUT_MS = 2200;
 const DELIVERY_ARTIFACT_TYPES = new Set(['file', 'image', 'audio', 'voice']);
 
+// A cloud-worker list can briefly be served without release metadata while
+// the provider snapshot refreshes. Preserve a known update in that case;
+// an explicit latest release still replaces it and can clear the notice.
+export function mergeCloudWorkerSnapshots(previous, next) {
+  const previousByUID = new Map(
+    (Array.isArray(previous) ? previous : [])
+      .map((worker) => [parseUid(worker?.uid), worker])
+      .filter(([uid]) => uid > 0),
+  );
+  return (Array.isArray(next) ? next : []).map((worker) => {
+    const prior = previousByUID.get(parseUid(worker?.uid));
+    if (prior?.update_available && !worker?.latest_release) {
+      return {
+        ...worker,
+        latest_release: prior.latest_release,
+        update_available: true,
+      };
+    }
+    return worker;
+  });
+}
+
 function artifactRefreshFileKey(file) {
   if (!file?.artifact_id || !file?.url) return '';
   return [
@@ -469,6 +491,7 @@ export default function MessagesView({
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [cloudWorkers, setCloudWorkers] = useState([]);
+  const [cloudWorkerUpdateVisible, setCloudWorkerUpdateVisible] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [awaitingAgentReply, setAwaitingAgentReply] = useState(false);
   const [activeQuestionKey, setActiveQuestionKey] = useState('');
@@ -676,10 +699,13 @@ export default function MessagesView({
     const loadCloudWorkers = async () => {
       if (!api.getCloudWorkers) return;
       try {
-        const response = await api.getCloudWorkers();
-        if (!cancelled) setCloudWorkers(Array.isArray(response?.workers) ? response.workers : []);
+        const response = await api.getCloudWorkers({ timeoutMs: 15_000 });
+        if (!cancelled && Array.isArray(response?.workers)) {
+          setCloudWorkers((previous) => mergeCloudWorkerSnapshots(previous, response?.workers));
+        }
       } catch {
-        if (!cancelled) setCloudWorkers([]);
+        // Keep the last successful snapshot so a transient refresh failure
+        // cannot make the active conversation's update notice disappear.
       }
     };
     loadCloudWorkers();
@@ -3052,6 +3078,19 @@ export default function MessagesView({
     if (!worker || !worker.update_available || !worker.latest_release) return null;
     return worker;
   }, [cloudWorkers, conversationBotUID]);
+  const cloudWorkerUpdateKey = cloudWorkerUpdate
+    ? `${cloudWorkerUpdate.uid}:${cloudWorkerUpdate.latest_release}`
+    : '';
+
+  useEffect(() => {
+    if (!cloudWorkerUpdateKey) {
+      setCloudWorkerUpdateVisible(false);
+      return undefined;
+    }
+    setCloudWorkerUpdateVisible(true);
+    const timer = window.setTimeout(() => setCloudWorkerUpdateVisible(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [cloudWorkerUpdateKey]);
   const isTwoPersonGroupWithCurrentUser = useMemo(() => {
     if (!isGroup) return false;
     const memberUIDs = new Set(
@@ -4260,6 +4299,19 @@ export default function MessagesView({
       >
         <div ref={chatColumnRef} className="v3-chat-column">
           {topBar}
+          {cloudWorkerUpdate && cloudWorkerUpdateVisible && (
+            <section className="cc-cloud-worker-update-notice" role="status" aria-live="polite">
+              <span>云员工「{cloudWorkerUpdate.display_name || cloudWorkerUpdate.username || '当前机器人'}」有新版本 {cloudWorkerUpdate.latest_release}，可在云托管管理中更新。</span>
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new CustomEvent('cc:open-cloud-worker-manager', {
+                  detail: { workerUid: cloudWorkerUpdate.uid, tenantName: cloudWorkerUpdate.tenant_name },
+                }))}
+              >
+                去更新
+              </button>
+            </section>
+          )}
           {messageLocationRequest?.topicId === topic && onBackToSearch && (
             <button type="button" className="cc-search-return" onClick={onBackToSearch}>
               <ArrowLeft size={16} />
@@ -4314,19 +4366,6 @@ export default function MessagesView({
               <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>
-              {cloudWorkerUpdate && (
-                <section className="cc-cloud-worker-update-notice" role="status" aria-live="polite">
-                  <span>云员工「{cloudWorkerUpdate.display_name || cloudWorkerUpdate.username || '当前机器人'}」有新版本 {cloudWorkerUpdate.latest_release}，可在云托管管理中更新。</span>
-                  <button
-                    type="button"
-                    onClick={() => window.dispatchEvent(new CustomEvent('cc:open-cloud-worker-manager', {
-                      detail: { workerUid: cloudWorkerUpdate.uid, tenantName: cloudWorkerUpdate.tenant_name },
-                    }))}
-                  >
-                    去更新
-                  </button>
-                </section>
-              )}
 
         {!historyLoaded && (
           <div className="v3-history-state" role="status" aria-live="polite">
