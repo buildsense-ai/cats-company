@@ -188,6 +188,18 @@ describe('narrow conversation top bar', () => {
       /@media\s*\(min-width:\s*769px\)[\s\S]*?@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-shell-title, \.v3-shell-title-input\)\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/,
     );
   });
+
+  it('keeps the phone model trigger and its menu inside a stable overlay layer', () => {
+    expect(topbarCss).toMatch(
+      /@media\s*\(max-width:\s*520px\)[\s\S]*?\.v3-model-select\s*\{[^}]*position:\s*absolute;[^}]*top:\s*calc\(max\(8px, env\(safe-area-inset-top\)\) \+ 32px\);[^}]*display:\s*block;[^}]*width:\s*min\(48vw, 200px\);/,
+    );
+    expect(topbarCss).toMatch(
+      /@media\s*\(max-width:\s*520px\)[\s\S]*?\.v3-model-menu\.is-mobile-portal\s*\{[^}]*position:\s*fixed;[^}]*width:\s*calc\(100vw - 20px\);[^}]*max-height:\s*calc\(100dvh - max\(8px, env\(safe-area-inset-top\)\) - 100px - env\(safe-area-inset-bottom\)\);[^}]*overflow-y:\s*auto;/,
+    );
+    expect(topbarCss).toMatch(
+      /@media\s*\(max-width:\s*520px\)[\s\S]*?\.v3-model-reasoning-back\s*\{[^}]*min-height:\s*44px;[^}]*touch-action:\s*manipulation;/,
+    );
+  });
 });
 
 describe('resolveDisplayedActiveAgent', () => {
@@ -463,7 +475,47 @@ describe('LocalAssistantBar model selector', () => {
     expect(info?.textContent).toContain('MiniMax-M2.7');
     expect(info?.textContent).toContain('剩余 95%');
     expect(info?.getAttribute('aria-label')).toContain('剩余 95%');
-    expect(info?.previousElementSibling?.classList.contains('v3-shell-title')).toBe(true);
+    expect(info?.closest('.v3-model-select')).toBeTruthy();
+  });
+
+  it('uses the mobile model row to open the existing switcher for manageable agents', async () => {
+    const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    await renderBar({
+      activeAgent: { uid: 43, isOwner: true, relation: 'owner' },
+      mobileModelInfo: { model: 'MiniMax-M2.7', quota: '剩余 95%' },
+    });
+
+    const trigger = container.querySelector('.v3-mobile-model-trigger');
+    expect(trigger?.tagName).toBe('BUTTON');
+    expect(trigger?.getAttribute('aria-label')).toContain('切换模型');
+    expect(trigger?.querySelector('.v3-mobile-model-visual')).toBeTruthy();
+
+    await act(async () => {
+      trigger.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: true });
+    expect(document.body.querySelector('[role="menu"][aria-label="选择运行模型"]')).toBeTruthy();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="menu"][aria-label="选择运行模型"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps the mobile model row passive when the conversation cannot manage models', async () => {
+    const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    await renderBar({
+      activeAgent: { uid: 43, isOwner: false, relation: 'friend' },
+      mobileModelInfo: { model: 'MiniMax-M2.7', quota: '剩余 95%' },
+    });
+
+    expect(container.querySelector('.v3-mobile-model-trigger')).toBeNull();
+    expect(container.querySelector('.v3-mobile-model-info')?.tagName).toBe('DIV');
+    expect(getConfig).not.toHaveBeenCalled();
   });
 
   it('keeps catalog context details out of the compact header', async () => {

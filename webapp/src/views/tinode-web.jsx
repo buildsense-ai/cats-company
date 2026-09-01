@@ -1634,19 +1634,10 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           currentModelName={currentModelName}
           agentModelState={agentModelState}
           activeAgent={activeAgent}
+          mobileModelInfo={mobileModelInfo}
         />
       </div>
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
-      {mobileModelInfo && (
-        <div
-          className="v3-mobile-model-info"
-          title={mobileModelInfo.title || undefined}
-          aria-label={`${mobileModelInfo.model || '模型'}${mobileModelInfo.quota ? `，${mobileModelInfo.quota}` : ''}`}
-        >
-          <span className="v3-mobile-model-name">{mobileModelInfo.model || '模型未知'}</span>
-          {mobileModelInfo.quota && <span className={`v3-mobile-model-quota${mobileModelInfo.tone ? ` ${mobileModelInfo.tone}` : ''}`}>{mobileModelInfo.quota}</span>}
-        </div>
-      )}
       <div className="v3-shell-actions">
         {relayAdminAllowed && (
           <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenRelayAdmin} aria-label="模型用量" title="模型用量管理">
@@ -1852,7 +1843,7 @@ function ProfileFooter({ user, wsStatus, popoverOpen, directSettings = false, on
       aria-label={`${displayName}，${directSettings ? '打开设置' : '打开个人菜单'}`}
       aria-expanded={popoverOpen}
     >
-      <Avatar name={displayName} src={user.avatar_url} size={32} className="v3-profile-avatar" />
+      <Avatar name={displayName} src={user.avatar_url} size={32} identityFallback className="v3-profile-avatar" />
       <div className="v3-profile-info">
         <div className="v3-profile-name">{displayName}</div>
         <div className="v3-profile-roles">

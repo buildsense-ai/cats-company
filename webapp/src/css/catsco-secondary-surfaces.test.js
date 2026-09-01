@@ -89,12 +89,16 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('.v3-composer-row.has-content .v3-voice-button');
     expect(css).toMatch(/\.v3-composer-model-info\s*\{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*display:\s*flex;/s);
+    expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*min-height:\s*44px;/s);
+    expect(css).toMatch(/\.v3-mobile-model-trigger\s*\{[^}]*touch-action:\s*manipulation;/s);
+    expect(css).toMatch(/\.v3-mobile-model-visual\s*\{[^}]*width:\s*fit-content;[^}]*min-height:\s*32px;[^}]*transform:\s*translateY\(-8px\);/s);
+    expect(css).toMatch(/\.v3-mobile-model-trigger\[aria-expanded='true'\] \.v3-mobile-model-visual\s*\{[^}]*background:\s*var\(--cc-hover\);/s);
     expect(css).toMatch(/\.v3-message-footer \.v3-action-btn\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;[^}]*touch-action:\s*manipulation;/s);
     expect(css).toMatch(/\.v3-message-footer \.v3-message-action-menu button\s*\{[^}]*min-height:\s*44px;[^}]*height:\s*44px;/s);
-    expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 36px);');
+    expect(css).toContain('min-height: 96px;');
     expect(css).toMatch(/\.v3-shell-title,\s*\.v3-shell-title-input\s*\{/);
     expect(css).toContain('top: max(12px, env(safe-area-inset-top));');
-    expect(css).toContain('width: min(48vw, 220px);');
+    expect(css).toContain('max-width: min(40vw, 170px);');
     expect(css).toContain('width: fit-content;');
     expect(css).toContain('height: 24px;');
     expect(css).toContain('.v3-shell-title-button::before {');
@@ -106,7 +110,7 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('background: rgba(0, 0, 0, 0.3);');
     expect(css).not.toContain('scale(0.975)');
     expect(css).toContain('min-width: 0;');
-    expect(css).toContain('max-width: min(48vw, 220px);');
+    expect(css).toContain('max-width: min(40vw, 170px);');
     expect(css).toContain('field-sizing: content;');
     expect(css).toContain('font-size: 16px;');
     expect(css).toContain('font-size: 12px;');

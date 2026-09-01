@@ -161,7 +161,10 @@ export function AuthView({
   if (mode === 'reset') {
     return authShell(
       <div className="oc-auth-card">
-        <div className="oc-auth-logo">CatsCo</div>
+        <div className="oc-auth-logo" translate="no">
+          <span className="catsco-brand-mark" aria-hidden="true" />
+          <span className="oc-auth-wordmark">CatsCo</span>
+        </div>
         <div className="oc-settings-secondary" style={{ marginBottom: 14 }}>
           输入注册邮箱，验证后设置新密码。
         </div>
@@ -178,7 +181,10 @@ export function AuthView({
 
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
-      <div className="oc-auth-logo">CatsCo</div>
+      <div className="oc-auth-logo" translate="no">
+        <span className="catsco-brand-mark" aria-hidden="true" />
+        <span className="oc-auth-wordmark">CatsCo</span>
+      </div>
       {error && <InlineFeedback tone="error" className="oc-auth-feedback">{error}</InlineFeedback>}
 
       {mode === 'login' ? (

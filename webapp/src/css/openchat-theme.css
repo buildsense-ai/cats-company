@@ -394,6 +394,13 @@ body {
   object-fit: cover;
 }
 
+.oc-avatar-identity-cat {
+  width: 170%;
+  height: 170%;
+  max-width: none;
+  flex: none;
+}
+
 .oc-avatar-text,
 .oc-avatar-icon {
   font-size: 18px;

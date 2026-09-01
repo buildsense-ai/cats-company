@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { resolveMediaURL } from '../api';
+import { IdentityCat } from '../components/identity-onboarding';
 
 const palette = ['#f59e0b', '#ef4444', '#14b8a6', '#07C160', '#06b6d4', '#3b82f6', '#8b5cf6', '#a16207'];
 
@@ -16,7 +17,7 @@ function resolveSrc(src) {
   return resolveMediaURL(src);
 }
 
-export default function Avatar({ name, src, size = 40, isGroup = false, isBot = false, className = '' }) {
+export default function Avatar({ name, src, size = 40, isGroup = false, isBot = false, identityFallback = false, className = '' }) {
   const label = String(name || '?').trim();
   const initials = (label[0] || '?').toUpperCase();
   const background = palette[hashName(label) % palette.length];
@@ -51,6 +52,8 @@ export default function Avatar({ name, src, size = 40, isGroup = false, isBot = 
         <span className="oc-avatar-icon" aria-label="group">群</span>
       ) : isBot ? (
         <span className="oc-avatar-icon" aria-label="bot">B</span>
+      ) : identityFallback ? (
+        <IdentityCat name={label} className="oc-avatar-identity-cat" />
       ) : (
         <span className="oc-avatar-text">{initials}</span>
       )}

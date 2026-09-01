@@ -842,7 +842,11 @@ describe('CatsCo shell styling', () => {
     expect(flowRule).toContain('pointer-events: none;');
     expect(cardRule).toContain('z-index: 1;');
     expect(logoRule).toContain('color: var(--cc-accent);');
-    expect(logoRule).toContain('font-weight: 700;');
+    const authWordmarkRule = ruleFor('.oc-auth-wordmark');
+    expect(authWordmarkRule).toContain('width: 112px;');
+    expect(authWordmarkRule).toContain('height: 23px;');
+    expect(authWordmarkRule).toContain('background-color: currentColor;');
+    expect(authWordmarkRule).toContain("mask: url('/catsco-wordmark.png') center / contain no-repeat;");
   });
 
   it('centers the sidebar settings icon inside its hover surface', () => {

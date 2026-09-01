@@ -12,7 +12,7 @@
 .cc-identity-onboarding__brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 5px;
   width: fit-content;
   color: var(--cc-accent);
   font-size: 18px;
@@ -20,16 +20,46 @@
 }
 
 .cc-identity-onboarding__brand .catsco-brand-mark {
-  width: 36px;
-  height: 20px;
+  width: 48px;
+  height: 25px;
+}
+
+.cc-identity-onboarding__brand .catsco-brand-name {
+  display: block;
+  width: 90px;
+  height: 17px;
+  overflow: hidden;
+  color: inherit;
+  font-size: 0;
+  background-color: currentColor;
+  -webkit-mask: url('/catsco-wordmark.png') center / contain no-repeat;
+  mask: url('/catsco-wordmark.png') center / contain no-repeat;
+}
+
+@media (forced-colors: active) {
+  .cc-identity-onboarding__brand .catsco-brand-name {
+    width: auto;
+    height: auto;
+    background: none;
+    -webkit-mask: none;
+    mask: none;
+    color: CanvasText;
+    font-size: 18px;
+  }
 }
 
 .cc-identity-onboarding__content {
   display: grid;
   justify-items: center;
-  width: min(100%, 540px);
-  margin: clamp(26px, 7vh, 72px) auto 0;
+  width: min(100%, 460px);
+  margin: clamp(14px, 3vh, 30px) auto 0;
   text-align: center;
+}
+
+.cc-identity-onboarding__intro {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
 }
 
 .cc-identity-onboarding h1 {
@@ -42,12 +72,20 @@
   text-wrap: balance;
 }
 
+.cc-identity-onboarding__intro p {
+  max-width: 390px;
+  margin: 0;
+  color: var(--cc-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 .cc-identity-onboarding__stage {
   display: grid;
-  width: min(76vw, 330px);
+  width: min(72vw, 320px);
   aspect-ratio: 14 / 15;
   place-items: center;
-  margin-top: clamp(14px, 3vh, 28px);
+  margin-top: clamp(6px, 1.5vh, 14px);
 }
 
 .cc-identity-cat {
@@ -73,7 +111,7 @@
 .cc-identity-cat__eye-white,
 .cc-identity-cat__nose {
   stroke: var(--identity-ink);
-  stroke-width: 3;
+  stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -99,46 +137,103 @@
 .cc-identity-cat__tail {
   fill: none;
   stroke: var(--identity-ink);
-  stroke-width: 3;
+  stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .cc-identity-cat__tail {
-  stroke-width: 5;
+  stroke-width: 3.6;
+}
+
+.cc-identity-cat__tail-motion {
+  animation: cc-identity-tail-sway var(--identity-tail-duration, 3.2s) ease-in-out infinite;
+  transform-box: view-box;
+}
+
+.cc-identity-cat__eye-group {
+  animation: cc-identity-blink var(--identity-blink-duration, 5.4s) ease-in-out var(--identity-blink-delay, 2s) infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.cc-identity-cat__brand-glasses {
+  fill: color-mix(in srgb, var(--identity-ink) 88%, transparent);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cc-identity-cat__brand-glasses-glint {
+  fill: #fff;
+  stroke: none;
+  opacity: 0.58;
+}
+
+.cc-identity-cat__brand-glasses-arm,
+.cc-identity-cat__brand-glasses-bridge {
+  fill: none;
+  stroke: var(--identity-ink);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.cc-identity-cat__brand-badge {
+  fill: none;
+  stroke: var(--identity-ink);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .cc-identity-onboarding__form {
   display: grid;
   width: min(100%, 420px);
   min-width: 0;
-  margin-top: 4px;
+  margin-top: -4px;
   text-align: left;
 }
 
 .cc-identity-onboarding__form label {
-  margin-bottom: 8px;
   color: var(--cc-text-secondary);
   font-size: 13px;
   font-weight: 600;
 }
 
+.cc-identity-onboarding__field {
+  display: grid;
+  gap: 8px;
+}
+
+.cc-identity-onboarding__field-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-inline: 2px;
+}
+
+.cc-identity-onboarding__counter {
+  color: var(--cc-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .cc-identity-onboarding__form input {
   width: 100%;
-  height: 56px;
-  padding: 0 4px;
-  border: 0;
-  border-bottom: 2px solid var(--cc-border-strong);
-  border-radius: 0;
+  box-sizing: border-box;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
   outline: 0;
-  background: transparent;
+  background: var(--cc-input-surface, var(--cc-panel));
   color: var(--cc-text);
   font: inherit;
-  font-size: 21px;
-  font-weight: 550;
+  font-size: 16px;
+  font-weight: var(--cc-font-weight-medium);
   letter-spacing: 0;
-  text-align: center;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  text-align: left;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
 .cc-identity-onboarding__form input::placeholder {
@@ -152,8 +247,8 @@
 }
 
 .cc-identity-onboarding__feedback {
-  min-height: 38px;
-  padding-top: 8px;
+  min-height: 10px;
+  padding-top: 6px;
   text-align: center;
 }
 
@@ -161,17 +256,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
   justify-self: center;
+  width: 100%;
   min-width: 148px;
-  min-height: 46px;
+  min-height: 48px;
   padding: 0 22px;
   border: 1px solid transparent;
   border-radius: var(--cc-radius-md);
   background: var(--cc-accent);
   color: #fff;
   font: inherit;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: var(--cc-font-weight-semibold);
   cursor: pointer;
   touch-action: manipulation;
@@ -224,7 +319,7 @@ html[data-theme="liquid"] .cc-identity-onboarding__form button {
   }
 
   .cc-identity-onboarding__stage {
-    width: min(74vw, 290px);
+    width: min(68vw, 250px);
   }
 }
 
@@ -240,12 +335,38 @@ html[data-theme="liquid"] .cc-identity-onboarding__form button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cc-identity-cat__morph {
+  .cc-identity-cat__morph,
+  .cc-identity-cat__tail-motion,
+  .cc-identity-cat__eye-group {
     animation: none;
   }
 
   .cc-identity-onboarding__form input,
   .cc-identity-onboarding__form button {
     transition: none;
+  }
+}
+
+@keyframes cc-identity-tail-sway {
+  0%,
+  100% {
+    transform: rotate(-5deg);
+  }
+
+  50% {
+    transform: rotate(7deg);
+  }
+}
+
+@keyframes cc-identity-blink {
+  0%,
+  90%,
+  94%,
+  100% {
+    transform: scaleY(1);
+  }
+
+  92% {
+    transform: scaleY(0.08);
   }
 }

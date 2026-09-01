@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { appLoginUrl, GITHUB_URL } from '../site-links'
-import { BrandMark, Icon } from './Icons'
+import { Icon } from './Icons'
 
 export function Header() {
   const pathname = window.location.pathname.replace(/\/+$/, '')
@@ -39,9 +39,9 @@ export function Header() {
   return (
     <header className="site-header">
       <div className="mx-auto flex h-[72px] max-w-[1200px] items-center justify-between px-5 sm:px-8">
-        <a href={homeHref('#top')} className="group flex items-center gap-1.5 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-cats-500 focus-visible:ring-offset-4" aria-label="CatsCo 首页">
-          <BrandMark className="!h-7 !w-11 transition-transform duration-200 group-hover:-rotate-3" />
-          <span className="text-[19px] font-bold tracking-normal text-ink">CatsCo</span>
+        <a href={homeHref('#top')} className="site-header-brand rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-cats-500 focus-visible:ring-offset-4" aria-label="CatsCo 首页">
+          <img className="site-header-brand-mark" src="/catsco-brand-mark.webp" alt="" width="256" height="96" />
+          <img className="site-header-wordmark" src="/catsco-wordmark.png" alt="" width="512" height="93" />
         </a>
 
         <nav className="site-primary-nav hidden items-center gap-9 text-sm font-medium text-[#52605B] md:flex" aria-label="主导航">
