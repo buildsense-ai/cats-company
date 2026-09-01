@@ -110,7 +110,9 @@ describe('entry bundle split', () => {
     expect(authCss).not.toContain('.cc-toast');
     expect(authCss).not.toContain('.oc-modal.cc-confirm-dialog');
     expect(authCss).not.toContain('.oc-auth .oc-auth-btn');
-    expect(authCss.length).toBeLessThan(18_000);
+    // The identity wordmark and forced-colors fallback add ~0.6 KB to the
+    // critical entry CSS; keep the expanded 19 KB budget explicit and reviewed.
+    expect(authCss.length).toBeLessThan(19_000);
   });
 
   it('generates the auth shell stylesheet from the workspace visual sources', () => {

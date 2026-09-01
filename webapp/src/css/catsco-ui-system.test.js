@@ -842,7 +842,11 @@ describe('CatsCo shell styling', () => {
     expect(flowRule).toContain('pointer-events: none;');
     expect(cardRule).toContain('z-index: 1;');
     expect(logoRule).toContain('color: var(--cc-accent);');
-    expect(logoRule).toContain('font-weight: 700;');
+    const authWordmarkRule = ruleFor('.oc-auth-wordmark');
+    expect(authWordmarkRule).toContain('width: 112px;');
+    expect(authWordmarkRule).toContain('height: 23px;');
+    expect(authWordmarkRule).toContain('background-color: currentColor;');
+    expect(authWordmarkRule).toContain("mask: url('/catsco-wordmark.png') center / contain no-repeat;");
   });
 
   it('centers the sidebar settings icon inside its hover surface', () => {
@@ -1687,6 +1691,15 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-message.is-peer .v3-avatar-col')).toContain('margin-right: 10px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-bubble')).toContain('padding: 8px 0 14px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-footer')).toContain('padding: 0;');
+    const messageFooterRule = ruleFor('.v3-message-footer');
+    const messageActionsRule = ruleFor('.v3-message-footer .v3-message-actions');
+    const messageTimeRule = ruleFor('.v3-message-footer .v3-msg-time');
+    expect(messageFooterRule).toContain('justify-content: flex-start;');
+    expect(messageActionsRule).toContain('order: 2;');
+    expect(messageActionsRule).toContain('margin-left: 8px;');
+    expect(messageActionsRule).toContain('margin-right: 0;');
+    expect(messageTimeRule).toContain('order: 1;');
+    expect(messageTimeRule).toContain('margin-right: 0;');
     expect(messageOverflowMenuRule).toContain('top: calc(100% + 6px);');
     expect(messageOverflowMenuRule).toContain('right: 0;');
     expect(messageOverflowMenuRule).toContain('bottom: auto;');
@@ -1734,6 +1747,20 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-composer-attachment-preview')).toContain('cursor: zoom-in;');
     expect(ruleFor('.v3-composer-image-preview-backdrop')).toContain('position: fixed;');
     expect(css).not.toContain('.v3-composer-attachments {');
+  });
+
+  it('keeps the thinking-process toggle aligned beside its label', () => {
+    const toggleRule = ruleFor('.oc-profile-thinking-toggle');
+    const labelRule = ruleFor('.oc-profile-thinking-label');
+    const switchRule = ruleFor('.oc-profile-thinking-toggle .oc-settings-switch');
+
+    expect(toggleRule).toContain('display: flex;');
+    expect(toggleRule).toContain('align-items: center;');
+    expect(toggleRule).toContain('gap: 12px;');
+    expect(labelRule).toContain('min-width: 0;');
+    expect(labelRule).toContain('flex: 1 1 auto;');
+    expect(switchRule).toContain('flex: 0 0 auto;');
+    expect(switchRule).toContain('margin-left: auto;');
   });
 
   it('keeps hidden self-message actions reachable by keyboard focus', () => {

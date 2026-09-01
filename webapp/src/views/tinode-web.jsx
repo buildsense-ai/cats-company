@@ -1947,7 +1947,7 @@ function ProfileFooter({ user, wsStatus, popoverOpen, directSettings = false, on
       aria-label={`${displayName}，${directSettings ? '打开设置' : '打开个人菜单'}`}
       aria-expanded={popoverOpen}
     >
-      <Avatar name={displayName} src={user.avatar_url} size={32} className="v3-profile-avatar" />
+      <Avatar name={displayName} src={user.avatar_url} size={32} identityFallback className="v3-profile-avatar" />
       <div className="v3-profile-info">
         <div className="v3-profile-name">{displayName}</div>
         <div className="v3-profile-roles">

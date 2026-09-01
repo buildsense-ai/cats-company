@@ -333,18 +333,43 @@ select:disabled {
 }
 
 .oc-auth-logo {
+  font-size: 32px;
+  font-weight: 700;
   -webkit-background-clip: text;
   background-clip: text;
+  font-family: var(--cc-font-sans);
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 30px;
   color: var(--cc-accent);
-  font-family: inherit;
-  font-size: 28px;
-  font-weight: 700;
   background: none;
   -webkit-text-fill-color: currentColor;
+}
+
+.oc-auth-wordmark {
+  display: block;
+  width: 112px;
+  height: 23px;
+  overflow: hidden;
+  color: inherit;
+  font-size: 0;
+  background-color: currentColor;
+  -webkit-mask: url('/catsco-wordmark.png') center / contain no-repeat;
+  mask: url('/catsco-wordmark.png') center / contain no-repeat;
+}
+
+@media (forced-colors: active) {
+  .oc-auth-wordmark {
+    width: auto;
+    height: auto;
+    background: none;
+    -webkit-mask: none;
+    mask: none;
+    color: CanvasText;
+    font-size: 28px;
+    font-weight: 700;
+  }
 }
 
 .oc-auth-input {
@@ -692,6 +717,12 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(
 
 /* Source: src/css/auth-critical-additions.css */
 /* Auth-entry-only rules that have no workspace equivalent. */
+.oc-auth-logo .catsco-brand-mark {
+  width: 48px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
 .cc-workspace-loading {
   display: flex;
   align-items: center;

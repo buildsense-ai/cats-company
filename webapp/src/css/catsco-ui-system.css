@@ -436,11 +436,33 @@ html[data-theme="liquid"] .catsco-brand-mark {
   justify-content: center;
   margin-bottom: 30px;
   color: var(--cc-accent);
-  font-family: inherit;
-  font-size: 28px;
-  font-weight: 700;
   background: none;
   -webkit-text-fill-color: currentColor;
+}
+
+.oc-auth-wordmark {
+  display: block;
+  width: 112px;
+  height: 23px;
+  overflow: hidden;
+  color: inherit;
+  font-size: 0;
+  background-color: currentColor;
+  -webkit-mask: url('/catsco-wordmark.png') center / contain no-repeat;
+  mask: url('/catsco-wordmark.png') center / contain no-repeat;
+}
+
+@media (forced-colors: active) {
+  .oc-auth-wordmark {
+    width: auto;
+    height: auto;
+    background: none;
+    -webkit-mask: none;
+    mask: none;
+    color: CanvasText;
+    font-size: 28px;
+    font-weight: 700;
+  }
 }
 
 .oc-auth-input {
@@ -3934,7 +3956,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   min-height: 22px;
   margin-top: -2px;
   padding: 0;
@@ -3953,7 +3975,9 @@ html[data-theme="liquid"] .catsco-brand-mark {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
-  margin-right: auto;
+  order: 2;
+  margin-right: 0;
+  margin-left: 8px;
   gap: 6px;
   border: 0;
   background: transparent;
@@ -3961,6 +3985,13 @@ html[data-theme="liquid"] .catsco-brand-mark {
   opacity: 0;
   visibility: visible;
   pointer-events: none;
+}
+
+.v3-message-footer .v3-msg-time {
+  order: 1;
+  margin-left: 0;
+  margin-right: 0;
+  min-width: 0;
 }
 
 .v3-message:hover .v3-message-footer .v3-message-actions,
@@ -5553,8 +5584,21 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 }
 
 .oc-profile-thinking-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-top: 14px;
   padding: 8px 0 2px;
+}
+
+.oc-profile-thinking-label {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.oc-profile-thinking-toggle .oc-settings-switch {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .oc-profile-thinking-toggle label {

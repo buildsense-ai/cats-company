@@ -311,7 +311,7 @@ export default function ProfileEditor({
           <div className="oc-profile-mobile-pane oc-profile-mobile-pane-profile">
             <div className="oc-settings-avatar-block">
               <div className="oc-profile-avatar-wrap">
-                <Avatar name={displayName || user?.username} src={avatarUrl} size={96} className="oc-profile-hero-avatar" />
+                <Avatar name={displayName || user?.username} src={avatarUrl} size={96} identityFallback className="oc-profile-hero-avatar" />
                 <button
                   type="button"
                   className="oc-profile-avatar-edit"
