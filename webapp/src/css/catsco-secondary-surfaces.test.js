@@ -87,6 +87,12 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('gap: 6px;');
     expect(css).toContain('.v3-composer-row.is-empty:not(.has-stop) .v3-send');
     expect(css).not.toContain('.v3-composer-row.has-content .v3-voice-button');
+    // Pin the exclusive hide block positively: has-stop keeps its mic hide, and
+    // the block holds exactly those two selectors, so re-adding a .has-content
+    // mic-hide line inside it breaks the match (the not.toContain above fails
+    // on re-adding it anywhere else).
+    expect(css).toMatch(/\.v3-composer-row\.has-stop \.v3-voice-button\s*\{[^}]*display:\s*none;/s);
+    expect(css).toMatch(/\.v3-composer-row\.is-empty:not\(\.has-stop\) \.v3-send,\s*\.v3-composer-row\.has-stop \.v3-voice-button \{\s*display: none;/);
     expect(css).toMatch(/\.v3-composer-model-info\s*\{[^}]*display:\s*none;/s);
     expect(css).toContain('.v3-composer-model-quota.warning { color: var(--cc-warning-text); }');
     expect(css).toContain('.v3-composer-model-quota.danger { color: var(--cc-danger-text); }');
