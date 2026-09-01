@@ -196,98 +196,6 @@ describe('EmptyTaskComposer', () => {
     expect(composerDraftStore.persist).toHaveBeenCalled();
   });
 
-  it('removes a just-uploaded attachment when X is clicked', async () => {
-    const attachmentDrafts = new Map();
-    const composerDraftStore = {
-      inputDrafts: new Map(),
-      structuredMentionDrafts: new Map(),
-      attachmentDrafts,
-      persist: vi.fn(),
-    };
-    const file = new File(['just uploaded'], 'fresh.pdf', { type: 'application/pdf' });
-    api.uploadFile.mockResolvedValueOnce({
-      file_key: 'fresh.pdf',
-      url: '/uploads/files/fresh.pdf',
-      name: 'fresh.pdf',
-      size: file.size,
-      mime_type: 'application/pdf',
-    });
-
-    await mountComposer({ composerDraftStore });
-    await act(async () => {
-      Simulate.click(container.querySelector('button.v3-composer-plus'));
-    });
-    const fileInput = [...container.querySelectorAll('input[type="file"]')]
-      .find((input) => !input.accept);
-    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
-    await act(async () => {
-      Simulate.change(fileInput);
-      await flushPromises();
-    });
-    expect(attachmentDrafts.get('new-task')).toHaveLength(1);
-
-    await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="移除附件：fresh.pdf"]'));
-      await flushPromises();
-    });
-
-    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
-    expect(container.querySelector('[aria-label="移除附件：fresh.pdf"]')).toBeNull();
-  });
-
-  it('keeps a phone-uploaded attachment removed across later polls in the same document', async () => {
-    const attachmentDrafts = new Map();
-    const phoneUploadSessions = new Map();
-    const composerDraftStore = {
-      inputDrafts: new Map(),
-      structuredMentionDrafts: new Map(),
-      attachmentDrafts,
-      phoneUploadSessions,
-      persist: vi.fn(),
-    };
-    api.createMobileUploadSession.mockResolvedValueOnce({
-      session_id: 'live-upload',
-      upload_url: '/mobile-upload/live-upload',
-    });
-    api.getMobileUploadSession.mockResolvedValue({
-      session_id: 'live-upload',
-      files: [{
-        file_key: 'live-brief.pdf',
-        url: '/uploads/files/live-brief.pdf',
-        name: 'live-brief.pdf',
-        size: 2048,
-        type: 'file',
-        mime_type: 'application/pdf',
-      }],
-    });
-
-    await mountComposer({ composerDraftStore });
-    await act(async () => {
-      Simulate.click(container.querySelector('button.v3-composer-plus'));
-      await Promise.resolve();
-    });
-    await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
-      await flushPromises();
-    });
-    await vi.waitFor(() => expect(attachmentDrafts.get('new-task')).toHaveLength(1));
-
-    // The file was added through the poll path in THIS document, so the
-    // phone-upload file-key ref knows it; removal must still stick.
-    await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="移除附件：live-brief.pdf"]'));
-      await flushPromises();
-    });
-    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
-      await flushPromises();
-    });
-    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
-    expect(container.querySelector('[aria-label="移除附件：live-brief.pdf"]')).toBeNull();
-  });
-
   it('persists removing a restored attachment across a fresh context', async () => {
     const composerDraftStore = createComposerDraftStore('attachment-removal-context');
     const attachment = {
@@ -311,71 +219,6 @@ describe('EmptyTaskComposer', () => {
     sessionStorage.clear();
     const freshContext = createComposerDraftStore('attachment-removal-context');
     expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
-  });
-
-  it('keeps a restored attachment removable while another upload is in flight', async () => {
-    const attachmentDrafts = new Map();
-    const composerDraftStore = {
-      inputDrafts: new Map(),
-      structuredMentionDrafts: new Map(),
-      attachmentDrafts,
-      persist: vi.fn(),
-    };
-    attachmentDrafts.set('new-task', [{
-      type: 'file',
-      name: 'kept.pdf',
-      content: {
-        type: 'file',
-        payload: { file_key: 'kept.pdf', url: '/uploads/files/kept.pdf', name: 'kept.pdf' },
-      },
-    }]);
-    let resolveUpload;
-    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
-      resolveUpload = resolve;
-    }));
-
-    await mountComposer({ composerDraftStore });
-    await act(async () => {
-      Simulate.click(container.querySelector('button.v3-composer-plus'));
-    });
-    const fileInput = [...container.querySelectorAll('input[type="file"]')]
-      .find((input) => !input.accept);
-    const file = new File(['second upload'], 'pending.pdf', { type: 'application/pdf' });
-    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
-    await act(async () => {
-      Simulate.change(fileInput);
-      await Promise.resolve();
-    });
-    // The batch upload is still in flight; the already-uploaded attachment
-    // must stay removable.
-    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]').disabled).toBe(false);
-
-    await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="移除附件：kept.pdf"]'));
-      await flushPromises();
-    });
-    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
-
-    await act(async () => {
-      resolveUpload({
-        file_key: 'pending.pdf',
-        url: '/uploads/files/pending.pdf',
-        name: 'pending.pdf',
-        size: file.size,
-        mime_type: 'application/pdf',
-      });
-      await flushPromises();
-    });
-    // The in-flight upload must not resurrect the removed attachment.
-    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
-
-    await act(async () => {
-      root.unmount();
-    });
-    root = createRoot(container);
-    await mountComposer({ composerDraftStore });
-    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
   });
 
   it('keeps a phone-uploaded attachment removed when the session poll re-lists it', async () => {
@@ -491,7 +334,165 @@ describe('EmptyTaskComposer', () => {
     expect(container.querySelector('[aria-label="移除附件：phone-brief.pdf"]')).toBeNull();
   });
 
-  it('keeps the new-task draft persisted after a successful send', async () => {
+  it('removes a just-uploaded attachment when X is clicked', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    const file = new File(['just uploaded'], 'fresh.pdf', { type: 'application/pdf' });
+    api.uploadFile.mockResolvedValueOnce({
+      file_key: 'fresh.pdf',
+      url: '/uploads/files/fresh.pdf',
+      name: 'fresh.pdf',
+      size: file.size,
+      mime_type: 'application/pdf',
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task')).toHaveLength(1);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：fresh.pdf"]'));
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：fresh.pdf"]')).toBeNull();
+  });
+
+  it('keeps a phone-uploaded attachment removed across later polls in the same document', async () => {
+    const attachmentDrafts = new Map();
+    const phoneUploadSessions = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions,
+      persist: vi.fn(),
+    };
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'live-upload',
+      upload_url: '/mobile-upload/live-upload',
+    });
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'live-upload',
+      files: [{
+        file_key: 'live-brief.pdf',
+        url: '/uploads/files/live-brief.pdf',
+        name: 'live-brief.pdf',
+        size: 2048,
+        type: 'file',
+        mime_type: 'application/pdf',
+      }],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(attachmentDrafts.get('new-task')).toHaveLength(1));
+
+    // The file was added through the poll path in THIS document, so the
+    // phone-upload file-key ref knows it; removal must still stick.
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：live-brief.pdf"]'));
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：live-brief.pdf"]')).toBeNull();
+  });
+
+  it('keeps a restored attachment removable while another upload is in flight', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    attachmentDrafts.set('new-task', [{
+      type: 'file',
+      name: 'kept.pdf',
+      content: {
+        type: 'file',
+        payload: { file_key: 'kept.pdf', url: '/uploads/files/kept.pdf', name: 'kept.pdf' },
+      },
+    }]);
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    const file = new File(['second upload'], 'pending.pdf', { type: 'application/pdf' });
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+    // The batch upload is still in flight; the already-uploaded attachment
+    // must stay removable.
+    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]').disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：kept.pdf"]'));
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'pending.pdf',
+        url: '/uploads/files/pending.pdf',
+        name: 'pending.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+    // The in-flight upload must not resurrect the removed attachment.
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+  });
+
+
+  it('clears the new-task draft from both storage copies after a successful send', async () => {
     const composerDraftStore = createComposerDraftStore('sent-draft-context');
     composerDraftStore.setAttachmentDraft('new-task', [{
       type: 'file',
@@ -513,22 +514,15 @@ describe('EmptyTaskComposer', () => {
       agents[0],
       expect.objectContaining({ text: '发送这条任务' }),
     );
-    // The sent draft persists for reuse; only the consumed phone upload
-    // session is released.
-    expect(composerDraftStore.getInputDraft('new-task')).toBe('发送这条任务');
-    expect(composerDraftStore.getAttachmentDraft('new-task')).toHaveLength(1);
-    expect(composerDraftStore.getPhoneUploadSession('new-task')).toBeNull();
-    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-context'))
-      .toContain('发送这条任务');
-    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-context'))
-      .toContain('发送这条任务');
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-context')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-context')).toBeNull();
 
     const freshContext = createComposerDraftStore('sent-draft-context');
-    expect(freshContext.getInputDraft('new-task')).toBe('发送这条任务');
-    expect(freshContext.getAttachmentDraft('new-task')).toHaveLength(1);
+    expect(freshContext.getInputDraft('new-task')).toBe('');
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
   });
 
-  it('keeps a sent draft when the Agent roster refreshes during the send', async () => {
+  it('clears a sent draft when the Agent roster refreshes during the send', async () => {
     const composerDraftStore = createComposerDraftStore('sent-draft-roster-refresh');
     let resolveSend;
     api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
@@ -558,14 +552,11 @@ describe('EmptyTaskComposer', () => {
       await flushPromises();
     });
 
-    // The roster refresh during the send must not wipe the persisted draft.
-    expect(composerDraftStore.getInputDraft('new-task')).toBe('发送后应清除');
-    expect(composerDraftStore.getTaskContextDraft('new-task'))
-      .toMatchObject({ agent: expect.objectContaining({ uid: 21 }) });
-    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh'))
-      .toContain('发送后应清除');
-    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh'))
-      .toContain('发送后应清除');
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('');
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+    expect(composerDraftStore.getTaskContextDraft('new-task')).toBeNull();
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh')).toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh')).toBeNull();
 
     await typeInto(container.querySelector('textarea.v3-composer-input'), '新的未发送草稿');
     expect(composerDraftStore.getTaskContextDraft('new-task')).toEqual(
@@ -598,10 +589,6 @@ describe('EmptyTaskComposer', () => {
       resolveSend({ seq_id: 114 });
       await flushPromises();
     });
-
-    // The visible composer resets on success; the re-typed draft itself stays
-    // persisted and is restored the next time the composer opens.
-    expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
 
     expect(composerDraftStore.getInputDraft('new-task')).toBe('重打同样的话');
     expect(localStorage.getItem('catsco_composer_drafts:v1:retype-in-flight')).not.toBeNull();
@@ -736,7 +723,7 @@ describe('EmptyTaskComposer', () => {
     ]);
   });
 
-  it('drops an old upload when a newer composer sends the draft', async () => {
+  it('drops an old upload when a newer composer sends and clears the draft', async () => {
     const attachmentDrafts = new Map();
     const inputDrafts = new Map();
     const composerDraftStore = {
@@ -774,8 +761,8 @@ describe('EmptyTaskComposer', () => {
     );
     await pressEnter(container.querySelector('textarea.v3-composer-input'));
 
-    // The sent draft itself persists.
-    expect(inputDrafts.get('new-task')).toBe('先发送这条新草稿');
+    expect(inputDrafts.get('new-task')).toBeUndefined();
+    expect(attachmentDrafts.get('new-task')).toBeUndefined();
 
     await act(async () => {
       resolveUpload({
@@ -788,12 +775,11 @@ describe('EmptyTaskComposer', () => {
       await flushPromises();
     });
 
-    // The stale upload from the previous composer must not attach to it.
-    expect(inputDrafts.get('new-task')).toBe('先发送这条新草稿');
+    expect(inputDrafts.get('new-task')).toBeUndefined();
     expect(attachmentDrafts.get('new-task')).toBeUndefined();
   });
 
-  it('keeps a sent draft when the send resolves after navigation unmounts the composer', async () => {
+  it('clears a sent draft when the send resolves after navigation unmounts the composer', async () => {
     const attachmentDrafts = new Map([[
       'new-task',
       [{ type: 'file', name: 'brief.pdf' }],
@@ -832,10 +818,8 @@ describe('EmptyTaskComposer', () => {
       await flushPromises();
     });
 
-    // The unmounted send still releases the consumed session, and the sent
-    // draft persists for reuse.
-    expect(inputDrafts.get('new-task')).toBe('发送后不应再次恢复');
-    expect(attachmentDrafts.get('new-task')).toEqual([{ type: 'file', name: 'brief.pdf' }]);
+    expect(inputDrafts.get('new-task')).toBeUndefined();
+    expect(attachmentDrafts.get('new-task')).toBeUndefined();
     expect(composerDraftStore.persist).toHaveBeenCalled();
   });
 
