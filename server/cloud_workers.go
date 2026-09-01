@@ -405,7 +405,8 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			latest := releases[0].Version
 			for i := range workers {
 				workers[i].LatestRelease = latest
-				workers[i].UpdateAvailable = workers[i].AppVersion != "" && workers[i].AppVersion != latest
+				current := strings.TrimPrefix(strings.TrimSpace(workers[i].AppVersion), "v")
+				workers[i].UpdateAvailable = current != "" && current != latest
 			}
 		}
 	}
