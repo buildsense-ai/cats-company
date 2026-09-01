@@ -57,9 +57,19 @@ vi.mock('../widgets/friend-request', () => ({
 }));
 
 vi.mock('../widgets/agent-store-modal', () => ({
-  default: function MockAgentStoreModal({ initialAgentId, onClose, onOpenSkillHub }) {
+  default: function MockAgentStoreModal({
+    initialAgentId,
+    initialCloudWorker,
+    onClose,
+    onOpenSkillHub,
+  }) {
     return (
-      <div data-testid="agent-store-modal" data-initial-agent-id={initialAgentId ?? ''}>
+      <div
+        data-testid="agent-store-modal"
+        data-initial-agent-id={initialAgentId ?? ''}
+        data-cloud-worker-uid={initialCloudWorker?.workerUid || ''}
+        data-cloud-tenant-name={initialCloudWorker?.tenantName || ''}
+      >
         <button type="button" onClick={() => onOpenSkillHub?.(initialAgentId)}>管理能力</button>
         <button type="button" onClick={onClose}>关闭助手管理</button>
       </div>
@@ -982,6 +992,23 @@ describe('ChatListView sidebar sections', () => {
     expect(modal).toBeTruthy();
     expect(modal.dataset.initialAgentId).toBe('42');
     expect(onStartAgentTask).not.toHaveBeenCalled();
+  });
+
+  it('opens a requested cloud worker directly without opening assistant details', async () => {
+    await mount();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('cc:open-cloud-worker-manager', {
+        detail: { workerUid: 202, tenantName: 'tenant-worker-b' },
+      }));
+      await Promise.resolve();
+    });
+
+    const modal = document.body.querySelector('[data-testid="agent-store-modal"]');
+    expect(modal).toBeTruthy();
+    expect(modal.dataset.initialAgentId).toBe('');
+    expect(modal.dataset.cloudWorkerUid).toBe('202');
+    expect(modal.dataset.cloudTenantName).toBe('tenant-worker-b');
   });
 
   it('forwards the managed assistant to SkillHub and closes assistant management', async () => {

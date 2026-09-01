@@ -761,6 +761,56 @@ describe('AgentStoreModal', () => {
     }));
   });
 
+  test('opens cloud management and focuses the requested worker when multiple workers exist', async () => {
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 101,
+        uid: 101,
+        username: 'worker-a',
+        display_name: 'Worker A',
+        tenant_name: 'tenant-worker-a',
+        relation: 'owner',
+        is_owner: true,
+      }, {
+        id: 202,
+        uid: 202,
+        username: 'worker-b',
+        display_name: 'Worker B',
+        tenant_name: 'tenant-worker-b',
+        relation: 'owner',
+        is_owner: true,
+      }],
+    });
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 3, used: 2, remaining: 1 },
+      workers: [{ uid: 101, tenant_name: 'tenant-worker-a', cloud_status: 'running' }, {
+        uid: 202,
+        tenant_name: 'tenant-worker-b',
+        cloud_status: 'running',
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        initialAgentId: 202,
+        initialCloudWorker: { workerUid: 202, tenantName: 'tenant-worker-b' },
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('云托管管理');
+    expect(container.querySelector('.cc-agent-manager-tabs')).toBeNull();
+    expect(container.querySelector('.cc-agent-manage-form')).toBeNull();
+    const focusedWorker = container.querySelector('[data-focused-worker="true"]');
+    expect(focusedWorker).toBeTruthy();
+    expect(focusedWorker.textContent).toContain('Worker B');
+    expect(focusedWorker.textContent).not.toContain('Worker A');
+  });
+
   test('uses the stable hub height for live overview data and practical usage guidance', async () => {
     api.getMyBots.mockResolvedValue({
       bots: [
