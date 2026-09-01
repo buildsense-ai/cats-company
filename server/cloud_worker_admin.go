@@ -62,7 +62,18 @@ type cloudWorkerAdminItem struct {
 	AZName             string     `json:"az_name,omitempty"`
 	InstanceID         string     `json:"instance_id,omitempty"`
 	InstanceName       string     `json:"instance_name,omitempty"`
+	PrivateIP          string     `json:"private_ip,omitempty"`
 	PublicIP           string     `json:"public_ip,omitempty"`
+	SSHUser            string     `json:"ssh_user,omitempty"`
+	SSHPort            string     `json:"ssh_port,omitempty"`
+	SSHJumpHost        string     `json:"ssh_jump_host,omitempty"`
+	SSHJumpAlias       string     `json:"ssh_jump_alias,omitempty"`
+	SSHJumpPort        string     `json:"ssh_jump_port,omitempty"`
+	SSHJumpUser        string     `json:"ssh_jump_user,omitempty"`
+	SSHJumpKey         string     `json:"ssh_jump_key,omitempty"`
+	SSHHostJumpKey     string     `json:"ssh_host_jump_key,omitempty"`
+	SSHStateRoot       string     `json:"ssh_state_root,omitempty"`
+	SSHHostStateRoot   string     `json:"ssh_host_state_root,omitempty"`
 	ManagementMode     string     `json:"management_mode,omitempty"`
 	LifecycleMode      string     `json:"lifecycle_mode,omitempty"`
 	BindingSource      string     `json:"binding_source,omitempty"`
@@ -137,6 +148,12 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 				appVersion = info.AppVersion
 				imageID = info.ImageID
 				imageVersion = info.Version
+				if info.PrivateIP != "" {
+					record.PrivateIP = info.PrivateIP
+				}
+				if info.PublicIP != "" {
+					record.PublicIP = info.PublicIP
+				}
 			}
 		}
 		item := cloudWorkerAdminItem{
@@ -168,6 +185,17 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 			InstanceID:         record.InstanceID,
 			InstanceName:       record.InstanceName,
 			PublicIP:           record.PublicIP,
+			PrivateIP:          record.PrivateIP,
+			SSHUser:            h.sshUser,
+			SSHPort:            h.sshPort,
+			SSHJumpHost:        h.sshJumpHost,
+			SSHJumpAlias:       h.sshJumpAlias,
+			SSHJumpPort:        h.sshJumpPort,
+			SSHJumpUser:        h.sshJumpUser,
+			SSHJumpKey:         h.sshJumpKey,
+			SSHHostJumpKey:     h.sshHostJumpKey,
+			SSHStateRoot:       h.sshStateRoot,
+			SSHHostStateRoot:   h.sshHostStateRoot,
 			ManagementMode:     record.ManagementMode,
 			LifecycleMode:      record.LifecycleMode,
 			BindingSource:      record.BindingSource,
