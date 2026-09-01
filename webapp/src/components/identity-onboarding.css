@@ -89,6 +89,7 @@
 }
 
 .cc-identity-cat {
+  --identity-ink: #263b34;
   display: block;
   width: 100%;
   height: 100%;
@@ -158,7 +159,6 @@
 }
 
 .cc-identity-cat__brand-glasses {
-  fill: color-mix(in srgb, var(--identity-ink) 88%, transparent);
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -247,7 +247,7 @@
 }
 
 .cc-identity-onboarding__feedback {
-  min-height: 10px;
+  min-height: 24px;
   padding-top: 6px;
   text-align: center;
 }
@@ -294,7 +294,9 @@
 }
 
 html[data-theme="dark"] .cc-identity-onboarding,
-html[data-theme="liquid"] .cc-identity-onboarding {
+html[data-theme="liquid"] .cc-identity-onboarding,
+html[data-theme="dark"] .cc-identity-cat,
+html[data-theme="liquid"] .cc-identity-cat {
   --identity-ink: #dce8e3;
 }
 

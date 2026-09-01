@@ -394,7 +394,7 @@ body {
   object-fit: cover;
 }
 
-.oc-avatar-identity-cat {
+.oc-avatar .oc-avatar-identity-cat {
   width: 170%;
   height: 170%;
   max-width: none;

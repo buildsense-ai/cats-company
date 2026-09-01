@@ -717,6 +717,12 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(
 
 /* Source: src/css/auth-critical-additions.css */
 /* Auth-entry-only rules that have no workspace equivalent. */
+.oc-auth-logo .catsco-brand-mark {
+  width: 48px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
 .cc-workspace-loading {
   display: flex;
   align-items: center;

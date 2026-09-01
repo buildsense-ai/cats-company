@@ -52,7 +52,7 @@ function catTraits(name) {
     smile: 5 + ((hash >> 20) % 5),
     tailSide: (hash >> 23) % 2 === 0 ? 1 : -1,
     whiskerLift: ((hash >> 25) % 7) - 3,
-    bodyTilt: ((hash >> 28) % 7) - 3,
+    bodyTilt: ((hash >>> 28) % 7) - 3,
     eyeColor: EYE_COLORS[(hash >>> 29) % EYE_COLORS.length],
     glassesColor: GLASSES_COLORS[(hash >>> 30) % GLASSES_COLORS.length],
     wearsGlasses: variantHash % 5 === 0,
@@ -247,7 +247,7 @@ export default function IdentityOnboarding({ initialName = '', onComplete }) {
           <div className="cc-identity-onboarding__field">
             <div className="cc-identity-onboarding__field-header">
               <label htmlFor="catsco-display-name">你的名字</label>
-              <span className="cc-identity-onboarding__counter" aria-live="polite">{name.length}/32</span>
+              <span className="cc-identity-onboarding__counter">{name.length}/32</span>
             </div>
             <input
               ref={inputRef}
