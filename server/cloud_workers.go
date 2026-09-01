@@ -277,7 +277,9 @@ type cloudWorkerSummary struct {
 	CloudImageID string `json:"cloud_image_id,omitempty"`
 	// AppVersion is always present: an empty value means the runtime version
 	// has not been observed and must not fall back to the bot definition.
-	AppVersion string `json:"app_version"`
+	AppVersion      string `json:"app_version"`
+	LatestRelease   string `json:"latest_release,omitempty"`
+	UpdateAvailable bool   `json:"update_available,omitempty"`
 }
 
 // cloudWorkersOfOwner returns the cloud-managed workers owned by uid
@@ -392,6 +394,20 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			workers[i].CloudImageID = info.ImageID
 			workers[i].CloudVersion = info.Version
 			workers[i].AppVersion = info.AppVersion
+		}
+	}
+	// The release catalog is independently cached and never blocks this request.
+	// Annotate each worker only when both its runtime version and the catalog are
+	// known; unknown data must not produce a false update prompt.
+	if h.releasesScript != "" {
+		releases, releasesLoaded, _, _ := h.cloudReleaseSnapshot()
+		if releasesLoaded && len(releases) > 0 {
+			latest := releases[0].Version
+			for i := range workers {
+				workers[i].LatestRelease = latest
+				current := strings.TrimPrefix(strings.TrimSpace(workers[i].AppVersion), "v")
+				workers[i].UpdateAvailable = current != "" && current != latest
+			}
 		}
 	}
 
@@ -684,6 +700,9 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 		meta["releases_refreshing"] = releasesRefreshing
 		if releasesLoaded {
 			meta["releases"] = releases
+			if len(releases) > 0 {
+				meta["latest_release"] = releases[0].Version
+			}
 			meta["releases_cached_at"] = releasesUpdatedAt.UTC().Format(time.RFC3339Nano)
 		}
 	}
@@ -1482,9 +1501,6 @@ func parseImageLines(out string) []cloudImageSummary {
 		right, _ := strconv.ParseInt(images[j].CreatedTime, 10, 64)
 		return left > right
 	})
-	if len(images) > 6 {
-		images = images[:6]
-	}
 	return images
 }
 
@@ -1533,9 +1549,6 @@ func parseReleaseLines(out string) []cloudReleaseSummary {
 		parsed = append(parsed, releaseWithTime{release: release, unix: publishedUnix})
 	}
 	sort.SliceStable(parsed, func(i, j int) bool { return parsed[i].unix > parsed[j].unix })
-	if len(parsed) > 6 {
-		parsed = parsed[:6]
-	}
 	releases := make([]cloudReleaseSummary, len(parsed))
 	for i := range parsed {
 		releases[i] = parsed[i].release

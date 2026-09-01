@@ -468,6 +468,7 @@ export default function MessagesView({
   ));
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
+  const [cloudWorkers, setCloudWorkers] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [awaitingAgentReply, setAwaitingAgentReply] = useState(false);
   const [activeQuestionKey, setActiveQuestionKey] = useState('');
@@ -661,6 +662,28 @@ export default function MessagesView({
     };
     loadAgents();
     const refresh = () => loadAgents();
+    window.addEventListener('cc:data-changed', refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('cc:data-changed', refresh);
+    };
+  }, [topic]);
+
+  // Cloud-worker release state is owner-scoped. Filter it again by the active
+  // conversation bot before rendering a notice so other bots stay untouched.
+  useEffect(() => {
+    let cancelled = false;
+    const loadCloudWorkers = async () => {
+      if (!api.getCloudWorkers) return;
+      try {
+        const response = await api.getCloudWorkers();
+        if (!cancelled) setCloudWorkers(Array.isArray(response?.workers) ? response.workers : []);
+      } catch {
+        if (!cancelled) setCloudWorkers([]);
+      }
+    };
+    loadCloudWorkers();
+    const refresh = () => loadCloudWorkers();
     window.addEventListener('cc:data-changed', refresh);
     return () => {
       cancelled = true;
@@ -3022,6 +3045,13 @@ export default function MessagesView({
       .filter((uid) => uid > 0);
   }, [availableAgentUIDs, isAgentTask, members]);
   const taskBotUID = taskBotUIDs.length === 1 ? taskBotUIDs[0] : 0;
+  const conversationBotUID = isGroup ? taskBotUID : peerUID;
+  const cloudWorkerUpdate = useMemo(() => {
+    if (!conversationBotUID) return null;
+    const worker = cloudWorkers.find((candidate) => sameUID(candidate?.uid, conversationBotUID));
+    if (!worker || !worker.update_available || !worker.latest_release) return null;
+    return worker;
+  }, [cloudWorkers, conversationBotUID]);
   const isTwoPersonGroupWithCurrentUser = useMemo(() => {
     if (!isGroup) return false;
     const memberUIDs = new Set(
@@ -4284,6 +4314,19 @@ export default function MessagesView({
               <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>
+              {cloudWorkerUpdate && (
+                <section className="cc-cloud-worker-update-notice" role="status" aria-live="polite">
+                  <span>云员工「{cloudWorkerUpdate.display_name || cloudWorkerUpdate.username || '当前机器人'}」有新版本 {cloudWorkerUpdate.latest_release}，可在云托管管理中更新。</span>
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent('cc:open-cloud-worker-manager', {
+                      detail: { workerUid: cloudWorkerUpdate.uid, tenantName: cloudWorkerUpdate.tenant_name },
+                    }))}
+                  >
+                    去更新
+                  </button>
+                </section>
+              )}
 
         {!historyLoaded && (
           <div className="v3-history-state" role="status" aria-live="polite">

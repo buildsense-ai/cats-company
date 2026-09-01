@@ -19,6 +19,7 @@ func main() {
 	var bucket string
 	var key string
 	var listPrefix string
+	var deleteKey string
 	var output string
 
 	flag.StringVar(&endpoint, "endpoint", "", "TOS endpoint")
@@ -26,11 +27,14 @@ func main() {
 	flag.StringVar(&bucket, "bucket", "", "TOS bucket")
 	flag.StringVar(&key, "key", "", "TOS object key")
 	flag.StringVar(&listPrefix, "list-prefix", "", "list TOS object keys below this prefix")
+	flag.StringVar(&deleteKey, "delete-key", "", "delete one TOS object key (explicit operator action)")
 	flag.StringVar(&output, "output", "", "local destination")
 	flag.Parse()
 
 	var err error
-	if strings.TrimSpace(listPrefix) != "" {
+	if strings.TrimSpace(deleteKey) != "" {
+		err = deleteObject(endpoint, region, bucket, deleteKey)
+	} else if strings.TrimSpace(listPrefix) != "" {
 		err = listObjects(endpoint, region, bucket, listPrefix, os.Stdout)
 	} else {
 		err = fetch(endpoint, region, bucket, key, output)
@@ -39,6 +43,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "tos-fetch: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func deleteObject(endpoint, region, bucket, key string) error {
+	if strings.TrimSpace(endpoint) == "" || strings.TrimSpace(region) == "" ||
+		strings.TrimSpace(bucket) == "" || strings.TrimSpace(key) == "" {
+		return errors.New("endpoint, region, bucket and delete key are required")
+	}
+	if strings.ContainsAny(key, "\r\n") {
+		return errors.New("delete key contains a newline")
+	}
+	client, err := newClient(endpoint, region)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := client.DeleteObjectV2(ctx, &tos.DeleteObjectV2Input{Bucket: bucket, Key: key}); err != nil {
+		return fmt.Errorf("delete private object: %w", err)
+	}
+	return nil
 }
 
 func fetch(endpoint, region, bucket, key, output string) error {
@@ -78,21 +102,24 @@ func listObjects(endpoint, region, bucket, prefix string, dst io.Writer) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	result, err := client.ListObjectsType2(ctx, &tos.ListObjectsType2Input{
-		Bucket:  bucket,
-		Prefix:  prefix,
-		MaxKeys: 1000,
-	})
-	if err != nil {
-		return fmt.Errorf("list private objects: %w", err)
-	}
-	for _, object := range result.Contents {
-		if strings.ContainsAny(object.Key, "\r\n\t") {
-			continue
+	input := &tos.ListObjectsType2Input{Bucket: bucket, Prefix: prefix, MaxKeys: 1000}
+	for {
+		result, listErr := client.ListObjectsType2(ctx, input)
+		if listErr != nil {
+			return fmt.Errorf("list private objects: %w", listErr)
 		}
-		if _, err := fmt.Fprintf(dst, "%s\t%d\n", object.Key, object.LastModified.Unix()); err != nil {
-			return fmt.Errorf("write object listing: %w", err)
+		for _, object := range result.Contents {
+			if strings.ContainsAny(object.Key, "\r\n\t") {
+				continue
+			}
+			if _, writeErr := fmt.Fprintf(dst, "%s\t%d\n", object.Key, object.LastModified.Unix()); writeErr != nil {
+				return fmt.Errorf("write object listing: %w", writeErr)
+			}
 		}
+		if !result.IsTruncated || strings.TrimSpace(result.NextContinuationToken) == "" {
+			break
+		}
+		input.ContinuationToken = result.NextContinuationToken
 	}
 	return nil
 }
