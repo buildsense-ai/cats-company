@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowUpCircle,
@@ -102,6 +102,7 @@ export default function CloudWorkerPanel({
   releases = [],
   actions = null,
   actioning = null,
+  focusedWorker = null,
   showHostingSwitch = true,
   onCreate,
   onUpdate,
@@ -120,6 +121,7 @@ export default function CloudWorkerPanel({
   const [resetCodes, setResetCodes] = useState({});
   const [resetInputs, setResetInputs] = useState({});
   const [resetErrors, setResetErrors] = useState({});
+  const focusedWorkerRef = useRef(null);
 
   // Missing action metadata means an older backend; preserve compatibility
   // during a rolling web/server deployment. Explicit false always disables.
@@ -142,6 +144,28 @@ export default function CloudWorkerPanel({
     ? { name: actioning, action: 'update' }
     : (actioning || {});
   const hasActiveAction = Boolean(activeAction.name);
+  const requestedWorkerUid = String(focusedWorker?.workerUid || focusedWorker?.uid || '').trim();
+  const requestedTenantName = String(
+    focusedWorker?.tenantName || focusedWorker?.tenant_name || '',
+  ).trim();
+  const focusedWorkerKey = (() => {
+    const byUID = requestedWorkerUid && workers.find((worker) => (
+      String(worker.id || worker.uid || '') === requestedWorkerUid
+    ));
+    const matched = byUID || (requestedTenantName && workers.find((worker) => (
+      String(worker.tenant_name || '') === requestedTenantName
+    )));
+    return matched ? String(matched.tenant_name || matched.id || matched.uid) : '';
+  })();
+
+  useEffect(() => {
+    if (!focusedWorkerKey || !focusedWorkerRef.current) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      focusedWorkerRef.current?.focus({ preventScroll: true });
+      focusedWorkerRef.current?.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusedWorkerKey]);
 
   const handleSubmit = async () => {
     const displayName = name.trim();
@@ -306,6 +330,8 @@ export default function CloudWorkerPanel({
           <div className="cc-cloud-worker-list">
             {workers.map((worker) => {
               const id = worker.id || worker.uid;
+              const workerKey = String(worker.tenant_name || id);
+              const isFocusedWorker = workerKey === focusedWorkerKey;
               const meta = statusMeta(worker.cloud_status);
               const lifecycleHint = cloudLifecycleHint(worker.cloud_status);
               const managementBlocked = cloudActionsBlocked(worker.cloud_status);
@@ -326,7 +352,10 @@ export default function CloudWorkerPanel({
               return (
                 <div
                   key={worker.tenant_name || id}
-                  className="cc-cloud-worker"
+                  ref={isFocusedWorker ? focusedWorkerRef : null}
+                  className={`cc-cloud-worker${isFocusedWorker ? ' is-focused' : ''}`}
+                  data-focused-worker={isFocusedWorker ? 'true' : undefined}
+                  tabIndex={isFocusedWorker ? -1 : undefined}
                   aria-busy={acting ? 'true' : undefined}
                 >
                   <div className="cc-cloud-worker-head">
