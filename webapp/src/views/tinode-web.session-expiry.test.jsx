@@ -61,6 +61,7 @@ vi.mock('../utils/theme-access', () => ({
 }));
 
 import TinodeWeb, { resetComposerDraftStore } from './tinode-web';
+import { COMPOSER_DRAFT_STORAGE_PREFIX } from '../utils/composer-draft-storage';
 
 let container;
 let root;
@@ -81,6 +82,7 @@ beforeEach(() => {
     mocks.token = nextToken;
   });
   mocks.setToken.mockClear();
+  sessionStorage.clear();
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   window.history.replaceState(null, '', '/e/invite-1?source=email#accept');
   container = document.createElement('div');
@@ -91,6 +93,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  sessionStorage.clear();
   localStorage.clear();
   window.history.replaceState(null, '', '/');
 });
@@ -116,6 +119,11 @@ test('replaces draft maps so stale callbacks cannot restore a closed session dra
 });
 
 test('keeps the current deep link when a WebSocket session expires', async () => {
+  const staleDraftKey = `${COMPOSER_DRAFT_STORAGE_PREFIX}99`;
+  sessionStorage.setItem(staleDraftKey, JSON.stringify({
+    inputDrafts: [['p2p_99_1', 'stale draft']],
+  }));
+
   await act(async () => {
     root.render(<TinodeWeb />);
   });
@@ -130,6 +138,7 @@ test('keeps the current deep link when a WebSocket session expires', async () =>
     expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
       .toBe('/login?next=%2Fe%2Finvite-1%3Fsource%3Demail%23accept');
   });
+  expect(sessionStorage.getItem(staleDraftKey)).toBeNull();
 });
 
 test('recovers a valid session when its cached profile is missing', async () => {

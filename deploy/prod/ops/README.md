@@ -9,6 +9,7 @@
 |---|---|---|
 | `list-worker-images.sh` | 列出 bake 通道镜像 | 创建 / 重置镜像选择 |
 | `list-worker-releases.sh` | 列出私有 TOS 应用发布 | 更新 / 回滚版本选择 |
+| `prune-worker-releases.sh` | 清理过旧 TOS worker 发布（默认 dry-run） | 定期维护版本目录，保护当前运行版本 |
 | `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
 | `destroy-worker.sh` | 退订并永久销毁实例 + key pair + 本地 state | 内部运维清理 / 到期保留期结束（幂等） |
 | `reset-worker.sh` | 原实例重装（丢数据，保留包月订单/到期时间） | 重置 / 重装 |
@@ -16,6 +17,10 @@
 | `deploy-worker-version.sh` | 安装指定应用版本（保数据） | 更新 / 本地版本缺失时回滚 |
 | `rollback-worker.sh` | 切换 `/opt/catsco/current`（保数据） | 版本回滚 |
 | `status-worker.sh` | 批量读取实例、镜像与版本状态 | 云员工管理页状态 |
+| `bootstrap-artifact-gateway.sh` | 初始化共享 HTTPS 网关 | 一次性安装 Nginx、通配符证书和路由器 |
+| `ensure-artifact-gateway-network.sh` | 对齐网关公网网络 | 创建或复用 DNAT、安全组规则和通配符 DNS |
+| `configure-worker-artifact.sh` | 配置单个私网 worker | 安装静态服务并注册 Agent UID 路由 |
+| `sync-artifact-gateway-routes.sh` | 重建全部 Artifact 路由 | 网关恢复或路由表校正 |
 
 ## 部署配置（B4-2 对接）
 
@@ -32,6 +37,7 @@ CATSCO_WORKER_UPDATE_SCRIPT=/opt/catsco/ops/deploy-worker-version.sh
 CATSCO_WORKER_ROLLBACK_SCRIPT=/opt/catsco/ops/rollback-worker.sh
 CATSCO_WORKER_IMAGES_SCRIPT=/opt/catsco/ops/list-worker-images.sh
 CATSCO_WORKER_RELEASES_SCRIPT=/opt/catsco/ops/list-worker-releases.sh
+CATSCO_WORKER_RELEASE_KEEP_COUNT=10
 CATSCO_WORKER_STATUS_SCRIPT=/opt/catsco/ops/status-worker.sh
 CATSCO_WORKER_CREATE_QUOTA=            # 仅灰度/运维静态配额；正式公共环境留空，付费权益走 cloud_worker_credits
 CTYUN_WORKER_EXT_IP=0                  # 默认内网，不申请公网 IP/带宽
@@ -81,15 +87,100 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
   默认 `/var/lib/catsco-worker/<tenant>`。
 - worker 应用包从私有 TOS 桶下载。生产凭证只授予
   `catsco-worker-release/update/worker/*` 的只读权限，不下发给浏览器或 worker。
+
+### TOS 发布生命周期
+
+控制面展示专用 worker artifact 桶中实际发现的全部 `manifest.json` 发布，不再截断为固定数量。
+生产主机可通过 `prune-worker-releases.sh` 定期清理旧对象：脚本默认只输出候选（dry-run），
+按发布时间保留最近 `CATSCO_WORKER_RELEASE_KEEP_COUNT` 个版本；启用 `--apply` 时还要求状态脚本
+成功，并始终保留当前 worker 正在运行的 `app_version`。任何列表或状态读取失败都会拒绝删除。
+建议先审阅 dry-run 输出，再将 `--apply` 放入受保护的 systemd timer/cron；凭据和定时任务只配置
+在生产服务器，不提交仓库。`--apply` 还必须显式设置
+`CATSCO_WORKER_RELEASE_DELETE_CONFIRM=I_UNDERSTAND_DELETE_WORKER_RELEASES`，并使用具备删除权限的
+运维 TOS 凭据；应用下载凭据仍保持只读。发布清理不会删除 worker 本地正在使用的 `/opt/catsco/releases`。
 - 云托管员工按套餐 30 天计费；不独立自动续费。套餐到期后天翼云进入 15 天冻结保留期（不收费、不可用），续费可恢复；窗口结束后控制面核对实例并调用退订/销毁接口，按量实例沿用直接删除。
   供给失败清理会短暂重试实例目录，并使用创建时记住的实例 ID 和计费模式
   兜底，避免目录最终一致性造成持续计费的孤儿实例。
 - 私网 worker 默认不申请公网 IP（`CTYUN_WORKER_EXT_IP=0`），SSH 注入依赖
   `CTYUN_JUMP_IP` 跳板/NAT；只有旧的直连公网路径显式设置 `CTYUN_WORKER_EXT_IP=1`。
 
+### 续费与到期边界
+
+续费链路只恢复仍属于当前天翼云区域生命周期的实例，并且不会创建替代实例：
+
+| Provider 状态 | 续费行为 |
+|---|---|
+| `running` / `active` / `stopped` / `shutoff` / `error` | 调用 `ResubscribeEcsInstance` 延长套餐 |
+| `expired` / `freezing` / `frozen` | 仍在 15 天保留窗口内，调用 `ResubscribeEcsInstance` 恢复 |
+| `unsubscribed` | 已离开可恢复生命周期，拒绝续费并要求人工核对 |
+| `released` / `deleted` / `bootdiskexpired` / `nobootdisk` | 终态，拒绝续费 |
+
+套餐支付成功后，控制面以天翼云返回的 `expires_at` 更新单个 worker 的生命周期，
+并尝试关闭云侧自动续费。关闭失败不会伪造成功，日志会标记为需要运维核对。
+到期后先进入 `delete_pending`，只有 `delete_after = package_expires_at + 15d`
+到达后才会 claim 为 `delete_running` 并永久销毁；已进入 `delete_running` 的记录
+不会被后续支付重新激活，避免和进行中的云端销毁竞态。销毁 API 使用相同
+`clientToken` 做有限重试，瞬时 API 错误不会留下未清理的实例，也不会重复提交
+非幂等请求。
+
+## 私网 Artifact 转发
+
+私网 worker 不再为每台机器申请公网 IP。页面文件仍由对应 worker 本地保存和
+提供，只把公网入口集中到跳板机：
+
+```text
+https://agent-<uid>.artifacts.catsco.fun:19991/artifacts/...
+  -> 通配符 DNS / DNAT
+  -> 跳板机 Nginx（按 Host 查 Agent UID）
+  -> worker-private-ip:19990/artifacts/...
+```
+
+启用前，在生产 `prod.env` 填写 `env.prod.example` 中的 Artifact gateway 参数。
+DNS Access Key 只供网关初始化和证书续签使用，不会注入 worker。然后在 server
+容器中执行一次：
+
+```bash
+/opt/catsco/ops/bootstrap-artifact-gateway.sh
+```
+
+该命令幂等地完成 DNAT、安全组、通配符 DNS、Let's Encrypt 通配符证书、
+Nginx 和路由命令安装。成功后将以下开关保持为：
+
+```env
+CATSCO_ARTIFACT_GATEWAY_ENABLED=1
+CATSCO_WORKER_ARTIFACT_HOST_MODE=forwarded
+```
+
+此后 `provision-worker.sh` 和 `reset-worker.sh` 会自动完成三件事：在 worker
+安装 `catsco-artifact-host.service`，向 `/srv/catsco-agent/.env` 注入
+`forwarded` 发布参数，以真实 Agent UID 注册网关路由。Artifact 配置失败只返回
+`artifact_status=warning`，不会回滚已经可用的虚拟员工。`destroy-worker.sh` 会
+尽力删除对应路由。
+
+网关路由表丢失或从备份恢复后，运行：
+
+```bash
+/opt/catsco/ops/sync-artifact-gateway-routes.sh
+```
+
+它只从持久化 worker state 和当前运行实例重建路由，不从实例名猜 Agent UID。
+排障时依次检查：
+
+```bash
+curl --fail https://gateway-probe.artifacts.catsco.fun:19991/__artifact_gateway_health
+/opt/catsco/ops/artifact-gateway-route.sh status <agent-uid>
+curl --fail http://<worker-private-ip>:19990/__artifact_health
+curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/__artifact_health
+curl --fail https://agent-<agent-uid>.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
+```
+
+回滚时将 `CATSCO_ARTIFACT_GATEWAY_ENABLED=0` 且
+`CATSCO_WORKER_ARTIFACT_HOST_MODE=`，重新创建 server 容器。旧的公网 worker
+继续使用 Skill 的 `direct-https` 模式；关闭开关不会删除已有 Artifact 文件。
+
 ## 脚本依赖（Dockerfile 已装）
 
-`bash`、`openssh-client`（ssh/ssh-keygen）、`jq`、GNU `timeout`、`ctyun-cli`
+`bash`、`openssh-client`（ssh/ssh-keygen）、`jq`、Node.js、GNU `timeout`、`ctyun-cli`
 和镜像内单独构建的 `tos-fetch`。脚本全部 `set -Eeuo pipefail` + shebang 可执行。
 
 ## 安全注意事项
@@ -115,6 +206,7 @@ export CATSCO_JQ=/path/to/jq
 cd deploy/prod/ops && node --test *.test.mjs
 ```
 
-测试覆盖 list / status / provision / update / destroy / reset / rollback
+测试覆盖 list / status / provision / update / destroy / reset / rollback，及 Artifact
+网关路由、DNS、静态服务和 lifecycle 的非阻塞接入
 （fake ctyun-cli + fake ssh + fake timeout），包含包月、按量、到期退订、
 失败回收、版本安装与状态同步路径。

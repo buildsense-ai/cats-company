@@ -229,6 +229,21 @@ func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestDeepSeekCatalogUsesOpenAIResponsesAndVisionReasoningEfforts(t *testing.T) {
+	model, effort, ok := normalizeBotModelSelection("deepseek-v4-flash", "")
+	if !ok || model.Provider != "openai" || model.Protocol != "OpenAI Responses" || model.ContextWindowTokens != 1000000 || effort != "high" {
+		t.Fatalf("selection model=%+v effort=%q ok=%v", model, effort, ok)
+	}
+	for _, value := range []string{"low", "high", "max", "disabled"} {
+		if _, got, valid := normalizeBotModelSelection("deepseek-v4-flash", value); !valid || got != value {
+			t.Fatalf("DeepSeek effort %q: valid=%v got=%q", value, valid, got)
+		}
+	}
+	if _, _, valid := normalizeBotModelSelection("deepseek-v4-flash", "xhigh"); valid {
+		t.Fatal("DeepSeek must reject GPT-only xhigh effort")
+	}
+}
+
 func TestCatalogModelRuntimeShipsContextWindowTokens(t *testing.T) {
 	db := &botModelConfigTestStore{
 		owners: map[int64]int64{43: 7},

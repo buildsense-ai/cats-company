@@ -13,6 +13,24 @@ import ChatComposer from '../widgets/chat-composer';
 import PwaDownloadLink from '../widgets/pwa-download-link';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
+import {
+  invalidateComposerDraftRevision,
+  isComposerDraftRevisionCurrent,
+  markComposerPhoneUploadIgnoredFileKey,
+  persistComposerDraftStore as persistComposerDraftStoreValue,
+  readComposerAttachmentDraft,
+  readComposerDraftMutationRevision,
+  readComposerDraftRevision,
+  readComposerInputDraft,
+  readComposerMentionDraft,
+  readComposerPhoneUploadIgnoredFileKeys,
+  readComposerPhoneUploadSession,
+  subscribeComposerDraftStore,
+  writeComposerAttachmentDraft,
+  writeComposerInputDraft,
+  writeComposerMentionDraft,
+  writeComposerPhoneUploadSession,
+} from '../utils/composer-draft-storage';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
@@ -26,6 +44,7 @@ import {
   withArtifactContextRef,
 } from '../artifact-context';
 import { createArtifactTaskHost } from '../artifact-task-host';
+import { createArtifactRuntimeHost } from '../artifact-runtime-host';
 import {
   artifactPreviewCoordinationID,
   createArtifactPreviewChatCoordinator,
@@ -449,6 +468,7 @@ export default function MessagesView({
   ));
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
+  const [cloudWorkers, setCloudWorkers] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [awaitingAgentReply, setAwaitingAgentReply] = useState(false);
   const [activeQuestionKey, setActiveQuestionKey] = useState('');
@@ -519,6 +539,7 @@ export default function MessagesView({
   const activeArtifactFocusRef = useRef(null);
   const activeArtifactSnapshotRef = useRef(null);
   const artifactTaskHostRef = useRef(null);
+  const artifactRuntimeHostRef = useRef(null);
   const artifactTaskFeedbackRef = useRef(feedback);
   const artifactPreviewCoordinatorRef = useRef(null);
   const artifactViewerHandoffRef = useRef(null);
@@ -552,9 +573,7 @@ export default function MessagesView({
   const questionIndexLoadingRef = useRef(false);
   const questionIndexAbortControllerRef = useRef(null);
   const questionJumpAbortControllerRef = useRef(null);
-  const composerDraftsRef = useRef(null);
-  const structuredMentionDraftsRef = useRef(null);
-  const attachmentDraftsRef = useRef(null);
+  const composerDraftStoreRef = useRef(null);
   const pendingAttachmentsRef = useRef([]);
   const previewWidthRef = useRef(previewWidth);
   const phoneUploadFileKeysRef = useRef(new Set());
@@ -567,11 +586,39 @@ export default function MessagesView({
   const conversationSharePreviewRef = useRef(null);
   const conversationSharePreviewCloseRef = useRef(null);
 
-  if (composerDraftsRef.current === null) {
-    composerDraftsRef.current = composerDraftStore?.inputDrafts || new Map();
-    structuredMentionDraftsRef.current = composerDraftStore?.structuredMentionDrafts || new Map();
-    attachmentDraftsRef.current = composerDraftStore?.attachmentDrafts || new Map();
+  if (composerDraftStoreRef.current === null) {
+    composerDraftStoreRef.current = composerDraftStore || {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      phoneUploadSessions: new Map(),
+    };
   }
+
+  useEffect(() => {
+    const syncDraftFromStore = ({ key } = {}) => {
+      if (key !== undefined && key !== topic) return;
+      if (activeTopicRef.current !== topic) return;
+      const nextInput = readComposerInputDraft(composerDraftStoreRef.current, topic);
+      const nextAttachments = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
+      const nextPhoneUploadSession = readComposerPhoneUploadSession(
+        composerDraftStoreRef.current,
+        topic,
+      );
+      if (phoneUploadSessionRef.current?.session_id !== nextPhoneUploadSession?.session_id) {
+        phoneUploadFileKeysRef.current = new Set();
+      }
+      setInput(nextInput);
+      pendingAttachmentsRef.current = nextAttachments;
+      setPendingAttachments(nextAttachments);
+      phoneUploadSessionRef.current = nextPhoneUploadSession;
+      phoneUploadTopicRef.current = nextPhoneUploadSession ? topic : '';
+      setPhoneUploadSession(nextPhoneUploadSession);
+    };
+
+    syncDraftFromStore();
+    return subscribeComposerDraftStore(composerDraftStoreRef.current, syncDraftFromStore);
+  }, [composerDraftStore, topic]);
 
   if (artifactTopicRef.current !== topic) {
     artifactTopicRef.current = topic;
@@ -622,40 +669,62 @@ export default function MessagesView({
     };
   }, [topic]);
 
+  // Cloud-worker release state is owner-scoped. Filter it again by the active
+  // conversation bot before rendering a notice so other bots stay untouched.
+  useEffect(() => {
+    let cancelled = false;
+    const loadCloudWorkers = async () => {
+      if (!api.getCloudWorkers) return;
+      try {
+        const response = await api.getCloudWorkers();
+        if (!cancelled) setCloudWorkers(Array.isArray(response?.workers) ? response.workers : []);
+      } catch {
+        if (!cancelled) setCloudWorkers([]);
+      }
+    };
+    loadCloudWorkers();
+    const refresh = () => loadCloudWorkers();
+    window.addEventListener('cc:data-changed', refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('cc:data-changed', refresh);
+    };
+  }, [topic]);
+
+  const persistComposerDraftStore = useCallback(() => {
+    persistComposerDraftStoreValue(composerDraftStoreRef.current);
+  }, []);
+
   const updateComposerDraft = useCallback((draftTopic, value) => {
     if (!draftTopic) return;
-    if (value) {
-      composerDraftsRef.current.set(draftTopic, value);
-    } else {
-      composerDraftsRef.current.delete(draftTopic);
-    }
-  }, []);
+    writeComposerInputDraft(composerDraftStoreRef.current, draftTopic, value);
+    persistComposerDraftStore();
+  }, [persistComposerDraftStore]);
 
   const updateStructuredMentionDraft = useCallback((draftTopic, selections) => {
     if (!draftTopic) return;
-    if (Array.isArray(selections) && selections.length > 0) {
-      structuredMentionDraftsRef.current.set(draftTopic, selections);
-    } else {
-      structuredMentionDraftsRef.current.delete(draftTopic);
-    }
-  }, []);
+    writeComposerMentionDraft(composerDraftStoreRef.current, draftTopic, selections);
+    persistComposerDraftStore();
+  }, [persistComposerDraftStore]);
 
-  const updateAttachmentDraft = useCallback((draftTopic, nextValue) => {
+  const updateAttachmentDraft = useCallback((draftTopic, nextValue, expectedRevision) => {
     if (!draftTopic) return [];
-    const current = attachmentDraftsRef.current.get(draftTopic) || [];
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      draftTopic,
+      expectedRevision,
+    )) return null;
+    const current = readComposerAttachmentDraft(composerDraftStoreRef.current, draftTopic);
     const next = typeof nextValue === 'function' ? nextValue(current) : nextValue;
     const normalized = Array.isArray(next) ? next : [];
-    if (normalized.length > 0) {
-      attachmentDraftsRef.current.set(draftTopic, normalized);
-    } else {
-      attachmentDraftsRef.current.delete(draftTopic);
-    }
+    writeComposerAttachmentDraft(composerDraftStoreRef.current, draftTopic, normalized);
     if (activeTopicRef.current === draftTopic) {
       pendingAttachmentsRef.current = normalized;
       setPendingAttachments(normalized);
     }
+    persistComposerDraftStore();
     return normalized;
-  }, []);
+  }, [persistComposerDraftStore]);
 
   useEffect(() => {
     previewWidthRef.current = previewWidth;
@@ -720,6 +789,7 @@ export default function MessagesView({
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
     artifactTaskHostRef.current?.deactivate();
+    artifactRuntimeHostRef.current?.deactivate();
   }, [invalidateArtifactSnapshot]);
 
   const cancelArtifactViewerHandoff = useCallback(({ closeWindow = true } = {}) => {
@@ -747,6 +817,7 @@ export default function MessagesView({
     }
     invalidateArtifactSnapshot();
     artifactTaskHostRef.current?.deactivate();
+    artifactRuntimeHostRef.current?.deactivate();
     activeArtifactFocusRef.current = artifactMessageFocusFromPreviewFile(
       file,
       artifactTopicRef.current,
@@ -764,32 +835,35 @@ export default function MessagesView({
     activeArtifactFrameRef.current = activeBinding;
     if (!activeBinding) {
       artifactTaskHostRef.current?.deactivate();
+      artifactRuntimeHostRef.current?.deactivate();
       return;
     }
+    artifactRuntimeHostRef.current?.resume();
     artifactTaskHostRef.current?.connect(activeBinding);
   }, []);
 
   useEffect(() => {
+    const getCurrentSession = () => {
+      const focus = activeArtifactFocusRef.current;
+      const binding = activeArtifactFrameRef.current;
+      if (!focus || !binding || activeTopicRef.current !== focus.topic
+        || artifactTopicGenerationRef.current !== focus.topicGeneration
+        || activeArtifactAgentUIDRef.current !== focus.agentUid
+        || !artifactBindingMatchesFocus(binding, focus)) return null;
+      return {
+        token: focus,
+        identityKey: focus.previewKey,
+        topicId: focus.topic,
+        topicGeneration: focus.topicGeneration,
+        agentUid: focus.agentUid,
+        artifactId: focus.artifactId,
+        displayedVersion: focus.displayedVersion,
+        artifactRef: focus.artifactRef,
+        binding,
+      };
+    };
     const host = createArtifactTaskHost({
-      getCurrentSession: () => {
-        const focus = activeArtifactFocusRef.current;
-        const binding = activeArtifactFrameRef.current;
-        if (!focus || !binding || activeTopicRef.current !== focus.topic
-          || artifactTopicGenerationRef.current !== focus.topicGeneration
-          || activeArtifactAgentUIDRef.current !== focus.agentUid
-          || !artifactBindingMatchesFocus(binding, focus)) return null;
-        return {
-          token: focus,
-          identityKey: focus.previewKey,
-          topicId: focus.topic,
-          topicGeneration: focus.topicGeneration,
-          agentUid: focus.agentUid,
-          artifactId: focus.artifactId,
-          displayedVersion: focus.displayedVersion,
-          artifactRef: focus.artifactRef,
-          binding,
-        };
-      },
+      getCurrentSession,
       confirmTask: () => artifactTaskFeedbackRef.current.confirm({
         title: '发送给虚拟员工？',
         message: '该应用希望把你刚才的操作作为一条新消息交给当前虚拟员工处理。',
@@ -797,13 +871,19 @@ export default function MessagesView({
         cancelLabel: '取消',
       }),
     });
+    const runtimeHost = createArtifactRuntimeHost({ getCurrentSession });
     artifactTaskHostRef.current = host;
+    artifactRuntimeHostRef.current = runtimeHost;
     host.connect(activeArtifactFrameRef.current);
     window.addEventListener('message', host.handleWindowMessage);
+    window.addEventListener('message', runtimeHost.handleWindowMessage);
     return () => {
       window.removeEventListener('message', host.handleWindowMessage);
+      window.removeEventListener('message', runtimeHost.handleWindowMessage);
       host.dispose();
+      runtimeHost.dispose();
       if (artifactTaskHostRef.current === host) artifactTaskHostRef.current = null;
+      if (artifactRuntimeHostRef.current === runtimeHost) artifactRuntimeHostRef.current = null;
     };
   }, []);
 
@@ -1115,7 +1195,7 @@ export default function MessagesView({
     activeTopicRef.current = topic;
     activeArtifactFocusRef.current = null;
     activeArtifactFrameRef.current = null;
-    setInput(composerDraftsRef.current.get(topic) || '');
+    setInput(readComposerInputDraft(composerDraftStoreRef.current, topic));
     const cacheKey = historyCacheKey(user.uid, topic);
     const cachedHistory = historyCacheRef.current.get(cacheKey);
     const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
@@ -1125,7 +1205,7 @@ export default function MessagesView({
     setQuestionIndexLimitReached(Boolean(cachedQuestionIndex?.limitReached));
     setQuestionIndexLoading(false);
     questionIndexLoadingRef.current = false;
-    const attachmentDraft = attachmentDraftsRef.current.get(topic) || [];
+    const attachmentDraft = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
     pendingAttachmentsRef.current = attachmentDraft;
     setPendingAttachments(attachmentDraft);
     setIsDragActive(false);
@@ -1175,10 +1255,14 @@ export default function MessagesView({
     setAttachmentStatus(null);
     setAttachmentMenuOpen(false);
     setPhoneUploadDialogOpen(false);
-    setPhoneUploadSession(null);
+    const restoredPhoneUploadSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      topic,
+    );
+    setPhoneUploadSession(restoredPhoneUploadSession);
     setPhoneUploadError('');
-    phoneUploadSessionRef.current = null;
-    phoneUploadTopicRef.current = '';
+    phoneUploadSessionRef.current = restoredPhoneUploadSession;
+    phoneUploadTopicRef.current = restoredPhoneUploadSession ? topic : '';
     phoneUploadSyncRef.current = null;
     phoneUploadFileKeysRef.current = new Set();
     const targetMessageId = messageLocationRequest?.topicId === topic
@@ -1892,8 +1976,21 @@ export default function MessagesView({
     const sessionTopic = phoneUploadTopicRef.current;
     if (!sessionId || !sessionTopic || activeTopicRef.current !== sessionTopic) return [];
 
+    if (final && phoneUploadSyncRef.current) {
+      const inFlightOperation = phoneUploadSyncRef.current;
+      try {
+        await inFlightOperation;
+      } catch {
+        // The fresh final read below gets one more chance to collect the latest files.
+      }
+      if (phoneUploadSyncRef.current === inFlightOperation) {
+        phoneUploadSyncRef.current = null;
+      }
+    }
+
     let operation = phoneUploadSyncRef.current;
     if (!operation) {
+      const draftRevision = readComposerDraftRevision(composerDraftStoreRef.current, sessionTopic);
       operation = (async () => {
         const data = await api.getMobileUploadSession(sessionId);
         if (
@@ -1903,15 +2000,35 @@ export default function MessagesView({
         ) {
           return [];
         }
+        if (!isComposerDraftRevisionCurrent(
+          composerDraftStoreRef.current,
+          sessionTopic,
+          draftRevision,
+        )) return [];
         if (data?.topic && data.topic !== sessionTopic) {
           throw new Error('手机上传会话与当前对话不匹配，请重新打开二维码。');
         }
 
         const nextAttachments = [];
+        const ignoredFileKeys = new Set(
+          readComposerPhoneUploadIgnoredFileKeys(composerDraftStoreRef.current, sessionTopic),
+        );
+        const existingAttachmentKeys = new Set(
+          readComposerAttachmentDraft(composerDraftStoreRef.current, sessionTopic)
+            .map(attachmentFileKey)
+            .filter(Boolean),
+        );
+        const nextAttachmentKeys = [];
         for (const file of Array.isArray(data?.files) ? data.files : []) {
           const fileKey = file.file_key || file.url || file.name;
-          if (!fileKey || phoneUploadFileKeysRef.current.has(fileKey)) continue;
-          phoneUploadFileKeysRef.current.add(fileKey);
+          if (
+            !fileKey
+            || ignoredFileKeys.has(fileKey)
+            || phoneUploadFileKeysRef.current.has(fileKey)
+            || existingAttachmentKeys.has(fileKey)
+          ) continue;
+          existingAttachmentKeys.add(fileKey);
+          nextAttachmentKeys.push(fileKey);
           const type = file.type === 'image' ? 'image' : 'file';
           const payload = {
             file_key: file.file_key,
@@ -1930,10 +2047,16 @@ export default function MessagesView({
         }
 
         if (nextAttachments.length > 0) {
-          const updated = updateAttachmentDraft(sessionTopic, (current) => [...current, ...nextAttachments]);
-          if (activeTopicRef.current === sessionTopic) {
+          const updated = updateAttachmentDraft(
+            sessionTopic,
+            (current) => [...current, ...nextAttachments],
+            draftRevision,
+          );
+          if (updated && activeTopicRef.current === sessionTopic) {
             setAttachmentStatus({ tone: 'success', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
           }
+          if (!updated) return [];
+          nextAttachmentKeys.forEach((fileKey) => phoneUploadFileKeysRef.current.add(fileKey));
         }
         if (activeTopicRef.current === sessionTopic) setPhoneUploadError('');
         return nextAttachments;
@@ -1950,12 +2073,27 @@ export default function MessagesView({
       ) {
         setPhoneUploadError(error?.message || '读取手机上传结果失败');
       }
+      if (
+        /session not found|not found|expired/i.test(String(error?.message || ''))
+        && phoneUploadSessionRef.current?.session_id === sessionId
+      ) {
+        writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, null);
+        persistComposerDraftStore();
+        if (
+          activeTopicRef.current === sessionTopic
+          && phoneUploadSessionRef.current?.session_id === sessionId
+        ) {
+          phoneUploadSessionRef.current = null;
+          phoneUploadTopicRef.current = '';
+          setPhoneUploadSession(null);
+        }
+      }
       if (final) throw error;
       return [];
     } finally {
       if (phoneUploadSyncRef.current === operation) phoneUploadSyncRef.current = null;
     }
-  }, [updateAttachmentDraft]);
+  }, [persistComposerDraftStore, updateAttachmentDraft]);
 
   const finalizeOptimisticMessage = useCallback((tempId, result) => {
     if (!result || (!result.seq_id && !result.id)) return;
@@ -1980,8 +2118,20 @@ export default function MessagesView({
   const handleSend = useCallback(async () => {
     const originalInput = input;
     const initialText = originalInput.trim();
-    const initialAttachments = attachmentDraftsRef.current.get(topic) || pendingAttachmentsRef.current;
-    if (!initialText && initialAttachments.length === 0) return;
+    const storedAttachments = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
+    const initialAttachments = storedAttachments.length > 0
+      ? storedAttachments
+      : pendingAttachmentsRef.current;
+    const storedPhoneUploadSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      topic,
+    );
+    if (
+      !initialText
+      && initialAttachments.length === 0
+      && !storedPhoneUploadSession?.session_id
+      && !phoneUploadSessionRef.current?.session_id
+    ) return;
     if (isUploadingAttachment || sendInFlightRef.current) return;
 
     sendInFlightRef.current = true;
@@ -1993,12 +2143,17 @@ export default function MessagesView({
     let topicToActivate = null;
     let switchesTopic = false;
     let stateCleared = false;
+    let sendClearMutationRevision = null;
     let messageSent = false;
     let optimisticMessageAdded = false;
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
-    const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const originalStructuredMentions = readComposerMentionDraft(composerDraftStoreRef.current, topic);
+    const originalPhoneUploadSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      topic,
+    );
     const protocolText = isGroup
       ? canonicalizeStructuredMentionText(originalInput, originalStructuredMentions).trim()
       : text;
@@ -2015,11 +2170,20 @@ export default function MessagesView({
       switchesTopic = sendTopic !== topic;
 
       await syncPhoneUploads({ final: true });
-      attachmentsToSend = [...(attachmentDraftsRef.current.get(topic) || [])];
+      attachmentsToSend = [...readComposerAttachmentDraft(composerDraftStoreRef.current, topic)];
       if (!text && attachmentsToSend.length === 0) {
         setAwaitingAgentReply(false);
         return;
       }
+      const snapshotMutationRevision = readComposerDraftMutationRevision(
+        composerDraftStoreRef.current,
+        topic,
+      );
+
+      // Phone polling above is part of message preparation. Invalidate the
+      // callback generation only after its final read so a file that arrived
+      // while Send was starting is still included in this message.
+      invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
       const contentBlocks = buildAtomicContentBlocks(protocolText, attachmentsToSend);
@@ -2036,15 +2200,44 @@ export default function MessagesView({
         : await captureArtifactMessageContext();
       const sendPayload = withArtifactContextRef(payload, artifactContext.contextRef);
 
-      updateComposerDraft(topic, '');
-      updateStructuredMentionDraft(topic, []);
-      updateAttachmentDraft(topic, []);
-      stateCleared = true;
+      // If a newer composer wrote text/mentions while this send was being
+      // prepared, leave that draft alone. Attachment polling above is part of
+      // the message preparation, so its writes are represented by the
+      // snapshot revision and do not count as a newer draft here.
+      const currentInputDraft = readComposerInputDraft(composerDraftStoreRef.current, topic);
+      const currentMentionDraft = readComposerMentionDraft(composerDraftStoreRef.current, topic);
+      const draftChangedBeforeClear = (
+        currentInputDraft !== originalInput
+        || JSON.stringify(currentMentionDraft) !== JSON.stringify(originalStructuredMentions)
+        || readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+          !== snapshotMutationRevision
+      );
+      if (!draftChangedBeforeClear) {
+        // Close the generation again immediately before clearing. This also
+        // rejects callbacks that started after the send began but still belong
+        // to the draft being consumed.
+        invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
+        updateComposerDraft(topic, '');
+        updateStructuredMentionDraft(topic, []);
+        updateAttachmentDraft(topic, []);
+        writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
+        persistComposerDraftStore();
+        sendClearMutationRevision = readComposerDraftMutationRevision(
+          composerDraftStoreRef.current,
+          topic,
+        );
+        stateCleared = true;
+      }
       if (activeTopicRef.current === topic) {
-        clearRuntimePlan();
-        setAttachmentStatus(null);
-        setInput('');
-        setReplyTo(null);
+        if (stateCleared) {
+          clearRuntimePlan();
+          setAttachmentStatus(null);
+          setInput('');
+          setReplyTo(null);
+          phoneUploadSessionRef.current = null;
+          phoneUploadTopicRef.current = '';
+          setPhoneUploadSession(null);
+        }
       }
 
       stickToBottomRef.current = true;
@@ -2066,10 +2259,53 @@ export default function MessagesView({
         }]));
       }
 
+      // Snapshot the payload mutation counter after preparation and before the
+      // request. Finish consuming the same payload after success only when
+      // nothing touched the draft in flight; the counter treats an identical
+      // re-typed draft as newer and keeps it intact.
+      const sendStartMutationRevision = readComposerDraftMutationRevision(
+        composerDraftStoreRef.current,
+        topic,
+      );
       const result = mentions.length > 0
         ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
         : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
+      const inputStillMatches = readComposerInputDraft(
+        composerDraftStoreRef.current,
+        topic,
+      ) === originalInput;
+      const attachmentsStillMatch = JSON.stringify(readComposerAttachmentDraft(
+        composerDraftStoreRef.current,
+        topic,
+      )) === JSON.stringify(attachmentsToSend);
+      if (
+        !stateCleared
+        && inputStillMatches
+        && attachmentsStillMatch
+        // The payload counter also moves on mention-draft writes, which the
+        // checks above do not compare. Mid-send mention writes only happen
+        // alongside an input-draft rewrite (edit-resend, tutorial prompts),
+        // where skipping this clear is correct anyway, so an unchanged
+        // counter reliably means "same payload, no newer draft".
+        && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+          === sendStartMutationRevision
+      ) {
+        invalidateComposerDraftRevision(composerDraftStoreRef.current, topic);
+        updateComposerDraft(topic, '');
+        updateStructuredMentionDraft(topic, []);
+        updateAttachmentDraft(topic, []);
+        writeComposerPhoneUploadSession(composerDraftStoreRef.current, topic, null);
+        persistComposerDraftStore();
+        stateCleared = true;
+        if (activeTopicRef.current === topic) {
+          setInput('');
+          setPendingAttachments([]);
+          phoneUploadSessionRef.current = null;
+          phoneUploadTopicRef.current = '';
+          setPhoneUploadSession(null);
+        }
+      }
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
           await onActivateTopic?.(topicToActivate);
@@ -2092,10 +2328,26 @@ export default function MessagesView({
       setAwaitingAgentReply(false);
 
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
-      if (stateCleared) {
+      const draftHasChangesAfterClear = (
+        readComposerInputDraft(composerDraftStoreRef.current, topic) !== ''
+        || readComposerMentionDraft(composerDraftStoreRef.current, topic).length > 0
+        || readComposerAttachmentDraft(composerDraftStoreRef.current, topic).length > 0
+      );
+      if (
+        stateCleared
+        && !draftHasChangesAfterClear
+        && readComposerDraftMutationRevision(composerDraftStoreRef.current, topic)
+          === sendClearMutationRevision
+      ) {
         updateComposerDraft(topic, originalInput);
         updateStructuredMentionDraft(topic, originalStructuredMentions);
         updateAttachmentDraft(topic, attachmentsToSend);
+        writeComposerPhoneUploadSession(
+          composerDraftStoreRef.current,
+          topic,
+          originalPhoneUploadSession,
+        );
+        persistComposerDraftStore();
       }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
@@ -2111,7 +2363,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -2225,7 +2477,7 @@ export default function MessagesView({
     const nextStructuredMentions = reconcileStructuredMentionSelections(
       input,
       val,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     setInput(val);
     updateComposerDraft(topic, val);
@@ -2272,7 +2524,7 @@ export default function MessagesView({
     const nextStructuredMentions = reconcileStructuredMentionSelections(
       result.baseValue,
       result.value,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     setInput(result.value);
     updateComposerDraft(topic, result.value);
@@ -2297,7 +2549,7 @@ export default function MessagesView({
     const reconciledSelections = reconcileStructuredMentionSelections(
       input,
       newText,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     updateStructuredMentionDraft(topic, [
       ...reconciledSelections,
@@ -2325,7 +2577,7 @@ export default function MessagesView({
     const nextStructuredMentions = reconcileStructuredMentionSelections(
       input,
       nextInput,
-      structuredMentionDraftsRef.current.get(topic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, topic),
     );
     setInput(nextInput);
     updateComposerDraft(topic, nextInput);
@@ -2340,7 +2592,17 @@ export default function MessagesView({
     }, 0);
   };
 
-  const uploadAttachmentFile = async (file, requestedType, uploadTopic = activeTopicRef.current) => {
+  const uploadAttachmentFile = async (
+    file,
+    requestedType,
+    uploadTopic = activeTopicRef.current,
+    uploadRevision = readComposerDraftRevision(composerDraftStoreRef.current, uploadTopic),
+  ) => {
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      uploadTopic,
+      uploadRevision,
+    )) return null;
     const type = inferAttachmentType(file, requestedType);
     const validationError = validateAttachmentBeforeUpload(file, type);
     if (validationError) {
@@ -2372,33 +2634,59 @@ export default function MessagesView({
         size: data.size,
         content,
       };
-      updateAttachmentDraft(uploadTopic, (current) => [...current, attachment]);
+      const updated = updateAttachmentDraft(
+        uploadTopic,
+        (current) => [...current, attachment],
+        uploadRevision,
+      );
+      if (!updated) return null;
       if (activeTopicRef.current === uploadTopic) {
         setAttachmentStatus({ tone: 'success', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
         setTimeout(() => textareaRef.current?.focus(), 0);
       }
       return attachment;
     } catch (err) {
-      if (activeTopicRef.current === uploadTopic) {
+      if (
+        activeTopicRef.current === uploadTopic
+        && isComposerDraftRevisionCurrent(
+          composerDraftStoreRef.current,
+          uploadTopic,
+          uploadRevision,
+        )
+      ) {
         setAttachmentStatus({ tone: 'error', message: formatUploadError(err) });
       }
       return null;
     }
   };
 
-  const uploadAttachmentFiles = async (files, requestedType) => {
+  const uploadAttachmentFiles = async (files, requestedType, expectedRevision) => {
     const fileList = Array.from(files || []).filter(Boolean);
     if (fileList.length === 0 || sendInFlightRef.current) return;
     const uploadTopic = activeTopicRef.current;
+    const uploadRevision = expectedRevision ?? readComposerDraftRevision(
+      composerDraftStoreRef.current,
+      uploadTopic,
+    );
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      uploadTopic,
+      uploadRevision,
+    )) return;
     let uploadedCount = 0;
     let failedCount = 0;
     setIsUploadingAttachment(true);
     try {
       for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
-        const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
+        const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic, uploadRevision);
         if (uploaded) {
           uploadedCount += 1;
         } else {
+          if (!isComposerDraftRevisionCurrent(
+            composerDraftStoreRef.current,
+            uploadTopic,
+            uploadRevision,
+          )) return;
           failedCount += 1;
         }
       }
@@ -2439,17 +2727,33 @@ export default function MessagesView({
     const sessionTopic = topic;
     setPhoneUploadDialogOpen(true);
     setPhoneUploadError('');
-    setPhoneUploadSession(null);
-    phoneUploadSessionRef.current = null;
-    phoneUploadTopicRef.current = '';
-    phoneUploadSyncRef.current = null;
-    phoneUploadFileKeysRef.current = new Set();
+    const existingSession = readComposerPhoneUploadSession(
+      composerDraftStoreRef.current,
+      sessionTopic,
+    );
+    if (existingSession?.session_id) {
+      phoneUploadSessionRef.current = existingSession;
+      phoneUploadTopicRef.current = sessionTopic;
+      setPhoneUploadSession(existingSession);
+      return;
+    }
+    const draftRevision = readComposerDraftRevision(composerDraftStoreRef.current, sessionTopic);
     try {
       const session = await api.createMobileUploadSession(sessionTopic);
-      if (activeTopicRef.current !== sessionTopic) return;
-      phoneUploadSessionRef.current = session;
-      phoneUploadTopicRef.current = sessionTopic;
-      setPhoneUploadSession(session);
+      if (
+        !isComposerDraftRevisionCurrent(
+          composerDraftStoreRef.current,
+          sessionTopic,
+          draftRevision,
+        )
+      ) return;
+      writeComposerPhoneUploadSession(composerDraftStoreRef.current, sessionTopic, session);
+      persistComposerDraftStore();
+      if (activeTopicRef.current === sessionTopic) {
+        phoneUploadSessionRef.current = session;
+        phoneUploadTopicRef.current = sessionTopic;
+        setPhoneUploadSession(session);
+      }
     } catch (err) {
       if (activeTopicRef.current === sessionTopic) {
         setPhoneUploadError(err.message || '手机上传入口创建失败');
@@ -2538,13 +2842,23 @@ export default function MessagesView({
       return;
     }
 
+    const dropTopic = activeTopicRef.current;
+    const dropRevision = readComposerDraftRevision(composerDraftStoreRef.current, dropTopic);
     const files = await collectDroppedFiles(e.dataTransfer);
+    if (
+      activeTopicRef.current !== dropTopic
+      || !isComposerDraftRevisionCurrent(
+        composerDraftStoreRef.current,
+        dropTopic,
+        dropRevision,
+      )
+    ) return;
     if (files.length === 0) {
       setAttachmentStatus({ tone: 'error', message: '这次拖入没有识别到可上传的文件。' });
       return;
     }
 
-    await uploadAttachmentFiles(files);
+    await uploadAttachmentFiles(files, undefined, dropRevision);
   };
 
   const handlePaste = async (e) => {
@@ -2569,6 +2883,11 @@ export default function MessagesView({
     }
 
     const pasteTopic = activeTopicRef.current;
+    const pasteRevision = readComposerDraftRevision(composerDraftStoreRef.current, pasteTopic);
+    const pasteMutationRevision = readComposerDraftMutationRevision(
+      composerDraftStoreRef.current,
+      pasteTopic,
+    );
     const textarea = e.currentTarget;
     const selectionStart = Number.isInteger(textarea?.selectionStart) ? textarea.selectionStart : input.length;
     const selectionEnd = Number.isInteger(textarea?.selectionEnd) ? textarea.selectionEnd : selectionStart;
@@ -2579,7 +2898,7 @@ export default function MessagesView({
     setIsUploadingAttachment(true);
     let uploaded = null;
     try {
-      uploaded = await uploadAttachmentFile(documentFile, 'file', pasteTopic);
+      uploaded = await uploadAttachmentFile(documentFile, 'file', pasteTopic, pasteRevision);
     } finally {
       setIsUploadingAttachment(false);
     }
@@ -2594,16 +2913,28 @@ export default function MessagesView({
       return;
     }
 
+    // A failed upload and an intentionally ignored stale upload both return
+    // null. Do not restore the old clipboard text after a newer draft has
+    // already been sent or replaced.
+    if (!isComposerDraftRevisionCurrent(
+      composerDraftStoreRef.current,
+      pasteTopic,
+      pasteRevision,
+    ) || readComposerDraftMutationRevision(
+      composerDraftStoreRef.current,
+      pasteTopic,
+    ) !== pasteMutationRevision) return;
+
     const currentText = pasteTopic === activeTopicRef.current
       ? (textareaRef.current?.value ?? input)
-      : (composerDraftsRef.current.get(pasteTopic) || '');
+      : readComposerInputDraft(composerDraftStoreRef.current, pasteTopic);
     const start = Math.min(Math.max(selectionStart, 0), currentText.length);
     const end = Math.min(Math.max(selectionEnd, start), currentText.length);
     const restoredText = `${currentText.slice(0, start)}${pastedText}${currentText.slice(end)}`;
     const restoredMentions = reconcileStructuredMentionSelections(
       currentText,
       restoredText,
-      structuredMentionDraftsRef.current.get(pasteTopic) || [],
+      readComposerMentionDraft(composerDraftStoreRef.current, pasteTopic),
     );
     updateComposerDraft(pasteTopic, restoredText);
     updateStructuredMentionDraft(pasteTopic, restoredMentions);
@@ -2714,6 +3045,13 @@ export default function MessagesView({
       .filter((uid) => uid > 0);
   }, [availableAgentUIDs, isAgentTask, members]);
   const taskBotUID = taskBotUIDs.length === 1 ? taskBotUIDs[0] : 0;
+  const conversationBotUID = isGroup ? taskBotUID : peerUID;
+  const cloudWorkerUpdate = useMemo(() => {
+    if (!conversationBotUID) return null;
+    const worker = cloudWorkers.find((candidate) => sameUID(candidate?.uid, conversationBotUID));
+    if (!worker || !worker.update_available || !worker.latest_release) return null;
+    return worker;
+  }, [cloudWorkers, conversationBotUID]);
   const isTwoPersonGroupWithCurrentUser = useMemo(() => {
     if (!isGroup) return false;
     const memberUIDs = new Set(
@@ -3976,6 +4314,19 @@ export default function MessagesView({
               <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>
+              {cloudWorkerUpdate && (
+                <section className="cc-cloud-worker-update-notice" role="status" aria-live="polite">
+                  <span>云员工「{cloudWorkerUpdate.display_name || cloudWorkerUpdate.username || '当前机器人'}」有新版本 {cloudWorkerUpdate.latest_release}，可在云托管管理中更新。</span>
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent('cc:open-cloud-worker-manager', {
+                      detail: { workerUid: cloudWorkerUpdate.uid, tenantName: cloudWorkerUpdate.tenant_name },
+                    }))}
+                  >
+                    去更新
+                  </button>
+                </section>
+              )}
 
         {!historyLoaded && (
           <div className="v3-history-state" role="status" aria-live="polite">
@@ -4290,7 +4641,13 @@ export default function MessagesView({
         attachments={pendingAttachments}
         attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
         onRemoveAttachment={(index) => {
-          updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          const current = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
+          markComposerPhoneUploadIgnoredFileKey(
+            composerDraftStoreRef.current,
+            topic,
+            attachmentFileKey(current[index]),
+          );
+          updateAttachmentDraft(topic, (items) => items.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}
         overlay={showMentionPicker && isGroup && (
@@ -4589,6 +4946,15 @@ function tutorialDismissStorageKey(uid, topic) {
 function hasFileDrag(dataTransfer) {
   if (!dataTransfer?.types) return false;
   return Array.from(dataTransfer.types).includes('Files');
+}
+
+function attachmentFileKey(attachment) {
+  return attachment?.content?.payload?.file_key
+    || attachment?.content?.payload?.url
+    || attachment?.file_key
+    || attachment?.url
+    || attachment?.name
+    || '';
 }
 
 

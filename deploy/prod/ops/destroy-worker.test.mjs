@@ -40,10 +40,20 @@ if (op === "ecs ListEcsInstances") {
   if (state.failDeleteInstance) { json({ statusCode: "900", errorCode: "E.DEL", message: "boom" }); process.exit(0); }
   state.deletedInstances = state.deletedInstances || [];
   state.deletedInstances.push(val("--instanceID"));
-  state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  if (!state.deferDeleteInstance) {
+    state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
+  }
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DestroyEcsInstance") {
+  state.destroyAttempts = (state.destroyAttempts || 0) + 1;
+  state.destroyTokens = state.destroyTokens || [];
+  state.destroyTokens.push(val("--clientToken"));
+  if (state.failDestroyAttempts >= state.destroyAttempts) {
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    json({ statusCode: "900", errorCode: "E.DESTROY", message: "retry" });
+    process.exit(0);
+  }
   if (state.failDestroyInstance) { json({ statusCode: "900", errorCode: "E.DESTROY", message: "boom" }); process.exit(0); }
   state.destroyedInstances = state.destroyedInstances || [];
   state.destroyedInstances.push(val("--instanceID"));
@@ -212,6 +222,98 @@ test("destroy-worker: deletes instance + keypair + state dir", () => {
   assert.ok(!fs.existsSync(st), "state dir should be cleaned up");
 });
 
+test("destroy-worker: removes the saved Agent route without making gateway failure fatal", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const st = path.join(sb.sandbox, "state");
+  fs.mkdirSync(st, { recursive: true });
+  fs.writeFileSync(path.join(st, "inject.env"), "CATSCO_BOT_UID=42\n");
+  const routeScript = path.join(sb.bin, "remove-artifact-route.sh");
+  const syncScript = path.join(sb.bin, "sync-artifact-routes.sh");
+  const calls = path.join(sb.sandbox, "route.calls");
+  const syncCalls = path.join(sb.sandbox, "sync.calls");
+  const cleanupDir = path.join(sb.sandbox, "route-cleanup");
+  fs.writeFileSync(routeScript, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > '${toMsys(calls)}'\nexit 1\n`);
+  fs.writeFileSync(syncScript, `#!/usr/bin/env bash\nprintf 'sync\\n' > '${toMsys(syncCalls)}'\n`);
+  fs.chmodSync(routeScript, 0o755);
+  fs.chmodSync(syncScript, 0o755);
+  const r = run(sb, ["--name", "bot-a"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
+    CATSCO_ARTIFACT_GATEWAY_SYNC_SCRIPT: toMsys(syncScript),
+    CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR: toMsys(cleanupDir),
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /Artifact route cleanup failed/);
+  assert.equal(fs.readFileSync(calls, "utf8").trim(), "remove 42");
+  assert.equal(fs.readFileSync(syncCalls, "utf8").trim(), "sync");
+  assert.equal(fs.existsSync(path.join(cleanupDir, "42.pending")), false);
+});
+
+test("destroy-worker: keeps a cleanup marker when route repair is unavailable", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+  });
+  const st = path.join(sb.sandbox, "state");
+  fs.mkdirSync(st, { recursive: true });
+  fs.writeFileSync(path.join(st, "inject.env"), "CATSCO_BOT_UID=42\n");
+  const routeScript = path.join(sb.bin, "remove-artifact-route.sh");
+  const syncScript = path.join(sb.bin, "sync-artifact-routes.sh");
+  const cleanupDir = path.join(sb.sandbox, "route-cleanup");
+  fs.writeFileSync(routeScript, "#!/usr/bin/env bash\nexit 1\n");
+  fs.writeFileSync(syncScript, "#!/usr/bin/env bash\nexit 1\n");
+  fs.chmodSync(routeScript, 0o755);
+  fs.chmodSync(syncScript, 0o755);
+  const r = run(sb, ["--name", "bot-a"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
+    CATSCO_ARTIFACT_GATEWAY_SYNC_SCRIPT: toMsys(syncScript),
+    CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR: toMsys(cleanupDir),
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /cleanup remains pending/);
+  assert.equal(fs.readFileSync(path.join(cleanupDir, "42.pending"), "utf8"), "42\n");
+});
+
+test("destroy-worker: full sync excludes a pending route while async deletion remains visible", () => {
+  const sb = setupSandbox({
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
+    keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
+    deferDeleteInstance: true,
+  });
+  const stateRoot = path.join(sb.sandbox, "worker-state");
+  const workerState = path.join(stateRoot, "bot-a");
+  const cleanupDir = path.join(stateRoot, ".artifact-route-cleanup");
+  const routeScript = path.join(sb.bin, "artifact-route.sh");
+  const syncedRoutes = path.join(sb.sandbox, "synced-routes.json");
+  fs.mkdirSync(workerState, { recursive: true });
+  fs.writeFileSync(path.join(workerState, "inject.env"), "CATSCO_BOT_UID=42\n");
+  fs.writeFileSync(routeScript, `#!/usr/bin/env bash
+case "$1" in
+  remove) exit 1 ;;
+  sync) cat > '${toMsys(syncedRoutes)}' ;;
+  *) exit 2 ;;
+esac
+`);
+  fs.chmodSync(routeScript, 0o755);
+
+  const r = run(sb, ["--name", "bot-a"], {
+    CTYUN_WORKER_STATE_ROOT: toMsys(stateRoot),
+    CTYUN_WORKER_STATE_DIR: "",
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
+    CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR: toMsys(cleanupDir),
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(syncedRoutes, "utf8")), {});
+  assert.equal(fs.existsSync(path.join(cleanupDir, "42.pending")), false);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.instances[0].state, "running", "the cloud API still exposes the asynchronously deleting instance");
+});
+
 test("destroy-worker: keypair still cleaned when instance already gone", () => {
   const sb = setupSandbox({
     keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
@@ -251,6 +353,19 @@ test("destroy-worker: already-unsubscribed monthly instance is destroyed directl
   assert.equal((state.stopCalls || []).length, 0);
   assert.deepEqual(state.destroyedInstances, ["i-1"]);
   assert.deepEqual(state.deletedKeypairs, ["worker-key-bot-a"]);
+});
+
+test("destroy-worker: retries transient permanent-destroy failure with one client token", () => {
+  const sb = setupSandbox({
+    failDestroyAttempts: 2,
+    instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "unsubscribed", instanceStatus: "unsubscribed" }],
+  });
+  const r = run(sb, ["--name", "bot-a"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.destroyAttempts, 3);
+  assert.deepEqual(state.destroyedInstances, ["i-1"]);
+  assert.equal(new Set(state.destroyTokens).size, 1, "retries must reuse the idempotency token");
 });
 
 test("destroy-worker: on-demand instance (no expiredTime) still uses DeleteEcsInstance", () => {

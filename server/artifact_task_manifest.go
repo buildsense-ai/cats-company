@@ -15,15 +15,16 @@ import (
 )
 
 const (
-	artifactTaskManifestContract = "catsco.artifact-manifest.v3"
-	artifactTaskManifestFilename = "artifact-manifest.json"
-	artifactTaskManifestMaxBytes = 64 * 1024
-	artifactTaskIntentMaxItems   = 16
-	artifactTaskSchemaMaxDepth   = 8
-	artifactTaskSchemaMaxNodes   = 256
-	artifactTaskSchemaMaxProps   = 64
-	artifactTaskSchemaMaxEnum    = 64
-	artifactTaskPayloadMaxBytes  = 64 * 1024
+	artifactTaskManifestContract   = "catsco.artifact-manifest.v3"
+	artifactTaskManifestContractV4 = "catsco.artifact-manifest.v4"
+	artifactTaskManifestFilename   = "artifact-manifest.json"
+	artifactTaskManifestMaxBytes   = 64 * 1024
+	artifactTaskIntentMaxItems     = 16
+	artifactTaskSchemaMaxDepth     = 8
+	artifactTaskSchemaMaxNodes     = 256
+	artifactTaskSchemaMaxProps     = 64
+	artifactTaskSchemaMaxEnum      = 64
+	artifactTaskPayloadMaxBytes    = 64 * 1024
 )
 
 var artifactTaskManifestKeys = map[string]bool{
@@ -35,16 +36,33 @@ var artifactTaskManifestKeys = map[string]bool{
 	"observation_capabilities": true,
 	"result_sinks":             true,
 	"task_intents":             true,
+	"runtime":                  true,
 }
 
 // ArtifactTaskIntent is application-authored data from one immutable Artifact
 // version. Its identity is server-validated, but its prose remains untrusted.
 type ArtifactTaskIntent struct {
-	ID          string          `json:"id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-	ResultSink  string          `json:"result_sink"`
+	ID          string                  `json:"id"`
+	Title       string                  `json:"title"`
+	Description string                  `json:"description"`
+	InputSchema json.RawMessage         `json:"input_schema"`
+	ResultSink  string                  `json:"result_sink,omitempty"`
+	Completion  *ArtifactTaskCompletion `json:"completion,omitempty"`
+}
+
+type ArtifactTaskCompletion struct {
+	Mode string `json:"mode,omitempty"`
+}
+
+func (intent ArtifactTaskIntent) usesRuntimeStateCompletion() bool {
+	return intent.ResultSink == "" && intent.completionMode() == "runtime_state"
+}
+
+func (intent ArtifactTaskIntent) completionMode() string {
+	if intent.Completion == nil {
+		return ""
+	}
+	return intent.Completion.Mode
 }
 
 // ArtifactTaskIntentResolver loads one declared intent from the exact
@@ -133,8 +151,17 @@ func parseArtifactTaskIntentManifest(body []byte, intentID string) (ArtifactTask
 			return ArtifactTaskIntent{}, fmt.Errorf("Artifact task manifest contains unsupported field %q", key)
 		}
 	}
-	if manifest["contract_version"] != artifactTaskManifestContract {
-		return ArtifactTaskIntent{}, fmt.Errorf("Artifact task manifest must use %s", artifactTaskManifestContract)
+	contractVersion := manifest["contract_version"]
+	if contractVersion != artifactTaskManifestContract && contractVersion != artifactTaskManifestContractV4 {
+		return ArtifactTaskIntent{}, fmt.Errorf(
+			"Artifact task manifest must use %s or %s",
+			artifactTaskManifestContract,
+			artifactTaskManifestContractV4,
+		)
+	}
+	_, hasRuntime := manifest["runtime"]
+	if contractVersion != artifactTaskManifestContractV4 && hasRuntime {
+		return ArtifactTaskIntent{}, errors.New("Only Artifact manifest v4 supports runtime")
 	}
 	sinkIDs, err := artifactTaskManifestSinkIDs(manifest["result_sinks"])
 	if err != nil {
@@ -152,17 +179,30 @@ func parseArtifactTaskIntentManifest(body []byte, intentID string) (ArtifactTask
 			return ArtifactTaskIntent{}, fmt.Errorf("Artifact task_intents[%d] must be an object", index)
 		}
 		for key := range value {
-			if artifactTaskUnsafeKey(key) || (key != "id" && key != "title" && key != "description" && key != "input_schema" && key != "result_sink") {
+			if artifactTaskUnsafeKey(key) || (key != "id" && key != "title" && key != "description" && key != "input_schema" && key != "result_sink" && key != "completion") {
 				return ArtifactTaskIntent{}, fmt.Errorf("Artifact task_intents[%d] contains unsupported field %q", index, key)
 			}
 		}
 		id, idOK := artifactTaskManifestText(value["id"], 128)
 		title, titleOK := artifactTaskManifestText(value["title"], 256)
 		description, descriptionOK := artifactTaskManifestText(value["description"], 500)
-		resultSink, sinkOK := artifactTaskManifestText(value["result_sink"], 128)
+		resultSink := ""
+		if rawSink, hasSink := value["result_sink"]; hasSink {
+			var sinkOK bool
+			resultSink, sinkOK = artifactTaskManifestText(rawSink, 128)
+			if !sinkOK || !artifactResultSinkIDPattern.MatchString(resultSink) || !sinkIDs[resultSink] {
+				return ArtifactTaskIntent{}, fmt.Errorf("Artifact task_intents[%d] is invalid", index)
+			}
+		}
+		completion, completionOK := parseArtifactTaskCompletion(value["completion"])
 		if !idOK || !artifactResultSinkIDPattern.MatchString(id) || seen[id] || !titleOK || !descriptionOK ||
-			!sinkOK || !artifactResultSinkIDPattern.MatchString(resultSink) || !sinkIDs[resultSink] {
+			(resultSink == "") == (completion == nil) || !completionOK {
 			return ArtifactTaskIntent{}, fmt.Errorf("Artifact task_intents[%d] is invalid", index)
+		}
+		if completion != nil {
+			if contractVersion != artifactTaskManifestContractV4 || artifactTaskManifestRuntimeVersion(manifest) != artifactRuntimeVersion02 {
+				return ArtifactTaskIntent{}, fmt.Errorf("Artifact task_intents[%d] Runtime State completion requires Runtime 0.2", index)
+			}
 		}
 		seen[id] = true
 		schema, err := normalizeArtifactTaskSchema(value["input_schema"])
@@ -176,19 +216,28 @@ func parseArtifactTaskIntentManifest(body []byte, intentID string) (ArtifactTask
 				Description: description,
 				InputSchema: schema,
 				ResultSink:  resultSink,
+				Completion:  completion,
 			}
 		}
 	}
 	if matched.ID == "" {
 		return ArtifactTaskIntent{}, errors.New("Artifact task intent is not declared by this version")
 	}
+	if matched.usesRuntimeStateCompletion() {
+		if _, err := parseArtifactRuntimeManifest(body); err != nil {
+			return ArtifactTaskIntent{}, fmt.Errorf("Artifact task Runtime 0.2 manifest is invalid: %w", err)
+		}
+	}
 	return matched, nil
 }
 
 func artifactTaskManifestSinkIDs(value interface{}) (map[string]bool, error) {
+	if value == nil {
+		return map[string]bool{}, nil
+	}
 	items, ok := value.([]interface{})
-	if !ok || len(items) == 0 || len(items) > 16 {
-		return nil, errors.New("Artifact task manifest requires result_sinks")
+	if !ok || len(items) > 16 {
+		return nil, errors.New("Artifact task manifest result_sinks is invalid")
 	}
 	result := make(map[string]bool, len(items))
 	for index, raw := range items {
@@ -200,6 +249,35 @@ func artifactTaskManifestSinkIDs(value interface{}) (map[string]bool, error) {
 		result[id] = true
 	}
 	return result, nil
+}
+
+func parseArtifactTaskCompletion(value interface{}) (*ArtifactTaskCompletion, bool) {
+	if value == nil {
+		return nil, true
+	}
+	entry, ok := value.(map[string]interface{})
+	if !ok || len(entry) != 1 {
+		return nil, false
+	}
+	for key := range entry {
+		if key != "mode" || artifactTaskUnsafeKey(key) {
+			return nil, false
+		}
+	}
+	mode, ok := artifactTaskManifestText(entry["mode"], 32)
+	if !ok || mode != "runtime_state" {
+		return nil, false
+	}
+	return &ArtifactTaskCompletion{Mode: mode}, true
+}
+
+func artifactTaskManifestRuntimeVersion(manifest map[string]interface{}) string {
+	runtimeValue, ok := manifest["runtime"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	version, _ := runtimeValue["version"].(string)
+	return version
 }
 
 func artifactTaskManifestText(value interface{}, maxRunes int) (string, bool) {

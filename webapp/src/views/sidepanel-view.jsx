@@ -284,6 +284,7 @@ export default function ChatListView({
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [showAgentStore, setShowAgentStore] = useState(false);
   const [agentStoreInitialAgentId, setAgentStoreInitialAgentId] = useState(null);
+  const [agentStoreInitialCloudWorker, setAgentStoreInitialCloudWorker] = useState(null);
   const [showNewChat, setShowNewChat] = useState(false);
   const [collapsed, setCollapsed] = useState(() => loadCollapsedSections(user?.uid));
   const [scrollCollapsed, setScrollCollapsed] = useState({ contacts: false, projects: false });
@@ -348,6 +349,19 @@ export default function ChatListView({
   const projectsSectionRef = useRef(null);
   const conversationsSectionRef = useRef(null);
   const previousSidebarScrollTopRef = useRef(0);
+
+  useEffect(() => {
+    const openCloudManager = (event) => {
+      const workerUid = Number(event?.detail?.workerUid || 0);
+      const tenantName = String(event?.detail?.tenantName || '').trim();
+      if (!workerUid && !tenantName) return;
+      setAgentStoreInitialAgentId(null);
+      setAgentStoreInitialCloudWorker({ workerUid, tenantName });
+      setShowAgentStore(true);
+    };
+    window.addEventListener('cc:open-cloud-worker-manager', openCloudManager);
+    return () => window.removeEventListener('cc:open-cloud-worker-manager', openCloudManager);
+  }, []);
   const pendingSidebarScrollAnchorRef = useRef(null);
   const pendingSidebarRevealRef = useRef('');
   const lastHistorySelectionTopicIdRef = useRef('');
@@ -3018,6 +3032,7 @@ export default function ChatListView({
                 role="menuitem"
                 onClick={() => {
                   setOpenFriendMenuId('');
+                  setAgentStoreInitialCloudWorker(null);
                   setAgentStoreInitialAgentId(agentId);
                   setShowAgentStore(true);
                 }}
@@ -3315,6 +3330,7 @@ export default function ChatListView({
                 role="menuitem"
                 onClick={() => {
                   setShowContactActions(false);
+                  setAgentStoreInitialCloudWorker(null);
                   setAgentStoreInitialAgentId(null);
                   setShowAgentStore(true);
                 }}
@@ -3959,19 +3975,23 @@ export default function ChatListView({
       {showAgentStore && createPortal(
         <AgentStoreModal
           initialAgentId={agentStoreInitialAgentId}
+          initialCloudWorker={agentStoreInitialCloudWorker}
           onOpenSkillHub={(agentId, agent) => {
             setShowAgentStore(false);
             setAgentStoreInitialAgentId(null);
+            setAgentStoreInitialCloudWorker(null);
             onOpenSkillHub?.(agentId, agent);
           }}
           onOpenCloudArtifacts={(agentId, agent) => {
             setShowAgentStore(false);
             setAgentStoreInitialAgentId(null);
+            setAgentStoreInitialCloudWorker(null);
             onOpenCloudArtifacts?.(agentId, agent);
           }}
           onClose={() => {
             setShowAgentStore(false);
             setAgentStoreInitialAgentId(null);
+            setAgentStoreInitialCloudWorker(null);
           }}
           user={user}
           onBotsChanged={() => loadAll()}

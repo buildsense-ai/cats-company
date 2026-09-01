@@ -93,6 +93,7 @@ type cloudWorkerTestStore struct {
 	botBodyIDs        map[int64]string
 	botDefinitions    map[int64]*types.BotDefinitionRecord
 	adminRecords      []types.CloudWorkerAdminRecord
+	importedBinding   *types.CloudWorkerBindingRecord
 }
 
 // quotaCreditStub lets quota presentation tests exercise the durable credit
@@ -121,6 +122,11 @@ func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error    {
 
 func (s *cloudWorkerTestStore) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord, error) {
 	return append([]types.CloudWorkerAdminRecord(nil), s.adminRecords...), nil
+}
+
+func (s *cloudWorkerTestStore) UpsertExternalCloudWorkerBinding(record types.CloudWorkerBindingRecord) error {
+	s.importedBinding = &record
+	return nil
 }
 
 func (s *cloudWorkerTestStore) GetUser(id int64) (*types.User, error) {
@@ -883,6 +889,9 @@ func TestCloudWorkerHandleMetaSeparatesApplicationReleasesFromImages(t *testing.
 	if releases[0].(map[string]interface{})["version"] != "1.4.9" {
 		t.Fatalf("releases=%v", releases)
 	}
+	if out["latest_release"] != "1.4.9" {
+		t.Fatalf("latest_release=%v want 1.4.9", out["latest_release"])
+	}
 }
 
 func TestCloudWorkerHandleMetaReportsConfiguredActions(t *testing.T) {
@@ -913,17 +922,17 @@ func TestCloudWorkerHandleMetaReportsConfiguredActions(t *testing.T) {
 	}
 }
 
-func TestParseImageLinesKeepsNewestSix(t *testing.T) {
+func TestParseImageLinesKeepsAllProviderImages(t *testing.T) {
 	lines := []string{}
 	for i := 1; i <= 8; i++ {
 		lines = append(lines, fmt.Sprintf("img-%d\tworker-%d\t1.4.%d\tcommit-%d\t%d\tactive", i, i, i, i, i*100))
 	}
 	images := parseImageLines(strings.Join(lines, "\n"))
-	if len(images) != 6 {
-		t.Fatalf("len(images)=%d want 6", len(images))
+	if len(images) != 8 {
+		t.Fatalf("len(images)=%d want 8", len(images))
 	}
-	if images[0].Version != "1.4.8" || images[5].Version != "1.4.3" {
-		t.Fatalf("versions=%v want newest 1.4.8..1.4.3", images)
+	if images[0].Version != "1.4.8" || images[7].Version != "1.4.1" {
+		t.Fatalf("versions=%v want newest 1.4.8..1.4.1", images)
 	}
 }
 
@@ -939,6 +948,20 @@ func TestParseReleaseLinesKeepsNewestUniquePublishedVersions(t *testing.T) {
 	}
 	if releases[0].Version != "1.4.9" || releases[1].Version != "1.4.8" {
 		t.Fatalf("releases=%v want 1.4.9,1.4.8", releases)
+	}
+}
+
+func TestParseReleaseLinesKeepsCompleteCatalog(t *testing.T) {
+	lines := make([]string, 0, 8)
+	for i := 1; i <= 8; i++ {
+		lines = append(lines, fmt.Sprintf("1.5.%d\t%d", i, int64(i)))
+	}
+	releases := parseReleaseLines(strings.Join(lines, "\n"))
+	if len(releases) != 8 {
+		t.Fatalf("len(releases)=%d want 8", len(releases))
+	}
+	if releases[0].Version != "1.5.8" || releases[7].Version != "1.5.1" {
+		t.Fatalf("releases=%v want newest-first complete catalog", releases)
 	}
 }
 

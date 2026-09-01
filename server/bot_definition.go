@@ -518,6 +518,9 @@ func (h *BotDefinitionHandler) definitionResponse(
 		} else if tokens, ok := catalogContextWindowTokens(model.ModelID); ok {
 			modelResponse["contextWindowTokens"] = tokens
 		}
+		if descriptor := catalogRuntimeDescriptorForModel(model.ModelID); descriptor != nil {
+			modelResponse["catalogRuntime"] = descriptor
+		}
 	}
 	definition := map[string]interface{}{
 		"schema": record.Definition.Schema,
@@ -543,6 +546,16 @@ func (h *BotDefinitionHandler) definitionResponse(
 		response["management_enabled"] = h.modelConfig.managementEnabled(ownerUID)
 	}
 	return response, nil
+}
+
+func catalogRuntimeDescriptorForModel(modelID string) *botModelRuntimeDescriptor {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	for _, model := range botModelCatalog {
+		if strings.ToLower(strings.TrimSpace(model.ID)) == normalized {
+			return catalogRuntimeDescriptor(model)
+		}
+	}
+	return nil
 }
 
 // Historical local handoffs can exist as an empty canonical model with a

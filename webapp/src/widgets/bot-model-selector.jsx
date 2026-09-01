@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Loader2, Settings2 } from 'lucide-react';
 
 import { api } from '../api';
@@ -182,16 +181,13 @@ export function describeModelApplyError(rawError) {
   return '机器人应用新模型失败，当前仍使用原模型，请稍后重试。';
 }
 
-export default function BotModelSelector({ currentModelName, agentModelState, activeAgent, mobileModelInfo = null }) {
+export default function BotModelSelector({ currentModelName, agentModelState, activeAgent }) {
   const menuRef = useRef(null);
-  const menuPanelRef = useRef(null);
-  const lastTriggerRef = useRef(null);
   const activeBotUIDRef = useRef(0);
   const activeBotUID = Number(activeAgent?.uid) || 0;
   const isModelOwner = activeBotUID > 0 && activeAgent?.isOwner === true;
   const [modelConfig, setModelConfig] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [mobileMenuPortal, setMobileMenuPortal] = useState(false);
   const [expandedModelID, setExpandedModelID] = useState('');
   const [customEditorOpen, setCustomEditorOpen] = useState(false);
   const [customDraft, setCustomDraft] = useState(EMPTY_CUSTOM_MODEL);
@@ -229,7 +225,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   useEffect(() => {
     activeBotUIDRef.current = activeBotUID;
     setMenuOpen(false);
-    setMobileMenuPortal(false);
     setExpandedModelID('');
     setCustomEditorOpen(false);
     setCustomDraft({ ...EMPTY_CUSTOM_MODEL });
@@ -252,7 +247,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       const target = event.target;
       if (
         !menuRef.current?.contains(target)
-        && !menuPanelRef.current?.contains(target)
         && !(target instanceof Element
           && target.closest('.v3-custom-model-select-options.is-portal'))
       ) {
@@ -260,10 +254,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       }
     };
     const closeOnEscape = (event) => {
-      if (event.key === 'Escape') {
-        setMenuOpen(false);
-        lastTriggerRef.current?.focus({ preventScroll: true });
-      }
+      if (event.key === 'Escape') setMenuOpen(false);
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer);
     document.addEventListener('keydown', closeOnEscape);
@@ -388,11 +379,9 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
     saveSelection({ kind: 'custom', model_id: 'custom', custom }, `custom:${custom.model}`);
   };
 
-  const openMenu = (event) => {
+  const openMenu = () => {
     if (transitioning) return;
-    lastTriggerRef.current = event?.currentTarget || null;
     const next = !menuOpen;
-    if (next) setMobileMenuPortal(event?.currentTarget?.classList?.contains('v3-mobile-model-trigger') === true);
     setMenuOpen(next);
     if (next && canManageModel) loadConfig(activeBotUID, true);
   };
@@ -459,83 +448,35 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
         : <ChevronDown className="v3-model-menu-chevron" size={14} aria-hidden="true" />)}
     </>
   );
-  const mobileModel = modelConfig ? display.model : mobileModelInfo?.model || display.model;
-  const mobileQuota = modelConfig ? headerQuota : mobileModelInfo?.quota || headerQuota;
-  const mobileTone = modelConfig ? headerTone : mobileModelInfo?.tone || headerTone;
-  const mobileAccessibleStatus = [mobileModel, mobileQuota, applyState].filter(Boolean).join('；');
-  const mobileTitle = feedback
-    || (runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : '')
-    || mobileModelInfo?.title
-    || displayTitle;
-  const mobileStatusContents = (
-    <span className="v3-mobile-model-visual">
-      <span className="v3-mobile-model-name">{mobileModel || '模型未知'}</span>
-      {mobileQuota && <span className={`v3-mobile-model-quota ${mobileTone}`.trim()}>{mobileQuota}</span>}
-      {canManageModel && (transitioning
-        ? <Loader2 className="v3-model-switch-spinner" size={13} aria-hidden="true" />
-        : <ChevronDown className="v3-model-menu-chevron" size={13} aria-hidden="true" />)}
-    </span>
-  );
 
   return (
     <div ref={menuRef} className="v3-model-menu-anchor">
-      <div className="v3-model-status-desktop">
-        {canManageModel ? (
-          <button
-            type="button"
-            className="v3-local-assistant-status v3-model-status-button"
-            aria-label={`${accessibleStatus}，切换模型`}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            aria-busy={transitioning}
-            title={feedback || displayTitle}
-            onClick={openMenu}
-            disabled={transitioning}
-          >
-            {statusContents}
-          </button>
-        ) : (
-          <div
-            className="v3-local-assistant-status"
-            aria-label={accessibleStatus}
-            title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : displayTitle}
-          >
-            {statusContents}
-          </div>
-        )}
-      </div>
-
       {canManageModel ? (
         <button
           type="button"
-          className="v3-mobile-model-info v3-mobile-model-trigger"
-          aria-label={`${mobileAccessibleStatus}，切换模型`}
+          className="v3-local-assistant-status v3-model-status-button"
+          aria-label={`${accessibleStatus}，切换模型`}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-busy={transitioning}
-          title={mobileTitle}
+          title={feedback || displayTitle}
           onClick={openMenu}
           disabled={transitioning}
         >
-          {mobileStatusContents}
+          {statusContents}
         </button>
       ) : (
         <div
-          className="v3-mobile-model-info"
-          aria-label={mobileAccessibleStatus}
-          title={mobileTitle}
+          className="v3-local-assistant-status"
+          aria-label={accessibleStatus}
+          title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : displayTitle}
         >
-          {mobileStatusContents}
+          {statusContents}
         </div>
       )}
 
-      {canManageModel && menuOpen && createPortal(
-        <div
-          ref={menuPanelRef}
-          className={`v3-model-menu${customEditorOpen ? ' custom-open' : ''}${mobileMenuPortal ? ' is-mobile-portal' : ''}`}
-          role="menu"
-          aria-label="选择运行模型"
-        >
+      {canManageModel && menuOpen && (
+        <div className={`v3-model-menu ${customEditorOpen ? 'custom-open' : ''}`} role="menu" aria-label="选择运行模型">
           {loading && !modelConfig ? (
             <div className="v3-model-menu-message">正在加载模型...</div>
           ) : customEditorOpen ? (
@@ -627,6 +568,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const hasOptions = hasReasoning || hasVision;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
                 const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
+                const defaultReasoningEffort = model.default_reasoning_effort || efforts[0] || '';
 
                 return (
                   <div
@@ -641,12 +583,15 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                       role="menuitem"
                       aria-haspopup={hasOptions ? 'menu' : undefined}
                       aria-expanded={hasOptions ? expandedModelID === model.id : undefined}
-                      onFocus={(event) => {
-                        if (hasOptions && event.currentTarget.matches(':focus-visible')) {
+                      onFocus={() => hasOptions && setExpandedModelID(model.id)}
+                      onClick={() => {
+                        if (!available) return;
+                        if (hasOptions && selected) {
                           setExpandedModelID(model.id);
+                          return;
                         }
+                        saveCatalogSelection(model.id, defaultReasoningEffort);
                       }}
-                      onClick={() => hasOptions ? setExpandedModelID(model.id) : available && saveCatalogSelection(model.id)}
                       disabled={transitioning || !available}
                     >
                       <span>
@@ -662,18 +607,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     </button>
                     {hasOptions && expandedModelID === model.id && (
                       <div className="v3-model-reasoning-menu" role="menu" aria-label={`${model.label} 模型能力`}>
-                        <button
-                          type="button"
-                          className="v3-model-reasoning-back"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setExpandedModelID('');
-                          }}
-                          aria-label="返回模型列表"
-                        >
-                          <ArrowLeft size={16} aria-hidden="true" />
-                          <span>{model.label}</span>
-                        </button>
                         {hasReasoning && (
                           <>
                             <div className="v3-model-reasoning-title">推理强度</div>
@@ -740,8 +673,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
               <span>{feedback}</span>
             </div>
           )}
-        </div>,
-        mobileMenuPortal ? document.body : menuRef.current,
+        </div>
       )}
     </div>
   );

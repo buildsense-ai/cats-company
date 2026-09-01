@@ -145,6 +145,8 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 
 `CATSCO_WORKER_CREATE_QUOTA` 仅用于灰度/运维账号的静态开关；正式公共环境应留空。付费套餐履约时，服务会在 `cloud_worker_credits` 中为用户发放一次性创建权益，云托管创建成功后消费该权益。静态配额与套餐权益会相加，因此不能给已购买套餐的账号同时配置静态配额。
 
+商业邀请码也支持按码配置 `cloud_worker_credits`（默认为 `0`，可配置为 `1` 或更多）。兑换邀请码时，云员工创建权益与套餐 entitlement 在同一事务中发放，且使用相同的过期时间；同一码重复兑换不会重复发放。套餐升级时，旧套餐下尚未使用的邀请码权益会一并撤销，已进入创建流程的 reserved 权益保留。
+
 内部确需额外分配创建次数时，应使用本地管理员接口 `POST /local/account-admin/commercial/cloud-worker-credits`（或同等受保护的商业运营服务接口），提交 `uid`、`count`、幂等 `source_ref` 和可选 `expires_at`；不要直接修改生产环境静态配额。省略 `expires_at` 表示永久内部权益：创建成功后只消费 credit，不登记自动到期清理；有有效期的补发权益才会登记生命周期并按到期/宽限期清理。
 
 商业运营后台的“云员工总览”通过 `GET /local/commercial-ops/api/cloud-workers` 读取全平台登记、生命周期、创建权益和天翼云状态。该路径只在 relay-admin 的本机路径白名单中转发；CatsCompany 端还要求本机/私网来源及 `commercial.ops.read`（或更高）service scope，不提供公网用户 JWT/API 路由。

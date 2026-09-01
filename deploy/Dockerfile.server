@@ -13,7 +13,11 @@ FROM alpine:3.24.1
 # (deploy/prod/ops/*.sh). gcompat provides glibc compatibility for the
 # linux-amd64 ctyun-cli binary. curl downloads the ctyun-cli package below
 # (not present in the minimal alpine base).
-RUN apk add --no-cache ca-certificates curl bash openssh-client jq gcompat
+ARG APK_REPOSITORY=
+RUN if [ -n "${APK_REPOSITORY}" ]; then \
+      sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${APK_REPOSITORY}#g" /etc/apk/repositories; \
+    fi; \
+    apk add --no-cache ca-certificates curl bash openssh-client jq gcompat nodejs
 
 # Tianyi Cloud CLI for the cloud virtual employee control plane.
 ARG CTYUN_CLI_VERSION=v0.1.1
@@ -36,6 +40,6 @@ COPY --from=builder /app/openchat-server .
 COPY --from=builder /app/tos-fetch /usr/local/bin/tos-fetch
 COPY --from=builder /app/server/tinode.conf .
 COPY deploy/prod/ops /opt/catsco/ops
-RUN chmod 0755 /opt/catsco/ops/*.sh
+RUN chmod 0755 /opt/catsco/ops/*.sh /opt/catsco/ops/*.mjs
 EXPOSE 6061 6062
 CMD ["./openchat-server", "tinode.conf"]

@@ -71,6 +71,24 @@ const baseConfig = {
   ],
 };
 
+const capabilityModelConfig = {
+  ...baseConfig,
+  desired: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 2 },
+  applied: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'medium', revision: 2 },
+  models: [
+    ...baseConfig.models,
+    {
+      id: 'glm-5.3-flash',
+      label: 'GLM 5.3 Flash',
+      description: '高性价比多模态模型',
+      context_window_tokens: 1000000,
+      reasoning_efforts: ['max'],
+      default_reasoning_effort: 'max',
+      vision: true,
+    },
+  ],
+};
+
 const relayState = {
   isBot: true,
   state: 'ready',
@@ -191,18 +209,6 @@ describe('narrow conversation top bar', () => {
     );
     expect(topbarCss).toMatch(
       /@media\s*\(min-width:\s*769px\)[\s\S]*?@container catsco-chat-column \(max-width: 820px\)[\s\S]*?\.v3-local-assistant-bar > :is\(\.v3-shell-title, \.v3-shell-title-input\)\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/,
-    );
-  });
-
-  it('keeps the phone model trigger and its menu inside a stable overlay layer', () => {
-    expect(topbarCss).toMatch(
-      /@media\s*\(max-width:\s*520px\)[\s\S]*?\.v3-model-select\s*\{[^}]*position:\s*absolute;[^}]*top:\s*calc\(max\(8px, env\(safe-area-inset-top\)\) \+ 32px\);[^}]*display:\s*block;[^}]*width:\s*min\(48vw, 200px\);/,
-    );
-    expect(topbarCss).toMatch(
-      /@media\s*\(max-width:\s*520px\)[\s\S]*?\.v3-model-menu\.is-mobile-portal\s*\{[^}]*position:\s*fixed;[^}]*width:\s*calc\(100vw - 20px\);[^}]*max-height:\s*calc\(100dvh - max\(8px, env\(safe-area-inset-top\)\) - 100px - env\(safe-area-inset-bottom\)\);[^}]*overflow-y:\s*auto;/,
-    );
-    expect(topbarCss).toMatch(
-      /@media\s*\(max-width:\s*520px\)[\s\S]*?\.v3-model-reasoning-back\s*\{[^}]*min-height:\s*44px;[^}]*touch-action:\s*manipulation;/,
     );
   });
 });
@@ -510,47 +516,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(info?.textContent).toContain('MiniMax-M2.7');
     expect(info?.textContent).toContain('剩余 95%');
     expect(info?.getAttribute('aria-label')).toContain('剩余 95%');
-    expect(info?.closest('.v3-model-select')).toBeTruthy();
-  });
-
-  it('uses the mobile model row to open the existing switcher for manageable agents', async () => {
-    const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
-    await renderBar({
-      activeAgent: { uid: 43, isOwner: true, relation: 'owner' },
-      mobileModelInfo: { model: 'MiniMax-M2.7', quota: '剩余 95%' },
-    });
-
-    const trigger = container.querySelector('.v3-mobile-model-trigger');
-    expect(trigger?.tagName).toBe('BUTTON');
-    expect(trigger?.getAttribute('aria-label')).toContain('切换模型');
-    expect(trigger?.querySelector('.v3-mobile-model-visual')).toBeTruthy();
-
-    await act(async () => {
-      trigger.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: true });
-    expect(document.body.querySelector('[role="menu"][aria-label="选择运行模型"]')).toBeTruthy();
-
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    });
-    expect(document.body.querySelector('[role="menu"][aria-label="选择运行模型"]')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-  });
-
-  it('keeps the mobile model row passive when the conversation cannot manage models', async () => {
-    const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
-    await renderBar({
-      activeAgent: { uid: 43, isOwner: false, relation: 'friend' },
-      mobileModelInfo: { model: 'MiniMax-M2.7', quota: '剩余 95%' },
-    });
-
-    expect(container.querySelector('.v3-mobile-model-trigger')).toBeNull();
-    expect(container.querySelector('.v3-mobile-model-info')?.tagName).toBe('DIV');
-    expect(getConfig).not.toHaveBeenCalled();
+    expect(info?.previousElementSibling?.classList.contains('v3-shell-title')).toBe(true);
   });
 
   it('keeps catalog context details out of the compact header', async () => {
@@ -726,7 +692,10 @@ describe('LocalAssistantBar model selector', () => {
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const terra = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('GPT-5.6 Terra'));
-    await act(async () => terra.click());
+    await act(async () => {
+      terra.focus();
+      await Promise.resolve();
+    });
     const xhigh = [...container.querySelectorAll('.v3-model-reasoning-item')]
       .find((item) => item.textContent.includes('xhigh'));
     await act(async () => {
@@ -738,8 +707,77 @@ describe('LocalAssistantBar model selector', () => {
     });
   });
 
+  it('switches capability models from the parent item using their default strength', async () => {
+    const config = capabilityModelConfig;
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(config);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...config,
+      status: 'pending',
+      desired: { kind: 'catalog', model_id: 'minimax-m3', reasoning_effort: '', revision: 3 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+
+    const m3 = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('MiniMax M3'));
+    await act(async () => {
+      m3.click();
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, {
+      kind: 'catalog', model_id: 'minimax-m3', reasoning_effort: '',
+    });
+  });
+
+  it('switches the DeepSeek parent item with its default reasoning strength', async () => {
+    const config = capabilityModelConfig;
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(config);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...config,
+      status: 'pending',
+      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 3 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+    await act(async () => {
+      deepseek.click();
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, {
+      kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high',
+    });
+  });
+
+  it('switches the GLM parent item with its default reasoning strength', async () => {
+    const config = capabilityModelConfig;
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(config);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...config,
+      status: 'pending',
+      desired: { kind: 'catalog', model_id: 'glm-5.3-flash', reasoning_effort: 'max', revision: 3 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const glm = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('GLM 5.3 Flash'));
+    await act(async () => {
+      glm.click();
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, {
+      kind: 'catalog', model_id: 'glm-5.3-flash', reasoning_effort: 'max',
+    });
+  });
+
   it('shows vision beside reasoning strength as a read-only automatic capability', async () => {
-    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    const deepseekConfig = {
+      ...baseConfig,
+      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 2 },
+      applied: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 2 },
+    };
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(deepseekConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]

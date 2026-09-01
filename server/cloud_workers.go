@@ -47,16 +47,26 @@ type CloudWorkerHandler struct {
 	quota map[int64]int
 
 	// Executable scripts invoked for heavy cloud operations (empty = disabled).
-	provisionScript string
-	resetScript     string
-	renewScript     string
-	updateScript    string
-	rollbackScript  string
-	destroyScript   string
-	imagesScript    string
-	releasesScript  string
-	statusScript    string
-	credits         CloudWorkerCreditStore
+	provisionScript  string
+	resetScript      string
+	renewScript      string
+	updateScript     string
+	rollbackScript   string
+	destroyScript    string
+	imagesScript     string
+	releasesScript   string
+	statusScript     string
+	sshJumpHost      string
+	sshJumpAlias     string
+	sshJumpPort      string
+	sshJumpUser      string
+	sshJumpKey       string
+	sshHostJumpKey   string
+	sshStateRoot     string
+	sshHostStateRoot string
+	sshUser          string
+	sshPort          string
+	credits          CloudWorkerCreditStore
 
 	scriptTimeout time.Duration
 
@@ -123,16 +133,29 @@ func cloudWorkerTenantName(username string) string {
 
 // CloudWorkerConfig configures the cloud worker control plane.
 type CloudWorkerConfig struct {
-	CreateQuota     string // CATSCO_WORKER_CREATE_QUOTA "<uid>=<n>;<uid>=<n>" — unset means 0 (disabled)
-	ProvisionScript string // CATSCO_WORKER_PROVISION_SCRIPT
-	ResetScript     string // CATSCO_WORKER_RESET_SCRIPT
-	RenewScript     string // CATSCO_WORKER_RENEW_SCRIPT
-	UpdateScript    string // CATSCO_WORKER_UPDATE_SCRIPT
-	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
-	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
-	ImagesScript    string // CATSCO_WORKER_IMAGES_SCRIPT
-	ReleasesScript  string // CATSCO_WORKER_RELEASES_SCRIPT
-	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
+	CreateQuota      string // CATSCO_WORKER_CREATE_QUOTA "<uid>=<n>;<uid>=<n>" — unset means 0 (disabled)
+	ProvisionScript  string // CATSCO_WORKER_PROVISION_SCRIPT
+	ResetScript      string // CATSCO_WORKER_RESET_SCRIPT
+	RenewScript      string // CATSCO_WORKER_RENEW_SCRIPT
+	UpdateScript     string // CATSCO_WORKER_UPDATE_SCRIPT
+	RollbackScript   string // CATSCO_WORKER_ROLLBACK_SCRIPT
+	DestroyScript    string // CATSCO_WORKER_DESTROY_SCRIPT
+	ImagesScript     string // CATSCO_WORKER_IMAGES_SCRIPT
+	ReleasesScript   string // CATSCO_WORKER_RELEASES_SCRIPT
+	StatusScript     string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
+	SSHJumpHost      string
+	SSHJumpAlias     string
+	SSHJumpPort      string
+	SSHJumpUser      string
+	SSHJumpKey       string
+	// SSHHostJumpKey and SSHHostStateRoot are paths as seen from the
+	// cats-ctyun host, where copied admin commands are executed. They must
+	// never contain key material itself.
+	SSHHostJumpKey   string
+	SSHStateRoot     string
+	SSHHostStateRoot string
+	SSHUser          string
+	SSHPort          string
 }
 
 // CloudWorkerCreditStore is optional for compatibility with focused test
@@ -183,36 +206,56 @@ const cloudWorkerExpiryGraceDays = 15
 // CloudWorkerConfigFromEnv reads configuration from the environment.
 func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 	return CloudWorkerConfig{
-		CreateQuota:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
-		ProvisionScript: strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
-		ResetScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
-		RenewScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
-		UpdateScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
-		RollbackScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
-		DestroyScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
-		ImagesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
-		ReleasesScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
-		StatusScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
+		CreateQuota:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
+		ProvisionScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
+		ResetScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
+		RenewScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
+		UpdateScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
+		RollbackScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
+		DestroyScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
+		ImagesScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
+		ReleasesScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
+		StatusScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
+		SSHJumpHost:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
+		SSHJumpAlias:     strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
+		SSHJumpPort:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
+		SSHJumpUser:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
+		SSHJumpKey:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_KEY")),
+		SSHHostJumpKey:   strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_JUMP_KEY")),
+		SSHStateRoot:     strings.TrimSpace(os.Getenv("CTYUN_WORKER_STATE_ROOT")),
+		SSHHostStateRoot: strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_STATE_ROOT")),
+		SSHUser:          strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_USER")),
+		SSHPort:          strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_PORT")),
 	}
 }
 
 // NewCloudWorkerHandler creates a CloudWorkerHandler.
 func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConfig) *CloudWorkerHandler {
 	handler := &CloudWorkerHandler{
-		db:              db,
-		bots:            bots,
-		quota:           parseWorkerCreateQuota(cfg.CreateQuota),
-		provisionScript: cfg.ProvisionScript,
-		resetScript:     cfg.ResetScript,
-		renewScript:     cfg.RenewScript,
-		updateScript:    cfg.UpdateScript,
-		rollbackScript:  cfg.RollbackScript,
-		destroyScript:   cfg.DestroyScript,
-		imagesScript:    cfg.ImagesScript,
-		releasesScript:  cfg.ReleasesScript,
-		statusScript:    cfg.StatusScript,
-		credits:         nil,
-		scriptTimeout:   10 * time.Minute,
+		db:               db,
+		bots:             bots,
+		quota:            parseWorkerCreateQuota(cfg.CreateQuota),
+		provisionScript:  cfg.ProvisionScript,
+		resetScript:      cfg.ResetScript,
+		renewScript:      cfg.RenewScript,
+		updateScript:     cfg.UpdateScript,
+		rollbackScript:   cfg.RollbackScript,
+		destroyScript:    cfg.DestroyScript,
+		imagesScript:     cfg.ImagesScript,
+		releasesScript:   cfg.ReleasesScript,
+		statusScript:     cfg.StatusScript,
+		sshJumpHost:      cfg.SSHJumpHost,
+		sshJumpAlias:     cfg.SSHJumpAlias,
+		sshJumpPort:      cfg.SSHJumpPort,
+		sshJumpUser:      cfg.SSHJumpUser,
+		sshJumpKey:       cfg.SSHJumpKey,
+		sshHostJumpKey:   cfg.SSHHostJumpKey,
+		sshStateRoot:     cfg.SSHStateRoot,
+		sshHostStateRoot: cfg.SSHHostStateRoot,
+		sshUser:          cfg.SSHUser,
+		sshPort:          cfg.SSHPort,
+		credits:          nil,
+		scriptTimeout:    10 * time.Minute,
 	}
 	if credits, ok := db.(CloudWorkerCreditStore); ok {
 		handler.credits = credits
@@ -277,7 +320,9 @@ type cloudWorkerSummary struct {
 	CloudImageID string `json:"cloud_image_id,omitempty"`
 	// AppVersion is always present: an empty value means the runtime version
 	// has not been observed and must not fall back to the bot definition.
-	AppVersion string `json:"app_version"`
+	AppVersion      string `json:"app_version"`
+	LatestRelease   string `json:"latest_release,omitempty"`
+	UpdateAvailable bool   `json:"update_available,omitempty"`
 }
 
 // cloudWorkersOfOwner returns the cloud-managed workers owned by uid
@@ -394,6 +439,20 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			workers[i].AppVersion = info.AppVersion
 		}
 	}
+	// The release catalog is independently cached and never blocks this request.
+	// Annotate each worker only when both its runtime version and the catalog are
+	// known; unknown data must not produce a false update prompt.
+	if h.releasesScript != "" {
+		releases, releasesLoaded, _, _ := h.cloudReleaseSnapshot()
+		if releasesLoaded && len(releases) > 0 {
+			latest := releases[0].Version
+			for i := range workers {
+				workers[i].LatestRelease = latest
+				current := strings.TrimPrefix(strings.TrimSpace(workers[i].AppVersion), "v")
+				workers[i].UpdateAvailable = current != "" && current != latest
+			}
+		}
+	}
 
 	total, used, remaining := h.quotaSummary(uid, len(workers))
 	response := map[string]interface{}{
@@ -418,6 +477,8 @@ type cloudInstanceInfo struct {
 	ImageID    string
 	Version    string
 	AppVersion string
+	PrivateIP  string
+	PublicIP   string
 }
 
 // parseCloudWorkerStatusTSV parses status-worker.sh output lines of the form
@@ -443,6 +504,12 @@ func parseCloudWorkerStatusTSV(out string) map[string]cloudInstanceInfo {
 		}
 		if len(parts) >= 5 {
 			info.AppVersion = strings.TrimSpace(parts[4])
+		}
+		if len(parts) >= 6 {
+			info.PrivateIP = strings.TrimSpace(parts[5])
+		}
+		if len(parts) >= 7 {
+			info.PublicIP = strings.TrimSpace(parts[6])
 		}
 		infos[strings.TrimPrefix(name, "worker-")] = info
 	}
@@ -684,6 +751,9 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 		meta["releases_refreshing"] = releasesRefreshing
 		if releasesLoaded {
 			meta["releases"] = releases
+			if len(releases) > 0 {
+				meta["latest_release"] = releases[0].Version
+			}
 			meta["releases_cached_at"] = releasesUpdatedAt.UTC().Format(time.RFC3339Nano)
 		}
 	}
@@ -1482,9 +1552,6 @@ func parseImageLines(out string) []cloudImageSummary {
 		right, _ := strconv.ParseInt(images[j].CreatedTime, 10, 64)
 		return left > right
 	})
-	if len(images) > 6 {
-		images = images[:6]
-	}
 	return images
 }
 
@@ -1533,9 +1600,6 @@ func parseReleaseLines(out string) []cloudReleaseSummary {
 		parsed = append(parsed, releaseWithTime{release: release, unix: publishedUnix})
 	}
 	sort.SliceStable(parsed, func(i, j int) bool { return parsed[i].unix > parsed[j].unix })
-	if len(parsed) > 6 {
-		parsed = parsed[:6]
-	}
 	releases := make([]cloudReleaseSummary, len(parsed))
 	for i := range parsed {
 		releases[i] = parsed[i].release

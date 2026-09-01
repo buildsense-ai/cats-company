@@ -229,6 +229,14 @@ function run(sandbox, args, extra = {}) {
   };
 }
 
+function artifactConfigureStub(sandbox, exitCode = 0) {
+  const script = path.join(sandbox.bin, "configure-artifact.sh");
+  const calls = path.join(sandbox.sandbox, "artifact-configure.calls");
+  fs.writeFileSync(script, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> '${toMsys(calls)}'\nexit ${exitCode}\n`);
+  fs.chmodSync(script, 0o755);
+  return { script: toMsys(script), calls };
+}
+
 test("provision-worker: missing args fails", () => {
   const sb = setupSandbox({});
   const r = run(sb, []);
@@ -263,6 +271,19 @@ test("provision-worker: dry-run resolves image and creates nothing", () => {
   assert.match(r.stdout, /"image_id":"img-1"/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.equal((state.instances || []).length, 0);
+});
+
+test("provision-worker: missing jump key fails before creating billable resources", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"], {
+    CTYUN_JUMP_IP: "121.11.232.177",
+    CTYUN_JUMP_KEY: "/definitely/missing/jump_host_ed25519",
+  });
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /jump host private key is missing or unreadable/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.instances || []).length, 0, "jump preflight must run before ECS creation");
+  assert.equal((state.keypairs || []).length, 0, "jump preflight must run before key-pair creation");
 });
 
 test("provision-worker: happy path creates instance, injects env, enables service", () => {
@@ -304,6 +325,59 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.equal(lc.account.uid, "7");
   assert.equal(lc.endpoints.serverUrl, "wss://app.catsco.cc/v0/channels");
   assert.ok((state.keypairs || []).some(k => k.keyPairName === "worker-key-bot-a"), "key pair created");
+});
+
+test("provision-worker: forwarded Artifact contract is injected and reconciled", () => {
+  const sb = setupSandbox({});
+  const artifact = artifactConfigureStub(sb);
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
+    CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(JSON.parse(r.stdout).artifact_status, "ready");
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.injectedEnv, /CATSCO_ARTIFACT_HOST_MODE=forwarded/);
+  assert.match(state.injectedEnv, /CATSCO_ARTIFACT_PUBLIC_BASE_URL=https:\/\/agent-42\.artifacts\.catsco\.fun:19991\/artifacts/);
+  assert.match(state.injectedEnv, /CATSCO_ARTIFACT_LOCAL_BASE_URL=http:\/\/127\.0\.0\.1:19990\/artifacts/);
+  assert.match(state.injectedEnv, /CATSCO_ARTIFACT_DATA_DIR=\/srv\/catsco-agent\/\.local\/share\/catsco\/cloud-html-artifact/);
+  assert.match(fs.readFileSync(artifact.calls, "utf8"), /--worker-ip 10\.0\.0\.1 --agent-uid 42/);
+});
+
+test("provision-worker: disabled gateway does not inject or configure forwarded Artifact", () => {
+  const sb = setupSandbox({});
+  const artifact = artifactConfigureStub(sb);
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "0",
+    CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
+    CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(JSON.parse(r.stdout).artifact_status, "disabled");
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.doesNotMatch(state.injectedEnv, /CATSCO_ARTIFACT_/);
+  assert.equal(fs.existsSync(artifact.calls), false);
+});
+
+test("provision-worker: Artifact reconciliation failure does not delete the worker", () => {
+  const sb = setupSandbox({});
+  const artifact = artifactConfigureStub(sb, 1);
+  const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1"], {
+    CATSCO_ARTIFACT_GATEWAY_ENABLED: "1",
+    CATSCO_WORKER_ARTIFACT_HOST_MODE: "forwarded",
+    CATSCO_ARTIFACT_CONFIGURE_WORKER_SCRIPT: artifact.script,
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(JSON.parse(r.stdout).artifact_status, "warning");
+  assert.match(r.stderr, /worker provisioning remains successful/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.unsubscribedInstances || []).length, 0);
+  assert.equal((state.deletedInstances || []).length, 0);
+  assert.equal(state.instances.length, 1);
 });
 
 test("provision-worker: state root isolates credentials by tenant", () => {

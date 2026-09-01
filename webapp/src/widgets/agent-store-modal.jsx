@@ -379,6 +379,7 @@ function AgentManageSection({ id, title, summary, icon: Icon, open, onToggle, va
 
 export default function AgentStoreModal({
   initialAgentId = null,
+  initialCloudWorker = null,
   onClose,
   onOpenSkillHub,
   onOpenCloudArtifacts,
@@ -627,8 +628,13 @@ export default function AgentStoreModal({
 
   useEffect(() => {
     initialAgentAppliedRef.current = false;
+    if (initialCloudWorker) {
+      setEditingBot(null);
+      setTab('hub');
+      setHubCloudView(true);
+    }
     loadBots();
-  }, [initialAgentId]);
+  }, [initialAgentId, initialCloudWorker]);
 
   // Application releases and base images are independent catalogs. A cold
   // backend snapshot gets one short follow-up poll; settled responses do not
@@ -952,6 +958,7 @@ export default function AgentStoreModal({
 
       if (
         !initialAgentAppliedRef.current
+        && !initialCloudWorker
         && initialAgentId !== null
         && initialAgentId !== undefined
       ) {
@@ -1414,6 +1421,7 @@ export default function AgentStoreModal({
                   actions={cloudActions}
                   actioning={cloudActioning}
                   showHostingSwitch={false}
+                  focusedWorker={initialCloudWorker}
                   onCreate={handleCloudCreate}
                   onUpdate={handleCloudUpdate}
                   onRollback={handleCloudRollback}

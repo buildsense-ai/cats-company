@@ -447,7 +447,9 @@ func TestCatalogDefinitionShipsContextWindowTokens(t *testing.T) {
 		t.Fatalf("runtime get status=%d body=%s", getRec.Code, getRec.Body.String())
 	}
 	if !strings.Contains(getRec.Body.String(), `"modelId":"gpt-5.6-sol"`) ||
-		!strings.Contains(getRec.Body.String(), `"contextWindowTokens":256000`) {
+		!strings.Contains(getRec.Body.String(), `"contextWindowTokens":256000`) ||
+		!strings.Contains(getRec.Body.String(), `"catalogRuntime":{"catalogModelId":"gpt-5.6-sol","model":"gpt-5.6-sol","provider":"openai"`) ||
+		!strings.Contains(getRec.Body.String(), `"openaiApiMode":"responses"`) {
 		t.Fatalf("catalog definition must ship cloud context window: body=%s", getRec.Body.String())
 	}
 }

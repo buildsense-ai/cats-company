@@ -62,6 +62,7 @@ type Hub struct {
 	groupTurns                 *groupAgentTurnTracker
 	artifactContextResolver    ArtifactContextResolver
 	artifactTaskIntentResolver ArtifactTaskIntentResolver
+	artifactRuntimeResolver    ArtifactRuntimeManifestResolver
 	artifactContextSnapshots   *artifactContextSnapshotStore
 	artifactResultWritebacks   *artifactResultWritebackStore
 	artifactTasks              *artifactTaskStore
@@ -160,7 +161,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 			artifactTaskTombstoneTTLDefault,
 			artifactTaskAgentFinishGrace,
 			artifactTaskStoreMaxEntries,
-		),
+		).withRuntimeStore(db),
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
@@ -176,6 +177,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	// or a transient DB error; the reaper re-scans durable rows so a missed
 	// timer still converges to stale (review 2026-08-05).
 	go hub.runConversationTaskReaper()
+	go hub.runArtifactRuntimeRunReaper()
 	return hub
 }
 
@@ -1525,18 +1527,11 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	}
 
 	if payload.ArtifactTaskRef != nil {
-		if result.Duplicate {
-			if !payload.ArtifactTaskRef.AlreadyDelivered {
-				h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_conflict", "Artifact task message identity could not be reconciled")
-				h.SendToClient(client, &ServerMessage{
-					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 409, Text: "Artifact task delivery conflict"},
-				})
-				return
-			}
-		} else if !h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client) {
-			h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_failed", "Artifact task turn could not be delivered to the online Agent")
+		if failure := h.deliverPersistedArtifactTaskMessage(
+			uid, topic, msg.ReplyTo, payload, result, client,
+		); failure != nil {
 			h.SendToClient(client, &ServerMessage{
-				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 503, Text: "Artifact task turn delivery failed"},
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: failure.HTTPStatus, Text: failure.PublicMessage},
 			})
 			return
 		}
@@ -1784,18 +1779,11 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 	}
 
 	if payload.ArtifactTaskRef != nil {
-		if result.Duplicate {
-			if !payload.ArtifactTaskRef.AlreadyDelivered {
-				h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_conflict", "Artifact task message identity could not be reconciled")
-				h.SendToClient(client, &ServerMessage{
-					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 409, Text: "Artifact task delivery conflict"},
-				})
-				return
-			}
-		} else if !h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client) {
-			h.artifactTasks.failDelivery(payload.ArtifactTaskRef, "turn_delivery_failed", "Artifact task turn could not be delivered to the online Agent")
+		if failure := h.deliverPersistedArtifactTaskMessage(
+			uid, topic, msg.ReplyTo, payload, result, client,
+		); failure != nil {
 			h.SendToClient(client, &ServerMessage{
-				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: 503, Text: "Artifact task turn delivery failed"},
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: failure.HTTPStatus, Text: failure.PublicMessage},
 			})
 			return
 		}

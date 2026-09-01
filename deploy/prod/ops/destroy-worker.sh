@@ -56,6 +56,11 @@ if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
 else
   STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
 fi
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARTIFACT_ROUTE_SCRIPT="${CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT:-$OPS_DIR/artifact-gateway-route.sh}"
+ARTIFACT_SYNC_SCRIPT="${CATSCO_ARTIFACT_GATEWAY_SYNC_SCRIPT:-$OPS_DIR/sync-artifact-gateway-routes.sh}"
+ARTIFACT_ROUTE_CLEANUP_DIR="${CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR:-$(dirname "$STATE_DIR")/.artifact-route-cleanup}"
+BOT_UID="$(sed -n 's/^CATSCO_BOT_UID=//p' "$STATE_DIR/inject.env" 2>/dev/null | tail -n1 || true)"
 
 # --- 工具 ---
 ctyun() {
@@ -71,6 +76,23 @@ ctyun() {
     return 1
   fi
   printf '%s' "$raw"
+}
+
+# Provider delete APIs can return a transient error after accepting the
+# request. Reuse the same client token across retries so an accepted request
+# remains idempotent and we do not issue duplicate destructive operations.
+ctyun_retry() {
+  local attempts="$1" delay_seconds="$2" attempt
+  shift 2
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if ctyun "$@"; then
+      return 0
+    fi
+    if ((attempt < attempts)); then
+      sleep "$delay_seconds"
+    fi
+  done
+  return 1
 }
 
 find_instance() {
@@ -158,8 +180,9 @@ if [[ -n "$inst" ]]; then
         exit 1
       fi
       if [[ "$destroy_ready" -eq 1 ]]; then
-        ctyun ecs DestroyEcsInstance \
-          --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+        destroy_token="$(gen_uuid)"
+        ctyun_retry 3 5 ecs DestroyEcsInstance \
+          --regionID "$REGION_ID" --clientToken "$destroy_token" --instanceID "$instance_id" >/dev/null 2>&1 \
           || { echo "error: instance permanent destroy failed (instance_id=$instance_id)" >&2; exit 1; }
         removed=0
         for _ in $(seq 1 60); do
@@ -180,8 +203,9 @@ if [[ -n "$inst" ]]; then
         fi
       fi
     else
-      ctyun ecs DeleteEcsInstance \
-        --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1 \
+      delete_token="$(gen_uuid)"
+      ctyun_retry 3 5 ecs DeleteEcsInstance \
+        --regionID "$REGION_ID" --clientToken "$delete_token" --instanceID "$instance_id" >/dev/null 2>&1 \
         || { echo "error: instance delete failed (instance_id=$instance_id)" >&2; exit 1; }
     fi
   fi
@@ -189,6 +213,27 @@ fi
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\"}"
   exit 0
+fi
+
+# Artifact routing is auxiliary. A stale route should be removed, but a
+# gateway outage must not turn a completed instance deletion into a failed
+# worker destroy operation.
+if [[ "${CATSCO_ARTIFACT_GATEWAY_ENABLED:-0}" == "1" && "$BOT_UID" =~ ^[1-9][0-9]{0,18}$ ]]; then
+  if ! "$ARTIFACT_ROUTE_SCRIPT" remove "$BOT_UID" >/dev/null; then
+    cleanup_marker="$ARTIFACT_ROUTE_CLEANUP_DIR/$BOT_UID.pending"
+    if mkdir -p "$ARTIFACT_ROUTE_CLEANUP_DIR" && printf '%s\n' "$BOT_UID" > "$cleanup_marker"; then
+      echo "warning: Artifact route cleanup failed for Agent $BOT_UID; attempting full route sync" >&2
+      if "$ARTIFACT_SYNC_SCRIPT" >/dev/null 2>&1; then
+        rm -f "$cleanup_marker"
+      else
+        echo "warning: Artifact route cleanup remains pending for Agent $BOT_UID" >&2
+      fi
+    else
+      echo "warning: Artifact route cleanup failed for Agent $BOT_UID and could not be recorded" >&2
+    fi
+  else
+    rm -f "$ARTIFACT_ROUTE_CLEANUP_DIR/$BOT_UID.pending"
+  fi
 fi
 
 # --- 2. 删 key pair（幂等：不存在则跳过） ---

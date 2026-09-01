@@ -21,6 +21,14 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
 		createImageUpscaleTasksTable,
+		createArtifactRuntimeStatesTable,
+		createArtifactRuntimeRunsTable,
+		migrateArtifactRuntimeRunsAddDeliveryClaimedAt,
+		createArtifactRuntimeAdmissionLockTable,
+		seedArtifactRuntimeAdmissionLock,
+		createArtifactRuntimeEventSequencesTable,
+		createArtifactRuntimeEventsTable,
+		migrateArtifactRuntimeEventsV2,
 		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createBotInviteCodesTable,
@@ -37,6 +45,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateCommercialPlansAddSaleFields,
 		migrateCommercialPlansAddInternalQuota,
 		createCommercialInviteCodesTable,
+		migrateCommercialInviteWorkerCredits,
 		createCommercialEntitlementsTable,
 		createCommercialQuotaGrantsTable,
 		createCommercialQuotaLedgerTable,
@@ -44,7 +53,9 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialOrderRequestIDsTable,
 		createCommercialPaymentEventsTable,
 		createCloudWorkerCreditsTable,
+		migrateCloudWorkerCreditsEntitlement,
 		createCloudWorkerLifecyclesTable,
+		createCloudWorkerBindingsTable,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,
@@ -313,6 +324,137 @@ CREATE TABLE IF NOT EXISTS image_upscale_tasks (
 CREATE INDEX IF NOT EXISTS idx_image_upscale_tasks_expires_at ON image_upscale_tasks (expires_at);
 `
 
+const createArtifactRuntimeStatesTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_states (
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    namespace VARCHAR(64) NOT NULL,
+    document_key VARCHAR(128) NOT NULL,
+    value_json JSONB NOT NULL,
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    updated_by_uid BIGINT NOT NULL,
+    updated_by_type VARCHAR(16) NOT NULL CHECK (updated_by_type IN ('viewer','agent')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_uid, artifact_id, namespace, document_key)
+);
+`
+
+const createArtifactRuntimeRunsTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_runs (
+    task_id VARCHAR(64) PRIMARY KEY,
+    task_ref_hash CHAR(64) NOT NULL UNIQUE,
+    run_id VARCHAR(64) NOT NULL UNIQUE,
+    actor_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id VARCHAR(128) NOT NULL,
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    artifact_title VARCHAR(256) NOT NULL DEFAULT '',
+    artifact_kind VARCHAR(64) NOT NULL DEFAULT '',
+    artifact_url TEXT NOT NULL,
+    publish_version INTEGER NOT NULL DEFAULT 0,
+    displayed_version BIGINT NOT NULL CHECK (displayed_version > 0),
+    preview_node_id VARCHAR(128) NOT NULL DEFAULT '',
+    preview_connection_id VARCHAR(128) NOT NULL DEFAULT '',
+    action_id VARCHAR(128) NOT NULL,
+    action_title VARCHAR(256) NOT NULL,
+    action_description VARCHAR(500) NOT NULL,
+    input_schema JSONB NOT NULL,
+    payload_json JSONB NOT NULL,
+    page_context_json JSONB NOT NULL,
+    completion_mode VARCHAR(32) NOT NULL CHECK (completion_mode = 'runtime_state'),
+    status VARCHAR(16) NOT NULL CHECK (status IN ('submitted','running','completed','failed')),
+    code VARCHAR(64) NOT NULL DEFAULT '',
+    message VARCHAR(500) NOT NULL DEFAULT '',
+    delivery_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+    delivery_client_id VARCHAR(128) NOT NULL DEFAULT '',
+    delivery_claimed_at TIMESTAMPTZ,
+    delivered BOOLEAN NOT NULL DEFAULT FALSE,
+    executor_run_id VARCHAR(128) NOT NULL DEFAULT '',
+    executor_state VARCHAR(32) NOT NULL DEFAULT '',
+    executor_finished_at TIMESTAMPTZ,
+    result_id VARCHAR(64) NOT NULL DEFAULT '',
+    applied_event_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_runtime_runs_artifact
+    ON artifact_runtime_runs (agent_uid, artifact_id, actor_uid, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifact_runtime_runs_expires
+    ON artifact_runtime_runs (status, expires_at);
+`
+
+const migrateArtifactRuntimeRunsAddDeliveryClaimedAt = `
+ALTER TABLE artifact_runtime_runs
+    ADD COLUMN IF NOT EXISTS delivery_claimed_at TIMESTAMPTZ;
+UPDATE artifact_runtime_runs
+SET delivery_claimed_at = updated_at
+WHERE delivery_claimed = TRUE AND delivery_claimed_at IS NULL;
+`
+
+const createArtifactRuntimeAdmissionLockTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_admission_lock (
+    lock_id SMALLINT PRIMARY KEY CHECK (lock_id = 1)
+);
+`
+
+const seedArtifactRuntimeAdmissionLock = `
+INSERT INTO artifact_runtime_admission_lock (lock_id)
+VALUES (1)
+ON CONFLICT (lock_id) DO NOTHING;
+`
+
+const createArtifactRuntimeEventSequencesTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_event_sequences (
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    last_event_id BIGINT NOT NULL CHECK (last_event_id > 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (agent_uid, artifact_id)
+);
+`
+
+const createArtifactRuntimeEventsTable = `
+CREATE TABLE IF NOT EXISTS artifact_runtime_events (
+    id BIGSERIAL PRIMARY KEY,
+    artifact_event_id BIGINT NOT NULL CHECK (artifact_event_id > 0),
+    event_type VARCHAR(64) NOT NULL CHECK (event_type IN ('state.updated','run.started','result.applied','run.finished','run.error')),
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artifact_id VARCHAR(64) NOT NULL,
+    namespace VARCHAR(64) NOT NULL,
+    document_key VARCHAR(128) NOT NULL,
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    updated_by_uid BIGINT NOT NULL,
+    updated_by_type VARCHAR(16) NOT NULL CHECK (updated_by_type IN ('viewer','agent')),
+    task_id VARCHAR(64),
+    run_id VARCHAR(64),
+    executor_run_id VARCHAR(128),
+    result_id VARCHAR(64),
+    event_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (agent_uid, artifact_id, artifact_event_id)
+);
+`
+
+const migrateArtifactRuntimeEventsV2 = `
+ALTER TABLE artifact_runtime_events
+    ADD COLUMN IF NOT EXISTS task_id VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS run_id VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS executor_run_id VARCHAR(128),
+    ADD COLUMN IF NOT EXISTS result_id VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS event_data JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE artifact_runtime_events
+    DROP CONSTRAINT IF EXISTS artifact_runtime_events_event_type_check;
+ALTER TABLE artifact_runtime_events
+    ADD CONSTRAINT artifact_runtime_events_event_type_check
+    CHECK (event_type IN ('state.updated','run.started','result.applied','run.finished','run.error'));
+CREATE INDEX IF NOT EXISTS idx_artifact_runtime_events_run
+    ON artifact_runtime_events (agent_uid, artifact_id, run_id, artifact_event_id);
+`
+
 const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
 ALTER TABLE conversation_task_status_sources
 ADD COLUMN IF NOT EXISTS event_updated_at TIMESTAMPTZ;
@@ -571,6 +713,20 @@ DO $$ BEGIN
 END $$;
 `
 
+const migrateCommercialInviteWorkerCredits = `
+ALTER TABLE commercial_invite_codes ADD COLUMN IF NOT EXISTS cloud_worker_credits INT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_invites_worker_credits') THEN
+        ALTER TABLE commercial_invite_codes ADD CONSTRAINT chk_commercial_invites_worker_credits CHECK (cloud_worker_credits >= 0);
+    END IF;
+END $$;
+`
+
+const migrateCloudWorkerCreditsEntitlement = `
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS entitlement_id BIGINT REFERENCES commercial_entitlements(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_credits_entitlement ON cloud_worker_credits(entitlement_id) WHERE entitlement_id IS NOT NULL;
+`
+
 const createCommercialInviteCodesTable = `
 CREATE TABLE IF NOT EXISTS commercial_invite_codes (
     id BIGSERIAL PRIMARY KEY,
@@ -578,6 +734,7 @@ CREATE TABLE IF NOT EXISTS commercial_invite_codes (
     plan_id BIGINT NOT NULL REFERENCES commercial_plans(id) ON DELETE RESTRICT,
     max_redemptions INT NOT NULL DEFAULT 1,
     redeemed_count INT NOT NULL DEFAULT 0,
+    cloud_worker_credits INT NOT NULL DEFAULT 0,
     state SMALLINT NOT NULL DEFAULT 0,
     expires_at TIMESTAMPTZ DEFAULT NULL,
     note TEXT NOT NULL DEFAULT '',
@@ -585,7 +742,8 @@ CREATE TABLE IF NOT EXISTS commercial_invite_codes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_commercial_invites_state CHECK (state IN (0, 1)),
-    CONSTRAINT chk_commercial_invites_redemptions CHECK (max_redemptions > 0 AND redeemed_count >= 0 AND redeemed_count <= max_redemptions)
+    CONSTRAINT chk_commercial_invites_redemptions CHECK (max_redemptions > 0 AND redeemed_count >= 0 AND redeemed_count <= max_redemptions),
+    CONSTRAINT chk_commercial_invites_worker_credits CHECK (cloud_worker_credits >= 0)
 );
 `
 
@@ -973,6 +1131,7 @@ const createCloudWorkerCreditsTable = `
 CREATE TABLE IF NOT EXISTS cloud_worker_credits (
     id BIGSERIAL PRIMARY KEY,
     uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    entitlement_id BIGINT DEFAULT NULL REFERENCES commercial_entitlements(id) ON DELETE SET NULL,
     source_ref VARCHAR(128) NOT NULL,
     state VARCHAR(16) NOT NULL DEFAULT 'available',
     reservation_ref VARCHAR(128) NOT NULL DEFAULT '',
@@ -1007,6 +1166,37 @@ CREATE TABLE IF NOT EXISTS cloud_worker_lifecycles (
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_due ON cloud_worker_lifecycles(state, delete_after);
 CREATE INDEX IF NOT EXISTS idx_cloud_worker_lifecycles_owner ON cloud_worker_lifecycles(owner_uid, state);
+`
+
+// Manually deployed workers are inventory records only. They deliberately do
+// not reference cloud_worker_lifecycles, so expiry/reconcile jobs cannot act
+// on them until an operator explicitly changes their management mode.
+const createCloudWorkerBindingsTable = `
+CREATE TABLE IF NOT EXISTS cloud_worker_bindings (
+    id BIGSERIAL PRIMARY KEY,
+    worker_uid BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+    owner_uid BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+    tenant_name VARCHAR(80) NOT NULL DEFAULT '',
+    provider VARCHAR(32) NOT NULL DEFAULT 'ctyun',
+    region_id VARCHAR(64) NOT NULL,
+    project_id VARCHAR(128) NOT NULL DEFAULT '',
+    az_name VARCHAR(128) NOT NULL DEFAULT '',
+    instance_id VARCHAR(128) NOT NULL,
+    instance_name VARCHAR(128) NOT NULL,
+    public_ip VARCHAR(64) NOT NULL DEFAULT '',
+    management_mode VARCHAR(32) NOT NULL DEFAULT 'manual_import',
+    lifecycle_mode VARCHAR(32) NOT NULL DEFAULT 'external',
+    source VARCHAR(32) NOT NULL DEFAULT 'manual',
+    status VARCHAR(32) NOT NULL DEFAULT 'unverified',
+    last_verified_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_cloud_worker_bindings_instance UNIQUE (provider, instance_id),
+    CONSTRAINT chk_cloud_worker_bindings_management CHECK (management_mode IN ('manual_import','managed')),
+    CONSTRAINT chk_cloud_worker_bindings_lifecycle CHECK (lifecycle_mode IN ('external','platform'))
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_bindings_owner ON cloud_worker_bindings(owner_uid);
+CREATE INDEX IF NOT EXISTS idx_cloud_worker_bindings_region ON cloud_worker_bindings(region_id, status);
 `
 
 const createCommercialManagedRelayBudgetsTable = `
@@ -1439,6 +1629,8 @@ CREATE OR REPLACE TRIGGER trg_conversation_task_statuses_updated_at BEFORE UPDAT
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_conversation_task_status_sources_updated_at BEFORE UPDATE ON conversation_task_status_sources
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_artifact_runtime_states_updated_at BEFORE UPDATE ON artifact_runtime_states
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_auth_services_updated_at BEFORE UPDATE ON auth_services
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_plans_updated_at BEFORE UPDATE ON commercial_plans
@@ -1448,6 +1640,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_entitlements_updated_at BEFORE UPDATE ON commercial_entitlements
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_orders_updated_at BEFORE UPDATE ON commercial_orders
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_cloud_worker_bindings_updated_at BEFORE UPDATE ON cloud_worker_bindings
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_managed_relay_budgets_updated_at BEFORE UPDATE ON commercial_managed_relay_budgets
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

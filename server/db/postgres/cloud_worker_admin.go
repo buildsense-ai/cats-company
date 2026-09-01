@@ -90,10 +90,80 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 			value := creditExpiresAt.Time
 			record.CreditExpiresAt = &value
 		}
+		record.Provider = "ctyun"
+		record.ManagementMode = "managed"
+		record.LifecycleMode = "platform"
+		record.BindingSource = "platform"
+		record.BindingStatus = "managed"
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read cloud worker admin records: %w", err)
 	}
+
+	// External/manual instances have no bot row and therefore need a separate
+	// inventory query. They are intentionally returned with no lifecycle or
+	// credit state so callers cannot mistake them for platform-managed workers.
+	bindings, err := a.db.Query(`
+		SELECT worker_uid, owner_uid, tenant_name, provider, region_id, project_id,
+		       az_name, instance_id, instance_name, public_ip, management_mode,
+		       lifecycle_mode, source, status, last_verified_at
+		FROM cloud_worker_bindings ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list external cloud worker bindings: %w", err)
+	}
+	defer bindings.Close()
+	for bindings.Next() {
+		var record types.CloudWorkerAdminRecord
+		var workerUID, ownerUID sql.NullInt64
+		var verifiedAt sql.NullTime
+		if err := bindings.Scan(&workerUID, &ownerUID, &record.TenantName, &record.Provider, &record.RegionID, &record.ProjectID, &record.AZName, &record.InstanceID, &record.InstanceName, &record.PublicIP, &record.ManagementMode, &record.LifecycleMode, &record.BindingSource, &record.BindingStatus, &verifiedAt); err != nil {
+			return nil, fmt.Errorf("scan external cloud worker binding: %w", err)
+		}
+		if workerUID.Valid {
+			record.WorkerUID = workerUID.Int64
+		}
+		if ownerUID.Valid {
+			record.OwnerUID = ownerUID.Int64
+		}
+		if verifiedAt.Valid {
+			value := verifiedAt.Time
+			record.LastVerifiedAt = &value
+		}
+		record.LifecycleState = "external"
+		records = append(records, record)
+	}
+	if err := bindings.Err(); err != nil {
+		return nil, fmt.Errorf("read external cloud worker bindings: %w", err)
+	}
 	return records, nil
+}
+
+// UpsertExternalCloudWorkerBinding is idempotent on provider + instance ID.
+// It always restores the safety defaults and never grants platform lifecycle
+// control as a side effect of import.
+func (a *Adapter) UpsertExternalCloudWorkerBinding(record types.CloudWorkerBindingRecord) error {
+	_, err := a.db.Exec(`
+		INSERT INTO cloud_worker_bindings
+		(worker_uid, owner_uid, tenant_name, provider, region_id, project_id, az_name,
+		 instance_id, instance_name, public_ip, management_mode, lifecycle_mode, source, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'manual_import','external','manual',$11)
+		ON CONFLICT (provider, instance_id) DO UPDATE SET
+		 worker_uid=EXCLUDED.worker_uid, owner_uid=EXCLUDED.owner_uid,
+		 tenant_name=EXCLUDED.tenant_name, region_id=EXCLUDED.region_id,
+		 project_id=EXCLUDED.project_id, az_name=EXCLUDED.az_name,
+		 instance_name=EXCLUDED.instance_name, public_ip=EXCLUDED.public_ip,
+		 management_mode='manual_import', lifecycle_mode='external',
+		 source='manual', status=EXCLUDED.status, updated_at=CURRENT_TIMESTAMP`,
+		nullInt64(record.WorkerUID), nullInt64(record.OwnerUID), record.TenantName,
+		record.Provider, record.RegionID, record.ProjectID, record.AZName,
+		record.InstanceID, record.InstanceName, record.PublicIP, record.Status)
+	return err
+}
+
+func nullInt64(value *int64) interface{} {
+	if value == nil {
+		return nil
+	}
+	return *value
 }

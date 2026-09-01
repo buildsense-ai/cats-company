@@ -98,12 +98,12 @@ jobs:
             tar -C "${source_tree}" -czf "${source_bundle}" .
             rm -rf "${source_tree}"
             trap - EXIT
-            ssh ${SSH_OPTS} "${REMOTE}" "rm -f '${remote_temp}' && cat > '${remote_temp}'" < "${source_bundle}"
+            ssh ${SSH_OPTS} "${REMOTE}" "rm -f '${remote_temp}' && timeout 420 cat > '${remote_temp}'" < "${source_bundle}"
             ssh ${SSH_OPTS} "${REMOTE}" "tar -tzf '${remote_temp}' >/dev/null && mv '${remote_temp}' '${remote_source}' && bash '${cache_script}' seal '${DEPLOY_CACHE_ROOT}' '${IMAGE_TAG}'"
           fi
 
       - name: Deploy prod stack
-        timeout-minutes: 25
+        timeout-minutes: 45
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -119,20 +119,20 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh ${SSH_OPTS} "${REMOTE}" "bash ${PROD_STACK_ROOT}/compose/bootstrap-server.sh ${PROD_STACK_ROOT}"
+          ssh ${SSH_OPTS} "${REMOTE}" "sudo -n bash ${PROD_STACK_ROOT}/compose/bootstrap-server.sh ${PROD_STACK_ROOT}"
           CATSCO_ARTIFACT_NODES_JSON_B64="$(printf '%s' "${CATSCO_ARTIFACT_NODES_JSON}" | base64 -w 0)"
           CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64="$(printf '%s' "${CATSCO_ARTIFACT_DNS_ACCESS_KEY}" | base64 -w 0)"
           CATSCO_ARTIFACT_DNS_SECRET_KEY_B64="$(printf '%s' "${CATSCO_ARTIFACT_DNS_SECRET_KEY}" | base64 -w 0)"
           printf '%s\0%s\0%s\0%s\0%s\0' \
             "$VAPID_PUBLIC_KEY" "$VAPID_PRIVATE_KEY" "$VAPID_SUBJECT" "$CATSCO_PUSH_RELAY_URL" "$CATSCO_PUSH_RELAY_TOKEN" |
             ssh ${SSH_OPTS} "${REMOTE}" \
-              "python3 ${PROD_STACK_ROOT}/compose/sync-vapid-env.py ${PROD_STACK_ROOT}/env/prod.env"
+              "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-vapid-env.py ${PROD_STACK_ROOT}/env/prod.env"
           printf '%s\0' "$VOLCENGINE_STT_API_KEY" |
             ssh ${SSH_OPTS} "${REMOTE}" \
-              "python3 ${PROD_STACK_ROOT}/compose/sync-stt-env.py ${PROD_STACK_ROOT}/env/prod.env"
+              "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-stt-env.py ${PROD_STACK_ROOT}/env/prod.env"
           printf '%s\0%s\0' "$CTYUN_WORKER_PROJECT_ID" "$CTYUN_IMAGE_PROJECT_ID" |
             ssh ${SSH_OPTS} "${REMOTE}" \
-              "python3 ${PROD_STACK_ROOT}/compose/sync-worker-project-env.py ${PROD_STACK_ROOT}/env/prod.env"
+              "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-worker-project-env.py ${PROD_STACK_ROOT}/env/prod.env"
           ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} DEPLOY_CACHE_ROOT=${DEPLOY_CACHE_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} CATSCO_ARTIFACT_NODES_JSON_B64=${CATSCO_ARTIFACT_NODES_JSON_B64} CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64=${CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64} CATSCO_ARTIFACT_DNS_SECRET_KEY_B64=${CATSCO_ARTIFACT_DNS_SECRET_KEY_B64} bash -s" <<'EOF'
           set -euo pipefail
 
@@ -158,20 +158,20 @@ jobs:
           chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh" "$root/compose/ensure-public-website-nginx.sh" "$root/compose/ensure-preview-website-nginx.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
-          "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
+          sudo -n -E "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
-          "$root/compose/remote-deploy.sh" "$root" "$revision"
-          sudo "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app
-          sudo "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
+          sudo -n -E "$root/compose/remote-deploy.sh" "$root" "$revision"
+          sudo -n "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app
+          sudo -n "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
           # Preview is an independent vhost and only activates after its own
           # certificate and the website health check.
-          "$root/compose/ensure-preview-website-nginx.sh" "$root"
+          sudo -n "$root/compose/ensure-preview-website-nginx.sh" "$root"
           # Once preview is healthy, make the temporary root-domain behavior
           # explicit: catsco.cc/www redirect there, while app/relay vhosts are
           # left untouched. This helper is fail-closed and restores configs on
           # nginx validation failure.
-          "$root/compose/ensure-public-website-nginx.sh" "$root"
-          "$root/compose/remote-status.sh" "$root"
+          sudo -n "$root/compose/ensure-public-website-nginx.sh" "$root"
+          sudo -n "$root/compose/remote-status.sh" "$root"
           EOF
 
       - name: Roll back prod stack on failure
@@ -187,7 +187,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
-          ssh ${SSH_OPTS} "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash ${PROD_STACK_ROOT}/compose/remote-rollback.sh ${PROD_STACK_ROOT} || true"
+          ssh ${SSH_OPTS} "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} sudo -n -E bash ${PROD_STACK_ROOT}/compose/remote-rollback.sh ${PROD_STACK_ROOT} || true"
 
       - name: Dump prod status on failure
         if: failure()
@@ -200,4 +200,4 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
-          ssh ${SSH_OPTS} "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "bash ${PROD_STACK_ROOT}/compose/remote-status.sh ${PROD_STACK_ROOT} || true"
+          ssh ${SSH_OPTS} "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "sudo -n bash ${PROD_STACK_ROOT}/compose/remote-status.sh ${PROD_STACK_ROOT} || true"

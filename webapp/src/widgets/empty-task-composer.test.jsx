@@ -20,6 +20,10 @@ vi.mock('./qr-code', () => ({
 }));
 
 import { api } from '../api';
+import {
+  createComposerDraftStore,
+  writeComposerTaskContextDraft,
+} from '../utils/composer-draft-storage';
 import EmptyTaskComposer from './empty-task-composer';
 
 const agents = [
@@ -52,6 +56,8 @@ describe('EmptyTaskComposer', () => {
     api.uploadFile.mockReset();
     api.createMobileUploadSession.mockReset();
     api.getMobileUploadSession.mockReset();
+    localStorage.clear();
+    sessionStorage.clear();
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -65,6 +71,8 @@ describe('EmptyTaskComposer', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     container.remove();
+    localStorage.clear();
+    sessionStorage.clear();
     vi.clearAllMocks();
   });
 
@@ -107,6 +115,877 @@ describe('EmptyTaskComposer', () => {
     expect(menu.textContent).toContain('上传图片');
     expect(menu.textContent).toContain('上传文件');
     expect(menu.textContent).toContain('手机扫码上传');
+  });
+
+  it('restores an unsent new-task draft from the shared store after remounting', async () => {
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+
+    await mountComposer({ composerDraftStore, draftKey: 'new-task' });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '保留这条尚未建立会话的草稿');
+
+    expect(composerDraftStore.inputDrafts.get('new-task'))
+      .toBe('保留这条尚未建立会话的草稿');
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore, draftKey: 'new-task' });
+
+    expect(container.querySelector('textarea.v3-composer-input').value)
+      .toBe('保留这条尚未建立会话的草稿');
+  });
+
+  it('persists uploaded attachments through the shared draft store interface', async () => {
+    const inputDrafts = new Map();
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      getInputDraft: vi.fn((key) => inputDrafts.get(key) || ''),
+      setInputDraft: vi.fn((key, value) => {
+        if (value) inputDrafts.set(key, value);
+        else inputDrafts.delete(key);
+      }),
+      getAttachmentDraft: vi.fn((key) => attachmentDrafts.get(key) || []),
+      setAttachmentDraft: vi.fn((key, value) => {
+        if (value.length > 0) attachmentDrafts.set(key, value);
+        else attachmentDrafts.delete(key);
+      }),
+      persist: vi.fn(),
+    };
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    api.uploadFile.mockResolvedValueOnce({
+      file_key: 'brief.pdf',
+      url: '/uploads/files/brief.pdf',
+      name: 'brief.pdf',
+      size: file.size,
+      mime_type: 'application/pdf',
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await flushPromises();
+    });
+
+    expect(composerDraftStore.setAttachmentDraft).toHaveBeenCalledWith(
+      'new-task',
+      [expect.objectContaining({ type: 'file', name: 'brief.pdf' })],
+    );
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('removes a just-uploaded attachment when X is clicked', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    const file = new File(['just uploaded'], 'fresh.pdf', { type: 'application/pdf' });
+    api.uploadFile.mockResolvedValueOnce({
+      file_key: 'fresh.pdf',
+      url: '/uploads/files/fresh.pdf',
+      name: 'fresh.pdf',
+      size: file.size,
+      mime_type: 'application/pdf',
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task')).toHaveLength(1);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：fresh.pdf"]'));
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：fresh.pdf"]')).toBeNull();
+  });
+
+  it('keeps a phone-uploaded attachment removed across later polls in the same document', async () => {
+    const attachmentDrafts = new Map();
+    const phoneUploadSessions = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions,
+      persist: vi.fn(),
+    };
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'live-upload',
+      upload_url: '/mobile-upload/live-upload',
+    });
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'live-upload',
+      files: [{
+        file_key: 'live-brief.pdf',
+        url: '/uploads/files/live-brief.pdf',
+        name: 'live-brief.pdf',
+        size: 2048,
+        type: 'file',
+        mime_type: 'application/pdf',
+      }],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(attachmentDrafts.get('new-task')).toHaveLength(1));
+
+    // The file was added through the poll path in THIS document, so the
+    // phone-upload file-key ref knows it; removal must still stick.
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：live-brief.pdf"]'));
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：live-brief.pdf"]')).toBeNull();
+  });
+
+  it('persists removing a restored attachment across a fresh context', async () => {
+    const composerDraftStore = createComposerDraftStore('attachment-removal-context');
+    const attachment = {
+      type: 'file',
+      name: 'brief.pdf',
+      content: {
+        type: 'file',
+        payload: { file_key: 'brief.pdf', url: '/uploads/brief.pdf', name: 'brief.pdf' },
+      },
+    };
+    composerDraftStore.setAttachmentDraft('new-task', [attachment]);
+    composerDraftStore.persist();
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：brief.pdf"]'));
+      await flushPromises();
+    });
+
+    // A new SkillHub document cannot see the old sessionStorage copy.
+    sessionStorage.clear();
+    const freshContext = createComposerDraftStore('attachment-removal-context');
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
+  });
+
+  it('keeps a restored attachment removable while another upload is in flight', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    attachmentDrafts.set('new-task', [{
+      type: 'file',
+      name: 'kept.pdf',
+      content: {
+        type: 'file',
+        payload: { file_key: 'kept.pdf', url: '/uploads/files/kept.pdf', name: 'kept.pdf' },
+      },
+    }]);
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    const file = new File(['second upload'], 'pending.pdf', { type: 'application/pdf' });
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+    // The batch upload is still in flight; the already-uploaded attachment
+    // must stay removable.
+    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="移除附件：kept.pdf"]').disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：kept.pdf"]'));
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'pending.pdf',
+        url: '/uploads/files/pending.pdf',
+        name: 'pending.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+    // The in-flight upload must not resurrect the removed attachment.
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+  });
+
+  it('keeps a phone-uploaded attachment removed when the session poll re-lists it', async () => {
+    const attachmentDrafts = new Map();
+    const phoneUploadSessions = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions,
+      persist: vi.fn(),
+    };
+    const phoneFile = {
+      file_key: 'phone-brief.pdf',
+      url: '/uploads/files/phone-brief.pdf',
+      name: 'phone-brief.pdf',
+      size: 2048,
+      type: 'file',
+      mime_type: 'application/pdf',
+    };
+    attachmentDrafts.set('new-task', [{
+      type: 'file',
+      name: 'phone-brief.pdf',
+      size: 2048,
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'phone-brief.pdf',
+          url: '/uploads/files/phone-brief.pdf',
+          name: 'phone-brief.pdf',
+        },
+      },
+    }]);
+    phoneUploadSessions.set('new-task', { session_id: 'draft-upload' });
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'draft-upload',
+      files: [phoneFile],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('draft-upload'));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：phone-brief.pdf"]'));
+      await flushPromises();
+    });
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+
+    // The still-alive server session keeps listing the removed file; the next
+    // poll tick must not re-attach it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task') ?? []).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：phone-brief.pdf"]')).toBeNull();
+  });
+
+  it('keeps a removed phone attachment removed after a fresh document restores the draft', async () => {
+    const composerDraftStore = createComposerDraftStore('removal-handoff');
+    composerDraftStore.setAttachmentDraft('new-task', [{
+      type: 'file',
+      name: 'phone-brief.pdf',
+      size: 2048,
+      content: {
+        type: 'file',
+        payload: {
+          file_key: 'phone-brief.pdf',
+          url: '/uploads/files/phone-brief.pdf',
+          name: 'phone-brief.pdf',
+        },
+      },
+    }]);
+    composerDraftStore.setPhoneUploadSession('new-task', { session_id: 'draft-upload' });
+    composerDraftStore.persist();
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'draft-upload',
+      files: [{
+        file_key: 'phone-brief.pdf',
+        url: '/uploads/files/phone-brief.pdf',
+        name: 'phone-brief.pdf',
+        size: 2048,
+        type: 'file',
+        mime_type: 'application/pdf',
+      }],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('draft-upload'));
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：phone-brief.pdf"]'));
+      await flushPromises();
+    });
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toEqual([]);
+
+    // A fresh SkillHub document rebuilds the store from persisted storage; the
+    // ignored file key must survive the handoff so the poll cannot re-attach.
+    sessionStorage.clear();
+    const freshContext = createComposerDraftStore('removal-handoff');
+    expect(freshContext.getPhoneUploadSession('new-task').ignored_file_keys)
+      .toEqual(['phone-brief.pdf']);
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore: freshContext });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('draft-upload'));
+    await flushPromises();
+
+    expect(freshContext.getAttachmentDraft('new-task')).toEqual([]);
+    expect(container.querySelector('[aria-label="移除附件：phone-brief.pdf"]')).toBeNull();
+  });
+
+  it('keeps the new-task draft persisted after a successful send', async () => {
+    const composerDraftStore = createComposerDraftStore('sent-draft-context');
+    composerDraftStore.setAttachmentDraft('new-task', [{
+      type: 'file',
+      name: 'brief.pdf',
+      content: { type: 'file', payload: { file_key: 'brief.pdf' } },
+    }]);
+    composerDraftStore.persist();
+
+    const onResolveAgentTopic = vi.fn().mockResolvedValue({ topicId: 'p2p_1_21' });
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic,
+    });
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '发送这条任务');
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+
+    expect(onResolveAgentTopic).toHaveBeenCalledWith(
+      agents[0],
+      expect.objectContaining({ text: '发送这条任务' }),
+    );
+    // The sent draft persists for reuse; only the consumed phone upload
+    // session is released.
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('发送这条任务');
+    expect(composerDraftStore.getAttachmentDraft('new-task')).toHaveLength(1);
+    expect(composerDraftStore.getPhoneUploadSession('new-task')).toBeNull();
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-context'))
+      .toContain('发送这条任务');
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-context'))
+      .toContain('发送这条任务');
+
+    const freshContext = createComposerDraftStore('sent-draft-context');
+    expect(freshContext.getInputDraft('new-task')).toBe('发送这条任务');
+    expect(freshContext.getAttachmentDraft('new-task')).toHaveLength(1);
+  });
+
+  it('keeps a sent draft when the Agent roster refreshes during the send', async () => {
+    const composerDraftStore = createComposerDraftStore('sent-draft-roster-refresh');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onSelectedAgentChange: (agent) => {
+        if (!agent) return;
+        writeComposerTaskContextDraft(composerDraftStore, 'new-task', { agent });
+        composerDraftStore.persist();
+      },
+    });
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '发送后应清除');
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    api.getAgents.mockResolvedValueOnce({ agents: [{ ...agents[0] }] });
+    await act(async () => {
+      window.dispatchEvent(new Event('cc:data-changed'));
+      await flushPromises();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 113 });
+      await flushPromises();
+    });
+
+    // The roster refresh during the send must not wipe the persisted draft.
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('发送后应清除');
+    expect(composerDraftStore.getTaskContextDraft('new-task'))
+      .toMatchObject({ agent: expect.objectContaining({ uid: 21 }) });
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh'))
+      .toContain('发送后应清除');
+    expect(localStorage.getItem('catsco_composer_drafts:v1:sent-draft-roster-refresh'))
+      .toContain('发送后应清除');
+
+    await typeInto(container.querySelector('textarea.v3-composer-input'), '新的未发送草稿');
+    expect(composerDraftStore.getTaskContextDraft('new-task')).toEqual(
+      expect.objectContaining({ agent: expect.objectContaining({ uid: 21 }) }),
+    );
+  });
+
+  it('keeps a draft re-typed identically while the send is in flight', async () => {
+    const composerDraftStore = createComposerDraftStore('retype-in-flight');
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic: vi.fn().mockResolvedValue({ topicId: 'p2p_1_22' }),
+    });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '重打同样的话');
+    await pressEnter(textarea);
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await typeInto(textarea, '重打同样的话');
+      await flushPromises();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 114 });
+      await flushPromises();
+    });
+
+    // The visible composer resets on success; the re-typed draft itself stays
+    // persisted and is restored the next time the composer opens.
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
+
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('重打同样的话');
+    expect(localStorage.getItem('catsco_composer_drafts:v1:retype-in-flight')).not.toBeNull();
+  });
+
+  it('retains the new-task draft in both storage copies when creation fails', async () => {
+    const composerDraftStore = createComposerDraftStore('creation-failure');
+    const onResolveAgentTopic = vi.fn().mockRejectedValue(new Error('创建失败'));
+    await mountComposer({
+      composerDraftStore,
+      initialAgent: agents[0],
+      onResolveAgentTopic,
+    });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '失败后保留草稿');
+    await pressEnter(textarea);
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(onResolveAgentTopic).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(composerDraftStore.getInputDraft('new-task')).toBe('失败后保留草稿');
+    expect(sessionStorage.getItem('catsco_composer_drafts:v1:creation-failure')).not.toBeNull();
+    expect(localStorage.getItem('catsco_composer_drafts:v1:creation-failure')).not.toBeNull();
+  });
+
+  it('persists an attachment when navigation unmounts the composer during upload', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+    expect(api.uploadFile).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('does not overwrite a newer text draft when an old upload finishes late', async () => {
+    const attachmentDrafts = new Map();
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '新的草稿内容',
+    );
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBe('新的草稿内容');
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({ name: 'brief.pdf' }),
+    ]);
+  });
+
+  it('drops an old upload when a newer composer sends the draft', async () => {
+    const attachmentDrafts = new Map();
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+
+    const file = new File(['draft attachment'], 'brief.pdf', { type: 'application/pdf' });
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+    });
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      Simulate.change(fileInput);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '先发送这条新草稿',
+    );
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+
+    // The sent draft itself persists.
+    expect(inputDrafts.get('new-task')).toBe('先发送这条新草稿');
+
+    await act(async () => {
+      resolveUpload({
+        file_key: 'brief.pdf',
+        url: '/uploads/files/brief.pdf',
+        name: 'brief.pdf',
+        size: file.size,
+        mime_type: 'application/pdf',
+      });
+      await flushPromises();
+    });
+
+    // The stale upload from the previous composer must not attach to it.
+    expect(inputDrafts.get('new-task')).toBe('先发送这条新草稿');
+    expect(attachmentDrafts.get('new-task')).toBeUndefined();
+  });
+
+  it('keeps a sent draft when the send resolves after navigation unmounts the composer', async () => {
+    const attachmentDrafts = new Map([[
+      'new-task',
+      [{ type: 'file', name: 'brief.pdf' }],
+    ]]);
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '发送后不应再次恢复',
+    );
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('textarea.v3-composer-input'), {
+        key: 'Enter',
+        shiftKey: false,
+      });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolveSend({ seq_id: 111 });
+      await flushPromises();
+    });
+
+    // The unmounted send still releases the consumed session, and the sent
+    // draft persists for reuse.
+    expect(inputDrafts.get('new-task')).toBe('发送后不应再次恢复');
+    expect(attachmentDrafts.get('new-task')).toEqual([{ type: 'file', name: 'brief.pdf' }]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('keeps a newer draft written while the previous send is in flight', async () => {
+    const inputDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts,
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts: new Map(),
+      persist: vi.fn(),
+    };
+    let resolveSend;
+    api.sendMessage.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSend = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '第一条任务',
+    );
+    await pressEnter(container.querySelector('textarea.v3-composer-input'));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mountComposer({ composerDraftStore });
+    await typeInto(
+      container.querySelector('textarea.v3-composer-input'),
+      '发送期间新写的任务',
+    );
+
+    await act(async () => {
+      resolveSend({ seq_id: 112 });
+      await flushPromises();
+    });
+
+    expect(inputDrafts.get('new-task')).toBe('发送期间新写的任务');
+  });
+
+  it('persists phone-uploaded attachments when navigation unmounts the composer during polling', async () => {
+    const attachmentDrafts = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      persist: vi.fn(),
+    };
+    let resolvePoll;
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'draft-upload',
+      upload_url: '/mobile-upload/draft-upload',
+    });
+    api.getMobileUploadSession.mockReturnValueOnce(new Promise((resolve) => {
+      resolvePoll = resolve;
+    }));
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(api.getMobileUploadSession).toHaveBeenCalledWith('draft-upload'));
+
+    await act(async () => {
+      root.unmount();
+    });
+    await act(async () => {
+      resolvePoll({
+        session_id: 'draft-upload',
+        files: [{
+          file_key: 'phone-brief.pdf',
+          url: '/uploads/files/phone-brief.pdf',
+          name: 'phone-brief.pdf',
+          size: 2048,
+          type: 'file',
+          mime_type: 'application/pdf',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(attachmentDrafts.get('new-task')).toEqual([
+      expect.objectContaining({
+        type: 'file',
+        name: 'phone-brief.pdf',
+        content: expect.objectContaining({
+          payload: expect.objectContaining({ file_key: 'phone-brief.pdf' }),
+        }),
+      }),
+    ]);
+    expect(composerDraftStore.persist).toHaveBeenCalled();
+  });
+
+  it('resumes a persisted phone upload session after the new-task composer remounts', async () => {
+    const attachmentDrafts = new Map();
+    const phoneUploadSessions = new Map();
+    const composerDraftStore = {
+      inputDrafts: new Map(),
+      structuredMentionDrafts: new Map(),
+      attachmentDrafts,
+      phoneUploadSessions,
+      persist: vi.fn(),
+    };
+    api.createMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'new-task-resume',
+      upload_url: '/mobile-upload/new-task-resume',
+    });
+    api.getMobileUploadSession.mockResolvedValue({
+      session_id: 'new-task-resume',
+      files: [],
+    });
+
+    await mountComposer({ composerDraftStore });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-composer-plus'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="手机扫码上传"]'));
+      await flushPromises();
+    });
+    await vi.waitFor(() => expect(phoneUploadSessions.get('new-task')).toMatchObject({
+      session_id: 'new-task-resume',
+    }));
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    api.getMobileUploadSession.mockResolvedValueOnce({
+      session_id: 'new-task-resume',
+      files: [{
+        file_key: 'new-task-resume.pdf',
+        url: '/uploads/files/new-task-resume.pdf',
+        name: 'new-task-resume.pdf',
+        size: 19,
+        type: 'file',
+        mime_type: 'application/pdf',
+      }],
+    });
+    await mountComposer({ composerDraftStore });
+    await vi.waitFor(() => expect(attachmentDrafts.get('new-task')).toHaveLength(1));
+
+    expect(attachmentDrafts.get('new-task')[0].content.payload.file_key)
+      .toBe('new-task-resume.pdf');
   });
 
   it('shows voice input on the new task composer and inserts the final transcript', async () => {

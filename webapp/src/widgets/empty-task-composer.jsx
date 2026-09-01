@@ -1,7 +1,24 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
+import {
+  invalidateComposerDraftRevision,
+  isComposerDraftRevisionCurrent,
+  markComposerDraftMutation,
+  markComposerPhoneUploadIgnoredFileKey,
+  NEW_TASK_DRAFT_KEY,
+  persistComposerDraftStore,
+  readComposerAttachmentDraft,
+  readComposerDraftRevision,
+  readComposerInputDraft,
+  readComposerPhoneUploadIgnoredFileKeys,
+  readComposerPhoneUploadSession,
+  subscribeComposerDraftStore,
+  writeComposerAttachmentDraft,
+  writeComposerInputDraft,
+  writeComposerPhoneUploadSession,
+} from '../utils/composer-draft-storage';
 import {
   IMAGE_UPLOAD_ACCEPT,
   MAX_ATTACHMENT_SIZE,
@@ -19,6 +36,8 @@ export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
   placeholder = '输入指令，我帮您完成',
   initialAgent,
+  composerDraftStore,
+  draftKey = NEW_TASK_DRAFT_KEY,
   onSelectedAgentChange,
   onResolveAgentTopic,
   onActivateTopic,
@@ -26,7 +45,19 @@ export default function EmptyTaskComposer({
   createVoiceSession,
   modelInfo = null,
 }) {
-  const [input, setInput] = useState('');
+  const normalizedDraftKey = String(draftKey || NEW_TASK_DRAFT_KEY);
+  // Components used outside TinodeWeb may not receive the shared store. Keep
+  // a per-instance revision object anyway so late callbacks cannot resurrect a
+  // cleared local draft in that mode.
+  const localRevisionStoreRef = useRef({});
+  const revisionStore = composerDraftStore || localRevisionStoreRef.current;
+  const initialDraftInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
+  const initialDraftAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
+  const initialPhoneUploadSession = readComposerPhoneUploadSession(
+    composerDraftStore,
+    normalizedDraftKey,
+  );
+  const [input, setInput] = useState(initialDraftInput);
   const initialAgentId = agentKey(initialAgent);
   const [agents, setAgents] = useState(() => initialAgentId ? [initialAgent] : []);
   const [agentsLoading, setAgentsLoading] = useState(true);
@@ -34,29 +65,133 @@ export default function EmptyTaskComposer({
   const [selectedAgentId, setSelectedAgentId] = useState(initialAgentId);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [pendingAttachments, setPendingAttachments] = useState(initialDraftAttachments);
   const [attachmentStatus, setAttachmentStatus] = useState(null);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [phoneUploadDialogOpen, setPhoneUploadDialogOpen] = useState(false);
-  const [phoneUploadSession, setPhoneUploadSession] = useState(null);
+  const [phoneUploadSession, setPhoneUploadSession] = useState(initialPhoneUploadSession);
   const [phoneUploadError, setPhoneUploadError] = useState('');
 
   const textareaRef = useRef(null);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const mountedRef = useRef(true);
-  const inputValueRef = useRef('');
+  const inputValueRef = useRef(initialDraftInput);
   const initialAgentRef = useRef(initialAgent);
   const agentsRef = useRef(initialAgentId ? [initialAgent] : []);
   const selectedAgentIdRef = useRef(initialAgentId);
-  const pendingAttachmentsRef = useRef([]);
+  const pendingAttachmentsRef = useRef(initialDraftAttachments);
   const dragDepthRef = useRef(0);
   const sendInFlightRef = useRef(false);
-  const phoneUploadSessionRef = useRef(null);
+  const phoneUploadSessionRef = useRef(initialPhoneUploadSession);
   const phoneUploadFileKeysRef = useRef(new Set());
   const phoneUploadSyncRef = useRef(null);
+  const sentDraftRef = useRef(false);
+
+  const persistDraft = useCallback(() => {
+    // Capture both values before either write. Store subscribers are notified
+    // synchronously and can otherwise replace the refs between field writes,
+    // making an attachment removal look like a no-op.
+    const nextInput = String(inputValueRef.current || '');
+    const nextAttachments = Array.isArray(pendingAttachmentsRef.current)
+      ? [...pendingAttachmentsRef.current]
+      : [];
+    const currentInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
+    const currentAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
+    if (currentInput !== nextInput) {
+      writeComposerInputDraft(composerDraftStore, normalizedDraftKey, nextInput);
+    } else {
+      // An identical re-type must still count as a newer draft, or a send
+      // in flight would clear it when the request completes.
+      markComposerDraftMutation(composerDraftStore, normalizedDraftKey);
+    }
+    if (JSON.stringify(currentAttachments) !== JSON.stringify(nextAttachments)) {
+      writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, nextAttachments);
+    } else {
+      markComposerDraftMutation(composerDraftStore, normalizedDraftKey);
+    }
+    persistComposerDraftStore(composerDraftStore);
+  }, [composerDraftStore, normalizedDraftKey]);
+
+  const flushDraft = useCallback((event) => {
+    const nextValue = event?.currentTarget?.value;
+    if (typeof nextValue === 'string' && !event.currentTarget.readOnly) {
+      inputValueRef.current = nextValue;
+    }
+    if (sentDraftRef.current && !inputValueRef.current) {
+      // A sent draft persists for reuse; flushing the emptied input must not
+      // wipe it.
+      return;
+    }
+    persistDraft();
+  }, [persistDraft]);
+
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      // Capture a controlled textarea value before a navigation unmount.
+      mountedRef.current = false;
+      if (sendInFlightRef.current) return;
+      const textarea = textareaRef.current;
+      if (textarea && !textarea.readOnly && typeof textarea.value === 'string') {
+        inputValueRef.current = textarea.value;
+      }
+      if (sentDraftRef.current && !inputValueRef.current) {
+        // Same as flushDraft: a sent draft must survive the unmount flush.
+        return;
+      }
+      persistDraft();
+    };
+  }, [persistDraft]);
+
+  const persistAttachmentDraft = useCallback((attachments) => {
+    writeComposerAttachmentDraft(composerDraftStore, normalizedDraftKey, attachments);
+    persistComposerDraftStore(composerDraftStore);
+  }, [composerDraftStore, normalizedDraftKey]);
+
+  const finalizeDraftAfterSend = useCallback(() => {
+    // A successful send consumes the draft's phone upload session, but the
+    // drafted text, attachments, and Agent context stay persisted: the next
+    // composer that opens this draft restores them for reuse.
+    invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
+    sentDraftRef.current = true;
+    inputValueRef.current = '';
+    pendingAttachmentsRef.current = [];
+    phoneUploadSessionRef.current = null;
+    // Releasing the session notifies subscribers synchronously; until the
+    // caller clears the visible state below, syncDraftFromStore can
+    // legitimately repopulate the refs from the still-persisted draft. The
+    // caller's clear is authoritative.
+    writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
+    persistComposerDraftStore(composerDraftStore);
+  }, [composerDraftStore, normalizedDraftKey, revisionStore]);
+
+  useEffect(() => {
+    const syncDraftFromStore = () => {
+      const nextInput = readComposerInputDraft(composerDraftStore, normalizedDraftKey);
+      const nextAttachments = readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey);
+      const nextPhoneUploadSession = readComposerPhoneUploadSession(
+        composerDraftStore,
+        normalizedDraftKey,
+      );
+      if (phoneUploadSessionRef.current?.session_id !== nextPhoneUploadSession?.session_id) {
+        phoneUploadFileKeysRef.current = new Set();
+      }
+      inputValueRef.current = nextInput;
+      pendingAttachmentsRef.current = nextAttachments;
+      phoneUploadSessionRef.current = nextPhoneUploadSession;
+      setInput(nextInput);
+      setPendingAttachments(nextAttachments);
+      setPhoneUploadSession(nextPhoneUploadSession);
+    };
+
+    syncDraftFromStore();
+    return subscribeComposerDraftStore(composerDraftStore, ({ key } = {}) => {
+      if (key === normalizedDraftKey && mountedRef.current) syncDraftFromStore();
+    });
+  }, [composerDraftStore, normalizedDraftKey]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -80,14 +215,36 @@ export default function EmptyTaskComposer({
   }, [initialAgent]);
 
   const replaceAttachments = useCallback((nextAttachments) => {
+    const normalized = Array.isArray(nextAttachments) ? [...nextAttachments] : [];
+    invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
+    pendingAttachmentsRef.current = normalized;
+    if (mountedRef.current) setPendingAttachments(normalized);
+    persistDraft();
+  }, [composerDraftStore, normalizedDraftKey, persistDraft, revisionStore]);
+
+  const appendAttachments = useCallback((attachments, expectedRevision) => {
+    if (!attachments?.length) return false;
+    if (!isComposerDraftRevisionCurrent(revisionStore, normalizedDraftKey, expectedRevision)) {
+      return false;
+    }
+    // The shared store outlives this view while navigating to SkillHub, so an
+    // upload that finishes after unmount must still be added and persisted.
+    const hasSharedAttachmentStore = Boolean(
+      composerDraftStore
+      && (
+        typeof composerDraftStore.getAttachmentDraft === 'function'
+        || typeof composerDraftStore.attachmentDrafts?.get === 'function'
+      )
+    );
+    const currentAttachments = hasSharedAttachmentStore
+      ? readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey)
+      : pendingAttachmentsRef.current;
+    const nextAttachments = [...currentAttachments, ...attachments];
     pendingAttachmentsRef.current = nextAttachments;
     if (mountedRef.current) setPendingAttachments(nextAttachments);
-  }, []);
-
-  const appendAttachments = useCallback((attachments) => {
-    if (!attachments?.length) return;
-    replaceAttachments([...pendingAttachmentsRef.current, ...attachments]);
-  }, [replaceAttachments]);
+    persistAttachmentDraft(nextAttachments);
+    return true;
+  }, [composerDraftStore, normalizedDraftKey, persistAttachmentDraft, revisionStore]);
 
   useEffect(() => {
     let cancelled = false;
@@ -142,10 +299,20 @@ export default function EmptyTaskComposer({
     () => agents.find((agent) => agentKey(agent) === String(selectedAgentId || '')) || null,
     [agents, selectedAgentId],
   );
+  const hasDraftPayload = Boolean(
+    input.trim()
+    || pendingAttachments.length > 0
+    || phoneUploadSession?.session_id,
+  );
 
   useEffect(() => {
+    // A successful send ends this draft. Do not let an Agent roster refresh
+    // re-persist context-only state; resume context persistence when the user
+    // starts a new draft in the still-mounted composer.
+    if (sentDraftRef.current && !hasDraftPayload) return;
+    if (hasDraftPayload) sentDraftRef.current = false;
     onSelectedAgentChange?.(selectedAgent);
-  }, [onSelectedAgentChange, selectedAgent]);
+  }, [hasDraftPayload, onSelectedAgentChange, selectedAgent]);
 
   const selectedAgentName = selectedAgent
     ? (selectedAgent.display_name || selectedAgent.username || 'Agent')
@@ -168,26 +335,47 @@ export default function EmptyTaskComposer({
 
     let operation = phoneUploadSyncRef.current;
     if (!operation) {
+      const draftRevision = readComposerDraftRevision(revisionStore, normalizedDraftKey);
       operation = (async () => {
         const data = await api.getMobileUploadSession(sessionId);
-        if (!mountedRef.current || phoneUploadSessionRef.current?.session_id !== sessionId) return [];
+        if (phoneUploadSessionRef.current?.session_id !== sessionId) return [];
+        if (!isComposerDraftRevisionCurrent(revisionStore, normalizedDraftKey, draftRevision)) return [];
 
+        // Keep the shared draft up to date even if navigation unmounted this
+        // view while the polling request was in flight.
         const nextAttachments = [];
+        const ignoredFileKeys = new Set(
+          readComposerPhoneUploadIgnoredFileKeys(composerDraftStore, normalizedDraftKey),
+        );
+        const existingAttachmentKeys = new Set(
+          readComposerAttachmentDraft(composerDraftStore, normalizedDraftKey)
+            .map(attachmentFileKey)
+            .filter(Boolean),
+        );
         for (const file of Array.isArray(data?.files) ? data.files : []) {
           const fileKey = file.file_key || file.url || file.name;
-          if (!fileKey || phoneUploadFileKeysRef.current.has(fileKey)) continue;
+          if (
+            !fileKey
+            || ignoredFileKeys.has(fileKey)
+            || phoneUploadFileKeysRef.current.has(fileKey)
+            || existingAttachmentKeys.has(fileKey)
+          ) continue;
           phoneUploadFileKeysRef.current.add(fileKey);
+          existingAttachmentKeys.add(fileKey);
           nextAttachments.push(attachmentFromUpload(file));
         }
 
         if (nextAttachments.length > 0) {
-          appendAttachments(nextAttachments);
-          setAttachmentStatus({
-            tone: 'success',
-            message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新任务。`,
-          });
+          const appended = appendAttachments(nextAttachments, draftRevision);
+          if (appended && mountedRef.current) {
+            setAttachmentStatus({
+              tone: 'success',
+              message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新任务。`,
+            });
+          }
+          if (!appended) return [];
         }
-        setPhoneUploadError('');
+        if (mountedRef.current) setPhoneUploadError('');
         return nextAttachments;
       })();
       phoneUploadSyncRef.current = operation;
@@ -199,8 +387,13 @@ export default function EmptyTaskComposer({
       if (mountedRef.current) {
         const message = error?.message || '读取手机上传结果失败';
         setPhoneUploadError(message);
-        if (/session not found|not found|expired/i.test(message)) {
+        if (
+          /session not found|not found|expired/i.test(message)
+          && phoneUploadSessionRef.current?.session_id === sessionId
+        ) {
           phoneUploadSessionRef.current = null;
+          writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, null);
+          persistComposerDraftStore(composerDraftStore);
           setPhoneUploadSession(null);
         }
       }
@@ -209,7 +402,7 @@ export default function EmptyTaskComposer({
     } finally {
       if (phoneUploadSyncRef.current === operation) phoneUploadSyncRef.current = null;
     }
-  }, [appendAttachments]);
+  }, [appendAttachments, composerDraftStore, normalizedDraftKey, revisionStore]);
 
   useEffect(() => {
     if (!phoneUploadSession?.session_id) return undefined;
@@ -229,30 +422,53 @@ export default function EmptyTaskComposer({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [phoneUploadDialogOpen]);
 
-  const uploadAttachmentFiles = useCallback(async (files, requestedType) => {
+  const uploadAttachmentFiles = useCallback(async (files, requestedType, expectedRevision) => {
     const fileList = Array.from(files || []).filter(Boolean).slice(0, MAX_DROPPED_FILES);
     if (fileList.length === 0 || isUploadingAttachment || sendInFlightRef.current) return;
+
+    const uploadRevision = expectedRevision ?? readComposerDraftRevision(
+      revisionStore,
+      normalizedDraftKey,
+    );
+    if (!isComposerDraftRevisionCurrent(revisionStore, normalizedDraftKey, uploadRevision)) return;
 
     setIsUploadingAttachment(true);
     let uploadedCount = 0;
     let failedCount = 0;
     try {
       for (const file of fileList) {
+        if (!isComposerDraftRevisionCurrent(
+          revisionStore,
+          normalizedDraftKey,
+          uploadRevision,
+        )) return;
         const type = inferAttachmentType(file, requestedType);
         const validationError = validateAttachmentBeforeUpload(file, type);
         if (validationError) {
-          setAttachmentStatus({ tone: 'error', message: validationError });
+          if (mountedRef.current) setAttachmentStatus({ tone: 'error', message: validationError });
           failedCount += 1;
           continue;
         }
 
-        setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
+        if (mountedRef.current) {
+          setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
+        }
         try {
           const data = await api.uploadFile(file, type);
-          if (!mountedRef.current) return;
-          appendAttachments([attachmentFromUpload(data, type, file.type)]);
-          uploadedCount += 1;
+          if (!isComposerDraftRevisionCurrent(
+            revisionStore,
+            normalizedDraftKey,
+            uploadRevision,
+          )) return;
+          if (appendAttachments([attachmentFromUpload(data, type, file.type)], uploadRevision)) {
+            uploadedCount += 1;
+          }
         } catch (error) {
+          if (!isComposerDraftRevisionCurrent(
+            revisionStore,
+            normalizedDraftKey,
+            uploadRevision,
+          )) return;
           if (mountedRef.current) setAttachmentStatus({ tone: 'error', message: formatUploadError(error) });
           failedCount += 1;
         }
@@ -278,7 +494,7 @@ export default function EmptyTaskComposer({
     } finally {
       if (mountedRef.current) setIsUploadingAttachment(false);
     }
-  }, [appendAttachments, isUploadingAttachment]);
+  }, [appendAttachments, composerDraftStore, isUploadingAttachment, normalizedDraftKey, revisionStore]);
 
   const handleFileInput = useCallback(async (event, type) => {
     const files = Array.from(event.target.files || []);
@@ -302,22 +518,30 @@ export default function EmptyTaskComposer({
     setPhoneUploadError('');
 
     if (phoneUploadSessionRef.current?.session_id) return;
+    const draftRevision = readComposerDraftRevision(revisionStore, normalizedDraftKey);
     try {
       const session = await api.createMobileUploadSession('');
-      if (!mountedRef.current) return;
+      if (!isComposerDraftRevisionCurrent(
+        revisionStore,
+        normalizedDraftKey,
+        draftRevision,
+      )) return;
       phoneUploadFileKeysRef.current = new Set();
       phoneUploadSessionRef.current = session;
-      setPhoneUploadSession(session);
+      writeComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey, session);
+      persistComposerDraftStore(composerDraftStore);
+      if (mountedRef.current) setPhoneUploadSession(session);
     } catch (error) {
       if (mountedRef.current) setPhoneUploadError(error?.message || '手机上传入口创建失败');
     }
-  }, [isSubmitting]);
+  }, [composerDraftStore, isSubmitting, normalizedDraftKey, revisionStore]);
 
   const handleInputChange = useCallback((event) => {
     const value = event.target.value;
     inputValueRef.current = value;
     setInput(value);
-  }, []);
+    persistDraft();
+  }, [persistDraft]);
 
   const handleVoiceFinal = useCallback((transcript, insertion) => {
     const textarea = textareaRef.current;
@@ -325,11 +549,12 @@ export default function EmptyTaskComposer({
     if (!result) return;
     inputValueRef.current = result.value;
     setInput(result.value);
+    persistDraft();
     window.setTimeout(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(result.caret, result.caret);
     }, 0);
-  }, []);
+  }, [persistDraft]);
 
   const handlePaste = useCallback(async (event) => {
     const files = collectClipboardFiles(event.clipboardData);
@@ -371,13 +596,15 @@ export default function EmptyTaskComposer({
     setIsDragActive(false);
 
     if (isUploadingAttachment || isSubmitting) return;
+    const dropRevision = readComposerDraftRevision(revisionStore, normalizedDraftKey);
     const files = await collectDroppedFiles(event.dataTransfer);
+    if (!isComposerDraftRevisionCurrent(revisionStore, normalizedDraftKey, dropRevision)) return;
     if (files.length === 0) {
       setAttachmentStatus({ tone: 'error', message: '这次拖入没有识别到可上传的文件。' });
       return;
     }
-    await uploadAttachmentFiles(files);
-  }, [isSubmitting, isUploadingAttachment, uploadAttachmentFiles]);
+    await uploadAttachmentFiles(files, undefined, dropRevision);
+  }, [composerDraftStore, isSubmitting, isUploadingAttachment, normalizedDraftKey, revisionStore, uploadAttachmentFiles]);
 
   const handleSend = useCallback(async () => {
     if (sendInFlightRef.current || isUploadingAttachment) return;
@@ -390,7 +617,12 @@ export default function EmptyTaskComposer({
       setAgentPickerOpen(true);
       return;
     }
-    if (!inputValueRef.current.trim() && pendingAttachmentsRef.current.length === 0) return;
+    if (
+      !inputValueRef.current.trim()
+      && pendingAttachmentsRef.current.length === 0
+      && !phoneUploadSessionRef.current?.session_id
+      && !readComposerPhoneUploadSession(composerDraftStore, normalizedDraftKey)?.session_id
+    ) return;
     if (typeof onResolveAgentTopic !== 'function' || typeof onActivateTopic !== 'function') {
       setAttachmentStatus({ tone: 'error', message: '暂时无法创建任务，请稍后重试。' });
       return;
@@ -412,7 +644,10 @@ export default function EmptyTaskComposer({
       const text = inputValueRef.current.trim();
       const attachments = [...pendingAttachmentsRef.current];
       if (!text && attachments.length === 0) return;
-
+      // Stop callbacks that belonged to the draft before this send. Phone
+      // polling above is intentionally allowed to finish so its files can be
+      // included in this message.
+      invalidateComposerDraftRevision(revisionStore, normalizedDraftKey);
       const contentBlocks = buildAtomicContentBlocks(text, attachments);
       const displayContent = text || summarizeAttachments(attachments);
       const payload = attachments.length > 0
@@ -430,17 +665,17 @@ export default function EmptyTaskComposer({
 
       await api.sendMessage(topicId, payload);
       messageSent = true;
+      // The release must happen even when navigation already unmounted this
+      // view while the request was in flight. The visible composer always
+      // resets: a draft re-typed during the flight stays persisted in the
+      // store and is restored the next time this composer opens.
+      finalizeDraftAfterSend();
       if (!mountedRef.current) return;
-      inputValueRef.current = '';
-      pendingAttachmentsRef.current = [];
-      phoneUploadSessionRef.current = null;
-      if (mountedRef.current) {
-        setInput('');
-        setPendingAttachments([]);
-        setPhoneUploadSession(null);
-        setPhoneUploadDialogOpen(false);
-        setAttachmentStatus(null);
-      }
+      setInput('');
+      setPendingAttachments([]);
+      setPhoneUploadSession(null);
+      setPhoneUploadDialogOpen(false);
+      setAttachmentStatus(null);
 
       await onActivateTopic(resolvedTopic);
       window.dispatchEvent(new Event('cc:data-changed'));
@@ -460,7 +695,7 @@ export default function EmptyTaskComposer({
       sendInFlightRef.current = false;
       if (mountedRef.current) setIsSubmitting(false);
     }
-  }, [isUploadingAttachment, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
+  }, [finalizeDraftAfterSend, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
 
   const handleKeyDown = useCallback((event) => {
     const nativeEvent = event.nativeEvent || event;
@@ -591,6 +826,7 @@ export default function EmptyTaskComposer({
         placeholder={placeholder}
         disabled={isSubmitting}
         onChange={handleInputChange}
+        textareaProps={{ onBlur: flushDraft }}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
         onVoiceFinal={handleVoiceFinal}
@@ -626,9 +862,15 @@ export default function EmptyTaskComposer({
           setAgentPickerOpen(false);
         }}
         attachments={pendingAttachments}
-        attachmentRemovalDisabled={isUploadingAttachment || isSubmitting}
+        attachmentRemovalDisabled={isSubmitting}
         onRemoveAttachment={(index) => {
-          replaceAttachments(pendingAttachmentsRef.current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          const current = pendingAttachmentsRef.current;
+          markComposerPhoneUploadIgnoredFileKey(
+            composerDraftStore,
+            normalizedDraftKey,
+            attachmentFileKey(current[index]),
+          );
+          replaceAttachments(current.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}
         notices={notices}
@@ -709,6 +951,15 @@ function attachmentFromUpload(file, requestedType, fallbackMimeType = '') {
     size: file?.size,
     content: { type, payload },
   };
+}
+
+function attachmentFileKey(attachment) {
+  return attachment?.content?.payload?.file_key
+    || attachment?.content?.payload?.url
+    || attachment?.file_key
+    || attachment?.url
+    || attachment?.name
+    || '';
 }
 
 function validateAttachmentBeforeUpload(file, type) {
