@@ -348,6 +348,17 @@ export default function ChatListView({
   const projectsSectionRef = useRef(null);
   const conversationsSectionRef = useRef(null);
   const previousSidebarScrollTopRef = useRef(0);
+
+  useEffect(() => {
+    const openCloudManager = (event) => {
+      const workerUid = Number(event?.detail?.workerUid || 0);
+      if (!workerUid) return;
+      setAgentStoreInitialAgentId(workerUid);
+      setShowAgentStore(true);
+    };
+    window.addEventListener('cc:open-cloud-worker-manager', openCloudManager);
+    return () => window.removeEventListener('cc:open-cloud-worker-manager', openCloudManager);
+  }, []);
   const pendingSidebarScrollAnchorRef = useRef(null);
   const pendingSidebarRevealRef = useRef('');
   const lastHistorySelectionTopicIdRef = useRef('');

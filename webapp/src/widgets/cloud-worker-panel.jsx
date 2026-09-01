@@ -293,7 +293,7 @@ export default function CloudWorkerPanel({
       <section aria-label="已有云托管员工">
         <div className="cc-cloud-workers-head">
           <h3><Server size={16} /> 已有云托管员工</h3>
-          <span>{workers.length} 个</span>
+          <span>{workers.length} 个 · 应用发布 {releaseVersions.length} 个 · 基础镜像 {imageVersions.length} 个</span>
         </div>
 
         {workers.length === 0 ? (
