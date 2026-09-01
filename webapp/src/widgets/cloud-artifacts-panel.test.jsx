@@ -210,7 +210,25 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('上传用户未知');
   });
 
-  test('shows the uploading account name ahead of Agent generation metadata', async () => {
+  test('keeps Agent provenance when both Agent names are unavailable', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'agent',
+        creator_name: '',
+        uploader_name: '旧版成员',
+        agent_name: '',
+      }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain('Agent 生成');
+    expect(container.textContent).not.toContain('旧版成员');
+    expect(container.textContent).not.toContain('上传用户未知');
+  });
+
+  test('shows Agent provenance ahead of a legacy uploading account name', async () => {
     api.getCloudArtifacts.mockResolvedValueOnce({
       artifacts: [{
         ...activeArtifact,
@@ -223,11 +241,27 @@ describe('CloudArtifactsPanel', () => {
     });
     await renderPanel();
 
-    expect(container.textContent).toContain('Cycren');
-    expect(container.textContent).not.toContain('自迭代 生成');
+    expect(container.textContent).toContain('自迭代 生成');
+    expect(container.textContent).not.toContain('Cycren');
   });
 
-  test('does not guess a creator for historical results with no provenance', async () => {
+  test('prefers canonical user provenance over a legacy uploading account name', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{
+        ...activeArtifact,
+        creator_type: 'user',
+        creator_name: '规范成员',
+        uploader_name: '旧版成员',
+      }],
+      viewer_relation: 'owner',
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain('规范成员');
+    expect(container.textContent).not.toContain('旧版成员');
+  });
+
+  test('uses the API unknown label for historical results with no provenance', async () => {
     api.getCloudArtifacts.mockResolvedValueOnce({
       artifacts: [{
         ...activeArtifact,
@@ -235,14 +269,16 @@ describe('CloudArtifactsPanel', () => {
         creator_uid: '',
         creator_name: '',
         uploader_uid: '',
-        uploader_name: '',
+        uploader_name: '旧版上传账号',
         agent_name: '',
       }],
       viewer_relation: 'owner',
     });
     await renderPanel();
 
-    expect(container.textContent).toContain('上传用户未知');
+    expect(container.textContent).toContain('来源未知');
+    expect(container.textContent).not.toContain('上传用户未知');
+    expect(container.textContent).not.toContain('旧版上传账号');
   });
 
   test('filters results by the current task and can show all Agent results', async () => {

@@ -144,6 +144,7 @@ describe('ChatMessage rich file rendering', () => {
     });
     container.remove();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {

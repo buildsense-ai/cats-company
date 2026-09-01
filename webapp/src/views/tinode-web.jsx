@@ -114,6 +114,19 @@ export function shouldOpenProfileSettingsDirectly(viewportWidth) {
   return Number(viewportWidth) <= 768;
 }
 
+export function buildMobileModelInfo(currentModelName, agentModelState, relayUsageSummary) {
+  const modelDisplay = resolveConversationModelDisplay(currentModelName, agentModelState);
+  if (!modelDisplay) return null;
+
+  const summary = agentModelState?.isBot ? agentModelState.summary : relayUsageSummary;
+  return {
+    model: modelDisplay.model || currentModelName,
+    quota: formatRelayUsagePill(summary, { customLabel: '自备模型', showModel: false }),
+    tone: relayUsageTone(summary),
+    title: modelDisplay.title || `当前使用的模型：${currentModelName}`,
+  };
+}
+
 export function getMobileSidebarWidth(viewportWidth) {
   return Math.min(Number(viewportWidth) * 0.78, 320);
 }
@@ -390,14 +403,11 @@ function TinodeWebApp({ location }) {
     taskDraft,
     emptyTaskSelectedAgent,
   );
-  const mobileModelDisplay = resolveConversationModelDisplay(currentModelName, displayedAgentModel);
-  const mobileModelSummary = displayedAgentModel?.isBot ? displayedAgentModel.summary : relayUsageSummary;
-  const mobileModelInfo = {
-    model: mobileModelDisplay?.model || currentModelName,
-    quota: formatRelayUsagePill(mobileModelSummary, { customLabel: '自备模型', showModel: false }),
-    tone: relayUsageTone(mobileModelSummary),
-    title: mobileModelDisplay?.title || `当前使用的模型：${currentModelName}`,
-  };
+  const mobileModelInfo = buildMobileModelInfo(
+    currentModelName,
+    displayedAgentModel,
+    relayUsageSummary,
+  );
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const openCloudArtifactsForAgent = useCallback((agentUid) => {
     const normalizedAgentUid = Number(agentUid || 0);
@@ -1437,6 +1447,7 @@ function TinodeWebApp({ location }) {
                 messageLocationRequest={messageLocationRequest}
                 onBackToSearch={() => setSearchOpen(true)}
                 composerDraftStore={composerDraftStoreRef.current}
+                modelInfo={mobileModelInfo}
               />
             ) : (
               <>
@@ -1449,6 +1460,7 @@ function TinodeWebApp({ location }) {
                     onSelectedAgentChange={setEmptyTaskSelectedAgent}
                     onResolveAgentTopic={createDraftAgentTaskTopic}
                     onActivateTopic={activateResolvedTopic}
+                    modelInfo={mobileModelInfo}
                   />
                   {standaloneCloudArtifactsRequest && (
                     <div className="v3-file-preview-shell">
@@ -1492,8 +1504,8 @@ function TinodeWebApp({ location }) {
           onSaved={handleUserUpdated}
           onOpenRelay={() => setShowRelayModal(true)}
           onOpenFeedback={() => setShowFeedbackModal(true)}
-          onOpenDownload={() => setShowDownloadModal(true)}
-          onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
+          onOpenDownload={() => openDesktopModal('download')}
+          onOpenDesktopConnect={() => openDesktopModal('connect')}
           onLogout={handleLogout}
         />
       )}
@@ -1736,7 +1748,7 @@ function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft,
   };
 }
 
-function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic }) {
+function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgentTopic, onActivateTopic, modelInfo = null }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -1749,6 +1761,7 @@ function NoActiveTask({ user, initialAgent, onSelectedAgentChange, onResolveAgen
           onSelectedAgentChange={onSelectedAgentChange}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}
+          modelInfo={modelInfo}
         />
       </div>
     </main>

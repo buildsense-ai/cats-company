@@ -96,6 +96,16 @@ describe('secondary surface design contract', () => {
     expect(css).toMatch(/\.v3-message-footer \.v3-action-btn\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;[^}]*touch-action:\s*manipulation;/s);
     expect(css).toMatch(/\.v3-message-footer \.v3-message-action-menu button\s*\{[^}]*min-height:\s*44px;[^}]*height:\s*44px;/s);
     expect(css).toContain('min-height: 96px;');
+    expect(css).toContain('.v3-composer-model-info {');
+    expect(css).toContain('display: flex;');
+    expect(css).toContain('.v3-composer-model-quota.warning { color: var(--cc-warning-text); }');
+    expect(css).toContain('.v3-composer-model-quota.danger { color: var(--cc-danger-text); }');
+    expect(css).toContain('.v3-mobile-model-quota.warning { color: var(--cc-warning-text); }');
+    expect(css).toContain('.v3-mobile-model-quota.danger { color: var(--cc-danger-text); }');
+    expect(css).not.toContain('#f8d477');
+    expect(css).not.toContain('#f2a0a0');
+    expect(css).toContain('.v3-mobile-model-info {');
+    expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 36px);');
     expect(css).toMatch(/\.v3-shell-title,\s*\.v3-shell-title-input\s*\{/);
     expect(css).toContain('top: max(12px, env(safe-area-inset-top));');
     expect(css).toContain('max-width: min(40vw, 170px);');
@@ -122,6 +132,7 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('width: 46px;');
     expect(css).toContain('height: 46px;');
     expect(css).toContain('@media (max-width: 640px)');
+    expect(css).toMatch(/\.v3-local-assistant-bar\s*\{\s*padding-inline:\s*max\(10px, env\(safe-area-inset-left\)\)\s+max\(10px, env\(safe-area-inset-right\)\);/s);
     expect(css).toContain('.relay-access-body {');
     expect(css).toContain('padding: 14px 16px calc(20px + env(safe-area-inset-bottom));');
     expect(css).toContain('min-height: 100dvh;');
@@ -143,7 +154,7 @@ describe('secondary surface design contract', () => {
     expect(css).toContain(".oc-profile-editor-modal[data-mobile-pane='home'] .oc-profile-mobile-home");
     expect(css).toContain(".oc-profile-editor-modal[data-mobile-pane='home'] .oc-profile-editor-actions");
 
-    expect(skillHubCss).toContain('@media (max-width: 760px)');
+    expect(skillHubCss).toContain('@media (max-width: 768px)');
     expect(skillHubCss).toMatch(/\.cc-skillhub-page\s*\{[^}]*--cc-mobile-text-body:\s*16px;[^}]*--cc-mobile-text-secondary:\s*14px;[^}]*--cc-mobile-control-height:\s*48px;[^}]*--cc-mobile-card-radius:\s*16px;/s);
     expect(skillHubCss).toMatch(/\.cc-skillhub-card,\s*\.cc-skillhub-local-card\s*\{[^}]*min-height:\s*188px;[^}]*padding:\s*var\(--cc-mobile-card-padding\);/s);
     expect(skillHubCss).toMatch(/\.cc-skillhub-added-actions button,[\s\S]*?min-height:\s*var\(--cc-mobile-control-height\);/s);

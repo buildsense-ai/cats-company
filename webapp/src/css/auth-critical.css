@@ -492,7 +492,7 @@ select:disabled {
   margin-bottom: 12px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 768px) {
 
   .oc-auth {
     padding: 16px;
