@@ -547,8 +547,8 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('课堂网页');
     expect(container.textContent).toContain('成员甲');
     expect(container.textContent).not.toContain('我上传');
-    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('成员');
-    expect(container.textContent).toContain('你可以查看和上传成果');
+    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('好友');
+    expect(container.textContent).toContain('你可以查看和上传成果，并可管理成果标签');
     expect(container.querySelector('button[aria-label="下架 课堂网页"]')).not.toBeNull();
     expect(container.textContent).not.toContain('待审核');
     expect(document.body.querySelector('.cc-toast')?.textContent).toContain('已共享内容到云端');
@@ -563,8 +563,8 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     expect(container.querySelector('button[aria-label="上传成果"]')).toBeNull();
-    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('成员');
-    expect(container.textContent).toContain('你可以查看成果');
+    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('好友');
+    expect(container.textContent).toContain('你可以查看成果，并可管理成果标签');
   });
 
   test('shows only the file tab when the current conversation has no Agent', async () => {
@@ -716,7 +716,7 @@ describe('CloudArtifactsPanel', () => {
 
     expect(api.setCloudArtifactTags).toHaveBeenCalledWith(440, 'lesson-game', ['游戏', '演示']);
     const removeButtons = [...container.querySelectorAll('button[aria-label="移除标签 游戏"]')];
-    expect(removeButtons).toHaveLength(1);
+    expect(removeButtons).toHaveLength(2);
 
     await act(async () => {
       removeButtons[0].click();
@@ -732,6 +732,9 @@ describe('CloudArtifactsPanel', () => {
     });
     api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '游戏', count: 1 }] });
     await renderPanel();
+
+    expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('好友');
+    expect(container.textContent).toContain('你可以查看成果，并可管理成果标签');
 
     const editButton = container.querySelector('button[aria-label="编辑 课堂小游戏 的标签"]');
     expect(editButton).not.toBeNull();
@@ -760,12 +763,36 @@ describe('CloudArtifactsPanel', () => {
 
     expect(api.setCloudArtifactTags).toHaveBeenCalledWith(440, 'lesson-game', ['游戏', '演示']);
     const removeButtons = [...container.querySelectorAll('button[aria-label="移除标签 游戏"]')];
-    expect(removeButtons).toHaveLength(1);
+    expect(removeButtons).toHaveLength(2);
 
     await act(async () => {
       removeButtons[0].click();
     });
     await flush();
     expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', ['演示']);
+  });
+
+  test('friend removes a tag from the tag editor', async () => {
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
+      viewer_relation: 'friend',
+    });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '游戏', count: 1 }] });
+    await renderPanel();
+
+    await act(async () => {
+      container.querySelector('button[aria-label="编辑 课堂小游戏 的标签"]').click();
+    });
+    await flush();
+
+    const editorChipRemove = container.querySelector(
+      '.cloud-artifact-tag-editor button[aria-label="移除标签 游戏"]',
+    );
+    expect(editorChipRemove).not.toBeNull();
+    await act(async () => {
+      editorChipRemove.click();
+    });
+    await flush();
+    expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', []);
   });
 });

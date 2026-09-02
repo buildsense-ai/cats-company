@@ -1773,15 +1773,16 @@ body {
 .cloud-artifact-tag-clear {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-height: 26px;
-  padding: 0 10px;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 12px;
   border: 1px solid var(--v3-border);
   border-radius: 999px;
   color: var(--v3-text-muted);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--v3-bg-input);
   font-size: 12px;
   cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
 .cloud-artifact-tag-chip span {
@@ -1793,13 +1794,19 @@ body {
 .cloud-artifact-tag-chip:hover,
 .cloud-artifact-tag-clear:hover {
   color: var(--v3-text-main);
-  border-color: #55585B;
+  border-color: var(--v3-text-muted);
 }
 
 .cloud-artifact-tag-chip.active {
-  color: var(--v3-text-main);
-  border-color: var(--accent, #4ade80);
+  color: var(--v3-primary);
+  border-color: var(--v3-primary);
   background: rgba(74, 222, 128, 0.12);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
+}
+
+.cloud-artifact-tag-chip.active span {
+  color: var(--v3-primary);
+  opacity: 0.8;
 }
 
 .cloud-artifact-tags-row {
@@ -1815,12 +1822,12 @@ body {
 .cloud-artifact-tag {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  min-height: 22px;
-  padding: 0 8px;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 4px 0 10px;
   border-radius: 999px;
   color: var(--v3-text-main);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--v3-bg-input);
   border: 1px solid var(--v3-border);
   font-size: 12px;
 }
@@ -1829,18 +1836,25 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
   border: 0;
   border-radius: 999px;
   color: var(--v3-text-muted);
   background: transparent;
   cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .cloud-artifact-tag button:hover {
-  color: var(--v3-text-main);
-  background: rgba(255, 255, 255, 0.08);
+  color: #fdfefd;
+  background: #e5484d;
+}
+
+.cloud-artifact-tag button:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 1px;
 }
 
 .cloud-artifact-tag-editor {
@@ -1859,24 +1873,30 @@ body {
   border: 1px solid var(--v3-border);
   border-radius: 6px;
   color: var(--v3-text-main);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--v3-bg-input);
   font-size: 12px;
+}
+
+.cloud-artifact-tag-editor input:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: -1px;
 }
 
 .cloud-artifact-tag-editor > button {
   height: 28px;
-  padding: 0 10px;
+  padding: 0 12px;
   border: 1px solid var(--v3-border);
   border-radius: 6px;
   color: var(--v3-text-muted);
-  background: transparent;
+  background: var(--v3-bg-input);
   font-size: 12px;
   cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
 .cloud-artifact-tag-editor > button:hover:not(:disabled) {
   color: var(--v3-text-main);
-  border-color: #55585B;
+  border-color: var(--v3-text-muted);
 }
 
 .cloud-artifact-tag-editor > button:disabled {
@@ -1901,11 +1921,12 @@ body {
   background: transparent;
   font-size: 11px;
   cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
 .cloud-artifact-tag-suggestions button:hover:not(:disabled) {
-  color: var(--v3-text-main);
-  border-color: #55585B;
+  color: var(--v3-primary);
+  border-color: var(--v3-primary);
 }
 
 .cloud-artifact-tag-suggestions button:disabled {

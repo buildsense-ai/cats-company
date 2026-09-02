@@ -405,7 +405,7 @@ export default function CloudArtifactsPanel({
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
   const isOwner = viewerRelation === 'owner';
   const canManageTags = viewerRelation === 'owner' || viewerRelation === 'friend';
-  const artifactRoleLabel = isOwner ? '所有者' : viewerRelation ? '成员' : '';
+  const artifactRoleLabel = isOwner ? '所有者' : viewerRelation ? '好友' : '';
   const artifactAccessText = !viewerRelation
     ? '正在读取成果权限…'
     : isOwner
@@ -413,8 +413,8 @@ export default function CloudArtifactsPanel({
         ? '成员可查看和上传 · 你可管理全部成果'
         : '成员可查看 · 你可管理全部成果'
       : canPublish
-        ? '你可以查看和上传成果'
-        : '你可以查看成果';
+        ? '你可以查看和上传成果，并可管理成果标签'
+        : '你可以查看成果，并可管理成果标签';
   const hasAgent = Number(agentUid || 0) > 0;
 
   return (
@@ -676,6 +676,7 @@ export default function CloudArtifactsPanel({
                           suggestions={tagCounts}
                           pending={pendingTagID === artifact.id}
                           onAdd={(tag) => saveArtifactTags(artifact, [...artifactTagList(artifact), tag])}
+                          onRemove={(tag) => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => item !== tag))}
                           onClose={() => setTagEditorID('')}
                         />
                       )}
@@ -733,7 +734,7 @@ function ArtifactScopeSelect({ value, canSelectCurrent, onChange }) {
   );
 }
 
-function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onClose }) {
+function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, onClose }) {
   const [draft, setDraft] = React.useState('');
   const currentTags = artifactTagList(artifact);
   const trimmed = draft.trim().slice(0, 32);
@@ -752,6 +753,20 @@ function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onClose }) {
   };
   return (
     <div className="cloud-artifact-tag-editor">
+      {currentTags.map((tag) => (
+        <span className="cloud-artifact-tag is-editor" key={tag}>
+          {tag}
+          <button
+            type="button"
+            onClick={() => onRemove(tag)}
+            disabled={pending}
+            aria-label={'移除标签 ' + tag}
+            title="移除标签"
+          >
+            <X size={11} />
+          </button>
+        </span>
+      ))}
       <input
         value={draft}
         placeholder="输入标签，回车添加"
