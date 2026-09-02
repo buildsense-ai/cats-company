@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -704,5 +705,45 @@ func TestAgentArtifactNodePublicIndexListReconcilesOrphanTags(t *testing.T) {
 	}
 	if len(response.Artifacts) != 1 || response.Artifacts[0].ID != "alpha" || len(response.Artifacts[0].Tags) != 1 {
 		t.Fatalf("artifacts = %#v", response.Artifacts)
+	}
+}
+
+func TestAgentArtifactRootIndexDNSFailurePreservesTags(t *testing.T) {
+	// A direct-template root index whose host does not resolve (yet) yields
+	// a synthetic empty index. The panel shows an empty list, but that must
+	// never be treated as a confirmed empty artifact set: existing tags are
+	// preserved, not purged as orphans.
+	handler := directTemplateHandler(t, 440, func(request *http.Request) (*http.Response, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: request.URL.Hostname(), IsNotFound: true}
+	})
+	tagStore := newArtifactTagTestStore()
+	handler.SetStore(tagStore)
+	tagStore.set(440, "alpha", []string{"游戏"})
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodGet, "/api/agents/440/artifacts?status=active"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, exists := tagStore.tags[440]["alpha"]; !exists {
+		t.Fatalf("tags purged by unconfirmed empty index: %#v", tagStore.tags[440])
+	}
+}
+
+func TestAgentArtifactRootIndexNotFoundPreservesTags(t *testing.T) {
+	handler := directTemplateHandler(t, 440, func(request *http.Request) (*http.Response, error) {
+		return artifactHTTPResponse(http.StatusNotFound, "not found"), nil
+	})
+	tagStore := newArtifactTagTestStore()
+	handler.SetStore(tagStore)
+	tagStore.set(440, "alpha", []string{"游戏"})
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodGet, "/api/agents/440/artifacts?status=active"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, exists := tagStore.tags[440]["alpha"]; !exists {
+		t.Fatalf("tags purged by unconfirmed missing index: %#v", tagStore.tags[440])
 	}
 }

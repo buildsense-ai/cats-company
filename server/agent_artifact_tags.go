@@ -162,12 +162,12 @@ func (h *CloudArtifactHandler) handleAgentArtifactTagsRead(w http.ResponseWriter
 // artifact set. ok=false means the error response has already been written.
 func (h *CloudArtifactHandler) agentArtifactTagTargetFound(w http.ResponseWriter, r *http.Request, node artifactNode, collectionURL string, agentUID int64, artifactID string) bool {
 	if collectionURL == "" {
-		index, ok := h.nodePublicIndexArtifacts(w, r, node, agentUID)
+		read, ok := h.nodePublicIndexArtifacts(w, r, node, agentUID)
 		if !ok {
 			return false
 		}
-		for i := range index.Artifacts {
-			if index.Artifacts[i].ID == artifactID {
+		for i := range read.index.Artifacts {
+			if read.index.Artifacts[i].ID == artifactID {
 				return true
 			}
 		}
