@@ -9320,3 +9320,8 @@ button.catsco-download-action:disabled {
   background: var(--v3-primary);
   border-color: var(--v3-primary);
 }
+
+.cloud-artifact-tag.is-editor:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 1px;
+}

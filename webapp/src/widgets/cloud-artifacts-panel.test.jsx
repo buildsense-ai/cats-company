@@ -828,7 +828,32 @@ test('friend bulk-deletes selected tags from the editor', async () => {
   await act(async () => { bulkButton.click(); });
   await flush();
   expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', []);
-});
+  });
+
+  test('clears a stale tag filter when the selected tag disappears', async () => {
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
+      viewer_relation: 'owner',
+    });
+    api.getCloudArtifactTags
+      .mockResolvedValueOnce({ tags: [{ tag: '游戏', count: 1 }] })
+      .mockResolvedValue({ tags: [] });
+    await renderPanel();
+
+    await act(async () => {
+      container.querySelector('.cloud-artifact-tag-chip').click();
+    });
+    await flush();
+    expect(container.textContent).toContain('课堂小游戏');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="移除标签 游戏"]').click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain('课堂小游戏');
+    expect(container.textContent).not.toContain('没有匹配所选标签的成果');
+  });
 
 });
 

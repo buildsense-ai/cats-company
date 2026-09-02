@@ -165,6 +165,7 @@ export default function CloudArtifactsPanel({
   const [selectedTags, setSelectedTags] = useState([]);
   const [tagEditorID, setTagEditorID] = useState('');
   const [pendingTagID, setPendingTagID] = useState('');
+  const tagCountsRequestSeqRef = useRef(0);
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -349,9 +350,19 @@ export default function CloudArtifactsPanel({
 
   const refreshTagCounts = async () => {
     if (!(Number(agentUid || 0) > 0)) return;
+    const seq = ++tagCountsRequestSeqRef.current;
     try {
       const result = await api.getCloudArtifactTags(agentUid);
-      setTagCounts(Array.isArray(result?.tags) ? result.tags : []);
+      if (seq !== tagCountsRequestSeqRef.current) return; // 过期响应不覆盖新状态
+      const counts = Array.isArray(result?.tags) ? result.tags : [];
+      setTagCounts(counts);
+      // 已被删除的标签不再作为筛选条件，避免残留筛选把列表清空且无法恢复。
+      setSelectedTags((current) => {
+        if (current.length === 0) return current;
+        const valid = new Set(counts.map((entry) => entry?.tag));
+        const next = current.filter((tag) => valid.has(tag));
+        return next.length === current.length ? current : next;
+      });
     } catch {
       // 标签计数是辅助信息，失败时保持现状即可。
     }
@@ -520,7 +531,7 @@ export default function CloudArtifactsPanel({
               />
             </div>
           )}
-          {artifactTabSelected && tab === 'active' && tagCounts.length > 0 && (
+          {artifactTabSelected && tab === 'active' && (tagCounts.length > 0 || selectedTags.length > 0) && (
             <div className="cloud-artifacts-tag-filter" role="group" aria-label="按标签筛选">
               {tagCounts.map(({ tag, count }) => (
                 <button
@@ -784,8 +795,15 @@ function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, on
           role={multi ? 'checkbox' : undefined}
           aria-checked={multi ? selected.has(tag) : undefined}
           aria-label={multi ? '选择标签 ' + tag : undefined}
+          tabIndex={multi ? 0 : undefined}
           title={multi ? (selected.has(tag) ? '取消选择' : '选择以批量删除') : undefined}
           onClick={multi ? () => toggleSelected(tag) : undefined}
+          onKeyDown={multi ? (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              toggleSelected(tag);
+            }
+          } : undefined}
         >
           {multi && (
             <span className="cloud-artifact-tag-check" aria-hidden="true">
