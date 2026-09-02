@@ -402,7 +402,7 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
 				return
 			}
-			if !h.agentArtifactTagTargetFound(w, r, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, route.artifactID) {
+			if !h.agentArtifactTagTargetFound(w, r, node, collectionURL, route.agentUID, route.artifactID) {
 				return
 			}
 			h.handleAgentArtifactTagsReplace(w, r, viewerUID, route.agentUID, route.artifactID)
@@ -420,7 +420,7 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
 			return
 		}
-		if !h.agentArtifactTagTargetFound(w, r, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, route.artifactID) {
+		if !h.agentArtifactTagTargetFound(w, r, node, collectionURL, route.agentUID, route.artifactID) {
 			return
 		}
 		h.handleAgentArtifactTagDelete(w, route.agentUID, route.artifactID, route.tag)
@@ -633,6 +633,55 @@ func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, index)
 }
 
+// nodePublicIndexArtifacts fetches and validates the public artifact index
+// backing one agent's node. ok=false means the error response has already
+// been written.
+func (h *CloudArtifactHandler) nodePublicIndexArtifacts(
+	w http.ResponseWriter,
+	r *http.Request,
+	node artifactNode,
+	agentUID int64,
+) (nodePublicIndexRead, bool) {
+	agentID := strconv.FormatInt(agentUID, 10)
+	indexURL := strings.TrimRight(node.publicBaseURL, "/")
+	urlValidationAgentUID := agentUID
+	allowMissing := false
+	if node.rootPublicIndex {
+		indexURL += "/artifacts-index.json"
+		urlValidationAgentUID = 0
+		allowMissing = true
+	} else {
+		indexURL += "/by-agent/" + agentID + "/artifacts-index.json"
+	}
+	index, confirmed, ok := h.readPublicArtifactIndexWithOptions(
+		w,
+		r,
+		indexURL,
+		allowMissing,
+	)
+	if !ok {
+		return nodePublicIndexRead{}, false
+	}
+	if validateManagedArtifactNodeURLs(
+		index.Artifacts,
+		node.publicBaseURL,
+		urlValidationAgentUID,
+	) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return nodePublicIndexRead{}, false
+	}
+	return nodePublicIndexRead{index: index, confirmed: confirmed}, true
+}
+
+// nodePublicIndexRead carries a public artifact index plus whether it was
+// positively read and validated (HTTP 200). Synthetic empties produced by
+// allowMissing (DNS NXDOMAIN, HTTP 404) are NOT confirmed: they mean "we do
+// not know", and must never drive destructive reconciliation.
+type nodePublicIndexRead struct {
+	index     cloudArtifactIndex
+	confirmed bool
+}
+
 func (h *CloudArtifactHandler) handleNodePublicIndexList(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -655,38 +704,20 @@ func (h *CloudArtifactHandler) handleNodePublicIndexList(
 		return
 	}
 
-	agentID := strconv.FormatInt(agentUID, 10)
-	indexURL := strings.TrimRight(node.publicBaseURL, "/")
-	urlValidationAgentUID := agentUID
-	allowMissing := false
-	if node.rootPublicIndex {
-		indexURL += "/artifacts-index.json"
-		urlValidationAgentUID = 0
-		allowMissing = true
-	} else {
-		indexURL += "/by-agent/" + agentID + "/artifacts-index.json"
-	}
-	index, ok := h.readPublicArtifactIndexWithOptions(
-		w,
-		r,
-		indexURL,
-		allowMissing,
-	)
+	read, ok := h.nodePublicIndexArtifacts(w, r, node, agentUID)
 	if !ok {
 		return
 	}
-	if validateManagedArtifactNodeURLs(
-		index.Artifacts,
-		node.publicBaseURL,
-		urlValidationAgentUID,
-	) != nil {
-		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
-	}
+	agentID := strconv.FormatInt(agentUID, 10)
 
-	list.Artifacts = append(list.Artifacts, index.Artifacts...)
+	list.Artifacts = append(list.Artifacts, read.index.Artifacts...)
 	h.enrichArtifactCreators(list.Artifacts, agentUID, true)
 	h.mergeAgentArtifactTags(agentUID, list.Artifacts)
+	// Only a positively-read index may drive reconciliation: synthetic
+	// empties (DNS NXDOMAIN, HTTP 404) must never purge existing tags.
+	if read.confirmed {
+		h.reconcileAgentArtifactTags(agentUID, list.Artifacts)
+	}
 	for i := range list.Artifacts {
 		list.Artifacts[i].Status = "active"
 		list.Artifacts[i].AgentUID = agentID
@@ -703,7 +734,9 @@ func (h *CloudArtifactHandler) readPublicArtifactIndex(
 	r *http.Request,
 	indexURL string,
 ) (cloudArtifactIndex, bool) {
-	return h.readPublicArtifactIndexWithOptions(w, r, indexURL, false)
+	// allowMissing is false here, so ok implies a positively-read index.
+	index, _, ok := h.readPublicArtifactIndexWithOptions(w, r, indexURL, false)
+	return index, ok
 }
 
 func (h *CloudArtifactHandler) readPublicArtifactIndexWithOptions(
@@ -711,11 +744,11 @@ func (h *CloudArtifactHandler) readPublicArtifactIndexWithOptions(
 	r *http.Request,
 	indexURL string,
 	allowMissing bool,
-) (cloudArtifactIndex, bool) {
+) (cloudArtifactIndex, bool, bool) {
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, indexURL, nil)
 	if err != nil {
 		writeArtifactError(w, http.StatusInternalServerError, "artifact_request_failed")
-		return cloudArtifactIndex{}, false
+		return cloudArtifactIndex{}, false, false
 	}
 	upstreamReq.Header.Set("Accept", "application/json")
 	upstreamReq.Header.Set("User-Agent", "catsco-cloud-artifacts/1.0")
@@ -723,34 +756,39 @@ func (h *CloudArtifactHandler) readPublicArtifactIndexWithOptions(
 	resp, err := h.httpClient.Do(upstreamReq)
 	if err != nil {
 		if allowMissing && artifactIndexDNSNotFound(err) {
-			return emptyCloudArtifactIndex(), true
+			// The node's host does not resolve (yet). The list treats this as
+			// an empty panel, but it is NOT a confirmed empty artifact set:
+			// flagged unconfirmed so reconciliation never purges on it.
+			return emptyCloudArtifactIndex(), false, true
 		}
 		writeArtifactError(w, http.StatusBadGateway, "artifact_index_unavailable")
-		return cloudArtifactIndex{}, false
+		return cloudArtifactIndex{}, false, false
 	}
 	defer resp.Body.Close()
 	if allowMissing && resp.StatusCode == http.StatusNotFound {
-		return emptyCloudArtifactIndex(), true
+		// "No index file yet" is a legitimate empty signal, but it still is
+		// not a positively-read artifact set: keep it unconfirmed.
+		return emptyCloudArtifactIndex(), false, true
 	}
 	if resp.StatusCode != http.StatusOK {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_index_unavailable")
-		return cloudArtifactIndex{}, false
+		return cloudArtifactIndex{}, false, false
 	}
 	body, err := readArtifactResponse(resp.Body)
 	if err != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return cloudArtifactIndex{}, false
+		return cloudArtifactIndex{}, false, false
 	}
 
 	var index cloudArtifactIndex
 	if err := json.Unmarshal(body, &index); err != nil || validateCloudArtifactIndex(index) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return cloudArtifactIndex{}, false
+		return cloudArtifactIndex{}, false, false
 	}
 	if index.Artifacts == nil {
 		index.Artifacts = []cloudArtifact{}
 	}
-	return index, true
+	return index, true, true
 }
 
 func emptyCloudArtifactIndex() cloudArtifactIndex {

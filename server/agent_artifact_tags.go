@@ -150,20 +150,32 @@ func (h *CloudArtifactHandler) handleAgentArtifactTagsRead(w http.ResponseWriter
 	writeJSON(w, http.StatusOK, cloudArtifactTagsResponse{Tags: byArtifact[artifactID]})
 }
 
-// agentArtifactTagTargetFound confirms the tag target resolves to an active
-// artifact in this agent's managed collection before any local tag row is
-// written. Tag writes must never outlive the resolver: rows for unknown,
-// recycled, or foreign artifact IDs would pollute ListAgentArtifactTagCounts
-// and the editor suggestions. The check mirrors the managed active list the
-// panel renders (same endpoint, validation, and node-URL acceptance), so a
-// tag can only be written to an artifact the panel would actually display.
-func (h *CloudArtifactHandler) agentArtifactTagTargetFound(w http.ResponseWriter, r *http.Request, collectionURL, managementToken, publicBaseURL string, agentUID int64, artifactID string) bool {
+// agentArtifactTagTargetFound verifies that artifactID names a real artifact
+// of this agent before any tag row is written. Tag writes must never outlive
+// the resolver: rows for unknown, recycled, or foreign artifact IDs would
+// pollute ListAgentArtifactTagCounts and the editor suggestions, and a tag
+// can only be written to an artifact the panel would actually display.
+// Managed-mode agents (collectionURL != "") are validated against the active
+// managed list the panel renders (same endpoint, validation, and node-URL
+// acceptance); public-index agents (collectionURL == "") are validated
+// against the node's own public artifact index, which is their authoritative
+// artifact set. ok=false means the error response has already been written.
+func (h *CloudArtifactHandler) agentArtifactTagTargetFound(w http.ResponseWriter, r *http.Request, node artifactNode, collectionURL string, agentUID int64, artifactID string) bool {
 	if collectionURL == "" {
-		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		read, ok := h.nodePublicIndexArtifacts(w, r, node, agentUID)
+		if !ok {
+			return false
+		}
+		for i := range read.index.Artifacts {
+			if read.index.Artifacts[i].ID == artifactID {
+				return true
+			}
+		}
+		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 		return false
 	}
 	target := collectionURL + "?status=active"
-	body, err := h.requestManagement(r, http.MethodGet, target, nil, managementToken)
+	body, err := h.requestManagement(r, http.MethodGet, target, nil, node.managementToken)
 	if err != nil {
 		writeArtifactUpstreamError(w, err)
 		return false
@@ -173,7 +185,7 @@ func (h *CloudArtifactHandler) agentArtifactTagTargetFound(w http.ResponseWriter
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return false
 	}
-	if validateManagedArtifactNodeURLs(list.Artifacts, publicBaseURL, agentUID) != nil {
+	if validateManagedArtifactNodeURLs(list.Artifacts, node.publicBaseURL, agentUID) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return false
 	}
