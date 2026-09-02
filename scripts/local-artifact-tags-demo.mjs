@@ -155,6 +155,41 @@ function handleArtifactAPI(req, res, url) {
     return true;
   }
 
+  const tagSystemRoute = url.pathname.match(/^\/api\/agents\/(\d+)\/artifacts\/tags\/(.+)$/);
+  if (tagSystemRoute && req.method === 'PUT') {
+    const uid = Number(tagSystemRoute[1]);
+    const oldTag = decodeURIComponent(tagSystemRoute[2]);
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { parsed = undefined; }
+      const newTag = typeof parsed?.tag === 'string' ? parsed.tag.split(/\s+/).filter(Boolean).join(' ') : '';
+      const tags = tagsFor(uid);
+      const carrying = (tag) => {
+        let n = 0;
+        for (const set of tags.values()) if (set.includes(tag)) n++;
+        return n;
+      };
+      if (!newTag) {
+        return sendJSON(res, 400, { error: '标签格式无效', code: 'artifact_tag_invalid' });
+      }
+      if (newTag === oldTag) {
+        return sendJSON(res, 200, { ok: true, renamed: carrying(newTag) });
+      }
+      for (const [artifactID, set] of tags) {
+        if (!set.includes(oldTag)) continue;
+        tags.set(artifactID, set.includes(newTag) ? set.filter((item) => item !== oldTag) : set.map((item) => (item === oldTag ? newTag : item)));
+      }
+      const carried = carrying(newTag);
+      if (carried === 0) {
+        return sendJSON(res, 404, { error: '标签不存在', code: 'artifact_tag_not_found' });
+      }
+      return sendJSON(res, 200, { ok: true, renamed: carried });
+    });
+    return true;
+  }
+
   const tagDeleteEverywhere = url.pathname.match(/^\/api\/agents\/(\d+)\/artifacts\/tags\/(.+)$/);
   if (tagDeleteEverywhere && req.method === 'DELETE') {
     const uid = Number(tagDeleteEverywhere[1]);

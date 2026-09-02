@@ -425,13 +425,17 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		}
 		h.handleAgentArtifactTagDelete(w, route.agentUID, route.artifactID, route.tag)
 	case "tag-delete-global":
-		if r.Method != http.MethodDelete {
-			w.Header().Set("Allow", http.MethodDelete)
+		if r.Method != http.MethodDelete && r.Method != http.MethodPut {
+			w.Header().Set("Allow", "DELETE, PUT")
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
 		if route.viewerRelation != "owner" && route.viewerRelation != "friend" {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
+			return
+		}
+		if r.Method == http.MethodPut {
+			h.handleAgentArtifactTagRename(w, r, route.agentUID, route.tag)
 			return
 		}
 		h.handleAgentArtifactTagDeleteEverywhere(w, route.agentUID, route.tag)

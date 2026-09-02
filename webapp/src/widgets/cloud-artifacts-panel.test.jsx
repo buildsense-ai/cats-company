@@ -15,6 +15,7 @@ vi.mock('../api', () => ({
     setCloudArtifactTags: vi.fn(),
     deleteCloudArtifactTag: vi.fn(),
     deleteCloudArtifactTagEverywhere: vi.fn(),
+    renameCloudArtifactTag: vi.fn(),
   },
 }));
 
@@ -128,6 +129,7 @@ describe('CloudArtifactsPanel', () => {
     api.setCloudArtifactTags.mockReset().mockImplementation(async (_agentUid, _artifactId, tags) => ({ tags }));
     api.deleteCloudArtifactTag.mockReset().mockResolvedValue({ ok: true });
     api.deleteCloudArtifactTagEverywhere.mockReset().mockResolvedValue({ ok: true, removed: 0 });
+    api.renameCloudArtifactTag.mockReset().mockResolvedValue({ ok: true, renamed: 0 });
     onPreviewArtifact = vi.fn();
     onPreviewFile = vi.fn();
     Object.defineProperty(navigator, 'clipboard', {
@@ -867,6 +869,39 @@ test('friend bulk-deletes selected tags from the editor', async () => {
       .map((chip) => chip.textContent);
     expect(chips).toEqual(['游戏1']);
     expect(container.textContent).not.toContain('素材2');
+  });
+
+  test('owner renames a tag from the chip', async () => {
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
+      viewer_relation: 'owner',
+    });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '游戏', count: 1 }] });
+    api.renameCloudArtifactTag.mockResolvedValue({ ok: true, renamed: 1 });
+    await renderPanel();
+
+    await act(async () => {
+      container.querySelector('button[aria-label="编辑标签 游戏"]').click();
+    });
+    await flush();
+
+    const input = container.querySelector('.cloud-artifact-tag-rename-input');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      ).set;
+      valueSetter.call(input, '互动游戏');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('button[aria-label="确认重命名"]').click();
+    });
+    await flush();
+
+    expect(api.renameCloudArtifactTag).toHaveBeenCalledWith(440, '游戏', '互动游戏');
+    expect(container.textContent).toContain('互动游戏');
   });
 
   test('clears a stale tag filter when the selected tag disappears', async () => {

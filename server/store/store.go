@@ -339,6 +339,11 @@ type AgentArtifactTagStore interface {
 	// currently have tag rows, used to reconcile orphaned rows against the
 	// agent's active managed list.
 	ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, error)
+	// RenameAgentArtifactTag renames a tag across every artifact of the agent.
+	// Artifacts already carrying newTag keep only newTag (the old binding is
+	// dropped, i.e. rename merges on collision). It returns the number of
+	// artifacts carrying newTag afterwards.
+	RenameAgentArtifactTag(agentUID int64, oldTag, newTag string) (int64, error)
 }
 
 // BotSkillMutationPolicyStore persists the opt-in policy for the dedicated

@@ -4,6 +4,7 @@ import {
   Check,
   Cloud,
   Copy,
+  Pencil,
   Download,
   Eye,
   ExternalLink,
@@ -167,6 +168,8 @@ export default function CloudArtifactsPanel({
   const [pendingTagID, setPendingTagID] = useState('');
   const tagCountsRequestSeqRef = useRef(0);
   const [confirmTag, setConfirmTag] = useState(null);
+  const [renamingTag, setRenamingTag] = useState(null);
+  const [renamingDraft, setRenamingDraft] = useState('');
   const [pendingGlobalTag, setPendingGlobalTag] = useState('');
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
@@ -386,6 +389,35 @@ export default function CloudArtifactsPanel({
     }
   };
 
+  const submitTagRename = async () => {
+    if (!renamingTag || pendingGlobalTag) return;
+    const nextTag = renamingDraft.trim();
+    if (!nextTag || nextTag === renamingTag) {
+      setRenamingTag(null);
+      return;
+    }
+    setPendingGlobalTag(renamingTag);
+    setError('');
+    try {
+      await api.renameCloudArtifactTag(agentUid, renamingTag, nextTag);
+      setArtifacts((current) => current.map((item) => ({
+        ...item,
+        tags: artifactTagList(item).some((t) => t === renamingTag)
+          ? artifactTagList(item)
+            .filter((t) => t !== renamingTag && t !== nextTag)
+            .concat(nextTag)
+          : artifactTagList(item),
+      })));
+      setRenamingTag(null);
+      setRenamingDraft('');
+      await refreshTagCounts();
+    } catch (err) {
+      setError(err.message || '标签重命名失败，请稍后重试');
+    } finally {
+      setPendingGlobalTag('');
+    }
+  };
+
   const saveArtifactTags = async (artifact, nextTags) => {
     if (pendingTagID) return;
     const normalized = [];
@@ -556,16 +588,69 @@ export default function CloudArtifactsPanel({
                   key={tag}
                   className={'cloud-artifact-tag-chip' + (selectedTags.includes(tag) ? ' active' : '') + (canManageTags ? ' has-remove' : '')}
                 >
-                  <button
-                    type="button"
-                    className="cloud-artifact-tag-chip-filter"
-                    aria-pressed={selectedTags.includes(tag)}
-                    onClick={() => toggleTagFilter(tag)}
-                  >
-                    {tag}
-                    <span>{count}</span>
-                  </button>
-                  {canManageTags && (
+                  {renamingTag === tag ? (
+                    <>
+                      <input
+                        className="cloud-artifact-tag-rename-input"
+                        value={renamingDraft}
+                        autoFocus
+                        maxLength={32}
+                        aria-label={'重命名标签 ' + tag}
+                        disabled={pendingGlobalTag === tag}
+                        onChange={(event) => setRenamingDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            submitTagRename();
+                          } else if (event.key === 'Escape') {
+                            event.stopPropagation();
+                            setRenamingTag(null);
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="cloud-artifact-tag-chip-confirm"
+                        aria-label="确认重命名"
+                        title="确认"
+                        disabled={pendingGlobalTag === tag || !renamingDraft.trim()}
+                        onClick={submitTagRename}
+                      >
+                        <Check size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="cloud-artifact-tag-chip-cancel"
+                        aria-label="取消重命名"
+                        title="取消"
+                        onClick={() => setRenamingTag(null)}
+                      >
+                        <X size={12} />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="cloud-artifact-tag-chip-filter"
+                      aria-pressed={selectedTags.includes(tag)}
+                      onClick={() => toggleTagFilter(tag)}
+                    >
+                      {tag}
+                      <span>{count}</span>
+                    </button>
+                  )}
+                  {canManageTags && renamingTag !== tag && (
+                    <button
+                      type="button"
+                      className="cloud-artifact-tag-chip-edit"
+                      aria-label={'编辑标签 ' + tag}
+                      title="重命名标签"
+                      onClick={() => { setRenamingTag(tag); setRenamingDraft(tag); }}
+                    >
+                      <Pencil size={11} />
+                    </button>
+                  )}
+                  {canManageTags && renamingTag !== tag && (
                     <button
                       type="button"
                       className="cloud-artifact-tag-chip-remove"
