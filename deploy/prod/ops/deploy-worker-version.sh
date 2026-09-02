@@ -88,10 +88,32 @@ ctyun() {
 }
 
 find_instance() {
-  local resp
+  local name="$1" resp match page total_page
   resp="$(ctyun ecs ListEcsInstances --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-    --instanceName "worker-$NAME" --pageNo 1 --pageSize 10)"
-  jq -r --arg n "worker-$NAME" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" || true
+    --instanceName "$name" --pageNo 1 --pageSize 10)"
+  match="$(jq -c --arg n "$name" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" | head -n1)"
+  if [[ -n "$match" ]]; then
+    printf '%s\n' "$match"
+    return 0
+  fi
+
+  # Some Tianyi API deployments acknowledge --instanceName but ignore the
+  # filter and return an empty page. Fall back to the same paginated full scan
+  # used by status-worker.sh so updates do not report a running worker missing.
+  page=1
+  total_page="$(jq -r '.returnObj.totalPage // 1' <<<"$resp")"
+  while (( page <= total_page )); do
+    if (( page > 1 )); then
+      resp="$(ctyun ecs ListEcsInstances --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+        --pageNo "$page" --pageSize 100)"
+    fi
+    match="$(jq -c --arg n "$name" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" | head -n1)"
+    if [[ -n "$match" ]]; then
+      printf '%s\n' "$match"
+      return 0
+    fi
+    page=$((page + 1))
+  done
 }
 
 COMMIT=""
@@ -104,7 +126,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 [[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || { echo "error: selected application version is invalid" >&2; exit 1; }
 
-inst="$(find_instance)"
+inst="$(find_instance "worker-$NAME")"
 [[ -n "$inst" ]] || { echo "error: instance worker-$NAME not found" >&2; exit 1; }
 INSTANCE_IP="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
 [[ -n "$INSTANCE_IP" ]] || { echo "error: instance has no IP" >&2; exit 1; }

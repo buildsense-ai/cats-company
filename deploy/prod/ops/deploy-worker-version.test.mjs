@@ -39,9 +39,17 @@ const args = process.argv.slice(2);
 const value = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : ""; };
 if (args.slice(0, 2).join(" ") !== "ecs ListEcsInstances") process.exit(2);
 const name = value("--instanceName");
+if (process.env.IGNORE_NAME_FILTER === "1" && name) {
+  process.stdout.write(JSON.stringify({ statusCode: "800", returnObj: { totalPage: 1, results: [] } }));
+  process.exit(0);
+}
 process.stdout.write(JSON.stringify({
   statusCode: "800",
-  returnObj: { results: name === "worker-bot-a" ? [{ instanceName: name, fixedIPList: ["10.0.0.9"] }] : [] },
+  returnObj: { totalPage: 1, results: name === "worker-bot-a" ? [{ instanceName: name, fixedIPList: ["10.0.0.9"] }] : (
+    process.env.IGNORE_NAME_FILTER === "1" && !name
+      ? [{ instanceName: "worker-bot-a", fixedIPList: ["10.0.0.9"] }]
+      : []
+  ) },
 }));
 `;
 
@@ -210,6 +218,14 @@ test("deploy-worker-version: omitted version selects the newest published applic
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /"version":"1\.4\.9"/);
   assert.equal(readState(sb).manifestDownloads || 0, 0);
+});
+
+test("deploy-worker-version: falls back to a full instance scan when name filtering is ignored", () => {
+  const sb = setupSandbox({ localRelease: false });
+  sb.env.IGNORE_NAME_FILTER = "1";
+  const result = run(sb, ["--name", "bot-a", "--version", "1.4.9"]);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /"status":"updated"/);
 });
 
 test("deploy-worker-version: explicit application version does not require a matching image", () => {

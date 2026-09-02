@@ -1297,7 +1297,8 @@ describe('AgentStoreModal', () => {
         workers: [{
           tenant_name: 'tenant-a',
           cloud_status: 'running',
-          cloud_version: '1.4.8',
+          app_version: '1.4.8',
+          cloud_version: '1.4.7',
         }],
       });
       await Promise.resolve();
@@ -1423,7 +1424,8 @@ describe('AgentStoreModal', () => {
       workers: [{
         tenant_name: 'tenant-a',
         status: 'running',
-        version: '1.4.8',
+        app_version: '1.5.3',
+        cloud_version: '1.5.0',
         image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
       }],
     });
@@ -1451,6 +1453,10 @@ describe('AgentStoreModal', () => {
     expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('运行中');
+    const cloudBotCard = Array.from(container.querySelectorAll('.cc-cloud-worker'))
+      .find((card) => card.textContent.includes('云端审查助手'));
+    expect(cloudBotCard?.textContent).toContain('版本 1.5.3');
+    expect(cloudBotCard?.textContent).not.toContain('版本 1.5.0');
     expect(container.querySelector('.cc-agent-hosting')).toBeNull();
     const back = Array.from(container.querySelectorAll('button'))
       .find((b) => b.textContent.includes('返回助手列表'));
