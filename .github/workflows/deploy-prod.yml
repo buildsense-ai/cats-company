@@ -66,6 +66,9 @@ jobs:
           cp deploy/prod/ensure-public-website-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/ensure-preview-website-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"
+          mkdir -p "${tmpdir}/systemd"
+          cp deploy/prod/systemd/catsco-worker-release-prune.service "${tmpdir}/systemd/"
+          cp deploy/prod/systemd/catsco-worker-release-prune.timer "${tmpdir}/systemd/"
           cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
           cp deploy/prod/sync-worker-project-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
@@ -82,7 +85,7 @@ jobs:
           remote_source="${DEPLOY_CACHE_ROOT}/releases/${source_bundle}"
           remote_temp="${remote_source}.upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          ssh ${SSH_OPTS} "${REMOTE}" "tar -xzf - -C ${PROD_STACK_ROOT}" < prod-stack-files.tar.gz
+          ssh ${SSH_OPTS} "${REMOTE}" "tar -xzf - -C ${PROD_STACK_ROOT} && sudo -n install -m 0644 ${PROD_STACK_ROOT}/systemd/catsco-worker-release-prune.service /etc/systemd/system/catsco-worker-release-prune.service && sudo -n install -m 0644 ${PROD_STACK_ROOT}/systemd/catsco-worker-release-prune.timer /etc/systemd/system/catsco-worker-release-prune.timer && sudo -n systemctl daemon-reload && sudo -n systemctl enable --now catsco-worker-release-prune.timer" < prod-stack-files.tar.gz
           cache_script="${PROD_STACK_ROOT}/compose/cache-source-bundle.sh"
           if ssh ${SSH_OPTS} "${REMOTE}" "bash '${cache_script}' verify '${DEPLOY_CACHE_ROOT}' '${IMAGE_TAG}'"; then
             echo "Reusing source bundle validated by test: ${remote_source}"

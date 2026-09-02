@@ -1,0 +1,18 @@
+[Unit]
+Description=CatsCo worker application release retention cleanup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The container owns the TOS client and status script. Credentials remain in
+# the server-side prod.env and are never written to this unit. The script's
+# explicit enable flag prevents a read-only production key from becoming
+# destructive.
+ExecStart=/usr/bin/docker exec -e CATSCO_WORKER_RELEASE_DELETE_CONFIRM=I_UNDERSTAND_DELETE_WORKER_RELEASES catscompany_prod-server-1 /opt/catsco/ops/prune-worker-releases.sh --apply
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

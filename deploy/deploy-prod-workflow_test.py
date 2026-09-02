@@ -34,6 +34,20 @@ class DeployProdWorkflowTest(unittest.TestCase):
             workflow,
         )
 
+    def test_prod_deploy_installs_and_starts_worker_release_prune_timer(self):
+        workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'deploy/prod/systemd/catsco-worker-release-prune.service', workflow
+        )
+        self.assertIn(
+            'deploy/prod/systemd/catsco-worker-release-prune.timer', workflow
+        )
+        self.assertIn(
+            'systemctl enable --now catsco-worker-release-prune.timer', workflow
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
