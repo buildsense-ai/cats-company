@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
+  Check,
   Cloud,
   Copy,
   Download,
@@ -165,8 +165,6 @@ export default function CloudArtifactsPanel({
   const [selectedTags, setSelectedTags] = useState([]);
   const [tagEditorID, setTagEditorID] = useState('');
   const [pendingTagID, setPendingTagID] = useState('');
-  const [tagMenu, setTagMenu] = useState(null);
-  const tagMenuLongPressRef = useRef(null);
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -379,44 +377,6 @@ export default function CloudArtifactsPanel({
       setPendingTagID('');
     }
   };
-
-  const closeTagMenu = useCallback(() => setTagMenu(null), []);
-  const cancelTagMenuLongPress = useCallback(() => {
-    if (tagMenuLongPressRef.current) {
-      clearTimeout(tagMenuLongPressRef.current);
-      tagMenuLongPressRef.current = null;
-    }
-  }, []);
-  const tagMenuTriggerProps = useCallback((artifactId, tag) => ({
-    onContextMenu: (event) => {
-      event.preventDefault();
-      cancelTagMenuLongPress();
-      setTagMenu({ artifactId, tag, x: event.clientX, y: event.clientY });
-    },
-    onTouchStart: (event) => {
-      const touch = event.touches[0];
-      cancelTagMenuLongPress();
-      tagMenuLongPressRef.current = setTimeout(() => {
-        setTagMenu({ artifactId, tag, x: touch.clientX, y: touch.clientY });
-      }, 500);
-    },
-    onTouchMove: cancelTagMenuLongPress,
-    onTouchEnd: cancelTagMenuLongPress,
-    onTouchCancel: cancelTagMenuLongPress,
-  }), [cancelTagMenuLongPress]);
-
-  useEffect(() => {
-    if (!tagMenu) return undefined;
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape') closeTagMenu();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    window.addEventListener('resize', closeTagMenu);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('resize', closeTagMenu);
-    };
-  }, [tagMenu, closeTagMenu]);
 
   const canFilterArtifactsByTask = Boolean(topicId) && (artifacts.length === 0 || artifacts.some(
     (artifact) => String(artifact?.source_topic_id || '').trim(),
@@ -695,13 +655,8 @@ export default function CloudArtifactsPanel({
                   </div>
                   {tab === 'active' && (artifactTagList(artifact).length > 0 || tagEditorID === artifact.id) && (
                     <div className="cloud-artifact-tags-row">
-                      {artifactTagList(artifact).map((tag) => (
-                        <span
-                          className="cloud-artifact-tag"
-                          key={tag}
-                          title={canManageTags ? '右键或长按管理标签' : undefined}
-                          {...(canManageTags ? tagMenuTriggerProps(artifact.id, tag) : {})}
-                        >
+                      {tagEditorID !== artifact.id && artifactTagList(artifact).map((tag) => (
+                        <span className="cloud-artifact-tag" key={tag}>
                           {tag}
                           {canManageTags && (
                             <button
@@ -758,54 +713,6 @@ export default function CloudArtifactsPanel({
           </div>
         )}
       </section>
-      {tagMenu && createPortal(
-        <div
-          className="cloud-artifact-tag-menu-backdrop"
-          onMouseDown={closeTagMenu}
-          onContextMenu={(event) => { event.preventDefault(); closeTagMenu(); }}
-        >
-          <div
-            className="cloud-artifact-tag-menu"
-            role="menu"
-            style={{
-              left: Math.max(8, Math.min(tagMenu.x, (window.innerWidth || 320) - 170)),
-              top: Math.max(8, Math.min(tagMenu.y, (window.innerHeight || 320) - 100)),
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            {canManageTags && (
-              <button
-                type="button"
-                role="menuitem"
-                className="is-danger"
-                onClick={() => {
-                  const artifact = artifacts.find((item) => item.id === tagMenu.artifactId);
-                  closeTagMenu();
-                  if (artifact) {
-                    saveArtifactTags(
-                      artifact,
-                      artifactTagList(artifact).filter((item) => item !== tagMenu.tag),
-                    );
-                  }
-                }}
-              >
-                删除标签
-              </button>
-            )}
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                if (navigator.clipboard?.writeText) navigator.clipboard.writeText(tagMenu.tag);
-                closeTagMenu();
-              }}
-            >
-              复制标签
-            </button>
-          </div>
-        </div>,
-        document.body,
-      )}
     </>
   );
 }
@@ -832,6 +739,7 @@ function ArtifactScopeSelect({ value, canSelectCurrent, onChange }) {
 function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, onRemoveMany, onClose }) {
   const [draft, setDraft] = React.useState('');
   const [selected, setSelected] = React.useState(() => new Set());
+  const [multi, setMulti] = React.useState(false);
   const currentTags = artifactTagList(artifact);
   const trimmed = draft.trim().slice(0, 32);
   const suggestionItems = suggestions
@@ -854,6 +762,10 @@ function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, on
     onRemoveMany([...selected]);
     setSelected(new Set());
   };
+  const toggleMulti = () => {
+    setSelected(new Set());
+    setMulti((current) => !current);
+  };
   const submit = () => {
     if (!trimmed || pending) return;
     if (currentTags.includes(trimmed)) {
@@ -867,27 +779,34 @@ function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, on
     <div className="cloud-artifact-tag-editor">
       {currentTags.map((tag) => (
         <span
-          className={'cloud-artifact-tag is-editor' + (selected.has(tag) ? ' is-selected' : '')}
+          className={'cloud-artifact-tag is-editor' + (selected.has(tag) ? ' is-selected' : '') + (multi ? ' is-multi' : '')}
           key={tag}
-          role="checkbox"
-          aria-checked={selected.has(tag)}
-          aria-label={'选择标签 ' + tag}
-          title={selected.has(tag) ? '取消选择' : '选择以批量删除'}
-          onClick={() => toggleSelected(tag)}
+          role={multi ? 'checkbox' : undefined}
+          aria-checked={multi ? selected.has(tag) : undefined}
+          aria-label={multi ? '选择标签 ' + tag : undefined}
+          title={multi ? (selected.has(tag) ? '取消选择' : '选择以批量删除') : undefined}
+          onClick={multi ? () => toggleSelected(tag) : undefined}
         >
+          {multi && (
+            <span className="cloud-artifact-tag-check" aria-hidden="true">
+              {selected.has(tag) && <Check size={10} />}
+            </span>
+          )}
           {tag}
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onRemove(tag);
-            }}
-            disabled={pending}
-            aria-label={'移除标签 ' + tag}
-            title="移除标签"
-          >
-            <X size={11} />
-          </button>
+          {!multi && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemove(tag);
+              }}
+              disabled={pending}
+              aria-label={'移除标签 ' + tag}
+              title="移除标签"
+            >
+              <X size={11} />
+            </button>
+          )}
         </span>
       ))}
       <input
@@ -908,7 +827,15 @@ function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, on
         }}
       />
       <button type="button" onClick={submit} disabled={pending || !trimmed}>添加</button>
-      {selected.size > 0 && (
+      <button
+        type="button"
+        onClick={toggleMulti}
+        aria-pressed={multi}
+        disabled={pending}
+      >
+        {multi ? '退出多选' : '多选'}
+      </button>
+      {multi && selected.size > 0 && (
         <button
           type="button"
           className="is-danger"
