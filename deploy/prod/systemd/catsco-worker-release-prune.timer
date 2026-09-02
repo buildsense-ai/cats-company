@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily CatsCo worker application release retention cleanup
+
+[Timer]
+OnCalendar=*-*-* 04:20:00 Asia/Shanghai
+RandomizedDelaySec=20m
+Persistent=true
+Unit=catsco-worker-release-prune.service
+
+[Install]
+WantedBy=timers.target

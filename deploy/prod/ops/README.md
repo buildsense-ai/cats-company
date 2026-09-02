@@ -37,7 +37,7 @@ CATSCO_WORKER_UPDATE_SCRIPT=/opt/catsco/ops/deploy-worker-version.sh
 CATSCO_WORKER_ROLLBACK_SCRIPT=/opt/catsco/ops/rollback-worker.sh
 CATSCO_WORKER_IMAGES_SCRIPT=/opt/catsco/ops/list-worker-images.sh
 CATSCO_WORKER_RELEASES_SCRIPT=/opt/catsco/ops/list-worker-releases.sh
-CATSCO_WORKER_RELEASE_KEEP_COUNT=10
+CATSCO_WORKER_RELEASE_KEEP_COUNT=3
 CATSCO_WORKER_STATUS_SCRIPT=/opt/catsco/ops/status-worker.sh
 CATSCO_WORKER_CREATE_QUOTA=            # 仅灰度/运维静态配额；正式公共环境留空，付费权益走 cloud_worker_credits
 CTYUN_WORKER_EXT_IP=0                  # 默认内网，不申请公网 IP/带宽
@@ -92,12 +92,13 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 
 控制面展示专用 worker artifact 桶中实际发现的全部 `manifest.json` 发布，不再截断为固定数量。
 生产主机可通过 `prune-worker-releases.sh` 定期清理旧对象：脚本默认只输出候选（dry-run），
-按发布时间保留最近 `CATSCO_WORKER_RELEASE_KEEP_COUNT` 个版本；启用 `--apply` 时还要求状态脚本
+按发布时间保留最近 `CATSCO_WORKER_RELEASE_KEEP_COUNT` 个版本（默认 3 个，当前版本加两个回滚版本）；启用 `--apply` 时还要求状态脚本
 成功，并始终保留当前 worker 正在运行的 `app_version`。任何列表或状态读取失败都会拒绝删除。
-建议先审阅 dry-run 输出，再将 `--apply` 放入受保护的 systemd timer/cron；凭据和定时任务只配置
-在生产服务器，不提交仓库。`--apply` 还必须显式设置
+建议先审阅 dry-run 输出，再启用仓库提供的 `catsco-worker-release-prune.timer`；该 timer 每日
+执行 `--apply`，凭据和定时任务只配置在生产服务器，不提交仓库。`--apply` 还必须显式设置
 `CATSCO_WORKER_RELEASE_DELETE_CONFIRM=I_UNDERSTAND_DELETE_WORKER_RELEASES`，并使用具备删除权限的
 运维 TOS 凭据；应用下载凭据仍保持只读。发布清理不会删除 worker 本地正在使用的 `/opt/catsco/releases`。
+生产环境还必须显式设置 `CATSCO_WORKER_RELEASE_PRUNE_ENABLED=1`；默认值为 0，避免只读下载凭据被误用于删除。
 - 云托管员工按套餐 30 天计费；不独立自动续费。套餐到期后天翼云进入 15 天冻结保留期（不收费、不可用），续费可恢复；窗口结束后控制面核对实例并调用退订/销毁接口，按量实例沿用直接删除。
   供给失败清理会短暂重试实例目录，并使用创建时记住的实例 ID 和计费模式
   兜底，避免目录最终一致性造成持续计费的孤儿实例。
