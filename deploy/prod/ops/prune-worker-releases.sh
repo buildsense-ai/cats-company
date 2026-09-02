@@ -3,7 +3,11 @@
 # Default mode is dry-run. Pass --apply only from an operator-controlled timer.
 set -Eeuo pipefail
 
-KEEP_COUNT="${CATSCO_WORKER_RELEASE_KEEP_COUNT:-10}"
+# Keep a small rollback window while protecting every version currently
+# reported by status-worker.sh below.  This is deliberately lower than the
+# historical default of 10: the control plane lists every manifest in TOS,
+# so an unused release would otherwise remain visible indefinitely.
+KEEP_COUNT="${CATSCO_WORKER_RELEASE_KEEP_COUNT:-3}"
 PREFIX="${CATSCO_WORKER_ARTIFACT_PREFIX:-update/worker}"
 BUCKET="${CATSCO_WORKER_ARTIFACT_BUCKET:-}"
 REGION="${CATSCO_WORKER_ARTIFACT_REGION:-cn-guangzhou}"
@@ -39,7 +43,10 @@ if [[ -n "$STATUS_SCRIPT" ]]; then
   status_out="$(timeout -s TERM -k 15 120s "$STATUS_SCRIPT")" || {
     [[ "$APPLY" -eq 0 ]] && echo "warning: status probe failed; dry-run only" >&2 || { echo "error: status probe failed; refusing deletion" >&2; exit 1; }
   }
-  protected="$(printf '%s\n' "$status_out" | awk -F '\t' 'NF>=5 && $5!="" {print $5}' | sort -u)"
+  # status-worker.sh emits: name, status, image id, app version,
+  # base-image version, private IP.  Protect the running application
+  # artifact (column 4); column 5 is only the independently managed image.
+  protected="$(printf '%s\n' "$status_out" | awk -F '\t' 'NF>=4 && $4!="" {print $4}' | sort -u)"
 elif [[ "$APPLY" -eq 1 ]]; then
   echo "error: CATSCO_WORKER_STATUS_SCRIPT is required for --apply" >&2
   exit 2

@@ -37,7 +37,7 @@ CATSCO_WORKER_UPDATE_SCRIPT=/opt/catsco/ops/deploy-worker-version.sh
 CATSCO_WORKER_ROLLBACK_SCRIPT=/opt/catsco/ops/rollback-worker.sh
 CATSCO_WORKER_IMAGES_SCRIPT=/opt/catsco/ops/list-worker-images.sh
 CATSCO_WORKER_RELEASES_SCRIPT=/opt/catsco/ops/list-worker-releases.sh
-CATSCO_WORKER_RELEASE_KEEP_COUNT=10
+CATSCO_WORKER_RELEASE_KEEP_COUNT=3
 CATSCO_WORKER_STATUS_SCRIPT=/opt/catsco/ops/status-worker.sh
 CATSCO_WORKER_CREATE_QUOTA=            # 仅灰度/运维静态配额；正式公共环境留空，付费权益走 cloud_worker_credits
 CTYUN_WORKER_EXT_IP=0                  # 默认内网，不申请公网 IP/带宽
@@ -92,7 +92,7 @@ CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
 
 控制面展示专用 worker artifact 桶中实际发现的全部 `manifest.json` 发布，不再截断为固定数量。
 生产主机可通过 `prune-worker-releases.sh` 定期清理旧对象：脚本默认只输出候选（dry-run），
-按发布时间保留最近 `CATSCO_WORKER_RELEASE_KEEP_COUNT` 个版本；启用 `--apply` 时还要求状态脚本
+按发布时间保留最近 `CATSCO_WORKER_RELEASE_KEEP_COUNT` 个版本（默认 3 个，当前版本加两个回滚版本）；启用 `--apply` 时还要求状态脚本
 成功，并始终保留当前 worker 正在运行的 `app_version`。任何列表或状态读取失败都会拒绝删除。
 建议先审阅 dry-run 输出，再将 `--apply` 放入受保护的 systemd timer/cron；凭据和定时任务只配置
 在生产服务器，不提交仓库。`--apply` 还必须显式设置
