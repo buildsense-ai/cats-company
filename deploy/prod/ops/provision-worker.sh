@@ -365,7 +365,10 @@ create_args=(ecs CreateEcsInstance \
   --imageID "$IMAGE_ID" \
   --imageType 0 \
   --bootDiskType "SSD" \
-  --bootDiskSize 100 \
+  # 50 GiB is sufficient for the worker image and keeps monthly cost/storage
+  # proportional to the actual runtime footprint. Increase only via an
+  # explicit script change after measuring a real workload.
+  --bootDiskSize 50 \
   --vpcID "$VPC_ID" \
   --networkCardList "[{\"isMaster\":true,\"subnetID\":\"$SUBNET_ID\"}]" \
   --secGroupList "[\"$SECURITY_GROUP_ID\"]" \
