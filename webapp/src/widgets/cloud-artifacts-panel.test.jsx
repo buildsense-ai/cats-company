@@ -929,5 +929,31 @@ test('friend bulk-deletes selected tags from the editor', async () => {
     expect(container.textContent).not.toContain('没有匹配所选标签的成果');
   });
 
+test('escape closes the tag-delete confirm dialog without closing the panel', async () => {
+  api.getCloudArtifacts.mockResolvedValue({
+    artifacts: [{ ...activeArtifact, tags: ['素材'] }],
+    viewer_relation: 'owner',
+  });
+  api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '素材', count: 1 }] });
+  await renderPanel();
+
+  await act(async () => {
+    container.querySelector('.cloud-artifact-tag-chip-remove').click();
+  });
+  await flush();
+  const dialog = document.querySelector('[aria-label="确认删除标签"]');
+  expect(dialog).not.toBeNull();
+
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await flush();
+
+  expect(document.querySelector('[aria-label="确认删除标签"]')).toBeNull();
+  expect(container.textContent).toContain('共享成果');
+  expect(api.deleteCloudArtifactTagEverywhere).not.toHaveBeenCalled();
 });
+
+});
+
 

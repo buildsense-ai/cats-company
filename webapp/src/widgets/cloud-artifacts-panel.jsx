@@ -266,7 +266,7 @@ export default function CloudArtifactsPanel({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [confirmArtifact, onClose]);
+  }, [confirmArtifact, confirmTag, onClose]);
 
   const copyURL = async (artifact) => {
     try {
