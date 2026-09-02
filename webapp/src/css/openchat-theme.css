@@ -436,7 +436,7 @@ body {
 
 .oc-search-mode-tab {
   border: 1px solid var(--v3-border);
-  background: var(--v3-bg-input);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
   color: var(--v3-text-muted);
   border-radius: 8px;
   padding: 10px 12px;
@@ -1779,7 +1779,7 @@ body {
   border: 1px solid var(--v3-border);
   border-radius: 999px;
   color: var(--v3-text-muted);
-  background: var(--v3-bg-input);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
   font-size: 12px;
   cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
@@ -1827,7 +1827,7 @@ body {
   padding: 0 4px 0 10px;
   border-radius: 999px;
   color: var(--v3-text-main);
-  background: var(--v3-bg-input);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
   border: 1px solid var(--v3-border);
   font-size: 12px;
 }
@@ -1873,7 +1873,7 @@ body {
   border: 1px solid var(--v3-border);
   border-radius: 6px;
   color: var(--v3-text-main);
-  background: var(--v3-bg-input);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
   font-size: 12px;
 }
 
@@ -1888,7 +1888,7 @@ body {
   border: 1px solid var(--v3-border);
   border-radius: 6px;
   color: var(--v3-text-muted);
-  background: var(--v3-bg-input);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
   font-size: 12px;
   cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease;
@@ -5914,7 +5914,7 @@ button.catsco-download-action:disabled {
   margin-bottom: 14px;
   border: 1px solid var(--v3-border);
   border-radius: 8px;
-  background: var(--v3-bg-input);
+  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
 }
 
 .oc-profile-identity-label {
