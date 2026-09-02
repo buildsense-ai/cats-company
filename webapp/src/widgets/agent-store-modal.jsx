@@ -1496,7 +1496,7 @@ export default function AgentStoreModal({
                       <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 16, marginTop: 12 }}>
                         {owned
                           ? (bot.tenant_name
-                              ? `我创建的 · 云托管${bot.cloud_version ? ` · 版本 ${bot.cloud_version}` : ''}`
+                              ? `我创建的 · 云托管${bot.app_version ? ` · 版本 ${bot.app_version}` : ''}`
                               : '我创建的 · 自托管')
                           : '已添加的助手'}
                       </div>
