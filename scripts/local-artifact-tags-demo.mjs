@@ -174,6 +174,9 @@ function handleArtifactAPI(req, res, url) {
       if (!newTag) {
         return sendJSON(res, 400, { error: '标签格式无效', code: 'artifact_tag_invalid' });
       }
+      if (carrying(oldTag) === 0) {
+        return sendJSON(res, 404, { error: '标签不存在', code: 'artifact_tag_not_found' });
+      }
       if (newTag === oldTag) {
         return sendJSON(res, 200, { ok: true, renamed: carrying(newTag) });
       }

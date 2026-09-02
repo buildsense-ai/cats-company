@@ -332,11 +332,6 @@ func (h *CloudArtifactHandler) handleAgentArtifactTagRename(w http.ResponseWrite
 		return
 	}
 	newTag := normalized[0]
-	if newTag == oldTag {
-		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "renamed": 0})
-		return
-	}
 	tags, ok := agentArtifactTagStore(h)
 	if !ok {
 		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")

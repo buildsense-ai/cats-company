@@ -186,6 +186,18 @@ func (a *Adapter) RenameAgentArtifactTag(agentUID int64, oldTag, newTag string) 
 		return 0, fmt.Errorf("begin agent artifact tag rename: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// An unknown old tag is a 404, never a silent success: check it carries
+	// at least one binding before touching anything.
+	var carried int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(DISTINCT artifact_id) FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND tag = $2`,
+		agentUID, oldTag).Scan(&carried); err != nil {
+		return 0, fmt.Errorf("count agent artifact tag before rename: %w", err)
+	}
+	if carried == 0 {
+		return 0, nil
+	}
 	// Drop the old binding on artifacts that already carry newTag, so the
 	// rename cannot violate the primary key and merges cleanly.
 	if _, err := tx.ExecContext(ctx, `
@@ -201,7 +213,6 @@ func (a *Adapter) RenameAgentArtifactTag(agentUID int64, oldTag, newTag string) 
 		agentUID, oldTag, newTag); err != nil {
 		return 0, fmt.Errorf("rename agent artifact tag: %w", err)
 	}
-	var carried int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT count(DISTINCT artifact_id) FROM agent_artifact_tags
 		WHERE agent_uid = $1 AND tag = $2`,

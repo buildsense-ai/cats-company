@@ -260,7 +260,8 @@ export default function CloudArtifactsPanel({
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key !== 'Escape') return;
-      if (confirmArtifact) setConfirmArtifact(null);
+      if (confirmTag) setConfirmTag(null);
+      else if (confirmArtifact) setConfirmArtifact(null);
       else onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -381,6 +382,11 @@ export default function CloudArtifactsPanel({
     try {
       await api.deleteCloudArtifactTagEverywhere(agentUid, tag);
       setConfirmTag(null);
+      setArtifacts((current) => current.map((item) => (
+        artifactTagList(item).includes(tag)
+          ? { ...item, tags: artifactTagList(item).filter((t) => t !== tag) }
+          : item
+      )));
       await refreshTagCounts();
     } catch (err) {
       setError(err.message || '标签删除失败，请稍后重试');

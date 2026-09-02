@@ -131,30 +131,37 @@ func (s *artifactTagTestStore) DeleteAgentArtifactTagEverywhere(agentUID int64, 
 
 func (s *artifactTagTestStore) RenameAgentArtifactTag(agentUID int64, oldTag, newTag string) (int64, error) {
 	tags := s.tags[agentUID]
-	if tags == nil {
-		return 0, nil
+	carriers := 0
+	for _, set := range tags {
+		if containsString(set, oldTag) {
+			carriers++
+		}
 	}
-	var renamed int64
+	if carriers == 0 {
+		return 0, nil // unknown old tag → handler reports 404
+	}
 	for artifactID, set := range tags {
-		hasOld := false
+		if !containsString(set, oldTag) {
+			continue
+		}
 		filtered := make([]string, 0, len(set))
 		for _, item := range set {
-			if item == oldTag {
-				hasOld = true
-				continue
+			if item != oldTag {
+				filtered = append(filtered, item)
 			}
-			filtered = append(filtered, item)
-		}
-		if !hasOld {
-			continue
 		}
 		if !containsString(filtered, newTag) {
 			filtered = append(filtered, newTag)
-			renamed++
 		}
 		tags[artifactID] = filtered
 	}
-	return renamed, nil
+	result := 0
+	for _, set := range tags {
+		if containsString(set, newTag) {
+			result++
+		}
+	}
+	return int64(result), nil
 }
 
 func (s *artifactTagTestStore) ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, error) {
@@ -897,6 +904,23 @@ func TestAgentArtifactTagRenameMergesOnCollision(t *testing.T) {
 	}
 	if got := tagStore.tags[440]["beta"]; len(got) != 1 || got[0] != "游戏" {
 		t.Fatalf("beta = %#v", got)
+	}
+}
+
+func TestAgentArtifactTagRenameUnknownOldTagWithExistingNewTag(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏"})
+	handler := tagTestHandlerWithUpstream(t, tagStore, newTagUpstream(t, "alpha"))
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/tags/%E6%BC%94%E7%A4%BA")
+	req.Body = io.NopCloser(strings.NewReader(`{"tag":"游戏"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(tagStore.tags[440]["alpha"]) != 1 || tagStore.tags[440]["alpha"][0] != "游戏" {
+		t.Fatalf("store changed: %#v", tagStore.tags[440])
 	}
 }
 
