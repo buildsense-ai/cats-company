@@ -402,7 +402,7 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
 				return
 			}
-			if !h.agentArtifactTagTargetFound(w, r, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, route.artifactID) {
+			if !h.agentArtifactTagTargetFound(w, r, node, collectionURL, route.agentUID, route.artifactID) {
 				return
 			}
 			h.handleAgentArtifactTagsReplace(w, r, viewerUID, route.agentUID, route.artifactID)
@@ -420,7 +420,7 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
 			return
 		}
-		if !h.agentArtifactTagTargetFound(w, r, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, route.artifactID) {
+		if !h.agentArtifactTagTargetFound(w, r, node, collectionURL, route.agentUID, route.artifactID) {
 			return
 		}
 		h.handleAgentArtifactTagDelete(w, route.agentUID, route.artifactID, route.tag)
@@ -633,6 +633,46 @@ func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, index)
 }
 
+// nodePublicIndexArtifacts fetches and validates the public artifact index
+// backing one agent's node. ok=false means the error response has already
+// been written.
+func (h *CloudArtifactHandler) nodePublicIndexArtifacts(
+	w http.ResponseWriter,
+	r *http.Request,
+	node artifactNode,
+	agentUID int64,
+) (cloudArtifactIndex, bool) {
+	agentID := strconv.FormatInt(agentUID, 10)
+	indexURL := strings.TrimRight(node.publicBaseURL, "/")
+	urlValidationAgentUID := agentUID
+	allowMissing := false
+	if node.rootPublicIndex {
+		indexURL += "/artifacts-index.json"
+		urlValidationAgentUID = 0
+		allowMissing = true
+	} else {
+		indexURL += "/by-agent/" + agentID + "/artifacts-index.json"
+	}
+	index, ok := h.readPublicArtifactIndexWithOptions(
+		w,
+		r,
+		indexURL,
+		allowMissing,
+	)
+	if !ok {
+		return cloudArtifactIndex{}, false
+	}
+	if validateManagedArtifactNodeURLs(
+		index.Artifacts,
+		node.publicBaseURL,
+		urlValidationAgentUID,
+	) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return cloudArtifactIndex{}, false
+	}
+	return index, true
+}
+
 func (h *CloudArtifactHandler) handleNodePublicIndexList(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -655,38 +695,16 @@ func (h *CloudArtifactHandler) handleNodePublicIndexList(
 		return
 	}
 
-	agentID := strconv.FormatInt(agentUID, 10)
-	indexURL := strings.TrimRight(node.publicBaseURL, "/")
-	urlValidationAgentUID := agentUID
-	allowMissing := false
-	if node.rootPublicIndex {
-		indexURL += "/artifacts-index.json"
-		urlValidationAgentUID = 0
-		allowMissing = true
-	} else {
-		indexURL += "/by-agent/" + agentID + "/artifacts-index.json"
-	}
-	index, ok := h.readPublicArtifactIndexWithOptions(
-		w,
-		r,
-		indexURL,
-		allowMissing,
-	)
+	index, ok := h.nodePublicIndexArtifacts(w, r, node, agentUID)
 	if !ok {
 		return
 	}
-	if validateManagedArtifactNodeURLs(
-		index.Artifacts,
-		node.publicBaseURL,
-		urlValidationAgentUID,
-	) != nil {
-		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
-	}
+	agentID := strconv.FormatInt(agentUID, 10)
 
 	list.Artifacts = append(list.Artifacts, index.Artifacts...)
 	h.enrichArtifactCreators(list.Artifacts, agentUID, true)
 	h.mergeAgentArtifactTags(agentUID, list.Artifacts)
+	h.reconcileAgentArtifactTags(agentUID, list.Artifacts)
 	for i := range list.Artifacts {
 		list.Artifacts[i].Status = "active"
 		list.Artifacts[i].AgentUID = agentID

@@ -594,3 +594,115 @@ func TestAgentArtifactManagedListReconcilesOrphansWhenListEmpty(t *testing.T) {
 		t.Fatalf("counts after reconciliation = %#v", response.Tags)
 	}
 }
+
+// newPublicIndexTagHandler wires a handler whose agent 440 resolves to a
+// public-index node (empty management URL) backed by a stub serving the
+// agent's artifact index listing the given IDs.
+func newPublicIndexTagHandler(t *testing.T, tagStore *artifactTagTestStore, ids ...string) *CloudArtifactHandler {
+	t.Helper()
+	const indexPath = "/public/by-agent/440/artifacts-index.json"
+	publicBaseURL := ""
+	var upstream *httptest.Server
+	artifacts := make([]map[string]any, 0, len(ids))
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == indexPath {
+			index := map[string]any{
+				"contract_version": "cloud-artifacts.index.v1",
+				"artifacts":        artifacts,
+			}
+			payload, err := json.Marshal(index)
+			if err != nil {
+				t.Errorf("marshal index: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write(payload)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(upstream.Close)
+	publicBaseURL = upstream.URL + "/public"
+	for _, id := range ids {
+		artifacts = append(artifacts, map[string]any{
+			"id":         id,
+			"title":      "Artifact " + id,
+			"kind":       "html",
+			"url":        publicBaseURL + "/by-agent/440/" + id + "/latest",
+			"updated_at": "2026-07-22T07:00:00.000Z",
+		})
+	}
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		"",
+		"",
+		upstream.Client(),
+	)
+	handler.SetStore(tagStore)
+	handler.nodeRegistry = mustArtifactNodeRegistry(t, nil, map[string]any{
+		"nodes": map[string]any{
+			"fallback": map[string]string{"public_base_url": publicBaseURL},
+		},
+		"agents": map[string]string{"440": "fallback"},
+	})
+	return handler
+}
+
+func TestAgentArtifactTagsReplaceAllowsPublicIndexTarget(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	handler := newPublicIndexTagHandler(t, tagStore, "alpha")
+
+	req := authenticatedArtifactRequestPath(http.MethodPut, "/api/agents/440/artifacts/alpha/tags")
+	req.Body = io.NopCloser(strings.NewReader(`{"tags":["游戏"]}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("friend status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(tagStore.tags[440]["alpha"]) != 1 || tagStore.tags[440]["alpha"][0] != "游戏" {
+		t.Fatalf("friend write tags = %#v", tagStore.tags[440])
+	}
+	if tagStore.storedBy[440] != 7 {
+		t.Fatalf("storedBy = %#v", tagStore.storedBy)
+	}
+}
+
+func TestAgentArtifactTagsReplaceRejectsUnknownArtifactOnPublicIndexNode(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	handler := newPublicIndexTagHandler(t, tagStore, "alpha")
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/does-not-exist/tags")
+	req.Body = io.NopCloser(strings.NewReader(`{"tags":["游戏"]}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(tagStore.tags[440]) != 0 {
+		t.Fatalf("store changed: %#v", tagStore.tags[440])
+	}
+}
+
+func TestAgentArtifactNodePublicIndexListReconcilesOrphanTags(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏"})
+	tagStore.set(440, "ghost", []string{"过期"})
+	handler := newPublicIndexTagHandler(t, tagStore, "alpha")
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodGet, "/api/agents/440/artifacts?status=active"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, exists := tagStore.tags[440]["ghost"]; exists {
+		t.Fatalf("orphan tags survived fallback reconciliation: %#v", tagStore.tags[440])
+	}
+	var response cloudArtifactManagementList
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Artifacts) != 1 || response.Artifacts[0].ID != "alpha" || len(response.Artifacts[0].Tags) != 1 {
+		t.Fatalf("artifacts = %#v", response.Artifacts)
+	}
+}
