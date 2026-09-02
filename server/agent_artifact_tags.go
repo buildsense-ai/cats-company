@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -241,4 +243,52 @@ func (h *CloudArtifactHandler) handleAgentArtifactTagDelete(w http.ResponseWrite
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// purgeAgentArtifactTagsWithRetry removes every tag row for one artifact,
+// retrying transient store failures. Purge is best-effort hygiene: a failure
+// is logged, and any residue converges via the managed-list reconciliation
+// sweep (a deleted artifact never passes target validation again, so writes
+// cannot resurrect its rows).
+func purgeAgentArtifactTagsWithRetry(tags store.AgentArtifactTagStore, agentUID int64, artifactID string) {
+	const attempts = 3
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+		if err = tags.PurgeAgentArtifactTags(agentUID, artifactID); err == nil {
+			return
+		}
+	}
+	log.Printf("cloud artifact: agent artifact tag purge failed after %d attempts agent=%d artifact=%s: %v",
+		attempts, agentUID, artifactID, err)
+}
+
+// reconcileAgentArtifactTags drops tag rows whose artifact is no longer in
+// the agent's active managed list. Deleted artifacts, purge failures, and
+// the validate/commit race on writes would otherwise keep feeding tag counts
+// forever. Best-effort: failures are logged, never surfaced to the caller.
+func (h *CloudArtifactHandler) reconcileAgentArtifactTags(agentUID int64, artifacts []cloudArtifact) {
+	tags, ok := agentArtifactTagStore(h)
+	if !ok || len(artifacts) == 0 {
+		return
+	}
+	ids, err := tags.ListAgentArtifactTagArtifactIDs(agentUID)
+	if err != nil {
+		log.Printf("cloud artifact: list agent artifact tag ids failed agent=%d: %v", agentUID, err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	active := make(map[string]bool, len(artifacts))
+	for _, artifact := range artifacts {
+		active[artifact.ID] = true
+	}
+	for _, id := range ids {
+		if !active[id] {
+			purgeAgentArtifactTagsWithRetry(tags, agentUID, id)
+		}
+	}
 }

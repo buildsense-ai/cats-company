@@ -331,6 +331,10 @@ type AgentArtifactTagStore interface {
 	// PurgeAgentArtifactTags removes every tag row for one artifact, used
 	// when the artifact is deleted so counts match the active panel.
 	PurgeAgentArtifactTags(agentUID int64, artifactID string) error
+	// ListAgentArtifactTagArtifactIDs returns the distinct artifact IDs that
+	// currently have tag rows, used to reconcile orphaned rows against the
+	// agent's active managed list.
+	ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, error)
 }
 
 // BotSkillMutationPolicyStore persists the opt-in policy for the dedicated

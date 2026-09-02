@@ -16,9 +16,10 @@ import (
 
 type artifactTagTestStore struct {
 	*agentTestStore
-	tags      map[int64]map[string][]string
-	storedBy  map[int64]int64
-	countsErr error
+	tags          map[int64]map[string][]string
+	storedBy      map[int64]int64
+	countsErr     error
+	purgeFailures map[int64]int
 }
 
 func newArtifactTagTestStore() *artifactTagTestStore {
@@ -26,6 +27,7 @@ func newArtifactTagTestStore() *artifactTagTestStore {
 		agentTestStore: managedArtifactAgentStore(8, 440, true),
 		tags:           map[int64]map[string][]string{},
 		storedBy:       map[int64]int64{},
+		purgeFailures:  map[int64]int{},
 	}
 	fixture.friendPairs[agentPairKey(7, 440)] = true
 	return fixture
@@ -97,8 +99,21 @@ func (s *artifactTagTestStore) DeleteAgentArtifactTag(agentUID int64, artifactID
 }
 
 func (s *artifactTagTestStore) PurgeAgentArtifactTags(agentUID int64, artifactID string) error {
+	if n := s.purgeFailures[agentUID]; n > 0 {
+		s.purgeFailures[agentUID] = n - 1
+		return fmt.Errorf("transient purge failure (%d attempts remaining)", n)
+	}
 	delete(s.tags[agentUID], artifactID)
 	return nil
+}
+
+func (s *artifactTagTestStore) ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, error) {
+	ids := make([]string, 0, len(s.tags[agentUID]))
+	for id := range s.tags[agentUID] {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 func overTagLimitFixture() []string {
@@ -496,5 +511,54 @@ func TestParseAgentArtifactAPIPathTagRoutes(t *testing.T) {
 	route, ok = parseAgentArtifactAPIPath("/api/agents/440/artifacts/alpha/tags/%E6%B8%B8%E6%88%8F")
 	if !ok || route.action != "tag-delete" || route.tag != "游戏" {
 		t.Fatalf("tag delete route = %#v ok=%v", route, ok)
+	}
+}
+
+func TestAgentArtifactDeletePurgeRetriesTransientFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Query().Get("status") == "active":
+			_, _ = w.Write([]byte(tagActiveArtifactsJSON("alpha")))
+		case r.Method == http.MethodDelete && r.URL.Path == "/internal/agents/440/artifacts/alpha":
+			_, _ = w.Write([]byte(managedAgentOperationJSON("440", "alpha", "deleted")))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	tagStore := newArtifactTagTestStore()
+	tagStore.purgeFailures[440] = 1
+	tagStore.set(440, "alpha", []string{"游戏"})
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodDelete, "/api/agents/440/artifacts/alpha"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, exists := tagStore.tags[440]["alpha"]; exists {
+		t.Fatalf("tags survived purge after retry: %#v", tagStore.tags[440])
+	}
+}
+
+func TestAgentArtifactManagedListReconcilesOrphanTags(t *testing.T) {
+	upstream := newTagUpstream(t, "alpha")
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏"})
+	tagStore.set(440, "ghost", []string{"过期"})
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodGet, "/api/agents/440/artifacts?status=active"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, exists := tagStore.tags[440]["ghost"]; exists {
+		t.Fatalf("orphan tags survived reconciliation: %#v", tagStore.tags[440])
+	}
+	remaining := tagStore.tags[440]["alpha"]
+	if len(remaining) != 1 || remaining[0] != "游戏" {
+		t.Fatalf("active artifact tags = %#v", remaining)
 	}
 }

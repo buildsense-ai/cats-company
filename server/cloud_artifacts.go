@@ -368,9 +368,12 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		}
 		if ok := h.handleMutation(w, r, route.artifactID, "", viewerUID, route.viewerRelation, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID); ok {
 			// Best-effort purge: a deleted artifact must stop feeding the
-			// agent tag counts; a failed purge self-heals on the next write.
+			// agent tag counts. Transient failures are retried and logged;
+			// any residue converges via the managed-list reconciliation
+			// sweep, because a deleted artifact can never pass target
+			// validation again.
 			if tags, okStore := agentArtifactTagStore(h); okStore {
-				_ = tags.PurgeAgentArtifactTags(route.agentUID, route.artifactID)
+				purgeAgentArtifactTagsWithRetry(tags, route.agentUID, route.artifactID)
 			}
 		}
 	case "restore":
@@ -515,6 +518,7 @@ func (h *CloudArtifactHandler) handleManagedList(
 		}
 		h.enrichArtifactCreators(list.Artifacts, agentUID, false)
 		h.mergeAgentArtifactTags(agentUID, list.Artifacts)
+		h.reconcileAgentArtifactTags(agentUID, list.Artifacts)
 		for i := range list.Artifacts {
 			list.Artifacts[i].UploadedByMe = list.Artifacts[i].UploaderUID != "" &&
 				list.Artifacts[i].UploaderUID == strconv.FormatInt(viewerUID, 10)

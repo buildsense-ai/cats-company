@@ -141,3 +141,33 @@ func (a *Adapter) PurgeAgentArtifactTags(agentUID int64, artifactID string) erro
 	}
 	return nil
 }
+
+// ListAgentArtifactTagArtifactIDs returns the distinct artifact IDs that
+// currently have tag rows for the agent. It feeds orphan reconciliation:
+// IDs absent from the active managed list get their rows purged.
+func (a *Adapter) ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, error) {
+	if agentUID <= 0 {
+		return []string{}, nil
+	}
+	rows, err := a.db.Query(`
+		SELECT DISTINCT artifact_id
+		FROM agent_artifact_tags
+		WHERE agent_uid = $1
+		ORDER BY artifact_id ASC`, agentUID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent artifact tag artifact ids: %w", err)
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan agent artifact tag artifact id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agent artifact tag artifact ids: %w", err)
+	}
+	return ids, nil
+}
