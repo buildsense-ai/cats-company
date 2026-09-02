@@ -11,6 +11,9 @@ vi.mock('../api', () => ({
     uploadFile: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
+    getCloudArtifactTags: vi.fn(),
+    setCloudArtifactTags: vi.fn(),
+    deleteCloudArtifactTag: vi.fn(),
   },
 }));
 
@@ -120,6 +123,9 @@ describe('CloudArtifactsPanel', () => {
     api.restoreCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: activeArtifact });
     api.publishCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: activeArtifact });
     api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/files/result.html' });
+    api.getCloudArtifactTags.mockReset().mockResolvedValue({ tags: [] });
+    api.setCloudArtifactTags.mockReset().mockImplementation(async (_agentUid, _artifactId, tags) => ({ tags }));
+    api.deleteCloudArtifactTag.mockReset().mockResolvedValue({ ok: true });
     onPreviewArtifact = vi.fn();
     onPreviewFile = vi.fn();
     Object.defineProperty(navigator, 'clipboard', {
@@ -629,4 +635,137 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
   }
+
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  test('filters shared artifacts by tag chips with AND semantics', async () => {
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [
+        { ...activeArtifact, tags: ['游戏', '演示'] },
+        { ...activeArtifact, id: 'lesson-poster', title: '课堂海报', tags: ['游戏'] },
+      ],
+      viewer_relation: 'owner',
+    });
+    api.getCloudArtifactTags.mockResolvedValue({
+      tags: [{ tag: '游戏', count: 2 }, { tag: '演示', count: 1 }],
+    });
+    await renderPanel();
+
+    const chips = [...container.querySelectorAll('.cloud-artifact-tag-chip')];
+    expect(chips.map((chip) => chip.textContent)).toEqual(['游戏2', '演示1']);
+    expect(container.textContent).toContain('课堂海报');
+
+    await act(async () => {
+      chips.find((chip) => chip.textContent === '游戏2').click();
+    });
+    await flush();
+    expect([...container.querySelectorAll('.cloud-artifact-item')]).toHaveLength(2);
+
+    await act(async () => {
+      [...container.querySelectorAll('.cloud-artifact-tag-chip')]
+        .find((chip) => chip.textContent === '演示1')
+        .click();
+    });
+    await flush();
+    const visible = [...container.querySelectorAll('.cloud-artifact-item')];
+    expect(visible).toHaveLength(1);
+    expect(visible[0].textContent).toContain('课堂小游戏');
+    expect(container.textContent).toContain('清空筛选');
+
+    await act(async () => {
+      container.querySelector('.cloud-artifact-tag-clear').click();
+    });
+    await flush();
+    expect([...container.querySelectorAll('.cloud-artifact-item')]).toHaveLength(2);
+  });
+
+  test('owner adds and removes tags from the inline editor', async () => {
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
+      viewer_relation: 'owner',
+    });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '游戏', count: 1 }] });
+    await renderPanel();
+
+    await act(async () => {
+      container.querySelector('button[aria-label="编辑 课堂小游戏 的标签"]').click();
+    });
+    await flush();
+
+    const input = container.querySelector('.cloud-artifact-tag-editor input');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      ).set;
+      valueSetter.call(input, '演示');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      [...container.querySelectorAll('.cloud-artifact-tag-editor > button')]
+        .find((button) => button.textContent === '添加')
+        .click();
+    });
+    await flush();
+
+    expect(api.setCloudArtifactTags).toHaveBeenCalledWith(440, 'lesson-game', ['游戏', '演示']);
+    const removeButtons = [...container.querySelectorAll('button[aria-label="移除标签 游戏"]')];
+    expect(removeButtons).toHaveLength(1);
+
+    await act(async () => {
+      removeButtons[0].click();
+    });
+    await flush();
+    expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', ['演示']);
+  });
+
+  test('friend can edit tags', async () => {
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
+      viewer_relation: 'friend',
+    });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '游戏', count: 1 }] });
+    await renderPanel();
+
+    const editButton = container.querySelector('button[aria-label="编辑 课堂小游戏 的标签"]');
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton.click();
+    });
+    await flush();
+
+    const input = container.querySelector('.cloud-artifact-tag-editor input');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      ).set;
+      valueSetter.call(input, '演示');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      [...container.querySelectorAll('.cloud-artifact-tag-editor > button')]
+        .find((button) => button.textContent === '添加')
+        .click();
+    });
+    await flush();
+
+    expect(api.setCloudArtifactTags).toHaveBeenCalledWith(440, 'lesson-game', ['游戏', '演示']);
+    const removeButtons = [...container.querySelectorAll('button[aria-label="移除标签 游戏"]')];
+    expect(removeButtons).toHaveLength(1);
+
+    await act(async () => {
+      removeButtons[0].click();
+    });
+    await flush();
+    expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', ['演示']);
+  });
 });

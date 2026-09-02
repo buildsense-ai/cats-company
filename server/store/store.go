@@ -305,6 +305,38 @@ type BotArtifactPolicyStore interface {
 	UpdateBotArtifactUploadPolicy(botUID int64, enabled bool) error
 }
 
+// AgentArtifactTagCount aggregates one tag across an agent's artifacts.
+type AgentArtifactTagCount struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+// AgentArtifactTagStore persists owner-managed tags for agent-scoped cloud
+// artifacts. Tags form a per-agent namespace: the same artifact ID may carry
+// different tag sets under different agents. The store remains optional so
+// focused test doubles that never tag artifacts keep working.
+type AgentArtifactTagStore interface {
+	// ListAgentArtifactTags returns the tags for each requested artifact that
+	// has at least one tag. Missing artifacts simply have no entry.
+	ListAgentArtifactTags(agentUID int64, artifactIDs []string) (map[string][]string, error)
+	// ListAgentArtifactTagCounts returns every tag in the agent namespace with
+	// the number of artifacts carrying it, most-used first.
+	ListAgentArtifactTagCounts(agentUID int64) ([]AgentArtifactTagCount, error)
+	// ReplaceAgentArtifactTags atomically swaps the tag set of one artifact and
+	// returns the stored set.
+	ReplaceAgentArtifactTags(agentUID int64, artifactID string, tags []string, createdBy int64) ([]string, error)
+	// DeleteAgentArtifactTag removes one tag from one artifact and reports
+	// whether a row was removed.
+	DeleteAgentArtifactTag(agentUID int64, artifactID, tag string) (bool, error)
+	// PurgeAgentArtifactTags removes every tag row for one artifact, used
+	// when the artifact is deleted so counts match the active panel.
+	PurgeAgentArtifactTags(agentUID int64, artifactID string) error
+	// ListAgentArtifactTagArtifactIDs returns the distinct artifact IDs that
+	// currently have tag rows, used to reconcile orphaned rows against the
+	// agent's active managed list.
+	ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, error)
+}
+
 // BotSkillMutationPolicyStore persists the opt-in policy for the dedicated
 // Skill mutation control plane. It does not authorize general Bot edits.
 type BotSkillMutationPolicyStore interface {

@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
   RefreshCw,
   RotateCcw,
+  Tag,
   Upload,
   UsersRound,
   Trash2,
@@ -133,6 +134,10 @@ function sortFilesByTime(files) {
   });
 }
 
+function artifactTagList(artifact) {
+  return Array.isArray(artifact?.tags) ? artifact.tags : [];
+}
+
 export default function CloudArtifactsPanel({
   agentUid,
   topicId,
@@ -155,6 +160,10 @@ export default function CloudArtifactsPanel({
   const [files, setFiles] = useState([]);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
+  const [tagCounts, setTagCounts] = useState([]);
+  const [selectedTags, setSelectedTags] = useState([]);
+  const [tagEditorID, setTagEditorID] = useState('');
+  const [pendingTagID, setPendingTagID] = useState('');
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -206,6 +215,13 @@ export default function CloudArtifactsPanel({
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
       setViewerRelation(String(result?.viewer_relation || ''));
       setCanPublish(Boolean(result?.can_publish) && result?.publish_mode === 'immediate');
+      api.getCloudArtifactTags(agentUid).then((tagResult) => {
+        if (isCurrentRequest()) {
+          setTagCounts(Array.isArray(tagResult?.tags) ? tagResult.tags : []);
+        }
+      }).catch(() => {
+        // 标签计数加载失败不阻塞成果列表。
+      });
     } catch (err) {
       if (!isCurrentRequest()) return;
       setError(err.message || (tab === 'files' ? '聊天文件读取失败' : '成果读取失败'));
@@ -219,6 +235,9 @@ export default function CloudArtifactsPanel({
     setFiles([]);
     setViewerRelation('');
     setCanPublish(false);
+    setTagCounts([]);
+    setSelectedTags([]);
+    setTagEditorID('');
     setFileCursor({ beforeId: 0, beforeCreatedAt: '' });
     setFileHasMore(false);
     loadContent();
@@ -321,6 +340,43 @@ export default function CloudArtifactsPanel({
     }
   };
 
+  const toggleTagFilter = (tag) => {
+    setSelectedTags((current) => current.includes(tag)
+      ? current.filter((item) => item !== tag)
+      : [...current, tag]);
+  };
+
+  const refreshTagCounts = async () => {
+    if (!(Number(agentUid || 0) > 0)) return;
+    try {
+      const result = await api.getCloudArtifactTags(agentUid);
+      setTagCounts(Array.isArray(result?.tags) ? result.tags : []);
+    } catch {
+      // 标签计数是辅助信息，失败时保持现状即可。
+    }
+  };
+
+  const saveArtifactTags = async (artifact, nextTags) => {
+    if (pendingTagID) return;
+    const normalized = [];
+    for (const value of nextTags) {
+      const tag = String(value || '').trim();
+      if (tag && !normalized.includes(tag)) normalized.push(tag);
+    }
+    setPendingTagID(artifact.id);
+    setError('');
+    try {
+      const result = await api.setCloudArtifactTags(agentUid, artifact.id, normalized);
+      const tags = Array.isArray(result?.tags) ? result.tags : normalized;
+      setArtifacts((current) => current.map((item) => item.id === artifact.id ? { ...item, tags } : item));
+      await refreshTagCounts();
+    } catch (err) {
+      setError(err.message || '标签保存失败，请稍后重试');
+    } finally {
+      setPendingTagID('');
+    }
+  };
+
   const canFilterArtifactsByTask = Boolean(topicId) && (artifacts.length === 0 || artifacts.some(
     (artifact) => String(artifact?.source_topic_id || '').trim(),
   ));
@@ -331,18 +387,24 @@ export default function CloudArtifactsPanel({
         return !sourceTopicID || sourceTopicID === String(topicId || '').trim();
       })
     : artifacts;
+  const visibleArtifacts = selectedTags.length === 0 ? scopedArtifacts : scopedArtifacts.filter(
+    (artifact) => selectedTags.every((tag) => artifactTagList(artifact).includes(tag)),
+  );
   const emptyText = tab === 'active'
     ? effectiveArtifactScope === 'current'
       ? '当前任务还没有共享成果'
-      : '这个 Agent 还没有共享成果'
+      : selectedTags.length > 0 && scopedArtifacts.length > 0
+        ? '没有匹配所选标签的成果'
+        : '这个 Agent 还没有共享成果'
     : tab === 'files'
       ? '当前聊天还没有文件'
       : '回收站是空的';
   const visibleCount = tab === 'files'
     ? files.length
-    : scopedArtifacts.length;
+    : visibleArtifacts.length;
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
   const isOwner = viewerRelation === 'owner';
+  const canManageTags = viewerRelation === 'owner' || viewerRelation === 'friend';
   const artifactRoleLabel = isOwner ? '所有者' : viewerRelation ? '成员' : '';
   const artifactAccessText = !viewerRelation
     ? '正在读取成果权限…'
@@ -457,6 +519,31 @@ export default function CloudArtifactsPanel({
               />
             </div>
           )}
+          {artifactTabSelected && tab === 'active' && tagCounts.length > 0 && (
+            <div className="cloud-artifacts-tag-filter" role="group" aria-label="按标签筛选">
+              {tagCounts.map(({ tag, count }) => (
+                <button
+                  type="button"
+                  key={tag}
+                  className={'cloud-artifact-tag-chip' + (selectedTags.includes(tag) ? ' active' : '')}
+                  aria-pressed={selectedTags.includes(tag)}
+                  onClick={() => toggleTagFilter(tag)}
+                >
+                  {tag}
+                  <span>{count}</span>
+                </button>
+              ))}
+              {selectedTags.length > 0 && (
+                <button
+                  type="button"
+                  className="cloud-artifact-tag-clear"
+                  onClick={() => setSelectedTags([])}
+                >
+                  清空筛选
+                </button>
+              )}
+            </div>
+          )}
           {loading && visibleCount === 0 && (
             <div className="cloud-artifacts-status" role="status" aria-live="polite">
               {tab === 'files'
@@ -496,9 +583,9 @@ export default function CloudArtifactsPanel({
               )}
             </>
           )}
-          {artifactTabSelected && scopedArtifacts.length > 0 && (
+          {artifactTabSelected && visibleArtifacts.length > 0 && (
             <div className="cloud-artifacts-list">
-              {scopedArtifacts.map((artifact) => (
+              {visibleArtifacts.map((artifact) => (
                 <article className="cloud-artifact-item" key={artifact.id}>
                   {tab === 'active' ? (
                     <button
@@ -518,6 +605,18 @@ export default function CloudArtifactsPanel({
                   <div className="cloud-artifact-actions">
                     {tab === 'active' && (
                       <>
+                        {canManageTags && (
+                          <button
+                            type="button"
+                            onClick={() => setTagEditorID(tagEditorID === artifact.id ? '' : artifact.id)}
+                            disabled={Boolean(pendingTagID)}
+                            aria-label={'编辑 ' + artifact.title + ' 的标签'}
+                            aria-expanded={tagEditorID === artifact.id}
+                            title="标签"
+                          >
+                            <Tag size={17} />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => copyURL(artifact)}
@@ -553,6 +652,35 @@ export default function CloudArtifactsPanel({
                       </button>
                     )}
                   </div>
+                  {tab === 'active' && (artifactTagList(artifact).length > 0 || tagEditorID === artifact.id) && (
+                    <div className="cloud-artifact-tags-row">
+                      {artifactTagList(artifact).map((tag) => (
+                        <span className="cloud-artifact-tag" key={tag}>
+                          {tag}
+                          {canManageTags && (
+                            <button
+                              type="button"
+                              onClick={() => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => item !== tag))}
+                              disabled={pendingTagID === artifact.id}
+                              aria-label={'移除标签 ' + tag}
+                              title="移除标签"
+                            >
+                              <X size={11} />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                      {tagEditorID === artifact.id && (
+                        <ArtifactTagEditor
+                          artifact={artifact}
+                          suggestions={tagCounts}
+                          pending={pendingTagID === artifact.id}
+                          onAdd={(tag) => saveArtifactTags(artifact, [...artifactTagList(artifact), tag])}
+                          onClose={() => setTagEditorID('')}
+                        />
+                      )}
+                    </div>
+                  )}
                 </article>
               ))}
             </div>
@@ -601,6 +729,62 @@ function ArtifactScopeSelect({ value, canSelectCurrent, onChange }) {
         <option value="current" disabled={!canSelectCurrent}>当前任务</option>
         <option value="all">全部</option>
       </CustomSelect>
+    </div>
+  );
+}
+
+function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onClose }) {
+  const [draft, setDraft] = React.useState('');
+  const currentTags = artifactTagList(artifact);
+  const trimmed = draft.trim().slice(0, 32);
+  const suggestionItems = suggestions
+    .map((item) => item?.tag || item)
+    .filter((tag) => tag && !currentTags.includes(tag))
+    .slice(0, 5);
+  const submit = () => {
+    if (!trimmed || pending) return;
+    if (currentTags.includes(trimmed)) {
+      setDraft('');
+      return;
+    }
+    onAdd(trimmed);
+    setDraft('');
+  };
+  return (
+    <div className="cloud-artifact-tag-editor">
+      <input
+        value={draft}
+        placeholder="输入标签，回车添加"
+        aria-label={'为 ' + artifact.title + ' 添加标签'}
+        maxLength={32}
+        disabled={pending}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            submit();
+          } else if (event.key === 'Escape') {
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+      />
+      <button type="button" onClick={submit} disabled={pending || !trimmed}>添加</button>
+      <button type="button" onClick={onClose} disabled={pending}>完成</button>
+      {suggestionItems.length > 0 && (
+        <div className="cloud-artifact-tag-suggestions">
+          {suggestionItems.map((tag) => (
+            <button
+              type="button"
+              key={tag}
+              disabled={pending || currentTags.length >= 12}
+              onClick={() => onAdd(tag)}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
