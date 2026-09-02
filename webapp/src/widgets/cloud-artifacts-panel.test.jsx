@@ -795,4 +795,82 @@ describe('CloudArtifactsPanel', () => {
     await flush();
     expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', []);
   });
+test('tag context menu deletes a tag', async () => {
+  api.getCloudArtifacts.mockResolvedValue({
+    artifacts: [{ ...activeArtifact, tags: ['游戏', '演示'] }],
+    viewer_relation: 'friend',
+  });
+  api.getCloudArtifactTags.mockResolvedValue({ tags: [] });
+  await renderPanel();
+
+  const chip = container.querySelector('.cloud-artifact-tags-row .cloud-artifact-tag');
+  await act(async () => {
+    chip.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: 20, clientY: 20,
+    }));
+  });
+  await flush();
+
+  const menu = document.querySelector('.cloud-artifact-tag-menu');
+  expect(menu).not.toBeNull();
+  const deleteItem = [...menu.querySelectorAll('button')].find((b) => b.textContent === '删除标签');
+  expect(deleteItem).not.toBeNull();
+  await act(async () => { deleteItem.click(); });
+  await flush();
+  expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', ['演示']);
+  expect(document.querySelector('.cloud-artifact-tag-menu')).toBeNull();
 });
+
+test('escape closes the tag context menu', async () => {
+  api.getCloudArtifacts.mockResolvedValue({
+    artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
+    viewer_relation: 'friend',
+  });
+  api.getCloudArtifactTags.mockResolvedValue({ tags: [] });
+  await renderPanel();
+
+  const chip = container.querySelector('.cloud-artifact-tags-row .cloud-artifact-tag');
+  await act(async () => {
+    chip.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  });
+  await flush();
+  expect(document.querySelector('.cloud-artifact-tag-menu')).not.toBeNull();
+
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await flush();
+  expect(document.querySelector('.cloud-artifact-tag-menu')).toBeNull();
+  expect(api.setCloudArtifactTags).not.toHaveBeenCalled();
+});
+
+test('friend bulk-deletes selected tags from the editor', async () => {
+  api.getCloudArtifacts.mockResolvedValue({
+    artifacts: [{ ...activeArtifact, tags: ['游戏', '演示'] }],
+    viewer_relation: 'friend',
+  });
+  api.getCloudArtifactTags.mockResolvedValue({ tags: [] });
+  await renderPanel();
+
+  await act(async () => {
+    container.querySelector('button[aria-label="编辑 课堂小游戏 的标签"]').click();
+  });
+  await flush();
+
+  for (const label of ['选择标签 游戏', '选择标签 演示']) {
+    await act(async () => {
+      container.querySelector(`.cloud-artifact-tag-editor [aria-label="${label}"]`).click();
+    });
+  }
+  await flush();
+
+  const bulkButton = [...container.querySelectorAll('.cloud-artifact-tag-editor button')]
+    .find((button) => button.textContent === '删除所选（2）');
+  expect(bulkButton).not.toBeNull();
+  await act(async () => { bulkButton.click(); });
+  await flush();
+  expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', []);
+});
+
+});
+

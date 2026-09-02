@@ -9269,3 +9269,75 @@ button.catsco-download-action:disabled {
     max-height: min(180px, 24vh);
   }
 }
+
+.cloud-artifact-tag {
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.cloud-artifact-tag.is-editor {
+  cursor: pointer;
+}
+
+.cloud-artifact-tag.is-selected {
+  color: var(--v3-primary);
+  border-color: var(--v3-primary);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
+}
+
+.cloud-artifact-tag-editor .is-danger {
+  color: #e5484d;
+  border-color: rgba(229, 72, 77, 0.45);
+}
+
+.cloud-artifact-tag-editor .is-danger:hover:not(:disabled) {
+  color: #fdfefd;
+  background: #e5484d;
+  border-color: #e5484d;
+}
+
+.cloud-artifact-tag-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+
+.cloud-artifact-tag-menu {
+  position: fixed;
+  z-index: 61;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--v3-border);
+  border-radius: 10px;
+  background: var(--v3-bg-app);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  display: grid;
+  gap: 2px;
+}
+
+.cloud-artifact-tag-menu button {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--v3-text-main);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cloud-artifact-tag-menu button:hover {
+  background: color-mix(in srgb, var(--v3-text-main) 10%, transparent);
+}
+
+.cloud-artifact-tag-menu button.is-danger {
+  color: #e5484d;
+}
+
+.cloud-artifact-tag-menu button.is-danger:hover {
+  background: rgba(229, 72, 77, 0.12);
+}
