@@ -562,3 +562,35 @@ func TestAgentArtifactManagedListReconcilesOrphanTags(t *testing.T) {
 		t.Fatalf("active artifact tags = %#v", remaining)
 	}
 }
+
+func TestAgentArtifactManagedListReconcilesOrphansWhenListEmpty(t *testing.T) {
+	// An empty active list is the normal state after every artifact is
+	// deleted: every tagged ID is an orphan and must be reconciled.
+	upstream := newTagUpstream(t)
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "ghost", []string{"过期"})
+	handler := tagTestHandlerWithUpstream(t, tagStore, upstream)
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodGet, "/api/agents/440/artifacts?status=active"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, exists := tagStore.tags[440]["ghost"]; exists {
+		t.Fatalf("orphan tags survived empty-list reconciliation: %#v", tagStore.tags[440])
+	}
+
+	// The tag counts endpoint must now report an empty tag system.
+	counts := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(counts, ownerArtifactRequest(http.MethodGet, "/api/agents/440/artifacts/tags"))
+	if counts.Code != http.StatusOK {
+		t.Fatalf("counts status = %d, body = %s", counts.Code, counts.Body.String())
+	}
+	var response cloudArtifactTagCountsResponse
+	if err := json.Unmarshal(counts.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode counts: %v", err)
+	}
+	if len(response.Tags) != 0 {
+		t.Fatalf("counts after reconciliation = %#v", response.Tags)
+	}
+}

@@ -268,10 +268,12 @@ func purgeAgentArtifactTagsWithRetry(tags store.AgentArtifactTagStore, agentUID 
 // reconcileAgentArtifactTags drops tag rows whose artifact is no longer in
 // the agent's active managed list. Deleted artifacts, purge failures, and
 // the validate/commit race on writes would otherwise keep feeding tag counts
-// forever. Best-effort: failures are logged, never surfaced to the caller.
+// forever. An empty active list is the normal post-deletion state — every
+// tagged ID is then an orphan. Best-effort: failures are logged, never
+// surfaced to the caller.
 func (h *CloudArtifactHandler) reconcileAgentArtifactTags(agentUID int64, artifacts []cloudArtifact) {
 	tags, ok := agentArtifactTagStore(h)
-	if !ok || len(artifacts) == 0 {
+	if !ok {
 		return
 	}
 	ids, err := tags.ListAgentArtifactTagArtifactIDs(agentUID)
