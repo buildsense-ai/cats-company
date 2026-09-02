@@ -301,6 +301,7 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.equal(parsed.instance_name, "worker-bot-a");
 
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.createArgs, /--bootDiskSize 50(?:\s|$)/, "new workers should use a 50 GiB boot disk");
   assert.ok(state.injectedEnv, "env should be injected");
   assert.match(state.injectedEnv, /CATSCO_USER_TOKEN=USERJWT/);
   assert.match(state.injectedEnv, /CATSCO_API_KEY=BOTKEY/);

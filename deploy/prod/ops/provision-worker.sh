@@ -353,6 +353,9 @@ INSTALLATION_ID="${INSTALLATION_ID:-$(gen_uuid)}"
 
 # extIP=0 时不传公网相关参数（带宽/线路/计费），API 会拒绝这些组合
 # 计费：month = 包月（--onDemand false + cycleType/cycleCount），ondemand = 按量
+# 50 GiB is sufficient for the worker image and keeps monthly cost/storage
+# proportional to the actual runtime footprint. Increase only via an explicit
+# script change after measuring a real workload.
 create_args=(ecs CreateEcsInstance \
   --regionID "$REGION_ID" \
   --projectID "$PROJECT_ID" \
@@ -365,7 +368,7 @@ create_args=(ecs CreateEcsInstance \
   --imageID "$IMAGE_ID" \
   --imageType 0 \
   --bootDiskType "SSD" \
-  --bootDiskSize 100 \
+  --bootDiskSize 50 \
   --vpcID "$VPC_ID" \
   --networkCardList "[{\"isMaster\":true,\"subnetID\":\"$SUBNET_ID\"}]" \
   --secGroupList "[\"$SECURITY_GROUP_ID\"]" \
