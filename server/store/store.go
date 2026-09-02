@@ -331,6 +331,10 @@ type AgentArtifactTagStore interface {
 	// PurgeAgentArtifactTags removes every tag row for one artifact, used
 	// when the artifact is deleted so counts match the active panel.
 	PurgeAgentArtifactTags(agentUID int64, artifactID string) error
+	// DeleteAgentArtifactTagEverywhere removes one tag from every artifact of
+	// the agent and returns the number of rows removed; used to delete a tag
+	// from the agent namespace.
+	DeleteAgentArtifactTagEverywhere(agentUID int64, tag string) (int64, error)
 	// ListAgentArtifactTagArtifactIDs returns the distinct artifact IDs that
 	// currently have tag rows, used to reconcile orphaned rows against the
 	// agent's active managed list.

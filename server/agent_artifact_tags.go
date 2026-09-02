@@ -306,3 +306,24 @@ func (h *CloudArtifactHandler) reconcileAgentArtifactTags(agentUID int64, artifa
 		}
 	}
 }
+
+// handleAgentArtifactTagDeleteEverywhere removes one tag from every artifact
+// of the agent, deleting the tag from the agent namespace entirely.
+func (h *CloudArtifactHandler) handleAgentArtifactTagDeleteEverywhere(w http.ResponseWriter, agentUID int64, tag string) {
+	tags, ok := agentArtifactTagStore(h)
+	if !ok {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	removed, err := tags.DeleteAgentArtifactTagEverywhere(agentUID, tag)
+	if err != nil {
+		writeArtifactError(w, http.StatusInternalServerError, "artifact_request_failed")
+		return
+	}
+	if removed == 0 {
+		writeArtifactError(w, http.StatusNotFound, "artifact_tag_not_found")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
+}

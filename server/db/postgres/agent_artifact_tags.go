@@ -171,3 +171,20 @@ func (a *Adapter) ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, err
 	}
 	return ids, nil
 }
+
+// DeleteAgentArtifactTagEverywhere removes one tag from every artifact of the
+// agent. It is idempotent: deleting a tag nobody holds removes nothing.
+func (a *Adapter) DeleteAgentArtifactTagEverywhere(agentUID int64, tag string) (int64, error) {
+	result, err := a.db.Exec(`
+		DELETE FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND tag = $2`,
+		agentUID, tag)
+	if err != nil {
+		return 0, fmt.Errorf("delete agent artifact tag everywhere: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read agent artifact tag delete result: %w", err)
+	}
+	return affected, nil
+}

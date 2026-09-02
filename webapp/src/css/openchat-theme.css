@@ -9325,3 +9325,40 @@ button.catsco-download-action:disabled {
   outline: 2px solid var(--v3-primary);
   outline-offset: 1px;
 }
+
+.cloud-artifact-tag-chip.has-remove {
+  padding: 0 4px 0 12px;
+}
+
+.cloud-artifact-tag-chip-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.cloud-artifact-tag-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--v3-text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.cloud-artifact-tag-chip-remove:hover {
+  color: #fdfefd;
+  background: #e5484d;
+}

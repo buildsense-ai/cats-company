@@ -166,6 +166,8 @@ export default function CloudArtifactsPanel({
   const [tagEditorID, setTagEditorID] = useState('');
   const [pendingTagID, setPendingTagID] = useState('');
   const tagCountsRequestSeqRef = useRef(0);
+  const [confirmTag, setConfirmTag] = useState(null);
+  const [pendingGlobalTag, setPendingGlobalTag] = useState('');
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -368,6 +370,22 @@ export default function CloudArtifactsPanel({
     }
   };
 
+  const deleteTagEverywhere = async () => {
+    if (!confirmTag || pendingGlobalTag) return;
+    const tag = confirmTag;
+    setPendingGlobalTag(tag);
+    setError('');
+    try {
+      await api.deleteCloudArtifactTagEverywhere(agentUid, tag);
+      setConfirmTag(null);
+      await refreshTagCounts();
+    } catch (err) {
+      setError(err.message || '标签删除失败，请稍后重试');
+    } finally {
+      setPendingGlobalTag('');
+    }
+  };
+
   const saveArtifactTags = async (artifact, nextTags) => {
     if (pendingTagID) return;
     const normalized = [];
@@ -534,16 +552,32 @@ export default function CloudArtifactsPanel({
           {artifactTabSelected && tab === 'active' && (tagCounts.length > 0 || selectedTags.length > 0) && (
             <div className="cloud-artifacts-tag-filter" role="group" aria-label="按标签筛选">
               {tagCounts.map(({ tag, count }) => (
-                <button
-                  type="button"
+                <span
                   key={tag}
-                  className={'cloud-artifact-tag-chip' + (selectedTags.includes(tag) ? ' active' : '')}
-                  aria-pressed={selectedTags.includes(tag)}
-                  onClick={() => toggleTagFilter(tag)}
+                  className={'cloud-artifact-tag-chip' + (selectedTags.includes(tag) ? ' active' : '') + (canManageTags ? ' has-remove' : '')}
                 >
-                  {tag}
-                  <span>{count}</span>
-                </button>
+                  <button
+                    type="button"
+                    className="cloud-artifact-tag-chip-filter"
+                    aria-pressed={selectedTags.includes(tag)}
+                    onClick={() => toggleTagFilter(tag)}
+                  >
+                    {tag}
+                    <span>{count}</span>
+                  </button>
+                  {canManageTags && (
+                    <button
+                      type="button"
+                      className="cloud-artifact-tag-chip-remove"
+                      aria-label={'删除标签 ' + tag}
+                      title="从所有成果删除此标签"
+                      disabled={pendingGlobalTag === tag}
+                      onClick={() => setConfirmTag(tag)}
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
+                </span>
               ))}
               {selectedTags.length > 0 && (
                 <button
@@ -718,6 +752,28 @@ export default function CloudArtifactsPanel({
                 </button>
                 <button type="button" className="danger" onClick={deleteArtifact} disabled={Boolean(pendingID)}>
                   {pendingID ? '正在下架...' : '下架'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {confirmTag && (
+          <div className="cloud-artifact-confirm-backdrop" onClick={() => !pendingGlobalTag && setConfirmTag(null)}>
+            <div
+              className="cloud-artifact-confirm"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label="确认删除标签"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h4>删除标签「{confirmTag}」？</h4>
+              <p>该标签将从本 Agent 的所有成果中移除。</p>
+              <div className="cloud-artifact-confirm-actions">
+                <button type="button" onClick={() => setConfirmTag(null)} disabled={Boolean(pendingGlobalTag)}>
+                  取消
+                </button>
+                <button type="button" className="danger" onClick={deleteTagEverywhere} disabled={Boolean(pendingGlobalTag)}>
+                  {pendingGlobalTag ? '正在删除...' : '删除'}
                 </button>
               </div>
             </div>
