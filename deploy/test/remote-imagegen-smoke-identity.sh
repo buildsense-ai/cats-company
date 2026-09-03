@@ -29,7 +29,12 @@ import sys
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 parts = urlsplit(sys.argv[1])
-query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != "search_path"]
+query = []
+for key, value in parse_qsl(parts.query, keep_blank_values=True):
+    if key == "search_path":
+        query.append(("options", f"-csearch_path={value}"))
+    else:
+        query.append((key, value))
 print(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)))
 PY
 }
