@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	requiredImageRaceProviders = 3
+	minimumImageRaceProviders = 1
+	maximumImageRaceProviders = 3
 )
 
 var imageProviderIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -94,10 +95,11 @@ func loadImageUpstreamProvidersFile(path string, defaultModel string, defaultTim
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, errors.New("CATSCO_IMAGE_UPSTREAMS_FILE must contain one JSON object")
 	}
-	if len(document.Providers) != requiredImageRaceProviders {
+	if len(document.Providers) < minimumImageRaceProviders || len(document.Providers) > maximumImageRaceProviders {
 		return nil, fmt.Errorf(
-			"CATSCO_IMAGE_UPSTREAMS_FILE must configure exactly %d providers",
-			requiredImageRaceProviders,
+			"CATSCO_IMAGE_UPSTREAMS_FILE must configure between %d and %d providers",
+			minimumImageRaceProviders,
+			maximumImageRaceProviders,
 		)
 	}
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +43,7 @@ func completeProviderDocument() map[string]interface{} {
 	}
 }
 
-func TestLoadImageUpstreamProvidersFileRequiresThreeCompleteProviders(t *testing.T) {
+func TestLoadImageUpstreamProvidersFileAcceptsCompleteProviderPool(t *testing.T) {
 	document := completeProviderDocument()
 	providersDocument := document["providers"].([]map[string]interface{})
 	secretPath := filepath.Join(t.TempDir(), "pptoken-key")
@@ -89,18 +90,11 @@ func TestLoadImageUpstreamProvidersFileRejectsIncompleteOrAmbiguousConfig(t *tes
 		contains string
 	}{
 		{
-			name: "one provider",
+			name: "zero providers",
 			mutate: func(document map[string]interface{}) {
-				document["providers"] = document["providers"].([]map[string]interface{})[:1]
+				document["providers"] = []map[string]interface{}{}
 			},
-			contains: "exactly 3 providers",
-		},
-		{
-			name: "two providers",
-			mutate: func(document map[string]interface{}) {
-				document["providers"] = document["providers"].([]map[string]interface{})[:2]
-			},
-			contains: "exactly 3 providers",
+			contains: "between 1 and 3 providers",
 		},
 		{
 			name: "four providers",
@@ -111,7 +105,7 @@ func TestLoadImageUpstreamProvidersFileRejectsIncompleteOrAmbiguousConfig(t *tes
 					completeProviderEntry("fourth", "http://127.0.0.1:18084", "secret-d", "multipart"),
 				)
 			},
-			contains: "exactly 3 providers",
+			contains: "between 1 and 3 providers",
 		},
 		{
 			name: "duplicate ids",
@@ -160,6 +154,26 @@ func TestLoadImageUpstreamProvidersFileRejectsIncompleteOrAmbiguousConfig(t *tes
 			}
 			if strings.Contains(err.Error(), "secret-a") || strings.Contains(err.Error(), "secret-b") {
 				t.Fatalf("configuration error leaked a secret: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadImageUpstreamProvidersFileAcceptsOneOrTwoProviders(t *testing.T) {
+	for count := 1; count <= 2; count++ {
+		t.Run(fmt.Sprintf("%d provider(s)", count), func(t *testing.T) {
+			document := completeProviderDocument()
+			document["providers"] = document["providers"].([]map[string]interface{})[:count]
+			providers, err := loadImageUpstreamProvidersFile(
+				writeImageProviderPool(t, document),
+				"gpt-image-2",
+				time.Minute,
+			)
+			if err != nil {
+				t.Fatalf("load provider pool: %v", err)
+			}
+			if len(providers) != count {
+				t.Fatalf("providers=%d, want %d", len(providers), count)
 			}
 		})
 	}
