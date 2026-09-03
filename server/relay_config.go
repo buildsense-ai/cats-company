@@ -16,12 +16,16 @@ type relayEndpoint struct {
 }
 
 type relayConfigResponse struct {
-	BaseURL            string          `json:"base_url"`
-	DefaultModel       string          `json:"default_model"`
-	Endpoints          []relayEndpoint `json:"endpoints"`
-	KeyHint            string          `json:"key_hint"`
-	DocsURL            string          `json:"docs_url,omitempty"`
-	SelfServiceEnabled bool            `json:"self_service_enabled"`
+	BaseURL      string          `json:"base_url"`
+	DefaultModel string          `json:"default_model"`
+	Endpoints    []relayEndpoint `json:"endpoints"`
+	// Models is the cloud-authoritative public catalog consumed by desktop
+	// clients. Runtime metadata includes the provider, model name, context
+	// window, protocol mode, and capabilities without exposing credentials.
+	Models             []botModelCatalogItem `json:"models,omitempty"`
+	KeyHint            string                `json:"key_hint"`
+	DocsURL            string                `json:"docs_url,omitempty"`
+	SelfServiceEnabled bool                  `json:"self_service_enabled"`
 }
 
 func NewRelayConfigHandler() *RelayConfigHandler {
@@ -63,8 +67,19 @@ func (h *RelayConfigHandler) HandleConfig(w http.ResponseWriter, r *http.Request
 			{Protocol: "OpenAI-compatible", BaseURL: openAIBaseURL},
 			{Protocol: "Anthropic-compatible", BaseURL: anthropicBaseURL},
 		},
+		Models:             relayPublicModelCatalog(),
 		KeyHint:            keyHint,
 		DocsURL:            relayEnv("CATS_RELAY_DOCS_URL", baseURL),
 		SelfServiceEnabled: selfServiceEnabled,
 	})
+}
+
+func relayPublicModelCatalog() []botModelCatalogItem {
+	catalog := make([]botModelCatalogItem, len(botModelCatalog))
+	copy(catalog, botModelCatalog)
+	for i := range catalog {
+		catalog[i].Available = true
+		catalog[i].Runtime = catalogRuntimeDescriptor(catalog[i])
+	}
+	return catalog
 }
