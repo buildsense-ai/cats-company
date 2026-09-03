@@ -47,6 +47,7 @@ export function Footer() {
         width="5140"
         height="3271"
         aria-hidden="true"
+        loading="lazy"
         decoding="async"
       />
 

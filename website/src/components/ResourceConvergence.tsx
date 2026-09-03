@@ -383,16 +383,16 @@ export function ResourceConvergenceScene() {
                 className="resource-logo-outline"
                 src="/catsco-logo.webp"
                 alt=""
-                width="5580"
-                height="2093"
+                width="2800" height="1050" decoding="async"
                 style={reduceMotion ? { opacity: 0 } : { opacity: logoOutlineOpacity }}
               />
               <m.img
                 className="resource-logo-color"
                 src="/catsco-logo.webp"
                 alt=""
-                width="5580"
-                height="2093"
+                width="2800"
+                height="1050"
+                decoding="async"
                 style={reduceMotion ? { clipPath: 'inset(0% 0 0 0)' } : { clipPath: logoReveal }}
               />
             </div>
