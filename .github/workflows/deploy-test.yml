@@ -60,6 +60,7 @@ jobs:
           cp deploy/test/remote-status.sh "${tmpdir}/compose/"
           cp deploy/test/remote-imagegen-smoke-identity.sh "${tmpdir}/compose/"
           cp deploy/test/remote-imagegen-smoke-run.sh "${tmpdir}/compose/"
+          cp deploy/test/remote-imagegen-smoke-relay.sh "${tmpdir}/compose/"
           cp deploy/test/imagegen-smoke-generate.json "${tmpdir}/compose/"
           cp -R skills/imagegen "${tmpdir}/skills/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
@@ -124,7 +125,7 @@ jobs:
           root="${TEST_STACK_ROOT}"
           revision="${GITHUB_SHA}"
           owner="${GHCR_OWNER}"
-          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh" "$root/compose/remote-imagegen-smoke-identity.sh" "$root/compose/remote-imagegen-smoke-run.sh"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh" "$root/compose/remote-imagegen-smoke-identity.sh" "$root/compose/remote-imagegen-smoke-run.sh" "$root/compose/remote-imagegen-smoke-relay.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           # Build both OCI images on the target host. The source mirror is
@@ -141,6 +142,8 @@ jobs:
       - name: Run real Codex-compatible imagegen smoke
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.image_smoke }}
         timeout-minutes: 35
+        env:
+          IMAGEGEN_SMOKE_UPSTREAM_API_KEY: ${{ secrets.IMAGEGEN_SMOKE_UPSTREAM_API_KEY }}
         run: |
           set -euo pipefail
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
@@ -149,9 +152,14 @@ jobs:
           remote_run="${TEST_STACK_ROOT}/run/imagegen-smoke-${GITHUB_RUN_ID}"
           cleanup() {
             ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-identity.sh cleanup ${TEST_STACK_ROOT} ${remote_key}" || true
+            ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-relay.sh disable ${TEST_STACK_ROOT} ${GITHUB_RUN_ID}" || true
           }
           trap cleanup EXIT
 
+          if [[ -n "${IMAGEGEN_SMOKE_UPSTREAM_API_KEY}" ]]; then
+            printf '%s\n' "${IMAGEGEN_SMOKE_UPSTREAM_API_KEY}" |
+              ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-relay.sh enable ${TEST_STACK_ROOT} ${GITHUB_RUN_ID}"
+          fi
           ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-identity.sh prepare ${TEST_STACK_ROOT} ${remote_key}"
           set +e
           ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-run.sh ${TEST_STACK_ROOT} ${remote_key} ${remote_run}"

@@ -153,7 +153,7 @@ case "$action" in
     fi
     server_id="$(compose ps -q server)"
     smoke_key="$(cat "$key_file")"
-    if [[ -n "$server_id" && "$smoke_key" == cc_smoke_* ]]; then
+    if [[ -n "$server_id" && "$smoke_key" == cc_*_* ]]; then
       delete_identity "$server_id" "$smoke_key"
     fi
     rm -f "$key_file"
