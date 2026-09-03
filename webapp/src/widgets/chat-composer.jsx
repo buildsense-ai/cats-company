@@ -346,6 +346,25 @@ export default function ChatComposer({
         voiceWarningAnnouncementKeyRef.current = null;
         setVoiceLiveStatus('正在保存到输入框…');
       },
+      onIdleWarning: ({ remainingSeconds } = {}) => {
+        if (voiceSessionRef.current !== session) return;
+        const seconds = Math.max(1, Number(remainingSeconds) || 1);
+        setVoiceError('');
+        setVoiceNotice(`未检测到说话，${seconds} 秒后结束；继续说话即可取消`);
+        setVoiceNoticeTone('notice');
+        const announcementKey = 'idle';
+        if (voiceWarningAnnouncementKeyRef.current !== announcementKey) {
+          voiceWarningAnnouncementKeyRef.current = announcementKey;
+          setVoiceLiveStatus(`未检测到说话，${seconds} 秒后结束，继续说话即可取消`);
+        }
+      },
+      onIdleResumed: () => {
+        if (voiceSessionRef.current !== session) return;
+        setVoiceNotice('');
+        setVoiceNoticeTone('notice');
+        voiceWarningAnnouncementKeyRef.current = null;
+        setVoiceLiveStatus('正在听…');
+      },
       onFinal: (text, details = {}) => {
         if (voiceSessionRef.current !== session) return;
         const insertion = voiceInsertionRef.current;

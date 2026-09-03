@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -111,6 +112,7 @@ type STTConfig struct {
 	TicketTTL        time.Duration
 	MaxDuration      time.Duration
 	IdleTimeout      time.Duration
+	IdleGrace        time.Duration
 	FinalTimeout     time.Duration
 	MaxConcurrent    int
 	HourlyAudioLimit time.Duration
@@ -124,7 +126,8 @@ func STTConfigFromEnv() STTConfig {
 		Provider:         sttEnvString("CATSCO_STT_PROVIDER", STTProviderVolcengineDoubaoStreamingV2),
 		TicketTTL:        sttEnvDurationSeconds("CATSCO_STT_TICKET_TTL_SECONDS", 45*time.Second),
 		MaxDuration:      sttEnvDurationSeconds("CATSCO_STT_MAX_SESSION_SECONDS", 150*time.Second),
-		IdleTimeout:      sttEnvDurationMilliseconds("CATSCO_STT_IDLE_TIMEOUT_MS", 15*time.Second),
+		IdleTimeout:      sttEnvDurationMilliseconds("CATSCO_STT_IDLE_TIMEOUT_MS", 10*time.Second),
+		IdleGrace:        sttEnvDurationSeconds("CATSCO_STT_IDLE_GRACE_SECONDS", 3*time.Second),
 		FinalTimeout:     sttEnvDurationMilliseconds("CATSCO_STT_FINAL_TIMEOUT_MS", 1200*time.Millisecond),
 		MaxConcurrent:    sttEnvInt("CATSCO_STT_MAX_CONCURRENT", 40),
 		HourlyAudioLimit: sttEnvDurationSeconds("CATSCO_STT_MAX_HOURLY_SECONDS", 24*time.Minute),
@@ -301,7 +304,10 @@ type STTHandler struct {
 
 func NewSTTHandler(config STTConfig, provider STTProvider) *STTHandler {
 	if config.IdleTimeout <= 0 {
-		config.IdleTimeout = 15 * time.Second
+		config.IdleTimeout = 10 * time.Second
+	}
+	if config.IdleGrace <= 0 {
+		config.IdleGrace = 3 * time.Second
 	}
 	handler := &STTHandler{
 		config:      config,
@@ -545,9 +551,54 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 	defer hardTimer.Stop()
 	idleTimer := time.NewTimer(h.config.IdleTimeout)
 	idleTimeout := idleTimer.C
-	hardDeadlineAt := startedAt.Add(allowedDuration)
+	idleGraceTimer := (*time.Timer)(nil)
+	var idleGraceTimeout <-chan time.Time
+	var idleWarningTicker *time.Ticker
+	var idleWarningTimeout <-chan time.Time
 	idleDeadlineAt := startedAt.Add(h.config.IdleTimeout)
+	idleGraceDeadlineAt := time.Time{}
+	lastIdleWarningSecond := 0
+	hardDeadlineAt := startedAt.Add(allowedDuration)
 	defer idleTimer.Stop()
+	defer func() {
+		if idleGraceTimer != nil {
+			idleGraceTimer.Stop()
+		}
+		if idleWarningTicker != nil {
+			idleWarningTicker.Stop()
+		}
+	}()
+	resetIdleTimer := func() {
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(h.config.IdleTimeout)
+		idleTimeout = idleTimer.C
+		idleDeadlineAt = time.Now().Add(h.config.IdleTimeout)
+	}
+	cancelIdleWarning := func() error {
+		if idleGraceTimer == nil {
+			return nil
+		}
+		if !idleGraceTimer.Stop() {
+			select {
+			case <-idleGraceTimer.C:
+			default:
+			}
+		}
+		idleGraceTimer = nil
+		idleGraceTimeout = nil
+		if idleWarningTicker != nil {
+			idleWarningTicker.Stop()
+			idleWarningTicker = nil
+		}
+		idleWarningTimeout = nil
+		lastIdleWarningSecond = 0
+		return h.writeSTTJSON(conn, map[string]interface{}{"type": "idle_resumed"})
+	}
 	markElapsedDurationBoundary := func() {
 		if stopping || sttIsBoundaryStopReason(stopReason) {
 			return
@@ -586,6 +637,16 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 		stopping = true
 		if idleTimer.Stop() {
 			idleTimeout = nil
+		}
+		if idleGraceTimer != nil {
+			idleGraceTimer.Stop()
+			idleGraceTimer = nil
+			idleGraceTimeout = nil
+		}
+		if idleWarningTicker != nil {
+			idleWarningTicker.Stop()
+			idleWarningTicker = nil
+			idleWarningTimeout = nil
 		}
 		stopStartedAt = time.Now()
 		if err := upstream.Finish(); err != nil {
@@ -646,15 +707,10 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if sttPCMHasVoice(message.payload) {
-					if !idleTimer.Stop() {
-						select {
-						case <-idleTimer.C:
-						default:
-						}
+					if err := cancelIdleWarning(); err != nil {
+						return
 					}
-					idleTimer.Reset(h.config.IdleTimeout)
-					idleTimeout = idleTimer.C
-					idleDeadlineAt = time.Now().Add(h.config.IdleTimeout)
+					resetIdleTimer()
 				}
 			case websocket.TextMessage:
 				var command struct {
@@ -747,6 +803,40 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-idleTimeout:
+			if stopping || idleGraceTimer != nil {
+				continue
+			}
+			idleTimeout = nil
+			idleGraceDeadlineAt = time.Now().Add(h.config.IdleGrace)
+			lastIdleWarningSecond = int(math.Ceil(time.Until(idleGraceDeadlineAt).Seconds()))
+			if lastIdleWarningSecond < 1 {
+				lastIdleWarningSecond = 1
+			}
+			if err := h.writeSTTJSON(conn, map[string]interface{}{
+				"type":              "idle_warning",
+				"remaining_seconds": lastIdleWarningSecond,
+			}); err != nil {
+				return
+			}
+			idleGraceTimer = time.NewTimer(h.config.IdleGrace)
+			idleGraceTimeout = idleGraceTimer.C
+			idleWarningTicker = time.NewTicker(time.Second)
+			idleWarningTimeout = idleWarningTicker.C
+		case <-idleWarningTimeout:
+			remaining := int(math.Ceil(time.Until(idleGraceDeadlineAt).Seconds()))
+			if remaining < 1 {
+				remaining = 1
+			}
+			if remaining < lastIdleWarningSecond {
+				lastIdleWarningSecond = remaining
+				if err := h.writeSTTJSON(conn, map[string]interface{}{
+					"type":              "idle_warning",
+					"remaining_seconds": remaining,
+				}); err != nil {
+					return
+				}
+			}
+		case <-idleGraceTimeout:
 			if stopping {
 				continue
 			}

@@ -94,6 +94,12 @@ func TestSTTConfigDefaultsMatchProductLimits(t *testing.T) {
 	if config.MaxDuration != 150*time.Second {
 		t.Fatalf("MaxDuration=%s, want 2m30s", config.MaxDuration)
 	}
+	if config.IdleTimeout != 10*time.Second {
+		t.Fatalf("IdleTimeout=%s, want 10s", config.IdleTimeout)
+	}
+	if config.IdleGrace != 3*time.Second {
+		t.Fatalf("IdleGrace=%s, want 3s", config.IdleGrace)
+	}
 	if config.HourlyAudioLimit != 24*time.Minute {
 		t.Fatalf("HourlyAudioLimit=%s, want 24m", config.HourlyAudioLimit)
 	}
@@ -408,6 +414,7 @@ func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 		TicketTTL:        time.Minute,
 		MaxDuration:      150 * time.Second,
 		IdleTimeout:      80 * time.Millisecond,
+		IdleGrace:        40 * time.Millisecond,
 		FinalTimeout:     time.Second,
 		MaxConcurrent:    4,
 		HourlyAudioLimit: 24 * time.Minute,
@@ -447,6 +454,10 @@ func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 	case <-stream.finished:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("silent PCM kept the STT session active past the idle timeout")
+	}
+	_, warning, err := conn.ReadMessage()
+	if err != nil || !strings.Contains(string(warning), `"type":"idle_warning"`) {
+		t.Fatalf("warning=%s err=%v", warning, err)
 	}
 	stream.events <- STTEvent{Type: STTEventFinal}
 	_, terminal, err := conn.ReadMessage()

@@ -354,6 +354,45 @@ describe('ChatComposer', () => {
       .toBe('语音输入即将结束，已识别内容会保存到输入框');
   });
 
+  it('shows the idle grace countdown and clears it when speech resumes', async () => {
+    let callbacks;
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onIdleWarning({ remainingSeconds: 3 });
+    });
+
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('3 秒后结束');
+
+    await act(async () => {
+      callbacks.onIdleWarning({ remainingSeconds: 2 });
+    });
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('2 秒后结束');
+
+    await act(async () => {
+      callbacks.onIdleResumed();
+    });
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toBe(CHAT_COMPOSER_HINT);
+  });
+
   it('shows a calm notice for a successfully finalized idle boundary', async () => {
     let callbacks;
     await renderComposer({

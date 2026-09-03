@@ -382,6 +382,8 @@ export class StreamingSTTSession {
     this.onAudioLevel = options.onAudioLevel || (() => {});
     this.onDurationWarning = options.onDurationWarning || (() => {});
     this.onDurationLimit = options.onDurationLimit || (() => {});
+    this.onIdleWarning = options.onIdleWarning || (() => {});
+    this.onIdleResumed = options.onIdleResumed || (() => {});
     this.onFinal = options.onFinal || (() => {});
     this.onError = options.onError || (() => {});
     this.socket = null;
@@ -877,6 +879,14 @@ export class StreamingSTTSession {
         if (message.text) this.markTranscriptActivity();
         this.checkDurationClock();
         this.publishPartial(this.transcript.updateDefinite(message.text));
+        break;
+      case 'idle_warning':
+        this.onIdleWarning({
+          remainingSeconds: Math.max(1, Number(message.remaining_seconds) || 1),
+        });
+        break;
+      case 'idle_resumed':
+        this.onIdleResumed();
         break;
       case 'final': {
         const previousStopReason = this.stopReason;
