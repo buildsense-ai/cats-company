@@ -153,6 +153,7 @@ jobs:
       - name: Validate host Nginx timeout update
         run: |
           bash -n deploy/prod/ensure-image-timeout-nginx.sh
+          bash -n deploy/prod/ensure-wecom-agent-nginx.sh
           python3 deploy/prod/update-nginx-v1-timeout_test.py
 
       - name: Validate deploy env updates

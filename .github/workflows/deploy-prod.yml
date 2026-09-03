@@ -65,6 +65,7 @@ jobs:
           cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/ensure-public-website-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/ensure-preview-website-nginx.sh "${tmpdir}/compose/"
+          cp deploy/prod/ensure-wecom-agent-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"
           mkdir -p "${tmpdir}/systemd"
           cp deploy/prod/systemd/catsco-worker-release-prune.service "${tmpdir}/systemd/"
@@ -77,6 +78,7 @@ jobs:
           cp deploy/tencent/nginx/catscompany-app.conf "${tmpdir}/compose/"
           cp deploy/tencent/nginx/catsco-public.conf "${tmpdir}/compose/"
           cp deploy/tencent/nginx/catsco-preview.conf "${tmpdir}/compose/"
+          cp deploy/tencent/nginx/catsco-wecom.conf "${tmpdir}/compose/"
           cp deploy/prod/tinode.prod.conf "${tmpdir}/compose/"
           cp deploy/prod/env.prod.example "${tmpdir}/env/"
           tar -C "${tmpdir}" -czf prod-stack-files.tar.gz .
@@ -158,7 +160,7 @@ jobs:
             mv "$artifact_nodes_temp" "$root/secrets/artifact-nodes.json"
             export CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
           fi
-          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh" "$root/compose/ensure-public-website-nginx.sh" "$root/compose/ensure-preview-website-nginx.sh"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh" "$root/compose/ensure-public-website-nginx.sh" "$root/compose/ensure-preview-website-nginx.sh" "$root/compose/ensure-wecom-agent-nginx.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           sudo -n -E "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
@@ -174,6 +176,7 @@ jobs:
           # left untouched. This helper is fail-closed and restores configs on
           # nginx validation failure.
           sudo -n "$root/compose/ensure-public-website-nginx.sh" "$root"
+          sudo -n "$root/compose/ensure-wecom-agent-nginx.sh" "$root"
           sudo -n "$root/compose/remote-status.sh" "$root"
           EOF
 

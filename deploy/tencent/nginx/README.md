@@ -9,6 +9,7 @@ The Tencent CVM uses Let's Encrypt certificates managed by certbot:
 - `app.catsco.cc`
 - `catsco.cc` (including `www.catsco.cc` for the public website)
 - `preview.catsco.cc` (temporary public-site preview)
+- `wecom.catsco.cn` (WeCom callback and authenticated Agent API proxy)
 
 They are stored under `/etc/letsencrypt/live/...` and renew automatically via
 the certbot timer. The root-domain certificate must contain both
@@ -42,6 +43,21 @@ the intended preview host, then issue its separate certificate:
 ```bash
 sudo certbot certonly --nginx -d preview.catsco.cc
 ```
+
+The WeCom middleware uses a separate HTTPS vhost on the CatsCompany gateway.
+Create `wecom.catsco.cn` in the Volcengine DNS zone, issue its independent
+certificate, then let the production helper install the repository config:
+
+```bash
+node deploy/prod/ops/ensure-wecom-dns.mjs
+sudo certbot certonly --nginx -d wecom.catsco.cn
+sudo deploy/prod/ensure-wecom-agent-nginx.sh /srv/catscompany-prod
+```
+
+The vhost exposes only `/health`, `/wecom/callback`, and `/api/agent/*`. The
+callback authenticates with the WeCom signature protocol; Agent endpoints
+still require their API key. Traffic reaches the Foshan middleware over the
+WireGuard address `10.254.0.2:12345`.
 
 The deployment helper will leave the existing routing unchanged until
 `/etc/letsencrypt/live/preview.catsco.cc/fullchain.pem` exists and
