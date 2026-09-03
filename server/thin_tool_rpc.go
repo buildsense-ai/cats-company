@@ -21,6 +21,8 @@ const (
 	maxThinToolRPCPendingPerRequester = 64
 	maxThinToolRPCPendingPerDevice    = 32
 	thinToolRPCBotActiveOnServerCode  = "BOT_ACTIVE_ON_SERVER_RUNTIME"
+	thinToolRPCBotBoundElsewhereCode  = "BOT_BOUND_TO_OTHER_RUNTIME"
+	thinToolRPCBotBindingUnknownCode  = "BOT_RUNTIME_BINDING_UNAVAILABLE"
 	thinToolRPCTargetIsServerCode     = "TARGET_IS_SERVER_RUNTIME"
 	thinToolRPCTargetUnavailableCode  = "target_device_unavailable"
 )
@@ -403,6 +405,9 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 				message: "target bot is already active on a server Runtime; desktop switch was not performed",
 			}
 		}
+		if err := h.authorizeSkillHubDesktopBotBinding(botUID, device); err != nil {
+			return err
+		}
 	}
 	for _, capability := range device.Capabilities {
 		if capability == operation {
@@ -411,6 +416,31 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		}
 	}
 	return fmt.Errorf("target device does not support %s", toolName)
+}
+
+// authorizeSkillHubDesktopBotBinding prevents a SkillHub view/refresh from
+// migrating a Bot between XiaoBa bodies as an implicit side effect. The body
+// binding is durable, unlike the five-minute device liveness lease, so this
+// guard remains effective while the Bot's server Runtime is reconnecting.
+func (h *Hub) authorizeSkillHubDesktopBotBinding(botUID int64, device UserDevice) error {
+	boundBodyID, err := h.db.GetBotBodyID(botUID)
+	if err != nil {
+		return &thinToolRPCAuthorizationError{
+			code:    thinToolRPCBotBindingUnknownCode,
+			message: "target bot Runtime binding could not be verified; desktop switch was not performed",
+		}
+	}
+	boundBodyID = strings.TrimSpace(boundBodyID)
+	if boundBodyID == "" {
+		return nil
+	}
+	if boundBodyID == strings.TrimSpace(device.BodyID) || boundBodyID == strings.TrimSpace(device.DeviceID) {
+		return nil
+	}
+	return &thinToolRPCAuthorizationError{
+		code:    thinToolRPCBotBoundElsewhereCode,
+		message: "target bot is bound to another Runtime; desktop switch was not performed",
+	}
 }
 
 func (h *Hub) authorizeOrdinaryThinToolRPCTarget(ownerUID int64, deviceID string) error {

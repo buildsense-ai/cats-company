@@ -47,6 +47,7 @@ vi.mock('../api', () => ({
     getSkillHubVersions: vi.fn(),
     getSkillHubVersion: vi.fn(),
     getDevices: vi.fn(),
+    getBotBodyStatus: vi.fn(),
     switchLocalBot: vi.fn(),
     getLocalCatsStatus: vi.fn(),
     getLocalSkills: vi.fn(),
@@ -164,6 +165,7 @@ describe('SkillHubView', () => {
       }],
     });
     api.getDevices.mockResolvedValue({ devices: [] });
+    api.getBotBodyStatus.mockResolvedValue({ bot_uid: 42, state: 'unbound', active: false, bound: false });
     api.getLocalSkills.mockResolvedValue({ skills: [] });
     api.shareLocalSkill.mockResolvedValue({});
     container = document.createElement('div');
@@ -511,9 +513,14 @@ describe('SkillHubView', () => {
       devices: [expect.objectContaining({ deviceId: 'desktop' })],
     });
     expect(resolveSkillHubRuntimeRouteForBot({ devices: [{
-      ...oldServerRoute.blockedServers[0], routable: false,
+      ...oldServerRoute.blockedServers[0],
+      bodyId: 'server-body-42',
+      active: false,
+      routeConnected: false,
+      routable: false,
     }, {
       deviceId: 'desktop',
+      bodyId: 'desktop-body',
       runtimeRole: 'desktop',
       active: true,
       routeConnected: true,
@@ -524,7 +531,54 @@ describe('SkillHubView', () => {
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
       ],
-    }] }, '42')).toMatchObject({
+    }] }, '42', {
+      bot_uid: 42,
+      bound: true,
+      body_id: 'server-body-42',
+    })).toMatchObject({
+      kind: 'server-offline',
+      devices: [],
+      blockedServers: [expect.objectContaining({ deviceId: 'old-server-42' })],
+    });
+    expect(resolveSkillHubRuntimeRouteForBot({ devices: [{
+      deviceId: 'desktop',
+      bodyId: 'desktop-body',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] }, '42', {
+      bot_uid: 42,
+      bound: true,
+      body_id: 'server-body-42',
+    })).toMatchObject({
+      kind: 'runtime-offline',
+      devices: [],
+    });
+    expect(resolveSkillHubRuntimeRouteForBot({ devices: [{
+      deviceId: 'desktop',
+      bodyId: 'desktop-body',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] }, '42', {
+      bot_uid: 42,
+      bound: true,
+      body_id: 'desktop-body',
+    })).toMatchObject({
       kind: 'desktop-fallback',
       devices: [expect.objectContaining({ deviceId: 'desktop' })],
     });
@@ -1455,6 +1509,96 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('当前 Agent 已在服务器运行');
     expect(container.textContent).toContain('已停止操作');
     expect(container.textContent).not.toContain('没有检测到支持 SkillHub 的在线 XiaoBa 运行环境');
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localBot.switch',
+      payload: expect.objectContaining({ bot_uid: '44' }),
+    }));
+  });
+
+  it('keeps an offline server Runtime authoritative instead of switching the desktop Bot', async () => {
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Local Bot', relation: 'owner' },
+        { id: 44, display_name: 'Fermi', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid),
+      revision: 1,
+      skills: [],
+    }));
+    api.getBotBodyStatus.mockImplementation((uid) => Promise.resolve(String(uid) === '44' ? {
+      bot_uid: 44,
+      state: 'offline',
+      active: false,
+      bound: true,
+      body_id: 'fermi-server-body',
+    } : {
+      bot_uid: 42,
+      state: 'online',
+      active: true,
+      bound: true,
+      body_id: 'desktop-body',
+    }));
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'desktop-7',
+      bodyId: 'desktop-body',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }, {
+      deviceId: 'fermi-server',
+      bodyId: 'fermi-server-body',
+      displayName: 'Fermi Runtime',
+      runtimeRole: 'server',
+      botUid: 44,
+      active: false,
+      routeConnected: false,
+      routable: false,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+      ],
+    }] });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '42') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '42',
+          active_bot_uid: '42',
+          skills_path: 'C:\\xiaoba\\local\\skills',
+          skills: [],
+        };
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCustomSkills();
+    const picker = container.querySelector('.cc-skillhub-bot-picker select');
+    await act(async () => {
+      picker.value = '44';
+      Simulate.change(picker);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain('服务器暂时离线或正在重连');
+    expect(container.textContent).toContain('已停止操作');
     expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'skillhub.localBot.switch',
       payload: expect.objectContaining({ bot_uid: '44' }),

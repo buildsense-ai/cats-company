@@ -636,6 +636,7 @@ export const api = {
 
   // Bot management
   getMyBots: () => request('GET', '/api/bots'),
+  getBotBodyStatus: (uid) => request('GET', `/api/bots/body-status?uid=${encodeURIComponent(uid)}`),
   getBotInviteCode: (uid) => request('GET', `/api/bots/invite-code?uid=${uid}`),
   generateBotInviteCode: (uid) => request('POST', `/api/bots/invite-code?uid=${uid}`, {}),
   revokeBotInviteCode: (uid) => request('DELETE', `/api/bots/invite-code?uid=${uid}`, {}),
