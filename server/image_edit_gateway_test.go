@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -31,8 +32,8 @@ func imageEditBody(prompt string, images ...string) string {
 	payload := map[string]interface{}{
 		"prompt":        prompt,
 		"images":        items,
-		"model":         "client-selected-model",
-		"n":             9,
+		"model":         "gpt-image-2",
+		"n":             1,
 		"size":          "1024x1024",
 		"quality":       "medium",
 		"output_format": "png",
@@ -145,18 +146,21 @@ func TestValidateImageEditPayloadPreservesOversizedMaskStatus(t *testing.T) {
 	}
 }
 
-func TestImageEditProxyHandlerForwardsReferencesAndForcesPolicy(t *testing.T) {
+func TestImageEditProxyHandlerForwardsReferencesAndOfficialParameters(t *testing.T) {
 	var upstreamAuthorization string
 	var upstreamPath string
-	var upstreamPayload map[string]interface{}
+	var upstreamForm url.Values
+	var upstreamImages int
 	responseBody := testImageResponse(t, 12)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamAuthorization = r.Header.Get("Authorization")
 		upstreamPath = r.URL.Path
-		if err := json.NewDecoder(r.Body).Decode(&upstreamPayload); err != nil {
-			t.Fatalf("failed to decode upstream request: %v", err)
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to decode upstream multipart request: %v", err)
 		}
+		upstreamForm = r.MultipartForm.Value
+		upstreamImages = len(r.MultipartForm.File["image"])
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Request-Id", "provider-edit-1")
 		_, _ = w.Write([]byte(responseBody))
@@ -194,19 +198,81 @@ func TestImageEditProxyHandlerForwardsReferencesAndForcesPolicy(t *testing.T) {
 	if upstreamAuthorization != "Bearer provider-secret" {
 		t.Fatalf("client identity leaked or provider auth missing: %q", upstreamAuthorization)
 	}
-	if upstreamPayload["model"] != "gpt-image-2" || upstreamPayload["n"] != float64(1) {
-		t.Fatalf("server image policy was not forced: %#v", upstreamPayload)
+	if upstreamForm.Get("model") != "gpt-image-2" || upstreamForm.Get("n") != "1" {
+		t.Fatalf("official image parameters were not preserved: %#v", upstreamForm)
 	}
-	images, ok := upstreamPayload["images"].([]interface{})
-	if !ok || len(images) != 1 {
-		t.Fatalf("reference images were not preserved: %#v", upstreamPayload["images"])
-	}
-	image, ok := images[0].(map[string]interface{})
-	if !ok || image["image_url"] != imageURL {
-		t.Fatalf("reference image_url changed: %#v", images[0])
+	if upstreamImages != 1 {
+		t.Fatalf("reference images were not preserved: %d", upstreamImages)
 	}
 	if rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("X-Request-Id") != "provider-edit-1" {
 		t.Fatalf("expected safe response headers, got %#v", rr.Header())
+	}
+}
+
+func TestImageEditProxyHandlerAcceptsOfficialMultipartRequest(t *testing.T) {
+	var upstreamForm url.Values
+	var upstreamImages int
+	responseBody := testImageResponse(t, 14)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(2 << 20); err != nil {
+			t.Fatalf("decode forwarded edit payload: %v", err)
+		}
+		upstreamForm = r.MultipartForm.Value
+		upstreamImages = len(r.MultipartForm.File["image"])
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(responseBody))
+	}))
+	defer upstream.Close()
+
+	handler := NewImageGenerationProxyHandler(
+		upstream.URL+"/v1/images/generations",
+		ImageGenerationProxyOptions{APIKey: "provider-secret"},
+	)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for name, value := range map[string]string{
+		"model":          "gpt-image-2",
+		"prompt":         "preserve the subject and replace the setting",
+		"n":              "1",
+		"size":           "auto",
+		"quality":        "high",
+		"input_fidelity": "high",
+		"background":     "transparent",
+		"output_format":  "png",
+	} {
+		if err := writer.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < 2; index++ {
+		part, err := writer.CreateFormFile("image[]", "reference.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, imageBytes, err := decodeImageEditDataURL(testPNGDataURL(byte(index + 31)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(imageBytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+	handler.HandleEdit(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if upstreamImages != 2 {
+		t.Fatalf("multipart references were not preserved: %d", upstreamImages)
+	}
+	if upstreamForm.Get("size") != "auto" || upstreamForm.Get("quality") != "high" || upstreamForm.Get("input_fidelity") != "high" || upstreamForm.Get("background") != "transparent" {
+		t.Fatalf("multipart options were not preserved: %#v", upstreamForm)
 	}
 }
 
@@ -214,9 +280,10 @@ func TestImageEditProxyHandlerRejectsInvalidRequests(t *testing.T) {
 	jpegBytes := []byte{0xff, 0xd8, 0xff, 0x00}
 	mismatchedPNG := "data:image/png;base64," + base64.StdEncoding.EncodeToString(jpegBytes)
 	validOne := testPNGDataURL(1)
-	validTwo := testPNGDataURL(2)
-	validThree := testPNGDataURL(3)
-	validFour := testPNGDataURL(4)
+	tooManyReferences := make([]string, defaultImageEditMaxReferences+1)
+	for index := range tooManyReferences {
+		tooManyReferences[index] = testPNGDataURL(byte(index + 1))
+	}
 
 	tests := []struct {
 		name            string
@@ -235,12 +302,11 @@ func TestImageEditProxyHandlerRejectsInvalidRequests(t *testing.T) {
 		{name: "unsupported media", method: http.MethodPost, contentType: "application/json", body: `{"prompt":"test","images":[{"image_url":"data:image/gif;base64,R0lGODlh"}]}`, wantStatus: http.StatusBadRequest},
 		{name: "invalid base64", method: http.MethodPost, contentType: "application/json", body: `{"prompt":"test","images":[{"image_url":"data:image/png;base64,not-valid***"}]}`, wantStatus: http.StatusBadRequest},
 		{name: "declared media mismatch", method: http.MethodPost, contentType: "application/json", body: imageEditBody("test", mismatchedPNG), wantStatus: http.StatusBadRequest},
-		{name: "duplicate pixels", method: http.MethodPost, contentType: "application/json", body: imageEditBody("test", validOne, validOne), wantStatus: http.StatusBadRequest},
-		{name: "too many references", method: http.MethodPost, contentType: "application/json", body: imageEditBody("test", validOne, validTwo, validThree, validFour), wantStatus: http.StatusBadRequest},
+		{name: "too many references", method: http.MethodPost, contentType: "application/json", body: imageEditBody("test", tooManyReferences...), wantStatus: http.StatusBadRequest},
 		{name: "unsupported top-level field", method: http.MethodPost, contentType: "application/json", body: `{"prompt":"test","images":[{"image_url":"` + validOne + `"}],"mask":"forbidden"}`, wantStatus: http.StatusBadRequest},
 		{name: "unsupported image field", method: http.MethodPost, contentType: "application/json", body: `{"prompt":"test","images":[{"image_url":"` + validOne + `","name":"forbidden"}]}`, wantStatus: http.StatusBadRequest},
 		{name: "invalid output size", method: http.MethodPost, contentType: "application/json", body: `{"prompt":"test","images":[{"image_url":"` + validOne + `"}],"size":"9999x1"}`, wantStatus: http.StatusBadRequest},
-		{name: "async unsupported", method: http.MethodPost, contentType: "application/json", body: `{"prompt":"test","images":[{"image_url":"` + validOne + `"}],"async":true}`, wantStatus: http.StatusBadRequest},
+		{name: "unknown async field", method: http.MethodPost, contentType: "application/json", body: `{"prompt":"test","images":[{"image_url":"` + validOne + `"}],"async":true}`, wantStatus: http.StatusBadRequest},
 		{name: "multiple JSON objects", method: http.MethodPost, contentType: "application/json", body: imageEditBody("one", validOne) + ` {}`, wantStatus: http.StatusBadRequest},
 		{name: "request body too large", method: http.MethodPost, contentType: "application/json", body: imageEditBody("test", validOne), maxRequestBytes: 64, wantStatus: http.StatusRequestEntityTooLarge},
 	}

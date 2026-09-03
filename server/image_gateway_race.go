@@ -24,6 +24,8 @@ import (
 
 type imageAttemptCategory string
 
+type imageIdempotencyContextKey struct{}
+
 const (
 	imageAttemptSuccess       imageAttemptCategory = "success"
 	imageAttemptTransient     imageAttemptCategory = "transient"
@@ -279,7 +281,7 @@ func (h *ImageGenerationProxyHandler) callImageProvider(
 	result.body = responseBody
 
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		if err := validateCompletedImageResponse(responseBody, h.maxResponseBytes); err != nil {
+		if err := validateCompletedImageResponse(responseBody, h.maxResponseBytes, requestedImageCount(payload)); err != nil {
 			if errors.Is(err, errAsyncImageResponse) {
 				result.category = imageAttemptProviderFatal
 				result.reason = "asynchronous_response_unsupported"
@@ -312,7 +314,6 @@ func buildImageProviderRequest(
 		providerPayload[key] = value
 	}
 	providerPayload["model"] = provider.model
-	providerPayload["n"] = 1
 	delete(providerPayload, "async")
 
 	var body io.Reader
@@ -338,8 +339,15 @@ func buildImageProviderRequest(
 	}
 	request.Header.Set("Authorization", "Bearer "+provider.apiKey)
 	request.Header.Set("Content-Type", contentType)
-	request.Header.Set("Accept", "application/json")
+	if requestWantsImageStream(payload) {
+		request.Header.Set("Accept", "text/event-stream")
+	} else {
+		request.Header.Set("Accept", "application/json")
+	}
 	request.Header.Set("User-Agent", "cats-company-image-proxy/2.0")
+	if idempotencyKey, _ := ctx.Value(imageIdempotencyContextKey{}).(string); idempotencyKey != "" {
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	return request, nil
 }
 
@@ -363,6 +371,9 @@ func encodeMultipartImageEdit(payload map[string]interface{}) ([]byte, string, e
 		"output_compression",
 		"moderation",
 		"input_fidelity",
+		"partial_images",
+		"stream",
+		"user",
 	} {
 		value, exists := payload[name]
 		if !exists {
@@ -379,8 +390,14 @@ func encodeMultipartImageEdit(payload map[string]interface{}) ([]byte, string, e
 			return nil, "", err
 		}
 	}
-	if err := writeField("n", "1"); err != nil {
-		return nil, "", err
+	if rawN, exists := payload["n"]; exists {
+		n, err := imageFormFieldString(rawN)
+		if err != nil {
+			return nil, "", fmt.Errorf("multipart field n: %w", err)
+		}
+		if err := writeField("n", n); err != nil {
+			return nil, "", err
+		}
 	}
 
 	images, ok := payload["images"].([]interface{})
@@ -452,6 +469,8 @@ func imageFormFieldString(value interface{}) (string, error) {
 		return strconv.FormatFloat(typed, 'f', -1, 64), nil
 	case int:
 		return strconv.Itoa(typed), nil
+	case bool:
+		return strconv.FormatBool(typed), nil
 	default:
 		return "", fmt.Errorf("unsupported value type %T", value)
 	}
@@ -516,7 +535,7 @@ func classifyImageProviderHTTPStatus(status int) (imageAttemptCategory, string) 
 	return imageAttemptTransient, "unexpected_status"
 }
 
-func validateCompletedImageResponse(body []byte, maxImageBytes int64) error {
+func validateCompletedImageResponse(body []byte, maxImageBytes int64, expectedImages int) error {
 	var envelope struct {
 		TaskID string `json:"task_id"`
 		Status string `json:"status"`
@@ -527,6 +546,7 @@ func validateCompletedImageResponse(body []byte, maxImageBytes int64) error {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return errors.New("response is not valid JSON")
 	}
+	validImages := 0
 	for _, item := range envelope.Data {
 		if strings.TrimSpace(item.B64JSON) != "" {
 			decodedLimit := maxImageBytes
@@ -538,14 +558,29 @@ func validateCompletedImageResponse(body []byte, maxImageBytes int64) error {
 			}
 			decoded, err := base64.StdEncoding.Strict().DecodeString(item.B64JSON)
 			if err == nil && validateGeneratedImageBytes(decoded) == nil {
-				return nil
+				validImages++
 			}
 		}
+	}
+	if expectedImages < 1 {
+		expectedImages = 1
+	}
+	if validImages >= expectedImages {
+		return nil
 	}
 	if strings.TrimSpace(envelope.TaskID) != "" {
 		return errAsyncImageResponse
 	}
-	return errors.New("response does not contain a completed PNG, JPEG, or WebP image")
+	return fmt.Errorf("response contains %d valid completed image(s), expected %d", validImages, expectedImages)
+}
+
+func requestedImageCount(payload map[string]interface{}) int {
+	if raw, exists := payload["n"]; exists {
+		if value, ok := imageEditInteger(raw); ok && value >= 1 {
+			return value
+		}
+	}
+	return 1
 }
 
 func validateGeneratedImageBytes(contents []byte) error {

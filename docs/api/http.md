@@ -131,10 +131,11 @@ Authorization: ApiKey <api_key>
 
 **POST /v1/images/generations**
 
-使用现有 CatsCo 用户登录凭证（`Authorization: Bearer ...`）或 Bot API Key
-（`Authorization: ApiKey ...`）调用服务端配置的图片生成服务。请求和响应遵循
+使用现有 CatsCo 用户登录凭证或 Bot API Key，均可按 OpenAI SDK 的标准
+`Authorization: Bearer ...` 调用；历史 `Authorization: ApiKey ...` 仍兼容。请求和响应遵循
 OpenAI-compatible images generations 格式；服务端固定使用配置的模型并强制
-`n=1`，不会向客户端暴露上游 API Key。
+GPT-Image-2 路由，保留 `n`（1-10）、精确尺寸、质量、透明背景、输出格式、压缩、
+moderation、`stream` 与 `partial_images` 等官方参数，不会向客户端暴露上游 API Key。
 
 此接口仅在服务端配置 `CATSCO_IMAGE_UPSTREAM_URL` 和上游 API Key 后可用。
 生产环境将这些值只保存在服务器的
@@ -142,12 +143,14 @@ OpenAI-compatible images generations 格式；服务端固定使用配置的模�
 写入仓库或 GitHub Actions 配置。
 
 XiaoBa Skill 从现有 `CATSCO_HTTP_BASE_URL` 自动推导 `/v1/images/generations`，
-并复用当前 CatsCo 登录或 Bot 凭证，无需任何生图专用客户端配置。
+并复用当前 CatsCo 登录或 Bot 凭证。官方 OpenAI SDK 同样只需把 `base_url`
+设为 CatsCo 的 `/v1` 地址；不需要 CatsCo 私有请求头。
 
 **POST /v1/images/edits**
 
 使用与图片生成相同的 CatsCo 用户或 Bot 鉴权、限流、服务端模型和上游密钥，
-用于带参考图的图片生成。请求使用 JSON，不接受 multipart、遮罩或远程图片 URL：
+用于带参考图的图片生成。推荐直接使用 OpenAI SDK 的官方 multipart 请求，可重复
+提交 `image`/`image[]` 文件并可附带 `mask`。迁移期仍兼容原有 JSON data URL：
 
 ```json
 {
@@ -161,11 +164,11 @@ XiaoBa Skill 从现有 `CATSCO_HTTP_BASE_URL` 自动推导 `/v1/images/generatio
 }
 ```
 
-服务端接受 1-3 张不重复的 PNG、JPEG 或 WebP。单张解码后最多 8 MiB，
-合计最多 16 MiB；只在内存中验证并转发，不下载远程图片、不持久化参考图，
-也不会把 base64、CatsCo 凭证或上游 API Key 写入日志。客户端传入的 `model`
-和 `n` 会被服务端配置覆盖，其中 `n` 固定为 1。第一版只支持同步响应，
-`async=true` 会被明确拒绝，避免返回当前网关无法继续查询的任务 ID。
+服务端接受 1-16 张 PNG、JPEG 或 WebP（包括重复引用），单张最多 50 MiB；可选 mask
+必须为与第一张图同尺寸、带 alpha 的 PNG。网关保留 `n`、`size`、`quality`、
+`background`、`output_format`、`output_compression`、`moderation`、`stream` 和
+`partial_images`，并支持编辑请求的 `input_fidelity=high|low`。当服务端默认策略为 `image2` 时，标准 OpenAI SDK
+请求无需私有请求头，也不会降级到即梦。
 
 ### 文件上传
 

@@ -114,8 +114,8 @@ CATSCO_IMAGE_TIMEOUT_SECONDS=260
 CATSCO_IMAGE_RACE_DEADLINE_SECONDS=270
 CATSCO_IMAGE_RACE_BACKOFF_MS=750
 CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER=2
-CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES=25165824
-CATSCO_IMAGE_MAX_RESPONSE_BYTES=41943040
+CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES=880803840
+CATSCO_IMAGE_MAX_RESPONSE_BYTES=536870912
 ```
 
 The deployment scripts create and preserve the `secrets` directory across
@@ -127,8 +127,10 @@ commands below.
 Every configured provider must set `generation_url`, `edit_url`, and an explicit
 `edit_transport`. Use `json_data_url` for an upstream that accepts the CatsCo
 JSON reference format and `multipart` for an OpenAI-compatible file upload.
-The gateway removes `async` and accepts only a completed image response, so a
-task ID never wins the race. Both provider lanes start together, which means a
+The gateway accepts the official GPT-Image-2 generation JSON and edit
+multipart formats. Non-streaming races accept only complete image responses,
+and all requested `n` images must be present and decodable before a provider
+wins. Both provider lanes start together, which means a
 single user request can create one billable request at each provider even when
 the slower request is cancelled locally. Explicit HTTP 429 and 5xx responses
 can be retried within the configured attempt bound. Network errors, timeouts,
@@ -145,9 +147,11 @@ For rollback, clear `CATSCO_IMAGE_UPSTREAMS_FILE` and restore the legacy
 `CATSCO_IMAGE_UPSTREAM_API_KEY_FILE`, and `CATSCO_IMAGE_MODEL` values. The
 legacy path is represented internally as a one-provider pool.
 
-`CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES` limits only the JSON request containing
-base64 references; its 24 MiB default remains below the bundled Nginx 32 MiB
-body limit.
+`CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES` covers either the official multipart edit
+request or the transitional JSON data-URL format. The default permits the
+upstream contract of sixteen images under 50 MiB each plus multipart overhead.
+The `/v1/images/edits` Nginx locations use the matching 900 MiB body cap; each
+file is still validated independently before forwarding.
 
 ## Image upscale gateway
 

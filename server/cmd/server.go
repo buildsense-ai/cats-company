@@ -749,6 +749,7 @@ func main() {
 
 	// Friends (require auth — JWT or API Key for bot access)
 	authWithDB := server.AuthMiddlewareWithDB(db)
+	openAIAuthWithDB := server.OpenAICompatibleAuthMiddlewareWithDB(db)
 	jwtAuthWithDB := server.JWTAuthMiddlewareWithDB(db)
 	ownerAuthWithDB := server.OwnerMiddlewareWithDB(db)
 	botAPIKeyAuthWithDB := server.BotAPIKeyMiddlewareWithDB(db)
@@ -936,8 +937,8 @@ func main() {
 	mux.HandleFunc("/api/mobile-upload/sessions", chainHTTP(uploadHandler.HandleMobileUploadSession, uploadIPLimit, authWithDB, uploadUserLimit))
 	mux.HandleFunc("/api/mobile-upload/sessions/", uploadIPLimit(uploadHandler.HandleMobileUploadSession))
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
-	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
-	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, openAIAuthWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, openAIAuthWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/images/upscale/tasks/", chainHTTP(imageUpscaleHandler.HandleUpscaleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
 	mux.HandleFunc("/v1/images/upscale", chainHTTP(imageUpscaleHandler.HandleUpscale, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/tasks/", chainHTTP(imageGenerationHandler.HandleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))

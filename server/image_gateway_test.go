@@ -13,7 +13,29 @@ import (
 	"time"
 )
 
-func TestImageGenerationProxyHandlerForwardsRequestAndForcesPolicy(t *testing.T) {
+func TestRequestedImageProviderPolicyUsesServerDefault(t *testing.T) {
+	t.Setenv("CATSCO_IMAGE_DEFAULT_PROVIDER", "image2")
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	policy, err := requestedImageProviderPolicy(req)
+	if err != nil {
+		t.Fatalf("requestedImageProviderPolicy: %v", err)
+	}
+	if policy != "image2" {
+		t.Fatalf("policy=%q want=image2", policy)
+	}
+
+	req.Header.Set(imageProviderPolicyHeader, "dreamina")
+	policy, err = requestedImageProviderPolicy(req)
+	if err != nil {
+		t.Fatalf("explicit requestedImageProviderPolicy: %v", err)
+	}
+	if policy != "dreamina" {
+		t.Fatalf("explicit policy=%q want=dreamina", policy)
+	}
+}
+
+func TestImageGenerationProxyHandlerForwardsOfficialParameters(t *testing.T) {
 	var upstreamAuthorization string
 	var upstreamMethod string
 	var upstreamPath string
@@ -47,7 +69,7 @@ func TestImageGenerationProxyHandlerForwardsRequestAndForcesPolicy(t *testing.T)
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
-		"model":"client-model",
+		"model":"gpt-image-2",
 		"prompt":"one red circle and one blue square",
 		"n":4,
 		"size":"1024x1024",
@@ -78,8 +100,8 @@ func TestImageGenerationProxyHandlerForwardsRequestAndForcesPolicy(t *testing.T)
 	if upstreamPayload["model"] != "gpt-image-2" {
 		t.Fatalf("expected server model policy, got %#v", upstreamPayload["model"])
 	}
-	if upstreamPayload["n"] != float64(1) {
-		t.Fatalf("expected n=1, got %#v", upstreamPayload["n"])
+	if upstreamPayload["n"] != float64(4) {
+		t.Fatalf("expected n=4 to be preserved, got %#v", upstreamPayload["n"])
 	}
 	if upstreamPayload["prompt"] != "one red circle and one blue square" {
 		t.Fatalf("prompt was not preserved: %#v", upstreamPayload["prompt"])
@@ -128,6 +150,52 @@ func TestImageGenerationProxyHandlerRejectsInvalidRequests(t *testing.T) {
 				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, rr.Code, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestImageGenerationProxyHandlerStreamsOfficialEvents(t *testing.T) {
+	var upstreamAccept string
+	var upstreamPayload map[string]interface{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAccept = r.Header.Get("Accept")
+		if err := json.NewDecoder(r.Body).Decode(&upstreamPayload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: image_generation.partial_image\ndata: {\"partial_image_index\":0}\n\n"))
+	}))
+	defer upstream.Close()
+	handler := NewImageGenerationProxyHandler(upstream.URL, ImageGenerationProxyOptions{APIKey: "provider-secret"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{
+		"model":"gpt-image-2",
+		"prompt":"stream a preview",
+		"stream":true,
+		"partial_images":2
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.HandleGenerate(rr, req)
+	if rr.Code != http.StatusOK || upstreamAccept != "text/event-stream" {
+		t.Fatalf("status=%d accept=%q body=%s", rr.Code, upstreamAccept, rr.Body.String())
+	}
+	if upstreamPayload["stream"] != true || upstreamPayload["partial_images"] != float64(2) {
+		t.Fatalf("stream controls were not preserved: %#v", upstreamPayload)
+	}
+	if !strings.Contains(rr.Body.String(), "image_generation.partial_image") {
+		t.Fatalf("SSE body was not proxied: %s", rr.Body.String())
+	}
+}
+
+func TestGPTImage2FlexibleSizeValidation(t *testing.T) {
+	for _, size := range []string{"auto", "1024x1024", "2048x1152", "3840x2160", "2160x3840"} {
+		if !validGPTImage2Size(size) {
+			t.Errorf("expected valid size %q", size)
+		}
+	}
+	for _, size := range []string{"1023x1024", "3840x3840", "512x512", "4096x1024", "320x1024", "portrait"} {
+		if validGPTImage2Size(size) {
+			t.Errorf("expected invalid size %q", size)
+		}
 	}
 }
 

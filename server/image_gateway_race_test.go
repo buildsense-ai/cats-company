@@ -61,7 +61,7 @@ func TestImageRaceFirstValidCompletedImageWins(t *testing.T) {
 		raceTestProvider("fast", fast.URL(), "", imageOperationGeneration),
 	}, ImageGenerationProxyOptions{RaceDeadline: time.Second})
 
-	rr := runRaceGeneration(t, handler, `{"prompt":"test","async":true}`)
+	rr := runRaceGeneration(t, handler, `{"prompt":"test"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -72,9 +72,23 @@ func TestImageRaceFirstValidCompletedImageWins(t *testing.T) {
 		t.Fatalf("both dispatched attempts were not counted: %q", rr.Header().Get("X-CatsCo-Image-Total-Attempts"))
 	}
 	waitForScriptedCancellation(t, slow)
-	_, _, fastPayloads := fast.Snapshot()
-	if _, sentAsync := fastPayloads[0]["async"]; sentAsync {
-		t.Fatalf("race forwarded async task mode: %#v", fastPayloads[0])
+}
+
+func TestImageRaceRequiresAllRequestedImagesAndPreservesN(t *testing.T) {
+	incomplete := newScriptedImageUpstream(t, scriptedImageStep{body: testImageResponseN(t, 71, 1)})
+	complete := newScriptedImageUpstream(t, scriptedImageStep{delay: 20 * time.Millisecond, body: testImageResponseN(t, 72, 2)})
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("incomplete", incomplete.URL(), "", imageOperationGeneration),
+		raceTestProvider("complete", complete.URL(), "", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{RaceDeadline: time.Second, MaxAttemptsPerProvider: 1})
+
+	rr := runRaceGeneration(t, handler, `{"model":"gpt-image-2","prompt":"two variants","n":2}`)
+	if rr.Code != http.StatusOK || rr.Header().Get("X-CatsCo-Image-Provider") != "complete" {
+		t.Fatalf("status=%d provider=%q body=%s", rr.Code, rr.Header().Get("X-CatsCo-Image-Provider"), rr.Body.String())
+	}
+	_, _, payloads := complete.Snapshot()
+	if len(payloads) != 1 || payloads[0]["n"] != float64(2) {
+		t.Fatalf("requested n was not preserved: %#v", payloads)
 	}
 }
 

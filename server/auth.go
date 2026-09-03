@@ -210,6 +210,10 @@ func JWTAuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.Handler
 
 func botAPIKeyUID(r *http.Request, db store.Store) (int64, int, string) {
 	apiKey := extractAPIKey(r)
+	return botAPIKeyUIDValue(apiKey, db)
+}
+
+func botAPIKeyUIDValue(apiKey string, db store.Store) (int64, int, string) {
 	if apiKey == "" {
 		return 0, http.StatusUnauthorized, "unauthorized"
 	}
@@ -225,6 +229,58 @@ func botAPIKeyUID(r *http.Request, db store.Store) (int64, int, string) {
 		return 0, status, msg
 	}
 	return parsedUID, 0, ""
+}
+
+// OpenAICompatibleAuthMiddlewareWithDB accepts ordinary CatsCo JWTs and bot
+// API keys using either CatsCo's historical `ApiKey` authorization scheme or
+// the OpenAI SDK's standard `Bearer` scheme. Keep this middleware scoped to
+// OpenAI-compatible API routes: accepting a bot key as Bearer globally would
+// blur the authentication contract of unrelated CatsCo endpoints.
+func OpenAICompatibleAuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			// Preserve normal CatsCo user-session authentication first.
+			tokenStr := extractToken(r)
+			if tokenStr != "" {
+				claims, err := ParseToken(tokenStr)
+				if err == nil {
+					if _, status, msg := activeUserFromClaims(claims, db.GetUser); status != 0 {
+						writeJSON(w, status, map[string]string{"error": msg})
+						return
+					}
+					ctx := contextWithClaims(r.Context(), claims)
+					next(w, r.WithContext(ctx))
+					return
+				}
+
+				// OpenAI clients send api_key as a Bearer token. Only attempt bot
+				// key authentication for CatsCo-shaped keys, avoiding database
+				// lookup and ambiguous semantics for arbitrary invalid JWTs.
+				if strings.HasPrefix(tokenStr, "cc_") {
+					if uid, status, msg := botAPIKeyUIDValue(tokenStr, db); status == 0 {
+						ctx := context.WithValue(r.Context(), uidKey, uid)
+						next(w, r.WithContext(ctx))
+						return
+					} else if status == http.StatusForbidden {
+						writeJSON(w, status, map[string]string{"error": msg})
+						return
+					}
+				}
+			}
+
+			// Retain the historical CatsCo `ApiKey` scheme for existing bots.
+			if uid, status, msg := botAPIKeyUID(r, db); status == 0 {
+				ctx := context.WithValue(r.Context(), uidKey, uid)
+				next(w, r.WithContext(ctx))
+				return
+			} else if status == http.StatusForbidden {
+				writeJSON(w, status, map[string]string{"error": msg})
+				return
+			}
+
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		}
+	}
 }
 
 // BotAPIKeyMiddlewareWithDB requires an active bot API key and never accepts JWTs.

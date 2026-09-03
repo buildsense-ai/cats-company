@@ -205,6 +205,58 @@ func TestAuthMiddlewareWithDBRejectsDisabledJWTAndDisabledBotAPIKey(t *testing.T
 	}
 }
 
+func TestOpenAICompatibleAuthMiddlewareWithDBAcceptsBearerBotAPIKey(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("openai-auth-state-test-secret")
+
+	activeToken, err := GenerateToken(1, "alice", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken active: %v", err)
+	}
+
+	const activeBotKey = "cc_7_openai"
+	const disabledBotKey = "cc_8_openai"
+	store := authStateTestStore{
+		users: map[int64]*types.User{
+			1: {ID: 1, Username: "alice", AccountType: types.AccountHuman, State: 0},
+			7: {ID: 7, Username: "active-bot", AccountType: types.AccountBot, State: 0},
+			8: {ID: 8, Username: "disabled-bot", AccountType: types.AccountBot, State: 1},
+		},
+		botKeys: map[string]int64{activeBotKey: 7, disabledBotKey: 8},
+	}
+	handler := OpenAICompatibleAuthMiddlewareWithDB(store)(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]int64{"uid": UIDFromContext(r.Context())})
+	})
+
+	cases := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "active jwt remains supported", authorization: "Bearer " + activeToken, wantStatus: http.StatusOK},
+		{name: "openai bearer bot key", authorization: "Bearer " + activeBotKey, wantStatus: http.StatusOK},
+		{name: "historical api key scheme", authorization: "ApiKey " + activeBotKey, wantStatus: http.StatusOK},
+		{name: "disabled bearer bot key", authorization: "Bearer " + disabledBotKey, wantStatus: http.StatusForbidden},
+		{name: "unknown bearer bot key", authorization: "Bearer cc_9_unknown", wantStatus: http.StatusUnauthorized},
+		{name: "arbitrary invalid bearer", authorization: "Bearer not-a-jwt-or-bot-key", wantStatus: http.StatusUnauthorized},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+			req.Header.Set("Authorization", tc.authorization)
+			rec := httptest.NewRecorder()
+
+			handler(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestJWTAuthMiddlewareWithDBRejectsDisabledJWTAndAPIKey(t *testing.T) {
 	oldSecret := append([]byte(nil), jwtSecret...)
 	defer func() { jwtSecret = oldSecret }()

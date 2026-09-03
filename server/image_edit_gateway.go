@@ -6,23 +6,24 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"image"
 	"image/png"
+	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
 
 const (
-	defaultImageEditMaxReferences           = 3
-	defaultImageEditMaxReferenceBytes int64 = 8 << 20  // 8 MiB decoded per image.
-	defaultImageEditMaxTotalBytes     int64 = 16 << 20 // 16 MiB decoded across references.
-	defaultImageEditMaxPromptRunes          = 12_000
+	defaultImageEditMaxReferences           = 16
+	defaultImageEditMaxReferenceBytes int64 = 50 << 20  // Official per-image upper bound.
+	defaultImageEditMaxTotalBytes     int64 = 800 << 20 // 16 images at the official per-image limit.
+	defaultImageEditMaxPromptRunes          = 32_000
 )
-
-var imageEditSizePattern = regexp.MustCompile(`^(\d{3,4})x(\d{3,4})$`)
 
 type imageEditReferenceLimits struct {
 	maxImages     int
@@ -63,22 +64,29 @@ func (h *ImageGenerationProxyHandler) HandleEdit(w http.ResponseWriter, r *http.
 
 	contentType := strings.TrimSpace(r.Header.Get("Content-Type"))
 	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil || mediaType != "application/json" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Content-Type must be application/json"})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Content-Type"})
 		return
 	}
 
-	payload, status, err := readImageJSONPayload(w, r, h.maxEditRequestBytes, "image edit")
-	if err != nil {
-		writeJSON(w, status, map[string]string{"error": err.Error()})
-		return
+	var payload map[string]interface{}
+	var referenceCount int
+	var referenceBytes int64
+	var status int
+	switch mediaType {
+	case "application/json":
+		payload, status, err = readImageJSONPayload(w, r, h.maxEditRequestBytes, "image edit")
+		if err == nil {
+			referenceCount, referenceBytes, err = validateImageEditPayload(payload, defaultImageEditReferenceLimits)
+		}
+	case "multipart/form-data":
+		payload, referenceCount, referenceBytes, err = readOfficialMultipartImageEditPayload(w, r, h.maxEditRequestBytes, defaultImageEditReferenceLimits)
+	default:
+		err = &imageEditRequestError{status: http.StatusBadRequest, message: "Content-Type must be multipart/form-data or application/json"}
 	}
-	referenceCount, referenceBytes, err := validateImageEditPayload(payload, defaultImageEditReferenceLimits)
 	if err != nil {
-		status := http.StatusBadRequest
-		var requestErr *imageEditRequestError
-		if errors.As(err, &requestErr) {
-			status = requestErr.status
+		if status == 0 {
+			status = imageRequestErrorStatus(err)
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
@@ -92,6 +100,129 @@ func (h *ImageGenerationProxyHandler) HandleEdit(w http.ResponseWriter, r *http.
 		referenceCount,
 		referenceBytes,
 	)
+}
+
+func readOfficialMultipartImageEditPayload(
+	w http.ResponseWriter,
+	r *http.Request,
+	maxRequestBytes int64,
+	limits imageEditReferenceLimits,
+) (map[string]interface{}, int, int64, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return nil, 0, 0, &imageEditRequestError{status: http.StatusRequestEntityTooLarge, message: "image edit request body is too large"}
+		}
+		return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "invalid multipart image edit request"}
+	}
+	if r.MultipartForm == nil {
+		return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "invalid multipart image edit request"}
+	}
+	defer r.MultipartForm.RemoveAll()
+
+	payload := make(map[string]interface{})
+	for field, values := range r.MultipartForm.Value {
+		if len(values) != 1 {
+			return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "multipart field must occur once: " + field}
+		}
+		value := values[0]
+		switch field {
+		case "model", "prompt", "size", "quality", "background", "output_format", "moderation", "input_fidelity", "user":
+			payload[field] = value
+		case "n", "output_compression", "partial_images":
+			if _, err := strconv.Atoi(value); err != nil {
+				return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: field + " must be an integer"}
+			}
+			payload[field] = json.Number(value)
+		case "stream":
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "stream must be a boolean"}
+			}
+			payload[field] = parsed
+		default:
+			return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "unsupported multipart image edit field: " + field}
+		}
+	}
+
+	for field := range r.MultipartForm.File {
+		if field != "image" && field != "image[]" && field != "mask" {
+			return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "unsupported multipart image edit file field: " + field}
+		}
+	}
+	imageHeaders := append(r.MultipartForm.File["image"], r.MultipartForm.File["image[]"]...)
+	if len(imageHeaders) < 1 || len(imageHeaders) > limits.maxImages {
+		return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: fmt.Sprintf("image must contain 1-%d files", limits.maxImages)}
+	}
+	images := make([]interface{}, 0, len(imageHeaders))
+	var totalBytes int64
+	for index, header := range imageHeaders {
+		dataURL, decodedBytes, err := multipartImageDataURL(header, limits.maxImageBytes, false)
+		if err != nil {
+			return nil, 0, 0, &imageEditRequestError{status: imageRequestErrorStatus(err), message: fmt.Sprintf("image %d: %s", index+1, err.Error())}
+		}
+		totalBytes += decodedBytes
+		if totalBytes > limits.maxTotalBytes {
+			return nil, 0, 0, &imageEditRequestError{status: http.StatusRequestEntityTooLarge, message: "image files exceed the decoded total size limit"}
+		}
+		images = append(images, map[string]interface{}{"image_url": dataURL})
+	}
+	payload["images"] = images
+
+	maskHeaders := r.MultipartForm.File["mask"]
+	if len(maskHeaders) > 1 {
+		return nil, 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must occur at most once"}
+	}
+	if len(maskHeaders) == 1 {
+		maskURL, decodedBytes, err := multipartImageDataURL(maskHeaders[0], limits.maxImageBytes, true)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		totalBytes += decodedBytes
+		if totalBytes > limits.maxTotalBytes {
+			return nil, 0, 0, &imageEditRequestError{status: http.StatusRequestEntityTooLarge, message: "image files and mask exceed the decoded total size limit"}
+		}
+		payload["mask"] = maskURL
+	}
+
+	referenceCount, validatedBytes, err := validateImageEditPayload(payload, limits)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return payload, referenceCount, validatedBytes, nil
+}
+
+func multipartImageDataURL(header interface {
+	Open() (multipart.File, error)
+}, maxBytes int64, mask bool) (string, int64, error) {
+	file, err := header.Open()
+	if err != nil {
+		return "", 0, &imageEditRequestError{status: http.StatusBadRequest, message: "cannot read uploaded image"}
+	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return "", 0, &imageEditRequestError{status: http.StatusBadRequest, message: "cannot read uploaded image"}
+	}
+	if int64(len(contents)) > maxBytes {
+		return "", 0, &imageEditRequestError{status: http.StatusRequestEntityTooLarge, message: "uploaded image exceeds the 50 MiB limit"}
+	}
+	mediaType := http.DetectContentType(contents)
+	switch mediaType {
+	case "image/png":
+	case "image/jpeg":
+		if mask {
+			return "", 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be PNG with an alpha channel"}
+		}
+	case "image/webp":
+		if mask {
+			return "", 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be PNG with an alpha channel"}
+		}
+	default:
+		return "", 0, &imageEditRequestError{status: http.StatusBadRequest, message: "uploaded image must be PNG, JPEG, or WebP"}
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(contents), int64(len(contents)), nil
 }
 
 func validateImageEditPayload(
@@ -111,7 +242,9 @@ func validateImageEditPayload(
 		"output_compression": {},
 		"moderation":         {},
 		"input_fidelity":     {},
-		"async":              {},
+		"stream":             {},
+		"partial_images":     {},
+		"user":               {},
 	}
 	for key := range payload {
 		if _, ok := allowedFields[key]; !ok {
@@ -129,6 +262,9 @@ func validateImageEditPayload(
 	if utf8.RuneCountInString(prompt) > defaultImageEditMaxPromptRunes {
 		return 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: "prompt is too long"}
 	}
+	if err := validateGPTImage2Model(payload); err != nil {
+		return 0, 0, &imageEditRequestError{status: http.StatusBadRequest, message: err.Error()}
+	}
 
 	if err := validateImageEditOutputOptions(payload); err != nil {
 		return 0, 0, err
@@ -138,13 +274,12 @@ func validateImageEditPayload(
 	if !ok || len(images) < 1 || len(images) > limits.maxImages {
 		return 0, 0, &imageEditRequestError{
 			status:  http.StatusBadRequest,
-			message: "images must contain 1-3 reference images",
+			message: fmt.Sprintf("images must contain 1-%d reference images", limits.maxImages),
 		}
 	}
 
 	var totalBytes int64
 	var firstImageURL string
-	seenDigests := make(map[[sha256.Size]byte]struct{}, len(images))
 	for index, rawImage := range images {
 		image, ok := rawImage.(map[string]interface{})
 		if !ok || len(image) != 1 {
@@ -163,17 +298,10 @@ func validateImageEditPayload(
 		if index == 0 {
 			firstImageURL = imageURL
 		}
-		decodedBytes, digest, err := validateImageEditDataURL(imageURL, limits.maxImageBytes)
+		decodedBytes, _, err := validateImageEditDataURL(imageURL, limits.maxImageBytes)
 		if err != nil {
 			return 0, 0, err
 		}
-		if _, duplicate := seenDigests[digest]; duplicate {
-			return 0, 0, &imageEditRequestError{
-				status:  http.StatusBadRequest,
-				message: "reference images must not contain duplicate pixels",
-			}
-		}
-		seenDigests[digest] = struct{}{}
 		totalBytes += decodedBytes
 		if totalBytes > limits.maxTotalBytes {
 			return 0, 0, &imageEditRequestError{
@@ -211,26 +339,23 @@ func validateImageEditMask(maskURL, firstImageURL string, maxDecodedBytes int64)
 		}
 		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a valid base64 PNG data URL"}
 	}
-	if !strings.HasPrefix(firstImageURL, "data:image/png;base64,") {
-		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be PNG when mask is provided"}
-	}
 	_, sourceBytes, err := decodeImageEditDataURL(firstImageURL)
 	if err != nil {
-		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be a valid PNG when mask is provided"}
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be valid when mask is provided"}
 	}
 	_, decodedMask, err := decodeImageEditDataURL(maskURL)
 	if err != nil {
 		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a valid base64 PNG data URL"}
 	}
-	sourceConfig, err := png.DecodeConfig(bytes.NewReader(sourceBytes))
+	sourceWidth, sourceHeight, err := decodedImageDimensions(sourceBytes)
 	if err != nil {
-		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be a decodable PNG when mask is provided"}
+		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "the first image must be decodable when mask is provided"}
 	}
 	maskConfig, err := png.DecodeConfig(bytes.NewReader(decodedMask))
 	if err != nil {
 		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask must be a decodable PNG"}
 	}
-	if sourceConfig.Width != maskConfig.Width || sourceConfig.Height != maskConfig.Height {
+	if sourceWidth != maskConfig.Width || sourceHeight != maskConfig.Height {
 		return 0, &imageEditRequestError{status: http.StatusBadRequest, message: "mask dimensions must match the first image"}
 	}
 	if maskConfig.Width <= 0 || maskConfig.Height <= 0 || maskConfig.Width > 8192 || maskConfig.Height > 8192 || int64(maskConfig.Width)*int64(maskConfig.Height) > 64_000_000 {
@@ -243,67 +368,31 @@ func validateImageEditMask(maskURL, firstImageURL string, maxDecodedBytes int64)
 }
 
 func validateImageEditOutputOptions(payload map[string]interface{}) error {
-	if rawSize, exists := payload["size"]; exists {
-		size, ok := rawSize.(string)
-		if !ok {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "size must be a string"}
-		}
-		match := imageEditSizePattern.FindStringSubmatch(size)
-		if match == nil {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "size must look like 1024x1024"}
-		}
-		width, _ := strconv.Atoi(match[1])
-		height, _ := strconv.Atoi(match[2])
-		if width < 512 || height < 512 || width > 3840 || height > 3840 || width > 3*height || height > 3*width {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "size is outside the supported range"}
-		}
-	}
-	if rawQuality, exists := payload["quality"]; exists {
-		quality, ok := rawQuality.(string)
-		if !ok || !oneOf(quality, "low", "medium", "high", "auto") {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "quality is unsupported"}
-		}
-	}
-	if rawFormat, exists := payload["output_format"]; exists {
-		format, ok := rawFormat.(string)
-		if !ok || !oneOf(format, "png", "jpeg", "jpg", "webp") {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "output_format is unsupported"}
-		}
-	}
-	if rawBackground, exists := payload["background"]; exists {
-		background, ok := rawBackground.(string)
-		if !ok || !oneOf(background, "auto", "transparent", "opaque") {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "background is unsupported"}
-		}
-	}
-	if rawCompression, exists := payload["output_compression"]; exists {
-		value, ok := imageEditInteger(rawCompression)
-		if !ok || value < 0 || value > 100 {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "output_compression must be an integer from 0 to 100"}
-		}
-	}
-	if rawModeration, exists := payload["moderation"]; exists {
-		moderation, ok := rawModeration.(string)
-		if !ok || !oneOf(moderation, "auto", "low") {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "moderation is unsupported"}
-		}
+	if err := validateGPTImage2OutputOptions(payload); err != nil {
+		return &imageEditRequestError{status: http.StatusBadRequest, message: err.Error()}
 	}
 	if rawFidelity, exists := payload["input_fidelity"]; exists {
 		fidelity, ok := rawFidelity.(string)
-		if !ok || !oneOf(fidelity, "low", "high") {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "input_fidelity is unsupported"}
-		}
-	}
-	if rawAsync, exists := payload["async"]; exists {
-		async, ok := rawAsync.(bool)
-		if !ok {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "async must be a boolean"}
-		}
-		if async {
-			return &imageEditRequestError{status: http.StatusBadRequest, message: "async image edits are not supported"}
+		if !ok || !oneOf(fidelity, "high", "low") {
+			return &imageEditRequestError{status: http.StatusBadRequest, message: "input_fidelity must be high or low"}
 		}
 	}
 	return nil
+}
+
+func decodedImageDimensions(contents []byte) (int, int, error) {
+	if len(contents) >= 12 && bytes.Equal(contents[:4], []byte("RIFF")) && bytes.Equal(contents[8:12], []byte("WEBP")) {
+		width, height, ok := webPDimensions(contents)
+		if !ok {
+			return 0, 0, errors.New("invalid WebP dimensions")
+		}
+		return width, height, nil
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(contents))
+	if err != nil {
+		return 0, 0, err
+	}
+	return config.Width, config.Height, nil
 }
 
 func imageEditInteger(value interface{}) (int, bool) {

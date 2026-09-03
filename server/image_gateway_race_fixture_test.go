@@ -93,15 +93,23 @@ func (u *scriptedImageUpstream) Snapshot() (requests int, cancellations int, pay
 }
 
 func testImageResponse(t *testing.T, marker byte) string {
+	return testImageResponseN(t, marker, 1)
+}
+
+func testImageResponseN(t *testing.T, marker byte, count int) string {
 	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
-	img.SetRGBA(0, 0, color.RGBA{R: marker, G: 32, B: 64, A: 255})
-	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, img); err != nil {
-		t.Fatalf("encode test image: %v", err)
+	items := make([]map[string]string, 0, count)
+	for index := 0; index < count; index++ {
+		img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+		img.SetRGBA(0, 0, color.RGBA{R: marker + byte(index), G: 32, B: 64, A: 255})
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, img); err != nil {
+			t.Fatalf("encode test image: %v", err)
+		}
+		items = append(items, map[string]string{"b64_json": base64.StdEncoding.EncodeToString(encoded.Bytes())})
 	}
 	payload := map[string]interface{}{
-		"data": []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString(encoded.Bytes())}},
+		"data": items,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
