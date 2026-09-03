@@ -52,13 +52,16 @@ jobs:
           ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${TEST_STACK_ROOT}/compose ${TEST_STACK_ROOT}/env ${TEST_STACK_ROOT}/data/mysql ${TEST_STACK_ROOT}/data/uploads ${TEST_STACK_ROOT}/logs ${TEST_STACK_ROOT}/releases ${DEPLOY_CACHE_ROOT}/releases ${DEPLOY_CACHE_ROOT}/source /usr/local/bin"
 
           tmpdir="$(mktemp -d)"
-          mkdir -p "${tmpdir}/compose" "${tmpdir}/env"
+          mkdir -p "${tmpdir}/compose" "${tmpdir}/env" "${tmpdir}/skills"
           cp deploy/test/bootstrap-server.sh "${tmpdir}/compose/"
           cp deploy/remote-build-source.sh "${tmpdir}/compose/"
           cp deploy/shared/cache-source-bundle.sh "${tmpdir}/compose/"
           cp deploy/test/remote-deploy.sh "${tmpdir}/compose/"
           cp deploy/test/remote-status.sh "${tmpdir}/compose/"
           cp deploy/test/remote-imagegen-smoke-identity.sh "${tmpdir}/compose/"
+          cp deploy/test/remote-imagegen-smoke-run.sh "${tmpdir}/compose/"
+          cp deploy/test/imagegen-smoke-generate.json "${tmpdir}/compose/"
+          cp -R skills/imagegen "${tmpdir}/skills/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/test/docker-compose.yml "${tmpdir}/compose/"
@@ -121,7 +124,7 @@ jobs:
           root="${TEST_STACK_ROOT}"
           revision="${GITHUB_SHA}"
           owner="${GHCR_OWNER}"
-          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh" "$root/compose/remote-imagegen-smoke-identity.sh"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh" "$root/compose/remote-imagegen-smoke-identity.sh" "$root/compose/remote-imagegen-smoke-run.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           # Build both OCI images on the target host. The source mirror is
@@ -143,61 +146,16 @@ jobs:
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
           remote_key="${TEST_STACK_ROOT}/run/imagegen-smoke-key"
-          local_key="$(mktemp)"
+          remote_run="${TEST_STACK_ROOT}/run/imagegen-smoke-${GITHUB_RUN_ID}"
           cleanup() {
             ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-identity.sh cleanup ${TEST_STACK_ROOT} ${remote_key}" || true
-            rm -f "${local_key}"
-            if [[ -n "${tunnel_pid:-}" ]]; then
-              kill "${tunnel_pid}" 2>/dev/null || true
-            fi
           }
           trap cleanup EXIT
 
           ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-identity.sh prepare ${TEST_STACK_ROOT} ${remote_key}"
-          scp ${SSH_OPTS} "${REMOTE}:${remote_key}" "${local_key}"
-          smoke_key="$(cat "${local_key}")"
-          echo "::add-mask::${smoke_key}"
-
-          ssh ${SSH_OPTS} -N -L 26061:127.0.0.1:16061 "${REMOTE}" &
-          tunnel_pid=$!
-          sleep 2
-          curl --fail --silent --show-error http://127.0.0.1:26061/health >/dev/null
-
-          python3 -m venv .imagegen-smoke-venv
-          . .imagegen-smoke-venv/bin/activate
-          python -m pip install --disable-pip-version-check -r skills/imagegen/requirements.txt
-          export CATSCO_IMAGE_API_BASE=http://127.0.0.1:26061/v1
-          export CATSCO_API_KEY="${smoke_key}"
-          export IMAGE_GEN_MODEL=gpt-image-2
-          export IMAGE_GEN_DEFAULT_SIZE=1024x1024
-          export IMAGE_GEN_DEFAULT_QUALITY=medium
-
-          mkdir -p imagegen-smoke/generate imagegen-smoke/edit
-          python skills/imagegen/scripts/invoke_imagegen.py \
-            --request deploy/test/imagegen-smoke-generate.json \
-            --out-dir imagegen-smoke/generate
-
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          source = Path("imagegen-smoke/generate/image.png").resolve()
-          request = {
-              "prompt": (
-                  "Keep the mug, camera angle, composition, lighting, shadows, "
-                  "travertine surface and warm-white background unchanged. "
-                  "Change only the mug color from forest green to cobalt blue. "
-                  "No text, no logo."
-              ),
-              "referenced_image_paths": [str(source)],
-          }
-          Path("imagegen-smoke/edit-request.json").write_text(
-              json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8"
-          )
-          PY
-          python skills/imagegen/scripts/invoke_imagegen.py \
-            --request imagegen-smoke/edit-request.json \
-            --out-dir imagegen-smoke/edit
+          ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-run.sh ${TEST_STACK_ROOT} ${remote_key} ${remote_run}"
+          mkdir -p imagegen-smoke
+          scp ${SSH_OPTS} -r "${REMOTE}:${remote_run}/." imagegen-smoke/
 
       - name: Upload real imagegen smoke results
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.image_smoke }}
