@@ -42,16 +42,18 @@ PY
 create_identity() {
   local server_id="$1"
   local smoke_user="$2"
-  local smoke_key="$3"
+  local random_suffix="$3"
   local mysql_id
   mysql_id="$(compose ps -q mysql)"
   if [[ -n "$mysql_id" ]]; then
-    docker exec -i "$mysql_id" sh -lc 'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" openchat' <<SQL
+    docker exec -i "$mysql_id" sh -lc 'exec mysql -N -B -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" openchat' <<SQL
 INSERT INTO users (username, display_name, account_type, pass_hash, state)
 VALUES ('${smoke_user}', 'Imagegen Smoke', 'bot', '!', 0);
 SET @smoke_uid = LAST_INSERT_ID();
+SET @smoke_key = CONCAT('cc_', LOWER(HEX(@smoke_uid)), '_', '${random_suffix}');
 INSERT INTO bot_config (user_id, api_endpoint, model, enabled, api_key)
-VALUES (@smoke_uid, '', 'gpt-image-2', 1, '${smoke_key}');
+VALUES (@smoke_uid, '', 'gpt-image-2', 1, @smoke_key);
+SELECT @smoke_key;
 SQL
     return
   fi
@@ -66,14 +68,19 @@ SQL
   fi
   dsn="$(psql_compatible_dsn "$dsn")"
   docker run --rm -i --network "$network" postgres:16-alpine \
-    psql "$dsn" -v ON_ERROR_STOP=1 -v smoke_user="$smoke_user" -v smoke_key="$smoke_key" <<'SQL'
+    psql "$dsn" -qAt -v ON_ERROR_STOP=1 -v smoke_user="$smoke_user" -v random_suffix="$random_suffix" <<'SQL'
 WITH created_user AS (
   INSERT INTO users (username, display_name, account_type, pass_hash, state)
   VALUES (:'smoke_user', 'Imagegen Smoke', 'bot', decode('', 'hex'), 0)
   RETURNING id
+), created_bot AS (
+  INSERT INTO bot_config (user_id, api_endpoint, model, enabled, api_key)
+  SELECT id, '', 'gpt-image-2', true,
+         'cc_' || to_hex(id) || '_' || :'random_suffix'
+  FROM created_user
+  RETURNING api_key
 )
-INSERT INTO bot_config (user_id, api_endpoint, model, enabled, api_key)
-SELECT id, '', 'gpt-image-2', true, :'smoke_key' FROM created_user;
+SELECT api_key FROM created_bot;
 SQL
 }
 
@@ -131,8 +138,12 @@ case "$action" in
 
     smoke_suffix="$(date +%s)_${RANDOM}"
     smoke_user="imagegen_smoke_${smoke_suffix}"
-    smoke_key="cc_smoke_$(openssl rand -hex 24)"
-    create_identity "$server_id" "$smoke_user" "$smoke_key"
+    random_suffix="$(openssl rand -hex 32)"
+    smoke_key="$(create_identity "$server_id" "$smoke_user" "$random_suffix")"
+    if [[ "$smoke_key" != cc_*_* ]]; then
+      echo "failed to create a parseable smoke bot key" >&2
+      exit 1
+    fi
     umask 077
     printf '%s' "$smoke_key" > "$key_file"
     ;;

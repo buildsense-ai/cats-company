@@ -18,6 +18,16 @@ fi
 mkdir -p "$run_dir/generate" "$run_dir/edit"
 cp "$root/compose/imagegen-smoke-generate.json" "$run_dir/generate-request.json"
 
+preflight_status="$(curl --silent --output "$run_dir/auth-preflight.json" --write-out '%{http_code}' \
+  -H "Authorization: Bearer $(cat "$key_file")" \
+  -H 'Content-Type: application/json' \
+  --data '{}' \
+  http://127.0.0.1:16061/v1/images/generations)"
+if [[ "$preflight_status" != "400" ]]; then
+  echo "imagegen Bearer authentication preflight returned HTTP $preflight_status" >&2
+  exit 1
+fi
+
 docker run --rm --network host \
   -v "$skill_dir:/opt/imagegen:ro" \
   -v "$key_file:/run/imagegen-key:ro" \
