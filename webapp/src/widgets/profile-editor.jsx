@@ -8,7 +8,7 @@ import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules'
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import {
   ArrowLeft,
-  Bell,
+  BellRing,
   BrainCircuit,
   Check,
   ChevronRight,
@@ -247,7 +247,7 @@ export default function ProfileEditor({
               <h4 id="mobile-settings-app-title">应用</h4>
               <div className="oc-profile-mobile-home-card">
                 <button type="button" onClick={() => setMobilePane('notifications')}>
-                  <span className="oc-profile-mobile-home-icon" aria-hidden="true"><Bell size={24} /></span>
+                  <span className="oc-profile-mobile-home-icon" aria-hidden="true"><BellRing size={24} /></span>
                   <span>消息通知</span>
                   <ChevronRight size={21} aria-hidden="true" />
                 </button>

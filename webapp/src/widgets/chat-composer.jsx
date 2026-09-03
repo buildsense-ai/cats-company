@@ -749,6 +749,7 @@ export default function ChatComposer({
           <textarea
             {...textareaProps}
             ref={setInputNode}
+            data-cc-focus-group="true"
             className={`v3-composer-input${showVoicePreview ? ' is-voice-preview' : ''}${voicePreviewPending ? ' is-voice-pending' : ''}`}
             aria-label={textareaProps['aria-label'] || placeholder || '消息'}
             name={textareaProps.name || 'message'}

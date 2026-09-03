@@ -1372,7 +1372,7 @@ export default function AgentStoreModal({
       {/* Removed arbitrary background hardcoding to allow inheritance from the global .oc-modal V3 matrix */}
       <div
         ref={dialogRef}
-        className={`oc-modal cc-agent-manager${tab === 'manage' ? ' cc-agent-manager-manage' : ''}`}
+        className={`oc-modal cc-agent-manager cc-secondary-interface${tab === 'manage' ? ' cc-agent-manager-manage' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="cc-agent-manager-title"
@@ -1382,7 +1382,7 @@ export default function AgentStoreModal({
         <div className="oc-modal-header cc-agent-manager-header">
           <div className="cc-agent-manager-nav">
             <h3 id="cc-agent-manager-title" className="cc-agent-manager-title">
-              <Bot size={17} /> AI 助手管理
+              <Bot size={22} strokeWidth={1.8} /> AI 助手管理
             </h3>
           </div>
           <div className="cc-agent-manager-header-actions">

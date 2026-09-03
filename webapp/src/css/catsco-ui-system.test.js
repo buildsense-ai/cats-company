@@ -7,6 +7,8 @@ const openchatCss = readFileSync(resolve(process.cwd(), 'src/css/openchat-theme.
   .replace(/\r\n?/g, '\n');
 const searchOverlayCss = readFileSync(resolve(process.cwd(), 'src/css/search-overlay.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
+const focusPolicyCss = readFileSync(resolve(process.cwd(), 'src/css/catsco-focus-policy.css'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 const liquidGreenCss = readFileSync(resolve(process.cwd(), 'src/css/catsco-liquid-green.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
 const brandAssetPath = resolve(process.cwd(), 'public/catsco-brand-mark.webp');
@@ -176,6 +178,7 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor(':root')).toContain('--cc-helper-text: color-mix(in srgb, var(--cc-text) 58%, transparent);');
     expect(ruleFor(':root')).toContain('--cc-placeholder: color-mix(in srgb, var(--cc-text) 46%, transparent);');
     expect(ruleFor(':root')).toContain('--cc-focus-ring: #656a73;');
+    expect(ruleFor(':root')).toContain('--cc-focus-border: color-mix(in srgb, var(--cc-text) 34%, var(--cc-border));');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-border: #2d2d2f;');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-border-strong: #3a3a3d;');
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-control-surface: #2c2c2f;');
@@ -236,6 +239,14 @@ describe('CatsCo shell styling', () => {
     expect(css).toMatch(/button\[data-cc-pointer-focus='true'\]:focus-visible,[\s\S]*?outline: none;/);
     expect(ruleFor('button:focus-visible,\n[tabindex]:focus-visible'))
       .toContain('outline: 2px solid var(--cc-focus-ring);');
+  });
+
+  it('uses an inset focus treatment without bright external frames', () => {
+    expect(focusPolicyCss).toContain(":focus-visible:not([data-cc-pointer-focus='true']):not([data-cc-focus-group='true'])");
+    expect(focusPolicyCss).toContain('outline: 0 !important;');
+    expect(focusPolicyCss).toContain('outline-offset: 0 !important;');
+    expect(focusPolicyCss).toContain('box-shadow: inset 0 0 0 1px var(--cc-focus-border, var(--cc-border-strong)) !important;');
+    expect(focusPolicyCss).not.toMatch(/outline:\s*[23]px\s+solid\s+(?:#fff|white|var\(--cc-focus-ring\))/i);
   });
 
   it('uses the optimized formal brand asset wherever the shared mark is rendered', () => {
@@ -400,6 +411,39 @@ describe('CatsCo shell styling', () => {
     expect(dangerRule).toContain('color: var(--v3-text-main);');
     expect(confirmRule).toContain('background: #f3f3f3;');
     expect(confirmRule).not.toContain('#dc2626');
+  });
+
+  it('keeps tag editor actions round, legible, and responsive', () => {
+    const addRule = ruleIn(openchatCss, '.cloud-artifact-tag-add');
+    const addSurfaceRule = ruleIn(openchatCss, '.cloud-artifact-tag-add::before');
+    const doneRule = ruleIn(openchatCss, '.cloud-artifact-tag-done');
+    const addHoverSurfaceRule = ruleIn(
+      openchatCss,
+      '.cloud-artifact-tag-add:hover:not(:disabled)::before,\n.cloud-artifact-tag-add:focus-visible::before',
+    );
+    const doneHoverRule = ruleIn(
+      openchatCss,
+      '.cloud-artifact-tag-done:hover:not(:disabled),\n.cloud-artifact-tag-done:focus-visible',
+    );
+    const addActiveSurfaceRule = ruleIn(openchatCss, '.cloud-artifact-tag-add:active:not(:disabled)::before');
+    const removeRule = ruleIn(
+      openchatCss,
+      '.cloud-artifact-tag button:hover:not(:disabled),\n.cloud-artifact-tag button:active:not(:disabled)',
+    );
+
+    expect(addRule).toContain('width: 34px;');
+    expect(addRule).toContain('height: 34px;');
+    expect(addRule).toContain('border-radius: 50%;');
+    expect(addSurfaceRule).toContain('inset: 5px;');
+    expect(addSurfaceRule).toContain('border-radius: 50%;');
+    expect(doneRule).toContain('color: var(--v3-text-muted);');
+    expect(addHoverSurfaceRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 14%, transparent);');
+    expect(doneHoverRule).toContain('color: var(--v3-text-main);');
+    expect(doneHoverRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 14%, transparent);');
+    expect(addActiveSurfaceRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 22%, transparent);');
+    expect(addActiveSurfaceRule).toContain('transform: scale(0.92);');
+    expect(removeRule).toContain('color: var(--v3-text-main);');
+    expect(removeRule).toContain('background: transparent;');
   });
 
   it('renders video thumbnails in a compact, centered viewport while previews retain the source', () => {
@@ -2087,40 +2131,40 @@ describe('CatsCo shell styling', () => {
       '.cloud-artifact-item:hover,\n.cloud-artifact-item:focus-within',
     );
     const mainHoverRule = ruleIn(openchatCss, '.cloud-artifact-main:hover');
-    const scopeWrapRule = ruleIn(openchatCss, '.cloud-artifacts-scope-select');
-    const scopeRule = ruleIn(openchatCss, '.cloud-artifacts-scope-select .v3-custom-model-select-trigger');
-    const scopeActiveRule = ruleIn(
+    const filterTriggerRule = ruleIn(openchatCss, '.cloud-artifact-filter-trigger');
+    const filterActiveRule = ruleIn(
       openchatCss,
-      '.cloud-artifacts-scope-select .v3-custom-model-select-trigger:hover,\n.cloud-artifacts-scope-select .v3-custom-model-select-trigger[aria-expanded="true"]',
+      '.cloud-artifact-filter-trigger:hover,\n.cloud-artifact-filter-trigger[aria-expanded="true"]',
     );
-    const scopeFocusRule = ruleIn(
-      openchatCss,
-      '.cloud-artifacts-scope-select .v3-custom-model-select-trigger:focus-visible',
-    );
-    const scopeOptionsRule = ruleIn(openchatCss, '.cloud-artifacts-scope-options');
-    const scopeSelectedRule = ruleIn(
-      openchatCss,
-      '.cloud-artifacts-scope-options .v3-custom-model-select-option:is(:hover, .is-active)',
-    );
+    const filterFocusRule = ruleIn(openchatCss, '.cloud-artifact-filter-trigger:focus-visible');
+    const filterPopoverRule = ruleIn(openchatCss, '.cloud-artifact-filter-popover');
+    const filterScopeRule = ruleIn(openchatCss, '.cloud-artifact-filter-scope-options');
+    const filterScopeSelectedRule = ruleIn(openchatCss, '.cloud-artifact-filter-scope-options label.is-selected');
+    const filterTagSelectedRule = ruleIn(openchatCss, '.cloud-artifact-filter-tag-item.is-selected');
+    const filterTagActionsRule = ruleIn(openchatCss, '.cloud-artifact-filter-tag-actions');
+    const filterFooterRule = ruleIn(openchatCss, '.cloud-artifact-filter-popover-footer');
 
     expect(itemRule).toContain('transition: background-color 160ms ease;');
     expect(hoverRule).toContain('background: var(--v3-bg-message-hover);');
     expect(mainHoverRule).toContain('background: transparent;');
-    expect(scopeWrapRule).toContain('width: 96px;');
-    expect(scopeWrapRule).toContain('min-width: 96px;');
-    expect(scopeRule).toContain('width: 100%;');
-    expect(scopeRule).toContain('border: 1px solid transparent;');
-    expect(scopeRule).toContain('background: var(--cc-control-surface);');
-    expect(scopeActiveRule).toContain('border-color: transparent !important;');
-    expect(scopeActiveRule).toContain('background: var(--cc-selected) !important;');
-    expect(scopeFocusRule).toContain('border-color: transparent !important;');
-    expect(scopeFocusRule).toContain('background: var(--cc-selected) !important;');
-    expect(scopeFocusRule).toContain('box-shadow: none !important;');
-    expect(scopeOptionsRule).toContain('min-width: 96px;');
-    expect(scopeOptionsRule).toContain('border: 1px solid var(--cc-text-secondary);');
-    expect(scopeOptionsRule).toContain('background: var(--cc-panel);');
-    expect(scopeSelectedRule).toContain('background: var(--cc-hover);');
-    expect(scopeSelectedRule).not.toContain('var(--v3-accent');
+    expect(filterTriggerRule).toContain('min-width: 84px;');
+    expect(filterTriggerRule).toContain('height: 36px;');
+    expect(filterTriggerRule).toContain('border: 1px solid transparent;');
+    expect(filterTriggerRule).toContain('background: var(--cc-control-surface);');
+    expect(filterActiveRule).toContain('background: var(--cc-selected);');
+    expect(filterFocusRule).toContain('border-color: var(--cc-focus-border);');
+    expect(filterPopoverRule).toContain('z-index: 2200;');
+    expect(filterPopoverRule).toContain('background: var(--cc-history-panel-bg);');
+    expect(filterPopoverRule).toContain('border: 1px solid var(--cc-border);');
+    expect(filterPopoverRule).toContain('border-radius: var(--cc-radius-md);');
+    expect(filterScopeRule).toContain('padding: 2px;');
+    expect(filterScopeRule).toContain('border: 0;');
+    expect(filterScopeSelectedRule).toContain('background: var(--cc-selected);');
+    expect(filterScopeSelectedRule).not.toContain('var(--v3-accent');
+    expect(filterTagSelectedRule).toContain('box-shadow: inset 2px 0 0 var(--cc-text-secondary);');
+    expect(filterTagActionsRule).toContain('opacity: 0;');
+    expect(filterTagActionsRule).toContain('visibility: hidden;');
+    expect(filterFooterRule).toContain('min-height: 40px;');
   });
 
   it('removes file preview sheet dismissal transitions for reduced motion', () => {

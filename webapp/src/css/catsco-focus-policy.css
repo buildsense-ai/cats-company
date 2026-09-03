@@ -1,0 +1,39 @@
+/*
+ * Global focus treatment: keyboard focus stays visible without adding a
+ * bright external frame or changing the control's measured footprint.
+ */
+html body :is(
+  button,
+  a[href],
+  input,
+  textarea,
+  select,
+  summary,
+  [contenteditable='true'],
+  [role='button'],
+  [role='checkbox'],
+  [role='radio'],
+  [role='tab'],
+  [role='menuitem'],
+  [tabindex]
+):focus-visible:not([data-cc-pointer-focus='true']):not([data-cc-focus-group='true']) {
+  outline: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: inset 0 0 0 1px var(--cc-focus-border, var(--cc-border-strong)) !important;
+}
+
+html body :is(
+  button,
+  [role='button'],
+  [tabindex]
+)[data-cc-pointer-focus='true']:focus-visible {
+  outline: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+html body [data-cc-focus-group='true']:focus-visible {
+  outline: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Bug, Plus, X } from 'lucide-react';
+import { Cat, Plus, X } from 'lucide-react';
 import { api } from '../api';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 import {
@@ -212,7 +212,7 @@ export default function FeedbackModal({ onClose, user }) {
         ) : (
           <form className="oc-modal-body" onSubmit={handleSubmit}>
             <div className="oc-feedback-intro">
-              <span className="oc-feedback-intro-icon" aria-hidden="true"><Bug /></span>
+              <span className="oc-feedback-intro-icon" aria-hidden="true"><Cat /></span>
               <div><h4>你的每一条反馈，都在帮助 CatsCo 变得更好</h4><p>请描述遇到的问题或建议，我们会认真查看。</p></div>
             </div>
 

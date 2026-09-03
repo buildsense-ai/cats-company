@@ -85,7 +85,9 @@ describe('ChatComposer', () => {
     const hint = composer.querySelector('.v3-composer-hint');
 
     expect(row.querySelector('.v3-attachment-picker > button.v3-composer-plus')).not.toBeNull();
-    expect(row.querySelector('textarea.v3-composer-input')).not.toBeNull();
+    const input = row.querySelector('textarea.v3-composer-input');
+    expect(input).not.toBeNull();
+    expect(input.getAttribute('data-cc-focus-group')).toBe('true');
     expect(row.querySelector('.v3-agent-picker')).toBeNull();
     expect(row.querySelector('button.v3-send')).not.toBeNull();
     expect(hint.textContent).toBe(CHAT_COMPOSER_HINT);

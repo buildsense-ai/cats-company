@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, X } from 'lucide-react';
+import { Search, UsersRound, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
 import { inviteMemberId, mergeInviteMemberCandidates } from '../utils/invite-member-candidates';
@@ -110,14 +110,19 @@ export default function CreateGroup({
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <section
-        className="oc-modal oc-collaboration-modal oc-create-group-dialog"
+        className="oc-modal oc-collaboration-modal oc-create-group-dialog cc-secondary-interface"
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-group-title"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="oc-collaboration-modal-header">
-          <h2 id="create-group-title">{isTaskUpgrade ? '协作管理' : '创建群聊'}</h2>
+          <h2 id="create-group-title">
+            <span className="oc-collaboration-modal-title-icon" aria-hidden="true">
+              <UsersRound size={22} strokeWidth={1.8} />
+            </span>
+            <span>{isTaskUpgrade ? '协作管理' : '创建群聊'}</span>
+          </h2>
           <button type="button" className="oc-modal-close" onClick={onClose} aria-label="关闭">
             <X size={18} strokeWidth={1.8} />
           </button>

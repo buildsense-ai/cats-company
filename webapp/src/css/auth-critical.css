@@ -110,6 +110,7 @@
   --cc-accent-hover: #219f7e;
   --cc-accent-soft: rgba(41, 188, 149, 0.16);
   --cc-focus-ring: #656a73;
+  --cc-focus-border: color-mix(in srgb, var(--cc-text) 34%, var(--cc-border));
   --cc-danger: #e05757;
   --cc-code: #f5f5f6;
   --cc-radius-md: 8px;

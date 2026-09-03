@@ -98,6 +98,143 @@
   color: var(--cc-text);
 }
 
+/* Neutral secondary-interface language: state is communicated by contrast,
+ * not by a theme-specific accent hue. */
+.cc-settings-secondary-surface .oc-feedback-intro-icon {
+  border: 1px solid var(--cc-border);
+  background: #fff;
+  color: #202124;
+  box-shadow: none;
+}
+
+.cc-settings-secondary-surface .oc-notification-icon {
+  border: 1px solid var(--cc-border);
+  background: var(--cc-panel);
+  color: var(--cc-text-secondary);
+  box-shadow: none;
+}
+
+.oc-collaboration-modal-header {
+  min-height: 38px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--cc-border);
+}
+
+.oc-collaboration-modal-header h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.oc-collaboration-modal-title-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--cc-text-secondary);
+}
+
+.oc-friend-search-control {
+  grid-template-columns: minmax(0, 1fr) 84px;
+  padding-right: 0;
+}
+
+.oc-friend-search-mode-select {
+  display: flex;
+  width: 84px;
+  height: 100%;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.oc-friend-search-mode-select .v3-custom-model-select-trigger,
+.oc-friend-search-mode-select .v3-custom-model-select-trigger:hover:not(:disabled),
+.oc-friend-search-mode-select .v3-custom-model-select-trigger:active:not(:disabled) {
+  width: 84px;
+  height: 42px;
+  min-height: 42px;
+  gap: 6px;
+  padding: 0 12px;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--cc-text-secondary);
+}
+
+.oc-friend-search-mode-select .v3-custom-model-select-trigger > span {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.oc-friend-search-mode-select .v3-custom-model-select-chevron {
+  width: 14px;
+  height: 14px;
+}
+
+.oc-friend-search-mode-select .v3-custom-model-select-trigger:hover:not(:disabled) {
+  color: var(--cc-text);
+}
+
+.oc-friend-search-mode-menu .v3-custom-model-select-option.is-active,
+.oc-friend-search-mode-menu .v3-custom-model-select-option:hover,
+.oc-friend-search-mode-menu .v3-custom-model-select-option:focus-visible {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.oc-friend-search-control,
+.oc-friend-search-submit {
+  min-height: 42px;
+  height: 42px;
+}
+
+.oc-friend-search-submit {
+  align-self: stretch;
+}
+
+/* Appearance choices keep their existing geometry while removing the green
+ * (or blue/teal) selected rail and checkmark. */
+.oc-theme-option.is-selected,
+.cc-settings-secondary-surface .oc-theme-option.is-selected {
+  border-color: var(--cc-border-strong) !important;
+  background: color-mix(in srgb, var(--cc-text) 8%, var(--cc-panel)) !important;
+  box-shadow: inset 3px 0 0 var(--cc-text-secondary) !important;
+}
+
+.oc-theme-option-state,
+.cc-settings-secondary-surface .oc-theme-option-state {
+  color: var(--cc-text-secondary) !important;
+}
+
+/* Agent manager, friend manager and group manager share the same restrained
+ * header material even though the Agent surface is wider. */
+.cc-secondary-interface {
+  border-color: var(--cc-border) !important;
+  background: var(--cc-panel) !important;
+  color: var(--cc-text) !important;
+}
+
+.cc-secondary-interface .cc-agent-manager-title svg {
+  color: var(--cc-text-secondary) !important;
+}
+
+.cc-secondary-interface .cc-agent-manager-header::after {
+  background: var(--cc-border);
+}
+
+@media (max-width: 768px) {
+  .oc-theme-option.is-selected,
+  .cc-settings-secondary-surface .oc-theme-option.is-selected {
+    box-shadow: inset 4px 0 0 var(--cc-text-secondary) !important;
+  }
+}
+
 .catsco-download-modal .catsco-download-card-primary:hover,
 .catsco-download-modal .catsco-download-card.catsco-device-card.is-preferred:hover {
   border-color: var(--cc-border);

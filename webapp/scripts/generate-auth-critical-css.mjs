@@ -27,6 +27,7 @@ const AUTH_ROOT_PROPERTIES = new Set([
   '--cc-accent-hover',
   '--cc-accent-soft',
   '--cc-focus-ring',
+  '--cc-focus-border',
   '--cc-danger',
   '--cc-code',
   '--cc-radius-md',

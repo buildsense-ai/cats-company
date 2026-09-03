@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Bell,
+  BellRing,
   CircleAlert,
   Download,
   LoaderCircle,
@@ -276,7 +276,7 @@ export default function NotificationSettings({ user }) {
     <div className="oc-settings-section oc-notification-settings">
       <div className="oc-settings-section-title">消息通知</div>
       <div className="oc-notification-row">
-        <span className="oc-notification-icon" aria-hidden="true"><Bell size={18} /></span>
+        <span className="oc-notification-icon" aria-hidden="true"><BellRing size={18} /></span>
         <div className="oc-settings-list-text">
           <div className="oc-notification-label">接收消息通知</div>
           <div className="oc-settings-secondary">
