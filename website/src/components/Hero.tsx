@@ -53,7 +53,7 @@ export function Hero() {
     >
       <img
         className="hero-watermark"
-        src="/catsco-logo-mask.png"
+        src="/catsco-logo-mask.webp"
         alt=""
         width="5140"
         height="3271"
@@ -62,7 +62,7 @@ export function Hero() {
       />
       <img
         className="hero-watermark hero-watermark-hover"
-        src="/catsco-logo-mask.png"
+        src="/catsco-logo-mask.webp"
         alt=""
         width="5140"
         height="3271"

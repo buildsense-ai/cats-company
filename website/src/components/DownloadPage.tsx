@@ -1,3 +1,4 @@
+import '../styles/pages/content.css'
 import { Icon } from './Icons'
 import { appLoginUrl } from '../site-links'
 

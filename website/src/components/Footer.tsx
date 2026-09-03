@@ -42,11 +42,12 @@ export function Footer() {
     <footer id="developers" className="final-footer">
       <img
         className="final-footer-watermark"
-        src="/catsco-logo-mask.png"
+        src="/catsco-logo-mask.webp"
         alt=""
         width="5140"
         height="3271"
         aria-hidden="true"
+        loading="lazy"
         decoding="async"
       />
 

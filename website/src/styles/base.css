@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 :root {
-  font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* Self-hosted variable fonts (see main.tsx); system CJK fonts cover the swap window. */
+  font-family: "Inter Variable", Inter, "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #15231f;
   background: #f8f8f8;
   font-synthesis: none;

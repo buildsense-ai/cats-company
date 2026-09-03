@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { motion, useMotionValueEvent, useReducedMotion, useScroll, useTransform } from 'framer-motion'
+import { m, useMotionValueEvent, useReducedMotion, useScroll, useTransform } from 'framer-motion'
 import { Reveal } from './Reveal'
 import { ResourceConvergenceScene } from './ResourceConvergence'
 
@@ -18,7 +18,7 @@ const stories: WorkflowStoryData[] = [
     title: '为每项工作，配置专属 AI 员工',
     body: '你可以为不同工作分别创建专属 AI 员工，设置它的名称、工作方向、需要使用的技能和运行方式。完成配置后，它会按照你确认的职责和工作边界处理对应任务，方便你按工作内容进行分工和管理。',
     imageSide: 'left',
-    videoSrc: '/workflow-ai-employee.mp4',
+    videoSrc: '/workflow-ai-employee.mp4?v=5',
     posterTime: 14,
     immersive: 'copy-left',
   },
@@ -26,7 +26,7 @@ const stories: WorkflowStoryData[] = [
     title: '从目标到成果，全程清晰可见',
     body: '交付目标后，CatsCo 会先把任务拆成清晰步骤，整理当前进度和待确认事项，再调用需要的工具逐步推进。过程中每一步都能回看，完成后把报告、文件或其他成果带回当前会话，方便继续修改和使用。',
     imageSide: 'left',
-    videoSrc: '/workflow-goal-delivery.mp4?v=3',
+    videoSrc: '/workflow-goal-delivery.mp4?v=5',
     posterTime: 5,
     videoFit: 'raw',
     immersive: 'copy-right',
@@ -35,7 +35,7 @@ const stories: WorkflowStoryData[] = [
     title: '一个 AI 员工，连接所有授权设备',
     body: '同一项任务可以在已授权且在线的电脑、服务器和云端环境中继续推进。CatsCo 会保留当前目标、已完成步骤和相关资料，减少切换设备、传递文件和重复补充背景的麻烦，让工作在不同环境之间自然接上。',
     imageSide: 'left',
-    videoSrc: '/workflow-device-connection.mp4',
+    videoSrc: '/workflow-device-connection.mp4?v=5',
     posterTime: 5,
     videoFit: 'raw',
     immersive: 'copy-left',
@@ -44,12 +44,21 @@ const stories: WorkflowStoryData[] = [
     title: '工作成果，统一留在云端',
     body: '完成后的文件、摘要和需要确认的事项会统一回到当前任务。你可以在云端查看已交付内容，核对关键数字和口径，再继续修改或下载，需要时也能回到同一项任务继续使用，避免在不同设备之间反复寻找文件。',
     imageSide: 'left',
-    videoSrc: '/workflow-cloud-handoff.mp4',
+    videoSrc: '/workflow-cloud-handoff.mp4?v=5',
     posterTime: 5,
     videoFit: 'raw',
     immersive: 'copy-right',
   },
 ]
+
+function webmSource(src: string) {
+  const [path, query] = src.split('?')
+  return `${path.replace(/\.mp4$/, '.webm')}${query ? `?${query}` : ''}`
+}
+
+function posterSource(src: string) {
+  return `${src.split('?')[0].replace(/\.mp4$/, '-poster.webp')}`
+}
 
 function formatVideoTime(value: number) {
   if (!Number.isFinite(value)) return '0:00'
@@ -159,7 +168,7 @@ function WorkflowPreviewVideo({
       <video
         ref={videoRef}
         className={`workflow-story-video${fit ? ` workflow-story-video-${fit}` : ''}`}
-        src={src}
+        poster={posterSource(src)}
         aria-label={`${title}演示视频`}
         disablePictureInPicture
         loop
@@ -170,7 +179,10 @@ function WorkflowPreviewVideo({
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-      />
+      >
+        <source src={webmSource(src)} type="video/webm" />
+        <source src={src} type="video/mp4" />
+      </video>
 
       <button
         className="workflow-video-start"
@@ -332,11 +344,11 @@ function ImmersiveWorkflowStory({ story }: { story: WorkflowStoryData }) {
       className={`workflow-story workflow-story-immersive workflow-story-immersive-${copySide}`}
     >
       <div className="workflow-story-immersive-stage">
-        <motion.div
+        <m.div
           className="workflow-story-immersive-media"
           style={animateScroll ? { width: mediaWidth, left: mediaLeft } : undefined}
         >
-          <motion.div
+          <m.div
             className="workflow-story-immersive-media-content"
             initial={animateScroll ? { opacity: 0, scale: 0.965 } : false}
             whileInView={animateScroll ? { opacity: 1, scale: 1 } : undefined}
@@ -349,22 +361,22 @@ function ImmersiveWorkflowStory({ story }: { story: WorkflowStoryData }) {
               posterTime={story.posterTime ?? 0}
               fit={story.videoFit}
             />
-          </motion.div>
-        </motion.div>
+          </m.div>
+        </m.div>
 
         <div className="workflow-story-copy">
-          <motion.h2 style={animateScroll ? {
+          <m.h2 style={animateScroll ? {
             opacity: titleLocked ? 1 : titleOpacity,
             x: titleLocked ? 0 : titleX,
           } : undefined}>
             {story.title}
-          </motion.h2>
-          <motion.p style={animateScroll ? {
+          </m.h2>
+          <m.p style={animateScroll ? {
             opacity: bodyLocked ? 1 : bodyOpacity,
             x: bodyLocked ? 0 : bodyX,
           } : undefined}>
             {story.body}
-          </motion.p>
+          </m.p>
         </div>
       </div>
     </article>

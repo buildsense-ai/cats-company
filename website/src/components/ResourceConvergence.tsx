@@ -1,5 +1,5 @@
 import {
-  motion,
+  m,
   useMotionValue,
   useMotionValueEvent,
   useReducedMotion,
@@ -259,12 +259,12 @@ function CapabilityCard({
 
   return (
     <div className="capability-anchor">
-      <motion.div
+      <m.div
         className="capability-flight"
         style={reduceMotion ? undefined : { x, y, zIndex: depthZIndex[capability.depth] }}
       >
         <div className="capability-drift" data-drift={index % 6}>
-          <motion.article
+          <m.article
             className="capability-card"
             data-depth={capability.depth}
             data-kind={capability.kind}
@@ -291,9 +291,9 @@ function CapabilityCard({
               <strong>{capability.title}</strong>
               <span>{capability.description}</span>
             </div>
-          </motion.article>
+          </m.article>
         </div>
-      </motion.div>
+      </m.div>
     </div>
   )
 }
@@ -351,8 +351,8 @@ export function ResourceConvergenceScene() {
     <section ref={sectionRef} className="resource-scroll-section" aria-labelledby="resource-title">
       <div className="resource-sticky">
         <div className="resource-stage">
-          <motion.div className="resource-orbit resource-orbit-outer" style={reduceMotion ? { opacity: 0 } : { opacity: orbitOpacity }} aria-hidden="true" />
-          <motion.div className="resource-orbit resource-orbit-inner" style={reduceMotion ? { opacity: 0 } : { opacity: orbitOpacity }} aria-hidden="true" />
+          <m.div className="resource-orbit resource-orbit-outer" style={reduceMotion ? { opacity: 0 } : { opacity: orbitOpacity }} aria-hidden="true" />
+          <m.div className="resource-orbit resource-orbit-inner" style={reduceMotion ? { opacity: 0 } : { opacity: orbitOpacity }} aria-hidden="true" />
 
           <div className="resource-motion-layer">
             {capabilities.map((capability, index) => (
@@ -379,32 +379,32 @@ export function ResourceConvergenceScene() {
                   </filter>
                 </defs>
               </svg>
-              <motion.img
+              <m.img
                 className="resource-logo-outline"
-                src="/catsco-logo.png"
+                src="/catsco-logo.webp"
                 alt=""
-                width="5580"
-                height="2093"
+                width="2800" height="1050" decoding="async"
                 style={reduceMotion ? { opacity: 0 } : { opacity: logoOutlineOpacity }}
               />
-              <motion.img
+              <m.img
                 className="resource-logo-color"
-                src="/catsco-logo.png"
+                src="/catsco-logo.webp"
                 alt=""
-                width="5580"
-                height="2093"
+                width="2800"
+                height="1050"
+                decoding="async"
                 style={reduceMotion ? { clipPath: 'inset(0% 0 0 0)' } : { clipPath: logoReveal }}
               />
             </div>
           </div>
 
-          <motion.div
+          <m.div
             className="resource-final-copy"
             style={reduceMotion ? { opacity: 1, y: 0 } : { opacity: finalOpacity, y: finalY }}
           >
             <h2 id="resource-title">One AI employee.</h2>
             <p>Every authorized environment.</p>
-          </motion.div>
+          </m.div>
         </div>
       </div>
     </section>

@@ -1,3 +1,4 @@
+import '../styles/pages/pricing.css'
 import { useState } from 'react'
 import { appLoginUrl } from '../site-links'
 import { Icon } from './Icons'

@@ -76,7 +76,7 @@ export function Icon({ name, ...props }: IconProps) {
 export function BrandMark({ className = '' }: { className?: string }) {
   return (
     <span className={`brand-mark ${className}`} aria-hidden="true">
-      <img src="/catsco-logo.png" alt="" width="5580" height="2093" decoding="async" />
+      <img src="/catsco-brand-mark.webp" alt="" width="256" height="96" decoding="async" />
     </span>
   )
 }

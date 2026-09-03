@@ -20,4 +20,15 @@ export default defineConfig({
   preview: {
     strictPort: true,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Stable vendor chunks: framework code stays cached across site deploys.
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-dom/client'],
+          'vendor-motion': ['framer-motion'],
+        },
+      },
+    },
+  },
 })
