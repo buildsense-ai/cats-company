@@ -56,6 +56,11 @@ Compatibility rules:
 - Preserve OpenAI-compatible response bodies, usage data, errors,
   `Content-Type`, `Retry-After`, and `X-Request-Id`.
 - Keep provider credentials server-side. Never return or log them.
+- Configure one to three upstream relays. One provider makes one upstream
+  submission; two or three enable the bounded first-valid-result race.
+- A successfully forwarded parameter is still subject to provider compliance.
+  For example, an older Relay may return an adaptive pixel size even when the
+  requested `size` field was preserved.
 
 Runtime variables used by the Skill:
 

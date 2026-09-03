@@ -47,6 +47,7 @@ server/cmd/uploads/
 # Local AI tooling
 .claude/
 CLAUDE.md
+.venv*/
 packages/skills/scripts/__pycache__/
 __pycache__/
 *.py[cod]
