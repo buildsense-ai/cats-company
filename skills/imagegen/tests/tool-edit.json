@@ -1,0 +1,6 @@
+{
+  "prompt": "Use case: precise-object-edit\nInput images: Image 1: edit target\nPrimary request: replace only the background with a warm neutral studio wall\nConstraints: keep the product unchanged",
+  "referenced_image_paths": [
+    "fixture.png"
+  ]
+}

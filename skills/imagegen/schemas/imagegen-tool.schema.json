@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catsco.cc/skills/imagegen/imagegen-tool.schema.json",
+  "title": "Codex-compatible imagegen tool input",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "referenced_image_paths": {
+      "anyOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "num_last_images_to_include": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "required": ["prompt"],
+  "allOf": [
+    {
+      "not": {
+        "required": [
+          "referenced_image_paths",
+          "num_last_images_to_include"
+        ]
+      }
+    }
+  ]
+}

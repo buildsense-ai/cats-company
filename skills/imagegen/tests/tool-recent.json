@@ -1,0 +1,4 @@
+{
+  "prompt": "Use case: identity-preserve\nInput images: Image 1: edit target\nPrimary request: keep the subject and change only the lighting",
+  "num_last_images_to_include": 1
+}
