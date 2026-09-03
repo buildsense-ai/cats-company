@@ -127,4 +127,29 @@ describe('service worker API routing', () => {
     expect(targetWindow.focus).toHaveBeenCalledTimes(1);
     expect(self.clients.openWindow).not.toHaveBeenCalled();
   });
+
+  test('opens the notification target when no window already has that URL', async () => {
+    const unrelatedWindow = {
+      url: 'https://app.catsco.cc/conversations/unrelated',
+      navigate: vi.fn(),
+      focus: vi.fn(),
+    };
+    self.clients.matchAll = vi.fn().mockResolvedValue([unrelatedWindow]);
+    self.clients.openWindow = vi.fn();
+    await import('./sw');
+
+    const notificationClick = self.addEventListener.mock.calls
+      .find(([type]) => type === 'notificationclick')[1];
+    const event = {
+      notification: { close: vi.fn(), data: { url: '/conversations/notified' } },
+      waitUntil: vi.fn(),
+    };
+    notificationClick(event);
+    await event.waitUntil.mock.calls[0][0];
+
+    expect(unrelatedWindow.navigate).not.toHaveBeenCalled();
+    expect(unrelatedWindow.focus).not.toHaveBeenCalled();
+    expect(self.clients.openWindow)
+      .toHaveBeenCalledWith('https://app.catsco.cc/conversations/notified');
+  });
 });
