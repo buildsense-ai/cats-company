@@ -194,7 +194,7 @@ export function Team() {
               </p>
             </div>
 
-            <div className="team-avatar-field" aria-label="CatsCo 团队成员">
+            <div className="team-avatar-field" role="group" aria-label="CatsCo 团队成员">
               {teamMembers.map((member, index) => {
                 const style: AvatarStyle = {
                   '--avatar-index': index,
