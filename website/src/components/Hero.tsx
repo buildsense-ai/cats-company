@@ -4,28 +4,37 @@ import { appLoginUrl } from '../site-links'
 
 export function Hero() {
   const heroRef = useRef<HTMLElement>(null)
+  const pointerFrameRef = useRef<number | null>(null)
+  const pointerPositionRef = useRef({ clientX: 0, clientY: 0 })
 
   const handlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
     if (event.pointerType === 'touch') return
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
 
-    const hero = heroRef.current
-    if (!hero) return
+    pointerPositionRef.current = { clientX: event.clientX, clientY: event.clientY }
+    if (pointerFrameRef.current !== null) return
 
-    const bounds = hero.getBoundingClientRect()
-    const x = event.clientX - bounds.left
-    const y = event.clientY - bounds.top
-    const watermark = hero.querySelector<HTMLImageElement>('.hero-watermark')
-    const watermarkBounds = watermark?.getBoundingClientRect()
-    const centerX = bounds.width / 2
-    const centerY = bounds.height / 2
-    const shiftX = ((x - centerX) / Math.max(centerX, 1)) * 8
-    const shiftY = ((y - centerY) / Math.max(centerY, 1)) * 6
+    pointerFrameRef.current = window.requestAnimationFrame(() => {
+      pointerFrameRef.current = null
+      const hero = heroRef.current
+      if (!hero) return
 
-    hero.style.setProperty('--hero-pointer-x', `${watermarkBounds ? event.clientX - watermarkBounds.left : x}px`)
-    hero.style.setProperty('--hero-pointer-y', `${watermarkBounds ? event.clientY - watermarkBounds.top : y}px`)
-    hero.style.setProperty('--hero-shift-x', `${shiftX.toFixed(2)}px`)
-    hero.style.setProperty('--hero-shift-y', `${shiftY.toFixed(2)}px`)
+      const { clientX, clientY } = pointerPositionRef.current
+      const bounds = hero.getBoundingClientRect()
+      const x = clientX - bounds.left
+      const y = clientY - bounds.top
+      const watermark = hero.querySelector<HTMLImageElement>('.hero-watermark')
+      const watermarkBounds = watermark?.getBoundingClientRect()
+      const centerX = bounds.width / 2
+      const centerY = bounds.height / 2
+      const shiftX = ((x - centerX) / Math.max(centerX, 1)) * 8
+      const shiftY = ((y - centerY) / Math.max(centerY, 1)) * 6
+
+      hero.style.setProperty('--hero-pointer-x', `${watermarkBounds ? clientX - watermarkBounds.left : x}px`)
+      hero.style.setProperty('--hero-pointer-y', `${watermarkBounds ? clientY - watermarkBounds.top : y}px`)
+      hero.style.setProperty('--hero-shift-x', `${shiftX.toFixed(2)}px`)
+      hero.style.setProperty('--hero-shift-y', `${shiftY.toFixed(2)}px`)
+    })
   }
 
   const handlePointerEnter = () => {
@@ -33,6 +42,11 @@ export function Hero() {
   }
 
   const handlePointerLeave = () => {
+    if (pointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(pointerFrameRef.current)
+      pointerFrameRef.current = null
+    }
+
     const hero = heroRef.current
     if (!hero) return
 
