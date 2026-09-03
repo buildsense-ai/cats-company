@@ -1,4 +1,8 @@
-/* Styles needed to render the first viewport before the deferred home chunk. */
+.home-sections-deferred {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 5600px;
+}
+
 body:has(main > .hero-section) .site-header {
   border-bottom-color: rgba(255, 255, 255, 0.08);
   background: rgba(25, 25, 25, 0.94);
