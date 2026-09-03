@@ -406,6 +406,76 @@ func TestSTTHandlerForwardsACompleteDefiniteSnapshotBeforeLaterPartial(t *testin
 	}
 }
 
+func TestSTTHandlerResumesAfterIdleWarningWhenVoicedAudioArrives(t *testing.T) {
+	provider := &fakeSTTProvider{}
+	handler := NewSTTHandler(STTConfig{
+		Enabled:          true,
+		Provider:         "fake",
+		TicketTTL:        time.Minute,
+		MaxDuration:      150 * time.Second,
+		IdleTimeout:      80 * time.Millisecond,
+		IdleGrace:        200 * time.Millisecond,
+		FinalTimeout:     time.Second,
+		MaxConcurrent:    4,
+		HourlyAudioLimit: 24 * time.Minute,
+		DailyAudioLimit:  time.Hour,
+	}, provider)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/stt/sessions", authenticatedSTTHandler(handler.HandleSession, 9))
+	mux.HandleFunc("/api/stt/realtime", handler.HandleRealtime)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ticket := issueSTTTicket(t, server.URL)
+	conn, _, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/api/stt/realtime?ticket="+ticket,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider.mu.Lock()
+	stream := provider.sessions[0]
+	provider.mu.Unlock()
+
+	if _, warning, err := conn.ReadMessage(); err != nil || !strings.Contains(string(warning), `"type":"idle_warning"`) {
+		t.Fatalf("warning=%s err=%v", warning, err)
+	}
+
+	voiced := make([]byte, 3200)
+	for offset := 0; offset < len(voiced); offset += 2 {
+		voiced[offset] = 0x10
+		voiced[offset+1] = 0x27 // 10000 in little-endian PCM16.
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, voiced); err != nil {
+		t.Fatal(err)
+	}
+	if _, resumed, err := conn.ReadMessage(); err != nil || !strings.Contains(string(resumed), `"type":"idle_resumed"`) {
+		t.Fatalf("resumed=%s err=%v", resumed, err)
+	}
+
+	select {
+	case <-stream.finished:
+		t.Fatal("voiced PCM during the idle grace period ended the STT session")
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	if err := conn.WriteJSON(map[string]string{"type": "stop"}); err != nil {
+		t.Fatal(err)
+	}
+	stream.events <- STTEvent{Type: STTEventFinal}
+	_, terminal, err := conn.ReadMessage()
+	if err != nil || !strings.Contains(string(terminal), `"type":"final"`) {
+		t.Fatalf("terminal=%s err=%v", terminal, err)
+	}
+}
+
 func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 	provider := &fakeSTTProvider{}
 	handler := NewSTTHandler(STTConfig{

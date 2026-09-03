@@ -607,7 +607,9 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !now.Before(hardDeadlineAt):
 			stopReason = sttStopReasonHardTimeout
-		case !now.Before(idleDeadlineAt):
+		case idleGraceTimer == nil && !now.Before(idleDeadlineAt):
+			stopReason = sttStopReasonIdleTimeout
+		case idleGraceTimer != nil && !now.Before(idleGraceDeadlineAt):
 			stopReason = sttStopReasonIdleTimeout
 		}
 	}
