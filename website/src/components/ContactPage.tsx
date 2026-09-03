@@ -1,3 +1,5 @@
+import '../styles/pages/contact.css'
+import '../styles/pages/content.css'
 import { useEffect, useMemo, useRef, useState, type FocusEvent, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { Icon } from './Icons'
 

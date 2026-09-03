@@ -1,3 +1,4 @@
+import '../styles/pages/content.css'
 export function NotFoundPage() {
   return (
     <main id="main-content" className="content-page not-found-page">

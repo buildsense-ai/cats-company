@@ -1,3 +1,4 @@
+import '../styles/pages/content.css'
 type LegalPageProps = { kind: 'privacy' | 'terms' }
 
 const content = {

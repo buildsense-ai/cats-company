@@ -1,15 +1,10 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
+import { LazyMotion } from 'framer-motion'
 import { Capabilities } from './components/Capabilities'
 import { Comparison } from './components/Comparison'
-import { ContactPage } from './components/ContactPage'
-import { DownloadPage } from './components/DownloadPage'
 import { Footer } from './components/Footer'
 import { Header } from './components/Header'
 import { Hero } from './components/Hero'
-import { LegalPage } from './components/LegalPage'
-import { LoginPage } from './components/LoginPage'
-import { NotFoundPage } from './components/NotFoundPage'
-import { PricingPage } from './components/PricingPage'
 import { ResourceConvergence } from './components/ResourceConvergence'
 import { TaskDemoSection } from './components/TaskDemoSection'
 import { Team } from './components/Team'
@@ -17,6 +12,20 @@ import { WorkEnvironment } from './components/WorkEnvironment'
 import { WorkflowSection } from './components/WorkflowSection'
 import { WorkflowStories } from './components/WorkflowStories'
 import { applyRouteMetadata, resolveSiteRoute, type SitePage } from './site-routes'
+
+// Non-home routes are split into separate chunks so the landing page ships
+// the smallest possible initial bundle. Home sections stay synchronous to
+// avoid layout shift and keep hash-anchor navigation reliable.
+const AsyncPricingPage = lazy(() => import('./components/PricingPage').then((m) => ({ default: m.PricingPage })))
+const AsyncDownloadPage = lazy(() => import('./components/DownloadPage').then((m) => ({ default: m.DownloadPage })))
+const AsyncContactPage = lazy(() => import('./components/ContactPage').then((m) => ({ default: m.ContactPage })))
+const AsyncLegalPage = lazy(() => import('./components/LegalPage').then((m) => ({ default: m.LegalPage })))
+const AsyncLoginPage = lazy(() => import('./components/LoginPage').then((m) => ({ default: m.LoginPage })))
+const AsyncNotFoundPage = lazy(() => import('./components/NotFoundPage').then((m) => ({ default: m.NotFoundPage })))
+
+// framer-motion feature set is split into an async chunk; strict mode throws if
+// any component still uses full `motion.*` elements instead of `m.*`.
+const loadMotionFeatures = () => import('./motion-features').then((mod) => mod.default)
 
 function HomePage() {
   return (
@@ -37,12 +46,13 @@ function HomePage() {
 function renderPage(page: SitePage) {
   switch (page) {
     case 'home': return <HomePage />
-    case 'pricing': return <PricingPage />
-    case 'download': return <DownloadPage />
-    case 'contact': return <ContactPage />
-    case 'privacy': return <LegalPage kind="privacy" />
-    case 'terms': return <LegalPage kind="terms" />
-    case 'login': return <LoginPage />
+    case 'pricing': return <AsyncPricingPage />
+    case 'download': return <AsyncDownloadPage />
+    case 'contact': return <AsyncContactPage />
+    case 'privacy':
+    case 'terms':
+      return <AsyncLegalPage kind={page} />
+    case 'login': return <AsyncLoginPage />
   }
 }
 
@@ -77,14 +87,26 @@ export default function App() {
     return () => window.cancelAnimationFrame(frame)
   }, [route])
 
-  if (route?.page === 'login') return <LoginPage />
+  if (route?.page === 'login') {
+    return (
+      <LazyMotion features={loadMotionFeatures} strict>
+        <Suspense fallback={null}>
+          <AsyncLoginPage />
+        </Suspense>
+      </LazyMotion>
+    )
+  }
 
   return (
-    <div className="min-h-screen bg-canvas text-ink">
-      <a className="skip-link" href="#main-content">跳到主要内容</a>
-      <Header />
-      {route ? renderPage(route.page) : <NotFoundPage />}
-      <Footer />
-    </div>
+    <LazyMotion features={loadMotionFeatures} strict>
+      <div className="min-h-screen bg-canvas text-ink">
+        <a className="skip-link" href="#main-content">跳到主要内容</a>
+        <Header />
+        <Suspense fallback={null}>
+          {route ? renderPage(route.page) : <AsyncNotFoundPage />}
+        </Suspense>
+        <Footer />
+      </div>
+    </LazyMotion>
   )
 }

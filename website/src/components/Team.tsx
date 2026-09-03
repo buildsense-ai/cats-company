@@ -36,18 +36,18 @@ type TeamMember = {
 }
 
 const teamMembers: TeamMember[] = [
-  { name: '林益', role: '产品', position: '0% 0%', image: '/team-linyi-v2.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.2, imageOffsetY: 3, left: 12, top: 34, size: 98, mobileLeft: 18, mobileTop: 18, mobileSize: 72 },
-  { name: '罗冬阳', role: '团队', position: '33.333% 0%', image: '/team-avatar-luodongyang.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.35, left: 27, top: 21, size: 86, mobileLeft: 50, mobileTop: 16, mobileSize: 64 },
-  { name: '朱汉元', role: '团队', position: '66.667% 0%', image: '/team-avatar-zhuhanyuan.png', imageWidth: 1295, imageHeight: 1215, imageScale: 1.2, left: 46, top: 33, size: 124, mobileLeft: 78, mobileTop: 19, mobileSize: 84, captionOffset: 4, mobileCaptionOffset: 2 },
-  { name: '方快', role: '工程', position: '100% 0%', image: '/team-avatar-fangkuai.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.22, left: 59, top: 20, size: 90, mobileLeft: 17, mobileTop: 38, mobileSize: 66 },
-  { name: '钟慧', role: '团队', position: '0% 50%', image: '/team-avatar-zhonghui.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1, left: 77, top: 31, size: 96, mobileLeft: 50, mobileTop: 36, mobileSize: 70 },
-  { name: '陈永轩', role: '团队', position: '33.333% 50%', image: '/team-avatar-chenyongxuan.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.05, left: 90, top: 46, size: 82, mobileLeft: 83, mobileTop: 39, mobileSize: 64 },
-  { name: '陈曦', role: '工程', position: '66.667% 50%', image: '/team-avatar-chenxi.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.3, imageOffsetY: 2, left: 74, top: 57, size: 94, mobileLeft: 18, mobileTop: 58, mobileSize: 74 },
-  { name: '陈坤', role: '团队', position: '100% 50%', image: '/team-avatar-chenkun.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.15, left: 56, top: 68, size: 110, mobileLeft: 50, mobileTop: 57, mobileSize: 68 },
-  { name: '王荩婧', role: '团队', position: '0% 100%', image: '/team-avatar-wangjinjing.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.5, left: 36, top: 59, size: 88, mobileLeft: 82, mobileTop: 58, mobileSize: 74 },
-  { name: '陈大为', role: '团队', position: '33.333% 100%', image: '/team-avatar-chendawei.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.08, left: 18, top: 69, size: 102, mobileLeft: 18, mobileTop: 78, mobileSize: 64 },
-  { name: '李冠烨', role: '团队', position: '66.667% 100%', image: '/team-avatar-liguanye-v3.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.7, imageOffsetY: -3, left: 40, top: 79, size: 76, mobileLeft: 50, mobileTop: 77, mobileSize: 76 },
-  { name: '杨佳尊', role: '品牌', position: '100% 100%', image: '/team-avatar-custom-v6.png', imageWidth: 1254, imageHeight: 1254, imageScale: 1.42, left: 82, top: 77, size: 88, mobileLeft: 82, mobileTop: 79, mobileSize: 66 },
+  { name: '林益', role: '产品', position: '0% 0%', image: '/team-linyi-v2.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.2, imageOffsetY: 3, left: 12, top: 34, size: 98, mobileLeft: 18, mobileTop: 18, mobileSize: 72 },
+  { name: '罗冬阳', role: '团队', position: '33.333% 0%', image: '/team-avatar-luodongyang.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.35, left: 27, top: 21, size: 86, mobileLeft: 50, mobileTop: 16, mobileSize: 64 },
+  { name: '朱汉元', role: '团队', position: '66.667% 0%', image: '/team-avatar-zhuhanyuan.webp', imageWidth: 512, imageHeight: 478, imageScale: 1.2, left: 46, top: 33, size: 124, mobileLeft: 78, mobileTop: 19, mobileSize: 84, captionOffset: 4, mobileCaptionOffset: 2 },
+  { name: '方快', role: '工程', position: '100% 0%', image: '/team-avatar-fangkuai.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.22, left: 59, top: 20, size: 90, mobileLeft: 17, mobileTop: 38, mobileSize: 66 },
+  { name: '钟慧', role: '团队', position: '0% 50%', image: '/team-avatar-zhonghui.webp', imageWidth: 512, imageHeight: 512, imageScale: 1, left: 77, top: 31, size: 96, mobileLeft: 50, mobileTop: 36, mobileSize: 70 },
+  { name: '陈永轩', role: '团队', position: '33.333% 50%', image: '/team-avatar-chenyongxuan.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.05, left: 90, top: 46, size: 82, mobileLeft: 83, mobileTop: 39, mobileSize: 64 },
+  { name: '陈曦', role: '工程', position: '66.667% 50%', image: '/team-avatar-chenxi.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.3, imageOffsetY: 2, left: 74, top: 57, size: 94, mobileLeft: 18, mobileTop: 58, mobileSize: 74 },
+  { name: '陈坤', role: '团队', position: '100% 50%', image: '/team-avatar-chenkun.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.15, left: 56, top: 68, size: 110, mobileLeft: 50, mobileTop: 57, mobileSize: 68 },
+  { name: '王荩婧', role: '团队', position: '0% 100%', image: '/team-avatar-wangjinjing.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.5, left: 36, top: 59, size: 88, mobileLeft: 82, mobileTop: 58, mobileSize: 74 },
+  { name: '陈大为', role: '团队', position: '33.333% 100%', image: '/team-avatar-chendawei.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.08, left: 18, top: 69, size: 102, mobileLeft: 18, mobileTop: 78, mobileSize: 64 },
+  { name: '李冠烨', role: '团队', position: '66.667% 100%', image: '/team-avatar-liguanye-v3.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.7, imageOffsetY: -3, left: 40, top: 79, size: 76, mobileLeft: 50, mobileTop: 77, mobileSize: 76 },
+  { name: '杨佳尊', role: '品牌', position: '100% 100%', image: '/team-avatar-custom-v6.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.42, left: 82, top: 77, size: 88, mobileLeft: 82, mobileTop: 79, mobileSize: 66 },
 ]
 
 export function Team() {

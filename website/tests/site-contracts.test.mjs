@@ -171,7 +171,8 @@ test('contact page follows the current dark form and validation contract', async
   assert.match(contactStyles, /\.contact-page \.contact-submit \{[^}]*font-size: 17px;/s)
   assert.match(contactStyles, /@media \(max-width: 640px\)/)
   assert.match(contactStyles, /@media \(prefers-reduced-motion: reduce\)/)
-  assert.match(main, /pages\/content\.css'[\s\S]*pages\/contact\.css'/)
+  assert.match(contact, /import '\.\.\/styles\/pages\/contact\.css'/)
+  assert.match(contact, /import '\.\.\/styles\/pages\/content\.css'/)
 })
 
 test('shared design rules use CatsCo brand direction', async () => {
@@ -201,7 +202,7 @@ test('source avoids known interaction regressions', async () => {
   const pricingStyles = await read('src/styles/pages/pricing.css')
   const responsive = await read('src/styles/legacy-responsive.css')
   assert.match(app, /className="skip-link" href="#main-content"/)
-  assert.match(app, /route \? renderPage\(route\.page\) : <NotFoundPage \/>/)
+  assert.match(app, /route \? renderPage\(route\.page\) : <AsyncNotFoundPage \/>/)
   assert.match(header, /aria-expanded=\{menuOpen\}/)
   assert.match(header, /inert=\{!menuOpen\}/)
   assert.match(header, /event\.key !== 'Escape'/)
@@ -210,7 +211,7 @@ test('source avoids known interaction regressions', async () => {
   assert.match(header, /className="site-primary-nav/)
   assert.doesNotMatch(header, /header-social-label/)
   assert.match(header, /className="site-header-brand-mark" src="\/catsco-brand-mark\.webp" alt="" width="256" height="96"/)
-  assert.match(header, /className="site-header-wordmark" src="\/catsco-wordmark\.png" alt="" width="512" height="93"/)
+  assert.match(header, /className="site-header-wordmark" src="\/catsco-wordmark.webp" alt="" width="512" height="93"/)
   assert.match(header, /aria-label="CatsCo 首页"/)
   assert.doesNotMatch(header, /<BrandMark/)
   assert.doesNotMatch(header, />CatsCo<\/span>/)
