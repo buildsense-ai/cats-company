@@ -31,9 +31,9 @@ cp "$root/compose/imagegen-smoke-generate.json" "$run_dir/generate-request.json"
 
 preflight_status="$(curl --silent --output "$run_dir/auth-preflight.json" --write-out '%{http_code}' \
   -H "Authorization: Bearer $(cat "$key_file")" \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/octet-stream' \
   --data '{}' \
-  http://127.0.0.1:16061/v1/images/generations)"
+  http://127.0.0.1:16061/v1/images/edits)"
 if [[ "$preflight_status" != "400" ]]; then
   echo "imagegen Bearer authentication preflight returned HTTP $preflight_status" >&2
   exit 1
