@@ -137,7 +137,15 @@ function supportsSkillHubDesktop(device) {
     );
 }
 
-export function resolveSkillHubRuntimeRouteForBot(response, botUID) {
+function matchesRuntimeBody(device, bodyID) {
+  const expected = String(bodyID || '').trim();
+  if (!expected) return false;
+  return [device?.bodyId, device?.deviceId]
+    .some((value) => String(value || '').trim() === expected);
+}
+
+export function resolveSkillHubRuntimeRouteForBot(response, botUID, bodyStatus = null) {
+  const registered = Array.isArray(response) ? response : (response?.devices || []);
   const activeRoutable = normalizeActiveRoutableSkillHubDevices(response);
   const requestedBotUID = String(botUID || '').trim();
   const exactServers = activeRoutable.filter((device) => (
@@ -154,11 +162,40 @@ export function resolveSkillHubRuntimeRouteForBot(response, botUID) {
     // Runtime to the server Bot and can disrupt both running instances.
     return { kind: 'server-upgrade-required', devices: [], blockedServers: exactServers };
   }
+
+  const bodyStatusKnown = bodyStatus && typeof bodyStatus.bound === 'boolean';
+  const boundBodyID = bodyStatus?.bound === true
+    ? String(bodyStatus?.body_id || bodyStatus?.bodyId || '').trim()
+    : '';
+  const registeredExactServers = registered.filter((device) => (
+    device?.runtimeRole === 'server'
+    && String(device?.botUid || '') === requestedBotUID
+  ));
+  const boundExactServers = boundBodyID
+    ? registeredExactServers.filter((device) => matchesRuntimeBody(device, boundBodyID))
+    : registeredExactServers;
+  if (boundExactServers.length > 0 && (!bodyStatusKnown || bodyStatus?.bound === true)) {
+    // Device registration survives temporary disconnects. Keep an offline
+    // server Runtime authoritative instead of rebinding the Bot to a desktop.
+    return { kind: 'server-offline', devices: [], blockedServers: boundExactServers };
+  }
+
+  const desktopCandidates = activeRoutable.filter((device) => (
+    device.runtimeRole === 'desktop' && supportsSkillHubDesktop(device)
+  ));
+  if (bodyStatus?.bound === true) {
+    const boundDesktops = desktopCandidates.filter((device) => matchesRuntimeBody(device, boundBodyID));
+    if (boundDesktops.length > 0) {
+      return { kind: 'desktop-fallback', devices: boundDesktops, blockedServers: [] };
+    }
+    // A durable binding exists but its Runtime is currently unavailable or no
+    // longer present in the 24-hour device registry. Never migrate it merely
+    // because another desktop happens to be online.
+    return { kind: 'runtime-offline', devices: [], blockedServers: [] };
+  }
   return {
     kind: 'desktop-fallback',
-    devices: activeRoutable.filter((device) => (
-      device.runtimeRole === 'desktop' && supportsSkillHubDesktop(device)
-    )),
+    devices: desktopCandidates,
     blockedServers: [],
   };
 }
@@ -941,19 +978,36 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const loadDevices = useCallback(async (options = {}) => {
     setLoadingDevices(true);
     try {
+      const requestedBotUID = selectedBotUIDRef.current;
+      const [deviceResponse, bodyStatus] = await Promise.all([
+        api.getDevices(),
+        api.getBotBodyStatus(requestedBotUID).catch(() => null),
+      ]);
+      if (requestedBotUID !== selectedBotUIDRef.current) return [];
       const route = resolveSkillHubRuntimeRouteForBot(
-        await api.getDevices(),
-        selectedBotUIDRef.current,
+        deviceResponse,
+        requestedBotUID,
+        bodyStatus,
       );
       const capable = route.devices;
-      if (route.kind === 'server-upgrade-required') {
+      if (
+        route.kind === 'server-upgrade-required'
+        || route.kind === 'server-offline'
+        || route.kind === 'runtime-offline'
+      ) {
         requestedBotSwitchRef.current = '';
         localRequestRef.current += 1;
         setLocalSkills([]);
         setLocalSkillsPath('');
         setLocalNotice('');
         setLocalSkillsError('');
-        setRuntimeRouteError('当前 Agent 已在服务器运行，但该服务器 XiaoBa 版本尚不支持远程 SkillHub 工作区。为避免切换本地 XiaoBa，已停止操作；请升级服务器 XiaoBa 后刷新。');
+        if (route.kind === 'server-upgrade-required') {
+          setRuntimeRouteError('当前 Agent 已在服务器运行，但该服务器 XiaoBa 版本尚不支持远程 SkillHub 工作区。为避免切换本地 XiaoBa，已停止操作；请升级服务器 XiaoBa 后刷新。');
+        } else if (route.kind === 'server-offline') {
+          setRuntimeRouteError('当前 Agent 已绑定服务器 Runtime，但服务器暂时离线或正在重连。为避免切换本地 XiaoBa，已停止操作；待服务器恢复后刷新。');
+        } else {
+          setRuntimeRouteError('当前 Agent 已绑定其他 XiaoBa Runtime，但该运行环境暂时不可达。为避免改变现有绑定，已停止切换本地 XiaoBa。');
+        }
       } else {
         setRuntimeRouteError('');
       }
@@ -1248,9 +1302,15 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       if (!isCurrentRequest()) return;
       setLocalSkills([]);
       setLocalSkillsPath('');
-      setLocalSkillsError(error?.code === 'BOT_ACTIVE_ON_SERVER_RUNTIME'
-        ? '当前 Agent 已在服务器运行，已停止切换本地 XiaoBa。请刷新页面；若服务器版本较旧，请升级后重试。'
-        : error?.message || '无法连接 XiaoBa 运行环境，请确认对应 XiaoBa 在线并已更新到最新版本。');
+      if (error?.code === 'BOT_ACTIVE_ON_SERVER_RUNTIME') {
+        setLocalSkillsError('当前 Agent 已在服务器运行，已停止切换本地 XiaoBa。请刷新页面；若服务器版本较旧，请升级后重试。');
+      } else if (error?.code === 'BOT_BOUND_TO_OTHER_RUNTIME') {
+        setLocalSkillsError('当前 Agent 已绑定其他 XiaoBa Runtime，已停止切换本地 XiaoBa。请恢复原运行环境后刷新。');
+      } else if (error?.code === 'BOT_RUNTIME_BINDING_UNAVAILABLE') {
+        setLocalSkillsError('暂时无法确认当前 Agent 的运行环境绑定。为避免误切换，已停止操作，请稍后刷新。');
+      } else {
+        setLocalSkillsError(error?.message || '无法连接 XiaoBa 运行环境，请确认对应 XiaoBa 在线并已更新到最新版本。');
+      }
     } finally {
       if (isCurrentRequest()) setLoadingLocalSkills(false);
     }

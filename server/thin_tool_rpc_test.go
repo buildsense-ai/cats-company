@@ -517,10 +517,14 @@ func TestGenericThinToolRPCRejectsUnregisteredLiveRoute(t *testing.T) {
 }
 
 func TestSkillHubBotSwitchRejectsDesktopWhenBotIsRoutableOnServer(t *testing.T) {
-	db := &agentTestStore{owners: map[int64]int64{42: 7, 43: 7}}
+	db := &agentTestStore{
+		owners:     map[int64]int64{42: 7, 43: 7},
+		botBodyIDs: map[int64]string{42: "alice-body", 43: "other-server-body"},
+	}
 	hub := NewHub(db, nil)
 	desktop, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
 		DeviceID:     "alice-desktop",
+		BodyID:       "alice-body",
 		RuntimeRole:  "desktop",
 		Status:       "online",
 		Capabilities: []string{string(DeviceGrantSkillHubBotSwitch)},
@@ -600,6 +604,68 @@ func TestSkillHubBotSwitchRejectsDesktopWhenBotIsRoutableOnServer(t *testing.T) 
 		t.Fatalf("request ack = %#v, want 200", ack.Ctrl)
 	}
 	if _, ok := hub.thinToolRPC.get("switch-request"); ok {
+		t.Fatal("denied desktop switch was left pending")
+	}
+	if drainOne(desktopTarget.send) {
+		t.Fatal("denied desktop switch was forwarded to the desktop Runtime")
+	}
+}
+
+func TestSkillHubBotSwitchRejectsDesktopWhenBotIsBoundToOfflineRuntime(t *testing.T) {
+	db := &agentTestStore{
+		owners:     map[int64]int64{42: 7},
+		botBodyIDs: map[int64]string{42: "fermi-server-body"},
+	}
+	hub := NewHub(db, nil)
+	desktop, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "boss-desktop",
+		BodyID:       "boss-desktop-body",
+		RuntimeRole:  "desktop",
+		Status:       "online",
+		Capabilities: []string{string(DeviceGrantSkillHubBotSwitch)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		BotUID:      42,
+		DeviceID:    "fermi-server",
+		BodyID:      "fermi-server-body",
+		RuntimeRole: "server",
+		Status:      "offline",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requester := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+	desktopTarget := &Client{uid: 77, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	hub.addClient(requester)
+	hub.addClient(desktopTarget)
+	hub.bindDeviceClient(7, desktop, desktopTarget)
+
+	hub.handleThinToolRPCRequest(requester, &MsgThinToolRPC{
+		ID:                "offline-switch-msg",
+		Type:              thinToolRPCTypeRequest,
+		RequestID:         "offline-switch-request",
+		TargetOwnerUserID: "usr7",
+		TargetDeviceID:    desktop.DeviceID,
+		ToolName:          string(DeviceGrantSkillHubBotSwitch),
+		Payload:           map[string]interface{}{"bot_uid": "42"},
+	})
+
+	var denied ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &denied)
+	if denied.ThinToolRPC == nil || denied.ThinToolRPC.Error == nil {
+		t.Fatalf("denied response = %#v, want thin_tool_rpc error", denied.ThinToolRPC)
+	}
+	if denied.ThinToolRPC.Error.Code != thinToolRPCBotBoundElsewhereCode {
+		t.Fatalf("denied code = %q, want %q", denied.ThinToolRPC.Error.Code, thinToolRPCBotBoundElsewhereCode)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("request ack = %#v, want 200", ack.Ctrl)
+	}
+	if _, ok := hub.thinToolRPC.get("offline-switch-request"); ok {
 		t.Fatal("denied desktop switch was left pending")
 	}
 	if drainOne(desktopTarget.send) {
