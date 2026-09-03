@@ -15,13 +15,87 @@ compose() {
   fi
 }
 
+container_env() {
+  local container_id="$1"
+  local name="$2"
+  docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' |
+    sed -n "s/^${name}=//p" |
+    head -n 1
+}
+
+create_identity() {
+  local server_id="$1"
+  local smoke_user="$2"
+  local smoke_key="$3"
+  local mysql_id
+  mysql_id="$(compose ps -q mysql)"
+  if [[ -n "$mysql_id" ]]; then
+    docker exec -i "$mysql_id" sh -lc 'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" openchat' <<SQL
+INSERT INTO users (username, display_name, account_type, pass_hash, state)
+VALUES ('${smoke_user}', 'Imagegen Smoke', 'bot', '!', 0);
+SET @smoke_uid = LAST_INSERT_ID();
+INSERT INTO bot_config (user_id, api_endpoint, model, enabled, api_key)
+VALUES (@smoke_uid, '', 'gpt-image-2', 1, '${smoke_key}');
+SQL
+    return
+  fi
+
+  local driver dsn network
+  driver="$(container_env "$server_id" OC_DB_DRIVER)"
+  dsn="$(container_env "$server_id" OC_DB_DSN)"
+  network="$(docker inspect "$server_id" --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' | head -n 1)"
+  if [[ "$driver" != "postgres" || -z "$dsn" || -z "$network" ]]; then
+    echo "test database is neither the local mysql service nor configured postgres" >&2
+    exit 1
+  fi
+  docker run --rm -i --network "$network" postgres:16-alpine \
+    psql "$dsn" -v ON_ERROR_STOP=1 -v smoke_user="$smoke_user" -v smoke_key="$smoke_key" <<'SQL'
+WITH created_user AS (
+  INSERT INTO users (username, display_name, account_type, pass_hash, state)
+  VALUES (:'smoke_user', 'Imagegen Smoke', 'bot', decode('', 'hex'), 0)
+  RETURNING id
+)
+INSERT INTO bot_config (user_id, api_endpoint, model, enabled, api_key)
+SELECT id, '', 'gpt-image-2', true, :'smoke_key' FROM created_user;
+SQL
+}
+
+delete_identity() {
+  local server_id="$1"
+  local smoke_key="$2"
+  local mysql_id
+  mysql_id="$(compose ps -q mysql)"
+  if [[ -n "$mysql_id" ]]; then
+    docker exec -i "$mysql_id" sh -lc 'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" openchat' <<SQL
+DELETE u FROM users u
+JOIN bot_config b ON b.user_id = u.id
+WHERE b.api_key = '${smoke_key}' AND u.username LIKE 'imagegen\\_smoke\\_%';
+SQL
+    return
+  fi
+
+  local driver dsn network
+  driver="$(container_env "$server_id" OC_DB_DRIVER)"
+  dsn="$(container_env "$server_id" OC_DB_DSN)"
+  network="$(docker inspect "$server_id" --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' | head -n 1)"
+  if [[ "$driver" == "postgres" && -n "$dsn" && -n "$network" ]]; then
+    docker run --rm -i --network "$network" postgres:16-alpine \
+      psql "$dsn" -v ON_ERROR_STOP=1 -v smoke_key="$smoke_key" <<'SQL'
+DELETE FROM users u
+USING bot_config b
+WHERE b.user_id = u.id
+  AND b.api_key = :'smoke_key'
+  AND u.username LIKE 'imagegen\_smoke\_%' ESCAPE '\';
+SQL
+  fi
+}
+
 case "$action" in
   prepare)
     mkdir -p "$(dirname "$key_file")"
     server_id="$(compose ps -q server)"
-    mysql_id="$(compose ps -q mysql)"
-    if [[ -z "$server_id" || -z "$mysql_id" ]]; then
-      echo "test server or mysql container is unavailable" >&2
+    if [[ -z "$server_id" ]]; then
+      echo "test server container is unavailable" >&2
       exit 1
     fi
 
@@ -40,13 +114,7 @@ case "$action" in
     smoke_suffix="$(date +%s)_${RANDOM}"
     smoke_user="imagegen_smoke_${smoke_suffix}"
     smoke_key="cc_smoke_$(openssl rand -hex 24)"
-    docker exec -i "$mysql_id" sh -lc 'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" openchat' <<SQL
-INSERT INTO users (username, display_name, account_type, pass_hash, state)
-VALUES ('${smoke_user}', 'Imagegen Smoke', 'bot', '!', 0);
-SET @smoke_uid = LAST_INSERT_ID();
-INSERT INTO bot_config (user_id, api_endpoint, model, enabled, api_key)
-VALUES (@smoke_uid, '', 'gpt-image-2', 1, '${smoke_key}');
-SQL
+    create_identity "$server_id" "$smoke_user" "$smoke_key"
     umask 077
     printf '%s' "$smoke_key" > "$key_file"
     ;;
@@ -54,14 +122,10 @@ SQL
     if [[ ! -f "$key_file" ]]; then
       exit 0
     fi
-    mysql_id="$(compose ps -q mysql)"
+    server_id="$(compose ps -q server)"
     smoke_key="$(cat "$key_file")"
-    if [[ -n "$mysql_id" && "$smoke_key" == cc_smoke_* ]]; then
-      docker exec -i "$mysql_id" sh -lc 'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" openchat' <<SQL
-DELETE u FROM users u
-JOIN bot_config b ON b.user_id = u.id
-WHERE b.api_key = '${smoke_key}' AND u.username LIKE 'imagegen\\_smoke\\_%';
-SQL
+    if [[ -n "$server_id" && "$smoke_key" == cc_smoke_* ]]; then
+      delete_identity "$server_id" "$smoke_key"
     fi
     rm -f "$key_file"
     ;;
