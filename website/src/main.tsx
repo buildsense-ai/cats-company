@@ -9,6 +9,7 @@ import '@fontsource-variable/inter'
 // set adds many late network requests without improving the initial render.
 import './styles/base.css'
 import './styles/site-header.css'
+import './styles/home-critical.css'
 import './styles/site-footer.css'
 import './styles/legacy-responsive.css'
 
