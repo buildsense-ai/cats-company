@@ -707,6 +707,33 @@ describe('StreamingSTTSession', () => {
     session.cancel();
   });
 
+  it('forwards idle warning countdowns and resume events', async () => {
+    let socket;
+    const warnings = [];
+    const resumed = vi.fn();
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-idle-warning', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onIdleWarning: (payload) => warnings.push(payload),
+      onIdleResumed: resumed,
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_ms: 150_000 });
+    socket.receive({ type: 'idle_warning', remaining_seconds: 3 });
+    socket.receive({ type: 'idle_warning', remaining_seconds: 2 });
+    socket.receive({ type: 'idle_resumed' });
+
+    expect(warnings).toEqual([{ remainingSeconds: 3 }, { remainingSeconds: 2 }]);
+    expect(resumed).toHaveBeenCalledOnce();
+    session.cancel();
+  });
+
   it('keeps an idle-timeout final as a natural, non-duration boundary', async () => {
     let socket;
     const finals = [];

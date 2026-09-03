@@ -3,7 +3,8 @@
 CatsCo exposes a dedicated backend WebSocket for browser voice input. The
 browser captures microphone audio, converts it to 16 kHz mono PCM16LE, and
 streams 100 ms frames to CatsCo. CatsCo forwards those frames to Volcengine and
-returns normalized `ready`, `definite`, `partial`, `final`, and `error` events.
+returns normalized `ready`, `definite`, `partial`, `idle_warning`,
+`idle_resumed`, `final`, and `error` events.
 
 Audio and partial transcripts are memory-only. They are not written to
 `/uploads`, message history, or the database. During a successful session, only
@@ -187,8 +188,10 @@ message history.
 - A delayed duration timer, a server hard/audio boundary reason, and a
   hidden-page final with a pending preview all preserve the snapshot and
   release the composer session.
-- An idle-timeout final uses the calm boundary notice, while an idle-timeout
-  provider/finalization error keeps the error state and recovers the snapshot.
+- An idle session receives a three-second server warning; voiced PCM resumes
+  the session, while an idle-timeout final uses the calm boundary notice.
+- An idle-timeout provider/finalization error keeps the error state and recovers
+  the snapshot.
 - An explicit user cancellation still discards the preview and does not insert
   a draft.
 
@@ -200,7 +203,8 @@ Defaults can be overridden through environment variables:
 |---|---:|---|
 | `CATSCO_STT_TICKET_TTL_SECONDS` | 45 | Ticket validity before WebSocket upgrade |
 | `CATSCO_STT_MAX_SESSION_SECONDS` | 150 | Maximum audio duration per session |
-| `CATSCO_STT_IDLE_TIMEOUT_MS` | 15000 | Stop after this much time without voiced PCM |
+| `CATSCO_STT_IDLE_TIMEOUT_MS` | 10000 | Begin warning after this much time without voiced PCM |
+| `CATSCO_STT_IDLE_GRACE_SECONDS` | 3 | Grace countdown after an idle warning |
 | `CATSCO_STT_MAX_CONCURRENT` | 40 | Active sessions per server instance |
 | `CATSCO_STT_MAX_HOURLY_SECONDS` | 1440 | Audio seconds per user in a rolling hour |
 | `CATSCO_STT_MAX_DAILY_SECONDS` | 3600 | Audio seconds per user in rolling 24 hours |
