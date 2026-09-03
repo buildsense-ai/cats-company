@@ -1,3 +1,4 @@
+import '../styles/pages/home.css'
 import { useEffect } from 'react'
 import { LazyMotion } from 'framer-motion'
 import { Capabilities } from './Capabilities'

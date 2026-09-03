@@ -1,4 +1,3 @@
-import '../styles/pages/home.css'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Hero } from './Hero'
 import { WorkflowSection } from './WorkflowSection'
