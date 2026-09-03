@@ -102,10 +102,10 @@ export default function App() {
       <div className="min-h-screen bg-canvas text-ink">
         <a className="skip-link" href="#main-content">跳到主要内容</a>
         <Header />
-        <Suspense fallback={null}>
+        <Suspense fallback={<div className="min-h-[calc(100vh-72px)]" aria-hidden="true" />}>
           {route ? renderPage(route.page) : <AsyncNotFoundPage />}
+          <Footer />
         </Suspense>
-        <Footer />
       </div>
     </LazyMotion>
   )

@@ -54,18 +54,22 @@ export function Hero() {
       <img
         className="hero-watermark"
         src="/catsco-logo-mask.webp"
+        srcSet="/catsco-logo-mask-1600.webp 1600w, /catsco-logo-mask.webp 2700w"
+        sizes="100vw"
         alt=""
-        width="5140"
-        height="3271"
+        width="2700"
+        height="1718"
         aria-hidden="true"
         decoding="async"
       />
       <img
         className="hero-watermark hero-watermark-hover"
         src="/catsco-logo-mask.webp"
+        srcSet="/catsco-logo-mask-1600.webp 1600w, /catsco-logo-mask.webp 2700w"
+        sizes="100vw"
         alt=""
-        width="5140"
-        height="3271"
+        width="2700"
+        height="1718"
         aria-hidden="true"
         decoding="async"
       />
