@@ -153,9 +153,13 @@ jobs:
           trap cleanup EXIT
 
           ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-identity.sh prepare ${TEST_STACK_ROOT} ${remote_key}"
+          set +e
           ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/remote-imagegen-smoke-run.sh ${TEST_STACK_ROOT} ${remote_key} ${remote_run}"
+          smoke_status=$?
+          set -e
           mkdir -p imagegen-smoke
-          scp ${SSH_OPTS} -r "${REMOTE}:${remote_run}/." imagegen-smoke/
+          scp ${SSH_OPTS} -r "${REMOTE}:${remote_run}/." imagegen-smoke/ || true
+          exit "${smoke_status}"
 
       - name: Upload real imagegen smoke results
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.image_smoke }}
