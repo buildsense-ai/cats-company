@@ -31,6 +31,16 @@ func TestRelayConfigDefaults(t *testing.T) {
 	if body.DefaultModel == "" {
 		t.Fatal("expected default model")
 	}
+	if len(body.Models) == 0 {
+		t.Fatal("expected cloud relay model catalog")
+	}
+	for _, model := range body.Models {
+		if model.Provider == "openai" {
+			if model.Runtime == nil || model.Runtime.OpenAIAPIMode != "responses" {
+				t.Fatalf("openai catalog model %q must advertise Responses runtime metadata: %#v", model.ID, model.Runtime)
+			}
+		}
+	}
 	if len(body.Endpoints) != 2 {
 		t.Fatalf("expected 2 endpoints, got %d", len(body.Endpoints))
 	}
