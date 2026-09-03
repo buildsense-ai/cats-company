@@ -306,3 +306,65 @@ func (h *CloudArtifactHandler) reconcileAgentArtifactTags(agentUID int64, artifa
 		}
 	}
 }
+
+// handleAgentArtifactTagDeleteEverywhere removes one tag from every artifact
+// of the agent, deleting the tag from the agent namespace entirely.
+// handleAgentArtifactTagRename renames a tag across every artifact of the
+// agent (PUT on the tag-system route). Same lifecycle as global delete:
+// owner-or-friend is enforced by the router.
+func (h *CloudArtifactHandler) handleAgentArtifactTagRename(w http.ResponseWriter, r *http.Request, agentUID int64, oldTag string) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
+	decoder.DisallowUnknownFields()
+	var request struct {
+		Tag string `json:"tag"`
+	}
+	if err := decoder.Decode(&request); err != nil {
+		writeArtifactError(w, http.StatusBadRequest, "artifact_tag_request_invalid")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeArtifactError(w, http.StatusBadRequest, "artifact_tag_request_invalid")
+		return
+	}
+	normalized, err := normalizeAgentArtifactTags([]string{request.Tag})
+	if err != nil || len(normalized) != 1 {
+		writeArtifactError(w, http.StatusBadRequest, "artifact_tag_invalid")
+		return
+	}
+	newTag := normalized[0]
+	tags, ok := agentArtifactTagStore(h)
+	if !ok {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	renamed, err := tags.RenameAgentArtifactTag(agentUID, oldTag, newTag)
+	if err != nil {
+		writeArtifactError(w, http.StatusInternalServerError, "artifact_request_failed")
+		return
+	}
+	if renamed == 0 {
+		writeArtifactError(w, http.StatusNotFound, "artifact_tag_not_found")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "renamed": renamed})
+}
+
+func (h *CloudArtifactHandler) handleAgentArtifactTagDeleteEverywhere(w http.ResponseWriter, agentUID int64, tag string) {
+	tags, ok := agentArtifactTagStore(h)
+	if !ok {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	removed, err := tags.DeleteAgentArtifactTagEverywhere(agentUID, tag)
+	if err != nil {
+		writeArtifactError(w, http.StatusInternalServerError, "artifact_request_failed")
+		return
+	}
+	if removed == 0 {
+		writeArtifactError(w, http.StatusNotFound, "artifact_tag_not_found")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
+}

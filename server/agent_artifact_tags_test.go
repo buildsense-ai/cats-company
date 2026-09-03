@@ -108,6 +108,62 @@ func (s *artifactTagTestStore) PurgeAgentArtifactTags(agentUID int64, artifactID
 	return nil
 }
 
+func (s *artifactTagTestStore) DeleteAgentArtifactTagEverywhere(agentUID int64, tag string) (int64, error) {
+	removed := int64(0)
+	for artifactID, tags := range s.tags[agentUID] {
+		filtered := make([]string, 0, len(tags))
+		for _, item := range tags {
+			if item != tag {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) != len(tags) {
+			removed++
+		}
+		if len(filtered) == 0 {
+			delete(s.tags[agentUID], artifactID)
+		} else {
+			s.tags[agentUID][artifactID] = filtered
+		}
+	}
+	return removed, nil
+}
+
+func (s *artifactTagTestStore) RenameAgentArtifactTag(agentUID int64, oldTag, newTag string) (int64, error) {
+	tags := s.tags[agentUID]
+	carriers := 0
+	for _, set := range tags {
+		if containsString(set, oldTag) {
+			carriers++
+		}
+	}
+	if carriers == 0 {
+		return 0, nil // unknown old tag → handler reports 404
+	}
+	for artifactID, set := range tags {
+		if !containsString(set, oldTag) {
+			continue
+		}
+		filtered := make([]string, 0, len(set))
+		for _, item := range set {
+			if item != oldTag {
+				filtered = append(filtered, item)
+			}
+		}
+		if !containsString(filtered, newTag) {
+			filtered = append(filtered, newTag)
+		}
+		tags[artifactID] = filtered
+	}
+	result := 0
+	for _, set := range tags {
+		if containsString(set, newTag) {
+			result++
+		}
+	}
+	return int64(result), nil
+}
+
 func (s *artifactTagTestStore) ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, error) {
 	ids := make([]string, 0, len(s.tags[agentUID]))
 	for id := range s.tags[agentUID] {
@@ -368,6 +424,50 @@ func TestAgentArtifactTagDeleteAllowsFriendWrite(t *testing.T) {
 	}
 }
 
+func TestAgentArtifactTagDeleteEverywhereRemovesFromAllArtifacts(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏", "演示"})
+	tagStore.set(440, "beta", []string{"游戏"})
+	handler := tagTestHandler(t, tagStore)
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodDelete, "/api/agents/440/artifacts/tags/%E6%B8%B8%E6%88%8F"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		OK      bool  `json:"ok"`
+		Removed int64 `json:"removed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK || response.Removed != 2 {
+		t.Fatalf("response = %#v", response)
+	}
+	if remaining := tagStore.tags[440]["alpha"]; len(remaining) != 1 || remaining[0] != "演示" {
+		t.Fatalf("alpha tags = %#v", remaining)
+	}
+	if _, exists := tagStore.tags[440]["beta"]; exists {
+		t.Fatalf("beta tags = %#v", tagStore.tags[440]["beta"])
+	}
+}
+
+func TestAgentArtifactTagDeleteEverywhereRejectsUnknownTag(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏"})
+	handler := tagTestHandler(t, tagStore)
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, ownerArtifactRequest(http.MethodDelete, "/api/agents/440/artifacts/tags/%E4%B8%8D%E5%AD%98%E5%9C%A8"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(tagStore.tags[440]["alpha"]) != 1 {
+		t.Fatalf("store changed: %#v", tagStore.tags[440])
+	}
+}
+
 func TestAgentArtifactTagsReplaceStoresNormalizedSet(t *testing.T) {
 	tagStore := newArtifactTagTestStore()
 	upstream := newTagUpstream(t, "alpha")
@@ -512,6 +612,10 @@ func TestParseAgentArtifactAPIPathTagRoutes(t *testing.T) {
 	route, ok = parseAgentArtifactAPIPath("/api/agents/440/artifacts/alpha/tags/%E6%B8%B8%E6%88%8F")
 	if !ok || route.action != "tag-delete" || route.tag != "游戏" {
 		t.Fatalf("tag delete route = %#v ok=%v", route, ok)
+	}
+	route, ok = parseAgentArtifactAPIPath("/api/agents/440/artifacts/tags/%E6%B8%B8%E6%88%8F")
+	if !ok || route.action != "tag-delete-global" || route.agentUID != 440 || route.tag != "游戏" {
+		t.Fatalf("global tag delete route = %#v ok=%v", route, ok)
 	}
 }
 
@@ -745,5 +849,113 @@ func TestAgentArtifactRootIndexNotFoundPreservesTags(t *testing.T) {
 	}
 	if _, exists := tagStore.tags[440]["alpha"]; !exists {
 		t.Fatalf("tags purged by unconfirmed missing index: %#v", tagStore.tags[440])
+	}
+}
+
+func TestAgentArtifactTagRenameUpdatesAllArtifacts(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏", "演示"})
+	tagStore.set(440, "beta", []string{"游戏"})
+	handler := tagTestHandler(t, tagStore)
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/tags/%E6%B8%B8%E6%88%8F")
+	req.Body = io.NopCloser(strings.NewReader(`{"tag":"互动游戏"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		OK      bool `json:"ok"`
+		Renamed int  `json:"renamed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !response.OK || response.Renamed != 2 {
+		t.Fatalf("response = %#v", response)
+	}
+	// Rows are a set: the rename must preserve membership, not row order.
+	gotAlpha := append([]string{}, tagStore.tags[440]["alpha"]...)
+	sort.Strings(gotAlpha)
+	if len(gotAlpha) != 2 || gotAlpha[0] != "互动游戏" || gotAlpha[1] != "演示" {
+		t.Fatalf("alpha = %#v", gotAlpha)
+	}
+	if got := tagStore.tags[440]["beta"]; len(got) != 1 || got[0] != "互动游戏" {
+		t.Fatalf("beta = %#v", got)
+	}
+}
+
+func TestAgentArtifactTagRenameMergesOnCollision(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"演示"})
+	tagStore.set(440, "beta", []string{"游戏", "演示"})
+	handler := tagTestHandler(t, tagStore)
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/tags/%E6%BC%94%E7%A4%BA")
+	req.Body = io.NopCloser(strings.NewReader(`{"tag":"游戏"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := tagStore.tags[440]["alpha"]; len(got) != 1 || got[0] != "游戏" {
+		t.Fatalf("alpha = %#v", got)
+	}
+	if got := tagStore.tags[440]["beta"]; len(got) != 1 || got[0] != "游戏" {
+		t.Fatalf("beta = %#v", got)
+	}
+}
+
+func TestAgentArtifactTagRenameUnknownOldTagWithExistingNewTag(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏"})
+	handler := tagTestHandlerWithUpstream(t, tagStore, newTagUpstream(t, "alpha"))
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/tags/%E6%BC%94%E7%A4%BA")
+	req.Body = io.NopCloser(strings.NewReader(`{"tag":"游戏"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(tagStore.tags[440]["alpha"]) != 1 || tagStore.tags[440]["alpha"][0] != "游戏" {
+		t.Fatalf("store changed: %#v", tagStore.tags[440])
+	}
+}
+
+func TestAgentArtifactTagRenameRejectsInvalidName(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	tagStore.set(440, "alpha", []string{"游戏"})
+	handler := tagTestHandler(t, tagStore)
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/tags/%E6%B8%B8%E6%88%8F")
+	req.Body = io.NopCloser(strings.NewReader(`{"tag":""}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "artifact_tag_invalid") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if got := tagStore.tags[440]["alpha"]; len(got) != 1 {
+		t.Fatalf("store changed: %#v", got)
+	}
+}
+
+func TestAgentArtifactTagRenameUnknownTag(t *testing.T) {
+	tagStore := newArtifactTagTestStore()
+	handler := tagTestHandler(t, tagStore)
+
+	req := ownerArtifactRequest(http.MethodPut, "/api/agents/440/artifacts/tags/%E4%B8%8D%E5%AD%98%E5%9C%A8")
+	req.Body = io.NopCloser(strings.NewReader(`{"tag":"新标签"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "artifact_tag_not_found") {
+		t.Fatalf("body = %s", rec.Body.String())
 	}
 }

@@ -424,6 +424,21 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			return
 		}
 		h.handleAgentArtifactTagDelete(w, route.agentUID, route.artifactID, route.tag)
+	case "tag-delete-global":
+		if r.Method != http.MethodDelete && r.Method != http.MethodPut {
+			w.Header().Set("Allow", "DELETE, PUT")
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if route.viewerRelation != "owner" && route.viewerRelation != "friend" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact tag management requires agent owner or friend"})
+			return
+		}
+		if r.Method == http.MethodPut {
+			h.handleAgentArtifactTagRename(w, r, route.agentUID, route.tag)
+			return
+		}
+		h.handleAgentArtifactTagDeleteEverywhere(w, route.agentUID, route.tag)
 	default:
 		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 	}
@@ -1226,6 +1241,23 @@ func parseAgentArtifactAPIPath(value string) (agentArtifactAPIRoute, bool) {
 		// the ID "tags": published IDs are generated content hashes, so the
 		// collision is theoretical while the collection route is core UX.
 		return agentArtifactAPIRoute{agentUID: agentUID, action: "tag-collection"}, true
+	}
+	if len(parts) == 4 && parts[2] == "tags" {
+		// /artifacts/tags/{tag} deletes the tag from the whole agent namespace.
+		// Safe to shadow: artifact IDs are never the literal "tags" (above).
+		tag, err := url.PathUnescape(parts[3])
+		if err != nil {
+			return agentArtifactAPIRoute{}, false
+		}
+		normalized, tagErr := normalizeAgentArtifactTags([]string{tag})
+		if tagErr != nil || len(normalized) != 1 {
+			return agentArtifactAPIRoute{}, false
+		}
+		return agentArtifactAPIRoute{
+			agentUID: agentUID,
+			action:   "tag-delete-global",
+			tag:      normalized[0],
+		}, true
 	}
 	artifactID, err := url.PathUnescape(parts[2])
 	if err != nil || !validArtifactID(artifactID) {

@@ -171,3 +171,84 @@ func (a *Adapter) ListAgentArtifactTagArtifactIDs(agentUID int64) ([]string, err
 	}
 	return ids, nil
 }
+
+// RenameAgentArtifactTag renames a tag across every artifact of the agent.
+// Artifacts already carrying newTag keep only newTag (their old binding is
+// dropped, i.e. rename merges on collision). It returns the number of
+// artifacts carrying newTag afterwards. oldTag == newTag is a no-op.
+func (a *Adapter) RenameAgentArtifactTag(agentUID int64, oldTag, newTag string) (int64, error) {
+	if oldTag == newTag {
+		return a.countArtifactsWithTag(agentUID, newTag)
+	}
+	ctx := context.Background()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin agent artifact tag rename: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// An unknown old tag is a 404, never a silent success: check it carries
+	// at least one binding before touching anything.
+	var carried int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(DISTINCT artifact_id) FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND tag = $2`,
+		agentUID, oldTag).Scan(&carried); err != nil {
+		return 0, fmt.Errorf("count agent artifact tag before rename: %w", err)
+	}
+	if carried == 0 {
+		return 0, nil
+	}
+	// Drop the old binding on artifacts that already carry newTag, so the
+	// rename cannot violate the primary key and merges cleanly.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND tag = $2
+		  AND artifact_id IN (SELECT artifact_id FROM agent_artifact_tags WHERE agent_uid = $1 AND tag = $3)`,
+		agentUID, oldTag, newTag); err != nil {
+		return 0, fmt.Errorf("clear agent artifact tag rename conflicts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE agent_artifact_tags SET tag = $3
+		WHERE agent_uid = $1 AND tag = $2`,
+		agentUID, oldTag, newTag); err != nil {
+		return 0, fmt.Errorf("rename agent artifact tag: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(DISTINCT artifact_id) FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND tag = $2`,
+		agentUID, newTag).Scan(&carried); err != nil {
+		return 0, fmt.Errorf("count agent artifact tag after rename: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit agent artifact tag rename: %w", err)
+	}
+	return carried, nil
+}
+
+func (a *Adapter) countArtifactsWithTag(agentUID int64, tag string) (int64, error) {
+	var carried int64
+	if err := a.db.QueryRow(`
+		SELECT count(DISTINCT artifact_id) FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND tag = $2`,
+		agentUID, tag).Scan(&carried); err != nil {
+		return 0, fmt.Errorf("count agent artifact tag: %w", err)
+	}
+	return carried, nil
+}
+
+// DeleteAgentArtifactTagEverywhere removes one tag from every artifact of the
+// agent. It is idempotent: deleting a tag nobody holds removes nothing.
+func (a *Adapter) DeleteAgentArtifactTagEverywhere(agentUID int64, tag string) (int64, error) {
+	result, err := a.db.Exec(`
+		DELETE FROM agent_artifact_tags
+		WHERE agent_uid = $1 AND tag = $2`,
+		agentUID, tag)
+	if err != nil {
+		return 0, fmt.Errorf("delete agent artifact tag everywhere: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read agent artifact tag delete result: %w", err)
+	}
+	return affected, nil
+}

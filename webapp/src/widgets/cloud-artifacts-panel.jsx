@@ -4,6 +4,7 @@ import {
   Check,
   Cloud,
   Copy,
+  Pencil,
   Download,
   Eye,
   ExternalLink,
@@ -166,6 +167,10 @@ export default function CloudArtifactsPanel({
   const [tagEditorID, setTagEditorID] = useState('');
   const [pendingTagID, setPendingTagID] = useState('');
   const tagCountsRequestSeqRef = useRef(0);
+  const [confirmTag, setConfirmTag] = useState(null);
+  const [renamingTag, setRenamingTag] = useState(null);
+  const [renamingDraft, setRenamingDraft] = useState('');
+  const [pendingGlobalTag, setPendingGlobalTag] = useState('');
   const [fileCursor, setFileCursor] = useState({ beforeId: 0, beforeCreatedAt: '' });
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -255,12 +260,13 @@ export default function CloudArtifactsPanel({
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key !== 'Escape') return;
-      if (confirmArtifact) setConfirmArtifact(null);
+      if (confirmTag) setConfirmTag(null);
+      else if (confirmArtifact) setConfirmArtifact(null);
       else onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [confirmArtifact, onClose]);
+  }, [confirmArtifact, confirmTag, onClose]);
 
   const copyURL = async (artifact) => {
     try {
@@ -365,6 +371,56 @@ export default function CloudArtifactsPanel({
       });
     } catch {
       // 标签计数是辅助信息，失败时保持现状即可。
+    }
+  };
+
+  const deleteTagEverywhere = async () => {
+    if (!confirmTag || pendingGlobalTag) return;
+    const tag = confirmTag;
+    setPendingGlobalTag(tag);
+    setError('');
+    try {
+      await api.deleteCloudArtifactTagEverywhere(agentUid, tag);
+      setConfirmTag(null);
+      setArtifacts((current) => current.map((item) => (
+        artifactTagList(item).includes(tag)
+          ? { ...item, tags: artifactTagList(item).filter((t) => t !== tag) }
+          : item
+      )));
+      await refreshTagCounts();
+    } catch (err) {
+      setError(err.message || '标签删除失败，请稍后重试');
+    } finally {
+      setPendingGlobalTag('');
+    }
+  };
+
+  const submitTagRename = async () => {
+    if (!renamingTag || pendingGlobalTag) return;
+    const nextTag = renamingDraft.trim();
+    if (!nextTag || nextTag === renamingTag) {
+      setRenamingTag(null);
+      return;
+    }
+    setPendingGlobalTag(renamingTag);
+    setError('');
+    try {
+      await api.renameCloudArtifactTag(agentUid, renamingTag, nextTag);
+      setArtifacts((current) => current.map((item) => ({
+        ...item,
+        tags: artifactTagList(item).some((t) => t === renamingTag)
+          ? artifactTagList(item)
+            .filter((t) => t !== renamingTag && t !== nextTag)
+            .concat(nextTag)
+          : artifactTagList(item),
+      })));
+      setRenamingTag(null);
+      setRenamingDraft('');
+      await refreshTagCounts();
+    } catch (err) {
+      setError(err.message || '标签重命名失败，请稍后重试');
+    } finally {
+      setPendingGlobalTag('');
     }
   };
 
@@ -534,16 +590,85 @@ export default function CloudArtifactsPanel({
           {artifactTabSelected && tab === 'active' && (tagCounts.length > 0 || selectedTags.length > 0) && (
             <div className="cloud-artifacts-tag-filter" role="group" aria-label="按标签筛选">
               {tagCounts.map(({ tag, count }) => (
-                <button
-                  type="button"
+                <span
                   key={tag}
-                  className={'cloud-artifact-tag-chip' + (selectedTags.includes(tag) ? ' active' : '')}
-                  aria-pressed={selectedTags.includes(tag)}
-                  onClick={() => toggleTagFilter(tag)}
+                  className={'cloud-artifact-tag-chip' + (selectedTags.includes(tag) ? ' active' : '') + (canManageTags ? ' has-remove' : '')}
                 >
-                  {tag}
-                  <span>{count}</span>
-                </button>
+                  {renamingTag === tag ? (
+                    <>
+                      <input
+                        className="cloud-artifact-tag-rename-input"
+                        value={renamingDraft}
+                        autoFocus
+                        maxLength={32}
+                        aria-label={'重命名标签 ' + tag}
+                        disabled={pendingGlobalTag === tag}
+                        onChange={(event) => setRenamingDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            submitTagRename();
+                          } else if (event.key === 'Escape') {
+                            event.stopPropagation();
+                            setRenamingTag(null);
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="cloud-artifact-tag-chip-confirm"
+                        aria-label="确认重命名"
+                        title="确认"
+                        disabled={pendingGlobalTag === tag || !renamingDraft.trim()}
+                        onClick={submitTagRename}
+                      >
+                        <Check size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="cloud-artifact-tag-chip-cancel"
+                        aria-label="取消重命名"
+                        title="取消"
+                        onClick={() => setRenamingTag(null)}
+                      >
+                        <X size={12} />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="cloud-artifact-tag-chip-filter"
+                      aria-pressed={selectedTags.includes(tag)}
+                      onClick={() => toggleTagFilter(tag)}
+                    >
+                      {tag}
+                      <span>{count}</span>
+                    </button>
+                  )}
+                  {canManageTags && renamingTag !== tag && (
+                    <button
+                      type="button"
+                      className="cloud-artifact-tag-chip-edit"
+                      aria-label={'编辑标签 ' + tag}
+                      title="重命名标签"
+                      onClick={() => { setRenamingTag(tag); setRenamingDraft(tag); }}
+                    >
+                      <Pencil size={11} />
+                    </button>
+                  )}
+                  {canManageTags && renamingTag !== tag && (
+                    <button
+                      type="button"
+                      className="cloud-artifact-tag-chip-remove"
+                      aria-label={'删除标签 ' + tag}
+                      title="从所有成果删除此标签"
+                      disabled={pendingGlobalTag === tag}
+                      onClick={() => setConfirmTag(tag)}
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
+                </span>
               ))}
               {selectedTags.length > 0 && (
                 <button
@@ -718,6 +843,28 @@ export default function CloudArtifactsPanel({
                 </button>
                 <button type="button" className="danger" onClick={deleteArtifact} disabled={Boolean(pendingID)}>
                   {pendingID ? '正在下架...' : '下架'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {confirmTag && (
+          <div className="cloud-artifact-confirm-backdrop" onClick={() => !pendingGlobalTag && setConfirmTag(null)}>
+            <div
+              className="cloud-artifact-confirm"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label="确认删除标签"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h4>删除标签「{confirmTag}」？</h4>
+              <p>该标签将从本 Agent 的所有成果中移除。</p>
+              <div className="cloud-artifact-confirm-actions">
+                <button type="button" onClick={() => setConfirmTag(null)} disabled={Boolean(pendingGlobalTag)}>
+                  取消
+                </button>
+                <button type="button" className="danger" onClick={deleteTagEverywhere} disabled={Boolean(pendingGlobalTag)}>
+                  {pendingGlobalTag ? '正在删除...' : '删除'}
                 </button>
               </div>
             </div>

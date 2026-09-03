@@ -816,6 +816,10 @@ export const api = {
     request('PUT', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/${encodeURIComponent(artifactId)}/tags`, { tags }),
   deleteCloudArtifactTag: (agentUid, artifactId, tag) =>
     request('DELETE', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/${encodeURIComponent(artifactId)}/tags/${encodeURIComponent(tag)}`),
+  deleteCloudArtifactTagEverywhere: (agentUid, tag) =>
+    request('DELETE', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/tags/${encodeURIComponent(tag)}`),
+  renameCloudArtifactTag: (agentUid, tag, nextTag) =>
+    request('PUT', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/tags/${encodeURIComponent(tag)}`, { tag: nextTag }),
 };
 
 function encodeSkillHubID(skillId) {
