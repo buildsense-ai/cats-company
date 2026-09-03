@@ -23,6 +23,17 @@ container_env() {
     head -n 1
 }
 
+psql_compatible_dsn() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+parts = urlsplit(sys.argv[1])
+query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != "search_path"]
+print(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)))
+PY
+}
+
 create_identity() {
   local server_id="$1"
   local smoke_user="$2"
@@ -48,6 +59,7 @@ SQL
     echo "test database is neither the local mysql service nor configured postgres" >&2
     exit 1
   fi
+  dsn="$(psql_compatible_dsn "$dsn")"
   docker run --rm -i --network "$network" postgres:16-alpine \
     psql "$dsn" -v ON_ERROR_STOP=1 -v smoke_user="$smoke_user" -v smoke_key="$smoke_key" <<'SQL'
 WITH created_user AS (
@@ -79,6 +91,7 @@ SQL
   dsn="$(container_env "$server_id" OC_DB_DSN)"
   network="$(docker inspect "$server_id" --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' | head -n 1)"
   if [[ "$driver" == "postgres" && -n "$dsn" && -n "$network" ]]; then
+    dsn="$(psql_compatible_dsn "$dsn")"
     docker run --rm -i --network "$network" postgres:16-alpine \
       psql "$dsn" -v ON_ERROR_STOP=1 -v smoke_key="$smoke_key" <<'SQL'
 DELETE FROM users u
