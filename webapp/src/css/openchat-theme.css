@@ -2121,12 +2121,6 @@ body {
   background: color-mix(in srgb, var(--v3-text-main) 15%, transparent);
 }
 
-.cloud-artifact-active-filter-chip:focus-visible,
-.cloud-artifact-active-filter-clear:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--v3-text-main) 48%, transparent);
-  outline-offset: 2px;
-}
-
 .cloud-artifact-active-filter-clear {
   border-color: transparent;
   color: var(--v3-text-muted);

@@ -57,6 +57,11 @@ describe('LiquidFlowBackground', () => {
   let pause;
   let play;
 
+  async function mountBackground() {
+    await act(async () => root.render(<LiquidFlowBackground />));
+    return [...container.querySelectorAll('video')];
+  }
+
   beforeEach(() => {
     originalMatchMedia = window.matchMedia;
     pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
@@ -124,9 +129,7 @@ describe('LiquidFlowBackground', () => {
     const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
 
     try {
-      await act(async () => root.render(<LiquidFlowBackground />));
-
-      const videos = [...container.querySelectorAll('video')];
+      const videos = await mountBackground();
       expect(videos[1].getAttribute('preload')).toBe('none');
       expect(load).not.toHaveBeenCalled();
 
@@ -144,9 +147,7 @@ describe('LiquidFlowBackground', () => {
 
   it('waits for the incoming layer to play before revealing it and pausing the outgoing layer', async () => {
     installMotionPreference(false);
-    await act(async () => root.render(<LiquidFlowBackground />));
-
-    const videos = [...container.querySelectorAll('video')];
+    const videos = await mountBackground();
     Object.defineProperty(videos[0], 'duration', { configurable: true, value: 6 });
     stubCurrentTime(videos[0], 4.9);
     stubCurrentTime(videos[1], 0);
@@ -177,11 +178,9 @@ describe('LiquidFlowBackground', () => {
     }
   });
 
-  it('releases the transition lock when the incoming layer never starts playing', async () => {
+  it('restarts the outgoing layer when the incoming layer stalls past the stall window', async () => {
     installMotionPreference(false);
-    await act(async () => root.render(<LiquidFlowBackground />));
-
-    const videos = [...container.querySelectorAll('video')];
+    const videos = await mountBackground();
     Object.defineProperty(videos[0], 'duration', { configurable: true, value: 6 });
     stubCurrentTime(videos[0], 4.9);
     stubCurrentTime(videos[1], 0);
@@ -192,18 +191,59 @@ describe('LiquidFlowBackground', () => {
         videos[0].dispatchEvent(new Event('timeupdate'));
       });
       expect(play).toHaveBeenCalledTimes(1);
+      expect(play.mock.contexts[0]).toBe(videos[1]);
 
+      // The outgoing layer reaches its end while the transition is pending;
+      // mid-transition `ended` is swallowed by design.
       await act(async () => {
-        vi.advanceTimersByTime(4000);
+        vi.advanceTimersByTime(1200);
+        videos[0].dispatchEvent(new Event('ended'));
       });
       expect(pause).not.toHaveBeenCalled();
+      expect(videos[1].className).not.toContain('is-active');
 
+      // The stall window lapses: the stalled layer is paused before its
+      // pending play can start invisibly, and the ended outgoing layer is
+      // restarted so the loop keeps moving.
       await act(async () => {
-        videos[0].dispatchEvent(new Event('timeupdate'));
+        vi.advanceTimersByTime(2800);
       });
       expect(play).toHaveBeenCalledTimes(2);
+      expect(play.mock.contexts[1]).toBe(videos[0]);
+      expect(pause).toHaveBeenCalledTimes(1);
+      expect(pause.mock.contexts[0]).toBe(videos[1]);
+      expect(videos[1].className).not.toContain('is-active');
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('defers the standby layer again and resets the visible layer after a reduced-motion round trip', async () => {
+    const motionPreference = installMotionPreference(false);
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+
+    try {
+      const videos = await mountBackground();
+      await act(async () => {
+        videos[0].dispatchEvent(new Event('canplay'));
+      });
+      expect(videos[1].getAttribute('preload')).toBe('auto');
+
+      await act(async () => motionPreference.setMatches(true));
+      expect(container.querySelector('video')).toBeNull();
+
+      await act(async () => motionPreference.setMatches(false));
+      const remounted = [...container.querySelectorAll('video')];
+      expect(remounted[1].getAttribute('preload')).toBe('none');
+      expect(remounted[0].className).toContain('is-active');
+
+      await act(async () => {
+        remounted[0].dispatchEvent(new Event('canplay'));
+      });
+      expect(remounted[1].getAttribute('preload')).toBe('auto');
+      expect(load).toHaveBeenCalledTimes(2);
+    } finally {
+      load.mockRestore();
     }
   });
 });
