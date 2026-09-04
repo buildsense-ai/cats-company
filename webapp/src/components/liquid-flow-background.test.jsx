@@ -42,6 +42,14 @@ function installMotionPreference(initialMatches = false) {
   };
 }
 
+function stubCurrentTime(video, value) {
+  Object.defineProperty(video, 'currentTime', {
+    configurable: true,
+    get: () => value,
+    set: () => {},
+  });
+}
+
 describe('LiquidFlowBackground', () => {
   let container;
   let root;
@@ -109,5 +117,93 @@ describe('LiquidFlowBackground', () => {
     await act(async () => motionPreference.setMatches(true));
     expect(container.querySelector('video')).toBeNull();
     expect(pause).toHaveBeenCalledTimes(2);
+  });
+
+  it('warms the crossfade layer once the primary layer can play', async () => {
+    installMotionPreference(false);
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+
+    try {
+      await act(async () => root.render(<LiquidFlowBackground />));
+
+      const videos = [...container.querySelectorAll('video')];
+      expect(videos[1].getAttribute('preload')).toBe('none');
+      expect(load).not.toHaveBeenCalled();
+
+      await act(async () => {
+        videos[0].dispatchEvent(new Event('canplay'));
+      });
+
+      expect(videos[0].getAttribute('preload')).toBe('auto');
+      expect(videos[1].getAttribute('preload')).toBe('auto');
+      expect(load).toHaveBeenCalledTimes(1);
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it('waits for the incoming layer to play before revealing it and pausing the outgoing layer', async () => {
+    installMotionPreference(false);
+    await act(async () => root.render(<LiquidFlowBackground />));
+
+    const videos = [...container.querySelectorAll('video')];
+    Object.defineProperty(videos[0], 'duration', { configurable: true, value: 6 });
+    stubCurrentTime(videos[0], 4.9);
+    stubCurrentTime(videos[1], 0);
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        videos[0].dispatchEvent(new Event('timeupdate'));
+      });
+      expect(play).toHaveBeenCalledTimes(1);
+      expect(videos[1].className).not.toContain('is-active');
+      expect(pause).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1200);
+      });
+      expect(pause).not.toHaveBeenCalled();
+      expect(videos[1].className).not.toContain('is-active');
+
+      await act(async () => {
+        videos[1].dispatchEvent(new Event('playing'));
+      });
+      expect(videos[1].className).toContain('is-active');
+      expect(videos[0].className).not.toContain('is-active');
+      expect(pause).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('releases the transition lock when the incoming layer never starts playing', async () => {
+    installMotionPreference(false);
+    await act(async () => root.render(<LiquidFlowBackground />));
+
+    const videos = [...container.querySelectorAll('video')];
+    Object.defineProperty(videos[0], 'duration', { configurable: true, value: 6 });
+    stubCurrentTime(videos[0], 4.9);
+    stubCurrentTime(videos[1], 0);
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        videos[0].dispatchEvent(new Event('timeupdate'));
+      });
+      expect(play).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(pause).not.toHaveBeenCalled();
+
+      await act(async () => {
+        videos[0].dispatchEvent(new Event('timeupdate'));
+      });
+      expect(play).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

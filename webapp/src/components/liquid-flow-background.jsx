@@ -1,6 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 const LIQUID_PLAYBACK_RATE = 2 / 3;
+// Matches the CSS opacity transition on .cc-liquid-flow-background__video.
+const CROSSFADE_FADE_MS = 1200;
+// Give a stalled crossfade layer this long to start playing before releasing
+// the transition lock; the outgoing frame stays on screen in the meantime.
+const CROSSFADE_STALL_MS = 4000;
 export const LIQUID_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 export const shouldMountLiquidFlowBackground = (theme) => theme === 'liquid';
 
@@ -37,15 +42,28 @@ function usePrefersReducedMotion() {
  * Ambient flow used by the light liquid theme. The reference is a text-free
  * texture loop, so prefer the compressed WebM and keep the original MP4 as a
  * browser compatibility fallback. Two muted layers crossfade at the loop
- * boundary so the motion does not snap back to the first frame.
+ * boundary so the motion does not snap back to the first frame. The standby
+ * layer warms once the primary layer can play, and the visible layer only
+ * switches once the incoming video actually renders frames — a slow fetch
+ * extends the previous frame instead of flashing the poster.
  */
 export default function LiquidFlowBackground() {
   const prefersReducedMotion = usePrefersReducedMotion();
   const videoRefs = useRef([]);
-  const transitionTimer = useRef(null);
+  const transitionTimers = useRef([]);
   const activeIndexRef = useRef(0);
   const transitioningRef = useRef(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [warmCrossfadeLayer, setWarmCrossfadeLayer] = useState(false);
+
+  useEffect(() => {
+    if (!warmCrossfadeLayer) return undefined;
+    // The preload attribute alone is only a hint on an idle element; load()
+    // reliably starts the fetch so the crossfade layer is buffered before the
+    // first loop boundary needs it.
+    videoRefs.current[1]?.load?.();
+    return undefined;
+  }, [warmCrossfadeLayer]);
 
   useEffect(() => {
     const videos = videoRefs.current.filter(Boolean);
@@ -59,16 +77,48 @@ export default function LiquidFlowBackground() {
       if (!current || !next) return;
 
       transitioningRef.current = true;
-      next.currentTime = 0;
+      try {
+        next.currentTime = 0;
+      } catch {
+        // Media that has not loaded yet can reject currentTime assignment.
+      }
       next.playbackRate = LIQUID_PLAYBACK_RATE;
       void next.play().catch(() => {});
-      activeIndexRef.current = nextIndex;
-      setActiveIndex(nextIndex);
-      transitionTimer.current = window.setTimeout(() => {
+
+      let nextPlaying = false;
+      let fadeElapsed = false;
+      const finish = () => {
+        if (!nextPlaying || !fadeElapsed) return;
         current.pause();
-        current.currentTime = 0;
+        try {
+          current.currentTime = 0;
+        } catch {
+          // Media that has not loaded yet can reject currentTime assignment.
+        }
         transitioningRef.current = false;
-      }, 1200);
+      };
+      const onPlaying = () => {
+        nextPlaying = true;
+        next.removeEventListener('playing', onPlaying);
+        // Reveal the incoming layer only once it renders frames, so a slow
+        // fetch shows the outgoing frame instead of the poster image.
+        activeIndexRef.current = nextIndex;
+        setActiveIndex(nextIndex);
+        finish();
+      };
+      next.addEventListener('playing', onPlaying);
+      transitionTimers.current = [
+        window.setTimeout(() => {
+          fadeElapsed = true;
+          finish();
+        }, CROSSFADE_FADE_MS),
+        window.setTimeout(() => {
+          // The incoming layer never started (stalled fetch/decode): release
+          // the lock and keep the outgoing frame rather than pausing it blind.
+          next.removeEventListener('playing', onPlaying);
+          transitioningRef.current = false;
+        }, CROSSFADE_STALL_MS),
+      ];
     };
 
     const listeners = videos.map((video, index) => {
@@ -90,8 +140,8 @@ export default function LiquidFlowBackground() {
         video.removeEventListener('timeupdate', onTimeUpdate);
         video.removeEventListener('ended', onEnded);
       });
-      window.clearTimeout(transitionTimer.current);
-      transitionTimer.current = null;
+      transitionTimers.current.forEach((timer) => window.clearTimeout(timer));
+      transitionTimers.current = [];
       videos.forEach((video) => {
         video.pause();
         try {
@@ -118,8 +168,9 @@ export default function LiquidFlowBackground() {
       autoPlay={index === 0}
       muted
       playsInline
-      preload={index === 0 ? 'auto' : 'none'}
+      preload={index === 0 || warmCrossfadeLayer ? 'auto' : 'none'}
       poster="/texture-background-2-poster.png"
+      onCanPlay={index === 0 ? () => setWarmCrossfadeLayer(true) : undefined}
       onLoadedMetadata={(event) => {
         event.currentTarget.playbackRate = LIQUID_PLAYBACK_RATE;
       }}

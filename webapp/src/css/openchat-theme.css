@@ -1507,8 +1507,6 @@ body {
 
 .cloud-artifact-filter-trigger:focus-visible {
   border-color: var(--cc-focus-border);
-  outline: 2px solid var(--cc-focus-ring);
-  outline-offset: 2px;
   color: var(--cc-text);
   background: var(--cc-selected);
 }
@@ -1546,11 +1544,6 @@ body {
 
 .cloud-artifact-filter-popover[data-placement="top"] {
   transform-origin: bottom right;
-}
-
-.cloud-artifact-filter-popover:focus-visible {
-  outline: 2px solid var(--cc-focus-ring);
-  outline-offset: 2px;
 }
 
 @keyframes cloud-artifact-filter-enter {
@@ -1591,12 +1584,6 @@ body {
 .cloud-artifact-filter-tag-action:hover:not(:disabled) {
   color: var(--cc-text);
   background: var(--cc-hover);
-}
-
-.cloud-artifact-filter-tag-action:focus-visible,
-.cloud-artifact-filter-popover-footer button:focus-visible {
-  outline: 2px solid var(--cc-focus-ring);
-  outline-offset: -2px;
 }
 
 .cloud-artifact-filter-section {
@@ -1828,11 +1815,6 @@ body {
   background: var(--cc-input-surface);
   font: inherit;
   font-size: 12px;
-}
-
-.cloud-artifact-filter-rename-input:focus-visible {
-  outline: 2px solid var(--cc-focus-ring);
-  outline-offset: 1px;
 }
 
 .cloud-artifact-filter-empty {

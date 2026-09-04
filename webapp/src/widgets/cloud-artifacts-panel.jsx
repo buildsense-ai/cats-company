@@ -957,12 +957,7 @@ function ArtifactFilters({
 
   useEffect(() => {
     if (!open) return undefined;
-    const closeOnOutsidePointer = (event) => {
-      if (!rootRef.current?.contains(event.target) && !panelRef.current?.contains(event.target)) {
-        close();
-      }
-    };
-    const closeOnOutsideFocus = (event) => {
+    const closeOnOutside = (event) => {
       if (!rootRef.current?.contains(event.target) && !panelRef.current?.contains(event.target)) {
         close();
       }
@@ -974,16 +969,16 @@ function ArtifactFilters({
       if (renamingTag) onCancelRename();
       else close({ restoreFocus: true });
     };
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    document.addEventListener('focusin', closeOnOutsideFocus);
+    document.addEventListener('pointerdown', closeOnOutside);
+    document.addEventListener('focusin', closeOnOutside);
     document.addEventListener('keydown', handleEscape, true);
     const focusFrame = renamingTag
       ? 0
       : window.requestAnimationFrame(() => panelRef.current?.focus());
     return () => {
       if (focusFrame) window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener('pointerdown', closeOnOutsidePointer);
-      document.removeEventListener('focusin', closeOnOutsideFocus);
+      document.removeEventListener('pointerdown', closeOnOutside);
+      document.removeEventListener('focusin', closeOnOutside);
       document.removeEventListener('keydown', handleEscape, true);
     };
   }, [close, onCancelRename, open, renamingTag]);
