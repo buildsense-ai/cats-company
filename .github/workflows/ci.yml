@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,8 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-and-validate-docker:
+  backend:
+    name: Backend tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:18-alpine
@@ -53,20 +56,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            webapp/package-lock.json
-            bot-sdk/typescript/package-lock.json
-            bots/xiaoba-ts/package-lock.json
-
-      - name: Test local showcase mock
-        run: node --test scripts/local-onboarding-mock-server.test.mjs
-
       - name: Test backend
         run: go test ./server/...
 
@@ -86,9 +75,32 @@ jobs:
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: go test ./server/db/mysql -run 'TestMySQLArtifactRuntimeEventSequenceFollowsCommitOrder' -count=1 -v
 
+  node_sdk:
+    name: TypeScript SDK tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: bot-sdk/typescript/package-lock.json
+
+      - name: Restore TypeScript SDK dependencies
+        id: sdk-node-modules
+        uses: actions/cache@v4
+        with:
+          path: bot-sdk/typescript/node_modules
+          key: ${{ runner.os }}-node24-sdk-${{ hashFiles('bot-sdk/typescript/package-lock.json') }}
+
       - name: Install TypeScript SDK dependencies
+        if: steps.sdk-node-modules.outputs.cache-hit != 'true'
         working-directory: bot-sdk/typescript
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Test TypeScript SDK
         working-directory: bot-sdk/typescript
@@ -97,15 +109,74 @@ jobs:
           npm test
           npm run test:types
 
+  bot_example:
+    name: TypeScript bot example
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            bots/xiaoba-ts/package-lock.json
+            bot-sdk/typescript/package-lock.json
+
+      - name: Restore bot example dependencies
+        id: bot-node-modules
+        uses: actions/cache@v4
+        with:
+          path: bots/xiaoba-ts/node_modules
+          key: ${{ runner.os }}-node24-bot-example-${{ hashFiles('bots/xiaoba-ts/package-lock.json', 'bot-sdk/typescript/package-lock.json') }}
+
+      - name: Install bot example dependencies
+        if: steps.bot-node-modules.outputs.cache-hit != 'true'
+        working-directory: bots/xiaoba-ts
+        run: npm ci --prefer-offline --no-audit --no-fund
+
       - name: Build TypeScript bot example
         working-directory: bots/xiaoba-ts
-        run: |
-          npm ci
-          npm run build
+        run: npm run build
+
+  webapp:
+    name: Web and SkillHub tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Restore webapp dependencies
+        id: webapp-node-modules
+        uses: actions/cache@v4
+        with:
+          path: webapp/node_modules
+          key: ${{ runner.os }}-node24-webapp-${{ hashFiles('webapp/package-lock.json') }}
 
       - name: Install webapp dependencies
+        if: steps.webapp-node-modules.outputs.cache-hit != 'true'
         working-directory: webapp
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Test local showcase mock
+        run: node --test scripts/local-onboarding-mock-server.test.mjs
 
       - name: SkillHub phase 1 mandatory regression
         run: npm run test:skillhub-phase1
@@ -118,12 +189,112 @@ jobs:
         working-directory: webapp
         run: npm run build
 
-      - name: Audit JavaScript dependencies
+  change_detection:
+    name: Detect dependency audit scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      audit_required: ${{ steps.scope.outputs.audit_required }}
+      audit_matrix: ${{ steps.scope.outputs.audit_matrix }}
+    steps:
+      - name: Checkout history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Select changed lockfiles
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
         run: |
-          npm audit --package-lock-only --audit-level=high
-          npm audit --prefix webapp --package-lock-only --audit-level=high
-          npm audit --prefix bot-sdk/typescript --package-lock-only --audit-level=high
-          npm audit --prefix bots/xiaoba-ts --package-lock-only --audit-level=high
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            changed="$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA")"
+          else
+            changed=""
+          fi
+
+          export CHANGED_FILES="$changed"
+          matrix="$(python3 - <<'PY'
+          import json
+          import os
+
+          lockfiles = [
+              ("root", ".", "package-lock.json"),
+              ("webapp", "webapp", "webapp/package-lock.json"),
+              ("TypeScript SDK", "bot-sdk/typescript", "bot-sdk/typescript/package-lock.json"),
+              ("XiaoBa bot", "bots/xiaoba-ts", "bots/xiaoba-ts/package-lock.json"),
+          ]
+          changed = set(os.environ.get("CHANGED_FILES", "").splitlines())
+          event_name = os.environ["EVENT_NAME"]
+          if event_name == "workflow_dispatch":
+              # An explicit run is an intentional full audit.
+              selected = lockfiles
+          elif event_name == "push" and os.environ.get("REF") == "refs/heads/main":
+              # Keep the full audit on main. Feature-branch pushes are often a
+              # duplicate of the PR workflow, so they use the same narrowed
+              # scope instead of adding another four audits.
+              selected = lockfiles
+          elif event_name in {"push", "pull_request"}:
+              selected = [item for item in lockfiles if item[2] in changed]
+          else:
+              selected = lockfiles
+          print(json.dumps([
+              {"name": name, "directory": directory, "lockfile": lockfile}
+              for name, directory, lockfile in selected
+          ], separators=(",", ":")))
+          PY
+          )"
+
+          echo "audit_matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [[ "$matrix" == "[]" ]]; then
+            echo 'audit_required=false' >> "$GITHUB_OUTPUT"
+            echo 'No dependency lockfile selected; skipping the audit matrix.'
+          else
+            echo 'audit_required=true' >> "$GITHUB_OUTPUT"
+            echo "Auditing dependency scopes: $matrix"
+          fi
+
+  security_audit:
+    name: JavaScript audit (${{ matrix.name }})
+    needs: change_detection
+    if: ${{ needs.change_detection.outputs.audit_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.change_detection.outputs.audit_matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+
+      - name: Audit JavaScript dependencies
+        working-directory: ${{ matrix.directory }}
+        run: npm audit --package-lock-only --audit-level=high
+
+  validation:
+    name: Compose and deploy validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Validate test compose
         run: docker compose -f deploy/test/docker-compose.yml --env-file deploy/test/env.test.example config
@@ -178,17 +349,74 @@ jobs:
           python3 deploy/stt-nginx-config_test.py
           python3 deploy/website-nginx-config_test.py
 
-      - name: Build server image
-        run: docker build -f deploy/Dockerfile.server -t cats-company-server-ci .
+  docker_images:
+    name: Docker image (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            file: deploy/Dockerfile.server
+            tag: cats-company-server-ci
+            build_args: ""
+          - name: Dreamina worker
+            file: deploy/Dockerfile.dreamina
+            tag: cats-company-dreamina-worker-ci
+            build_args: ""
+          - name: web
+            file: deploy/Dockerfile.nginx
+            tag: cats-company-web-ci
+            build_args: "--build-arg REACT_APP_API_BASE="
+          - name: public website without media
+            file: deploy/Dockerfile.website
+            tag: cats-company-website-ci
+            build_args: "--build-arg VITE_APP_BASE_URL=https://app.catsco.cc"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      - name: Build Dreamina worker image
-        run: docker build -f deploy/Dockerfile.dreamina -t cats-company-dreamina-worker-ci .
+      - name: Build image
+        run: docker build -f "${{ matrix.file }}" ${{ matrix.build_args }} -t "${{ matrix.tag }}" .
 
-      - name: Build web image
-        run: docker build -f deploy/Dockerfile.nginx --build-arg REACT_APP_API_BASE= -t cats-company-web-ci .
-
-      - name: Build public website image without media
+  # Keep the historical required check name while the expensive, independent
+  # suites run in parallel above. This gate also turns skipped/cancelled
+  # dependencies into a visible failure instead of a false green check.
+  test-and-validate-docker:
+    name: test-and-validate-docker
+    if: ${{ always() }}
+    needs:
+      - backend
+      - node_sdk
+      - bot_example
+      - webapp
+      - change_detection
+      - security_audit
+      - validation
+      - docker_images
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check parallel job results
+        env:
+          BACKEND: ${{ needs.backend.result }}
+          NODE_SDK: ${{ needs.node_sdk.result }}
+          BOT_EXAMPLE: ${{ needs.bot_example.result }}
+          WEBAPP: ${{ needs.webapp.result }}
+          CHANGE_DETECTION: ${{ needs.change_detection.result }}
+          AUDIT_REQUIRED: ${{ needs.change_detection.outputs.audit_required }}
+          SECURITY_AUDIT: ${{ needs.security_audit.result }}
+          VALIDATION: ${{ needs.validation.result }}
+          DOCKER_IMAGES: ${{ needs.docker_images.result }}
         run: |
-          docker build -f deploy/Dockerfile.website \
-            --build-arg VITE_APP_BASE_URL=https://app.catsco.cc \
-            -t cats-company-website-ci .
+          printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nwebapp=%s\nchange-detection=%s\naudit-required=%s\nsecurity-audit=%s\nvalidation=%s\ndocker-images=%s\n' \
+            "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$WEBAPP" "$CHANGE_DETECTION" "$AUDIT_REQUIRED" "$SECURITY_AUDIT" "$VALIDATION" "$DOCKER_IMAGES"
+          if [[ "$BACKEND" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$WEBAPP" != success || \
+                "$CHANGE_DETECTION" != success || "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
+                ("$AUDIT_REQUIRED" == true && "$SECURITY_AUDIT" != success) || \
+                ("$AUDIT_REQUIRED" != true && "$SECURITY_AUDIT" != skipped) ]]; then
+            echo 'One or more CI suites did not succeed.' >&2
+            exit 1
+          fi
+          echo 'All parallel CI suites passed.'
