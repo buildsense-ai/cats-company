@@ -1,6 +1,37 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 const LIQUID_PLAYBACK_RATE = 2 / 3;
+export const LIQUID_REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+export const shouldMountLiquidFlowBackground = (theme) => theme === 'liquid';
+
+function usePrefersReducedMotion() {
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => (
+    globalThis.window?.matchMedia?.(LIQUID_REDUCED_MOTION_QUERY)?.matches ?? false
+  ));
+
+  useEffect(() => {
+    const mediaQuery = globalThis.window?.matchMedia?.(LIQUID_REDUCED_MOTION_QUERY);
+    if (!mediaQuery) return undefined;
+
+    const updatePreference = () => setPrefersReducedMotion(mediaQuery.matches);
+    updatePreference();
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', updatePreference);
+    } else {
+      mediaQuery.addListener?.(updatePreference);
+    }
+
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener('change', updatePreference);
+      } else {
+        mediaQuery.removeListener?.(updatePreference);
+      }
+    };
+  }, []);
+
+  return prefersReducedMotion;
+}
 
 /**
  * Ambient flow used by the light liquid theme. The reference is a text-free
@@ -9,6 +40,7 @@ const LIQUID_PLAYBACK_RATE = 2 / 3;
  * boundary so the motion does not snap back to the first frame.
  */
 export default function LiquidFlowBackground() {
+  const prefersReducedMotion = usePrefersReducedMotion();
   const videoRefs = useRef([]);
   const transitionTimer = useRef(null);
   const activeIndexRef = useRef(0);
@@ -59,8 +91,21 @@ export default function LiquidFlowBackground() {
         video.removeEventListener('ended', onEnded);
       });
       window.clearTimeout(transitionTimer.current);
+      transitionTimer.current = null;
+      videos.forEach((video) => {
+        video.pause();
+        try {
+          video.currentTime = 0;
+        } catch {
+          // Media that has not loaded yet can reject currentTime assignment.
+        }
+      });
+      transitioningRef.current = false;
+      activeIndexRef.current = 0;
     };
-  }, []);
+  }, [prefersReducedMotion]);
+
+  if (prefersReducedMotion) return null;
 
   const setVideoRef = (index) => (node) => {
     videoRefs.current[index] = node;
@@ -73,7 +118,7 @@ export default function LiquidFlowBackground() {
       autoPlay={index === 0}
       muted
       playsInline
-      preload="auto"
+      preload={index === 0 ? 'auto' : 'none'}
       poster="/texture-background-2-poster.png"
       onLoadedMetadata={(event) => {
         event.currentTarget.playbackRate = LIQUID_PLAYBACK_RATE;
