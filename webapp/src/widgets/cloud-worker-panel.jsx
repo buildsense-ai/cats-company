@@ -335,8 +335,11 @@ export default function CloudWorkerPanel({
               const meta = statusMeta(worker.cloud_status);
               const lifecycleHint = cloudLifecycleHint(worker.cloud_status);
               const managementBlocked = cloudActionsBlocked(worker.cloud_status);
-              const acting = activeAction.name === worker.tenant_name;
-              const actionName = acting ? activeAction.action : '';
+              const remoteActing = worker.cloud_operation_status === 'running';
+              const acting = activeAction.name === worker.tenant_name || remoteActing;
+              const actionName = activeAction.name === worker.tenant_name
+                ? activeAction.action
+                : (remoteActing ? worker.cloud_operation_action : '');
               const currentVersion = parseVersion(worker.app_version);
               const upgradeVersions = currentVersion
                 ? releaseVersions.filter((version) => compareVersions(version, worker.app_version) > 0)

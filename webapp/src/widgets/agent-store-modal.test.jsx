@@ -19,6 +19,7 @@ vi.mock('../api', () => ({
     getMyBots: vi.fn(),
     generateBotInviteCode: vi.fn(),
     updateCloudWorker: vi.fn(),
+    getCloudWorkerOperation: vi.fn(),
     resetCloudWorker: vi.fn(),
     rollbackCloudWorker: vi.fn(),
     getSkillHubSkill: vi.fn(),
@@ -36,7 +37,11 @@ vi.mock('../api', () => ({
 }));
 
 import { api } from '../api';
-import AgentStoreModal from './agent-store-modal';
+import AgentStoreModal, {
+  cloudWorkerActionMayStillRun,
+  cloudWorkerActionMessage,
+  cloudWorkerActionReachedTarget,
+} from './agent-store-modal';
 
 describe('AgentStoreModal', () => {
   let container;
@@ -108,6 +113,44 @@ describe('AgentStoreModal', () => {
     document.body.querySelectorAll('.cc-agent-skill-detail-overlay').forEach((node) => node.remove());
     document.body.querySelectorAll('.cc-agent-prompt-editor-overlay').forEach((node) => node.remove());
     container.remove();
+  });
+
+  test('keeps the action lock only for errors that may hide an accepted operation', () => {
+    expect(cloudWorkerActionMayStillRun({ code: 'NETWORK_ERROR' })).toBe(true);
+    expect(cloudWorkerActionMayStillRun({ code: 'REQUEST_TIMEOUT' })).toBe(true);
+    expect(cloudWorkerActionMayStillRun({ code: 'CLOUD_OPERATION_INVALID_RESPONSE' })).toBe(true);
+    expect(cloudWorkerActionMayStillRun({ status: 504 })).toBe(true);
+    expect(cloudWorkerActionMayStillRun({ status: 502, data: {} })).toBe(true);
+    expect(cloudWorkerActionMayStillRun({
+      status: 404,
+      data: { error: 'cloud worker operation not found' },
+    })).toBe(true);
+    expect(cloudWorkerActionMayStillRun({
+      status: 404,
+      data: { error: 'cloud worker not found' },
+    })).toBe(false);
+    expect(cloudWorkerActionMayStillRun({ status: 503, data: {} })).toBe(false);
+    expect(cloudWorkerActionMayStillRun({
+      status: 502,
+      data: { code: 'cloud_worker_update_failed' },
+    })).toBe(false);
+    expect(cloudWorkerActionMessage({ status: 504 }, '更新'))
+      .toContain('不要重复提交');
+  });
+
+  test('confirms completion from application version only', () => {
+    const action = {
+      target_version: 'v1.5.5',
+      previous_version: '1.5.4',
+    };
+    expect(cloudWorkerActionReachedTarget(action, { app_version: '1.5.5', cloud_version: '1.5.4' }))
+      .toBe(true);
+    // A matching base-image version is not evidence that the application
+    // release finished installing.
+    expect(cloudWorkerActionReachedTarget(action, { app_version: '', cloud_version: '1.5.5' }))
+      .toBe(false);
+    expect(cloudWorkerActionReachedTarget(action, { app_version: '1.5.4', cloud_version: '1.5.5' }))
+      .toBe(false);
   });
 
   test('allows creating an assistant without a usage description', async () => {

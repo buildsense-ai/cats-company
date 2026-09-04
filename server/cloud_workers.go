@@ -20,7 +20,10 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -74,7 +77,9 @@ type CloudWorkerHandler struct {
 	// delete). These are low-frequency, long-running, paid-instance actions;
 	// a global lock keeps quota checks atomic and prevents a single user from
 	// piling up concurrent script processes.
-	opMu sync.Mutex
+	opMu        sync.Mutex
+	operationMu sync.Mutex
+	operations  map[string]cloudWorkerOperation
 
 	// Cloud provider reads take seconds and must never sit on the HTTP request
 	// path. Requests read the latest completed snapshot while one background
@@ -133,21 +138,21 @@ func cloudWorkerTenantName(username string) string {
 
 // CloudWorkerConfig configures the cloud worker control plane.
 type CloudWorkerConfig struct {
-	CreateQuota      string // CATSCO_WORKER_CREATE_QUOTA "<uid>=<n>;<uid>=<n>" — unset means 0 (disabled)
-	ProvisionScript  string // CATSCO_WORKER_PROVISION_SCRIPT
-	ResetScript      string // CATSCO_WORKER_RESET_SCRIPT
-	RenewScript      string // CATSCO_WORKER_RENEW_SCRIPT
-	UpdateScript     string // CATSCO_WORKER_UPDATE_SCRIPT
-	RollbackScript   string // CATSCO_WORKER_ROLLBACK_SCRIPT
-	DestroyScript    string // CATSCO_WORKER_DESTROY_SCRIPT
-	ImagesScript     string // CATSCO_WORKER_IMAGES_SCRIPT
-	ReleasesScript   string // CATSCO_WORKER_RELEASES_SCRIPT
-	StatusScript     string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
-	SSHJumpHost      string
-	SSHJumpAlias     string
-	SSHJumpPort      string
-	SSHJumpUser      string
-	SSHJumpKey       string
+	CreateQuota     string // CATSCO_WORKER_CREATE_QUOTA "<uid>=<n>;<uid>=<n>" — unset means 0 (disabled)
+	ProvisionScript string // CATSCO_WORKER_PROVISION_SCRIPT
+	ResetScript     string // CATSCO_WORKER_RESET_SCRIPT
+	RenewScript     string // CATSCO_WORKER_RENEW_SCRIPT
+	UpdateScript    string // CATSCO_WORKER_UPDATE_SCRIPT
+	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
+	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
+	ImagesScript    string // CATSCO_WORKER_IMAGES_SCRIPT
+	ReleasesScript  string // CATSCO_WORKER_RELEASES_SCRIPT
+	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
+	SSHJumpHost     string
+	SSHJumpAlias    string
+	SSHJumpPort     string
+	SSHJumpUser     string
+	SSHJumpKey      string
 	// SSHHostJumpKey and SSHHostStateRoot are paths as seen from the
 	// cats-ctyun host, where copied admin commands are executed. They must
 	// never contain key material itself.
@@ -256,6 +261,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		sshPort:          cfg.SSHPort,
 		credits:          nil,
 		scriptTimeout:    10 * time.Minute,
+		operations:       make(map[string]cloudWorkerOperation),
 	}
 	if credits, ok := db.(CloudWorkerCreditStore); ok {
 		handler.credits = credits
@@ -268,6 +274,55 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 	handler.requestCloudImageRefresh(true)
 	handler.requestCloudReleaseRefresh(true)
 	return handler
+}
+
+func newCloudWorkerOperationID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func (h *CloudWorkerHandler) rememberCloudWorkerOperation(op cloudWorkerOperation) {
+	now := time.Now()
+	h.operationMu.Lock()
+	if h.operations == nil {
+		h.operations = make(map[string]cloudWorkerOperation)
+	}
+	for id, existing := range h.operations {
+		if !existing.FinishedAt.IsZero() && now.Sub(existing.FinishedAt) > cloudWorkerOperationRetention {
+			delete(h.operations, id)
+		}
+	}
+	h.operations[op.ID] = op
+	h.operationMu.Unlock()
+}
+
+func (h *CloudWorkerHandler) finishCloudWorkerOperation(id, state, errorCode string) {
+	h.operationMu.Lock()
+	defer h.operationMu.Unlock()
+	op, ok := h.operations[id]
+	if !ok {
+		return
+	}
+	op.State = state
+	op.ErrorCode = errorCode
+	op.FinishedAt = time.Now()
+	h.operations[id] = op
+}
+
+func (h *CloudWorkerHandler) cloudWorkerOperation(id string) (cloudWorkerOperation, bool) {
+	h.operationMu.Lock()
+	defer h.operationMu.Unlock()
+	op, ok := h.operations[id]
+	if !ok || (!op.FinishedAt.IsZero() && time.Since(op.FinishedAt) > cloudWorkerOperationRetention) {
+		if ok {
+			delete(h.operations, id)
+		}
+		return cloudWorkerOperation{}, false
+	}
+	return op, true
 }
 
 func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter) bool {
@@ -323,7 +378,28 @@ type cloudWorkerSummary struct {
 	AppVersion      string `json:"app_version"`
 	LatestRelease   string `json:"latest_release,omitempty"`
 	UpdateAvailable bool   `json:"update_available,omitempty"`
+	OperationID     string `json:"operation_id,omitempty"`
+	OperationAction string `json:"operation_action,omitempty"`
+	OperationStatus string `json:"operation_status,omitempty"`
 }
+
+// cloudWorkerOperation is a short-lived, in-memory record for a long-running
+// worker action. The provider operation itself is authoritative; this record
+// only lets a client distinguish "accepted and still running" from a failed
+// HTTP request. Records are intentionally scoped to the authenticated owner.
+type cloudWorkerOperation struct {
+	ID         string
+	OwnerUID   int64
+	TenantName string
+	Action     string
+	Version    string
+	State      string
+	ErrorCode  string
+	StartedAt  time.Time
+	FinishedAt time.Time
+}
+
+const cloudWorkerOperationRetention = 30 * time.Minute
 
 // cloudWorkersOfOwner returns the cloud-managed workers owned by uid
 // (bots with a non-empty tenant_name).
@@ -421,6 +497,18 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 	for i := range workers {
 		workers[i].CloudStatus = "unavailable"
 	}
+	h.operationMu.Lock()
+	for i := range workers {
+		for _, op := range h.operations {
+			if op.OwnerUID == uid && op.TenantName == workers[i].TenantName && op.State == "running" {
+				workers[i].OperationID = op.ID
+				workers[i].OperationAction = op.Action
+				workers[i].OperationStatus = op.State
+				break
+			}
+		}
+	}
+	h.operationMu.Unlock()
 	infos, statusLoaded, statusRefreshing, statusUpdatedAt := h.cloudStatusSnapshot()
 	if statusLoaded {
 		for i := range workers {
@@ -1301,7 +1389,22 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		Version string `json:"version,omitempty"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body) // malformed body is ignored
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
+		if err := decoder.Decode(&body); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid request body",
+				"code":  "cloud_worker_invalid_request",
+			})
+			return
+		}
+		var extra interface{}
+		if err := decoder.Decode(&extra); err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid request body",
+				"code":  "cloud_worker_invalid_request",
+			})
+			return
+		}
 	}
 	body.Version = strings.TrimSpace(body.Version)
 	if requireVersion && body.Version == "" {
@@ -1322,6 +1425,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		}
 		args = append(args, "--version", body.Version)
 	}
+	var cleanupCredentialFile func()
 	if refreshIdentity {
 		// Keep the endpoint's authenticated-request contract, but never reuse
 		// this session token as the worker credential below.
@@ -1347,13 +1451,13 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity"})
 			return
 		}
-		credentialFile, cleanupCredentialFile, credentialErr := writeWorkerCredentialFile(workerToken, apiKey)
+		credentialFile, cleanup, credentialErr := writeWorkerCredentialFile(workerToken, apiKey)
 		if credentialErr != nil {
 			log.Printf("[cloud-worker] reset %s cannot create credential file: %v", name, credentialErr)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare cloud worker identity"})
 			return
 		}
-		defer cleanupCredentialFile()
+		cleanupCredentialFile = cleanup
 		args = append(args,
 			"--credential-file", credentialFile,
 			"--bot-uid", strconv.FormatInt(worker.UID, 10),
@@ -1367,21 +1471,123 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	}
 
 	if !h.tryBeginOperation(w) {
+		if cleanupCredentialFile != nil {
+			cleanupCredentialFile()
+		}
 		return
 	}
-	defer h.opMu.Unlock()
+	// Keep the original synchronous contract for an already-open browser tab
+	// during a rolling deployment. New clients explicitly opt into the 202 +
+	// polling contract; the repaired Nginx route gives legacy requests enough
+	// time to finish instead of failing at the generic 60-second timeout.
+	if r.URL.Query().Get("async") != "1" {
+		defer h.opMu.Unlock()
+		if cleanupCredentialFile != nil {
+			defer cleanupCredentialFile()
+		}
+		out, err := h.runScript(script, args...)
+		if err != nil {
+			log.Printf("[cloud-worker] %s %s failed: %v; output=%s", action, name, err, truncateWorkerOutput(out))
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "cloud worker " + action + " failed",
+				"code":  "cloud_worker_" + action + "_failed",
+			})
+			return
+		}
+		h.requestCloudStatusRefresh(true)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action})
+		return
+	}
+	operationID, idErr := newCloudWorkerOperationID()
+	if idErr != nil {
+		h.opMu.Unlock()
+		if cleanupCredentialFile != nil {
+			cleanupCredentialFile()
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create cloud worker operation"})
+		return
+	}
+	op := cloudWorkerOperation{
+		ID: operationID, OwnerUID: uid, TenantName: name, Action: action,
+		Version: body.Version, State: "running", StartedAt: time.Now(),
+	}
+	h.rememberCloudWorkerOperation(op)
 
-	out, err := h.runScript(script, args...)
-	if err != nil {
-		log.Printf("[cloud-worker] %s %s failed: %v; output=%s", action, name, err, truncateWorkerOutput(out))
-		// Script output stays in the server logs; never echo it back (the
-		// provision script receives an API key via argv).
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "cloud worker " + action + " failed"})
+	// Cloud provider updates routinely exceed the 60-second timeout of a
+	// browser, edge proxy, or corporate gateway. Accept the operation first,
+	// then release the global lock only after the script has finished. This
+	// prevents duplicate paid operations while making the HTTP request short.
+	go func() {
+		// The reset script reads this short-lived credential file. It must stay
+		// present until the background process has exited; deferring cleanup in
+		// the request handler would delete it as soon as the 202 response is
+		// written.
+		if cleanupCredentialFile != nil {
+			defer cleanupCredentialFile()
+		}
+		out, err := h.runScript(script, args...)
+		if err != nil {
+			log.Printf("[cloud-worker] %s %s failed: %v; output=%s", action, name, err, truncateWorkerOutput(out))
+			errorCode := "cloud_worker_" + action + "_failed"
+			if errors.Is(err, context.DeadlineExceeded) {
+				errorCode = "cloud_worker_" + action + "_timeout"
+			}
+			h.finishCloudWorkerOperation(operationID, "failed", errorCode)
+		} else {
+			h.requestCloudStatusRefresh(true)
+			h.finishCloudWorkerOperation(operationID, "succeeded", "")
+		}
+		// Publish the terminal state before releasing the global gate. This
+		// avoids a small race where a subsequent action is accepted while the
+		// previous operation is still reported as running by the roster.
+		h.opMu.Unlock()
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status": "pending", "action": action, "operation_id": operationID,
+	})
+}
+
+// HandleOperation returns the state of a previously accepted worker action.
+// The operation ID is required so an old browser cannot observe another
+// operation for the same tenant; ownership is checked before the record.
+func (h *CloudWorkerHandler) HandleOperation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	// The script ran synchronously to completion.
-	h.requestCloudStatusRefresh(true)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action})
+	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	name := r.PathValue("name")
+	operationID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if name == "" || operationID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "worker name and operation id are required"})
+		return
+	}
+	if len(operationID) > 128 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "operation id is too long"})
+		return
+	}
+	op, ok := h.cloudWorkerOperation(operationID)
+	if !ok || op.OwnerUID != uid || op.TenantName != name {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "cloud worker operation not found"})
+		return
+	}
+	response := map[string]interface{}{
+		"operation_id": op.ID,
+		"action":       op.Action,
+		"status":       op.State,
+		"started_at":   op.StartedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !op.FinishedAt.IsZero() {
+		response["finished_at"] = op.FinishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if op.ErrorCode != "" {
+		response["code"] = op.ErrorCode
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // HandleDelete rejects user-initiated cloud-worker destruction. Managed
@@ -1419,6 +1625,9 @@ func (h *CloudWorkerHandler) HandleSub(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(rest, "/reset"):
 		r.SetPathValue("name", strings.TrimSuffix(rest, "/reset"))
 		h.HandleReset(w, r)
+	case strings.HasSuffix(rest, "/operation"):
+		r.SetPathValue("name", strings.TrimSuffix(rest, "/operation"))
+		h.HandleOperation(w, r)
 	case rest != "" && !strings.Contains(rest, "/"):
 		// User deletion is policy-blocked; other methods remain unsupported.
 		r.SetPathValue("name", rest)
@@ -1452,6 +1661,9 @@ func (h *CloudWorkerHandler) runScriptTimeout(timeout time.Duration, script stri
 	cmd := exec.CommandContext(ctx, script, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return string(out), fmt.Errorf("script timed out after %s: %w", timeout, ctx.Err())
+		}
 		return string(out), fmt.Errorf("script failed: %w", err)
 	}
 	return string(out), nil

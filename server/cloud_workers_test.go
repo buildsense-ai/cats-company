@@ -254,6 +254,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 			body = "@echo off\r\necho worker-bot-bot-a\trunning\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\t1.4.7\r\necho worker-bot-bot-b\tcreating\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\t\r\n"
 		case "slow-status":
 			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
+		case "slow":
+			body = "@echo off\r\nping 127.0.0.1 -n 3 >nul\r\necho ok\r\n"
 		case "require-identity":
 			// Credentials must arrive through the restricted file, never argv.
 			body = "@echo off\r\nif not \"%3\"==\"--credential-file\" exit /b 1\r\nif not exist \"%4\" exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
@@ -287,6 +289,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		body = "#!/bin/sh\nprintf 'worker-bot-bot-a\\trunning\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\t1.4.7\\nworker-bot-bot-b\\tcreating\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\t\\n'\n"
 	case "slow-status":
 		body = "#!/bin/sh\nsleep 1\nprintf 'worker-bot-bot-a\\trunning\\timg-slow\\tv1.4.8\\n'\n"
+	case "slow":
+		body = "#!/bin/sh\nsleep 0.2\necho ok\n"
 	case "require-identity":
 		// Credentials are read from the 0600 file; identity metadata remains argv.
 		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail
@@ -1124,14 +1128,39 @@ func TestCloudWorkerHandleResetUsesPersistentOwnerToken(t *testing.T) {
 	ts.botAPIKeys = map[int64]string{1: "worker-specific-key"}
 	ts.creatorUser = &types.User{Username: "alice", Email: "alice@example.com", DisplayName: "Alice"}
 	requestToken := "test-owner-token"
-	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1"})
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset?async=1", map[string]string{"version": "v1"})
 	req.Header.Set("Authorization", "Bearer "+requestToken)
 	rec := httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d want 202 body=%s", rec.Code, rec.Body.String())
 	}
+	accepted := decodeCloudWorkerList(t, rec)
+	waitCloudWorkerOperation(t, h, 7, "bot-bot-a", accepted["operation_id"].(string))
 	assertPersistentWorkerToken(t, tokenPath, 7, requestToken)
+}
+
+func TestCloudWorkerHandleActionRejectsMalformedBody(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"reset": writeWorkerOpScript(t, "ok")})
+	if cfg.ResetScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", strings.NewReader(`{"version":`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	if h.opMu.TryLock() {
+		h.opMu.Unlock()
+	} else {
+		t.Fatal("malformed action body must not start an operation")
+	}
 }
 
 func TestCloudWorkerHandleCreateInvalidUsername(t *testing.T) {
@@ -1251,6 +1280,29 @@ func TestCloudWorkerHandleCreateSetTenantFails(t *testing.T) {
 	}
 }
 
+func waitCloudWorkerOperation(t *testing.T, h *CloudWorkerHandler, uid int64, name, operationID string) map[string]interface{} {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req := cloudWorkerRequest(uid, http.MethodGet, "/api/cloud-workers/"+name+"/operation?id="+operationID, nil)
+		rec := httptest.NewRecorder()
+		h.HandleSub(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("operation status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		out := decodeCloudWorkerList(t, rec)
+		if out["status"] == "succeeded" {
+			return out
+		}
+		if out["status"] == "failed" {
+			t.Fatalf("operation failed: %s", rec.Body.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for cloud worker operation")
+	return nil
+}
+
 func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 	cfg := workerScriptCfg(t, "7=5", map[string]string{
 		"rollback": writeWorkerOpScript(t, "ok"),
@@ -1267,28 +1319,31 @@ func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 
 	// update and rollback forward the optional version selector.
 	for _, path := range []string{
-		"/api/cloud-workers/bot-bot-a/update",
-		"/api/cloud-workers/bot-bot-a/rollback",
+		"/api/cloud-workers/bot-bot-a/update?async=1",
+		"/api/cloud-workers/bot-bot-a/rollback?async=1",
 	} {
 		req := cloudWorkerRequest(7, http.MethodPost, path, map[string]string{"version": "v1"})
 		rec := httptest.NewRecorder()
 		h.HandleSub(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s status=%d want 200 body=%s", path, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("%s status=%d want 202 body=%s", path, rec.Code, rec.Body.String())
 		}
 		out := decodeCloudWorkerList(t, rec)
-		if out["status"] != "ok" {
+		if out["status"] != "pending" || out["operation_id"] == nil {
 			t.Fatalf("%s status field=%v", path, out["status"])
 		}
+		waitCloudWorkerOperation(t, h, 7, "bot-bot-a", out["operation_id"].(string))
 	}
 
 	// reset without a version selector succeeds (rebuild from latest image)
-	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil)
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset?async=1", nil)
 	rec := httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reset status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("reset status=%d want 202 body=%s", rec.Code, rec.Body.String())
 	}
+	out := decodeCloudWorkerList(t, rec)
+	waitCloudWorkerOperation(t, h, 7, "bot-bot-a", out["operation_id"].(string))
 }
 
 func TestCloudWorkerBusyOperationReturnsConflictWithoutQueueing(t *testing.T) {
@@ -1335,6 +1390,160 @@ func TestCloudWorkerBusyOperationReturnsConflictWithoutQueueing(t *testing.T) {
 	}
 }
 
+func TestCloudWorkerOperationIsAcceptedAndReportsFailure(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update": writeWorkerOpScript(t, "fail"),
+	})
+	if cfg.UpdateScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update?async=1", map[string]string{"version": "v1"})
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d want 202 body=%s", rec.Code, rec.Body.String())
+	}
+	accepted := decodeCloudWorkerList(t, rec)
+	operationID := accepted["operation_id"].(string)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		statusReq := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers/bot-bot-a/operation?id="+operationID, nil)
+		statusRec := httptest.NewRecorder()
+		h.HandleSub(statusRec, statusReq)
+		status := decodeCloudWorkerList(t, statusRec)
+		if status["status"] == "failed" {
+			if status["code"] != "cloud_worker_update_failed" {
+				t.Fatalf("failure code=%v", status["code"])
+			}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if time.Now().After(deadline) {
+		t.Fatal("operation did not report failure")
+	}
+	// A different owner cannot inspect the operation record.
+	otherReq := cloudWorkerRequest(8, http.MethodGet, "/api/cloud-workers/bot-bot-a/operation?id="+operationID, nil)
+	otherRec := httptest.NewRecorder()
+	h.HandleSub(otherRec, otherReq)
+	if otherRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner status=%d want 404", otherRec.Code)
+	}
+}
+
+func TestCloudWorkerLegacyActionRemainsSynchronous(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update": writeWorkerOpScript(t, "ok"),
+	})
+	if cfg.UpdateScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1"})
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	if out["status"] != "ok" {
+		t.Fatalf("legacy status field=%v", out["status"])
+	}
+}
+
+func TestCloudWorkerLegacyActionReportsTerminalFailureCode(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update": writeWorkerOpScript(t, "fail"),
+	})
+	if cfg.UpdateScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1"})
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("legacy failure status=%d want 502 body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	if out["code"] != "cloud_worker_update_failed" {
+		t.Fatalf("legacy failure code=%v want cloud_worker_update_failed", out["code"])
+	}
+}
+
+func TestCloudWorkerAsyncActionRejectsDuplicateWhileRunning(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update": writeWorkerOpScript(t, "slow"),
+	})
+	if cfg.UpdateScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	first := httptest.NewRecorder()
+	h.HandleSub(first, cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update?async=1", map[string]string{"version": "v1"}))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status=%d want 202 body=%s", first.Code, first.Body.String())
+	}
+	second := httptest.NewRecorder()
+	h.HandleSub(second, cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update?async=1", map[string]string{"version": "v1"}))
+	if second.Code != http.StatusConflict {
+		t.Fatalf("duplicate status=%d want 409 body=%s", second.Code, second.Body.String())
+	}
+	if second.Header().Get("Retry-After") != "15" {
+		t.Fatalf("duplicate Retry-After=%q want 15", second.Header().Get("Retry-After"))
+	}
+	accepted := decodeCloudWorkerList(t, first)
+	waitCloudWorkerOperation(t, h, 7, "bot-bot-a", accepted["operation_id"].(string))
+}
+
+func TestCloudWorkerAsyncActionReportsTimeout(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update": writeWorkerOpScript(t, "slow"),
+	})
+	if cfg.UpdateScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	h.scriptTimeout = 20 * time.Millisecond
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+	acceptedRec := httptest.NewRecorder()
+	h.HandleSub(acceptedRec, cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update?async=1", map[string]string{"version": "v1"}))
+	if acceptedRec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d want 202 body=%s", acceptedRec.Code, acceptedRec.Body.String())
+	}
+	accepted := decodeCloudWorkerList(t, acceptedRec)
+	operationID := accepted["operation_id"].(string)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		statusRec := httptest.NewRecorder()
+		h.HandleSub(statusRec, cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers/bot-bot-a/operation?id="+operationID, nil))
+		status := decodeCloudWorkerList(t, statusRec)
+		if status["status"] == "failed" {
+			if status["code"] != "cloud_worker_update_timeout" {
+				t.Fatalf("timeout code=%v body=%s", status["code"], statusRec.Body.String())
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("operation did not report timeout")
+}
+
 // TestCloudWorkerHandleResetForwardsVersion asserts reset forwards an optional
 // version selector to reset-worker.sh (which maps it to the matching image id,
 // falling back to the latest image when omitted).
@@ -1351,16 +1560,17 @@ func TestCloudWorkerHandleResetForwardsVersion(t *testing.T) {
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 	}
 
-	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1"})
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset?async=1", map[string]string{"version": "v1"})
 	rec := httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reset with version status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("reset with version status=%d want 202 body=%s", rec.Code, rec.Body.String())
 	}
 	out := decodeCloudWorkerList(t, rec)
-	if out["status"] != "ok" {
+	if out["status"] != "pending" {
 		t.Fatalf("reset status field=%v", out["status"])
 	}
+	waitCloudWorkerOperation(t, h, 7, "bot-bot-a", out["operation_id"].(string))
 }
 
 func TestCloudWorkerHandleUpdateRequiresExplicitApplicationVersion(t *testing.T) {
@@ -1423,12 +1633,14 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	ts.creatorUser = &types.User{Username: "owner-name", DisplayName: "Owner Display"}
 
 	// update forwards the selected target.
-	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1.4.9"})
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update?async=1", map[string]string{"version": "v1.4.9"})
 	rec := httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("update status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("update status=%d want 202 body=%s", rec.Code, rec.Body.String())
 	}
+	op := decodeCloudWorkerList(t, rec)
+	waitCloudWorkerOperation(t, h, 7, "bot-bot-a", op["operation_id"].(string))
 	argv, err := os.ReadFile(recordFile)
 	if err != nil {
 		t.Fatal(err)
@@ -1438,12 +1650,14 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	}
 
 	// rollback forwards the version selector
-	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", map[string]string{"version": "v1.4.7"})
+	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback?async=1", map[string]string{"version": "v1.4.7"})
 	rec = httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("rollback status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("rollback status=%d want 202 body=%s", rec.Code, rec.Body.String())
 	}
+	op = decodeCloudWorkerList(t, rec)
+	waitCloudWorkerOperation(t, h, 7, "bot-bot-a", op["operation_id"].(string))
 	argv, err = os.ReadFile(recordFile)
 	if err != nil {
 		t.Fatal(err)
@@ -1453,12 +1667,14 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	}
 
 	// reset forwards the version selector too
-	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1.4.7"})
+	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset?async=1", map[string]string{"version": "v1.4.7"})
 	rec = httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reset status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("reset status=%d want 202 body=%s", rec.Code, rec.Body.String())
 	}
+	op = decodeCloudWorkerList(t, rec)
+	waitCloudWorkerOperation(t, h, 7, "bot-bot-a", op["operation_id"].(string))
 	argv, err = os.ReadFile(recordFile)
 	if err != nil {
 		t.Fatal(err)
@@ -1529,6 +1745,8 @@ func TestCloudWorkerHandleSubRouteBoundaries(t *testing.T) {
 		{http.MethodPost, "/api/cloud-workers/bot-bot-a", http.StatusMethodNotAllowed},
 		{http.MethodPost, "/api/cloud-workers/", http.StatusNotFound},
 		{http.MethodGet, "/api/cloud-workers/meta/x", http.StatusNotFound},
+		{http.MethodGet, "/api/cloud-workers/bot-bot-a/operation", http.StatusBadRequest},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/operation?id=unknown", http.StatusMethodNotAllowed},
 	}
 	for _, c := range cases {
 		req := cloudWorkerRequest(7, c.method, c.path, nil)
@@ -1536,6 +1754,10 @@ func TestCloudWorkerHandleSubRouteBoundaries(t *testing.T) {
 		h.HandleSub(rec, req)
 		if rec.Code != c.want {
 			t.Fatalf("%s %s status=%d want %d body=%s", c.method, c.path, rec.Code, c.want, rec.Body.String())
+		}
+		if rec.Code == http.StatusAccepted {
+			out := decodeCloudWorkerList(t, rec)
+			waitCloudWorkerOperation(t, h, 7, "bot-bot-a", out["operation_id"].(string))
 		}
 	}
 }
@@ -1588,9 +1810,9 @@ func TestCloudWorkerMuxRouting(t *testing.T) {
 		{http.MethodGet, "/api/cloud-workers", nil, http.StatusOK},
 		{http.MethodPost, "/api/cloud-workers", map[string]string{"username": "bot-x", "display_name": "X"}, http.StatusCreated},
 		{http.MethodGet, "/api/cloud-workers/meta", nil, http.StatusOK},
-		{http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1.4.9"}, http.StatusOK},
-		{http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", nil, http.StatusOK},
-		{http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil, http.StatusOK},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/update?async=1", map[string]string{"version": "v1.4.9"}, http.StatusAccepted},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback?async=1", nil, http.StatusAccepted},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/reset?async=1", nil, http.StatusAccepted},
 		{http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil, http.StatusForbidden},
 	}
 	for _, c := range cases {
@@ -1599,6 +1821,10 @@ func TestCloudWorkerMuxRouting(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		if rec.Code != c.want {
 			t.Fatalf("%s %s status=%d want %d body=%s", c.method, c.path, rec.Code, c.want, rec.Body.String())
+		}
+		if rec.Code == http.StatusAccepted {
+			out := decodeCloudWorkerList(t, rec)
+			waitCloudWorkerOperation(t, h, 7, "bot-bot-a", out["operation_id"].(string))
 		}
 	}
 }

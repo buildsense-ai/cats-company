@@ -48,6 +48,19 @@ class DeployProdWorkflowTest(unittest.TestCase):
             'systemctl enable --now catsco-worker-release-prune.timer', workflow
         )
 
+    def test_prod_deploy_repairs_cloud_worker_timeout_route_on_both_domains(self):
+        workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ensure-cloud-worker-nginx.sh", workflow)
+        for route in (
+            "/etc/nginx/sites-available/catscompany-app:app.catsco.cc",
+            "/etc/nginx/sites-available/catscompany-api:api.catsco.cc",
+            "/etc/nginx/sites-available/catscompany-app-cn:app.catsco.cn",
+            "/etc/nginx/sites-available/catscompany-api-cn:api.catsco.cn",
+        ):
+            self.assertIn(route, workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
