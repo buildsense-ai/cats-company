@@ -171,6 +171,8 @@ jobs:
           sudo -n "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app
           sudo -n "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
           sudo -n "$root/compose/ensure-cloud-worker-nginx.sh" \
+            /etc/nginx/sites-available/catscompany-app:app.catsco.cc \
+            /etc/nginx/sites-available/catscompany-api:api.catsco.cc \
             /etc/nginx/sites-available/catscompany-app-cn:app.catsco.cn \
             /etc/nginx/sites-available/catscompany-api-cn:api.catsco.cn
           # Preview is an independent vhost and only activates after its own

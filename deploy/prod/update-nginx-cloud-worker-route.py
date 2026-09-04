@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add the long-running cloud-worker API route to a host Nginx vhost.
 
-The migrated ``app.catsco.cn`` vhost initially only had the generic ``/api/``
+The migrated application vhosts initially only had the generic ``/api/``
 route. Nginx's default upstream timeout is 60 seconds, which made a valid
 worker update look like a failed operation. Keep the special route scoped to
 the cloud-worker endpoints so ordinary API timeout policy is unchanged.
