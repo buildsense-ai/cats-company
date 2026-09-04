@@ -189,104 +189,22 @@ jobs:
         working-directory: webapp
         run: npm run build
 
-  change_detection:
-    name: Detect dependency audit scope
+  dependency_review:
+    name: Dependency review
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    outputs:
-      audit_required: ${{ steps.scope.outputs.audit_required }}
-      audit_matrix: ${{ steps.scope.outputs.audit_matrix }}
-    steps:
-      - name: Checkout history
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Select changed lockfiles
-        id: scope
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-          CURRENT_SHA: ${{ github.sha }}
-          REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            changed="$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA")"
-          else
-            changed=""
-          fi
-
-          export CHANGED_FILES="$changed"
-          matrix="$(python3 - <<'PY'
-          import json
-          import os
-
-          lockfiles = [
-              ("root", ".", "package-lock.json"),
-              ("webapp", "webapp", "webapp/package-lock.json"),
-              ("TypeScript SDK", "bot-sdk/typescript", "bot-sdk/typescript/package-lock.json"),
-              ("XiaoBa bot", "bots/xiaoba-ts", "bots/xiaoba-ts/package-lock.json"),
-          ]
-          changed = set(os.environ.get("CHANGED_FILES", "").splitlines())
-          event_name = os.environ["EVENT_NAME"]
-          if event_name == "workflow_dispatch":
-              # An explicit run is an intentional full audit.
-              selected = lockfiles
-          elif event_name == "push" and os.environ.get("REF") == "refs/heads/main":
-              # Keep the full audit on main. Feature-branch pushes are often a
-              # duplicate of the PR workflow, so they use the same narrowed
-              # scope instead of adding another four audits.
-              selected = lockfiles
-          elif event_name in {"push", "pull_request"}:
-              selected = [item for item in lockfiles if item[2] in changed]
-          else:
-              selected = lockfiles
-          print(json.dumps([
-              {"name": name, "directory": directory, "lockfile": lockfile}
-              for name, directory, lockfile in selected
-          ], separators=(",", ":")))
-          PY
-          )"
-
-          echo "audit_matrix=$matrix" >> "$GITHUB_OUTPUT"
-          if [[ "$matrix" == "[]" ]]; then
-            echo 'audit_required=false' >> "$GITHUB_OUTPUT"
-            echo 'No dependency lockfile selected; skipping the audit matrix.'
-          else
-            echo 'audit_required=true' >> "$GITHUB_OUTPUT"
-            echo "Auditing dependency scopes: $matrix"
-          fi
-
-  security_audit:
-    name: JavaScript audit (${{ matrix.name }})
-    needs: change_detection
-    if: ${{ needs.change_detection.outputs.audit_required == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.change_detection.outputs.audit_matrix) }}
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
         with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: ${{ matrix.lockfile }}
-
-      - name: Audit JavaScript dependencies
-        working-directory: ${{ matrix.directory }}
-        run: npm audit --package-lock-only --audit-level=high
+          fail-on-severity: high
 
   validation:
     name: Compose and deploy validation
@@ -391,8 +309,7 @@ jobs:
       - node_sdk
       - bot_example
       - webapp
-      - change_detection
-      - security_audit
+      - dependency_review
       - validation
       - docker_images
     runs-on: ubuntu-latest
@@ -404,18 +321,15 @@ jobs:
           NODE_SDK: ${{ needs.node_sdk.result }}
           BOT_EXAMPLE: ${{ needs.bot_example.result }}
           WEBAPP: ${{ needs.webapp.result }}
-          CHANGE_DETECTION: ${{ needs.change_detection.result }}
-          AUDIT_REQUIRED: ${{ needs.change_detection.outputs.audit_required }}
-          SECURITY_AUDIT: ${{ needs.security_audit.result }}
+          DEPENDENCY_REVIEW: ${{ needs.dependency_review.result }}
           VALIDATION: ${{ needs.validation.result }}
           DOCKER_IMAGES: ${{ needs.docker_images.result }}
         run: |
-          printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nwebapp=%s\nchange-detection=%s\naudit-required=%s\nsecurity-audit=%s\nvalidation=%s\ndocker-images=%s\n' \
-            "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$WEBAPP" "$CHANGE_DETECTION" "$AUDIT_REQUIRED" "$SECURITY_AUDIT" "$VALIDATION" "$DOCKER_IMAGES"
+          printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nwebapp=%s\ndependency-review=%s\nvalidation=%s\ndocker-images=%s\n' \
+            "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$WEBAPP" "$DEPENDENCY_REVIEW" "$VALIDATION" "$DOCKER_IMAGES"
           if [[ "$BACKEND" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$WEBAPP" != success || \
-                "$CHANGE_DETECTION" != success || "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
-                ("$AUDIT_REQUIRED" == true && "$SECURITY_AUDIT" != success) || \
-                ("$AUDIT_REQUIRED" != true && "$SECURITY_AUDIT" != skipped) ]]; then
+                "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
+                ("$DEPENDENCY_REVIEW" != success && "$DEPENDENCY_REVIEW" != skipped) ]]; then
             echo 'One or more CI suites did not succeed.' >&2
             exit 1
           fi
