@@ -1,0 +1,58 @@
+name: Full dependency audit
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cats-company-full-dependency-audit
+  cancel-in-progress: true
+
+jobs:
+  npm_audit:
+    name: npm audit (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # The PR gate uses Dependency Review and stays sub-minute. This separate
+    # full-tree audit must tolerate a slow registry response without hanging
+    # indefinitely; each npm request remains bounded below.
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: root
+            directory: .
+            lockfile: package-lock.json
+          - name: webapp
+            directory: webapp
+            lockfile: webapp/package-lock.json
+          - name: TypeScript SDK
+            directory: bot-sdk/typescript
+            lockfile: bot-sdk/typescript/package-lock.json
+          - name: XiaoBa bot
+            directory: bots/xiaoba-ts
+            lockfile: bots/xiaoba-ts/package-lock.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+
+      - name: Audit JavaScript dependencies
+        working-directory: ${{ matrix.directory }}
+        run: >-
+          npm audit --package-lock-only --audit-level=high
+          --fetch-timeout=15000 --fetch-retries=1
+          --fetch-retry-mintimeout=1000 --fetch-retry-maxtimeout=5000
