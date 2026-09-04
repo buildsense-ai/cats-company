@@ -250,6 +250,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
             <Search className="cc-global-search-leading-icon" size={19} aria-hidden="true" />
             <input
               ref={inputRef}
+              data-cc-focus-group="true"
               name="global-search"
               autoComplete="off"
               spellCheck={false}

@@ -1474,59 +1474,386 @@ body {
   line-height: 1.4;
 }
 
-.cloud-artifacts-scope {
+.cloud-artifact-filter {
   flex: 0 0 auto;
   margin-left: auto;
 }
 
-.cloud-artifacts-scope-select {
-  width: 96px;
-  min-width: 96px;
-}
-
-.cloud-artifacts-scope-select .v3-custom-model-select-trigger {
-  width: 100%;
+.cloud-artifact-filter-trigger {
+  min-width: 84px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
   border: 1px solid transparent;
+  border-radius: var(--cc-radius-md);
   color: var(--cc-text-secondary);
   background: var(--cc-control-surface);
+  font: inherit;
+  font-size: 12px;
   font-weight: var(--cc-font-weight-medium);
+  touch-action: manipulation;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.cloud-artifacts-scope-select .v3-custom-model-select-trigger:hover,
-.cloud-artifacts-scope-select .v3-custom-model-select-trigger[aria-expanded="true"] {
-  border-color: transparent !important;
+.cloud-artifact-filter-trigger:hover,
+.cloud-artifact-filter-trigger[aria-expanded="true"] {
   color: var(--cc-text);
-  background: var(--cc-selected) !important;
+  background: var(--cc-selected);
 }
 
-.cloud-artifacts-scope-select .v3-custom-model-select-trigger:focus-visible {
-  border-color: transparent !important;
-  outline: none;
+.cloud-artifact-filter-trigger:focus-visible {
+  border-color: var(--cc-focus-border);
   color: var(--cc-text);
-  background: var(--cc-selected) !important;
-  box-shadow: none !important;
+  background: var(--cc-selected);
 }
 
-.cloud-artifacts-scope-options {
-  min-width: 96px;
-  border: 1px solid var(--cc-text-secondary);
+.cloud-artifact-filter-trigger-count {
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 999px;
+  color: var(--cc-text);
+  background: color-mix(in srgb, var(--cc-text) 7%, transparent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.cloud-artifact-filter-popover {
+  z-index: 2200;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
   color: var(--cc-text-secondary);
-  background: var(--cc-panel);
-  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.08);
+  background: var(--cc-history-panel-bg);
+  box-shadow: 0 12px 28px color-mix(in srgb, #000 20%, transparent), 0 2px 6px color-mix(in srgb, #000 8%, transparent);
+  animation: cloud-artifact-filter-enter 140ms ease-out;
+  transform-origin: top right;
 }
 
-.cloud-artifacts-scope-options .v3-custom-model-select-option {
+.cloud-artifact-filter-popover[data-placement="top"] {
+  transform-origin: bottom right;
+}
+
+@keyframes cloud-artifact-filter-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-artifact-filter-popover {
+    animation: none;
+  }
+}
+
+.cloud-artifact-filter-tag-action {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cc-radius-md);
   color: var(--cc-text-secondary);
-  font-weight: var(--cc-font-weight-medium);
+  background: transparent;
+  touch-action: manipulation;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.cloud-artifacts-scope-options .v3-custom-model-select-option:is(:hover, .is-active) {
+.cloud-artifact-filter-tag-action:hover:not(:disabled) {
   color: var(--cc-text);
   background: var(--cc-hover);
 }
 
-.cloud-artifacts-scope-options .v3-custom-model-select-option[aria-selected="true"] {
-  color: var(--cc-accent-text);
+.cloud-artifact-filter-section {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+}
+
+.cloud-artifact-filter-scope-section {
+  padding-bottom: 8px;
+}
+
+.cloud-artifact-filter-section legend {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 0;
+  color: var(--cc-text);
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.4;
+}
+
+.cloud-artifact-filter-section legend > span:last-child:not(:first-child) {
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: var(--cc-font-weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.cloud-artifact-filter-scope-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-control-surface);
+}
+
+.cloud-artifact-filter-scope-options label {
+  position: relative;
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--cc-radius-md) - 2px);
+  color: var(--cc-muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-medium);
+  touch-action: manipulation;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.cloud-artifact-filter-scope-options label:hover:not(:has(input:disabled)) {
+  color: var(--cc-text);
+  background: var(--cc-hover);
+}
+
+.cloud-artifact-filter-scope-options label.is-selected {
+  border-color: transparent;
+  color: var(--cc-text);
+  background: var(--cc-selected);
+  font-weight: var(--cc-font-weight-semibold);
+  box-shadow: none;
+}
+
+.cloud-artifact-filter-scope-options label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.cloud-artifact-filter-scope-options label:focus-within {
+  outline: 0;
+  box-shadow: inset 2px 0 0 var(--cc-focus-border);
+}
+
+.cloud-artifact-filter-scope-options input,
+.cloud-artifact-filter-tag-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cloud-artifact-filter-tags-section {
+  padding-top: 9px;
+  padding-bottom: 8px;
+  border-top: 1px solid var(--cc-border);
+}
+
+.cloud-artifact-filter-tag-list {
+  display: grid;
+  gap: 2px;
+}
+
+.cloud-artifact-filter-tag-item {
+  min-width: 0;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--cc-radius-md);
+  transition: background-color 120ms ease;
+}
+
+.cloud-artifact-filter-tag-item:hover,
+.cloud-artifact-filter-tag-item:focus-within {
+  background: var(--cc-hover);
+}
+
+.cloud-artifact-filter-tag-item.is-selected {
+  background: var(--cc-selected);
+  box-shadow: inset 2px 0 0 var(--cc-text-secondary);
+}
+
+.cloud-artifact-filter-tag-item.is-renaming {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding-left: 8px;
+}
+
+.cloud-artifact-filter-tag-choice {
+  position: relative;
+  min-width: 0;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 6px 0 8px;
+  color: var(--cc-text-secondary);
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+.cloud-artifact-filter-tag-choice:focus-within {
+  border-radius: var(--cc-radius-md);
+  outline: 0;
+  box-shadow: inset 2px 0 0 var(--cc-focus-border);
+}
+
+.cloud-artifact-filter-check {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 5px;
+  color: var(--cc-history-panel-bg);
+  background: transparent;
+}
+
+.cloud-artifact-filter-tag-choice input:checked + .cloud-artifact-filter-check {
+  border-color: var(--cc-text);
+  background: var(--cc-text);
+}
+
+.cloud-artifact-filter-tag-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-text);
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-artifact-filter-tag-count {
+  margin-left: auto;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cloud-artifact-filter-tag-actions {
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(2px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+
+.cloud-artifact-filter-tag-item:hover .cloud-artifact-filter-tag-actions,
+.cloud-artifact-filter-tag-item:focus-within .cloud-artifact-filter-tag-actions {
+  opacity: 0.76;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .cloud-artifact-filter-tag-actions {
+    opacity: 0.62;
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
+  }
+}
+
+.cloud-artifact-filter-tag-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.cloud-artifact-filter-rename-input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid var(--cc-focus-border);
+  border-radius: var(--cc-radius-md);
+  color: var(--cc-text);
+  background: var(--cc-input-surface);
+  font: inherit;
+  font-size: 12px;
+}
+
+.cloud-artifact-filter-empty {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0 8px;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.cloud-artifact-filter-popover-footer {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  border-top: 1px solid var(--cc-border);
+}
+
+.cloud-artifact-filter-popover-footer button {
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--cc-radius-md);
+  color: var(--cc-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-medium);
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+.cloud-artifact-filter-popover-footer button:hover:not(:disabled) {
+  color: var(--cc-text);
+  background: var(--cc-hover);
 }
 
 .cloud-artifacts-context-copy strong {
@@ -1761,52 +2088,43 @@ body {
   cursor: pointer;
 }
 
-.cloud-artifacts-tag-filter {
+.cloud-artifacts-active-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 10px 18px 0;
+  margin: 0 0 10px;
+  padding: 0 2px;
 }
 
-.cloud-artifact-tag-chip,
-.cloud-artifact-tag-clear {
+.cloud-artifact-active-filter-chip,
+.cloud-artifact-active-filter-clear {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 5px;
   min-height: 28px;
-  padding: 0 12px;
+  padding: 0 9px;
   border: 1px solid var(--v3-border);
   border-radius: 999px;
-  color: var(--v3-text-muted);
-  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
+  color: var(--v3-text-main);
+  background: color-mix(in srgb, var(--v3-text-main) 10%, transparent);
+  font: inherit;
   font-size: 12px;
   cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
-.cloud-artifact-tag-chip span {
-  color: var(--v3-text-muted);
-  font-size: 11px;
-  opacity: 0.75;
-}
-
-.cloud-artifact-tag-chip:hover,
-.cloud-artifact-tag-clear:hover {
-  color: var(--v3-text-main);
+.cloud-artifact-active-filter-chip:hover,
+.cloud-artifact-active-filter-clear:hover {
   border-color: var(--v3-text-muted);
+  background: color-mix(in srgb, var(--v3-text-main) 15%, transparent);
 }
 
-.cloud-artifact-tag-chip.active {
-  color: var(--v3-primary);
-  border-color: var(--v3-primary);
-  background: rgba(74, 222, 128, 0.12);
-  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
-}
-
-.cloud-artifact-tag-chip.active span {
-  color: var(--v3-primary);
-  opacity: 0.8;
+.cloud-artifact-active-filter-clear {
+  border-color: transparent;
+  color: var(--v3-text-muted);
+  background: transparent;
 }
 
 .cloud-artifact-tags-row {
@@ -1817,6 +2135,51 @@ body {
   gap: 6px;
   padding: 8px 12px 10px;
   border-top: 1px solid var(--v3-border);
+}
+
+.cloud-artifact-result-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.cloud-artifact-result-group {
+  display: grid;
+  gap: 7px;
+}
+
+.cloud-artifact-result-group-title {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 2px 0;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+
+.cloud-artifact-result-group-count {
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border: 1px solid var(--v3-border);
+  border-radius: 999px;
+  color: var(--v3-text-muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.cloud-artifact-result-group-divider {
+  height: 1px;
+  margin: 2px 2px 0;
+  background: var(--v3-border);
 }
 
 .cloud-artifact-tag {
@@ -1836,8 +2199,9 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 28px;
+  height: 28px;
+  margin: -5px -5px -5px 0;
   padding: 0;
   border: 0;
   border-radius: 999px;
@@ -1847,9 +2211,10 @@ body {
   transition: color 0.15s ease, background 0.15s ease;
 }
 
-.cloud-artifact-tag button:hover {
-  color: #fdfefd;
-  background: #e5484d;
+.cloud-artifact-tag button:hover:not(:disabled),
+.cloud-artifact-tag button:active:not(:disabled) {
+  color: var(--v3-text-main);
+  background: transparent;
 }
 
 .cloud-artifact-tag button:focus-visible {
@@ -1858,49 +2223,138 @@ body {
 }
 
 .cloud-artifact-tag-editor {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.cloud-artifact-tag-editor-current {
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  width: 100%;
+}
+
+.cloud-artifact-tag-editor-compose {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.cloud-artifact-tag-entry {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  border: 1px solid var(--v3-border);
+  border-radius: var(--cc-radius-md);
+  background: color-mix(in srgb, var(--v3-text-main) 7%, transparent);
+}
+
+.cloud-artifact-tag-entry:focus-within {
+  border-color: var(--cc-focus-border);
+  background: color-mix(in srgb, var(--v3-text-main) 9%, transparent);
 }
 
 .cloud-artifact-tag-editor input {
-  flex: 1 1 140px;
   min-width: 0;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--v3-border);
-  border-radius: 6px;
+  height: 34px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--cc-radius-md) 0 0 var(--cc-radius-md);
   color: var(--v3-text-main);
-  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
+  background: transparent;
+  font: inherit;
   font-size: 12px;
 }
 
 .cloud-artifact-tag-editor input:focus-visible {
-  outline: 2px solid var(--v3-primary);
-  outline-offset: -1px;
+  outline: 0;
+  box-shadow: none !important;
 }
 
-.cloud-artifact-tag-editor > button {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--v3-border);
-  border-radius: 6px;
+.cloud-artifact-tag-add,
+.cloud-artifact-tag-done {
+  min-height: 34px;
+  border: 0;
+  border-radius: var(--cc-radius-md);
   color: var(--v3-text-muted);
-  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
+  background: transparent;
+  font: inherit;
   font-size: 12px;
+  touch-action: manipulation;
   cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition: color 140ms ease, background-color 140ms ease, transform 120ms ease;
 }
 
-.cloud-artifact-tag-editor > button:hover:not(:disabled) {
+.cloud-artifact-tag-add {
+  position: relative;
+  isolation: isolate;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.cloud-artifact-tag-add::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 5px;
+  border-radius: 50%;
+  background: transparent;
+  transition: background-color 140ms ease, transform 120ms ease;
+}
+
+.cloud-artifact-tag-done {
+  min-width: 52px;
+  padding: 0 9px;
+  color: var(--v3-text-muted);
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.cloud-artifact-tag-add:hover:not(:disabled),
+.cloud-artifact-tag-add:focus-visible {
   color: var(--v3-text-main);
-  border-color: var(--v3-text-muted);
+  background: transparent;
 }
 
-.cloud-artifact-tag-editor > button:disabled {
-  opacity: 0.5;
+.cloud-artifact-tag-add:hover:not(:disabled)::before,
+.cloud-artifact-tag-add:focus-visible::before {
+  background: color-mix(in srgb, var(--v3-text-main) 14%, transparent);
+}
+
+.cloud-artifact-tag-done:hover:not(:disabled),
+.cloud-artifact-tag-done:focus-visible {
+  color: var(--v3-text-main);
+  background: color-mix(in srgb, var(--v3-text-main) 14%, transparent);
+}
+
+.cloud-artifact-tag-add:active:not(:disabled) {
+  color: var(--v3-text-main);
+  background: transparent;
+  transform: scale(0.94);
+}
+
+.cloud-artifact-tag-done:active:not(:disabled) {
+  color: var(--v3-text-main);
+  background: color-mix(in srgb, var(--v3-text-main) 22%, transparent);
+  transform: scale(0.94);
+}
+
+.cloud-artifact-tag-add:active:not(:disabled)::before {
+  background: color-mix(in srgb, var(--v3-text-main) 22%, transparent);
+  transform: scale(0.92);
+}
+
+.cloud-artifact-tag-add:disabled,
+.cloud-artifact-tag-done:disabled {
+  opacity: 0.32;
   cursor: not-allowed;
 }
 
@@ -1908,25 +2362,27 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   width: 100%;
 }
 
 .cloud-artifact-tag-suggestions button {
-  min-height: 22px;
-  padding: 0 8px;
-  border: 1px dashed var(--v3-border);
+  min-height: 26px;
+  padding: 0 9px;
+  border: 0;
   border-radius: 999px;
   color: var(--v3-text-muted);
-  background: transparent;
+  background: color-mix(in srgb, var(--v3-text-main) 6%, transparent);
+  font: inherit;
   font-size: 11px;
+  touch-action: manipulation;
   cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 
 .cloud-artifact-tag-suggestions button:hover:not(:disabled) {
-  color: var(--v3-primary);
-  border-color: var(--v3-primary);
+  color: var(--v3-text-main);
+  background: var(--v3-bg-message-hover);
 }
 
 .cloud-artifact-tag-suggestions button:disabled {
@@ -2062,6 +2518,33 @@ body {
 
   .cloud-artifacts-context-copy > span {
     display: none;
+  }
+
+  .cloud-artifact-filter-trigger {
+    min-width: 80px;
+    height: 40px;
+  }
+
+  .cloud-artifact-filter-tag-action {
+    width: 44px;
+    height: 44px;
+  }
+
+  .cloud-artifact-filter-scope-options label,
+  .cloud-artifact-filter-tag-item,
+  .cloud-artifact-filter-tag-choice {
+    min-height: 44px;
+  }
+
+  .cloud-artifact-filter-popover-footer button {
+    min-height: 44px;
+  }
+
+  .cloud-artifact-filter-tag-actions {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
   }
 }
 
@@ -9276,153 +9759,8 @@ button.catsco-download-action:disabled {
   touch-action: manipulation;
 }
 
-.cloud-artifact-tag.is-editor {
-  cursor: pointer;
-}
-
-.cloud-artifact-tag.is-selected {
-  color: var(--v3-primary);
-  border-color: var(--v3-primary);
-  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
-}
-
-.cloud-artifact-tag-editor .is-danger {
-  color: #e5484d;
-  border-color: rgba(229, 72, 77, 0.45);
-}
-
-.cloud-artifact-tag-editor .is-danger:hover:not(:disabled) {
-  color: #fdfefd;
-  background: #e5484d;
-  border-color: #e5484d;
-}
-
-
-.cloud-artifact-tag.is-multi {
-  padding-left: 6px;
-  cursor: pointer;
-}
-
-.cloud-artifact-tag-check {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  border: 1px solid var(--v3-border);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #fdfefd;
-  background: transparent;
-  flex: 0 0 auto;
-}
-
-.cloud-artifact-tag.is-selected .cloud-artifact-tag-check {
-  background: var(--v3-primary);
-  border-color: var(--v3-primary);
-}
-
-.cloud-artifact-tag.is-editor:focus-visible {
-  outline: 2px solid var(--v3-primary);
-  outline-offset: 1px;
-}
-
-.cloud-artifact-tag-chip.has-remove {
-  padding: 0 4px 0 12px;
-}
-
-.cloud-artifact-tag-chip-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 26px;
-  border: 0;
-  padding: 0;
-  color: inherit;
-  font: inherit;
-  background: transparent;
-  cursor: pointer;
-}
-
-.cloud-artifact-tag-chip-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  color: var(--v3-text-muted);
-  background: transparent;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-
-.cloud-artifact-tag-chip-remove:hover {
-  color: #fdfefd;
-  background: #e5484d;
-}
-
-.cloud-artifact-tag-chip-edit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  color: var(--v3-text-muted);
-  background: transparent;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-
-.cloud-artifact-tag-chip-edit:hover {
-  color: var(--v3-primary);
-  background: color-mix(in srgb, var(--v3-primary) 14%, transparent);
-}
-
-.cloud-artifact-tag-chip.is-renaming {
-  padding: 0 6px;
-  gap: 4px;
-}
-
-.cloud-artifact-tag-rename-input {
-  width: 110px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--v3-primary);
-  border-radius: 999px;
+.cloud-artifact-tag-editor .cloud-artifact-tag button:hover:not(:disabled),
+.cloud-artifact-tag-editor .cloud-artifact-tag button:active:not(:disabled) {
   color: var(--v3-text-main);
-  background: var(--v3-bg-app);
-  font-size: 12px;
-}
-
-.cloud-artifact-tag-rename-input:focus-visible {
-  outline: none;
-}
-
-.cloud-artifact-tag-chip-confirm,
-.cloud-artifact-tag-chip-cancel {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.cloud-artifact-tag-chip-confirm {
-  color: #fdfefd;
-  background: var(--v3-primary);
-}
-
-.cloud-artifact-tag-chip-cancel {
-  color: var(--v3-text-muted);
-  background: color-mix(in srgb, var(--v3-text-main) 12%, transparent);
+  background: transparent;
 }

@@ -120,7 +120,7 @@ describe('AddFriend search mode', () => {
     });
     await act(async () => Simulate.click(trigger));
     const uidOption = Array.from(document.body.querySelectorAll('.oc-friend-search-mode-option'))
-      .find((option) => option.textContent.includes('按 UID'));
+      .find((option) => option.textContent.includes('UID'));
     await act(async () => Simulate.click(uidOption));
 
     expect(container.querySelector('.oc-contact-item')).toBeNull();
@@ -174,12 +174,12 @@ describe('AddFriend search mode', () => {
     expect(trigger.getAttribute('aria-controls')).toBe(listbox.id);
 
     const uidOption = Array.from(listbox.querySelectorAll('[role="option"]'))
-      .find((option) => option.textContent.includes('按 UID'));
+      .find((option) => option.textContent.includes('UID'));
     await act(async () => Simulate.click(uidOption));
 
     expect(document.body.querySelector('.oc-friend-search-mode-menu')).toBeNull();
-    expect(trigger.textContent).toContain('按 UID');
-    expect(trigger.getAttribute('aria-label')).toBe('搜索方式：按 UID');
+    expect(trigger.textContent).toContain('UID');
+    expect(trigger.getAttribute('aria-label')).toBe('搜索模式：UID');
     expect(document.activeElement).toBe(trigger);
     expect(container.querySelector('.oc-friend-search-input').placeholder).toBe('搜索联系人');
   });
@@ -214,7 +214,7 @@ describe('AddFriend search mode', () => {
     await act(async () => Simulate.keyDown(trigger, { key: 'End' }));
     listbox = document.body.querySelector('.oc-friend-search-mode-menu');
     await act(async () => Simulate.keyDown(listbox, { key: 'Enter' }));
-    expect(trigger.textContent).toContain('按 UID');
+    expect(trigger.textContent).toContain('UID');
   });
 
   it('closes on Tab and follows the dialog focus order in both directions', async () => {

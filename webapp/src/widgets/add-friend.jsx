@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { UserPlus, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
@@ -7,18 +7,18 @@ import CustomSelect from './custom-select';
 import FriendRequest from './friend-request';
 
 const FRIEND_SEARCH_MODES = [
-  { value: 'name', label: '按名字' },
-  { value: 'uid', label: '按 UID' },
+  { value: 'name', label: '名字' },
+  { value: 'uid', label: 'UID' },
 ];
 function FriendSearchModeSelect({ value, onValueChange }) {
   const selectedMode = FRIEND_SEARCH_MODES.find((option) => option.value === value)
     || FRIEND_SEARCH_MODES[0];
   return (
     <CustomSelect
-      ariaLabel={`搜索方式：${selectedMode.label}`}
+      ariaLabel={`搜索模式：${selectedMode.label}`}
       className="oc-friend-search-mode-select"
       density="compact"
-      listboxAriaLabel="搜索方式"
+      listboxAriaLabel="搜索模式"
       menuClassName="oc-friend-search-mode-menu"
       optionClassName="oc-friend-search-mode-option"
       triggerClassName="oc-friend-search-mode-trigger"
@@ -154,14 +154,19 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <section
-        className="oc-modal oc-collaboration-modal oc-friend-manager-dialog"
+        className="oc-modal oc-collaboration-modal oc-friend-manager-dialog cc-secondary-interface"
         role="dialog"
         aria-modal="true"
         aria-labelledby="friend-manager-title"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="oc-collaboration-modal-header">
-          <h2 id="friend-manager-title">好友</h2>
+          <h2 id="friend-manager-title">
+            <span className="oc-collaboration-modal-title-icon" aria-hidden="true">
+              <UserPlus size={22} strokeWidth={1.8} />
+            </span>
+            <span>好友</span>
+          </h2>
           <button type="button" className="oc-modal-close" onClick={onClose} aria-label="关闭">
             <X size={18} strokeWidth={1.8} aria-hidden="true" />
           </button>

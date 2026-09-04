@@ -156,7 +156,8 @@ describe('CloudArtifactsPanel', () => {
     expect(container.querySelector('.cloud-artifacts-role-badge')?.textContent).toBe('所有者');
     expect(container.textContent).toContain('成员可查看 · 你可管理全部成果');
     expect(container.textContent).not.toContain('已添加该 Agent');
-    expect(container.querySelector('button[aria-label="筛选成果范围"]')?.textContent).toContain('当前任务');
+    expect(container.querySelector('.cloud-artifact-filter-trigger')?.textContent).toContain('筛选');
+    expect(container.querySelector('.cloud-artifact-filter-trigger')?.getAttribute('aria-label')).toContain('范围：当前任务');
     expect(container.textContent).toContain('成员甲');
     expect(container.querySelector('.cloud-artifact-kind-icon.application .lucide-cloud')).not.toBeNull();
     expect(container.textContent).not.toContain('Agent 用户可见');
@@ -307,24 +308,16 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('课堂小游戏');
     expect(container.textContent).not.toContain('其他任务成果');
 
-    const scopeTrigger = container.querySelector('button[aria-label="筛选成果范围"]');
-    scopeTrigger.getBoundingClientRect = () => ({
-      bottom: 72, height: 32, left: 240, right: 336, top: 40, width: 96,
-      x: 240, y: 40, toJSON: () => ({}),
-    });
-    await act(async () => {
-      scopeTrigger.click();
-    });
-    expect(document.querySelector('.cloud-artifacts-scope-options')?.style.width).toBe('96px');
-    await act(async () => {
-      document.querySelector('.cloud-artifacts-scope-options button:not(:disabled):last-child').click();
-    });
+    const filterPopover = await openFilters();
+    expect(filterPopover.getAttribute('role')).toBe('dialog');
+    expect(filterPopover.style.position).toBe('fixed');
+    await act(async () => filterPopover.querySelector('input[type="radio"][value="all"]').click());
 
     expect(container.textContent).toContain('课堂小游戏');
     expect(container.textContent).toContain('其他任务成果');
   });
 
-  test('supports keyboard selection and Escape without closing the cloud panel', async () => {
+  test('supports keyboard controls and Escape without closing the cloud panel', async () => {
     api.getCloudArtifacts.mockResolvedValueOnce({
       artifacts: [
         activeArtifact,
@@ -334,31 +327,53 @@ describe('CloudArtifactsPanel', () => {
     });
     await renderPanel();
 
-    const scopeTrigger = container.querySelector('button[aria-label="筛选成果范围"]');
-    scopeTrigger.getBoundingClientRect = () => ({
-      bottom: 72, height: 32, left: 240, right: 336, top: 40, width: 96,
-      x: 240, y: 40, toJSON: () => ({}),
-    });
-    await act(async () => {
-      scopeTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-    });
-    expect(scopeTrigger.getAttribute('aria-expanded')).toBe('true');
-
-    let listbox = document.querySelector('.cloud-artifacts-scope-options');
-    await act(async () => {
-      listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
-    expect(scopeTrigger.textContent).toContain('全部');
+    const scopeTrigger = container.querySelector('.cloud-artifact-filter-trigger');
+    const filterPopover = await openFilters();
+    await act(async () => filterPopover.querySelector('input[type="radio"][value="all"]').click());
+    expect(scopeTrigger.getAttribute('aria-label')).toContain('范围：全部成果');
 
     await act(async () => {
-      scopeTrigger.click();
-    });
-    listbox = document.querySelector('.cloud-artifacts-scope-options');
-    await act(async () => {
-      listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(scopeTrigger.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+  });
+
+  test('summarizes active filters and keeps the popover outside the scroll container', async () => {
+    api.getCloudArtifacts.mockResolvedValueOnce({
+      artifacts: [{ ...activeArtifact, tags: ['游戏'] }],
+      viewer_relation: 'owner',
+    });
+    api.getCloudArtifactTags.mockResolvedValueOnce({ tags: [{ tag: '游戏', count: 1 }] });
+    await renderPanel();
+
+    const scrollContainer = container.querySelector('.cloud-artifacts-body');
+    scrollContainer.scrollTop = 24;
+    const filterPopover = await openFilters();
+    const trigger = container.querySelector('.cloud-artifact-filter-trigger');
+
+    expect(scrollContainer.contains(filterPopover)).toBe(false);
+    expect(scrollContainer.scrollTop).toBe(24);
+    expect(filterPopover.getAttribute('data-cc-focus-group')).toBe('true');
+    expect(filterPopover.querySelector('.cloud-artifact-filter-scope-section legend')?.textContent)
+      .toBe('成果范围');
+    expect(trigger.textContent).toContain('1');
+    expect(filterPopover.textContent).not.toContain('选择后即时更新列表');
+    expect(filterPopover.querySelector('button[aria-label="关闭筛选"]')).toBeNull();
+    expect(filterPopover.querySelector('.cloud-artifact-filter-popover-footer')).not.toBeNull();
+
+    await act(async () => filterPopover.querySelector('input[type="radio"][value="all"]').click());
+    expect(trigger.querySelector('.cloud-artifact-filter-trigger-count')).toBeNull();
+    expect(filterPopover.querySelector('.cloud-artifact-filter-popover-footer')).toBeNull();
+
+    await act(async () => filterPopover.querySelector('input[type="checkbox"]').click());
+    expect(trigger.querySelector('.cloud-artifact-filter-trigger-count')?.textContent).toBe('1');
+    expect(container.querySelector('.cloud-artifact-active-filter-chip')?.textContent).toBe('游戏');
+    expect(filterPopover.querySelector('.cloud-artifact-filter-tag-item.is-selected')).not.toBeNull();
+
+    await act(async () => filterPopover.querySelector('.cloud-artifact-filter-popover-footer button').click());
+    expect(trigger.querySelector('.cloud-artifact-filter-trigger-count')).toBeNull();
+    expect(container.querySelector('.cloud-artifact-active-filter-chip')).toBeNull();
   });
 
   test('keeps legacy results without a task source visible in the current-task view', async () => {
@@ -369,11 +384,9 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     expect(container.textContent).toContain('课堂小游戏');
-    expect(container.querySelector('button[aria-label="筛选成果范围"]')?.textContent).toContain('全部');
-    await act(async () => {
-      container.querySelector('button[aria-label="筛选成果范围"]').click();
-    });
-    expect(document.querySelector('.cloud-artifacts-scope-options button')?.disabled).toBe(true);
+    expect(container.querySelector('.cloud-artifact-filter-trigger')?.getAttribute('aria-label')).toContain('范围：全部成果');
+    const filterPopover = await openFilters();
+    expect(filterPopover.querySelector('input[type="radio"][value="current"]')?.disabled).toBe(true);
   });
 
   test('loads conversation files without an Agent sender filter and opens the preview', async () => {
@@ -443,6 +456,8 @@ describe('CloudArtifactsPanel', () => {
     expect(container.querySelector('.cloud-file-item img')?.getAttribute('src'))
       .toBe('/uploads/images/classroom-thumb.jpg');
     expect(container.querySelector('.cloud-file-item .cloud-file-meta-type')?.textContent).toBe('图片');
+    expect(container.querySelector('button[aria-label="预览图片 课堂照片.jpg"] .cloud-artifact-open-icon'))
+      .toBeNull();
 
     await act(async () => {
       container.querySelector('button[aria-label="预览图片 课堂照片.jpg"]').click();
@@ -452,6 +467,9 @@ describe('CloudArtifactsPanel', () => {
 
   test('previews and copies an active result', async () => {
     await renderPanel();
+
+    expect(container.querySelector('button[aria-label="预览 课堂小游戏"] .cloud-artifact-open-icon'))
+      .toBeNull();
 
     await act(async () => {
       container.querySelector('button[aria-label="预览 课堂小游戏"]').click();
@@ -582,7 +600,7 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(api.getAgentFiles).not.toHaveBeenCalled();
     expect(api.getCloudArtifacts).not.toHaveBeenCalled();
-    expect(container.querySelector('button[aria-label="筛选成果范围"]')).toBeNull();
+    expect(container.querySelector('.cloud-artifact-filter-trigger')).toBeNull();
   });
 
   test('opens all Agent results when no conversation exists', async () => {
@@ -601,8 +619,8 @@ describe('CloudArtifactsPanel', () => {
 
     expect(container.textContent).toContain('课堂小游戏');
     expect(container.textContent).toContain('其他任务成果');
-    expect(container.querySelector('button[aria-label="筛选成果范围"]')?.textContent)
-      .toContain('全部');
+    expect(container.querySelector('.cloud-artifact-filter-trigger')?.getAttribute('aria-label'))
+      .toContain('范围：全部成果');
     expect(container.querySelector('button[role="tab"][disabled]')?.textContent).toBe('文件');
     expect(api.getAgentFiles).not.toHaveBeenCalled();
   });
@@ -647,7 +665,74 @@ describe('CloudArtifactsPanel', () => {
     });
   }
 
-  test('filters shared artifacts by tag chips with AND semantics', async () => {
+  async function openFilters() {
+    const trigger = container.querySelector('.cloud-artifact-filter-trigger');
+    trigger.getBoundingClientRect = () => ({
+      bottom: 80, height: 36, left: 240, right: 324, top: 44, width: 84,
+      x: 240, y: 44, toJSON: () => ({}),
+    });
+    await act(async () => {
+      trigger.click();
+      await Promise.resolve();
+    });
+    return document.body.querySelector('.cloud-artifact-filter-popover');
+  }
+
+  test('groups multi-tag results by full and partial matches', async () => {
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [
+        { ...activeArtifact, tags: ['游戏', '演示'] },
+        { ...activeArtifact, id: 'lesson-poster', title: '课堂海报', tags: ['游戏'] },
+        { ...activeArtifact, id: 'reading-notes', title: '读书笔记', tags: ['阅读'] },
+      ],
+      viewer_relation: 'owner',
+    });
+    api.getCloudArtifactTags.mockResolvedValue({
+      tags: [
+        { tag: '游戏', count: 2 },
+        { tag: '演示', count: 1 },
+        { tag: '阅读', count: 1 },
+      ],
+    });
+    await renderPanel();
+
+    const filterPopover = await openFilters();
+    const tagItems = [...filterPopover.querySelectorAll('.cloud-artifact-filter-tag-item')];
+    expect(tagItems.map((item) => item.textContent)).toEqual(['游戏2', '演示1', '阅读1']);
+    expect(container.textContent).toContain('课堂海报');
+
+    await act(async () => {
+      tagItems.find((item) => item.textContent === '游戏2')
+        .querySelector('input[type="checkbox"]')
+        .click();
+    });
+    await flush();
+    expect([...container.querySelectorAll('.cloud-artifact-item')]).toHaveLength(2);
+    expect(container.textContent).not.toContain('读书笔记');
+
+    await act(async () => {
+      [...document.querySelectorAll('.cloud-artifact-filter-tag-item')]
+        .find((item) => item.textContent === '演示1')
+        .querySelector('input[type="checkbox"]')
+        .click();
+    });
+    await flush();
+    const visible = [...container.querySelectorAll('.cloud-artifact-item')];
+    expect(visible).toHaveLength(2);
+    expect(visible[0].textContent).toContain('课堂小游戏');
+    expect(visible[1].textContent).toContain('课堂海报');
+    expect(container.textContent).toContain('全部匹配');
+    expect(container.textContent).toContain('部分匹配');
+    expect(container.textContent).toContain('清除标签');
+
+    await act(async () => {
+      container.querySelector('.cloud-artifact-active-filter-clear').click();
+    });
+    await flush();
+    expect([...container.querySelectorAll('.cloud-artifact-item')]).toHaveLength(3);
+  });
+
+  test('single-tag filtering stays ungrouped', async () => {
     api.getCloudArtifacts.mockResolvedValue({
       artifacts: [
         { ...activeArtifact, tags: ['游戏', '演示'] },
@@ -655,39 +740,17 @@ describe('CloudArtifactsPanel', () => {
       ],
       viewer_relation: 'owner',
     });
-    api.getCloudArtifactTags.mockResolvedValue({
-      tags: [{ tag: '游戏', count: 2 }, { tag: '演示', count: 1 }],
-    });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '游戏', count: 2 }, { tag: '演示', count: 1 }] });
     await renderPanel();
 
-    const chips = [...container.querySelectorAll('.cloud-artifact-tag-chip')];
-    expect(chips.map((chip) => chip.textContent)).toEqual(['游戏2', '演示1']);
-    expect(container.textContent).toContain('课堂海报');
-
-    await act(async () => {
-      chips.find((chip) => chip.textContent === '游戏2')
-        .querySelector('.cloud-artifact-tag-chip-filter')
-        .click();
-    });
+    const filterPopover = await openFilters();
+    const gameItem = [...filterPopover.querySelectorAll('.cloud-artifact-filter-tag-item')]
+      .find((item) => item.textContent === '游戏2');
+    await act(async () => gameItem.querySelector('input[type="checkbox"]').click());
     await flush();
-    expect([...container.querySelectorAll('.cloud-artifact-item')]).toHaveLength(2);
 
-    await act(async () => {
-      [...container.querySelectorAll('.cloud-artifact-tag-chip')]
-        .find((chip) => chip.textContent === '演示1')
-        .querySelector('.cloud-artifact-tag-chip-filter')
-        .click();
-    });
-    await flush();
-    const visible = [...container.querySelectorAll('.cloud-artifact-item')];
-    expect(visible).toHaveLength(1);
-    expect(visible[0].textContent).toContain('课堂小游戏');
-    expect(container.textContent).toContain('清空筛选');
-
-    await act(async () => {
-      container.querySelector('.cloud-artifact-tag-clear').click();
-    });
-    await flush();
+    expect(container.textContent).not.toContain('全部匹配');
+    expect(container.textContent).not.toContain('部分匹配');
     expect([...container.querySelectorAll('.cloud-artifact-item')]).toHaveLength(2);
   });
 
@@ -715,9 +778,7 @@ describe('CloudArtifactsPanel', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => {
-      [...container.querySelectorAll('.cloud-artifact-tag-editor > button')]
-        .find((button) => button.textContent === '添加')
-        .click();
+      container.querySelector('.cloud-artifact-tag-add').click();
     });
     await flush();
 
@@ -762,9 +823,7 @@ describe('CloudArtifactsPanel', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => {
-      [...container.querySelectorAll('.cloud-artifact-tag-editor > button')]
-        .find((button) => button.textContent === '添加')
-        .click();
+      container.querySelector('.cloud-artifact-tag-add').click();
     });
     await flush();
 
@@ -802,7 +861,7 @@ describe('CloudArtifactsPanel', () => {
     await flush();
     expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', []);
   });
-test('friend bulk-deletes selected tags from the editor', async () => {
+test('friend tag editor exposes only direct tag actions', async () => {
   api.getCloudArtifacts.mockResolvedValue({
     artifacts: [{ ...activeArtifact, tags: ['游戏', '演示'] }],
     viewer_relation: 'friend',
@@ -815,26 +874,12 @@ test('friend bulk-deletes selected tags from the editor', async () => {
   });
   await flush();
 
-  await act(async () => {
-    [...container.querySelectorAll('.cloud-artifact-tag-editor > button')]
-      .find((button) => button.textContent === '多选')
-      .click();
-  });
-  await flush();
-
-  for (const label of ['选择标签 游戏', '选择标签 演示']) {
-    await act(async () => {
-      container.querySelector(`.cloud-artifact-tag-editor [aria-label="${label}"]`).click();
-    });
-  }
-  await flush();
-
-  const bulkButton = [...container.querySelectorAll('.cloud-artifact-tag-editor button')]
-    .find((button) => button.textContent === '删除所选（2）');
-  expect(bulkButton).not.toBeNull();
-  await act(async () => { bulkButton.click(); });
-  await flush();
-  expect(api.setCloudArtifactTags).toHaveBeenLastCalledWith(440, 'lesson-game', []);
+  const editor = container.querySelector('.cloud-artifact-tag-editor');
+  expect(editor.textContent).not.toContain('多选');
+  expect(editor.textContent).not.toContain('删除所选');
+  expect(editor.querySelectorAll('button[aria-label^="移除标签 "]')).toHaveLength(2);
+  expect(editor.querySelector('.cloud-artifact-tag-add')).not.toBeNull();
+  expect(editor.querySelector('.cloud-artifact-tag-done')?.textContent).toBe('完成');
   });
 
   test('owner deletes a tag from the tag system', async () => {
@@ -851,7 +896,8 @@ test('friend bulk-deletes selected tags from the editor', async () => {
     api.deleteCloudArtifactTagEverywhere.mockResolvedValue({ ok: true, removed: 2 });
     await renderPanel();
 
-    const removeButton = container.querySelector('button[aria-label="删除标签 素材"]');
+    let filterPopover = await openFilters();
+    const removeButton = filterPopover.querySelector('button[aria-label="删除标签 素材"]');
     expect(removeButton).not.toBeNull();
     await act(async () => { removeButton.click(); });
     await flush();
@@ -864,11 +910,11 @@ test('friend bulk-deletes selected tags from the editor', async () => {
     await flush();
 
     expect(api.deleteCloudArtifactTagEverywhere).toHaveBeenCalledWith(440, '素材');
-    // counts refreshed without 素材: its chip disappears, 游戏 remains
-    const chips = [...container.querySelectorAll('.cloud-artifact-tag-chip')]
-      .map((chip) => chip.textContent);
-    expect(chips).toEqual(['游戏1']);
-    expect(container.textContent).not.toContain('素材2');
+    filterPopover = await openFilters();
+    const tagRows = [...filterPopover.querySelectorAll('.cloud-artifact-filter-tag-item')]
+      .map((item) => item.textContent);
+    expect(tagRows).toEqual(['游戏1']);
+    expect(filterPopover.textContent).not.toContain('素材2');
   });
 
   test('owner renames a tag from the chip', async () => {
@@ -880,12 +926,13 @@ test('friend bulk-deletes selected tags from the editor', async () => {
     api.renameCloudArtifactTag.mockResolvedValue({ ok: true, renamed: 1 });
     await renderPanel();
 
+    const filterPopover = await openFilters();
     await act(async () => {
-      container.querySelector('button[aria-label="编辑标签 游戏"]').click();
+      filterPopover.querySelector('button[aria-label="编辑标签 游戏"]').click();
     });
     await flush();
 
-    const input = container.querySelector('.cloud-artifact-tag-rename-input');
+    const input = document.querySelector('.cloud-artifact-filter-rename-input');
     expect(input).not.toBeNull();
     await act(async () => {
       const valueSetter = Object.getOwnPropertyDescriptor(
@@ -896,7 +943,7 @@ test('friend bulk-deletes selected tags from the editor', async () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => {
-      container.querySelector('button[aria-label="确认重命名"]').click();
+      document.querySelector('button[aria-label="确认重命名"]').click();
     });
     await flush();
 
@@ -914,8 +961,9 @@ test('friend bulk-deletes selected tags from the editor', async () => {
       .mockResolvedValue({ tags: [] });
     await renderPanel();
 
+    const filterPopover = await openFilters();
     await act(async () => {
-      container.querySelector('.cloud-artifact-tag-chip').click();
+      filterPopover.querySelector('input[type="checkbox"]').click();
     });
     await flush();
     expect(container.textContent).toContain('课堂小游戏');
@@ -937,8 +985,9 @@ test('escape closes the tag-delete confirm dialog without closing the panel', as
   api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '素材', count: 1 }] });
   await renderPanel();
 
+  const filterPopover = await openFilters();
   await act(async () => {
-    container.querySelector('.cloud-artifact-tag-chip-remove').click();
+    filterPopover.querySelector('button[aria-label="删除标签 素材"]').click();
   });
   await flush();
   const dialog = document.querySelector('[aria-label="确认删除标签"]');
@@ -955,5 +1004,3 @@ test('escape closes the tag-delete confirm dialog without closing the panel', as
 });
 
 });
-
-

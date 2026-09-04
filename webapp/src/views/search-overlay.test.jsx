@@ -93,6 +93,7 @@ describe('SearchOverlay', () => {
     expect(container.textContent).not.toContain('范围');
     expect(container.textContent).toContain('输入至少 2 个字开始搜索');
     const input = container.querySelector('input');
+    expect(input.getAttribute('data-cc-focus-group')).toBe('true');
     await act(async () => { Simulate.change(input, { target: { value: 'a' } }); });
     await act(async () => { vi.advanceTimersByTime(500); });
     expect(api.getMessageSearch).not.toHaveBeenCalled();

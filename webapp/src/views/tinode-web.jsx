@@ -31,6 +31,9 @@ import GroupSettings from '../widgets/group-settings';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import IdentityOnboarding from '../components/identity-onboarding';
+import LiquidFlowBackground, {
+  shouldMountLiquidFlowBackground,
+} from '../components/liquid-flow-background';
 import { useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import ArtifactFullscreenViewer from './artifact-fullscreen-viewer';
@@ -1330,6 +1333,7 @@ function TinodeWebApp({ location }) {
       onTouchEnd={onMobileTouchEnd}
       onTouchCancel={() => { mobileGestureRef.current = null; }}
     >
+      {shouldMountLiquidFlowBackground(theme) && <LiquidFlowBackground />}
       {mobileSidebarOpen && (
         <button
           type="button"

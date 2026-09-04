@@ -44,7 +44,7 @@
   --cc-accent-soft: rgba(41, 188, 149, 0.16);
   --cc-accent-text: #147c65;
   --cc-focus-ring: #656a73;
-  --cc-focus-border: color-mix(in srgb, var(--cc-text) 58%, var(--cc-border));
+  --cc-focus-border: color-mix(in srgb, var(--cc-text) 34%, var(--cc-border));
   --cc-success-text: #13765e;
   --cc-warning-text: #7a5200;
   --cc-danger-text: #b42318;
@@ -319,6 +319,89 @@ html[data-theme="liquid"] body::after {
 html[data-theme="liquid"] #root {
   position: relative;
   z-index: 1;
+}
+
+/*
+ * Light liquid flow: a soft, slow-moving field based on the exported
+ * MISTED SKY / GLAZED AZURE / VIOLET HAZE palette. The app remains above this
+ * layer so controls and glass surfaces keep their existing contrast.
+ */
+.cc-liquid-flow-background {
+  position: fixed;
+  z-index: 0;
+  inset: -9%;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  background: #f6f9ff;
+  isolation: isolate;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-liquid-flow-background {
+  opacity: 1;
+}
+
+.cc-liquid-flow-background__wash,
+.cc-liquid-flow-background__grain {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+
+.cc-liquid-flow-background__wash {
+  inset: 0;
+  z-index: 0;
+  background: #eef0fb url('/texture-background-2-poster.png') center / cover no-repeat;
+}
+
+.cc-liquid-flow-background__video,
+.cc-liquid-flow-background__veil {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.cc-liquid-flow-background__video {
+  z-index: 1;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 1200ms ease-in-out;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-liquid-flow-background__video {
+  /* Keep the light-liquid blue airy without changing the source texture. */
+  filter: saturate(96%) brightness(1.025);
+}
+
+.cc-liquid-flow-background__video.is-active {
+  opacity: 0.92;
+}
+
+.cc-liquid-flow-background__veil {
+  z-index: 2;
+  background: rgba(240, 232, 255, 0.14);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-liquid-flow-background__veil {
+  background: rgba(240, 232, 255, 0.18);
+}
+
+.cc-liquid-flow-background__grain {
+  inset: 0;
+  z-index: 4;
+  opacity: 0.015;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96' viewBox='0 0 96 96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.24'/%3E%3C/svg%3E");
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-liquid-flow-background__video {
+    display: none;
+  }
+
 }
 
 @keyframes cc-liquid-drift-a {
@@ -10550,6 +10633,11 @@ html[data-theme="liquid"] .v3-main {
     radial-gradient(circle at 16% 8%, rgba(143, 181, 255, 0.26), transparent 34%),
     radial-gradient(circle at 86% 88%, rgba(180, 145, 255, 0.18), transparent 36%),
     linear-gradient(135deg, #f9fbff 0%, #f4f7ff 54%, #f8f4ff 100%);
+}
+
+/* The flow layer owns the light-liquid canvas; keep the workspace surface clear. */
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-main {
+  background: transparent;
 }
 
 html[data-theme="liquid"] .v3-message-workspace {

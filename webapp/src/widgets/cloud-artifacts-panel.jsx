@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
   Check,
@@ -6,10 +7,11 @@ import {
   Copy,
   Pencil,
   Download,
-  Eye,
   ExternalLink,
   FileText,
   Image as ImageIcon,
+  ListFilter,
+  Plus,
   RefreshCw,
   RotateCcw,
   Tag,
@@ -22,9 +24,12 @@ import { api, resolveMediaURL } from '../api';
 import { useFeedback } from '../components/feedback-system';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
-import CustomSelect from './custom-select';
 
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
+const FILTER_POPOVER_GAP = 8;
+const FILTER_POPOVER_GUTTER = 8;
+const FILTER_POPOVER_MAX_HEIGHT = 480;
+const FILTER_POPOVER_WIDTH = 304;
 
 function notifyArtifactsChanged(agentUid) {
   window.dispatchEvent(new CustomEvent(CLOUD_ARTIFACTS_CHANGED_EVENT, {
@@ -455,14 +460,40 @@ export default function CloudArtifactsPanel({
         return !sourceTopicID || sourceTopicID === String(topicId || '').trim();
       })
     : artifacts;
-  const visibleArtifacts = selectedTags.length === 0 ? scopedArtifacts : scopedArtifacts.filter(
-    (artifact) => selectedTags.every((tag) => artifactTagList(artifact).includes(tag)),
-  );
+  const matchingArtifacts = selectedTags.length === 0
+    ? scopedArtifacts
+    : scopedArtifacts
+      .map((artifact) => ({
+        artifact,
+        matchCount: selectedTags.filter((tag) => artifactTagList(artifact).includes(tag)).length,
+      }))
+      .filter(({ matchCount }) => matchCount > 0);
+  const visibleArtifacts = selectedTags.length === 0
+    ? scopedArtifacts
+    : matchingArtifacts.map(({ artifact }) => artifact);
+  const artifactGroups = selectedTags.length > 1
+    ? [
+        {
+          key: 'full-match',
+          label: '全部匹配',
+          items: matchingArtifacts
+            .filter(({ matchCount }) => matchCount === selectedTags.length)
+            .map(({ artifact }) => artifact),
+        },
+        {
+          key: 'partial-match',
+          label: '部分匹配',
+          items: matchingArtifacts
+            .filter(({ matchCount }) => matchCount < selectedTags.length)
+            .map(({ artifact }) => artifact),
+        },
+      ].filter((group) => group.items.length > 0)
+    : [{ key: 'results', label: '', items: visibleArtifacts }];
   const emptyText = tab === 'active'
-    ? effectiveArtifactScope === 'current'
-      ? '当前任务还没有共享成果'
-      : selectedTags.length > 0 && scopedArtifacts.length > 0
-        ? '没有匹配所选标签的成果'
+    ? selectedTags.length > 0 && scopedArtifacts.length > 0
+      ? '没有匹配所选标签的成果'
+      : effectiveArtifactScope === 'current'
+        ? '当前任务还没有共享成果'
         : '这个 Agent 还没有共享成果'
     : tab === 'files'
       ? '当前聊天还没有文件'
@@ -484,6 +515,105 @@ export default function CloudArtifactsPanel({
         ? '你可以查看和上传成果，并可管理成果标签'
         : '你可以查看成果，并可管理成果标签';
   const hasAgent = Number(agentUid || 0) > 0;
+
+  const renderArtifact = (artifact) => (
+    <article className="cloud-artifact-item" key={artifact.id}>
+      {tab === 'active' ? (
+        <button
+          type="button"
+          className="cloud-artifact-main"
+          onClick={() => onPreviewArtifact?.(artifact)}
+          aria-label={'预览 ' + artifact.title}
+        >
+          <ArtifactSummary artifact={artifact} />
+        </button>
+      ) : (
+        <div className="cloud-artifact-main is-deleted">
+          <ArtifactSummary artifact={artifact} />
+        </div>
+      )}
+      <div className="cloud-artifact-actions">
+        {tab === 'active' && (
+          <>
+            {canManageTags && (
+              <button
+                type="button"
+                onClick={() => setTagEditorID(tagEditorID === artifact.id ? '' : artifact.id)}
+                disabled={Boolean(pendingTagID)}
+                aria-label={'编辑 ' + artifact.title + ' 的标签'}
+                aria-expanded={tagEditorID === artifact.id}
+                title="标签"
+              >
+                <Tag size={17} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => copyURL(artifact)}
+              disabled={pendingID === artifact.id}
+              aria-label={'复制 ' + artifact.title + ' 链接'}
+              title={copiedID === artifact.id ? '已复制' : '复制链接'}
+            >
+              <Copy size={17} />
+            </button>
+            {(isOwner || artifact.can_delete) && (
+              <button
+                type="button"
+                className="danger"
+                onClick={() => setConfirmArtifact(artifact)}
+                disabled={pendingID === artifact.id}
+                aria-label={'下架 ' + artifact.title}
+                title="下架"
+              >
+                <Trash2 size={17} />
+              </button>
+            )}
+          </>
+        )}
+        {tab === 'deleted' && (isOwner || artifact.can_restore) && (
+          <button
+            type="button"
+            onClick={() => restoreArtifact(artifact)}
+            disabled={pendingID === artifact.id}
+            aria-label={'恢复 ' + artifact.title}
+            title="恢复"
+          >
+            <RotateCcw size={17} className={pendingID === artifact.id ? 'is-spinning' : ''} />
+          </button>
+        )}
+      </div>
+      {tab === 'active' && (artifactTagList(artifact).length > 0 || tagEditorID === artifact.id) && (
+        <div className="cloud-artifact-tags-row">
+          {tagEditorID !== artifact.id && artifactTagList(artifact).map((tag) => (
+            <span className="cloud-artifact-tag" key={tag}>
+              {tag}
+              {canManageTags && (
+                <button
+                  type="button"
+                  onClick={() => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => item !== tag))}
+                  disabled={pendingTagID === artifact.id}
+                  aria-label={'移除标签 ' + tag}
+                  title="移除标签"
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </span>
+          ))}
+          {tagEditorID === artifact.id && (
+            <ArtifactTagEditor
+              artifact={artifact}
+              suggestions={tagCounts}
+              pending={pendingTagID === artifact.id}
+              onAdd={(tag) => saveArtifactTags(artifact, [...artifactTagList(artifact), tag])}
+              onRemove={(tag) => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => item !== tag))}
+              onClose={() => setTagEditorID('')}
+            />
+          )}
+        </div>
+      )}
+    </article>
+  );
 
   return (
     <>
@@ -580,105 +710,53 @@ export default function CloudArtifactsPanel({
                 </div>
                 <span>{artifactAccessText}</span>
               </div>
-              <ArtifactScopeSelect
+              <ArtifactFilters
                 value={effectiveArtifactScope}
                 canSelectCurrent={canFilterArtifactsByTask}
-                onChange={setArtifactScope}
+                onScopeChange={setArtifactScope}
+                tags={tagCounts}
+                selectedTags={selectedTags}
+                onToggleTag={toggleTagFilter}
+                onReset={() => {
+                  setArtifactScope('all');
+                  setSelectedTags([]);
+                }}
+                canManageTags={canManageTags}
+                renamingTag={renamingTag}
+                renamingDraft={renamingDraft}
+                onRenamingDraftChange={setRenamingDraft}
+                onStartRename={(tag) => {
+                  setRenamingTag(tag);
+                  setRenamingDraft(tag);
+                }}
+                onCancelRename={() => setRenamingTag(null)}
+                onSubmitRename={submitTagRename}
+                onDeleteTag={setConfirmTag}
+                pendingTag={pendingGlobalTag}
               />
             </div>
           )}
-          {artifactTabSelected && tab === 'active' && (tagCounts.length > 0 || selectedTags.length > 0) && (
-            <div className="cloud-artifacts-tag-filter" role="group" aria-label="按标签筛选">
-              {tagCounts.map(({ tag, count }) => (
-                <span
-                  key={tag}
-                  className={'cloud-artifact-tag-chip' + (selectedTags.includes(tag) ? ' active' : '') + (canManageTags ? ' has-remove' : '')}
-                >
-                  {renamingTag === tag ? (
-                    <>
-                      <input
-                        className="cloud-artifact-tag-rename-input"
-                        value={renamingDraft}
-                        autoFocus
-                        maxLength={32}
-                        aria-label={'重命名标签 ' + tag}
-                        disabled={pendingGlobalTag === tag}
-                        onChange={(event) => setRenamingDraft(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            submitTagRename();
-                          } else if (event.key === 'Escape') {
-                            event.stopPropagation();
-                            setRenamingTag(null);
-                          }
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="cloud-artifact-tag-chip-confirm"
-                        aria-label="确认重命名"
-                        title="确认"
-                        disabled={pendingGlobalTag === tag || !renamingDraft.trim()}
-                        onClick={submitTagRename}
-                      >
-                        <Check size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        className="cloud-artifact-tag-chip-cancel"
-                        aria-label="取消重命名"
-                        title="取消"
-                        onClick={() => setRenamingTag(null)}
-                      >
-                        <X size={12} />
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      className="cloud-artifact-tag-chip-filter"
-                      aria-pressed={selectedTags.includes(tag)}
-                      onClick={() => toggleTagFilter(tag)}
-                    >
-                      {tag}
-                      <span>{count}</span>
-                    </button>
-                  )}
-                  {canManageTags && renamingTag !== tag && (
-                    <button
-                      type="button"
-                      className="cloud-artifact-tag-chip-edit"
-                      aria-label={'编辑标签 ' + tag}
-                      title="重命名标签"
-                      onClick={() => { setRenamingTag(tag); setRenamingDraft(tag); }}
-                    >
-                      <Pencil size={11} />
-                    </button>
-                  )}
-                  {canManageTags && renamingTag !== tag && (
-                    <button
-                      type="button"
-                      className="cloud-artifact-tag-chip-remove"
-                      aria-label={'删除标签 ' + tag}
-                      title="从所有成果删除此标签"
-                      disabled={pendingGlobalTag === tag}
-                      onClick={() => setConfirmTag(tag)}
-                    >
-                      <X size={11} />
-                    </button>
-                  )}
-                </span>
-              ))}
-              {selectedTags.length > 0 && (
+          {artifactTabSelected && tab === 'active' && selectedTags.length > 0 && (
+            <div className="cloud-artifacts-active-filters" role="group" aria-label="已选标签">
+              {selectedTags.map((tag) => (
                 <button
                   type="button"
-                  className="cloud-artifact-tag-clear"
-                  onClick={() => setSelectedTags([])}
+                  className="cloud-artifact-active-filter-chip"
+                  key={tag}
+                  aria-label={'移除筛选标签 ' + tag}
+                  onClick={() => toggleTagFilter(tag)}
                 >
-                  清空筛选
+                  <span>{tag}</span>
+                  <X size={12} aria-hidden="true" />
                 </button>
-              )}
+              ))}
+              <button
+                type="button"
+                className="cloud-artifact-active-filter-clear"
+                onClick={() => setSelectedTags([])}
+              >
+                清除标签
+              </button>
             </div>
           )}
           {loading && visibleCount === 0 && (
@@ -721,106 +799,20 @@ export default function CloudArtifactsPanel({
             </>
           )}
           {artifactTabSelected && visibleArtifacts.length > 0 && (
-            <div className="cloud-artifacts-list">
-              {visibleArtifacts.map((artifact) => (
-                <article className="cloud-artifact-item" key={artifact.id}>
-                  {tab === 'active' ? (
-                    <button
-                      type="button"
-                      className="cloud-artifact-main"
-                      onClick={() => onPreviewArtifact?.(artifact)}
-                      aria-label={'预览 ' + artifact.title}
-                    >
-                      <ArtifactSummary artifact={artifact} />
-                      <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
-                    </button>
-                  ) : (
-                    <div className="cloud-artifact-main is-deleted">
-                      <ArtifactSummary artifact={artifact} />
-                    </div>
+            <div className="cloud-artifact-result-groups">
+              {artifactGroups.map((group, index) => (
+                <section className="cloud-artifact-result-group" key={group.key}>
+                  {group.label && (
+                    <h3 className="cloud-artifact-result-group-title">
+                      <span>{group.label}</span>
+                      <span className="cloud-artifact-result-group-count">{group.items.length}</span>
+                    </h3>
                   )}
-                  <div className="cloud-artifact-actions">
-                    {tab === 'active' && (
-                      <>
-                        {canManageTags && (
-                          <button
-                            type="button"
-                            onClick={() => setTagEditorID(tagEditorID === artifact.id ? '' : artifact.id)}
-                            disabled={Boolean(pendingTagID)}
-                            aria-label={'编辑 ' + artifact.title + ' 的标签'}
-                            aria-expanded={tagEditorID === artifact.id}
-                            title="标签"
-                          >
-                            <Tag size={17} />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => copyURL(artifact)}
-                          disabled={pendingID === artifact.id}
-                          aria-label={'复制 ' + artifact.title + ' 链接'}
-                          title={copiedID === artifact.id ? '已复制' : '复制链接'}
-                        >
-                          <Copy size={17} />
-                        </button>
-                        {(isOwner || artifact.can_delete) && (
-                          <button
-                            type="button"
-                            className="danger"
-                            onClick={() => setConfirmArtifact(artifact)}
-                            disabled={pendingID === artifact.id}
-                            aria-label={'下架 ' + artifact.title}
-                            title="下架"
-                          >
-                            <Trash2 size={17} />
-                          </button>
-                        )}
-                      </>
-                    )}
-                    {tab === 'deleted' && (isOwner || artifact.can_restore) && (
-                      <button
-                        type="button"
-                        onClick={() => restoreArtifact(artifact)}
-                        disabled={pendingID === artifact.id}
-                        aria-label={'恢复 ' + artifact.title}
-                        title="恢复"
-                      >
-                        <RotateCcw size={17} className={pendingID === artifact.id ? 'is-spinning' : ''} />
-                      </button>
-                    )}
+                  <div className="cloud-artifacts-list">
+                    {group.items.map(renderArtifact)}
                   </div>
-                  {tab === 'active' && (artifactTagList(artifact).length > 0 || tagEditorID === artifact.id) && (
-                    <div className="cloud-artifact-tags-row">
-                      {tagEditorID !== artifact.id && artifactTagList(artifact).map((tag) => (
-                        <span className="cloud-artifact-tag" key={tag}>
-                          {tag}
-                          {canManageTags && (
-                            <button
-                              type="button"
-                              onClick={() => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => item !== tag))}
-                              disabled={pendingTagID === artifact.id}
-                              aria-label={'移除标签 ' + tag}
-                              title="移除标签"
-                            >
-                              <X size={11} />
-                            </button>
-                          )}
-                        </span>
-                      ))}
-                      {tagEditorID === artifact.id && (
-                        <ArtifactTagEditor
-                          artifact={artifact}
-                          suggestions={tagCounts}
-                          pending={pendingTagID === artifact.id}
-                          onAdd={(tag) => saveArtifactTags(artifact, [...artifactTagList(artifact), tag])}
-                          onRemove={(tag) => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => item !== tag))}
-                          onRemoveMany={(tags) => saveArtifactTags(artifact, artifactTagList(artifact).filter((item) => !tags.includes(item)))}
-                          onClose={() => setTagEditorID('')}
-                        />
-                      )}
-                    </div>
-                  )}
-                </article>
+                  {group.label && index < artifactGroups.length - 1 && <div className="cloud-artifact-result-group-divider" aria-hidden="true" />}
+                </section>
               ))}
             </div>
           )}
@@ -875,57 +867,316 @@ export default function CloudArtifactsPanel({
   );
 }
 
-function ArtifactScopeSelect({ value, canSelectCurrent, onChange }) {
+function ArtifactFilters({
+  value,
+  canSelectCurrent,
+  onScopeChange,
+  tags,
+  selectedTags,
+  onToggleTag,
+  onReset,
+  canManageTags,
+  renamingTag,
+  renamingDraft,
+  onRenamingDraftChange,
+  onStartRename,
+  onCancelRename,
+  onSubmitRename,
+  onDeleteTag,
+  pendingTag,
+}) {
+  const [open, setOpen] = useState(false);
+  const [floatingStyle, setFloatingStyle] = useState(null);
+  const [placement, setPlacement] = useState('bottom');
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
+  const panelID = React.useId();
+  const activeFilterCount = selectedTags.length + (value === 'current' ? 1 : 0);
+  const scopeLabel = value === 'current' ? '当前任务' : '全部成果';
+  const hasFilters = activeFilterCount > 0;
+
+  const close = useCallback(({ restoreFocus = false } = {}) => {
+    setOpen(false);
+    setFloatingStyle(null);
+    if (restoreFocus) triggerRef.current?.focus();
+  }, []);
+
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const panel = panelRef.current;
+    if (!open || !trigger || !panel) return;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const width = Math.min(FILTER_POPOVER_WIDTH, viewportWidth - (FILTER_POPOVER_GUTTER * 2));
+    const availableBelow = viewportHeight - triggerRect.bottom - FILTER_POPOVER_GUTTER - FILTER_POPOVER_GAP;
+    const availableAbove = triggerRect.top - FILTER_POPOVER_GUTTER - FILTER_POPOVER_GAP;
+    const measuredHeight = panel.scrollHeight || 360;
+    const opensAbove = availableBelow < Math.min(measuredHeight, 260) && availableAbove > availableBelow;
+    const availableHeight = Math.max(96, Math.floor(opensAbove ? availableAbove : availableBelow));
+    const maxHeight = Math.min(
+      FILTER_POPOVER_MAX_HEIGHT,
+      viewportHeight - (FILTER_POPOVER_GUTTER * 2),
+      availableHeight,
+    );
+    const renderedHeight = Math.min(measuredHeight, maxHeight);
+    const left = Math.min(
+      Math.max(triggerRect.right - width, FILTER_POPOVER_GUTTER),
+      viewportWidth - FILTER_POPOVER_GUTTER - width,
+    );
+    const top = opensAbove
+      ? Math.max(FILTER_POPOVER_GUTTER, triggerRect.top - FILTER_POPOVER_GAP - renderedHeight)
+      : Math.min(
+        viewportHeight - FILTER_POPOVER_GUTTER - renderedHeight,
+        triggerRect.bottom + FILTER_POPOVER_GAP,
+      );
+
+    setPlacement(opensAbove ? 'top' : 'bottom');
+    setFloatingStyle({
+      left,
+      maxHeight,
+      position: 'fixed',
+      top,
+      visibility: 'visible',
+      width,
+    });
+  }, [open, renamingTag, tags.length]);
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutside = (event) => {
+      if (!rootRef.current?.contains(event.target) && !panelRef.current?.contains(event.target)) {
+        close();
+      }
+    };
+    const handleEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (renamingTag) onCancelRename();
+      else close({ restoreFocus: true });
+    };
+    document.addEventListener('pointerdown', closeOnOutside);
+    document.addEventListener('focusin', closeOnOutside);
+    document.addEventListener('keydown', handleEscape, true);
+    const focusFrame = renamingTag
+      ? 0
+      : window.requestAnimationFrame(() => panelRef.current?.focus());
+    return () => {
+      if (focusFrame) window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener('pointerdown', closeOnOutside);
+      document.removeEventListener('focusin', closeOnOutside);
+      document.removeEventListener('keydown', handleEscape, true);
+    };
+  }, [close, onCancelRename, open, renamingTag]);
+
+  const popover = open && typeof document !== 'undefined' && createPortal(
+    <section
+      ref={panelRef}
+      id={panelID}
+      className="cloud-artifact-filter-popover"
+      role="dialog"
+      aria-label="筛选成果"
+      data-cc-focus-group="true"
+      data-placement={placement}
+      tabIndex={-1}
+      style={floatingStyle || {
+        left: 0,
+        maxHeight: FILTER_POPOVER_MAX_HEIGHT,
+        position: 'fixed',
+        top: 0,
+        visibility: 'hidden',
+        width: 0,
+      }}
+    >
+      <fieldset className="cloud-artifact-filter-section cloud-artifact-filter-scope-section">
+        <legend>成果范围</legend>
+        <div className="cloud-artifact-filter-scope-options">
+          <label className={value === 'current' ? 'is-selected' : ''}>
+            <input
+              type="radio"
+              name={panelID + '-scope'}
+              value="current"
+              checked={value === 'current'}
+              disabled={!canSelectCurrent}
+              onChange={() => onScopeChange('current')}
+            />
+            <span>当前任务</span>
+          </label>
+          <label className={value === 'all' ? 'is-selected' : ''}>
+            <input
+              type="radio"
+              name={panelID + '-scope'}
+              value="all"
+              checked={value === 'all'}
+              onChange={() => onScopeChange('all')}
+            />
+            <span>全部成果</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset className="cloud-artifact-filter-section cloud-artifact-filter-tags-section">
+        <legend>
+          <span>标签</span>
+          {selectedTags.length > 0 && <span>{selectedTags.length} 个已选</span>}
+        </legend>
+        {tags.length > 0 ? (
+          <div className="cloud-artifact-filter-tag-list">
+            {tags.map(({ tag, count }) => (
+              <div
+                className={[
+                  'cloud-artifact-filter-tag-item',
+                  selectedTags.includes(tag) ? 'is-selected' : '',
+                  renamingTag === tag ? 'is-renaming' : '',
+                ].filter(Boolean).join(' ')}
+                key={tag}
+              >
+                {renamingTag === tag ? (
+                  <>
+                    <input
+                      className="cloud-artifact-filter-rename-input"
+                      value={renamingDraft}
+                      autoFocus
+                      maxLength={32}
+                      aria-label={'重命名标签 ' + tag}
+                      disabled={pendingTag === tag}
+                      onChange={(event) => onRenamingDraftChange(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          onSubmitRename();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="cloud-artifact-filter-tag-action"
+                      aria-label="确认重命名"
+                      title="确认"
+                      disabled={pendingTag === tag || !renamingDraft.trim()}
+                      onClick={onSubmitRename}
+                    >
+                      <Check size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="cloud-artifact-filter-tag-action"
+                      aria-label="取消重命名"
+                      title="取消"
+                      onClick={onCancelRename}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <label className="cloud-artifact-filter-tag-choice">
+                      <input
+                        type="checkbox"
+                        checked={selectedTags.includes(tag)}
+                        onChange={() => onToggleTag(tag)}
+                      />
+                      <span className="cloud-artifact-filter-check" aria-hidden="true">
+                        {selectedTags.includes(tag) && <Check size={12} />}
+                      </span>
+                      <span className="cloud-artifact-filter-tag-name">{tag}</span>
+                      <span className="cloud-artifact-filter-tag-count">{count}</span>
+                    </label>
+                    {canManageTags && (
+                      <div className="cloud-artifact-filter-tag-actions">
+                        <button
+                          type="button"
+                          className="cloud-artifact-filter-tag-action"
+                          aria-label={'编辑标签 ' + tag}
+                          title="重命名标签"
+                          onClick={() => onStartRename(tag)}
+                        >
+                          <Pencil size={14} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="cloud-artifact-filter-tag-action"
+                          aria-label={'删除标签 ' + tag}
+                          title="从所有成果删除此标签"
+                          disabled={pendingTag === tag}
+                          onClick={() => {
+                            close();
+                            onDeleteTag(tag);
+                          }}
+                        >
+                          <Trash2 size={14} aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="cloud-artifact-filter-empty">暂无可用标签</p>
+        )}
+      </fieldset>
+
+      {hasFilters && (
+        <footer className="cloud-artifact-filter-popover-footer">
+          <button type="button" onClick={onReset}>重置筛选</button>
+        </footer>
+      )}
+    </section>,
+    document.body,
+  );
+
   return (
-    <div className="cloud-artifacts-scope">
-      <CustomSelect
-        ariaLabel="筛选成果范围"
-        className="cloud-artifacts-scope-select"
-        density="compact"
-        menuClassName="cloud-artifacts-scope-options"
-        triggerClassName="cloud-artifacts-scope-trigger"
-        value={value}
-        onValueChange={onChange}
+    <div className="cloud-artifact-filter" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="cloud-artifact-filter-trigger"
+        aria-label={`筛选成果，范围：${scopeLabel}${selectedTags.length > 0 ? `，已选 ${selectedTags.length} 个标签` : ''}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? panelID : undefined}
+        onClick={() => open ? close() : setOpen(true)}
       >
-        <option value="current" disabled={!canSelectCurrent}>当前任务</option>
-        <option value="all">全部</option>
-      </CustomSelect>
+        <ListFilter size={16} aria-hidden="true" />
+        <span>筛选</span>
+        {activeFilterCount > 0 && <span className="cloud-artifact-filter-trigger-count">{activeFilterCount}</span>}
+      </button>
+      {popover}
     </div>
   );
 }
 
-function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, onRemoveMany, onClose }) {
+function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, onClose }) {
   const [draft, setDraft] = React.useState('');
-  const [selected, setSelected] = React.useState(() => new Set());
-  const [multi, setMulti] = React.useState(false);
   const currentTags = artifactTagList(artifact);
   const trimmed = draft.trim().slice(0, 32);
   const suggestionItems = suggestions
     .map((item) => item?.tag || item)
-    .filter((tag) => tag && !currentTags.includes(tag))
-    .slice(0, 5);
-  const toggleSelected = (tag) => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(tag)) {
-        next.delete(tag);
-      } else {
-        next.add(tag);
-      }
-      return next;
-    });
-  };
-  const removeSelected = () => {
-    if (pending || selected.size === 0) return;
-    onRemoveMany([...selected]);
-    setSelected(new Set());
-  };
-  const toggleMulti = () => {
-    setSelected(new Set());
-    setMulti((current) => !current);
-  };
+    .filter((tag) => (
+      tag
+      && !currentTags.includes(tag)
+      && trimmed
+      && tag.toLocaleLowerCase().includes(trimmed.toLocaleLowerCase())
+    ))
+    .slice(0, 4);
   const submit = () => {
-    if (!trimmed || pending) return;
+    if (!trimmed || pending || currentTags.length >= 12) return;
     if (currentTags.includes(trimmed)) {
       setDraft('');
       return;
@@ -935,90 +1186,78 @@ function ArtifactTagEditor({ artifact, suggestions, pending, onAdd, onRemove, on
   };
   return (
     <div className="cloud-artifact-tag-editor">
-      {currentTags.map((tag) => (
-        <span
-          className={'cloud-artifact-tag is-editor' + (selected.has(tag) ? ' is-selected' : '') + (multi ? ' is-multi' : '')}
-          key={tag}
-          role={multi ? 'checkbox' : undefined}
-          aria-checked={multi ? selected.has(tag) : undefined}
-          aria-label={multi ? '选择标签 ' + tag : undefined}
-          tabIndex={multi ? 0 : undefined}
-          title={multi ? (selected.has(tag) ? '取消选择' : '选择以批量删除') : undefined}
-          onClick={multi ? () => toggleSelected(tag) : undefined}
-          onKeyDown={multi ? (event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              toggleSelected(tag);
-            }
-          } : undefined}
-        >
-          {multi && (
-            <span className="cloud-artifact-tag-check" aria-hidden="true">
-              {selected.has(tag) && <Check size={10} />}
+      {currentTags.length > 0 && (
+        <div className="cloud-artifact-tag-editor-current" aria-label="当前标签">
+          {currentTags.map((tag) => (
+            <span className="cloud-artifact-tag is-editor" key={tag}>
+              {tag}
+              <button
+                type="button"
+                onClick={() => onRemove(tag)}
+                disabled={pending}
+                aria-label={'移除标签 ' + tag}
+                title="移除标签"
+              >
+                <X size={11} aria-hidden="true" />
+              </button>
             </span>
-          )}
-          {tag}
-          {!multi && (
-            <button
-              type="button"
-              onClick={(event) => {
+          ))}
+        </div>
+      )}
+      <div className="cloud-artifact-tag-editor-compose">
+        <div className="cloud-artifact-tag-entry">
+          <input
+            value={draft}
+            placeholder="添加标签…"
+            aria-label={'为 ' + artifact.title + ' 添加标签'}
+            autoComplete="off"
+            spellCheck={false}
+            data-cc-focus-group="true"
+            maxLength={32}
+            disabled={pending || currentTags.length >= 12}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                submit();
+              } else if (event.key === 'Escape') {
                 event.stopPropagation();
-                onRemove(tag);
-              }}
-              disabled={pending}
-              aria-label={'移除标签 ' + tag}
-              title="移除标签"
-            >
-              <X size={11} />
-            </button>
-          )}
-        </span>
-      ))}
-      <input
-        value={draft}
-        placeholder="输入标签，回车添加"
-        aria-label={'为 ' + artifact.title + ' 添加标签'}
-        maxLength={32}
-        disabled={pending}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            submit();
-          } else if (event.key === 'Escape') {
-            event.stopPropagation();
-            onClose();
-          }
-        }}
-      />
-      <button type="button" onClick={submit} disabled={pending || !trimmed}>添加</button>
-      <button
-        type="button"
-        onClick={toggleMulti}
-        aria-pressed={multi}
-        disabled={pending}
-      >
-        {multi ? '退出多选' : '多选'}
-      </button>
-      {multi && selected.size > 0 && (
+                onClose();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="cloud-artifact-tag-add"
+            onClick={submit}
+            disabled={pending || !trimmed || currentTags.length >= 12}
+            aria-label="添加标签"
+            title="添加标签"
+          >
+            <Plus size={14} aria-hidden="true" />
+          </button>
+        </div>
         <button
           type="button"
-          className="is-danger"
-          onClick={removeSelected}
+          className="cloud-artifact-tag-done"
+          onClick={onClose}
           disabled={pending}
         >
-          删除所选（{selected.size}）
+          完成
         </button>
-      )}
-      <button type="button" onClick={onClose} disabled={pending}>完成</button>
+      </div>
       {suggestionItems.length > 0 && (
-        <div className="cloud-artifact-tag-suggestions">
+        <div className="cloud-artifact-tag-suggestions" aria-label="标签建议">
           {suggestionItems.map((tag) => (
             <button
               type="button"
               key={tag}
               disabled={pending || currentTags.length >= 12}
-              onClick={() => onAdd(tag)}
+              onClick={() => {
+                onAdd(tag);
+                setDraft('');
+              }}
+              aria-label={'使用标签 ' + tag}
             >
               {tag}
             </button>
@@ -1100,7 +1339,6 @@ function HistoricalFileItem({ file, onPreviewFile }) {
           aria-label={'预览' + itemLabel + ' ' + file.name}
         >
           <FileSummary file={file} thumbnailURL={thumbnailURL} />
-          <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
         </button>
       ) : (
         <a

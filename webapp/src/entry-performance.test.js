@@ -7,6 +7,7 @@ const readSource = (path) => readFileSync(resolve(process.cwd(), path), 'utf8')
 
 const entrySource = readSource('src/index.jsx');
 const authCss = readSource('src/css/auth-critical.css');
+const focusPolicyCss = readSource('src/css/catsco-focus-policy.css');
 const workspaceStyles = readSource('src/views/workspace-styles.js');
 const authSessionSource = readSource('src/auth-session.js');
 const authGatewaySource = readSource('src/views/auth-gateway.jsx');
@@ -54,6 +55,11 @@ describe('entry bundle split', () => {
     expect(entrySource).not.toContain("from './api'");
   });
 
+  it('loads the shared inset focus policy for auth and workspace routes', () => {
+    expect(entrySource).toContain("import './css/catsco-focus-policy.css';");
+    expect(focusPolicyCss).toContain('box-shadow: inset 0 0 0 1px');
+  });
+
   it('keeps navigation HTML out of precache while retaining hashed entry assets and offline fallback', () => {
     expect(viteConfig).toContain("'assets/index-*.{js,css}'");
     expect(viteConfig).toContain("'assets/workbox-window.*.js'");
@@ -82,6 +88,7 @@ describe('entry bundle split', () => {
   it('keeps the auth shell on the established visual tokens and overflow rules', () => {
     expect(authCss).toContain('--cc-accent: #29bc95;');
     expect(authCss).toContain('--cc-bg: #fcfcfc;');
+    expect(authCss).toContain('--cc-focus-border: color-mix(in srgb, var(--cc-text) 34%, var(--cc-border));');
     expect(authCss).toContain('--oc-danger: #ef4444;');
     expect(authCss).toContain('--cc-scrollbar-size: var(--cc-scrollbar-panel-size);');
     expect(authCss).toContain('scrollbar-color: var(--cc-scrollbar-thumb) var(--cc-scrollbar-track);');
