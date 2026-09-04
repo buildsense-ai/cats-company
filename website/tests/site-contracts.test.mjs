@@ -64,8 +64,8 @@ test('home and pricing conversion copy follows current page briefs', async () =>
   const pricing = await read('src/components/PricingPage.tsx')
   const login = await read('src/components/LoginPage.tsx')
   const homeCss = await read('src/styles/pages/home.css')
-  const homeCriticalCss = await read('src/styles/home-critical.css')
-  const pricingCss = await read('src/styles/pages/pricing.css')
+  const homeCriticalCss = await read('src/styles/pages/home-critical.css')
+  const siteHeaderCss = await read('src/styles/site-header.css')
 
   assert.match(hero, />CatsCo<\/span>/)
   assert.match(hero, />你的专业AI员工<\/span>/)
@@ -119,14 +119,12 @@ test('home and pricing conversion copy follows current page briefs', async () =>
 
   for (const action of ['header-social-link', 'header-login', 'header-download']) {
     for (const state of ['', ':hover', ':active']) {
-      const criticalState = homeCriticalCss.match(new RegExp(`body:has\\(main > \\.hero-section\\) \\.site-header \\.${action}${state} \\{([^}]+)\\}`))
-      const pricingState = pricingCss.match(new RegExp(`\\.min-h-screen:has\\(\\.pricing-page\\) > \\.site-header \\.${action}${state} \\{([^}]+)\\}`))
-      assert.ok(criticalState && pricingState)
-      assert.equal(criticalState[1].trim(), pricingState[1].trim())
+      assert.match(siteHeaderCss, new RegExp(`body:has\\(main > \\.hero-section\\) \\.site-header \\.${action}${state},\\s*\\.min-h-screen:has\\(\\.pricing-page\\) > \\.site-header \\.${action}${state} \\{`))
     }
   }
-  assert.equal((homeCriticalCss.match(/background: #2b2b2b;/g) || []).length, 3)
-  assert.equal((pricingCss.match(/background: #2b2b2b;/g) || []).length, 3)
+  assert.doesNotMatch(homeCriticalCss, /background: #2b2b2b;/)
+  assert.doesNotMatch(await read('src/styles/pages/pricing.css'), /background: #2b2b2b;/)
+  assert.equal((siteHeaderCss.match(/background: #2b2b2b;/g) || []).length, 3)
 })
 
 test('SPA hosting fallbacks cover deep links', async () => {
@@ -196,17 +194,29 @@ test('shared design rules use CatsCo brand direction', async () => {
   assert.match(base, /"Noto Sans SC"/)
 })
 
-test('deferred home sections preserve targeted hash navigation', async () => {
+test('home hash navigation loads only deferred targets and never replays static hashes', async () => {
+  const app = await read('src/App.tsx')
   const home = await read('src/components/HomePage.tsx')
+  const sections = await read('src/components/HomeSections.tsx')
+  const homeHash = await read('src/home-hash.ts')
+  const main = await read('src/main.tsx')
 
-  assert.match(home, /const deferredHomeTargetIds = new Set\(\['workflows', 'task-demo', 'company-purpose', 'team'\]\)/)
-  assert.match(home, /targetsDeferredHomeSection\(window\.location\.hash\)/)
+  assert.match(main, /styles\/pages\/home-critical\.css/)
+  assert.doesNotMatch(main, /styles\/home-critical\.css/)
+  assert.match(homeHash, /deferredHomeTargetIds = new Set\(\['workflows', 'task-demo', 'company-purpose', 'team'\]\)/)
+  assert.match(homeHash, /export function getHomeHashTargetId/)
+  assert.match(homeHash, /export function getDeferredHomeHashTargetId/)
+  assert.match(home, /Boolean\(getDeferredHomeHashTargetId\(window\.location\.hash\)\)/)
   assert.match(home, /window\.addEventListener\('hashchange', loadDeferredHashTarget\)/)
-  assert.doesNotMatch(home, /Boolean\(window\.location\.hash\)/)
+  assert.match(home, /let cancelScroll = scrollToHomeHashTarget\(\)/)
+  assert.match(home, /window\.addEventListener\('hashchange', scrollChangedHash\)/)
+  assert.match(sections, /const targetId = getDeferredHomeHashTargetId\(window\.location\.hash\)/)
+  assert.doesNotMatch(sections, /getHomeHashTargetId\(window\.location\.hash\)/)
+  assert.doesNotMatch(app, /scrollIntoView/)
 })
 
 test('source avoids known interaction regressions', async () => {
-  const files = ['src/App.tsx', 'src/components/Header.tsx', 'src/components/Footer.tsx', 'src/styles/base.css', 'src/styles/site-header.css', 'src/styles/site-footer.css', 'src/styles/pages/contact.css', 'src/styles/legacy-responsive.css']
+  const files = ['src/App.tsx', 'src/components/Header.tsx', 'src/components/Footer.tsx', 'src/styles/base.css', 'src/styles/site-header.css', 'src/styles/site-footer.css', 'src/styles/pages/contact.css', 'src/styles/pages/home-critical.css', 'src/styles/pages/home.css', 'src/styles/legacy-responsive.css']
   const source = (await Promise.all(files.map(read))).join('\n')
   assert.doesNotMatch(source, /transition:\s*all/i)
   assert.doesNotMatch(source, /user-scalable\s*=\s*no|maximum-scale\s*=\s*1/i)
@@ -217,6 +227,8 @@ test('source avoids known interaction regressions', async () => {
   const footerStyles = await read('src/styles/site-footer.css')
   const pricingStyles = await read('src/styles/pages/pricing.css')
   const responsive = await read('src/styles/legacy-responsive.css')
+  const homeCritical = await read('src/styles/pages/home-critical.css')
+  const homeStyles = await read('src/styles/pages/home.css')
   assert.match(app, /className="skip-link" href="#main-content"/)
   assert.match(app, /route \? renderPage\(route\.page\) : <AsyncNotFoundPage \/>/)
   assert.match(header, /aria-expanded=\{menuOpen\}/)
@@ -256,4 +268,9 @@ test('source avoids known interaction regressions', async () => {
   assert.match(pricingStyles, /\.pricing-access \{[^}]*border: 1px solid transparent;/s)
   assert.match(pricingStyles, /\.pricing-access:hover,[^{]+\.pricing-access:focus-within \{[^}]*border-color: #616161;/s)
   assert.match(responsive, /@media \(prefers-reduced-motion: reduce\)/)
+  assert.doesNotMatch(responsive, /\.hero-|\.workflow-(?:section|stories)|\.resource-|\.team-/)
+  assert.match(homeCritical, /@media \(max-width: 900px\)[\s\S]*\.hero-watermark/)
+  assert.match(homeCritical, /@media \(max-width: 900px\)[\s\S]*\.workflow-section/)
+  assert.match(homeStyles, /Deferred chapter breakpoints/)
+  assert.match(homeStyles, /@keyframes capability-drift/)
 })

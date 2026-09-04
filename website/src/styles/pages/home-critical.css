@@ -22,51 +22,6 @@ body:has(main > .hero-section) .site-header .nav-link.is-active {
   color: #f5f5f5;
 }
 
-body:has(main > .hero-section) .site-header .header-download {
-  color: #d2d2d2;
-  background: #2b2b2b;
-}
-
-body:has(main > .hero-section) .site-header .header-download:hover {
-  color: #f5f5f5;
-  background: #303030;
-}
-
-body:has(main > .hero-section) .site-header .header-download:active {
-  color: #f5f5f5;
-  background: #3a3a3a;
-}
-
-body:has(main > .hero-section) .site-header .header-social-link {
-  color: #ededed;
-  background: #2b2b2b;
-}
-
-body:has(main > .hero-section) .site-header .header-social-link:hover {
-  color: #fff;
-  background: #303030;
-}
-
-body:has(main > .hero-section) .site-header .header-social-link:active {
-  color: #fff;
-  background: #3a3a3a;
-}
-
-body:has(main > .hero-section) .site-header .header-login {
-  color: #b8b8b8;
-  background: #2b2b2b;
-}
-
-body:has(main > .hero-section) .site-header .header-login:hover {
-  color: #fff;
-  background: #5dc6b0;
-}
-
-body:has(main > .hero-section) .site-header .header-login:active {
-  color: #fff;
-  background: #11745b;
-}
-
 body:has(main > .hero-section) .site-header .mobile-menu-button {
   border-color: #353535;
   color: #e6e6e6;
@@ -221,4 +176,129 @@ body:has(main > .hero-section) .site-header .mobile-navigation a[aria-current='p
   .workflow-card { transition: border-color 120ms ease, box-shadow 120ms ease; }
   .workflow-card:hover { transform: none; }
   .workflow-icon, .workflow-icon * { animation: none !important; transition: none !important; }
+}
+
+/* Eager responsive rules for the Hero and first Workflow section. */
+@media (min-width: 640px) {
+  .section-container {
+    width: min(1200px, calc(100% - 64px));
+  }
+}
+
+@media (max-width: 900px) {
+  .workflow-section {
+    padding: 64px 0 72px;
+  }
+
+  .workflow-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    margin-top: 36px;
+  }
+
+  .workflow-card {
+    min-height: 0;
+  }
+
+  .hero-watermark {
+    top: 74px;
+    width: 145vw;
+    max-width: none;
+    transform: translate(-50%, 0);
+  }
+
+  .hero-watermark-hover {
+    transform: translate(-50%, 0);
+  }
+
+  .hero-intro {
+    min-height: calc(100vh - 72px);
+    min-height: calc(100dvh - 72px);
+    justify-content: center;
+    padding: 100px 0 110px;
+  }
+
+  .hero-title {
+    max-width: 760px;
+    white-space: normal;
+  }
+
+  .hero-title-brand,
+  .hero-title-value {
+    display: block;
+  }
+
+  .hero-title-value {
+    margin-top: 0.08em;
+    margin-left: 0;
+  }
+
+  .hero-lead {
+    max-width: 680px;
+    margin-top: 32px;
+    font-size: 21px;
+    white-space: normal;
+  }
+
+  .hero-action {
+    margin-top: 46px;
+  }
+}
+
+@media (max-width: 680px) {
+  .workflow-heading {
+    text-align: left;
+  }
+
+  .workflow-heading p {
+    font-size: 16px;
+  }
+
+  .workflow-card {
+    border-radius: 20px;
+    padding: 28px 24px 26px;
+  }
+
+  .workflow-card > p {
+    margin-top: 22px;
+    font-size: 16px;
+  }
+
+  .hero-watermark {
+    top: 120px;
+    width: 215vw;
+  }
+
+  .hero-intro {
+    min-height: calc(100dvh - 72px);
+    padding: 100px 0 120px;
+  }
+
+  .hero-title {
+    font-size: clamp(2.8rem, 13vw, 4rem);
+    line-height: 1.08;
+  }
+
+  .hero-lead {
+    max-width: 340px;
+    margin-top: 30px;
+    font-size: 16px;
+    line-height: 1.8;
+  }
+
+  .hero-action {
+    margin-top: 42px;
+  }
+
+  .hero-cta {
+    min-width: 164px;
+    min-height: 52px;
+    font-size: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-watermark-hover {
+    display: none;
+  }
 }

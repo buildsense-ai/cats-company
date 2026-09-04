@@ -4414,7 +4414,7 @@ main:has(> .hero-section) + .final-footer .final-footer-watermark {
   transform: translateX(-50%);
 }
 
-/* Deferred home chapters; Header, Hero, and WorkflowSection live in ../home-critical.css. */
+/* Deferred home chapters; Header, Hero, and WorkflowSection live in ./home-critical.css. */
 .workflow-story-copy h2 {
   color: #f5f5f5;
 }
@@ -6582,4 +6582,270 @@ main:has(> .hero-section) + .final-footer .final-footer-watermark {
 .team-title {
   font-weight: 500;
   letter-spacing: var(--cats-heading-latin-tracking);
+}
+
+/* Deferred chapter breakpoints. Keep these after chapter base rules. */
+@media (min-width: 640px) {
+  .delivery-panel {
+    padding: 30px;
+  }
+}
+
+@media (max-width: 900px) {
+  .workflow-stories {
+    padding: 12px 0 84px;
+  }
+
+  .workflow-story {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    gap: 34px;
+    padding: 64px 0;
+  }
+
+  .workflow-story-right .workflow-story-placeholder {
+    order: 2;
+  }
+
+  .workflow-story-right .workflow-story-copy {
+    order: 1;
+  }
+
+  .workflow-story-copy {
+    max-width: 680px;
+  }
+
+  .workflow-story-placeholder {
+    aspect-ratio: 1.45;
+  }
+
+  .resource-motion-layer {
+    transform: scale(0.78);
+    transform-origin: center;
+  }
+
+  .resource-orbit-outer {
+    transform: translate(-50%, -50%) scale(0.82) rotate(-8deg);
+  }
+
+  .resource-orbit-inner {
+    transform: translate(-50%, -50%) scale(0.82) rotate(12deg);
+  }
+
+  .environment-stage {
+    display: grid;
+    height: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    padding: 24px;
+  }
+
+  .environment-lines,
+  .environment-stage::before,
+  .environment-caption {
+    display: none;
+  }
+
+  .environment-center,
+  .environment-card {
+    position: relative;
+    inset: auto;
+    width: auto;
+    transform: none;
+  }
+
+  .environment-center {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+  }
+
+  .environment-card {
+    animation: none;
+  }
+}
+
+@media (max-width: 680px) {
+  .resource-scroll-section {
+    height: 330vh;
+  }
+
+  .resource-sticky {
+    min-height: 540px;
+  }
+
+  .resource-stage {
+    width: 100vw;
+    min-height: 520px;
+  }
+
+  .resource-motion-layer {
+    transform: scale(0.56);
+  }
+
+  .resource-orbit-outer,
+  .resource-orbit-inner {
+    transform: translate(-50%, -50%) scale(0.64) rotate(-8deg);
+  }
+
+  .resource-orbit-inner {
+    transform: translate(-50%, -50%) scale(0.64) rotate(12deg);
+  }
+
+  .resource-logo-wrap {
+    width: 150px;
+    height: 56px;
+    margin: -28px 0 0 -75px;
+  }
+
+  .resource-final-copy {
+    top: calc(50% - 22px);
+  }
+
+  .resource-final-copy h2 {
+    font-size: clamp(2.35rem, 12vw, 3.5rem);
+  }
+
+  .resource-final-copy p {
+    margin-top: 10px;
+    font-size: 17px;
+  }
+
+  .task-demo-section {
+    padding: 82px 0 100px;
+  }
+
+  .task-topbar {
+    padding: 13px 16px;
+  }
+
+  .delivery-panel {
+    min-height: 390px;
+  }
+
+  .environment-stage {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+
+  .environment-center {
+    grid-column: 1;
+  }
+
+  .catsco-flow {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0;
+    padding: 36px 20px 10px;
+  }
+
+  .flow-group,
+  .flow-group:last-child {
+    flex: initial;
+    flex-direction: column;
+  }
+
+  .flow-step {
+    min-width: 120px;
+    flex-direction: row;
+  }
+
+  .flow-line {
+    width: 2px;
+    height: 22px;
+    min-width: 2px;
+    flex: none;
+    margin: 4px 0 4px 16px;
+  }
+
+  .flow-line span {
+    background: linear-gradient(180deg, transparent, var(--cats-primary), transparent);
+    animation-name: flow-scan-y;
+  }
+
+  .comparison-card {
+    min-height: auto;
+    padding: 22px;
+  }
+}
+
+@keyframes flow-scan-y {
+  0% { transform: translateY(-100%); }
+  70%, 100% { transform: translateY(100%); }
+}
+
+@keyframes capability-drift {
+  from {
+    transform: translate3d(var(--drift-from-x), var(--drift-from-y), 0);
+  }
+  to {
+    transform: translate3d(var(--drift-to-x), var(--drift-to-y), 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-section {
+    min-height: auto;
+  }
+
+  .team-sticky {
+    position: relative;
+    height: auto;
+    padding: clamp(88px, 12vw, 128px) 0;
+    overflow: visible;
+  }
+
+  .team-stage {
+    height: auto;
+  }
+
+  .team-title-wrap {
+    position: relative;
+    display: block;
+    padding: 0 20px;
+  }
+
+  .team-title,
+  .team-stage[data-phase='people'] .team-title,
+  .team-stage[data-phase='story'] .team-title {
+    opacity: 1;
+    transform: none;
+  }
+
+  .team-story,
+  .team-stage[data-phase='story'] .team-story {
+    max-width: 700px;
+    margin: 28px auto 0;
+    opacity: 1;
+    transform: none;
+  }
+
+  .team-avatar-field {
+    position: relative;
+    height: 560px;
+    margin-top: 36px;
+    pointer-events: auto;
+  }
+
+  .team-avatar,
+  .team-stage[data-phase='people'] .team-avatar,
+  .team-stage[data-phase='story'] .team-avatar {
+    top: var(--avatar-top);
+    left: var(--avatar-left);
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) and (max-width: 720px) {
+  .team-avatar-field {
+    height: 600px;
+  }
+
+  .team-avatar,
+  .team-stage[data-phase='people'] .team-avatar,
+  .team-stage[data-phase='story'] .team-avatar {
+    top: var(--avatar-top-mobile);
+    left: var(--avatar-left-mobile);
+  }
 }

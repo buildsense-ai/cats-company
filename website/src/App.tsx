@@ -34,31 +34,6 @@ export default function App() {
 
   useEffect(() => applyRouteMetadata(route), [route])
 
-  useEffect(() => {
-    if (route?.page !== 'home' || !window.location.hash) return undefined
-
-    const targetId = window.location.hash.slice(1)
-    if (!targetId) return undefined
-
-    let target: HTMLElement | null = null
-    try {
-      target = document.getElementById(decodeURIComponent(targetId))
-    } catch {
-      return undefined
-    }
-
-    if (!target) return undefined
-
-    const frame = window.requestAnimationFrame(() => {
-      const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      target?.scrollIntoView({
-        behavior: prefersReducedMotion ? 'auto' : 'smooth',
-        block: 'start',
-      })
-    })
-
-    return () => window.cancelAnimationFrame(frame)
-  }, [route])
 
   if (route?.page === 'login') {
     return <AsyncLoginPage />
