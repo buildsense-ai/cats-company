@@ -3,11 +3,21 @@ import { Hero } from './Hero'
 import { WorkflowSection } from './WorkflowSection'
 
 const AsyncHomeSections = lazy(() => import('./HomeSections').then((m) => ({ default: m.HomeSections })))
+const deferredHomeTargetIds = new Set(['workflows', 'task-demo', 'company-purpose', 'team'])
+
+function targetsDeferredHomeSection(hash: string) {
+  if (!hash) return false
+
+  try {
+    return deferredHomeTargetIds.has(decodeURIComponent(hash.slice(1)))
+  } catch {
+    return false
+  }
+}
 
 function DeferredHomeSections() {
   const triggerRef = useRef<HTMLDivElement>(null)
-  // Hash links (for example /#task-demo) must mount their target immediately.
-  const [shouldLoad, setShouldLoad] = useState(() => Boolean(window.location.hash))
+  const [shouldLoad, setShouldLoad] = useState(() => targetsDeferredHomeSection(window.location.hash))
 
   useEffect(() => {
     const trigger = triggerRef.current
@@ -24,6 +34,15 @@ function DeferredHomeSections() {
 
     observer.observe(trigger)
     return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const loadDeferredHashTarget = () => {
+      if (targetsDeferredHomeSection(window.location.hash)) setShouldLoad(true)
+    }
+
+    window.addEventListener('hashchange', loadDeferredHashTarget)
+    return () => window.removeEventListener('hashchange', loadDeferredHashTarget)
   }, [])
 
   return (

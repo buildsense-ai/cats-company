@@ -9,19 +9,85 @@ body:has(main > .hero-section) .site-header {
   backdrop-filter: saturate(110%) blur(12px);
 }
 
-body:has(main > .hero-section) .site-header a[aria-label='CatsCo 首页'] > span,
+body:has(main > .hero-section) .site-header a[aria-label='CatsCo 首页'] > span {
+  color: #f5f5f5;
+}
+
+body:has(main > .hero-section) .site-header nav[aria-label='主导航'] {
+  color: #a8a8a8;
+}
+
 body:has(main > .hero-section) .site-header .nav-link:hover,
 body:has(main > .hero-section) .site-header .nav-link.is-active {
   color: #f5f5f5;
 }
 
-body:has(main > .hero-section) .site-header nav[aria-label='主导航'] { color: #a8a8a8; }
-body:has(main > .hero-section) .site-header .header-download,
-body:has(main > .hero-section) .site-header .header-social-link,
-body:has(main > .hero-section) .site-header .header-login { background: #2b2b2b; }
-body:has(main > .hero-section) .site-header .header-download { color: #d2d2d2; }
-body:has(main > .hero-section) .site-header .header-social-link { color: #ededed; }
-body:has(main > .hero-section) .site-header .header-login { color: #b8b8b8; }
+body:has(main > .hero-section) .site-header .header-download {
+  color: #d2d2d2;
+  background: #2b2b2b;
+}
+
+body:has(main > .hero-section) .site-header .header-download:hover {
+  color: #f5f5f5;
+  background: #303030;
+}
+
+body:has(main > .hero-section) .site-header .header-download:active {
+  color: #f5f5f5;
+  background: #3a3a3a;
+}
+
+body:has(main > .hero-section) .site-header .header-social-link {
+  color: #ededed;
+  background: #2b2b2b;
+}
+
+body:has(main > .hero-section) .site-header .header-social-link:hover {
+  color: #fff;
+  background: #303030;
+}
+
+body:has(main > .hero-section) .site-header .header-social-link:active {
+  color: #fff;
+  background: #3a3a3a;
+}
+
+body:has(main > .hero-section) .site-header .header-login {
+  color: #b8b8b8;
+  background: #2b2b2b;
+}
+
+body:has(main > .hero-section) .site-header .header-login:hover {
+  color: #fff;
+  background: #5dc6b0;
+}
+
+body:has(main > .hero-section) .site-header .header-login:active {
+  color: #fff;
+  background: #11745b;
+}
+
+body:has(main > .hero-section) .site-header .mobile-menu-button {
+  border-color: #353535;
+  color: #e6e6e6;
+  background: #171717;
+}
+
+body:has(main > .hero-section) .site-header .mobile-navigation {
+  border-bottom-color: #292929;
+  background: rgba(16, 16, 16, 0.98);
+  box-shadow: 0 20px 42px rgba(0, 0, 0, 0.3);
+}
+
+body:has(main > .hero-section) .site-header .mobile-navigation a {
+  color: #c2c2c2;
+}
+
+body:has(main > .hero-section) .site-header .mobile-navigation a:hover,
+body:has(main > .hero-section) .site-header .mobile-navigation a[aria-current='page'] {
+  color: #f5f5f5;
+  background: #1f1f1f;
+}
 
 .hero-section {
   position: relative;
@@ -110,7 +176,7 @@ body:has(main > .hero-section) .site-header .header-login { color: #b8b8b8; }
 .workflow-card-head { display: flex; align-items: center; gap: 14px; }
 .workflow-card h3 { margin: 0; color: #f5f5f5; font-size: clamp(1.25rem, 1.75vw, 1.65rem); font-weight: var(--cats-heading-card-weight); letter-spacing: var(--cats-heading-card-tracking); line-height: 1.2; }
 .workflow-card > p { margin: 28px 0 0; color: #a8a8a8; font-size: 0.95rem; letter-spacing: -0.012em; line-height: 1.62; text-wrap: pretty; }
-.workflow-icon { display: inline-flex; width: 36px; height: 36px; flex: 0 0 36px; align-items: center; justify-content: center; color: #858a88; transition: color 180ms ease; }
+.workflow-icon { display: inline-flex; width: 36px; height: 36px; flex: 0 0 36px; align-items: center; justify-content: center; border: 0; color: #858a88; background: transparent; box-shadow: none; transition: color 180ms ease; }
 .workflow-icon svg { width: 30px; height: 30px; overflow: visible; }
 .workflow-icon svg > * { transform-box: fill-box; transform-origin: center; }
 .workflow-icon-cycle { transform-origin: center; transition: transform 620ms cubic-bezier(0.22, 1, 0.36, 1); }
@@ -119,9 +185,40 @@ body:has(main > .hero-section) .site-header .header-login { color: #b8b8b8; }
 @media (hover: hover) and (pointer: fine) {
   .workflow-card:hover { z-index: 1; border-color: #454545; box-shadow: 0 28px 68px rgba(0, 0, 0, 0.34); transform: translateY(-4px) scale(1.025); }
   .workflow-card:hover .workflow-icon { color: #f2f4f3; }
+  .workflow-card:hover .workflow-icon-goal-start { animation: workflow-goal-start 320ms ease-out both; }
+  .workflow-card:hover .workflow-icon-goal-route { animation: workflow-line-travel 340ms ease-out both; }
+  .workflow-card:hover .workflow-icon-goal-arrow { animation: workflow-goal-arrow 320ms ease-out both; }
+  .workflow-card:hover .workflow-icon-cycle { transform: rotate(120deg); }
+  .workflow-card:hover .workflow-icon-memory-line { animation: workflow-memory-line-draw 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .workflow-card:hover .workflow-icon-memory-line-two { animation-delay: 55ms; }
+  .workflow-card:hover .workflow-icon-memory-line-three { animation-delay: 110ms; }
+  .workflow-card:hover .workflow-icon-memory-line-four { animation-delay: 165ms; }
 }
 
-@media (min-width: 1200px) { .workflow-card { padding-inline: 30px; } }
+@keyframes workflow-line-travel {
+  from { stroke-dasharray: 28; stroke-dashoffset: 28; opacity: 0.55; }
+  to { stroke-dasharray: 28; stroke-dashoffset: 0; opacity: 1; }
+}
+
+@keyframes workflow-goal-start { 50% { transform: scale(1.28); } }
+@keyframes workflow-goal-arrow { 50% { transform: translateX(1.5px); } }
+
+@keyframes workflow-memory-line-draw {
+  from { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0.45; }
+  to { stroke-dasharray: 1; stroke-dashoffset: 0; opacity: 1; }
+}
+
+@media (min-width: 1200px) {
+  .workflow-card { padding-inline: 30px; }
+  .workflow-heading p { white-space: nowrap; }
+}
+
 @media (min-width: 721px) { .hero-intro { min-height: calc(100dvh + 32px); padding-top: clamp(205px, 22vh, 228px); } }
 @media (max-width: 720px) { .hero-section { min-height: calc(100dvh + 24px); } .hero-intro { min-height: max(676px, calc(100dvh + 24px)); } .hero-watermark { opacity: 0.075; } }
-@media (prefers-reduced-motion: reduce) { .workflow-section::before { animation: none; opacity: 1; transform: none; will-change: auto; } .workflow-heading h2, .workflow-heading p, .workflow-card-reveal { opacity: 1; transform: none; transition: none; } .workflow-card { transition: border-color 120ms ease, box-shadow 120ms ease; } .workflow-card:hover { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .workflow-section::before { animation: none; opacity: 1; transform: none; will-change: auto; }
+  .workflow-heading h2, .workflow-heading p, .workflow-card-reveal { opacity: 1; transform: none; transition: none; }
+  .workflow-card { transition: border-color 120ms ease, box-shadow 120ms ease; }
+  .workflow-card:hover { transform: none; }
+  .workflow-icon, .workflow-icon * { animation: none !important; transition: none !important; }
+}

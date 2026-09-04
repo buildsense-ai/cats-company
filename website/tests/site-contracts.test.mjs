@@ -64,6 +64,7 @@ test('home and pricing conversion copy follows current page briefs', async () =>
   const pricing = await read('src/components/PricingPage.tsx')
   const login = await read('src/components/LoginPage.tsx')
   const homeCss = await read('src/styles/pages/home.css')
+  const homeCriticalCss = await read('src/styles/home-critical.css')
   const pricingCss = await read('src/styles/pages/pricing.css')
 
   assert.match(hero, />CatsCo<\/span>/)
@@ -77,22 +78,24 @@ test('home and pricing conversion copy follows current page briefs', async () =>
     assert.match(workflow, new RegExp(`icon: '${iconName}'`))
   }
   assert.doesNotMatch(workflow, /workflow-icon-\$\{card\.tone\}/)
-  assert.match(homeCss, /\.workflow-icon \{[^}]*color: #858a88;[^}]*background: transparent;[^}]*box-shadow: none;/s)
+  assert.match(homeCriticalCss, /\.workflow-icon \{[^}]*color: #858a88;[^}]*background: transparent;[^}]*box-shadow: none;/s)
   assert.match(workflow, /strokeWidth="1\.4"/)
-  assert.match(homeCss, /\.workflow-icon svg \{[^}]*width: 30px;[^}]*height: 30px;/s)
-  assert.match(homeCss, /\.workflow-card:hover \.workflow-icon \{[^}]*color: #f2f4f3;/s)
-  assert.doesNotMatch(homeCss, /\.workflow-card:hover \.workflow-icon \{[^}]*background:/s)
-  assert.match(homeCss, /@keyframes workflow-goal-arrow/)
+  assert.match(homeCriticalCss, /\.workflow-icon svg \{[^}]*width: 30px;[^}]*height: 30px;/s)
+  assert.match(homeCriticalCss, /\.workflow-card:hover \.workflow-icon \{[^}]*color: #f2f4f3;/s)
+  assert.doesNotMatch(homeCriticalCss, /\.workflow-card:hover \.workflow-icon \{[^}]*background:/s)
+  assert.match(homeCriticalCss, /@keyframes workflow-goal-arrow/)
   assert.match(workflow, /className="workflow-icon-cycle"/)
   assert.equal((workflow.match(/workflow-icon-cycle-arrow/g) || []).length, 6)
-  assert.match(homeCss, /\.workflow-card:hover \.workflow-icon-cycle \{[^}]*rotate\(120deg\);/s)
+  assert.match(homeCriticalCss, /\.workflow-card:hover \.workflow-icon-cycle \{[^}]*rotate\(120deg\);/s)
   assert.equal((workflow.match(/workflow-icon-memory-line workflow-icon-memory-line-/g) || []).length, 4)
   assert.doesNotMatch(workflow, /workflow-icon-memory-return/)
-  assert.match(homeCss, /@keyframes workflow-memory-line-draw/)
-  assert.match(homeCss, /\.workflow-card:hover \.workflow-icon-memory-line-four \{[^}]*animation-delay: 165ms;/s)
-  assert.match(homeCss, /\.workflow-card > p \{[^}]*font-size: 0\.95rem;[^}]*line-height: 1\.62;[^}]*text-wrap: pretty;/s)
-  assert.match(homeCss, /@media \(min-width: 1200px\) \{\s*\.workflow-card \{\s*padding-inline: 30px;/s)
-  assert.match(homeCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.workflow-icon \*/)
+  assert.match(homeCriticalCss, /@keyframes workflow-memory-line-draw/)
+  assert.match(homeCriticalCss, /\.workflow-card:hover \.workflow-icon-memory-line-four \{[^}]*animation-delay: 165ms;/s)
+  assert.match(homeCriticalCss, /\.workflow-card > p \{[^}]*font-size: 0\.95rem;[^}]*line-height: 1\.62;[^}]*text-wrap: pretty;/s)
+  assert.match(homeCriticalCss, /@media \(min-width: 1200px\) \{\s*\.workflow-card \{\s*padding-inline: 30px;/s)
+  assert.match(homeCriticalCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.workflow-icon \*/)
+  assert.doesNotMatch(homeCss, /^\.hero-section \{/m)
+  assert.doesNotMatch(homeCss, /body:has\(main > \.hero-section\) \.site-header/)
   assert.match(footer, />CATSCO · FROM GOAL TO OUTCOME</)
   assert.match(footer, />拥抱你的第一位 AI 员工</)
   assert.match(footer, /从下一项任务开始，让 CatsCo 帮你持续推进并交付成果。/)
@@ -116,13 +119,13 @@ test('home and pricing conversion copy follows current page briefs', async () =>
 
   for (const action of ['header-social-link', 'header-login', 'header-download']) {
     for (const state of ['', ':hover', ':active']) {
-      const homeState = homeCss.match(new RegExp(`body:has\\(main > \\.hero-section\\) \\.site-header \\.${action}${state} \\{([^}]+)\\}`))
+      const criticalState = homeCriticalCss.match(new RegExp(`body:has\\(main > \\.hero-section\\) \\.site-header \\.${action}${state} \\{([^}]+)\\}`))
       const pricingState = pricingCss.match(new RegExp(`\\.min-h-screen:has\\(\\.pricing-page\\) > \\.site-header \\.${action}${state} \\{([^}]+)\\}`))
-      assert.ok(homeState && pricingState)
-      assert.equal(homeState[1].trim(), pricingState[1].trim())
+      assert.ok(criticalState && pricingState)
+      assert.equal(criticalState[1].trim(), pricingState[1].trim())
     }
   }
-  assert.equal((homeCss.match(/background: #2b2b2b;/g) || []).length, 3)
+  assert.equal((homeCriticalCss.match(/background: #2b2b2b;/g) || []).length, 3)
   assert.equal((pricingCss.match(/background: #2b2b2b;/g) || []).length, 3)
 })
 
@@ -131,6 +134,7 @@ test('SPA hosting fallbacks cover deep links', async () => {
   const redirects = (await read('public/_redirects')).trim()
 
   assert.deepEqual(vercel.rewrites, [{ source: '/(.*)', destination: '/index.html' }])
+  assert.match(JSON.stringify(vercel.headers), /woff2/)
   assert.equal(redirects, '/* /index.html 200')
 })
 
@@ -139,6 +143,7 @@ test('document shell provides language, viewport, and initial metadata', async (
   assert.match(html, /<html lang="zh-CN">/)
   assert.match(html, /name="viewport" content="width=device-width, initial-scale=1\.0"/)
   assert.match(html, /name="description"/)
+  assert.match(html, /href="\/fonts\/inter-latin-wght-normal\.woff2"/)
   assert.match(html, /<title>[^<]*CatsCo[^<]*<\/title>/)
 })
 
@@ -187,6 +192,17 @@ test('shared design rules use CatsCo brand direction', async () => {
   assert.match(base, /--cats-heading-section-tracking: 0\.008em;/)
   assert.match(base, /--cats-heading-card-weight: 600;/)
   assert.match(base, /--cats-heading-latin-tracking: -0\.025em;/)
+  assert.match(base, /@tailwind utilities;/)
+  assert.match(base, /"Noto Sans SC"/)
+})
+
+test('deferred home sections preserve targeted hash navigation', async () => {
+  const home = await read('src/components/HomePage.tsx')
+
+  assert.match(home, /const deferredHomeTargetIds = new Set\(\['workflows', 'task-demo', 'company-purpose', 'team'\]\)/)
+  assert.match(home, /targetsDeferredHomeSection\(window\.location\.hash\)/)
+  assert.match(home, /window\.addEventListener\('hashchange', loadDeferredHashTarget\)/)
+  assert.doesNotMatch(home, /Boolean\(window\.location\.hash\)/)
 })
 
 test('source avoids known interaction regressions', async () => {

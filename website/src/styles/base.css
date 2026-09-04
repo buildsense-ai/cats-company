@@ -1,5 +1,7 @@
 @tailwind base;
 @tailwind components;
+@tailwind utilities;
+
 @font-face {
   font-family: "Inter Variable";
   font-style: normal;
@@ -9,8 +11,8 @@
 }
 
 :root {
-  /* CJK resolves to the operating system's native UI font; see main.tsx. */
-  font-family: "Inter Variable", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* Noto remains a system fallback; no Noto web font is downloaded. */
+  font-family: "Inter Variable", Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #15231f;
   background: #f8f8f8;
   font-synthesis: none;
