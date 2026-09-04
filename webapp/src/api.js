@@ -650,11 +650,17 @@ export const api = {
   createCloudWorker: ({ username, display_name, role, description }) =>
     request('POST', '/api/cloud-workers', { username, display_name, role, description }, { timeoutMs: 630_000 }),
   updateCloudWorker: (name, payload = {}) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/update`, payload, { timeoutMs: 630_000 }),
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/update?async=1`, payload, { timeoutMs: 15_000 }),
+  getCloudWorkerOperation: (name, operationID) => request(
+    'GET',
+    `/api/cloud-workers/${encodeURIComponent(name)}/operation?id=${encodeURIComponent(operationID)}`,
+    undefined,
+    { timeoutMs: 15_000 },
+  ),
   rollbackCloudWorker: (name, payload = {}) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload, { timeoutMs: 630_000 }),
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback?async=1`, payload, { timeoutMs: 15_000 }),
   resetCloudWorker: (name, payload = {}) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload, { timeoutMs: 630_000 }),
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset?async=1`, payload, { timeoutMs: 15_000 }),
   updateBot: (uid, {
     display_name,
     avatar_url,

@@ -798,7 +798,7 @@ describe('cloud worker operation request controls', () => {
     vi.useRealTimers();
   });
 
-  test('bounds a long-running update without timing out before the server limit', async () => {
+  test('uses a short acceptance timeout because cloud updates are asynchronous', async () => {
     global.fetch = vi.fn((_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener('abort', () => {
         const error = new Error('aborted');
@@ -809,10 +809,36 @@ describe('cloud worker operation request controls', () => {
 
     const request = apiModule.api.updateCloudWorker('bot-a', { version: '1.4.9' });
     const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
-    await vi.advanceTimersByTimeAsync(629_999);
+    expect(global.fetch.mock.calls[0][0]).toBe('/api/cloud-workers/bot-a/update?async=1');
+    await vi.advanceTimersByTimeAsync(14_999);
     expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await rejection;
+  });
+
+  test('fetches an operation with an encoded id and bounded timeout', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ operation_id: 'op-1', status: 'running' }),
+    });
+    await apiModule.api.getCloudWorkerOperation('bot/a', 'op/1?x=2');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/cloud-workers/bot%2Fa/operation?id=op%2F1%3Fx%3D2',
+      expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  test('opts cloud actions into the asynchronous operation contract', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ status: 'pending', operation_id: 'op-1' }),
+    });
+    await apiModule.api.rollbackCloudWorker('bot-a', { version: '1.4.8' });
+    await apiModule.api.resetCloudWorker('bot-a', { version: '1.4.8' });
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/cloud-workers/bot-a/rollback?async=1',
+      '/api/cloud-workers/bot-a/reset?async=1',
+    ]);
   });
 });
 

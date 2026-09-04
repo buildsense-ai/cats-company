@@ -91,13 +91,124 @@ const cloudWorkerActionMessage = (e, actionLabel) => {
     cloud_worker_delete_unconfigured: '云端删除服务尚未配置，请联系管理员',
   };
   if (unavailableMessages[code]) return unavailableMessages[code];
+  const timeoutMessages = {
+    cloud_worker_update_timeout: '云端更新超时，可能仍在服务器收尾；请刷新状态确认后再试，不要重复提交',
+    cloud_worker_rollback_timeout: '云端回滚超时，可能仍在服务器收尾；请刷新状态确认后再试，不要重复提交',
+    cloud_worker_reset_timeout: '云端重置超时，可能仍在服务器收尾；请刷新状态确认后再试，不要重复提交',
+  };
+  if (timeoutMessages[code]) return timeoutMessages[code];
+  const failedMessages = {
+    cloud_worker_update_failed: '云端更新执行失败，请刷新状态确认当前版本后再重试',
+    cloud_worker_rollback_failed: '云端回滚执行失败，请刷新状态确认当前版本后再重试',
+    cloud_worker_reset_failed: '云端重置执行失败，请刷新状态确认实例状态后再重试',
+  };
+  if (failedMessages[code]) return failedMessages[code];
+  if (code === 'CLOUD_OPERATION_INVALID_RESPONSE') {
+    return `${actionLabel}状态返回异常，请刷新页面后重试；未确认成功前不要重复提交`;
+  }
+  if (e?.status === 401) {
+    return `${actionLabel}状态查询需要重新登录，请刷新页面后重试`;
+  }
+  if (e?.status === 403) {
+    return `当前账号没有${actionLabel}权限，请切换到拥有该云员工的账号`;
+  }
   if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(e?.code)) {
     return `${actionLabel}连接中断，操作可能仍在服务器执行。请先等待并刷新状态，不要重复提交`;
   }
-  if ([502, 503, 504].includes(e?.status)) {
+  if (e?.status === 404 && e?.data?.error?.includes('operation')) {
+    return `${actionLabel}状态记录已过期或服务已重启，请刷新状态确认后再试`;
+  }
+  if (e?.status === 504) {
+    return `${actionLabel}请求超时，操作可能仍在服务器执行；请等待并刷新状态确认，不要重复提交`;
+  }
+  if ([502, 503].includes(e?.status)) {
     return `${actionLabel}未完成，云端服务暂不可用。请刷新状态确认后再重试`;
   }
   return e?.message || `${actionLabel}失败，请稍后重试`;
+};
+
+const waitForCloudWorkerOperation = async (name, operationID, { timeoutMs = 15 * 60_000, intervalMs = 3_000 } = {}) => {
+  const startedAt = Date.now();
+  let lastError = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    let operation;
+    try {
+      operation = await api.getCloudWorkerOperation(name, operationID);
+      lastError = null;
+    } catch (error) {
+      // A transient browser/proxy failure must not turn an accepted provider
+      // operation into a false failure. Keep polling; a missing operation is
+      // the only terminal lookup error.
+      if ([401, 403, 404].includes(error?.status)) throw error;
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      continue;
+    }
+    if (operation?.status === 'succeeded') return operation;
+    if (operation?.status === 'failed') {
+      const error = new Error('云端操作失败');
+      error.status = 502;
+      error.data = { code: operation.code || `cloud_worker_${operation.action || 'operation'}_failed` };
+      throw error;
+    }
+    if (operation?.status !== 'running') {
+      const error = new Error('云端返回了未知的操作状态');
+      error.code = 'CLOUD_OPERATION_INVALID_RESPONSE';
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  const error = new Error('云端操作仍在执行，请稍后刷新状态确认结果');
+  error.code = 'REQUEST_TIMEOUT';
+  error.cause = lastError;
+  throw error;
+};
+
+const waitForAcceptedCloudWorkerAction = async (name, accepted) => {
+  if (accepted?.status !== 'pending') return accepted;
+  if (!accepted.operation_id) {
+    const error = new Error('云端返回了不可追踪的操作状态');
+    error.code = 'CLOUD_OPERATION_INVALID_RESPONSE';
+    throw error;
+  }
+  return waitForCloudWorkerOperation(name, accepted.operation_id);
+};
+
+// A request can fail at the browser/proxy boundary after the server has
+// accepted the operation (for example a 504 at the old 60-second upstream
+// timeout). Keep the local action lock in that case so a second click cannot
+// start another paid operation before the next roster refresh observes the
+// backend operation. Terminal API errors are safe to unlock immediately.
+const cloudWorkerActionMayStillRun = (error) => (
+  ['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(error?.code)
+  || error?.code === 'CLOUD_OPERATION_INVALID_RESPONSE'
+  || Number(error?.status) === 504
+  || (Number(error?.status) === 502 && !error?.data?.code)
+  // A restarted service can lose the in-memory operation record while the
+  // provider process is still finishing. Keep the lock until the roster
+  // refresh proves completion or the bounded uncertainty window expires.
+  || (Number(error?.status) === 404
+    && String(error?.data?.error || '').toLowerCase().includes('operation'))
+);
+
+const CLOUD_ACTION_UNCERTAIN_TIMEOUT_MS = 15 * 60_000;
+
+const normalizedCloudVersion = (value) => String(value || '').trim().replace(/^v/i, '');
+
+const cloudWorkerActionReachedTarget = (action, worker) => {
+  const target = normalizedCloudVersion(action?.target_version);
+  const previous = normalizedCloudVersion(action?.previous_version);
+  if (!target || !previous || previous === target || !worker) return false;
+  // Update/rollback select an application release, not a base image. Never
+  // treat the image version as proof that the application deployment finished.
+  const observed = normalizedCloudVersion(worker.app_version);
+  return Boolean(observed) && observed === target;
+};
+
+export {
+  cloudWorkerActionMayStillRun,
+  cloudWorkerActionMessage,
+  cloudWorkerActionReachedTarget,
 };
 
 const CHANNEL_AGENT_ACCESS_MODES = {
@@ -311,6 +422,9 @@ const mergeCloudWorkerFacts = (bots, workers) => {
         : bot.app_version,
       cloud_version: cloud.cloud_version || cloud.version,
       cloud_image_id: cloud.cloud_image_id || cloud.image_id,
+      cloud_operation_id: cloud.operation_id || '',
+      cloud_operation_action: cloud.operation_action || '',
+      cloud_operation_status: cloud.operation_status || '',
     };
   });
 };
@@ -1010,6 +1124,35 @@ export default function AgentStoreModal({
         setCloudQuotaError(false);
         setCloudQuota(cloudRes?.quota || null);
         setBots((current) => mergeCloudWorkerFacts(current, cloudRes?.workers || []));
+        const running = (cloudRes?.workers || []).find((worker) => worker?.operation_status === 'running');
+        if (running?.tenant_name) {
+          setCloudActioning({
+            name: running.tenant_name,
+            action: running.operation_action || 'update',
+            source: 'remote',
+            startedAt: Date.now(),
+          });
+        } else {
+          // Preserve the local action while its initial POST or operation
+          // poll is still settling. A refresh can race that request and a
+          // premature clear would re-enable duplicate paid operations. If a
+          // rolling deployment still serves the legacy synchronous endpoint,
+          // there is no operation ID to poll: clear only after the roster
+          // observes the requested version or after the script's bounded
+          // execution window has elapsed.
+          setCloudActioning((current) => {
+            if (current?.source !== 'local') return null;
+            const worker = (cloudRes?.workers || []).find((item) => (
+              item?.tenant_name === current.name
+            ));
+            if (cloudWorkerActionReachedTarget(current, worker)) return null;
+            if (current.startedAt
+              && Date.now() - current.startedAt >= CLOUD_ACTION_UNCERTAIN_TIMEOUT_MS) {
+              return null;
+            }
+            return current;
+          });
+        }
         if (cloudRes?.status_refreshing) {
           if (retryTimer) window.clearTimeout(retryTimer);
           retryTimer = window.setTimeout(refresh, 2_000);
@@ -1232,16 +1375,30 @@ export default function AgentStoreModal({
       tone: 'default',
     });
     if (!confirmed) return;
+    let keepActioning = false;
     try {
-      setCloudActioning({ name, action: 'update' });
-      await api.updateCloudWorker(name, { version });
+      setCloudActioning({
+        name,
+        action: 'update',
+        source: 'local',
+        target_version: version,
+        previous_version: bot.app_version || bot.cloud_version || bot.version || '',
+        startedAt: Date.now(),
+      });
+      const accepted = await api.updateCloudWorker(name, { version });
+      await waitForAcceptedCloudWorkerAction(name, accepted);
       await loadBots({ silent: true });
       feedback.notify({ tone: 'success', message: '应用更新完成' });
     } catch (e) {
+      keepActioning = cloudWorkerActionMayStillRun(e);
       setError(cloudWorkerActionMessage(e, '更新'));
       await loadBots({ silent: true }).catch(() => {});
     } finally {
-      setCloudActioning(null);
+      if (!keepActioning) {
+        setCloudActioning((current) => (
+          current?.name === name && current?.source === 'local' ? null : current
+        ));
+      }
     }
   };
 
@@ -1250,6 +1407,7 @@ export default function AgentStoreModal({
   const handleCloudRollback = async (bot, version = '', opts = {}) => {
     const name = bot.tenant_name;
     if (!name) return;
+    let keepActioning = false;
     try {
       if (!version && !opts.fromPanel) {
         // Legacy caller: fetch published application releases for selection.
@@ -1278,14 +1436,28 @@ export default function AgentStoreModal({
         tone: 'default',
       });
       if (!confirmed) return;
-      setCloudActioning({ name, action: 'rollback' });
-      await api.rollbackCloudWorker(name, { version });
-      feedback.notify({ tone: 'success', message: '回滚已触发，稍后刷新查看状态' });
+      setCloudActioning({
+        name,
+        action: 'rollback',
+        source: 'local',
+        target_version: version,
+        previous_version: bot.app_version || bot.cloud_version || bot.version || '',
+        startedAt: Date.now(),
+      });
+      const accepted = await api.rollbackCloudWorker(name, { version });
+      await waitForAcceptedCloudWorkerAction(name, accepted);
+      await loadBots({ silent: true });
+      feedback.notify({ tone: 'success', message: '应用回滚完成' });
     } catch (e) {
+      keepActioning = cloudWorkerActionMayStillRun(e);
       setError(cloudWorkerActionMessage(e, '回滚'));
       await loadBots({ silent: true }).catch(() => {});
     } finally {
-      setCloudActioning(null);
+      if (!keepActioning) {
+        setCloudActioning((current) => (
+          current?.name === name && current?.source === 'local' ? null : current
+        ));
+      }
     }
   };
 
@@ -1306,15 +1478,28 @@ export default function AgentStoreModal({
       });
       if (!confirmed) return;
     }
+    let keepActioning = false;
     try {
-      setCloudActioning({ name, action: 'reset' });
-      await api.resetCloudWorker(name, version ? { version } : {});
-      feedback.notify({ tone: 'success', message: '重置已触发，稍后刷新查看状态' });
+      setCloudActioning({
+        name,
+        action: 'reset',
+        source: 'local',
+        startedAt: Date.now(),
+      });
+      const accepted = await api.resetCloudWorker(name, version ? { version } : {});
+      await waitForAcceptedCloudWorkerAction(name, accepted);
+      await loadBots({ silent: true });
+      feedback.notify({ tone: 'success', message: '云员工重置完成' });
     } catch (e) {
+      keepActioning = cloudWorkerActionMayStillRun(e);
       setError(cloudWorkerActionMessage(e, '重置'));
       await loadBots({ silent: true }).catch(() => {});
     } finally {
-      setCloudActioning(null);
+      if (!keepActioning) {
+        setCloudActioning((current) => (
+          current?.name === name && current?.source === 'local' ? null : current
+        ));
+      }
     }
   };
 

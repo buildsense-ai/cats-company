@@ -61,6 +61,8 @@ jobs:
           cp deploy/prod/remote-rollback.sh "${tmpdir}/compose/"
           cp deploy/prod/remote-status.sh "${tmpdir}/compose/"
           cp deploy/prod/ensure-image-timeout-nginx.sh "${tmpdir}/compose/"
+          cp deploy/prod/ensure-cloud-worker-nginx.sh "${tmpdir}/compose/"
+          cp deploy/prod/update-nginx-cloud-worker-route.py "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-v1-timeout.py "${tmpdir}/compose/"
           cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/ensure-public-website-nginx.sh "${tmpdir}/compose/"
@@ -160,7 +162,7 @@ jobs:
             mv "$artifact_nodes_temp" "$root/secrets/artifact-nodes.json"
             export CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
           fi
-          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh" "$root/compose/ensure-public-website-nginx.sh" "$root/compose/ensure-preview-website-nginx.sh" "$root/compose/ensure-wecom-agent-nginx.sh"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-cloud-worker-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh" "$root/compose/ensure-public-website-nginx.sh" "$root/compose/ensure-preview-website-nginx.sh" "$root/compose/ensure-wecom-agent-nginx.sh"
           export CATSCO_SHARED_RELEASE_ROOT="${DEPLOY_CACHE_ROOT}/releases"
           export CATSCO_SHARED_SOURCE_ROOT="${DEPLOY_CACHE_ROOT}/source"
           sudo -n -E "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
@@ -168,6 +170,9 @@ jobs:
           sudo -n -E "$root/compose/remote-deploy.sh" "$root" "$revision"
           sudo -n "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app
           sudo -n "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
+          sudo -n "$root/compose/ensure-cloud-worker-nginx.sh" \
+            /etc/nginx/sites-available/catscompany-app-cn:app.catsco.cn \
+            /etc/nginx/sites-available/catscompany-api-cn:api.catsco.cn
           # Preview is an independent vhost and only activates after its own
           # certificate and the website health check.
           sudo -n "$root/compose/ensure-preview-website-nginx.sh" "$root"
