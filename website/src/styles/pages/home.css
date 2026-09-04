@@ -3571,11 +3571,6 @@
   background: #eaf4f0;
 }
 
-.section-container {
-  width: min(1200px, calc(100% - 40px));
-  margin: 0 auto;
-}
-
 .section-space {
   padding-top: clamp(88px, 11vw, 150px);
   padding-bottom: clamp(88px, 11vw, 150px);

@@ -1,6 +1,6 @@
 import '../styles/pages/home.css'
 import { useEffect } from 'react'
-import { getDeferredHomeHashTargetId } from '../home-hash'
+import { getDeferredHomeHashTargetId, scrollToHomeHashTarget } from '../home-hash'
 import { LazyMotion } from 'framer-motion'
 import { Capabilities } from './Capabilities'
 import { Comparison } from './Comparison'
@@ -14,18 +14,7 @@ const loadMotionFeatures = () => import('../motion-features').then((mod) => mod.
 
 export function HomeSections() {
   useEffect(() => {
-    const targetId = getDeferredHomeHashTargetId(window.location.hash)
-    if (!targetId) return undefined
-
-    const target = document.getElementById(targetId)
-    if (!target) return undefined
-
-    const frame = window.requestAnimationFrame(() => {
-      const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-      target.scrollIntoView({ behavior, block: 'start' })
-    })
-
-    return () => window.cancelAnimationFrame(frame)
+    return scrollToHomeHashTarget(getDeferredHomeHashTargetId(window.location.hash))
   }, [])
 
   return (

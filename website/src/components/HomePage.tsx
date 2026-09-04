@@ -1,24 +1,9 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { getDeferredHomeHashTargetId, getHomeHashTargetId } from '../home-hash'
+import { getDeferredHomeHashTargetId, getHomeHashTargetId, scrollToHomeHashTarget } from '../home-hash'
 import { Hero } from './Hero'
 import { WorkflowSection } from './WorkflowSection'
 
 const AsyncHomeSections = lazy(() => import('./HomeSections').then((m) => ({ default: m.HomeSections })))
-
-function scrollToHomeHashTarget() {
-  const targetId = getHomeHashTargetId(window.location.hash)
-  if (!targetId) return undefined
-
-  const target = document.getElementById(targetId)
-  if (!target) return undefined
-
-  const frame = window.requestAnimationFrame(() => {
-    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-    target.scrollIntoView({ behavior, block: 'start' })
-  })
-
-  return () => window.cancelAnimationFrame(frame)
-}
 
 function DeferredHomeSections() {
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -63,11 +48,11 @@ function DeferredHomeSections() {
 
 export function HomePage() {
   useEffect(() => {
-    let cancelScroll = scrollToHomeHashTarget()
+    let cancelScroll = scrollToHomeHashTarget(getHomeHashTargetId(window.location.hash))
 
     const scrollChangedHash = () => {
       cancelScroll?.()
-      cancelScroll = scrollToHomeHashTarget()
+      cancelScroll = scrollToHomeHashTarget(getHomeHashTargetId(window.location.hash))
     }
 
     window.addEventListener('hashchange', scrollChangedHash)
