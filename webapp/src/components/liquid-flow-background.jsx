@@ -57,8 +57,8 @@ function recoverFromStall(video) {
 
 /**
  * Ambient flow used by the light liquid theme. The reference is a text-free
- * texture loop, so prefer the compressed WebM and keep the original MP4 as a
- * browser compatibility fallback. Two muted layers crossfade at the loop
+ * texture loop, so only the compressed WebM is shipped; browsers without
+ * WebM support fall back to the static poster wash instead. Two muted layers crossfade at the loop
  * boundary so the motion does not snap back to the first frame. The standby
  * layer warms once the primary layer can play, and the visible layer only
  * switches once the incoming video actually renders frames — a slow fetch
@@ -216,7 +216,6 @@ export default function LiquidFlowBackground() {
       }}
     >
       <source src="/texture-background-2.webm" type="video/webm" />
-      <source src="/texture-background-2.mp4" type="video/mp4" />
     </video>
   );
 

@@ -106,7 +106,7 @@ describe('LiquidFlowBackground', () => {
     expect(videos[1].autoplay).toBe(false);
     videos.forEach((video) => {
       expect(video.querySelector('source[type="video/webm"]')).not.toBeNull();
-      expect(video.querySelector('source[type="video/mp4"]')).not.toBeNull();
+      expect(video.querySelector('source[type="video/mp4"]')).toBeNull();
     });
   });
 
