@@ -34,6 +34,7 @@ import SkillHubView, {
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
+import { formatSkillHubPublisher } from '../utils/skillhub-entry';
 
 vi.mock('../api', () => ({
   api: {
@@ -135,7 +136,7 @@ describe('SkillHubView', () => {
         id: 'tools/summarize',
         name: 'Summarize',
         description: 'Summarize text',
-        author: 'arrowhaken',
+        author: { name: 'arrowhaken', displayName: 'arrowhaken1', catsCoUid: '85' },
         latestVersion: '2.0.0',
         publishedAt: '2026-08-20T02:03:04Z',
         contentHash: 'b'.repeat(64),
@@ -160,7 +161,7 @@ describe('SkillHubView', () => {
       versions: [{
         skillId: 'tools/review',
         latestVersion: '1.0.0',
-        author: { name: 'arrowhaken' },
+        author: { name: 'arrowhaken', displayName: 'arrowhaken1', catsCoUid: '85' },
         publishedAt: '2026-08-20T02:03:04Z',
       }],
     });
@@ -200,6 +201,17 @@ describe('SkillHubView', () => {
         version: 'v2', revisionNumber: 2, author: 'lin', current: true, privateReference: true,
       })],
       nextBeforeRevisionNumber: 2,
+    });
+    expect(normalizeSkillVersionHistory({
+      versions: [{
+        skillId: 'arrowhaken/review',
+        version: '1.0.0',
+        author: { name: 'arrowhaken', displayName: 'arrowhaken1', catsCoUid: '85' },
+      }],
+    })).toMatchObject({
+      versions: [expect.objectContaining({
+        author: 'arrowhaken1', publisherDisplayName: 'arrowhaken1', publisherUid: '85',
+      })],
     });
     const merged = buildCurrentAgentSkills([], [{ name: 'draft', localSkillId: 'draft-id' }]);
     expect(resolveLocalSkillForAgentSkill(merged[0], [{ name: 'draft', localSkillId: 'draft-id' }]))
@@ -343,14 +355,23 @@ describe('SkillHubView', () => {
     expect(normalizeSkillHubSkills({ items: [{
       id: 'a',
       name: 'A',
+      author: { name: 'arrowhaken', displayName: 'arrowhaken1', catsCoUid: '85' },
       latest_version: '1.2.0',
       published_at: '2026-08-20T02:03:04Z',
     }] })[0]).toMatchObject({
       skillId: 'a',
       displayName: 'A',
+      author: 'arrowhaken1',
+      publisherDisplayName: 'arrowhaken1',
+      publisherUid: '85',
       latestVersion: '1.2.0',
       publishedAt: '2026-08-20T02:03:04Z',
     });
+    expect(formatSkillHubPublisher({
+      author: 'arrowhaken1',
+      publisherDisplayName: 'arrowhaken1',
+      publisherUid: '85',
+    })).toBe('arrowhaken1 · UID 85');
     expect(normalizeLocalSkills({ skills: [{
       name: 'local-demo',
       relative_path: 'local-demo',
@@ -888,8 +909,8 @@ describe('SkillHubView', () => {
     const expectedTime = `发布于 ${new Intl.DateTimeFormat('zh-CN', {
       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
     }).format(new Date('2026-08-20T02:03:04Z'))}`;
-    expect(source?.textContent).toBe(`v2.0.0 · arrowhaken${expectedTime}`);
-    expect(source?.getAttribute('title')).toBe(`v2.0.0 · arrowhaken · ${expectedTime}`);
+    expect(source?.textContent).toBe(`v2.0.0 · arrowhaken1 · UID 85${expectedTime}`);
+    expect(source?.getAttribute('title')).toBe(`v2.0.0 · arrowhaken1 · UID 85 · ${expectedTime}`);
     expect(source?.querySelector('time')?.getAttribute('datetime')).toBe('2026-08-20T02:03:04Z');
   });
 
@@ -974,7 +995,7 @@ describe('SkillHubView', () => {
     expect(cards[0].textContent).toContain('Local Writer');
     expect(cards[0].textContent).toContain('本机');
     expect(cards[1].textContent).not.toContain('在线');
-    expect(cards[1].textContent).toContain('v2.0.0 · arrowhaken');
+    expect(cards[1].textContent).toContain('v2.0.0 · arrowhaken1 · UID 85');
     expect(cards[1].textContent).toContain('发布于');
 
     await act(async () => {
@@ -1227,7 +1248,7 @@ describe('SkillHubView', () => {
     expect(dialog.textContent).toContain('tools/review');
     expect(dialog.textContent).toContain('v1.0.0');
     expect(dialog.textContent).toContain('版本历史仅供查看');
-    expect(dialog.textContent).toContain('arrowhaken');
+    expect(dialog.textContent).toContain('arrowhaken1 · UID 85');
     expect(api.getSkillHubVersions).toHaveBeenCalledWith('tools/review');
     await act(async () => {
       Simulate.click(dialog.querySelector('button[aria-label="关闭能力详情"]'));
