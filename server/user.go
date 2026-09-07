@@ -87,6 +87,7 @@ type UserHandler struct {
 	relayRegistrationDelays  []time.Duration
 	relayRegistrationTimeout time.Duration
 	skillHubProfileSync      func(context.Context, string) error
+	skillHubProfileSyncSlots chan struct{}
 }
 
 // SetSkillHubProfileSync keeps SkillHub's cached publisher display name aligned
@@ -110,7 +111,29 @@ func NewUserHandler(db store.Store) *UserHandler {
 		db:                       db,
 		relayRegistrationDelays:  []time.Duration{0, 2 * time.Second, 10 * time.Second},
 		relayRegistrationTimeout: defaultRelayAdminTimeout,
+		skillHubProfileSyncSlots: make(chan struct{}, 4),
 	}
+}
+
+func (h *UserHandler) synchronizeSkillHubPublisherProfile(uid int64, token string) {
+	if h == nil || h.skillHubProfileSync == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	select {
+	case h.skillHubProfileSyncSlots <- struct{}{}:
+	default:
+		log.Printf("[skillhub] publisher profile sync queue is full for uid=%d; entry calibration will retry", uid)
+		return
+	}
+	sync := h.skillHubProfileSync
+	go func() {
+		defer func() { <-h.skillHubProfileSyncSlots }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sync(ctx, token); err != nil {
+			log.Printf("[skillhub] publisher profile sync failed for uid=%d: %v", uid, err)
+		}
+	}()
 }
 
 // SetRelayRegistrationProvisioning asynchronously provisions a relay key for
@@ -621,16 +644,6 @@ func (h *UserHandler) HandleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load updated profile"})
 		return
 	}
-	if h.skillHubProfileSync != nil {
-		if token := extractToken(r); token != "" {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if syncErr := h.skillHubProfileSync(ctx, token); syncErr != nil {
-				log.Printf("[skillhub] publisher profile sync failed for uid=%d: %v", uid, syncErr)
-			}
-			cancel()
-		}
-	}
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"uid":          user.ID,
 		"username":     user.Username,
@@ -639,6 +652,7 @@ func (h *UserHandler) HandleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		"avatar_url":   user.AvatarURL,
 		"account_type": user.AccountType,
 	})
+	h.synchronizeSkillHubPublisherProfile(uid, extractToken(r))
 }
 
 // autoAddAssistantFriend adds the default AI assistant as a friend for new users.
