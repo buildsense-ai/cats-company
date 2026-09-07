@@ -7858,6 +7858,10 @@ button.catsco-download-action:disabled {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.oc-plain-text-paragraph.is-first {
+  display: block;
+  text-indent: 2em;
+}
 .oc-markdown-table {
   display: block;
   max-width: 100%;
@@ -8110,8 +8114,8 @@ button.catsco-download-action:disabled {
 
 /* V3 Working Process (AI Tools) */
 .v3-working-process {
-  margin-top: 8px;
-  margin-bottom: 8px;
+  margin-top: 4px;
+  margin-bottom: 4px;
   max-width: 100%;
   min-width: 0;
 }
@@ -8129,8 +8133,8 @@ button.catsco-download-action:disabled {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   cursor: pointer;
-  padding: 4px 0;
-  margin-bottom: 4px;
+  padding: 2px 0;
+  margin-bottom: 2px;
 }
 
 .v3-working-status {

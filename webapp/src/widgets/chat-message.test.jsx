@@ -451,6 +451,8 @@ describe('ChatMessage rich file rendering', () => {
 
     const paragraphs = container.querySelectorAll('.oc-plain-text-paragraph');
     expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].classList.contains('is-first')).toBe(true);
+    expect(paragraphs[1].classList.contains('is-first')).toBe(false);
     expect(paragraphs[0].textContent).toBe('第一段');
     expect(paragraphs[1].textContent).toBe('第二段 @自迭代测试\n第三段');
     expect(container.querySelector('.oc-mention')?.dataset.mentionUid).toBe('535');
@@ -506,6 +508,35 @@ describe('ChatMessage rich file rendering', () => {
     expect(paragraphs[0].textContent).toBe('First paragraph.');
     expect(paragraphs[1].textContent).toBe('Second paragraph.');
     expect(container.querySelector('.oc-markdown')).toBeNull();
+  });
+
+  it.each([false, true])('normalizes paragraph starts without changing source text or internal whitespace (group=%s)', async (isGroup) => {
+    const content = '\u3000\u3000第一段\r\n\u3000\r\n  第二段\r\n  段内换行';
+    const message = Object.freeze({
+      id: 24,
+      from_uid: 2,
+      content,
+      created_at: '2026-06-09T00:00:00Z',
+    });
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={message}
+          isSelf={false}
+          isGroup={isGroup}
+          senderName="CatsCo"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const paragraphs = container.querySelectorAll('.oc-plain-text-paragraph');
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].classList.contains('is-first')).toBe(true);
+    expect(paragraphs[1].classList.contains('is-first')).toBe(false);
+    expect(paragraphs[0].textContent).toBe('第一段');
+    expect(paragraphs[1].textContent).toBe('第二段\r\n  段内换行');
+    expect(message.content).toBe(content);
   });
 
   it('previews uploaded XLSX files as a spreadsheet artifact', async () => {
