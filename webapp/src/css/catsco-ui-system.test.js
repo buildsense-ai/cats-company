@@ -126,6 +126,33 @@ describe('CatsCo shell styling', () => {
     expect(root).toContain('--cc-secondary-action-text: color-mix(in srgb, var(--cc-text) 86%, var(--cc-panel));');
   });
 
+  it('shares a theme-aware menu item rhythm while preserving compact variants', () => {
+    const root = ruleFor(':root');
+    const actionMenuButton = ruleFor('.v3-friend-action-menu button');
+    const batchMenu = ruleFor('.v3-friend-action-menu.cc-batch-action-menu');
+    const batchMenuButton = ruleFor('.v3-friend-action-menu.cc-batch-action-menu button');
+    const pickerButtons = ruleFor('.v3-agent-picker-menu button,\n.v3-attachment-menu button');
+
+    expect(root).toContain('--cc-menu-item-height: 40px;');
+    expect(root).toContain('--cc-menu-item-gap: 10px;');
+    expect(root).toContain('--cc-menu-item-padding-inline: 11px;');
+    expect(root).toContain('--cc-menu-item-icon-size: 17px;');
+    expect(actionMenuButton).toContain('min-height: var(--cc-menu-item-height);');
+    expect(actionMenuButton).toContain('gap: var(--cc-menu-item-gap);');
+    expect(actionMenuButton).toContain('padding: 0 var(--cc-menu-item-padding-inline);');
+    expect(batchMenu).toContain('--cc-menu-item-height: 36px;');
+    expect(batchMenuButton).toContain('font-size: 12px;');
+    expect(pickerButtons).toContain('min-height: var(--cc-menu-item-height);');
+    expect(pickerButtons).toContain('border-radius: var(--cc-menu-item-radius);');
+  });
+
+  it('indents the explicitly marked first plain-text paragraph without changing paragraph spacing', () => {
+    expect(openchatCss).toMatch(
+      /\.oc-plain-text-paragraph\.is-first\s*\{[^}]*text-indent:\s*2em;[^}]*\}/s,
+    );
+    expect(openchatCss).toMatch(/\.oc-plain-text-paragraphs\s*\{[^}]*gap:\s*6px;[^}]*\}/s);
+  });
+
   it('uses one slightly deeper backdrop across secondary dialogs', () => {
     expect(ruleFor(':root')).toContain('--cc-modal-backdrop: rgba(0, 0, 0, 0.72);');
     expect(ruleFor('.name-dialog-overlay,\n.oc-modal-overlay'))
