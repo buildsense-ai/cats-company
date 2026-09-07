@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import CustomSelect from '../widgets/custom-select';
 import useDialogBehavior from '../utils/use-dialog-behavior';
+import { formatSkillHubPublisher } from '../utils/skillhub-entry';
 
 export default function SkillHubContent(props) {
   const {
@@ -193,7 +194,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
   const authorLabel = privateReference
     ? `最近变更：${skill.lastChangedBy || '修改者未记录'}`
-    : details?.author || skill.author || '发布者待确认';
+    : formatSkillHubPublisher(details || skill);
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const firstMenuItemRef = useRef(null);
@@ -454,7 +455,7 @@ function SkillDetailsDialog({ cataloguePreview = false, details, historyBotUID, 
         <dl className='cc-skillhub-detail-meta'>
           <div><dt>{localOnly ? '本地能力名' : privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{localOnly ? skill.localName || label : skill.skillId}</code></dd></div>
           <div><dt>{localOnly ? '发布状态' : cataloguePreview ? '最新版本' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
-          <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前运行工作区' : privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
+          <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前运行工作区' : privateReference ? '仅当前 Agent' : formatSkillHubPublisher(details || skill, 'SkillHub')}</dd></div>
         </dl>
         {!cataloguePreview && <section className='cc-skillhub-history' aria-labelledby={`${titleId}-history`}>
           <div className='cc-skillhub-history-heading'>
@@ -510,7 +511,7 @@ function formatHistoryVersion(version) {
 }
 
 function formatHistoryActor(version, privateReference) {
-  if (!privateReference) return version?.author || '发布者待确认';
+  if (!privateReference) return formatSkillHubPublisher(version);
   if (version?.author) return version.author;
   return version?.changeSource === 'runtime_backup' ? 'Bot 自动同步' : '修改者未记录';
 }
@@ -585,7 +586,7 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
     && (!skill.localSkill?.canShare || skill.localSkill?.source === 'system');
   const versionAndPublisher = [
     formatCatalogueVersion(skill.latestVersion) || '版本待确认',
-    skill.author || '发布者待确认',
+    formatSkillHubPublisher(skill),
   ].join(' · ');
   const publishedTime = formatCataloguePublishedTime(skill.publishedAt);
   const sourceMetadata = skill.isLocalSkill
