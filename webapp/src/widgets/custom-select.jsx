@@ -230,6 +230,19 @@ export default function CustomSelect({
     };
   }, [open, updateFloatingPosition]);
 
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const option = list?.querySelectorAll('[role="option"]')[activeIndex];
+    if (!open || !option) return;
+    // Scroll only the popup: scrollIntoView can also move a dialog or the page.
+    const listRect = list.getBoundingClientRect();
+    const optionRect = option.getBoundingClientRect();
+    const top = listRect.top + list.clientTop;
+    const bottom = top + list.clientHeight;
+    if (optionRect.top < top) list.scrollTop -= top - optionRect.top;
+    else if (optionRect.bottom > bottom) list.scrollTop += optionRect.bottom - bottom;
+  }, [activeIndex, open, floatingStyle?.maxHeight]);
+
   const selectedOption = options[selectedIndex];
   const selectedLabelTitle = typeof selectedOption?.label === 'string'
     ? selectedOption.label

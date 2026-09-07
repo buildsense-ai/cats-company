@@ -761,7 +761,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Member Collaboration 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="加入项目 Member Collaboration"]'));
+      Simulate.click(document.querySelector('[aria-label="加入项目 Member Collaboration"]'));
     });
     const dialog = document.body.querySelector('[role="dialog"][aria-label="选择项目"]');
     expect(dialog).toBeTruthy();
@@ -1103,7 +1103,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(moreButton);
     });
-    const mobileButton = container.querySelector('[aria-label="Virtual Team 手机扫码"]');
+    const mobileButton = document.querySelector('[aria-label="Virtual Team 手机扫码"]');
     expect(mobileButton).toBeTruthy();
 
     await act(async () => {
@@ -1137,15 +1137,15 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(row.querySelector('[aria-label="Virtual Team 更多操作"]'));
     });
-    expect(row.querySelector('[role="menu"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="修改任务名称 Virtual Team"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="加入项目 Virtual Team"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="Virtual Team 手机扫码"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="Virtual Team 协作管理"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="删除任务 Virtual Team"]')).toBeTruthy();
+    expect(document.querySelector('[role="menu"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="修改任务名称 Virtual Team"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="加入项目 Virtual Team"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Virtual Team 手机扫码"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Virtual Team 协作管理"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="删除任务 Virtual Team"]')).toBeTruthy();
 
     await act(async () => {
-      Simulate.click(row.querySelector('[aria-label="Virtual Team 协作管理"]'));
+      Simulate.click(document.querySelector('[aria-label="Virtual Team 协作管理"]'));
     });
     expect(onManageGroup).toHaveBeenCalledWith(expect.objectContaining({
       topicId: 'grp_88',
@@ -1159,7 +1159,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(row.querySelector('[aria-label="Virtual Team 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(row.querySelector('[aria-label="删除任务 Virtual Team"]'));
+      Simulate.click(document.querySelector('[aria-label="删除任务 Virtual Team"]'));
       await Promise.resolve();
     });
     expect(api.disbandGroup).toHaveBeenCalledWith(88);
@@ -1196,17 +1196,17 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(row.querySelector('[aria-label="Review Task 更多操作"]'));
     });
-    expect(row.querySelector('[role="menu"] [aria-label="置顶任务 Review Task"]')).toBeNull();
-    expect(row.querySelector('[aria-label="修改任务名称 Review Task"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="加入项目 Review Task"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="静音此会话 Review Task"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="Review Task 手机扫码"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="Review Task 协作管理"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="删除任务 Review Task"]')).toBeTruthy();
-    expect(row.querySelector('[role="menu"]').textContent).not.toContain('0');
+    expect(document.querySelector('[role="menu"] [aria-label="置顶任务 Review Task"]')).toBeNull();
+    expect(document.querySelector('[aria-label="修改任务名称 Review Task"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="加入项目 Review Task"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="静音此会话 Review Task"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Review Task 手机扫码"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Review Task 协作管理"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="删除任务 Review Task"]')).toBeTruthy();
+    expect(document.querySelector('[role="menu"]').textContent).not.toContain('0');
 
     await act(async () => {
-      Simulate.click(row.querySelector('[aria-label="加入项目 Review Task"]'));
+      Simulate.click(document.querySelector('[aria-label="加入项目 Review Task"]'));
     });
     expect(document.body.textContent).toContain('将“Review Task”加入项目');
     expect(document.body.textContent).toContain('暂无可用项目');
@@ -1218,7 +1218,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(row.querySelector('[aria-label="Review Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(row.querySelector('[aria-label="Review Task 手机扫码"]'));
+      Simulate.click(document.querySelector('[aria-label="Review Task 手机扫码"]'));
     });
     expect(onOpenMobileLink).toHaveBeenCalledWith(expect.objectContaining({
       topicId: 'p2p_7_42',
@@ -1231,7 +1231,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(row.querySelector('[aria-label="Review Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(row.querySelector('[aria-label="删除任务 Review Task"]'));
+      Simulate.click(document.querySelector('[aria-label="删除任务 Review Task"]'));
       await Promise.resolve();
     });
     expect(onDeleteHistoryTask).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_42' }));
@@ -1278,7 +1278,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Review Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="Review Task 协作管理"]'));
+      Simulate.click(document.querySelector('[aria-label="Review Task 协作管理"]'));
     });
 
     const upgradeDialog = document.body.querySelector('[data-testid="create-group-modal"]');
@@ -1340,7 +1340,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Review Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="Review Task 协作管理"]'));
+      Simulate.click(document.querySelector('[aria-label="Review Task 协作管理"]'));
     });
     const upgradeDialog = document.body.querySelector('[data-testid="create-group-modal"]');
     await act(async () => {
@@ -1396,7 +1396,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Review Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="Review Task 协作管理"]'));
+      Simulate.click(document.querySelector('[aria-label="Review Task 协作管理"]'));
     });
     const upgradeDialog = document.body.querySelector('[data-testid="create-group-modal"]');
     await act(async () => {
@@ -1437,10 +1437,10 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Review Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="修改任务名称 Review Task"]'));
+      Simulate.click(document.querySelector('[aria-label="修改任务名称 Review Task"]'));
     });
 
-    const input = container.querySelector('input[aria-label="修改任务名称 Review Task"]');
+    const input = document.querySelector('input[aria-label="修改任务名称 Review Task"]');
     await act(async () => {
       Simulate.change(input, { target: { value: 'Release checklist' } });
     });
@@ -1475,7 +1475,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Local History Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="从列表移除 Local History Task"]'));
+      Simulate.click(document.querySelector('[aria-label="从列表移除 Local History Task"]'));
       await Promise.resolve();
     });
 
@@ -1529,7 +1529,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="Release Review Task 更多操作"]'));
     });
-    expect(container.querySelector('[aria-label="从列表移除 Release Review Task"]')).toBeNull();
+    expect(document.querySelector('[aria-label="从列表移除 Release Review Task"]')).toBeNull();
   });
 
   it('assigns a history task to an existing project from the row menu', async () => {
@@ -1551,7 +1551,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Project Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="加入项目 Project Task"]'));
+      Simulate.click(document.querySelector('[aria-label="加入项目 Project Task"]'));
     });
 
     const dialog = document.body.querySelector('[aria-label="选择项目"]');
@@ -1880,14 +1880,14 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(task.querySelector('[aria-label="Project Task 更多操作"]'));
     });
 
-    expect(task.querySelector('[aria-label="修改任务名称 Project Task"]')).toBeTruthy();
-    expect(task.querySelector('[aria-label="移动到项目 Project Task"]')).toBeTruthy();
-    expect(task.querySelector('[aria-label="移出当前项目 Project Task"]')).toBeTruthy();
-    expect(task.querySelector('[aria-label="Project Task 手机扫码"]')).toBeTruthy();
-    expect(task.querySelector('[aria-label="删除任务 Project Task"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="修改任务名称 Project Task"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="移动到项目 Project Task"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="移出当前项目 Project Task"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Project Task 手机扫码"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="删除任务 Project Task"]')).toBeTruthy();
 
     await act(async () => {
-      Simulate.click(task.querySelector('[aria-label="移出当前项目 Project Task"]'));
+      Simulate.click(document.querySelector('[aria-label="移出当前项目 Project Task"]'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1987,10 +1987,10 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Agent Project Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="修改任务名称 Agent Project Task"]'));
+      Simulate.click(document.querySelector('[aria-label="修改任务名称 Agent Project Task"]'));
     });
 
-    const input = container.querySelector('input[aria-label="修改任务名称 Agent Project Task"]');
+    const input = document.querySelector('input[aria-label="修改任务名称 Agent Project Task"]');
     await act(async () => {
       Simulate.change(input, { target: { value: 'Renamed Agent Task' } });
     });
@@ -2064,7 +2064,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Fresh Project Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="加入项目 Fresh Project Task"]'));
+      Simulate.click(document.querySelector('[aria-label="加入项目 Fresh Project Task"]'));
     });
     await act(async () => {
       Simulate.click(document.body.querySelector('[aria-label="选择项目"] .oc-btn-primary'));
@@ -2262,24 +2262,67 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(trigger);
     });
-    expect(container.querySelector('.cc-chat-action-menu')).toBeTruthy();
+    expect(document.querySelector('.cc-chat-action-menu')).toBeTruthy();
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
-    expect(container.querySelector('.cc-chat-action-menu')).toBeFalsy();
+    expect(document.querySelector('.cc-chat-action-menu')).toBeFalsy();
 
     await act(async () => {
       Simulate.click(trigger);
     });
-    expect(container.querySelector('.cc-chat-action-menu')).toBeTruthy();
+    expect(document.querySelector('.cc-chat-action-menu')).toBeTruthy();
     await act(async () => {
       document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     });
-    expect(container.querySelector('.cc-chat-action-menu')).toBeFalsy();
+    expect(document.querySelector('.cc-chat-action-menu')).toBeFalsy();
   });
 
-  it('opens a task menu upward when the sidebar has no room below it', async () => {
+  it.each([620, 480])('keeps all seven project task actions reachable in a %ipx-high viewport', async (height) => {
+    const viewportHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
+    api.getConversations.mockResolvedValue({ conversations: [{
+      id: 'p2p_7_42', friend_id: 42, name: 'Project Task', is_bot: true,
+      project_id: 12, project_name: 'Website',
+    }] });
+    api.getProjects.mockResolvedValue({ projects: [{ id: 12, name: 'Website', task_count: 1 }] });
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function rect() {
+      if (this.classList.contains('cc-chat-action-menu')) {
+        return { top: 0, bottom: 296, height: 296, left: 0, right: 184, width: 184 };
+      }
+      return originalRect.call(this);
+    });
+    try {
+      await mount();
+      await act(async () => Simulate.click(container.querySelector('[aria-label="打开项目 Website"]')));
+      const trigger = container.querySelector('.cc-project-task-item .v3-history-menu-trigger');
+      trigger.getBoundingClientRect = () => ({ top: 278, bottom: 302, height: 24, left: 246, right: 270, width: 24 });
+      await act(async () => Simulate.click(trigger));
+      const menu = document.querySelector('.cc-sidebar-floating-menu');
+      const items = menu.querySelectorAll('[role="menuitem"]');
+      expect(items).toHaveLength(7);
+      expect(menu.parentElement).toBe(document.body);
+      expect(container.querySelector('.cc-chat-action-menu')).toBeNull();
+      expect(menu.style.position).toBe('fixed');
+      expect(menu.style.overflowY).toBe('auto');
+      expect(menu.dataset.placement).toBe(height === 620 ? 'bottom' : 'top');
+      const renderedHeight = Math.min(296, parseFloat(menu.style.maxHeight));
+      expect(parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
+      expect(parseFloat(menu.style.top) + renderedHeight).toBeLessThanOrEqual(height - 8);
+      await act(async () => Simulate.keyDown(items[0], { key: 'End' }));
+      expect(document.activeElement).toBe(items[6]);
+      await act(async () => Simulate.keyDown(items[6], { key: 'Escape' }));
+      expect(document.querySelector('.cc-sidebar-floating-menu')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      rectSpy.mockRestore();
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: viewportHeight });
+    }
+  });
+
+  it('portals a task menu and flips within the viewport rather than the sidebar clip', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_42',
@@ -2292,7 +2335,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
-    let triggerTop = 450;
+    let triggerTop = window.innerHeight - 50;
     const makeRect = (top, bottom, height = bottom - top) => ({
       top,
       bottom,
@@ -2316,7 +2359,15 @@ describe('ChatListView sidebar sections', () => {
       await act(async () => {
         Simulate.click(trigger);
       });
-      expect(container.querySelector('.cc-chat-action-menu-up')).toBeTruthy();
+      const menu = document.querySelector('.cc-chat-action-menu');
+      expect(menu.parentElement).toBe(document.body);
+      expect(menu.dataset.placement).toBe('top');
+      expect(parseFloat(menu.style.top) + 170).toBeLessThan(window.innerHeight);
+
+      triggerTop = window.innerHeight + 500;
+      await act(async () => window.dispatchEvent(new Event('scroll')));
+      expect(parseFloat(menu.style.top) + 170).toBeLessThan(window.innerHeight);
+      expect(parseFloat(menu.style.maxHeight)).toBeLessThan(window.innerHeight);
 
       await act(async () => {
         Simulate.click(trigger);
@@ -2325,7 +2376,7 @@ describe('ChatListView sidebar sections', () => {
       await act(async () => {
         Simulate.click(trigger);
       });
-      expect(container.querySelector('.cc-chat-action-menu-up')).toBeFalsy();
+      expect(document.querySelector('.cc-chat-action-menu').dataset.placement).toBe('bottom');
     } finally {
       HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
     }
@@ -3296,7 +3347,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
     });
 
-    let menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    let menu = document.querySelector('[role="menu"][aria-label="联系人操作"]');
     expect(menu).toBeTruthy();
     expect(container.querySelector('[aria-label="联系人更多操作"]').getAttribute('aria-expanded')).toBe('true');
     const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
@@ -3308,16 +3359,16 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
     });
-    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
+    expect(document.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
 
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
     });
-    menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    menu = document.querySelector('[role="menu"][aria-label="联系人操作"]');
     await act(async () => {
       Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('添加好友')));
     });
-    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
+    expect(document.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="add-friend-modal"]')).toBeTruthy();
 
     await act(async () => {
@@ -3326,11 +3377,11 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
     });
-    menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    menu = document.querySelector('[role="menu"][aria-label="联系人操作"]');
     await act(async () => {
       Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('Agent 助手')));
     });
-    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
+    expect(document.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeTruthy();
 
     await act(async () => {
@@ -3340,13 +3391,13 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
     });
-    menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    menu = document.querySelector('[role="menu"][aria-label="联系人操作"]');
     await act(async () => {
       Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('创建群组')));
     });
     expect(container.querySelector('[data-testid="create-group-modal"]')).toBeFalsy();
     expect(document.body.querySelector('[data-testid="create-group-modal"]')).toBeTruthy();
-    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
+    expect(document.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
   });
 
   it('removes an ordinary friend from the friend row menu', async () => {
@@ -3371,7 +3422,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
     });
-    const removeButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
+    const removeButton = Array.from(document.querySelectorAll('[role="menuitem"]'))
       .find((node) => node.textContent.includes('删除好友'));
     expect(removeButton).toBeTruthy();
 
@@ -3382,6 +3433,71 @@ describe('ChatListView sidebar sections', () => {
 
     expect(api.removeFriend).toHaveBeenCalledWith(8);
     expect(onSelectTopic).toHaveBeenCalledWith(null);
+  });
+
+  it('uses native sibling buttons for opening tasks, friends and groups without nested controls', async () => {
+    api.getConversations.mockResolvedValue({ conversations: [{ id: 'p2p_7_42', friend_id: 42, name: 'Keyboard Task', is_bot: true }] });
+    api.getFriends.mockResolvedValue({ friends: [{ id: 8, username: 'alice', display_name: 'Alice' }] });
+    api.getGroups.mockResolvedValue({ groups: [{ id: 88, name: 'Keyboard Group', topic_id: 'grp_88', owner_id: 7 }] });
+    await mount({ activeTopic: 'p2p_7_42' });
+    for (const name of ['Keyboard Task', 'Alice', 'Keyboard Group']) {
+      const primary = container.querySelector(`button.cc-sidebar-row-main[aria-label="打开 ${name}"]`);
+      expect(primary).not.toBeNull();
+      expect(primary.tabIndex).toBe(0);
+      expect(primary.querySelector('button, input, a')).toBeNull();
+      expect(primary.closest('.cc-sidebar-item-row').querySelector('.cc-chat-row-actions')).not.toBeNull();
+      primary.focus();
+      expect(document.activeElement).toBe(primary);
+      await act(async () => primary.click());
+    }
+    expect(container.querySelector('[aria-label="打开 Keyboard Task"]').getAttribute('aria-current')).toBe('page');
+    expect(onSelectTopic).toHaveBeenCalledTimes(3);
+  });
+
+  it('portals a friend menu at the viewport edge and restores keyboard focus', async () => {
+    api.getFriends.mockResolvedValue({ friends: [{ id: 8, username: 'alice', display_name: 'Alice' }] });
+    await mount();
+    const trigger = container.querySelector('[aria-label="Alice 联系人操作"]');
+    trigger.getBoundingClientRect = () => ({ top: window.innerHeight - 40, bottom: window.innerHeight - 8, left: 260, right: 292, width: 32, height: 32 });
+    await act(async () => Simulate.click(trigger));
+    const menu = document.querySelector('.cc-sidebar-floating-menu[aria-label="Alice 操作"]');
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.dataset.placement).toBe('top');
+    expect(menu.style.position).toBe('fixed');
+    const items = menu.querySelectorAll('[role="menuitem"]');
+    expect(document.activeElement).toBe(items[0]);
+    await act(async () => Simulate.keyDown(items[0], { key: 'End' }));
+    expect(document.activeElement).toBe(items[items.length - 1]);
+    await act(async () => Simulate.keyDown(items[items.length - 1], { key: 'Escape' }));
+    expect(document.querySelector('.cc-sidebar-floating-menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(onSelectTopic).not.toHaveBeenCalled();
+  });
+
+  it('waits for visible menu positioning before initial focus and does not steal it on reposition', async () => {
+    const originalFocus = HTMLElement.prototype.focus;
+    const hiddenFocusAttempts = [];
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function browserLikeFocus(options) {
+      if (this.closest('.cc-sidebar-floating-menu')?.style.visibility === 'hidden') {
+        hiddenFocusAttempts.push(this);
+        return;
+      }
+      originalFocus.call(this, options);
+    });
+    api.getFriends.mockResolvedValue({ friends: [{ id: 8, username: 'alice', display_name: 'Alice' }] });
+    await mount();
+    const trigger = container.querySelector('[aria-label="Alice 联系人操作"]');
+    trigger.focus();
+    await act(async () => Simulate.click(trigger));
+    const menu = document.querySelector('.cc-sidebar-floating-menu[aria-label="Alice 操作"]');
+    const items = menu.querySelectorAll('[role="menuitem"]');
+    expect(hiddenFocusAttempts).toHaveLength(0);
+    expect(menu.style.visibility).toBe('visible');
+    expect(document.activeElement).toBe(items[0]);
+    await act(async () => Simulate.keyDown(items[0], { key: 'End' }));
+    expect(document.activeElement).toBe(items[items.length - 1]);
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    expect(document.activeElement).toBe(items[items.length - 1]);
   });
 
   it('blocks an ordinary friend from the friend row menu', async () => {
@@ -3406,7 +3522,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="Bob 联系人操作"]'));
     });
-    const blockButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
+    const blockButton = Array.from(document.querySelectorAll('[role="menuitem"]'))
       .find((node) => node.textContent.includes('拉黑好友'));
     expect(blockButton).toBeTruthy();
 
@@ -3483,8 +3599,8 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(groupItem.querySelector('[aria-label="查云端log 更多操作"]'));
     });
-    expect(groupItem.querySelector('[aria-label="查云端log 协作管理"]')).toBeTruthy();
-    expect(groupItem.querySelector('[aria-label="删除任务 查云端log"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="查云端log 协作管理"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="删除任务 查云端log"]')).toBeTruthy();
   });
 
   it('orders group and Agent tasks together while ordering people independently', async () => {
@@ -3817,7 +3933,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(friendRow.querySelector('.v3-friend-menu-trigger'));
     });
-    const friendMenu = friendRow.querySelector('.v3-friend-action-menu');
+    const friendMenu = document.querySelector('.cc-sidebar-floating-menu');
     expect(friendMenu).toBeTruthy();
     expect(friendRow.querySelector('.cc-chat-row-trailing').contains(friendMenu)).toBe(false);
   });
@@ -4086,11 +4202,11 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="批量项目操作"]'));
     });
-    expect(container.querySelector('[role="menu"][aria-label="批量项目操作"]')).toBeTruthy();
+    expect(document.querySelector('[role="menu"][aria-label="批量项目操作"]')).toBeTruthy();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
-    expect(container.querySelector('[role="menu"][aria-label="批量项目操作"]')).toBeFalsy();
+    expect(document.querySelector('[role="menu"][aria-label="批量项目操作"]')).toBeFalsy();
     expect(container.querySelector('.cc-history-batch-exit-actions [aria-label="确认选择任务"]')).toBeTruthy();
 
     await act(async () => {
@@ -4267,7 +4383,7 @@ describe('ChatListView sidebar sections', () => {
     expect(container.textContent).toContain('静音（1）');
     expect(container.textContent).toContain('取消静音（1）');
 
-    const mute = Array.from(container.querySelectorAll('[role="menuitem"]'))
+    const mute = Array.from(document.querySelectorAll('[role="menuitem"]'))
       .find((button) => button.textContent.includes('静音（1）'));
     await act(async () => {
       Simulate.click(mute);
@@ -4398,7 +4514,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
     });
-    const muteAction = container.querySelector('[aria-label="静音此会话 Alice"]');
+    const muteAction = document.querySelector('[aria-label="静音此会话 Alice"]');
     expect(muteAction).toBeTruthy();
 
     await act(async () => {
@@ -4412,6 +4528,6 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
     });
-    expect(container.querySelector('[aria-label="静音此会话 Alice"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="静音此会话 Alice"]')).toBeTruthy();
   });
 });

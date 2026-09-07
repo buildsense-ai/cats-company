@@ -153,6 +153,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
   useEffect(() => {
     if (!open) return undefined;
     const handleKeyDown = (event) => {
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         onClose();

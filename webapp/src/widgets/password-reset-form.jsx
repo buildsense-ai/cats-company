@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { authApi } from '../auth-session';
 import { formatSharedAuthError } from '../utils/auth-error';
 import { isValidEmailFormat } from '../utils/email-format';
@@ -22,6 +22,8 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
+  const sendingCodeRef = useRef(false);
 
   useEffect(() => {
     setEmail(defaultEmail);
@@ -34,6 +36,7 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
   }, [countdown]);
 
   const handleSendCode = async () => {
+    if (sendingCodeRef.current || countdown > 0) return;
     const trimmedEmail = email.trim();
     if (!trimmedEmail || !isValidEmailFormat(trimmedEmail)) {
       setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
@@ -43,12 +46,17 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
     setError('');
     setStatus('');
     try {
+      sendingCodeRef.current = true;
+      setSendingCode(true);
       await authApi.sendPasswordResetCode(trimmedEmail);
       setCodeSent(true);
       setCountdown(60);
       setStatus('如果该邮箱已注册，验证码会发送到对应邮箱。请使用最新邮件中的验证码（旧验证码将失效）。');
     } catch (err) {
       setError(formatResetError(err.message));
+    } finally {
+      sendingCodeRef.current = false;
+      setSendingCode(false);
     }
   };
 
@@ -118,9 +126,10 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
           type="button"
           className="oc-auth-btn"
           onClick={handleSendCode}
-          disabled={countdown > 0}
+          disabled={sendingCode || countdown > 0}
+          aria-busy={sendingCode}
         >
-          {countdown > 0 ? `${countdown}秒` : (codeSent ? '重新发送' : '发送验证码')}
+          {sendingCode ? '发送中...' : countdown > 0 ? `${countdown}秒` : (codeSent ? '重新发送' : '发送验证码')}
         </button>
       </div>
       <input

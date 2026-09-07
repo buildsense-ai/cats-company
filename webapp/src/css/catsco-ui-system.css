@@ -43,6 +43,10 @@
   --cc-accent-hover: #219f7e;
   --cc-accent-soft: rgba(41, 188, 149, 0.16);
   --cc-accent-text: #147c65;
+  /* Solid actions have their own accessible foreground/background pair. */
+  --cc-action-bg: #454549;
+  --cc-action-bg-hover: #343438;
+  --cc-on-action: #ffffff;
   --cc-focus-ring: #656a73;
   --cc-focus-border: color-mix(in srgb, var(--cc-text) 34%, var(--cc-border));
   --cc-success-text: #13765e;
@@ -136,6 +140,9 @@ html[data-theme="dark"] {
   --cc-voice-notice: var(--cc-text-secondary);
   --cc-muted: #9a9aa0;
   --cc-accent-text: #7be0c1;
+  --cc-action-bg: #d8d8dc;
+  --cc-action-bg-hover: #ececec;
+  --cc-on-action: #202022;
   --cc-focus-ring: #aeb2b9;
   --cc-success-text: #7be0c1;
   --cc-warning-text: #f3c76b;
@@ -180,6 +187,9 @@ html[data-theme="liquid"] {
   --cc-accent-hover: #4652c5;
   --cc-accent-soft: rgba(86, 98, 217, 0.12);
   --cc-accent-text: #4652c5;
+  --cc-action-bg: #4652c5;
+  --cc-action-bg-hover: #3b45b0;
+  --cc-on-action: #ffffff;
   --cc-focus-ring: #697185;
   --cc-success-text: #147c65;
   --cc-warning-text: #7a5200;
@@ -1169,6 +1179,23 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-action-btn:active,
 .v3-tool:active:not(:disabled) {
   background: var(--cc-pressed);
+}
+
+.v3-tool.v3-stop-button {
+  flex: 0 0 34px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cc-text-secondary);
+}
+
+.v3-tool.v3-stop-button:hover:not(:disabled) {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.v3-tool.v3-stop-button:active:not(:disabled) {
+  background: var(--cc-pressed);
+  color: var(--cc-text);
 }
 
 .v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark {
@@ -3016,7 +3043,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
   cursor: pointer;
 }
 
-.cc-agent-row-main {
+.cc-agent-row-main,
+.cc-sidebar-row-main {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
@@ -6482,7 +6510,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 }
 
 .oc-member-search:focus-within {
-  border-color: color-mix(in srgb, var(--cc-text) 22%, var(--cc-border));
+  border-color: var(--cc-focus-border);
   box-shadow: none;
 }
 
@@ -6769,23 +6797,47 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 
   .oc-create-group-dialog .oc-collaboration-modal-body {
+    flex: 0 0 auto;
+    max-height: none;
     overflow: visible;
+    gap: 12px;
+    padding: 12px 16px;
   }
 
-  .oc-member-picker-shell {
+  .oc-create-group-dialog .oc-member-picker-shell {
     grid-template-columns: 1fr;
     height: auto;
-    min-height: 420px;
+    min-height: 0;
   }
 
-  .oc-member-picker-source,
-  .oc-member-picker-selected {
-    min-height: 210px;
+  .oc-create-group-dialog .oc-member-picker-source,
+  .oc-create-group-dialog .oc-member-picker-selected {
+    min-height: 0;
+    gap: 8px;
+    padding: 12px;
   }
 
-  .oc-member-picker-selected {
+  .oc-create-group-dialog .oc-member-picker-list {
+    flex: 0 1 auto;
+    max-height: min(240px, 35dvh);
+  }
+
+  .oc-create-group-dialog .oc-member-picker-selected-list {
+    flex: 0 1 auto;
+    max-height: 160px;
+  }
+
+  .oc-create-group-dialog .oc-member-picker-shell .oc-collaboration-empty.compact {
+    min-height: 64px;
+  }
+
+  .oc-create-group-dialog .oc-member-picker-selected {
     border-top: 1px solid var(--cc-border);
     border-left: 0;
+  }
+
+  .oc-create-group-dialog .oc-collaboration-modal-footer {
+    padding: 12px 16px 16px;
   }
 }
 
@@ -10765,7 +10817,7 @@ html[data-theme="liquid"] :is(.cc-sidebar-primary:hover, .cc-sidebar-search:hove
 html[data-theme="liquid"] .v3-chat-item.active {
   border-color: var(--cc-liquid-edge);
   background: rgba(73, 86, 168, 0.12);
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--cc-accent) 66%, transparent);
+  box-shadow: none;
 }
 
 html[data-theme="liquid"] .v3-message.is-self .v3-message-bubble {

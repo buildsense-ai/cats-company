@@ -204,6 +204,25 @@ describe('SearchOverlay', () => {
     expect(document.documentElement.classList.contains('cc-global-search-open')).toBe(false);
   });
 
+  it('leaves composing Escape, arrow and Enter keys to the input method', async () => {
+    api.getMessageSearch.mockResolvedValue({ results: [{ message_id: 7, topic_id: 'p2p_1_2', content: 'hello' }] });
+    await render();
+    const input = container.querySelector('input');
+    await act(async () => Simulate.change(input, { target: { value: 'hello' } }));
+    await act(async () => vi.advanceTimersByTime(300));
+    input.focus();
+    for (const options of [{ isComposing: true }, { keyCode: 229 }]) {
+      for (const key of ['ArrowDown', 'ArrowUp', 'Escape', 'Enter']) {
+        const event = new KeyboardEvent('keydown', { key, ...options, bubbles: true, cancelable: true });
+        await act(async () => input.dispatchEvent(event));
+        expect(event.defaultPrevented).toBe(false);
+      }
+    }
+    expect(document.activeElement).toBe(input);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSelectResult).not.toHaveBeenCalled();
+  });
+
   it('traps focus inside the dialog and restores focus after closing', async () => {
     const opener = document.createElement('button');
     opener.textContent = '打开搜索';

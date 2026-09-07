@@ -165,6 +165,26 @@ afterEach(async () => {
   sessionStorage.clear();
 });
 
+test.each([{ ctrlKey: true }, { metaKey: true }])('keeps search shortcuts inside an active modal workflow (%j)', async (modifier) => {
+  await act(async () => renderWorkspace());
+  const modal = document.createElement('section');
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  document.body.appendChild(modal);
+  try {
+    const blocked = new KeyboardEvent('keydown', { key: 'k', ...modifier, bubbles: true, cancelable: true });
+    await act(async () => document.dispatchEvent(blocked));
+    expect(blocked.defaultPrevented).toBe(true);
+    expect(container.querySelector('.cc-global-search')).toBeNull();
+  } finally {
+    modal.remove();
+  }
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'k', ...modifier, bubbles: true, cancelable: true,
+  })));
+  expect(container.querySelector('.cc-global-search')).not.toBeNull();
+});
+
 test('restores a draft when returning from SkillHub after the workspace remounts', async () => {
   await act(async () => {
     renderWorkspace();

@@ -415,15 +415,15 @@
 }
 
 .cc-skillhub-page button.primary {
-  border-color: var(--cc-accent);
-  background: var(--cc-accent);
-  color: #fff;
+  border-color: transparent;
+  background: var(--cc-action-bg);
+  color: var(--cc-on-action);
 }
 
 .cc-skillhub-page button.primary:hover:not(:disabled) {
-  border-color: var(--cc-accent-hover);
-  background: var(--cc-accent-hover);
-  color: #fff;
+  border-color: transparent;
+  background: var(--cc-action-bg-hover);
+  color: var(--cc-on-action);
 }
 
 .cc-skillhub-page button.bound {
@@ -871,6 +871,9 @@
 .cc-skillhub-card.is-added { border-color: var(--cc-border-strong); }
 .cc-skillhub-card-title { align-items: center; }
 .cc-skillhub-card-title h3 { margin: 0; }
+.cc-skillhub-page button.cc-skillhub-card-details-trigger { display: block; min-height: 32px; max-width: 100%; border: 0; padding: 0; overflow: hidden; background: transparent; color: inherit; font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.cc-skillhub-page button.cc-skillhub-card-details-trigger:hover:not(:disabled) { background: transparent; color: var(--cc-text); text-decoration: underline; text-underline-offset: 3px; }
+.cc-skillhub-page button.cc-skillhub-card-details-trigger:active:not(:disabled) { transform: none; }
 .cc-skillhub-card p { display: -webkit-box; min-height: 38px; margin: 13px 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .cc-skillhub-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 11px; border-top: 1px solid var(--cc-border); }
 .cc-skillhub-card-footer > span { display: inline-flex; align-items: center; gap: 4px; color: var(--cc-muted); font-size: 11px; }

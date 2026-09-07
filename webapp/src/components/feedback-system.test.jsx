@@ -6,6 +6,13 @@ import {
   InlineFeedback,
   useFeedback,
 } from './feedback-system';
+import useDialogBehavior from '../utils/use-dialog-behavior';
+
+function ParentDialog({ onClose }) {
+  const dialogRef = React.useRef(null);
+  useDialogBehavior(dialogRef, { onClose });
+  return <section ref={dialogRef} role="dialog" tabIndex={-1}><FeedbackHarness /></section>;
+}
 
 function FeedbackHarness() {
   const feedback = useFeedback();
@@ -134,5 +141,29 @@ describe('feedback system', () => {
 
     expect(document.body.querySelector('[role="alertdialog"]')).toBeFalsy();
     expect(document.body.querySelector('.cc-toast-success')).toBeFalsy();
+  });
+
+  it('keeps nested confirmation above a parent dialog and restores focus without closing both', async () => {
+    const onClose = vi.fn();
+    await act(async () => root.render(
+      <FeedbackProvider><ParentDialog onClose={onClose} /></FeedbackProvider>,
+    ));
+    const opener = [...container.querySelectorAll('button')].find((button) => button.textContent === '确认');
+    opener.focus();
+    await act(async () => Simulate.click(opener));
+    const dialog = document.querySelector('[role="alertdialog"]');
+    expect(document.activeElement).toBe(dialog.querySelector('.cc-confirm-cancel'));
+    expect(container.hasAttribute('inert')).toBe(true);
+    const last = dialog.querySelector('.cc-confirm-submit');
+    last.focus();
+    last.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(dialog.querySelector('.cc-confirm-close'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.hasAttribute('inert')).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

@@ -119,6 +119,7 @@ export default function ChatComposer({
   onSend,
   sendDisabled = false,
   stop = false,
+  separateStop = false,
   onStop,
   stopDisabled = false,
   agentReplyActive = false,
@@ -819,6 +820,18 @@ export default function ChatComposer({
               </button>
               {agentMenu}
             </div>
+          )}
+          {separateStop && !stop && (
+            <button
+              type="button"
+              className="v3-tool v3-stop-button"
+              disabled={stopDisabled}
+              onClick={onStop}
+              aria-label="停止当前工作"
+              title="停止当前工作"
+            >
+              <Square size={13} fill="currentColor" aria-hidden="true" />
+            </button>
           )}
           <button
             className={`v3-send${stop ? ' stop' : ''}`}

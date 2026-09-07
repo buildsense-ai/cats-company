@@ -6,6 +6,7 @@ import {
   ShieldCheck, Wrench, X,
 } from 'lucide-react';
 import CustomSelect from '../widgets/custom-select';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 
 export default function SkillHubContent(props) {
   const {
@@ -371,7 +372,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
   );
 }
 
-function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClose, onLoadSkillHistory, privateReference, skill }) {
+function SkillDetailsDialog({ cataloguePreview = false, details, historyBotUID, label, localDetails, onClose, onLoadSkillHistory, privateReference, skill }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
   const titleId = useId();
@@ -381,37 +382,15 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
   const [historyCursor, setHistoryCursor] = useState(0);
   const [historyError, setHistoryError] = useState('');
   const [historyLoading, setHistoryLoading] = useState(!localOnly);
-  const description = localOnly
+  const description = localOnly && !cataloguePreview
     ? '该能力当前存在于此 Agent 的 XiaoBa 运行工作区，可供该运行时使用；尚未发布到 SkillHub，也未写入 Agent 的云端能力配置。'
-    : details?.description || skill?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
+    : details?.description || skill?.description || localDetails?.description
+      || (cataloguePreview ? '这个能力暂时没有补充说明。' : '此能力已添加到当前 Agent，可立即使用。');
 
-  useEffect(() => {
-    closeButtonRef.current?.focus({ preventScroll: true });
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = [...(dialogRef.current?.querySelectorAll('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])') || [])];
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  useDialogBehavior(dialogRef, { onClose, initialFocusRef: closeButtonRef });
 
   const loadHistory = async ({ append = false, beforeRevisionNumber = 0 } = {}) => {
-    if (localOnly || typeof onLoadSkillHistory !== 'function') return;
+    if (cataloguePreview || localOnly || typeof onLoadSkillHistory !== 'function') return;
     setHistoryLoading(true);
     setHistoryError('');
     try {
@@ -427,7 +406,7 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
 
   useEffect(() => {
     let active = true;
-    if (localOnly || typeof onLoadSkillHistory !== 'function') {
+    if (cataloguePreview || localOnly || typeof onLoadSkillHistory !== 'function') {
       setHistoryLoading(false);
       return () => { active = false; };
     }
@@ -443,7 +422,7 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
       if (active) setHistoryLoading(false);
     });
     return () => { active = false; };
-  }, [historyBotUID, localOnly, onLoadSkillHistory, skill]);
+  }, [cataloguePreview, historyBotUID, localOnly, onLoadSkillHistory, skill]);
 
   return (
     <div
@@ -454,6 +433,7 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
     >
       <section
         ref={dialogRef}
+        tabIndex={-1}
         className='cc-skillhub-detail-dialog'
         role='dialog'
         aria-modal='true'
@@ -473,10 +453,10 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
         <p id={descriptionId} className='cc-skillhub-detail-description'>{description}</p>
         <dl className='cc-skillhub-detail-meta'>
           <div><dt>{localOnly ? '本地能力名' : privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{localOnly ? skill.localName || label : skill.skillId}</code></dd></div>
-          <div><dt>{localOnly ? '发布状态' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
+          <div><dt>{localOnly ? '发布状态' : cataloguePreview ? '最新版本' : '当前版本'}</dt><dd>{localOnly ? '尚未发布' : formatAddedSkillVersion(skill, privateReference)}</dd></div>
           <div><dt>{localOnly ? '存放范围' : privateReference ? '可见范围' : '发布者'}</dt><dd>{localOnly ? '当前运行工作区' : privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
         </dl>
-        <section className='cc-skillhub-history' aria-labelledby={`${titleId}-history`}>
+        {!cataloguePreview && <section className='cc-skillhub-history' aria-labelledby={`${titleId}-history`}>
           <div className='cc-skillhub-history-heading'>
             <div>
               <h3 id={`${titleId}-history`}>版本历史</h3>
@@ -513,7 +493,7 @@ function SkillDetailsDialog({ details, historyBotUID, label, localDetails, onClo
             disabled={historyLoading}
             onClick={() => loadHistory({ append: true, beforeRevisionNumber: historyCursor })}
           >{historyLoading ? '读取中…' : '加载更早版本'}</button>}
-        </section>
+        </section>}
         <div className='cc-skillhub-detail-footer'>
           <button type='button' onClick={onClose}>完成</button>
         </div>
@@ -591,6 +571,13 @@ function Catalogue(props) {
 }
 
 function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsTriggerRef = useRef(null);
+  const closeDetails = () => {
+    setDetailsOpen(false);
+    detailsTriggerRef.current?.focus({ preventScroll: true });
+  };
+  const label = skill.displayName || skill.skillId;
   const installed = installedByID.has(skill.skillId);
   const adding = skillAction?.type === 'add' && skillAction.skillId === skill.skillId;
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
@@ -608,7 +595,14 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
     <article className={`cc-skillhub-card${installed ? ' is-added' : ''}`}>
       <div className='cc-skillhub-card-title'>
         <span className='cc-skillhub-card-icon' aria-hidden='true'><Package size={17} /></span>
-        <h3>{skill.displayName || skill.skillId}</h3>
+        <h3><button
+          ref={detailsTriggerRef}
+          type='button'
+          className='cc-skillhub-card-details-trigger'
+          aria-label={`查看 ${label} 详情`}
+          aria-haspopup='dialog'
+          onClick={() => setDetailsOpen(true)}
+        >{label}</button></h3>
       </div>
       <p>{skill.description || '这个能力暂时没有补充说明。'}</p>
       <div className='cc-skillhub-card-footer'>
@@ -623,6 +617,21 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
           {installed ? '已添加' : adding || sharing ? '添加中…' : '添加'}
         </button>}
       </div>
+      {detailsOpen && createPortal(
+        <SkillDetailsDialog
+          cataloguePreview
+          details={skill}
+          label={label}
+          skill={{
+            ...skill,
+            version: skill.latestVersion,
+            localOnly: skill.isLocalSkill && !skill.canBind,
+            localName: skill.localSkill?.name,
+          }}
+          onClose={closeDetails}
+        />,
+        document.body,
+      )}
     </article>
   );
 }

@@ -316,6 +316,36 @@
   transform: none !important;
 }
 
+/* Text-bearing primary actions share a contrast-safe pair in every theme.
+ * This deliberately excludes the icon-only composer send control and danger actions. */
+:root body .oc-btn-primary,
+:root[data-theme] body .oc-btn-primary,
+:root[data-theme][data-liquid-variant] body .oc-btn-primary,
+:root body .cc-confirm-submit:not(.is-danger) {
+  border-color: transparent !important;
+  background: var(--cc-action-bg) !important;
+  color: var(--cc-on-action) !important;
+  box-shadow: none !important;
+}
+
+:root body .oc-btn-primary:hover:not(:disabled),
+:root[data-theme] body .oc-btn-primary:hover:not(:disabled),
+:root[data-theme][data-liquid-variant] body .oc-btn-primary:hover:not(:disabled),
+:root body .cc-confirm-submit:not(.is-danger):hover:not(:disabled) {
+  background: var(--cc-action-bg-hover) !important;
+  color: var(--cc-on-action) !important;
+  box-shadow: none !important;
+}
+
+:root body .oc-btn-primary:active:not(:disabled),
+:root[data-theme] body .oc-btn-primary:active:not(:disabled),
+:root[data-theme][data-liquid-variant] body .oc-btn-primary:active:not(:disabled),
+:root body .cc-confirm-submit:not(.is-danger):active:not(:disabled) {
+  background: var(--cc-action-bg-hover) !important;
+  color: var(--cc-on-action) !important;
+  box-shadow: none !important;
+}
+
 .cc-settings-secondary-surface :is(
   .oc-btn-default,
   .oc-settings-small-btn,
@@ -371,19 +401,6 @@
 .cc-settings-secondary-surface .relay-access-key-actions .relay-access-danger-action:active:not(:disabled) {
   background: var(--cc-secondary-action-bg-active) !important;
   color: var(--cc-danger) !important;
-}
-
-.cc-settings-secondary-surface .oc-btn-primary {
-  background: var(--cc-accent) !important;
-  color: #fff !important;
-}
-
-.cc-settings-secondary-surface .oc-btn-primary:hover:not(:disabled) {
-  background: var(--cc-accent-hover) !important;
-}
-
-.cc-settings-secondary-surface .oc-btn-primary:active:not(:disabled) {
-  background: color-mix(in srgb, var(--cc-accent-hover) 84%, #000) !important;
 }
 
 .cc-settings-secondary-surface :is(
@@ -461,7 +478,6 @@ html[data-theme='liquid'] .cc-settings-secondary-surface :is(
 
 html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
   border: 0 !important;
-  background: var(--cc-accent) !important;
   box-shadow: none !important;
   transform: none !important;
 }
@@ -797,7 +813,8 @@ html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
   .oc-profile-editor-modal[data-mobile-pane='home'] .oc-profile-editor-actions,
   .oc-profile-editor-modal[data-mobile-pane='account'] .oc-profile-editor-actions,
   .oc-profile-editor-modal[data-mobile-pane='appearance'] .oc-profile-editor-actions,
-  .oc-profile-editor-modal[data-mobile-pane='notifications'] .oc-profile-editor-actions {
+  .oc-profile-editor-modal[data-mobile-pane='notifications'] .oc-profile-editor-actions,
+  .oc-profile-editor-modal[data-mobile-pane='behavior'] .oc-profile-editor-actions {
     display: none;
   }
 

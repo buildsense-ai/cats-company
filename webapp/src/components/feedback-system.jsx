@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import AppTooltip from './app-tooltip';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 
 const FeedbackContext = createContext(null);
 const DEFAULT_TOAST_DURATION = 4200;
@@ -125,37 +126,10 @@ function ConfirmDialog({ confirmation, onResolve }) {
   const titleId = useMemo(() => nextFeedbackId('confirm-title'), []);
   const descriptionId = useMemo(() => nextFeedbackId('confirm-description'), []);
 
-  useEffect(() => {
-    const previousFocus = document.activeElement;
-    cancelButtonRef.current?.focus();
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onResolve(false);
-        return;
-      }
-      if (event.key === 'Tab') {
-        const focusable = dialogRef.current?.querySelectorAll(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        );
-        if (!focusable?.length) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      if (previousFocus instanceof HTMLElement) previousFocus.focus();
-    };
-  }, [onResolve]);
+  useDialogBehavior(dialogRef, {
+    onClose: () => onResolve(false),
+    initialFocusRef: cancelButtonRef,
+  });
 
   return (
     <div
@@ -166,6 +140,7 @@ function ConfirmDialog({ confirmation, onResolve }) {
     >
       <section
         ref={dialogRef}
+        tabIndex={-1}
         className="oc-modal cc-confirm-dialog"
         role="alertdialog"
         aria-modal="true"

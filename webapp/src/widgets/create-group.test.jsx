@@ -71,6 +71,19 @@ describe('CreateGroup member candidates', () => {
     expect(names.filter((name) => name === 'Virtual Catsco')).toHaveLength(1);
   });
 
+  it('starts at the group name and supports dialog keyboard boundaries and Escape', async () => {
+    const onClose = vi.fn();
+    await mount({ onClose, initialName: 'Review' });
+    expect(document.activeElement).toBe(container.querySelector('.oc-collaboration-input'));
+    const first = container.querySelector('.oc-modal-close');
+    const last = container.querySelector('.oc-collaboration-modal-footer .oc-btn-primary');
+    last.focus();
+    last.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(first);
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it('submits the selected Agent canonical ID when creating the group', async () => {
     const onClose = vi.fn();
     const onCreated = vi.fn();

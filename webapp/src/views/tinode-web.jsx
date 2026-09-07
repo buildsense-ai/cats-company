@@ -1,19 +1,16 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api, resolveMediaURL, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
 import t from '../i18n';
-import RelayAdminPanel from './relay-admin-panel';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
 import SearchOverlay from './search-overlay';
 import AgentEntryBindView from './agent-entry-bind-view';
 import ChannelDeviceLinkView from './channel-device-link-view';
-import MobileUploadView from './mobile-upload-view';
-import SkillHubView from './skillhub-view';
 import EmptyTaskComposer from '../widgets/empty-task-composer';
 import SidebarResizeHandle, {
   MIN_APP_SIDEBAR_WIDTH,
@@ -27,7 +24,6 @@ import FeedbackModal from '../widgets/feedback-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
 import RelayAccessModal from '../widgets/relay-access-modal';
-import GroupSettings from '../widgets/group-settings';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import IdentityOnboarding from '../components/identity-onboarding';
@@ -35,10 +31,10 @@ import LiquidFlowBackground, {
   shouldMountLiquidFlowBackground,
 } from '../components/liquid-flow-background';
 import { useFeedback } from '../components/feedback-system';
-import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import ArtifactFullscreenViewer from './artifact-fullscreen-viewer';
 import { ARTIFACT_VIEWER_PATH } from '../artifact-preview-coordinator';
 import Avatar from '../widgets/avatar';
+
 import BotModelSelector, {
   describeModelApplyError,
   describeModelConfigRequestError,
@@ -96,6 +92,18 @@ import {
 } from '../utils/auth-routes';
 import { Cloud, Download, Frown, KeyRound, Laptop, MoreHorizontal, Package, Plus, Settings, Settings2, LogOut, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import './workspace-styles';
+
+// Keep the active conversation eager; fetch secondary tools only when opened.
+// Chunk failures still use the app's existing WorkspaceLoadErrorBoundary.
+const RelayAdminPanel = lazy(() => import('./relay-admin-panel'));
+const MobileUploadView = lazy(() => import('./mobile-upload-view'));
+const SkillHubView = lazy(() => import('./skillhub-view'));
+const GroupSettings = lazy(() => import('../widgets/group-settings'));
+const WorkflowRichMediaDemo = lazy(() => import('./workflow-rich-media-demo'));
+
+function SecondaryViewLoading({ label }) {
+  return <div className="v3-empty-state" role="status" aria-live="polite">正在加载{label}…</div>;
+}
 
 const TABS = {
   CHATS: 'chats'
@@ -254,13 +262,21 @@ export default function TinodeWeb({ location = window.location } = {}) {
   }
   const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
   if (mobileUploadMatch) {
-    return <MobileUploadView sessionId={decodeURIComponent(mobileUploadMatch[1])} />;
+    return (
+      <Suspense fallback={<SecondaryViewLoading label="手机上传" />}>
+        <MobileUploadView sessionId={decodeURIComponent(mobileUploadMatch[1])} />
+      </Suspense>
+    );
   }
 
   const demoParams = new URLSearchParams(search);
   const showWorkflowDemo = demoParams.get('workflow_demo') === '1';
   if (showWorkflowDemo) {
-    return <WorkflowRichMediaDemo />;
+    return (
+      <Suspense fallback={<SecondaryViewLoading label="演示" />}>
+        <WorkflowRichMediaDemo />
+      </Suspense>
+    );
   }
 
   return <TinodeWebApp location={location} />;
@@ -314,7 +330,10 @@ function TinodeWebApp({ location }) {
     if (!user) return undefined;
     const handleGlobalSearchShortcut = (event) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 'k') return;
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       event.preventDefault();
+      // Do not open a second, unrelated modal above an active modal workflow.
+      if (document.querySelector('[aria-modal="true"]')) return;
       setSearchOpen(true);
     };
     document.addEventListener('keydown', handleGlobalSearchShortcut);
@@ -1492,7 +1511,9 @@ function TinodeWebApp({ location }) {
         <div className="v3-main-body">
           <div className="v3-main-content">
             {activeView === 'skillhub' ? (
-              <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
+              <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
+                <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
+              </Suspense>
             ) : activeTopic ? (
               <MessagesView
                 key={composerDraftOwner || 'anonymous'}
@@ -1551,7 +1572,9 @@ function TinodeWebApp({ location }) {
             )}
           </div>
           {relayAdminAllowed && relayAdminOpen && (
-            <RelayAdminPanel onClose={() => setRelayAdminOpen(false)} />
+            <Suspense fallback={<SecondaryViewLoading label="用量管理" />}>
+              <RelayAdminPanel onClose={() => setRelayAdminOpen(false)} />
+            </Suspense>
           )}
         </div>
       </div>
@@ -1601,25 +1624,27 @@ function TinodeWebApp({ location }) {
       )}
 
       {managedGroup?.groupId && (
-        <GroupSettings
-          groupId={managedGroup.groupId}
-          currentUser={user}
-          onClose={() => setManagedGroup(null)}
-          onSaved={(updatedGroup) => {
-            if (updatedGroup) {
-              handleTopicUpdated({
-                topicId: managedGroup.topicId,
-                name: updatedGroup.name,
-                avatar_url: updatedGroup.avatar_url,
-              });
-            } else {
-              setActiveTopic((current) => (
-                current?.topicId === managedGroup.topicId ? null : current
-              ));
-            }
-            window.dispatchEvent(new Event('cc:data-changed'));
-          }}
-        />
+        <Suspense fallback={<SecondaryViewLoading label="群设置" />}>
+          <GroupSettings
+            groupId={managedGroup.groupId}
+            currentUser={user}
+            onClose={() => setManagedGroup(null)}
+            onSaved={(updatedGroup) => {
+              if (updatedGroup) {
+                handleTopicUpdated({
+                  topicId: managedGroup.topicId,
+                  name: updatedGroup.name,
+                  avatar_url: updatedGroup.avatar_url,
+                });
+              } else {
+                setActiveTopic((current) => (
+                  current?.topicId === managedGroup.topicId ? null : current
+                ));
+              }
+              window.dispatchEvent(new Event('cc:data-changed'));
+            }}
+          />
+        </Suspense>
       )}
 
     </div>

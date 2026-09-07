@@ -223,4 +223,36 @@ describe('CustomSelect', () => {
     expect(document.body.querySelector('[role="listbox"][aria-label="Model protocol"]')).toBeNull();
     expect(document.activeElement).not.toBe(listbox);
   });
+
+  it('keeps active options visible in a 30-item popup without scrolling the page', async () => {
+    await act(async () => root.render(
+      <CustomSelect ariaLabel="Long list" value="0" onValueChange={vi.fn()}>
+        {Array.from({ length: 30 }, (_, i) => <option key={i} value={i}>Option {i}</option>)}
+      </CustomSelect>,
+    ));
+    const trigger = container.querySelector('button');
+    trigger.getBoundingClientRect = () => rect({ bottom: 82, left: 32, top: 40, width: 160 });
+    await act(async () => Simulate.click(trigger));
+    const list = document.querySelector('[role="listbox"]');
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 200 });
+    list.getBoundingClientRect = () => rect({ bottom: 286, top: 86, left: 32, width: 160 });
+    [...list.querySelectorAll('[role="option"]')].forEach((option, index) => {
+      option.getBoundingClientRect = () => rect({
+        top: 86 + index * 32 - list.scrollTop,
+        bottom: 86 + (index + 1) * 32 - list.scrollTop,
+        left: 32,
+        width: 160,
+      });
+    });
+    await act(async () => Simulate.keyDown(list, { key: 'End' }));
+    expect(list.scrollTop).toBe(760);
+    expect(list.getAttribute('aria-activedescendant')).toContain('option-29');
+    await act(async () => Simulate.keyDown(list, { key: 'Home' }));
+    expect(list.scrollTop).toBe(0);
+    for (let i = 0; i < 7; i += 1) {
+      await act(async () => Simulate.keyDown(list, { key: 'ArrowDown' }));
+    }
+    expect(list.scrollTop).toBe(56);
+    expect(container.scrollTop).toBe(0);
+  });
 });

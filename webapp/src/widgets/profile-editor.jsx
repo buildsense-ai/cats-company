@@ -5,7 +5,8 @@ import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
 import NotificationSettings from './notification-settings';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
-import { readStorageValue, writeStorageValue } from '../utils/storage-access';
+import { setShowThinkingPreference, useShowThinkingPreference } from '../utils/show-thinking-preference';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 import {
   ArrowLeft,
   BellRing,
@@ -65,10 +66,8 @@ export default function ProfileEditor({
   const mobileBackRef = useRef(null);
   const [displayName, setDisplayName] = useState(user?.display_name || '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
-  const [showThinking, setShowThinking] = useState(() => {
-    const saved = readStorageValue('cc_show_thinking');
-    return saved === null ? true : saved === 'true';
-  });
+  const showThinking = useShowThinkingPreference();
+  const [preferenceError, setPreferenceError] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
@@ -82,6 +81,8 @@ export default function ProfileEditor({
   const resetEmail = user?.email || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user?.username || '') ? user.username : '');
   const userUID = user?.uid || user?.id || '';
   const currentThemeLabel = THEME_OPTIONS.find(({ id }) => id === theme)?.label || '浅色';
+
+  useDialogBehavior(modalRef, { onClose });
 
   useEffect(() => {
     if (window.matchMedia?.('(max-width: 768px)').matches) {
@@ -129,7 +130,6 @@ export default function ProfileEditor({
     setSaving(true);
     setError('');
     try {
-      writeStorageValue('cc_show_thinking', String(showThinking));
       const updated = await api.updateMe(displayName.trim(), avatarUrl || '');
       if (onSaved) onSaved(updated);
       onClose();
@@ -138,6 +138,11 @@ export default function ProfileEditor({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleThinkingChange = () => {
+    const saved = setShowThinkingPreference(!showThinking);
+    setPreferenceError(saved ? '' : '当前浏览器无法保存偏好，请检查存储权限后重试。');
   };
 
   const handleThemeChoice = (nextTheme) => {
@@ -193,7 +198,7 @@ export default function ProfileEditor({
         <div className="oc-profile-editor-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
             <h3 id="profile-editor-dialog-title">设置与资料</h3>
-            <p id="profile-editor-dialog-description">管理个人资料、账号安全与使用偏好。</p>
+            <p id="profile-editor-dialog-description">资料需保存，外观与使用偏好即时生效。</p>
           </div>
           <button
             type="button"
@@ -338,6 +343,7 @@ export default function ProfileEditor({
             </div>
             <div className="oc-profile-details-section">
               <div className="oc-settings-section-title oc-profile-mobile-section-title">个人资料</div>
+              <p className="oc-settings-secondary">头像与昵称修改后，点击“保存资料”生效。</p>
               <div className="oc-profile-mobile-group-card">
                 <div className="oc-profile-name-field oc-profile-mobile-settings-row">
                   <span className="oc-profile-mobile-row-icon" aria-hidden="true"><UserRound size={22} /></span>
@@ -370,6 +376,7 @@ export default function ProfileEditor({
           {onThemeChange && (
             <div className="oc-settings-section oc-profile-theme-section oc-profile-mobile-pane oc-profile-mobile-pane-appearance">
               <div className="oc-settings-section-title">外观</div>
+              <p className="oc-settings-secondary">选择后即时生效，关闭设置不会撤回。</p>
               <div className="oc-theme-picker" role="radiogroup" aria-label="界面主题">
                 {THEME_OPTIONS.map(({ id, label, description, Icon }) => {
                   const locked = isLiquidThemeOption(id) && !liquidThemeAccess.unlocked;
@@ -473,6 +480,7 @@ export default function ProfileEditor({
           </div>
           <div className="oc-profile-behavior-section oc-profile-mobile-pane oc-profile-mobile-pane-behavior">
             <div className="oc-settings-section-title oc-profile-mobile-section-title">AI 行为</div>
+            <p className="oc-settings-secondary">显示偏好即时生效，并保存在当前浏览器。</p>
             <div className="oc-profile-mobile-group-card">
               <div className="oc-profile-thinking-toggle oc-profile-mobile-settings-row">
                 <span className="oc-profile-mobile-row-icon" aria-hidden="true"><BrainCircuit size={22} /></span>
@@ -483,19 +491,20 @@ export default function ProfileEditor({
                   role="switch"
                   aria-checked={showThinking}
                   aria-label="显示 AI 思考过程"
-                  onClick={() => setShowThinking((value) => !value)}
+                  onClick={handleThinkingChange}
                 >
                   <span aria-hidden="true" />
                 </button>
               </div>
             </div>
+            {preferenceError && <div className="oc-form-error" role="alert">{preferenceError}</div>}
           </div>
           {error && <div className="oc-form-error">{error}</div>}
         </div>
         <div className="oc-settings-actions oc-profile-editor-actions">
-          <button className="oc-btn oc-btn-default" onClick={onClose}>{t('cancel')}</button>
+          <button className="oc-btn oc-btn-default" onClick={onClose}>关闭</button>
           <button className="oc-btn oc-btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? t('loading') : t('save')}
+            {saving ? '保存中…' : '保存资料'}
           </button>
         </div>
       </div>

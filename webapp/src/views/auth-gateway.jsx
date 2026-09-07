@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { authApi, getToken, isTokenExpired, setToken } from '../auth-session';
 import { InlineFeedback } from '../components/feedback-system';
@@ -98,6 +98,8 @@ export function AuthView({
   const [codeSent, setCodeSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [sentHint, setSentHint] = useState('');
+  const [sendingCode, setSendingCode] = useState(false);
+  const sendingCodeRef = useRef(false);
 
   useEffect(() => {
     if (countdown > 0) {
@@ -107,11 +109,16 @@ export function AuthView({
   }, [countdown]);
 
   const handleSendCode = async () => {
+    if (sendingCodeRef.current || countdown > 0) return;
     if (!email || !isValidEmailFormat(email)) {
       setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
       return;
     }
     try {
+      sendingCodeRef.current = true;
+      setSendingCode(true);
+      setError('');
+      setSentHint('');
       await authApi.sendVerificationCode(email);
       setCodeSent(true);
       setCountdown(60);
@@ -120,6 +127,9 @@ export function AuthView({
     } catch (err) {
       setSentHint('');
       setError(err.message || '发送验证码失败，请稍后再试');
+    } finally {
+      sendingCodeRef.current = false;
+      setSendingCode(false);
     }
   };
 
@@ -234,9 +244,10 @@ export function AuthView({
               type="button"
               className="oc-auth-btn"
               onClick={handleSendCode}
-              disabled={countdown > 0}
+              disabled={sendingCode || countdown > 0}
+              aria-busy={sendingCode}
             >
-              {countdown > 0 ? `${countdown}秒` : '发送验证码'}
+              {sendingCode ? '发送中...' : countdown > 0 ? `${countdown}秒` : '发送验证码'}
             </button>
           </div>
           {sentHint && (

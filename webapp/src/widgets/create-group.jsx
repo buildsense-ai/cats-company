@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, UsersRound, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
 import { inviteMemberId, mergeInviteMemberCandidates } from '../utils/invite-member-candidates';
 import Avatar from './avatar';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 
 export default function CreateGroup({
   onClose,
@@ -26,6 +27,9 @@ export default function CreateGroup({
   const [loading, setLoading] = useState(false);
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [error, setError] = useState('');
+  const dialogRef = useRef(null);
+  const nameInputRef = useRef(null);
+  useDialogBehavior(dialogRef, { onClose, initialFocusRef: nameInputRef });
 
   useEffect(() => {
     loadMembers();
@@ -110,6 +114,8 @@ export default function CreateGroup({
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="oc-modal oc-collaboration-modal oc-create-group-dialog cc-secondary-interface"
         role="dialog"
         aria-modal="true"
@@ -143,6 +149,7 @@ export default function CreateGroup({
             <label className="oc-collaboration-field">
               <span>{isTaskUpgrade ? '任务名称' : '群聊名称'}</span>
               <input
+                ref={nameInputRef}
                 className="oc-collaboration-input"
                 placeholder={isTaskUpgrade ? '任务名称' : '#新的话题'}
                 value={name}
@@ -155,7 +162,7 @@ export default function CreateGroup({
             <section className="oc-member-picker-source">
               <div className="oc-member-search">
                 <Search size={15} strokeWidth={1.8} />
-                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索成员" />
+                <input data-cc-focus-group="true" aria-label="搜索成员" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索成员" />
                 <div className="oc-segmented-control" role="tablist" aria-label="成员类型">
                   <button
                     type="button"

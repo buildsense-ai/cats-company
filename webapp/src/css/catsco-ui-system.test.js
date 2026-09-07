@@ -197,6 +197,14 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('html[data-theme="liquid"] .v3-chat-item.active {\n  border-color: var(--cc-liquid-edge);\n  background: rgba(73, 86, 168, 0.12);');
   });
 
+  it('keeps selected sidebar rows free of accent rails in liquid themes', () => {
+    expect(ruleFor('.v3-chat-item.active::before')).toContain('display: none;');
+    expect(ruleFor('html[data-theme="liquid"] .v3-chat-item.active'))
+      .toContain('box-shadow: none;');
+    expect(ruleIn(liquidGreenCss, 'html[data-theme="liquid"][data-liquid-variant="green"] .v3-chat-item.active'))
+      .toContain('box-shadow: none;');
+  });
+
   it('keeps neutral borders quiet while focus remains a distinct semantic state', () => {
     expect(ruleFor(':root')).toContain('--cc-border: #ececef;');
     expect(ruleFor(':root')).toContain('--cc-border-strong: #dedee2;');
@@ -436,7 +444,8 @@ describe('CatsCo shell styling', () => {
     expect(actionRule).toContain('color: var(--v3-text-main);');
     expect(hoverRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 18%, transparent);');
     expect(dangerRule).toContain('color: var(--v3-text-main);');
-    expect(confirmRule).toContain('background: #f3f3f3;');
+    expect(confirmRule).toContain('background: color-mix(in srgb, var(--cc-danger-text) 10%, var(--cc-history-panel-bg));');
+    expect(confirmRule).toContain('color: var(--cc-danger-text);');
     expect(confirmRule).not.toContain('#dc2626');
   });
 

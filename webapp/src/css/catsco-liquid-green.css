@@ -11,18 +11,24 @@ html[data-theme="liquid"][data-liquid-variant="green"] {
   --cc-empty-task-bg: transparent;
   --cc-panel: #1a1c1d;
   --cc-panel-raised: #222425;
+  --cc-history-panel-bg: #222425;
+  --cc-history-hover: #303634;
+  --cc-history-hover-border: rgba(198, 240, 228, 0.12);
   --cc-control-surface: #252829;
   --cc-input-surface: rgba(255, 255, 255, 0.07);
   --cc-border: rgba(184, 229, 216, 0.12);
   --cc-border-strong: rgba(198, 240, 228, 0.22);
-  --cc-text: #ffffff;
-  --cc-text-secondary: #ffffff;
+  --cc-text: #f2f5f3;
+  --cc-text-secondary: #c7d1cd;
   --cc-voice-notice: #b8d8cf;
-  --cc-muted: #ffffff;
+  --cc-muted: #a0b2aa;
   --cc-accent: #29bc95;
   --cc-accent-hover: #219f7e;
   --cc-accent-soft: rgba(41, 188, 149, 0.12);
   --cc-accent-text: #7be0c1;
+  --cc-action-bg: #d8dedb;
+  --cc-action-bg-hover: #edf0ee;
+  --cc-on-action: #1a1c1d;
   --cc-focus-ring: #aeb2b9;
   --cc-success-text: #7be0c1;
   --cc-warning-text: #f3c76b;
@@ -34,6 +40,11 @@ html[data-theme="liquid"][data-liquid-variant="green"] {
   --cc-selected: rgba(32, 173, 133, 0.18);
   --cc-self-message: rgba(255, 255, 255, 0.11);
   --cc-pressed: rgba(255, 255, 255, 0.13);
+  --cc-task-hover: #222826;
+  --cc-task-selected: #2c3732;
+  --cc-batch-hover-bg: rgba(255, 255, 255, 0.055);
+  --cc-batch-selected-bg: rgba(255, 255, 255, 0.075);
+  --cc-batch-selected-control: #c7d1cd;
   --cc-liquid-violet: #29bc95;
   --cc-liquid-blue: #29bc95;
   --oc-green-light: #a9e7d7;
@@ -276,7 +287,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(.cc-sidebar-primary:h
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-chat-item.active {
   border-color: var(--cc-liquid-edge);
   background: rgba(255, 255, 255, 0.09);
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--cc-accent) 70%, transparent);
+  box-shadow: none;
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-message.is-self .v3-message-bubble {

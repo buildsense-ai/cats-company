@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { api, resolveMediaURL } from '../api';
 import { useFeedback } from '../components/feedback-system';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
 
@@ -183,6 +184,7 @@ export default function CloudArtifactsPanel({
   const [copiedID, setCopiedID] = useState('');
   const [pendingID, setPendingID] = useState('');
   const [confirmArtifact, setConfirmArtifact] = useState(null);
+  const [confirmError, setConfirmError] = useState('');
   const [artifactScope, setArtifactScope] = useState('current');
   const requestSequenceRef = useRef(0);
   const publishInputRef = useRef(null);
@@ -263,11 +265,14 @@ export default function CloudArtifactsPanel({
   }, [agentUid, topicId]);
 
   useEffect(() => {
+    setConfirmError('');
+  }, [confirmArtifact, confirmTag]);
+
+  useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.key !== 'Escape') return;
-      if (confirmTag) setConfirmTag(null);
-      else if (confirmArtifact) setConfirmArtifact(null);
-      else onClose();
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      // A nested confirmation owns Escape and must not close its parent panel.
+      if (!confirmTag && !confirmArtifact) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -287,6 +292,7 @@ export default function CloudArtifactsPanel({
     if (!confirmArtifact || pendingID) return;
     const artifact = confirmArtifact;
     setPendingID(artifact.id);
+    setConfirmError('');
     setError('');
     try {
       await api.deleteCloudArtifact(agentUid, artifact.id);
@@ -295,7 +301,7 @@ export default function CloudArtifactsPanel({
       notifyArtifactsChanged(agentUid);
       feedback.notify({ tone: 'success', message: '已下架共享成果' });
     } catch (err) {
-      setError(err.message || '下架失败，请稍后重试');
+      setConfirmError(err.message || '下架失败，请稍后重试');
     } finally {
       setPendingID('');
     }
@@ -383,6 +389,7 @@ export default function CloudArtifactsPanel({
     if (!confirmTag || pendingGlobalTag) return;
     const tag = confirmTag;
     setPendingGlobalTag(tag);
+    setConfirmError('');
     setError('');
     try {
       await api.deleteCloudArtifactTagEverywhere(agentUid, tag);
@@ -394,7 +401,7 @@ export default function CloudArtifactsPanel({
       )));
       await refreshTagCounts();
     } catch (err) {
-      setError(err.message || '标签删除失败，请稍后重试');
+      setConfirmError(err.message || '标签删除失败，请稍后重试');
     } finally {
       setPendingGlobalTag('');
     }
@@ -819,51 +826,61 @@ export default function CloudArtifactsPanel({
         </div>
 
         {confirmArtifact && (
-          <div className="cloud-artifact-confirm-backdrop" onClick={() => !pendingID && setConfirmArtifact(null)}>
-            <div
-              className="cloud-artifact-confirm"
-              role="alertdialog"
-              aria-modal="true"
-              aria-label="确认下架成果"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <h4>下架“{confirmArtifact.title}”？</h4>
-              <p>下架后其他成员将无法打开，Agent 所有者可以从回收站恢复。</p>
-              <div className="cloud-artifact-confirm-actions">
-                <button type="button" onClick={() => setConfirmArtifact(null)} disabled={Boolean(pendingID)}>
-                  取消
-                </button>
-                <button type="button" className="danger" onClick={deleteArtifact} disabled={Boolean(pendingID)}>
-                  {pendingID ? '正在下架...' : '下架'}
-                </button>
-              </div>
-            </div>
-          </div>
+          <ArtifactConfirm
+            label="确认下架成果"
+            title={`下架“${confirmArtifact.title}”？`}
+            message="下架后其他成员将无法打开，Agent 所有者可以从回收站恢复。"
+            actionLabel={pendingID ? '正在下架...' : '下架'}
+            pending={Boolean(pendingID)}
+            error={confirmError}
+            onClose={() => !pendingID && setConfirmArtifact(null)}
+            onConfirm={deleteArtifact}
+          />
         )}
         {confirmTag && (
-          <div className="cloud-artifact-confirm-backdrop" onClick={() => !pendingGlobalTag && setConfirmTag(null)}>
-            <div
-              className="cloud-artifact-confirm"
-              role="alertdialog"
-              aria-modal="true"
-              aria-label="确认删除标签"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <h4>删除标签「{confirmTag}」？</h4>
-              <p>该标签将从本 Agent 的所有成果中移除。</p>
-              <div className="cloud-artifact-confirm-actions">
-                <button type="button" onClick={() => setConfirmTag(null)} disabled={Boolean(pendingGlobalTag)}>
-                  取消
-                </button>
-                <button type="button" className="danger" onClick={deleteTagEverywhere} disabled={Boolean(pendingGlobalTag)}>
-                  {pendingGlobalTag ? '正在删除...' : '删除'}
-                </button>
-              </div>
-            </div>
-          </div>
+          <ArtifactConfirm
+            label="确认删除标签"
+            title={`删除标签「${confirmTag}」？`}
+            message="该标签将从本 Agent 的所有成果中移除。"
+            actionLabel={pendingGlobalTag ? '正在删除...' : '删除'}
+            pending={Boolean(pendingGlobalTag)}
+            error={confirmError}
+            onClose={() => !pendingGlobalTag && setConfirmTag(null)}
+            onConfirm={deleteTagEverywhere}
+          />
         )}
       </section>
     </>
+  );
+}
+
+function ArtifactConfirm({ label, title, message, actionLabel, pending, error, onClose, onConfirm }) {
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(null);
+  const descriptionID = React.useId();
+  useDialogBehavior(dialogRef, { onClose, initialFocusRef: cancelRef });
+  return (
+    <div className="cloud-artifact-confirm-backdrop" onClick={onClose}>
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="cloud-artifact-confirm"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={label}
+        aria-describedby={descriptionID}
+        aria-busy={pending}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h4>{title}</h4>
+        <p id={descriptionID}>{message}</p>
+        {error && <p className="cloud-artifact-confirm-error" role="alert">{error}</p>}
+        <div className="cloud-artifact-confirm-actions">
+          <button ref={cancelRef} type="button" onClick={onClose} disabled={pending}>取消</button>
+          <button type="button" className="danger" onClick={onConfirm} disabled={pending}>{actionLabel}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1114,7 +1131,8 @@ function ArtifactFilters({
                           title="从所有成果删除此标签"
                           disabled={pendingTag === tag}
                           onClick={() => {
-                            close();
+                            // Keep a connected opener when the portalled delete action disappears.
+                            close({ restoreFocus: true });
                             onDeleteTag(tag);
                           }}
                         >
