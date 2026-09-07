@@ -17,12 +17,14 @@ import (
 )
 
 const (
-	defaultSkillHubBaseURL            = "https://skillhub.catsco.fun:19990"
-	defaultSkillHubTimeout            = 15 * time.Second
-	defaultSkillHubMaxResponse  int64 = 2 << 20
-	skillHubSkillsPrefix              = "/api/skills"
-	skillHubPrivateMetadataPath       = "/api/bot/private-skill-metadata"
-	skillHubPrivateHistoryPath        = "/api/bot/private-skill-history"
+	defaultSkillHubBaseURL                    = "https://skillhub.catsco.fun:19990"
+	defaultSkillHubTimeout                    = 15 * time.Second
+	defaultSkillHubMaxResponse          int64 = 2 << 20
+	skillHubSkillsPrefix                      = "/api/skills"
+	skillHubPublisherProfileSyncPath          = "/api/auth/catsco-profile-sync"
+	skillHubPrivateMetadataPath               = "/api/bot/private-skill-metadata"
+	skillHubPrivateHistoryPath                = "/api/bot/private-skill-history"
+	skillHubPublisherProfileSyncTimeout       = 5 * time.Second
 )
 
 // SkillHubProxyHandler exposes the public SkillHub catalogue through CatsCo.
@@ -84,7 +86,6 @@ func NewSkillHubProxyHandler(baseURL string, options SkillHubProxyOptions) *Skil
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	h.baseURL = parsed
-
 	timeout := options.Timeout
 	if timeout <= 0 {
 		timeout = defaultSkillHubTimeout
@@ -119,6 +120,74 @@ func NewSkillHubProxyHandlerFromEnv() *SkillHubProxyHandler {
 		}
 	}
 	return NewSkillHubProxyHandler(baseURL, SkillHubProxyOptions{Timeout: timeout})
+}
+
+// HandlePublisherProfileSync refreshes the current human user's public
+// publisher identity in SkillHub. The JWT is verified by both CatsCo's route
+// middleware and SkillHub's callback to CatsCo /api/me.
+func (h *SkillHubProxyHandler) HandlePublisherProfileSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), skillHubPublisherProfileSyncTimeout)
+	defer cancel()
+	if err := h.SyncPublisherProfile(ctx, extractToken(r)); err != nil {
+		status := http.StatusBadGateway
+		if h == nil || h.configError != nil || h.baseURL == nil {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, map[string]string{"error": "SkillHub publisher profile sync failed"})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]bool{"synced": true})
+}
+
+// SyncPublisherProfile performs an idempotent profile-only sync. It never
+// creates a SkillHub login session and never changes Skill packages or history.
+func (h *SkillHubProxyHandler) SyncPublisherProfile(ctx context.Context, token string) error {
+	if h == nil || h.configError != nil || h.baseURL == nil {
+		return errors.New("SkillHub is not configured")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("CatsCo token is unavailable")
+	}
+	payload, err := json.Marshal(map[string]string{"token": token})
+	if err != nil {
+		return errors.New("failed to encode SkillHub profile sync request")
+	}
+	target := *h.baseURL
+	target.Path = strings.TrimRight(target.Path, "/") + skillHubPublisherProfileSyncPath
+	target.RawQuery = ""
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(payload))
+	if err != nil {
+		return errors.New("failed to build SkillHub profile sync request")
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", "cats-company-skillhub-profile-sync/1.0")
+	response, err := h.client.Do(request)
+	if err != nil {
+		return errors.New("SkillHub is unavailable")
+	}
+	defer response.Body.Close()
+	body, err := readLimited(response.Body, 64<<10)
+	if err != nil {
+		return errors.New("failed to read SkillHub profile sync response")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("SkillHub profile sync returned status %d", response.StatusCode)
+	}
+	var result struct {
+		Synced bool `json:"synced"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil || !result.Synced {
+		return errors.New("SkillHub returned an invalid profile sync response")
+	}
+	return nil
 }
 
 // HandleSkills handles GET /api/skillhub/skills and forwards only catalogue query parameters.

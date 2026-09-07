@@ -1360,7 +1360,9 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
 
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Agent 列表'));
-    searchCatalogue('').catch(() => {});
+    api.syncSkillHubPublisherProfile()
+      .catch(() => {})
+      .finally(() => searchCatalogue('').catch(() => {}));
     loadLibraryLocalSkills().catch(() => {});
   }, [loadBots, loadLibraryLocalSkills, searchCatalogue]);
 

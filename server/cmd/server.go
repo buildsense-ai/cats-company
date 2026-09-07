@@ -369,6 +369,7 @@ func main() {
 		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
+	userHandler.SetSkillHubProfileSync(skillHubProxyHandler.SyncPublisherProfile)
 	botDefinitionHandler.SetSkillMetadataResolver(func(ctx context.Context, botUID int64, skills []types.BotSkillRef) (map[string]server.BotSkillDisplayMetadata, error) {
 		apiKey, err := db.GetBotAPIKey(botUID)
 		if err != nil {
@@ -908,6 +909,7 @@ func main() {
 	mux.HandleFunc("/api/agents/skill-versions", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkillHistory))
 	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
 	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
+	mux.HandleFunc("/api/skillhub/publisher-profile/sync", jwtAuthWithDB(skillHubProxyHandler.HandlePublisherProfileSync))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))

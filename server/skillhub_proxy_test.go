@@ -115,6 +115,60 @@ func TestSkillHubProxyForwardsCatalogueQuery(t *testing.T) {
 	}
 }
 
+func TestSkillHubPublisherProfileSyncForwardsOnlyTheCurrentCatsCoIdentity(t *testing.T) {
+	var gotBody map[string]string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != skillHubPublisherProfileSyncPath {
+			t.Fatalf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("CatsCo authorization header leaked to SkillHub: %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"synced":true}`))
+	}))
+	defer upstream.Close()
+
+	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{
+		Timeout: time.Second,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/skillhub/publisher-profile/sync", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer current-user-jwt")
+	rec := httptest.NewRecorder()
+	h.HandlePublisherProfileSync(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "{\"synced\":true}\n" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotBody["token"] != "current-user-jwt" || len(gotBody) != 1 {
+		t.Fatalf("sync body=%v", gotBody)
+	}
+}
+
+func TestSkillHubPublisherProfileSyncFailureIsSanitized(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `secret upstream detail`, http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{
+		Timeout: time.Second,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/skillhub/publisher-profile/sync", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer secret-user-jwt")
+	rec := httptest.NewRecorder()
+	h.HandlePublisherProfileSync(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret upstream detail") || strings.Contains(rec.Body.String(), "secret-user-jwt") {
+		t.Fatalf("upstream details leaked: %s", rec.Body.String())
+	}
+}
+
 func TestSkillHubProxyForwardsVersionAndEscapesSkillID(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -370,6 +370,9 @@ export const api = {
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 
+  syncSkillHubPublisherProfile: () =>
+    request('POST', '/api/skillhub/publisher-profile/sync', {}),
+
   getFriends: () => request('GET', '/api/friends'),
   getPendingRequests: (agentUid = '') => request('GET', `/api/friends/pending${agentUid ? `?agent_uid=${encodeURIComponent(agentUid)}` : ''}`),
   sendFriendRequest: (userId, message) =>

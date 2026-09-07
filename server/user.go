@@ -86,6 +86,16 @@ type UserHandler struct {
 	relayRegistrationReady   func(int64)
 	relayRegistrationDelays  []time.Duration
 	relayRegistrationTimeout time.Duration
+	skillHubProfileSync      func(context.Context, string) error
+}
+
+// SetSkillHubProfileSync keeps SkillHub's cached publisher display name aligned
+// with CatsCo after a profile change. Sync failures never roll back the CatsCo
+// profile update.
+func (h *UserHandler) SetSkillHubProfileSync(sync func(context.Context, string) error) {
+	if h != nil {
+		h.skillHubProfileSync = sync
+	}
 }
 
 func (h *UserHandler) SetRelayRegistrationReadyHook(hook func(int64)) {
@@ -610,6 +620,15 @@ func (h *UserHandler) HandleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	if err != nil || user == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load updated profile"})
 		return
+	}
+	if h.skillHubProfileSync != nil {
+		if token := extractToken(r); token != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if syncErr := h.skillHubProfileSync(ctx, token); syncErr != nil {
+				log.Printf("[skillhub] publisher profile sync failed for uid=%d: %v", uid, syncErr)
+			}
+			cancel()
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
