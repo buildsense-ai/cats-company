@@ -3389,6 +3389,43 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('textarea.v3-composer-input').disabled).toBe(false);
   });
 
+  it.each(['accepted', 'rejected'])('ignores a late %s stop result after switching topics', async (outcome) => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 50, from_uid: 1, type: 'text', content: '执行长任务', created_at: '2026-07-17T02:00:00Z' },
+        { id: 51, from_uid: 2, type: 'tool_use', content: '执行工具', created_at: '2026-07-17T02:00:01Z' },
+      ],
+    });
+    const pendingStop = deferred();
+    wsSendStreamCancel.mockReturnValueOnce(pendingStop.promise);
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } });
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="停止当前工作"]'));
+    });
+
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 60, from_uid: 1, type: 'text', content: '另一个任务', created_at: '2026-07-17T02:00:02Z' },
+        { id: 61, from_uid: 3, type: 'tool_use', content: '执行工具', created_at: '2026-07-17T02:00:03Z' },
+      ],
+    });
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => {
+      wsHandler({ info: { topic: 'p2p_1_3', what: 'kp', from: 'usr3' } });
+    });
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+    await act(async () => {
+      if (outcome === 'accepted') pendingStop.resolve(1);
+      else pendingStop.reject(new Error('old topic stop rejected'));
+      await flushPromises();
+    });
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('old topic stop rejected');
+  });
+
   it('does not let a group member stop an agent response requested by someone else', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       group: { id: 80, name: 'Agent Room', has_bot: true },
@@ -3529,6 +3566,7 @@ describe('MessagesView composer draft isolation', () => {
     const stopButton = container.querySelector('button[aria-label="停止当前工作"]');
     expect(stopButton).not.toBeNull();
     expect(stopButton.disabled).toBe(false);
+    expect(container.textContent).toContain('socket closed');
   });
 
   it('drops a stale stop state after the bot activity heartbeat expires', async () => {

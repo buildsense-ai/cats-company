@@ -1172,34 +1172,65 @@ export async function wsSendMessage(topicId, content, replyTo, mentions = []) {
   return null;
 }
 
-// Send a non-persistent cancel event to stop the active agent turn.
+// Send control input only, and wait for the server to accept the cancellation.
 export async function wsSendStreamCancel(topicId, targetBotUid = 0) {
+  if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+    throw new Error('实时连接已断开，停止指令未发送。请等待重连后再试。');
+  }
   const streamId = `cancel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const normalizedTargetBotUid = Number(targetBotUid);
-  if (wsConn && wsConn.readyState === WebSocket.OPEN) {
-    const id = nextMsgId();
-    sendWS({
-      pub: {
-        id,
-        topic: topicId,
-        type: 'stream_cancel',
-        msg_type: 'stream_cancel',
-        content: '',
-        metadata: {
-          stream_id: streamId,
-          stream_event: 'cancel',
-          control: 'interrupt',
-          ...(Number.isFinite(normalizedTargetBotUid) && normalizedTargetBotUid > 0
-            ? { target_bot_uid: normalizedTargetBotUid }
-            : {}),
-        },
-      },
+  const id = nextMsgId();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let removeHandler = () => {};
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      removeHandler();
+      if (error) reject(error);
+      else resolve(id);
+    };
+    const timer = setTimeout(() => {
+      finish(new Error('停止请求确认超时，尚未确认停止。请重试。'));
+    }, 10_000);
+    removeHandler = onWSMessage((message) => {
+      if (message?._type === 'ws_close' || message?._type === 'ws_auth_expired') {
+        finish(new Error('实时连接已断开，尚未确认停止。请等待重连后再试。'));
+        return;
+      }
+      if (message?.ctrl?.id !== id) return;
+      const status = Number(message.ctrl.code || 0);
+      if (status >= 200 && status < 300) finish();
+      else if (status >= 400) {
+        const error = new Error('停止请求被拒绝，请确认你有权停止当前任务后重试。');
+        error.status = status;
+        finish(error);
+      }
     });
-    return id;
-  }
-  // Fallback for old/offline transports: visible, but still understood by CatsCo.
-  await api.sendMessage(topicId, '停止');
-  return null;
+    try {
+      const sent = sendWS({
+        pub: {
+          id,
+          topic: topicId,
+          type: 'stream_cancel',
+          msg_type: 'stream_cancel',
+          content: '',
+          metadata: {
+            stream_id: streamId,
+            stream_event: 'cancel',
+            control: 'interrupt',
+            ...(Number.isFinite(normalizedTargetBotUid) && normalizedTargetBotUid > 0
+              ? { target_bot_uid: normalizedTargetBotUid }
+              : {}),
+          },
+        },
+      });
+      if (!sent) finish(new Error('实时连接已断开，停止指令未发送。请等待重连后再试。'));
+    } catch {
+      finish(new Error('停止指令发送失败，请等待连接恢复后重试。'));
+    }
+  });
 }
 
 // Send typing indicator
