@@ -419,20 +419,35 @@ export async function waitForSkillHubWorkspaceAfterSwitch({
 
 export function normalizeViewerSkills(response) {
   const values = Array.isArray(response) ? response : (response?.skills || []);
-  return values.map((skill) => ({
-    ...skill,
-    source: String(skill?.source || 'skillhub').trim().toLowerCase(),
-    skillId: String(skill?.skillId || skill?.skill_id || skill?.id || '').trim(),
-    version: String(skill?.version || '').trim(),
-    displayVersion: String(skill?.displayVersion || skill?.display_version || '').trim(),
-    revisionNumber: Number(skill?.revisionNumber || skill?.revision_number || 0),
-    displayName: String(skill?.displayName || skill?.display_name || skill?.name || '').trim(),
-    description: String(skill?.description || '').trim(),
-    lastChangedBy: String(skill?.lastChangedBy || skill?.last_changed_by || '').trim(),
-    lastChangedAt: String(skill?.lastChangedAt || skill?.last_changed_at || '').trim(),
-    author: String(skill?.author || skill?.publisher || '').trim(),
-    public: skill?.public ?? skill?.is_public ?? false,
-  })).filter((skill) => skill.skillId);
+  return values.map((skill) => {
+    const authorValue = skill?.author;
+    return {
+      ...skill,
+      source: String(skill?.source || 'skillhub').trim().toLowerCase(),
+      skillId: String(skill?.skillId || skill?.skill_id || skill?.id || '').trim(),
+      version: String(skill?.version || '').trim(),
+      displayVersion: String(skill?.displayVersion || skill?.display_version || '').trim(),
+      revisionNumber: Number(skill?.revisionNumber || skill?.revision_number || 0),
+      displayName: String(skill?.displayName || skill?.display_name || skill?.name || '').trim(),
+      description: String(skill?.description || '').trim(),
+      lastChangedBy: String(skill?.lastChangedBy || skill?.last_changed_by || '').trim(),
+      lastChangedAt: String(skill?.lastChangedAt || skill?.last_changed_at || '').trim(),
+      author: String(
+        (authorValue && typeof authorValue === 'object' ? authorValue.displayName || authorValue.display_name || authorValue.name : authorValue)
+        || skill?.publisher
+        || '',
+      ).trim(),
+      publisherDisplayName: String(
+        (authorValue && typeof authorValue === 'object' ? authorValue.displayName || authorValue.display_name : '')
+        || '',
+      ).trim(),
+      publisherUid: String(
+        (authorValue && typeof authorValue === 'object' ? authorValue.catsCoUid || authorValue.catscoUid || authorValue.cats_co_uid : '')
+        || '',
+      ).trim(),
+      public: skill?.public ?? skill?.is_public ?? false,
+    };
+  }).filter((skill) => skill.skillId);
 }
 
 export function normalizeSkillVersionHistory(response, { currentVersion = '', privateReference = false } = {}) {
@@ -443,8 +458,17 @@ export function normalizeSkillVersionHistory(response, { currentVersion = '', pr
       const version = String(item?.version || item?.latestVersion || item?.latest_version || '').trim();
       const revisionNumber = Number(item?.revisionNumber || item?.revision_number || 0);
       const authorValue = item?.author;
+      const publisherDisplayName = String(
+        (authorValue && typeof authorValue === 'object' ? authorValue.displayName || authorValue.display_name : '')
+        || '',
+      ).trim();
+      const publisherUid = String(
+        (authorValue && typeof authorValue === 'object' ? authorValue.catsCoUid || authorValue.catscoUid || authorValue.cats_co_uid : '')
+        || '',
+      ).trim();
       const author = String(
-        (authorValue && typeof authorValue === 'object' ? authorValue.name : authorValue)
+        publisherDisplayName
+        || (authorValue && typeof authorValue === 'object' ? authorValue.name : authorValue)
         || item?.publisher
         || item?.lastChangedBy
         || item?.last_changed_by
@@ -457,6 +481,8 @@ export function normalizeSkillVersionHistory(response, { currentVersion = '', pr
         revisionNumber: Number.isSafeInteger(revisionNumber) && revisionNumber > 0 ? revisionNumber : 0,
         displayName: String(item?.displayName || item?.display_name || item?.name || '').trim(),
         author,
+        publisherDisplayName,
+        publisherUid,
         lastChangedAt: String(item?.lastChangedAt || item?.last_changed_at || item?.publishedAt || item?.published_at || '').trim(),
         changeSource: String(item?.changeSource || item?.change_source || (privateReference ? '' : 'published')).trim(),
         current: item?.current === true || Boolean(version && exactCurrent && version === exactCurrent),

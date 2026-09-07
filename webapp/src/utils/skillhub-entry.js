@@ -2,33 +2,54 @@ export function normalizeSkillHubSkills(response) {
   const values = Array.isArray(response)
     ? response
     : (response?.skills || response?.items || response?.results || []);
-  return values.map((skill) => ({
-    ...skill,
-    skillId: String(skill?.skillId || skill?.skill_id || skill?.id || '').trim(),
-    displayName: String(
-      skill?.displayName
-      || skill?.display_name
-      || skill?.name
-      || skill?.skillId
-      || skill?.id
+  return values.map((skill) => {
+    const author = skill?.author;
+    const publisherDisplayName = String(
+      (author && typeof author === 'object' ? author.displayName || author.display_name : '')
       || '',
-    ).trim(),
-    description: String(skill?.description || '').trim(),
-    author: String(
-      skill?.author?.displayName
-      || skill?.author?.name
-      || skill?.author
-      || skill?.publisher
+    ).trim();
+    const publisherUid = String(
+      (author && typeof author === 'object' ? author.catsCoUid || author.catscoUid || author.cats_co_uid : '')
       || '',
-    ).trim(),
-    latestVersion: String(
-      skill?.latestVersion || skill?.latest_version || skill?.version || '',
-    ).trim(),
-    publishedAt: String(skill?.publishedAt || skill?.published_at || '').trim(),
-    contentHash: String(
-      skill?.contentHash || skill?.content_hash || skill?.sha256 || '',
-    ).trim().toLowerCase(),
-  })).filter((skill) => skill.skillId);
+    ).trim();
+    return {
+      ...skill,
+      skillId: String(skill?.skillId || skill?.skill_id || skill?.id || '').trim(),
+      displayName: String(
+        skill?.displayName
+        || skill?.display_name
+        || skill?.name
+        || skill?.skillId
+        || skill?.id
+        || '',
+      ).trim(),
+      description: String(skill?.description || '').trim(),
+      author: String(
+        publisherDisplayName
+        || (author && typeof author === 'object' ? author.name : author)
+        || skill?.publisher
+        || '',
+      ).trim(),
+      publisherDisplayName,
+      publisherUid,
+      latestVersion: String(
+        skill?.latestVersion || skill?.latest_version || skill?.version || '',
+      ).trim(),
+      publishedAt: String(skill?.publishedAt || skill?.published_at || '').trim(),
+      contentHash: String(
+        skill?.contentHash || skill?.content_hash || skill?.sha256 || '',
+      ).trim().toLowerCase(),
+    };
+  }).filter((skill) => skill.skillId);
+}
+
+export function formatSkillHubPublisher(skill, fallback = '发布者待确认') {
+  const displayName = String(skill?.publisherDisplayName || skill?.author || '').trim();
+  const uid = String(skill?.publisherUid || '').trim();
+  if (displayName && uid) return `${displayName} · UID ${uid}`;
+  if (displayName) return displayName;
+  if (uid) return `UID ${uid}`;
+  return fallback;
 }
 
 export function normalizeLocalSkillHubSkills(response) {
