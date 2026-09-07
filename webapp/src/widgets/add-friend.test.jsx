@@ -127,6 +127,89 @@ describe('AddFriend search mode', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('focuses the search, isolates the background, wraps Tab and restores the opener', async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    await mount({ onClose });
+    const input = container.querySelector('.oc-friend-search-input');
+    const first = container.querySelector('.oc-modal-close');
+    const last = container.querySelector('textarea');
+    expect(document.activeElement).toBe(input);
+    expect(opener.hasAttribute('inert')).toBe(true);
+    last.focus();
+    last.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(first);
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(last);
+    opener.focus();
+    expect(document.activeElement).toBe(input);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+    expect(onClose).not.toHaveBeenCalled();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(onClose).toHaveBeenCalledOnce();
+    await act(async () => root.render(null));
+    expect(opener.hasAttribute('inert')).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('only shows empty results after a completed search and prevents duplicate pending searches', async () => {
+    let resolve;
+    api.searchUsers.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    await mount();
+    const input = container.querySelector('.oc-friend-search-input');
+    await act(async () => Simulate.change(input, { target: { value: '没有此人' } }));
+    expect(container.textContent).not.toContain('没有找到匹配的好友');
+    const submit = container.querySelector('.oc-friend-search-submit');
+    await act(async () => {
+      Simulate.click(submit);
+      Simulate.keyDown(input, { key: 'Enter' });
+    });
+    expect(api.searchUsers).toHaveBeenCalledOnce();
+    expect(submit.disabled).toBe(true);
+    await act(async () => resolve({ users: [] }));
+    expect(submit.disabled).toBe(false);
+    expect(container.textContent).toContain('没有找到匹配的好友');
+  });
+
+  it('ignores earlier query results and errors after the mode changes', async () => {
+    let resolveOld;
+    let rejectNew;
+    api.searchUsers
+      .mockImplementationOnce(() => new Promise((done) => { resolveOld = done; }))
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectNew = reject; }));
+    await mount();
+    const input = container.querySelector('.oc-friend-search-input');
+    const submit = container.querySelector('.oc-friend-search-submit');
+    await act(async () => Simulate.change(input, { target: { value: '旧查询' } }));
+    await act(async () => Simulate.click(submit));
+    await act(async () => Simulate.change(input, { target: { value: '新查询' } }));
+    await act(async () => Simulate.click(submit));
+    await act(async () => resolveOld({ users: [{ id: 1, display_name: '过期结果' }] }));
+    expect(container.textContent).not.toContain('过期结果');
+    expect(submit.disabled).toBe(true);
+    await act(async () => Simulate.click(container.querySelector('.oc-friend-search-mode-trigger')));
+    const uid = [...document.querySelectorAll('.oc-friend-search-mode-option')].find((node) => node.textContent === 'UID');
+    await act(async () => Simulate.click(uid));
+    await act(async () => rejectNew(new Error('过期错误')));
+    expect(container.textContent).not.toContain('过期错误');
+    expect(submit.disabled).toBe(false);
+    expect(container.textContent).not.toContain('没有找到匹配的好友');
+  });
+
+  it('shows failed searches as an error rather than an empty result and permits retry', async () => {
+    api.searchUsers.mockRejectedValueOnce(new Error('网络暂不可用'));
+    await mount();
+    await act(async () => Simulate.change(container.querySelector('.oc-friend-search-input'), { target: { value: '好友' } }));
+    const submit = container.querySelector('.oc-friend-search-submit');
+    await act(async () => Simulate.click(submit));
+    expect(container.querySelector('[role="alert"]').textContent).toBe('网络暂不可用');
+    expect(container.textContent).not.toContain('没有找到匹配的好友');
+    expect(submit.disabled).toBe(false);
+  });
+
   it('shows a localized error when a bot invite code is invalid or expired', async () => {
     api.redeemBotInviteCode.mockRejectedValue(
       new Error('bot invite code is invalid or expired'),

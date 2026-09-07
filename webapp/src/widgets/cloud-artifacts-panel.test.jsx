@@ -882,6 +882,61 @@ test('friend tag editor exposes only direct tag actions', async () => {
   expect(editor.querySelector('.cloud-artifact-tag-done')?.textContent).toBe('完成');
   });
 
+  test('shows unpublish errors inside the confirmation and keeps retry available', async () => {
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [activeArtifact], viewer_relation: 'owner' });
+    api.deleteCloudArtifact.mockRejectedValueOnce(new Error('服务暂时不可用，请重试'));
+    await renderPanel();
+    const trigger = container.querySelector('button[aria-label="下架 课堂小游戏"]');
+    await act(async () => { trigger.focus(); trigger.click(); });
+    const dialog = container.querySelector('[aria-label="确认下架成果"]');
+    const cancel = dialog.querySelector('button');
+    expect(document.activeElement).toBe(cancel);
+    await act(async () => { dialog.querySelector('.danger').click(); });
+    await flush();
+    expect(dialog.querySelector('[role="alert"]').textContent).toBe('服务暂时不可用，请重试');
+    expect(dialog.querySelector('.danger').disabled).toBe(false);
+    expect(container.querySelector('.cloud-artifacts-error')).toBeNull();
+    await act(async () => { cancel.click(); });
+    expect(document.activeElement).toBe(trigger);
+    expect(container.querySelector('[aria-label="确认下架成果"]')).toBeNull();
+  });
+
+  test('keeps tag-delete errors in its focused confirmation instead of behind it', async () => {
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [{ ...activeArtifact, tags: ['素材'] }], viewer_relation: 'owner' });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '素材', count: 1 }] });
+    api.deleteCloudArtifactTagEverywhere.mockRejectedValueOnce(new Error('标签删除失败'));
+    await renderPanel();
+    const filters = await openFilters();
+    await act(async () => { filters.querySelector('button[aria-label="删除标签 素材"]').click(); });
+    const dialog = container.querySelector('[aria-label="确认删除标签"]');
+    await act(async () => { dialog.querySelector('.danger').click(); });
+    await flush();
+    expect(dialog.querySelector('[role="alert"]').textContent).toBe('标签删除失败');
+    expect(dialog.querySelector('.danger').disabled).toBe(false);
+    await act(async () => {
+      dialog.querySelector('.danger').focus();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(dialog.querySelector('button'));
+  });
+
+  test('returns focus to the stable filter trigger after cancelling tag deletion', async () => {
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [{ ...activeArtifact, tags: ['素材'] }], viewer_relation: 'owner' });
+    api.getCloudArtifactTags.mockResolvedValue({ tags: [{ tag: '素材', count: 1 }] });
+    await renderPanel();
+    const trigger = container.querySelector('.cloud-artifact-filter-trigger');
+    const filters = await openFilters();
+    const deleteButton = filters.querySelector('button[aria-label="删除标签 素材"]');
+    await act(async () => { deleteButton.focus(); deleteButton.click(); });
+    const dialog = container.querySelector('[aria-label="确认删除标签"]');
+    expect(deleteButton.isConnected).toBe(false);
+    expect(document.activeElement).toBe(dialog.querySelector('button'));
+    await act(async () => { dialog.querySelector('button').click(); });
+    expect(container.querySelector('[aria-label="确认删除标签"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(api.deleteCloudArtifactTagEverywhere).not.toHaveBeenCalled();
+  });
+
   test('owner deletes a tag from the tag system', async () => {
     api.getCloudArtifacts.mockResolvedValue({
       artifacts: [

@@ -1606,10 +1606,14 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         timeoutMs: 90_000,
       }), { toolName: SKILLHUB_DEVICE_TOOLS.share, botUID: requestedBotUID });
       if (shared?.requiresConfirmation || shared?.requires_confirmation) {
-        const confirmed = globalThis.confirm?.(
-          `SkillHub 已存在“${localSkill.name}”，是否将当前本地内容发布为新版本？`,
-        );
+        const confirmed = await feedback.confirm({
+          title: `发布“${localSkill.name}”的新版本？`,
+          message: 'SkillHub 已存在同名能力。确认后会将当前本地内容发布为新版本，并更新当前 Agent 的能力引用。',
+          confirmLabel: '发布新版本',
+          cancelLabel: '取消',
+        });
         if (!confirmed) return;
+        if (requestedBotUID !== selectedBotUIDRef.current) return;
         shared = assertSkillHubDeviceResult(await requestSkillHubDeviceTool({
           deviceId: requestedDeviceID,
           ownerUserId: user?.uid,

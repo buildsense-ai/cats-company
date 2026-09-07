@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { UserPlus, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
 import CustomSelect from './custom-select';
 import FriendRequest from './friend-request';
+import useDialogBehavior from '../utils/use-dialog-behavior';
 
 const FRIEND_SEARCH_MODES = [
   { value: 'name', label: '名字' },
@@ -52,13 +53,20 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
   const [pending, setPending] = useState([]);
   const [sent, setSent] = useState(new Set());
   const [loading, setLoading] = useState(false);
+  const [searchStatus, setSearchStatus] = useState('idle');
+  const searchRequestRef = useRef(0);
+  const searchingRef = useRef(false);
+  const dialogRef = useRef(null);
+  const searchInputRef = useRef(null);
   const [pendingLoading, setPendingLoading] = useState(true);
   const [error, setError] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [redeemingInvite, setRedeemingInvite] = useState(false);
+  useDialogBehavior(dialogRef, { onClose, initialFocusRef: searchInputRef });
 
   useEffect(() => {
     loadPending();
+    return () => { searchRequestRef.current += 1; };
   }, []);
 
   const loadPending = async () => {
@@ -74,6 +82,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
   };
 
   const handleSearch = async () => {
+    if (searchingRef.current) return;
     const trimmedQuery = query.trim();
     if (searchMode === 'uid' && !/^\d+$/.test(trimmedQuery)) {
       setError('请输入数字 UID');
@@ -84,16 +93,27 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
       return;
     }
 
+    const requestId = ++searchRequestRef.current;
+    searchingRef.current = true;
     setLoading(true);
+    setSearchStatus('loading');
+    setResults([]);
     setError('');
     try {
       const res = await api.searchUsers(trimmedQuery, searchMode);
+      if (requestId !== searchRequestRef.current) return;
       setResults(res.users || []);
+      setSearchStatus('complete');
     } catch (e) {
+      if (requestId !== searchRequestRef.current) return;
       console.error('search:', e);
       setError(e.message || t('error_server'));
+      setSearchStatus('error');
     } finally {
-      setLoading(false);
+      if (requestId === searchRequestRef.current) {
+        searchingRef.current = false;
+        setLoading(false);
+      }
     }
   };
 
@@ -145,15 +165,24 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
     }
   };
 
-  const handleSearchModeChange = (nextMode) => {
-    setSearchMode(nextMode);
+  const resetSearch = () => {
+    searchRequestRef.current += 1;
+    searchingRef.current = false;
+    setLoading(false);
+    setSearchStatus('idle');
     setResults([]);
     setError('');
+  };
+  const handleSearchModeChange = (nextMode) => {
+    resetSearch();
+    setSearchMode(nextMode);
   };
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="oc-modal oc-collaboration-modal oc-friend-manager-dialog cc-secondary-interface"
         role="dialog"
         aria-modal="true"
@@ -196,21 +225,21 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
             <div className="oc-friend-search-row">
               <div className="oc-friend-search-control">
                 <input
-                  autoFocus
+                  ref={searchInputRef}
                   className="oc-friend-search-input"
                   aria-label={searchMode === 'uid' ? '好友 UID' : '好友名称'}
                   name="friend-search"
                   placeholder={t('contacts_search_placeholder')}
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  onChange={(e) => { resetSearch(); setQuery(e.target.value); }}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229 && handleSearch()}
                 />
                 <FriendSearchModeSelect
                   value={searchMode}
                   onValueChange={handleSearchModeChange}
                 />
               </div>
-              <button type="button" className="oc-btn oc-btn-primary oc-friend-search-submit" onClick={handleSearch}>
+              <button type="button" className="oc-btn oc-btn-primary oc-friend-search-submit" onClick={handleSearch} disabled={loading} aria-busy={loading}>
                 {loading ? t('loading') : '搜索'}
               </button>
             </div>
@@ -220,7 +249,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
               <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={3} />
             </label>
 
-            {error && <div className="oc-form-error">{error}</div>}
+            {error && <div className="oc-form-error" role="alert">{error}</div>}
 
             {results.length > 0 && (
               <div className="oc-collaboration-list oc-friend-search-results">
@@ -249,8 +278,8 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
               </div>
             )}
 
-            {results.length === 0 && canShowEmptyState(query, searchMode) && !loading && (
-              <div className="oc-collaboration-empty">{t('no_data')}</div>
+            {results.length === 0 && searchStatus === 'complete' && (
+              <div className="oc-collaboration-empty" role="status">没有找到匹配的好友，试试其他名字或 UID</div>
             )}
           </section>
 
@@ -289,12 +318,6 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
 function defaultFriendMessage(user) {
   const name = user?.display_name || user?.username || '';
   return name ? t('friend_request_default_msg', { name }) : '你好，我想添加你为好友';
-}
-
-function canShowEmptyState(query, searchMode) {
-  const trimmedQuery = query.trim();
-  if (searchMode === 'uid') return /^\d+$/.test(trimmedQuery);
-  return trimmedQuery.length >= 2;
 }
 
 function userIdentity(user) {

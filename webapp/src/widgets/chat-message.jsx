@@ -1440,7 +1440,10 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
     !renderableTable && hasPlainTextTableLikeBlock(text)
   ), [renderableTable, text]);
   const plainTextParagraphs = useMemo(() => (
-    plainText.split(/\r?\n(?:[\t ]*\r?\n)+/)
+    // Presentation-only normalization: CSS owns the first-line indent.
+    // Preserve line breaks and whitespace within each paragraph.
+    plainText.split(/\r?\n(?:[\t \u3000]*\r?\n)+/)
+      .map((paragraph) => paragraph.replace(/^[\t \u3000]+/, ''))
   ), [plainText]);
 
   const markdownHtml = useMemo(() => {
@@ -1498,7 +1501,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
         <>
           <div className="oc-plain-text-paragraphs">
             {plainTextParagraphs.map((paragraph, index) => (
-              <p className="oc-plain-text-paragraph" key={index}>
+              <p className={`oc-plain-text-paragraph${index === 0 ? ' is-first' : ''}`} key={index}>
                 {renderGroupText(paragraph, `group-paragraph-${index}`)}
               </p>
             ))}
@@ -1510,8 +1513,8 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
 
     return (
       <>
-        <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-          {renderGroupText(plainText)}
+        <span className="oc-plain-text-paragraph is-first" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+          {renderGroupText(plainTextParagraphs[0])}
         </span>
         <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
       </>
@@ -1523,7 +1526,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
       <>
         <div className="oc-plain-text-paragraphs">
           {plainTextParagraphs.map((paragraph, index) => (
-            <p className="oc-plain-text-paragraph" key={index}>{paragraph}</p>
+            <p className={`oc-plain-text-paragraph${index === 0 ? ' is-first' : ''}`} key={index}>{paragraph}</p>
           ))}
         </div>
         <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
@@ -1533,7 +1536,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
 
   return (
     <>
-      <span style={{ whiteSpace: 'pre-wrap' }}>{removeKnownArtifactURLs(text, matchedArtifacts)}</span>
+      <span className="oc-plain-text-paragraph is-first" style={{ whiteSpace: 'pre-wrap' }}>{plainTextParagraphs[0]}</span>
       <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
     </>
   );

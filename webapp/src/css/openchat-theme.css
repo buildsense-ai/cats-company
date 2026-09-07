@@ -2438,13 +2438,13 @@ body {
   padding: 20px;
   border: 1px solid var(--v3-border);
   border-radius: 8px;
-  background: #202020;
+  background: var(--cc-history-panel-bg);
   box-shadow: 0 20px 55px rgba(0, 0, 0, 0.42);
 }
 
 .cloud-artifact-confirm h4 {
   margin: 0;
-  color: var(--v3-text-main);
+  color: var(--cc-text);
   font-size: 16px;
   letter-spacing: 0;
 }
@@ -2475,14 +2475,24 @@ body {
 
 .cloud-artifact-confirm-actions button.danger {
   border-color: transparent;
-  color: #171717;
-  background: #f3f3f3;
+  color: var(--cc-danger-text);
+  background: color-mix(in srgb, var(--cc-danger-text) 10%, var(--cc-history-panel-bg));
 }
 
 .cloud-artifact-confirm-actions button.danger:hover:not(:disabled) {
   border-color: transparent;
-  color: #171717;
-  background: #fff;
+  color: var(--cc-danger-text);
+  background: color-mix(in srgb, var(--cc-danger-text) 17%, var(--cc-history-panel-bg));
+}
+
+.cloud-artifact-confirm-actions button:not(.danger):hover:not(:disabled) {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.cloud-artifact-confirm .cloud-artifact-confirm-error {
+  margin: 0 0 16px;
+  color: var(--cc-danger-text);
 }
 
 .cloud-artifact-confirm-actions button:disabled {
@@ -7858,6 +7868,31 @@ button.catsco-download-action:disabled {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.oc-rich-image-gallery-status {
+  position: absolute;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: max-content;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 8px 12px;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-tooltip-bg);
+  color: var(--cc-tooltip-text);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.oc-plain-text-paragraph.is-first {
+  display: block;
+  text-indent: 2em;
+}
 .oc-markdown-table {
   display: block;
   max-width: 100%;
@@ -8110,8 +8145,8 @@ button.catsco-download-action:disabled {
 
 /* V3 Working Process (AI Tools) */
 .v3-working-process {
-  margin-top: 8px;
-  margin-bottom: 8px;
+  margin-top: 4px;
+  margin-bottom: 4px;
   max-width: 100%;
   min-width: 0;
 }
@@ -8129,8 +8164,8 @@ button.catsco-download-action:disabled {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   cursor: pointer;
-  padding: 4px 0;
-  margin-bottom: 4px;
+  padding: 2px 0;
+  margin-bottom: 2px;
 }
 
 .v3-working-status {

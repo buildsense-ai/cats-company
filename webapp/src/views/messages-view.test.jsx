@@ -18,7 +18,9 @@ vi.mock('../widgets/chat-message', () => ({
   __esModule: true,
   downloadableMediaURL: (url) => `${url}${url.includes('?') ? '&' : '?'}download=1`,
   default: function MockChatMessage(props) {
+    const [workingExpanded, setWorkingExpanded] = React.useState(false);
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
+    const imageBlock = props.message?.content_blocks?.find?.((block) => block.type === 'image');
     const textBlocks = props.message?.content_blocks?.filter?.((block) => block.type === 'text') || [];
     return (
       <div
@@ -29,6 +31,7 @@ vi.mock('../widgets/chat-message', () => ({
         data-consecutive={String(Boolean(props.isConsecutive))}
         data-known-artifact-count={String(props.knownArtifacts?.length || 0)}
         data-working-only={String(Boolean(props.workingOnly))}
+        data-working-expanded={String(workingExpanded)}
         data-working-complete={String(Boolean(props.workingComplete))}
         data-working-count={String(props.workingMessages?.length || 0)}
         data-working-message-ids={(props.workingMessages || []).map((message) => message.id).join(',')}
@@ -40,6 +43,8 @@ vi.mock('../widgets/chat-message', () => ({
         data-sender-avatar={props.senderAvatarUrl || ''}
         data-sender-is-bot={String(Boolean(props.senderIsBot))}
       >
+        {props.workingOnly && <button className="mock-toggle-working" onClick={() => setWorkingExpanded(!workingExpanded)} aria-label="展开执行步骤" />}
+        {imageBlock && <button className="mock-open-image" onClick={(event) => props.onOpenImage?.('', event.currentTarget, imageBlock.payload)} aria-label="预览消息图片" />}
         {props.onReply && (
           <button
             type="button"
@@ -3352,7 +3357,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => {
       typeDraft(textarea, '再补充一个条件');
     });
-    expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
+    expect(container.querySelector('button.v3-stop-button[aria-label="停止当前工作"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
 
     await act(async () => {
@@ -6608,6 +6613,132 @@ describe('MessagesView composer draft isolation', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15000 }),
     );
     expect(container.querySelector('[data-message-content="older"]')).not.toBeNull();
+  });
+
+  async function mountTallHistory(messages, hasMore = true) {
+    const initial = deferred();
+    api.getMessages.mockReturnValueOnce(initial.promise);
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperties(timeline, {
+      scrollHeight: { configurable: true, value: 2000 },
+      clientHeight: { configurable: true, value: 500 },
+    });
+    timeline.scrollTop = 1500;
+    await act(async () => {
+      initial.resolve({ messages, has_more: hasMore, next_before_id: 100 });
+      await flushPromises();
+    });
+    api.getMessages.mockClear();
+    return timeline;
+  }
+
+  const galleryMessage = (id) => ({ id, seq_id: id, from_uid: 2, type: 'image',
+    content_blocks: [{ type: 'image', payload: { url: `/image-${id}.png`, name: `image-${id}.png` } }] });
+
+  it('preserves expanded execution steps and message DOM when older history is prepended', async () => {
+    const timeline = await mountTallHistory([
+      { id: 100, from_uid: 1, type: 'text', content: 'newer question' },
+      { id: 101, from_uid: 2, type: 'thinking', content: 'work already inspected' },
+      { id: 102, from_uid: 2, type: 'text', content: 'finished answer' },
+    ]);
+    const working = container.querySelector('[data-working-only="true"]');
+    const answer = container.querySelector('[data-message-id="102"]');
+    await act(async () => Simulate.click(working.querySelector('.mock-toggle-working')));
+    expect(working.dataset.workingExpanded).toBe('true');
+    api.getMessages.mockResolvedValueOnce({ messages: [{ id: 99, from_uid: 1, type: 'text', content: 'older question' }], has_more: false });
+    await act(async () => {
+      timeline.scrollTop = 0;
+      Simulate.scroll(timeline);
+      await flushPromises();
+    });
+    expect(container.querySelector('[data-message-id="99"]')).not.toBeNull();
+    expect(container.querySelector('[data-working-only="true"]')).toBe(working);
+    expect(working.dataset.workingExpanded).toBe('true');
+    expect(container.querySelector('[data-message-id="102"]')).toBe(answer);
+  });
+
+  it('opens an image without fetching history, then pages only the gallery at its previous boundary', async () => {
+    await mountTallHistory([galleryMessage(100), galleryMessage(101)]);
+    await act(async () => Simulate.click(container.querySelector('.mock-open-image')));
+    expect(api.getMessages).not.toHaveBeenCalled();
+    api.getMessages.mockResolvedValueOnce({ messages: [galleryMessage(90)], has_more: true, next_before_id: 90 });
+    await act(async () => {
+      Simulate.click(document.querySelector('[aria-label="上一张图片"]'));
+      await flushPromises();
+    });
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('.oc-rich-image-preview-media').getAttribute('src')).toBe('/image-90.png');
+    expect(container.querySelector('[data-message-id="90"]')).toBeNull();
+    await act(async () => Simulate.click(document.querySelector('[aria-label="下一张图片"]')));
+    expect(document.querySelector('.oc-rich-image-preview-media').getAttribute('src')).toBe('/image-100.png');
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the working group identity when an older page extends the same execution group', async () => {
+    const timeline = await mountTallHistory([
+      { id: 100, from_uid: 2, type: 'thinking', content: 'later part of the same work' },
+      { id: 101, from_uid: 2, type: 'text', content: 'finished answer' },
+    ]);
+    const working = container.querySelector('[data-working-only="true"]');
+    await act(async () => Simulate.click(working.querySelector('.mock-toggle-working')));
+    api.getMessages.mockResolvedValueOnce({ messages: [{ id: 99, from_uid: 2, type: 'thinking', content: 'earlier step' }], has_more: false });
+    await act(async () => { timeline.scrollTop = 0; Simulate.scroll(timeline); await flushPromises(); });
+    expect(container.querySelector('[data-working-only="true"]')).toBe(working);
+    expect(working.dataset.workingExpanded).toBe('true');
+    expect(working.dataset.workingMessageIds).toBe('99,100');
+  });
+
+  it.each(['close', 'topic'])('cancels gallery history on %s and ignores a late response', async (action) => {
+    await mountTallHistory([galleryMessage(100)]);
+    await act(async () => Simulate.click(container.querySelector('.mock-open-image')));
+    const pending = deferred();
+    api.getMessages.mockReturnValueOnce(pending.promise);
+    await act(async () => Simulate.click(document.querySelector('[aria-label="上一张图片"]')));
+    const signal = api.getMessages.mock.calls[0][5].signal;
+    expect(signal.aborted).toBe(false);
+    if (action === 'close') {
+      await act(async () => Simulate.click(document.querySelector('[aria-label="关闭图片预览"]')));
+    } else {
+      await mountTopic(root, 'p2p_1_3');
+    }
+    expect(signal.aborted).toBe(true);
+    await act(async () => { pending.resolve({ messages: [galleryMessage(90)], has_more: true, next_before_id: 90 }); await flushPromises(); });
+    expect(document.querySelector('.oc-rich-image-gallery-preview')).toBeNull();
+    expect(container.querySelector('[data-message-id="90"]')).toBeNull();
+  });
+
+  it('does not steal gallery navigation when an older-page response arrives later', async () => {
+    await mountTallHistory([galleryMessage(100), galleryMessage(101)]);
+    await act(async () => Simulate.click(container.querySelector('.mock-open-image')));
+    const pending = deferred();
+    api.getMessages.mockReturnValueOnce(pending.promise);
+    await act(async () => Simulate.click(document.querySelector('[aria-label="上一张图片"]')));
+    await act(async () => Simulate.click(document.querySelector('[aria-label="下一张图片"]')));
+    expect(document.querySelector('.oc-rich-image-preview-media').getAttribute('src')).toBe('/image-101.png');
+    await act(async () => { pending.resolve({ messages: [galleryMessage(90)], has_more: false }); await flushPromises(); });
+    expect(document.querySelector('.oc-rich-image-preview-media').getAttribute('src')).toBe('/image-101.png');
+  });
+
+  it('does not scan another gallery page automatically when a page has no images', async () => {
+    await mountTallHistory([galleryMessage(100)]);
+    await act(async () => Simulate.click(container.querySelector('.mock-open-image')));
+    api.getMessages.mockResolvedValueOnce({ messages: [{ id: 90, from_uid: 2, type: 'text', content: 'no image' }], has_more: true, next_before_id: 90 });
+    await act(async () => { Simulate.click(document.querySelector('[aria-label="上一张图片"]')); await flushPromises(); });
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('.oc-rich-image-gallery-status').textContent).toContain('可再次点击上一张');
+    expect(container.querySelector('[data-message-id="90"]')).toBeNull();
+  });
+
+  it('updates working visibility in the active conversation on local and cross-tab preference changes', async () => {
+    await mountTallHistory([{ id: 100, from_uid: 1, type: 'text', content: 'question' },
+      { id: 101, from_uid: 2, type: 'thinking', content: 'thinking' }], false);
+    expect(container.querySelector('[data-working-only="true"]')).not.toBeNull();
+    await act(async () => { localStorage.setItem('cc_show_thinking', 'false'); window.dispatchEvent(new Event('cc:show-thinking-changed')); });
+    expect(container.querySelector('[data-working-only="true"]')).toBeNull();
+    await act(async () => { localStorage.setItem('cc_show_thinking', 'true'); window.dispatchEvent(new StorageEvent('storage', { key: 'cc_show_thinking', newValue: 'true' })); });
+    expect(container.querySelector('[data-working-only="true"]')).not.toBeNull();
+    expect(api.getMessages).not.toHaveBeenCalled();
   });
 
   it('shows a specific retry state when history loading times out', async () => {

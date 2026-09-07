@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq } from '../api';
@@ -32,6 +32,7 @@ import {
   writeComposerPhoneUploadSession,
 } from '../utils/composer-draft-storage';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
+import { useShowThinkingPreference } from '../utils/show-thinking-preference';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
 import {
@@ -241,6 +242,49 @@ function imageGalleryItemId(message, blockIndex, payload) {
   const src = payload?.url || payload?.thumbnail || '';
   if (!src) return '';
   return `${message?.id || message?.seq_id || 'message'}:${blockIndex}:${src}`;
+}
+
+function imageGalleryItems(messages) {
+  const items = [];
+  (messages || []).forEach((message) => {
+    const blocks = contentBlocksFromMessage(message);
+    const structured = blocks.length === 0 ? parseStructuredMessageContent(message?.content) : null;
+    const imageBlocks = structured?.type === 'image' ? [structured] : blocks;
+    imageBlocks.forEach((block, blockIndex) => {
+      if (block?.type !== 'image' || !block.payload) return;
+      const id = imageGalleryItemId(message, blockIndex, block.payload);
+      if (id) items.push({ id, payload: block.payload });
+    });
+  });
+  return items;
+}
+
+// Persisted and streaming messages have identities independent of their list position.
+// The object fallback is only for unsaved messages with no transport identity.
+const anonymousTimelineKeys = new WeakMap();
+let nextAnonymousTimelineKey = 0;
+export function timelineMessageKey(message) {
+  const identity = message?.id ?? message?.seq_id ?? message?.seq ?? message?.client_msg_id ?? message?._stream_id;
+  if (identity != null) return String(identity);
+  if (message?.created_at) return `${messageSenderIdentity(message)}:${message.created_at}:${message.type || message.msg_type || ''}`;
+  if (!message || typeof message !== 'object') return 'empty';
+  if (!anonymousTimelineKeys.has(message)) anonymousTimelineKeys.set(message, `local-${++nextAnonymousTimelineKey}`);
+  return anonymousTimelineKeys.get(message);
+}
+
+function retainTimelineGroupKeys(groups, previousGroups) {
+  const previousKeyByMessage = new Map();
+  const memberKeys = (group) => (group.type === 'working' ? group.messages : group.sourceMessages || [group.message])
+    .map((message) => `${group.type}:${timelineMessageKey(message)}`);
+  previousGroups.forEach((group) => memberKeys(group).forEach((key) => previousKeyByMessage.set(key, group.renderKey)));
+  const used = new Set();
+  return groups.map((group) => {
+    const keys = memberKeys(group);
+    const retained = keys.map((key) => previousKeyByMessage.get(key)).find((key) => key && !used.has(key));
+    const renderKey = retained || keys.find((key) => !used.has(key));
+    used.add(renderKey);
+    return { ...group, renderKey };
+  });
 }
 
 function structuredMentionToken(selection) {
@@ -457,6 +501,10 @@ export default function MessagesView({
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const [previewImageId, setPreviewImageId] = useState('');
+  const [olderGalleryItems, setOlderGalleryItems] = useState([]);
+  const [galleryHasMore, setGalleryHasMore] = useState(false);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryStatus, setGalleryStatus] = useState('');
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
   const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
@@ -499,10 +547,7 @@ export default function MessagesView({
   const [questionIndexLoading, setQuestionIndexLoading] = useState(false);
   const [questionIndexHasMore, setQuestionIndexHasMore] = useState(false);
   const [questionIndexLimitReached, setQuestionIndexLimitReached] = useState(false);
-  const [showThinking, setShowThinking] = useState(() => {
-    const saved = readStorageValue('cc_show_thinking');
-    return saved === null ? true : saved === 'true';
-  });
+  const showThinking = useShowThinkingPreference();
   const [conversationShareMode, setConversationShareMode] = useState(false);
   const [conversationShareSelectedKeys, setConversationShareSelectedKeys] = useState([]);
   const [conversationSharePreviewOpen, setConversationSharePreviewOpen] = useState(false);
@@ -514,28 +559,9 @@ export default function MessagesView({
   const [conversationShareManualSaveAvailable, setConversationShareManualSaveAvailable] = useState(false);
   const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
   const imageGallery = useMemo(() => {
-    const result = [];
-    (messages || []).forEach((message, messageIndex) => {
-      const blocks = contentBlocksFromMessage(message);
-      blocks.forEach((block, blockIndex) => {
-        if (block?.type !== 'image' || !block?.payload) return;
-        const payload = block.payload;
-        const src = payload.url || payload.thumbnail;
-        if (!src) return;
-        const id = imageGalleryItemId(message, blockIndex, payload) || `${message.id || message.seq_id || `message-${messageIndex}`}:${blockIndex}:${src}`;
-        result.push({ id, payload });
-      });
-      if (blocks.length === 0) {
-        const structured = parseStructuredMessageContent(message?.content);
-        if (structured?.type === 'image' && structured.payload) {
-          const payload = structured.payload;
-          const src = payload.url || payload.thumbnail;
-          if (src) result.push({ id: imageGalleryItemId(message, 0, payload), payload });
-        }
-      }
-    });
-    return result;
-  }, [messages]);
+    return Array.from(new Map([...olderGalleryItems, ...imageGalleryItems(messages)]
+      .map((item) => [item.id, item])).values());
+  }, [messages, olderGalleryItems]);
   const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const previewImageTriggerRef = useRef(null);
   const chatColumnRef = useRef(null);
@@ -572,7 +598,8 @@ export default function MessagesView({
   const historyLoadingRef = useRef(false);
   const historyAbortControllerRef = useRef(null);
   const olderHistoryAbortControllerRef = useRef(null);
-  const galleryHistoryLoadingRef = useRef(false);
+  const galleryAbortControllerRef = useRef(null);
+  const galleryCursorRef = useRef({ offset: 0, beforeId: 0, hasMore: false });
   const autoHistoryPageCountRef = useRef(0);
   const groupMembersRequestRef = useRef(0);
   const peerProfileRequestRef = useRef(0);
@@ -585,6 +612,7 @@ export default function MessagesView({
     pending: new Map(),
   });
   const historyCacheRef = useRef(new Map());
+  const committedTimelineGroupsRef = useRef({ topic: '', groups: [] });
   const groupProfileCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
@@ -1213,6 +1241,13 @@ export default function MessagesView({
     clearChatAttachmentDrag();
     historyAbortControllerRef.current?.abort();
     olderHistoryAbortControllerRef.current?.abort();
+    galleryAbortControllerRef.current?.abort();
+    galleryAbortControllerRef.current = null;
+    setPreviewImageId('');
+    setOlderGalleryItems([]);
+    setGalleryHasMore(false);
+    setGalleryLoading(false);
+    setGalleryStatus('');
     questionIndexAbortControllerRef.current?.abort();
     questionJumpAbortControllerRef.current?.abort();
     groupMembersRequestRef.current += 1;
@@ -1304,6 +1339,7 @@ export default function MessagesView({
     return () => {
       historyAbortControllerRef.current?.abort();
       olderHistoryAbortControllerRef.current?.abort();
+      galleryAbortControllerRef.current?.abort();
       questionIndexAbortControllerRef.current?.abort();
       questionJumpAbortControllerRef.current?.abort();
     };
@@ -1888,21 +1924,44 @@ export default function MessagesView({
     }
   }, [topic, user.uid]);
 
-  const loadAllHistoryForImageGallery = useCallback(async () => {
-    if (galleryHistoryLoadingRef.current || !hasMoreHistoryRef.current) return;
-    galleryHistoryLoadingRef.current = true;
+  const loadOlderGalleryPage = useCallback(async () => {
+    const cursor = galleryCursorRef.current;
+    if (galleryAbortControllerRef.current || !cursor.hasMore) return;
+    const targetTopic = topic;
+    const controller = new AbortController();
+    galleryAbortControllerRef.current = controller;
+    const requestedImageId = previewImageId;
+    setGalleryLoading(true);
+    setGalleryStatus('正在查找更早的图片…');
     try {
-      let pageCount = 0;
-      while (hasMoreHistoryRef.current && pageCount < 100) {
-        const beforeID = historyBeforeIDRef.current;
-        await loadOlderHistory({ automatic: false });
-        pageCount += 1;
-        if (historyBeforeIDRef.current === beforeID) break;
+      // One page per explicit boundary-navigation action. Keep only image metadata
+      // in the gallery; opening an image must not hydrate the main timeline.
+      const res = await api.getMessages(targetTopic, PAGE_SIZE, cursor.offset, true, cursor.beforeId,
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS });
+      if (controller.signal.aborted || activeTopicRef.current !== targetTopic) return;
+      const raw = res.messages || [];
+      const nextBeforeId = Number(res.next_before_id) || oldestHistoryMessageID(raw);
+      const hasMore = (typeof res.has_more === 'boolean' ? res.has_more : raw.length === PAGE_SIZE)
+        && raw.length > 0 && nextBeforeId !== cursor.beforeId;
+      galleryCursorRef.current = { offset: cursor.offset + raw.length, beforeId: nextBeforeId, hasMore };
+      const items = imageGalleryItems(normalizeHistoryMessages(raw).visibleMessages);
+      setOlderGalleryItems((previous) => Array.from(new Map([...items, ...previous]
+        .map((item) => [item.id, item])).values()));
+      setGalleryHasMore(hasMore);
+      if (items.length) setPreviewImageId((current) => current === requestedImageId ? items[items.length - 1].id : current);
+      setGalleryStatus(items.length ? '' : hasMore
+        ? '这一页没有更早的图片，可再次点击上一张继续查找。' : '没有更早的图片了。');
+    } catch (error) {
+      if (!controller.signal.aborted && activeTopicRef.current === targetTopic) {
+        setGalleryStatus('更早的图片加载失败，请点击上一张重试。');
       }
     } finally {
-      galleryHistoryLoadingRef.current = false;
+      if (galleryAbortControllerRef.current === controller) {
+        galleryAbortControllerRef.current = null;
+        setGalleryLoading(false);
+      }
     }
-  }, [loadOlderHistory]);
+  }, [topic, previewImageId]);
 
   useEffect(() => {
     const el = timelineRef.current;
@@ -3768,7 +3827,10 @@ export default function MessagesView({
 
     flushCurrentWorking();
 
-    return reconcileRenderedGroupConsecutiveness(reorderAssistantTurnGroups(groups));
+    return retainTimelineGroupKeys(
+      reconcileRenderedGroupConsecutiveness(reorderAssistantTurnGroups(groups)),
+      committedTimelineGroupsRef.current.topic === topic ? committedTimelineGroupsRef.current.groups : [],
+    );
   }, [
     availableAgentByUID,
     inferredAgentUIDs,
@@ -3784,6 +3846,10 @@ export default function MessagesView({
     topicName,
     user.uid,
   ]);
+
+  useLayoutEffect(() => {
+    committedTimelineGroupsRef.current = { topic, groups: groupedMessages };
+  }, [topic, groupedMessages]);
 
   const conversationShareCandidates = useMemo(() => (
     groupedMessages
@@ -4283,11 +4349,22 @@ export default function MessagesView({
       ));
     if (!resolvedItem) return;
     previewImageTriggerRef.current = trigger || null;
+    galleryCursorRef.current = {
+      offset: historyOffsetRef.current,
+      beforeId: historyBeforeIDRef.current,
+      hasMore: hasMoreHistoryRef.current,
+    };
+    setGalleryHasMore(hasMoreHistoryRef.current);
+    setGalleryStatus('');
     setPreviewImageId(resolvedItem.id);
-    void loadAllHistoryForImageGallery();
-  }, [imageGallery, loadAllHistoryForImageGallery]);
+  }, [imageGallery]);
 
   const closeImagePreview = useCallback(() => {
+    galleryAbortControllerRef.current?.abort();
+    galleryAbortControllerRef.current = null;
+    setGalleryLoading(false);
+    setOlderGalleryItems([]);
+    setGalleryStatus('');
     setPreviewImageId('');
   }, []);
 
@@ -4432,7 +4509,7 @@ export default function MessagesView({
             if (!showThinking) return null;
             return (
               <div
-                key={`working:${group.messages[0].id || 'group'}:${i}`}
+                key={group.renderKey}
                 className={`oc-working-group cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && group.messages.some((message) => historyMessageID(message) === highlightedMessageId) ? ' cc-message-search-hit' : ''}`}
               >
                 {group.messages.map((message, messageIndex) => (
@@ -4470,7 +4547,7 @@ export default function MessagesView({
           const selected = selectable && conversationShareSelectedKeys.includes(candidate.key);
           return (
             <div
-              key={`message:${group.message.id || 'group'}:${i}`}
+              key={group.renderKey}
               className={`cc-message-anchor${!conversationShareMode && highlightedMessageId > 0 && historyMessageID(group.message) === highlightedMessageId ? ' cc-message-search-hit' : ''}${selectable ? ' is-conversation-share-selectable' : ''}${selected ? ' is-conversation-share-selected' : ''}`}
               data-search-message-id={historyMessageID(group.message) || undefined}
             >
@@ -4657,6 +4734,7 @@ export default function MessagesView({
         )}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
         stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
+        separateStop={canStopActiveBotWorking && Boolean(input.trim() || pendingAttachments.length)}
         stopDisabled={isStopRequested}
         onStop={handleStopGeneration}
         onCloseMenus={() => {
@@ -4839,6 +4917,10 @@ export default function MessagesView({
           item={previewImage}
           index={previewImageIndex}
           items={imageGallery}
+          hasOlder={galleryHasMore}
+          loadingOlder={galleryLoading}
+          status={galleryStatus}
+          onLoadOlder={loadOlderGalleryPage}
           onClose={closeImagePreview}
           onChange={(nextIndex) => {
             const next = imageGallery[nextIndex];
@@ -6098,12 +6180,13 @@ export function mergeOwnServerEcho(messages, serverMessage, ownUID) {
   return next;
 }
 
-export function ImageGalleryPreview({ item, index, items, onClose, onChange, triggerRef }) {
+export function ImageGalleryPreview({ item, index, items, onClose, onChange, triggerRef,
+  hasOlder = false, loadingOlder = false, status = '', onLoadOlder }) {
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
-  const stateRef = useRef({ item, index, items, onClose, onChange, triggerRef });
-  stateRef.current = { item, index, items, onClose, onChange, triggerRef };
-  const hasPrevious = index > 0;
+  const stateRef = useRef(null);
+  stateRef.current = { item, index, items, onClose, onChange, triggerRef, hasOlder, loadingOlder, onLoadOlder };
+  const hasPrevious = index > 0 || (hasOlder && !loadingOlder);
   const hasNext = index < items.length - 1;
   const imageURL = resolveMediaURL(item.payload?.url || item.payload?.thumbnail);
   const downloadURL = downloadableMediaURL(imageURL);
@@ -6112,7 +6195,7 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
     closeRef.current?.focus({ preventScroll: true });
     const handleKeyDown = (event) => {
       const state = stateRef.current;
-      const currentHasPrevious = state.index > 0;
+      const currentHasPrevious = state.index > 0 || (state.hasOlder && !state.loadingOlder);
       const currentHasNext = state.index < state.items.length - 1;
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -6121,7 +6204,8 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
       }
       if (event.key === 'ArrowLeft' && currentHasPrevious) {
         event.preventDefault();
-        state.onChange(state.index - 1);
+        if (state.index > 0) state.onChange(state.index - 1);
+        else state.onLoadOlder?.();
         return;
       }
       if (event.key === 'ArrowRight' && currentHasNext) {
@@ -6172,10 +6256,13 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
         className="oc-rich-image-gallery-nav is-previous"
         aria-label="上一张图片"
         disabled={!hasPrevious}
-        onClick={() => onChange(index - 1)}
+        aria-busy={loadingOlder || undefined}
+        onClick={() => index > 0 ? onChange(index - 1) : onLoadOlder?.()}
       >
-        <ChevronLeft size={56} strokeWidth={1.5} aria-hidden="true" />
+        {loadingOlder ? <LoaderCircle size={32} className="is-spinning" aria-hidden="true" />
+          : <ChevronLeft size={56} strokeWidth={1.5} aria-hidden="true" />}
       </button>
+      {status && <div className="oc-rich-image-gallery-status" role="status">{status}</div>}
       <button
         ref={closeRef}
         type="button"

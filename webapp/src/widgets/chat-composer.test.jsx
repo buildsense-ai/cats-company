@@ -205,6 +205,33 @@ describe('ChatComposer', () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { value: '保留下一条草稿' },
+    { value: '', attachments: [{ id: 'draft-image', type: 'image', url: '/draft.png', name: 'draft.png' }] },
+  ])('keeps a separate stop action alongside an unsent draft or attachment: %j', async (draft) => {
+    const onStop = vi.fn();
+    const onSend = vi.fn();
+    const onChange = vi.fn();
+    await renderComposer({ ...draft, separateStop: true, onStop, onSend, onChange });
+    const stop = container.querySelector('.v3-stop-button');
+    expect(stop).not.toBeNull();
+    expect(container.querySelector('[aria-label="发送"]')).not.toBeNull();
+    expect(container.querySelectorAll('[aria-label="停止当前工作"]')).toHaveLength(1);
+    await act(async () => stop.click());
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector('textarea').value).toBe(draft.value);
+    if (draft.attachments) expect(container.textContent).toContain('draft.png');
+  });
+
+  it('does not duplicate the stop action in an empty composer', async () => {
+    await renderComposer({ stop: true, separateStop: true, stopDisabled: true });
+    expect(container.querySelectorAll('[aria-label="停止当前工作"]')).toHaveLength(1);
+    expect(container.querySelector('[aria-label="停止当前工作"]').disabled).toBe(true);
+    expect(container.querySelector('.v3-stop-button')).toBeNull();
+  });
+
   it('keeps streaming partial text local and commits only the final transcript', async () => {
 	const onVoiceFinal = vi.fn();
 	let callbacks;

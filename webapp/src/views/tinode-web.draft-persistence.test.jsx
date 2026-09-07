@@ -128,7 +128,6 @@ vi.mock('../widgets/empty-task-composer', () => ({
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
 vi.mock('../widgets/desktop-connect-modal', () => ({ default: () => null }));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
-vi.mock('../widgets/profile-editor', () => ({ default: () => null }));
 vi.mock('../widgets/relay-access-modal', () => ({ default: () => null }));
 
 import TinodeWeb from './tinode-web';
@@ -163,6 +162,56 @@ afterEach(async () => {
   container.remove();
   localStorage.clear();
   sessionStorage.clear();
+});
+
+test.each(['Escape', 'close button', 'cancel button'])('returns focus to the desktop profile entry after settings closes via %s', async (method) => {
+  await act(async () => renderWorkspace());
+  const trigger = container.querySelector('[aria-label="cats，打开个人菜单"]');
+  expect(trigger).not.toBeNull();
+  trigger.focus();
+  await act(async () => trigger.click());
+  const settings = [...document.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.textContent.includes('设置与资料'));
+  settings.focus();
+  await act(async () => settings.click());
+  expect(settings.isConnected).toBe(false);
+  const dialog = container.querySelector('.oc-profile-editor-modal');
+  expect(dialog).not.toBeNull();
+  expect(dialog.contains(document.activeElement)).toBe(true);
+  await act(async () => {
+    if (method === 'Escape') {
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true,
+      }));
+    } else {
+      dialog.querySelector(method === 'close button'
+        ? '.oc-profile-editor-close' : '.oc-profile-editor-actions .oc-btn-default').click();
+    }
+  });
+  expect(container.querySelector('.oc-profile-editor-modal')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  expect(trigger.closest('[inert]')).toBeNull();
+  expect(document.querySelector('[aria-label="账号菜单"]')).toBeNull();
+});
+
+test.each([{ ctrlKey: true }, { metaKey: true }])('keeps search shortcuts inside an active modal workflow (%j)', async (modifier) => {
+  await act(async () => renderWorkspace());
+  const modal = document.createElement('section');
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  document.body.appendChild(modal);
+  try {
+    const blocked = new KeyboardEvent('keydown', { key: 'k', ...modifier, bubbles: true, cancelable: true });
+    await act(async () => document.dispatchEvent(blocked));
+    expect(blocked.defaultPrevented).toBe(true);
+    expect(container.querySelector('.cc-global-search')).toBeNull();
+  } finally {
+    modal.remove();
+  }
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'k', ...modifier, bubbles: true, cancelable: true,
+  })));
+  expect(container.querySelector('.cc-global-search')).not.toBeNull();
 });
 
 test('restores a draft when returning from SkillHub after the workspace remounts', async () => {

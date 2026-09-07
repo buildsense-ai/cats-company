@@ -605,9 +605,9 @@ html[data-theme="liquid"][data-liquid-variant="green"] {
   --cc-input-surface: rgba(255, 255, 255, 0.07);
   --cc-border: rgba(184, 229, 216, 0.12);
   --cc-border-strong: rgba(198, 240, 228, 0.22);
-  --cc-text: #ffffff;
-  --cc-text-secondary: #ffffff;
-  --cc-muted: #ffffff;
+  --cc-text: #f2f5f3;
+  --cc-text-secondary: #c7d1cd;
+  --cc-muted: #a0b2aa;
   --cc-accent: #29bc95;
   --cc-accent-hover: #219f7e;
   --cc-accent-soft: rgba(41, 188, 149, 0.12);

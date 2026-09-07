@@ -255,6 +255,85 @@ function SidebarRowTrailing({
   );
 }
 
+// Contacts and assistants share one viewport-aware menu rather than inheriting
+// the sidebar's clipped scrolling area. The trigger and the menu remain siblings.
+function SidebarFloatingMenu({ anchorRef, onClose, className = '', children, ...props }) {
+  const menuRef = useRef(null);
+  const initialFocusAppliedRef = useRef(false);
+  const [position, setPosition] = useState(null);
+  useLayoutEffect(() => {
+    const trigger = anchorRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return undefined;
+    const updatePosition = () => {
+      const rect = trigger.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const gutter = 8;
+      const gap = 4;
+      const width = Math.min(Math.max(172, menuRect.width), window.innerWidth - gutter * 2);
+      const height = Math.max(44, menu.scrollHeight || menuRect.height);
+      const below = window.innerHeight - rect.bottom - gutter - gap;
+      const above = rect.top - gutter - gap;
+      const opensAbove = height > below && above > below;
+      const maxHeight = Math.min(window.innerHeight - gutter * 2,
+        Math.max(44, Math.floor(opensAbove ? above : below)));
+      const renderedHeight = Math.min(height, maxHeight);
+      const preferredTop = opensAbove ? rect.top - gap - renderedHeight : rect.bottom + gap;
+      setPosition({
+        position: 'fixed', width, maxHeight, overflowY: 'auto', visibility: 'visible',
+        left: Math.max(gutter, Math.min(rect.right - width, window.innerWidth - width - gutter)),
+        top: Math.max(gutter, Math.min(preferredTop, window.innerHeight - gutter - renderedHeight)),
+      });
+      menu.dataset.placement = opensAbove ? 'top' : 'bottom';
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [anchorRef]);
+
+  useLayoutEffect(() => {
+    // A hidden positioning pass cannot receive focus in real browsers. Wait for
+    // the visible style to commit, and never re-focus when scrolling repositions it.
+    if (!position || initialFocusAppliedRef.current) return;
+    initialFocusAppliedRef.current = true;
+    menuRef.current?.querySelector('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
+  }, [position]);
+
+  return createPortal(
+    <div
+      {...props}
+      className={`v3-friend-action-menu cc-sidebar-floating-menu ${className}`}
+      role="menu"
+      ref={menuRef}
+      style={position || { position: 'fixed', top: 0, left: 0, width: 172, visibility: 'hidden' }}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape', 'Tab'].includes(event.key)) return;
+        event.stopPropagation();
+        if (event.key === 'Escape' || event.key === 'Tab') {
+          event.preventDefault();
+          onClose();
+          anchorRef.current?.focus({ preventScroll: true });
+          return;
+        }
+        event.preventDefault();
+        const items = Array.from(menuRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') || []);
+        const current = items.indexOf(document.activeElement);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+          : event.key === 'ArrowUp' ? (current <= 0 ? items.length - 1 : current - 1)
+            : (current + 1) % items.length;
+        items[next]?.focus();
+      }}
+    >
+      {children}
+    </div>, document.body,
+  );
+}
+
 export default function ChatListView({
   activeTopic,
   onSelectTopic,
@@ -292,7 +371,6 @@ export default function ChatListView({
   const [mobileLinkGroup, setMobileLinkGroup] = useState(null);
   const [collaborationUpgradeTask, setCollaborationUpgradeTask] = useState(null);
   const [agentActionId, setAgentActionId] = useState('');
-  const [agentMenuPosition, setAgentMenuPosition] = useState(null);
   const [agentPendingRequests, setAgentPendingRequests] = useState([]);
   const [agentReviewingKey, setAgentReviewingKey] = useState('');
   const [pinnedGroupIds, setPinnedGroupIds] = useState(() => loadPinnedGroupIds(user?.uid));
@@ -300,7 +378,6 @@ export default function ChatListView({
   const [hiddenHistoryIds, setHiddenHistoryIds] = useState(() => loadHiddenHistoryIds(user?.uid));
   const [openFriendMenuId, setOpenFriendMenuId] = useState('');
   const [openChatMenuKey, setOpenChatMenuKey] = useState('');
-  const [chatMenuPlacement, setChatMenuPlacement] = useState('down');
   const [unreadFriendTopicIds, setUnreadFriendTopicIds] = useState(() => new Set());
   const [openProjectMenuId, setOpenProjectMenuId] = useState(null);
   const [newTaskProject, setNewTaskProject] = useState(null);
@@ -335,9 +412,8 @@ export default function ChatListView({
   const activeTopicRef = useRef(activeTopic);
   const userUidRef = useRef(user?.uid);
   const agentMenuTriggerRef = useRef(null);
-  const agentMenuRef = useRef(null);
+  const contactMenuTriggerRef = useRef(null);
   const chatMenuTriggerRef = useRef(null);
-  const chatMenuRef = useRef(null);
   const chatsRef = useRef(chats);
   const friendsRef = useRef(friends);
   const agentsRef = useRef(agents);
@@ -493,9 +569,10 @@ export default function ChatListView({
     };
     const closeMenusOnEscape = (event) => {
       if (event.key !== 'Escape') return;
-      const shouldRestoreAgentFocus = openFriendMenuId.startsWith('agent:');
       closeMenus();
-      if (shouldRestoreAgentFocus) agentMenuTriggerRef.current?.focus();
+      if (openFriendMenuId.startsWith('agent:')) agentMenuTriggerRef.current?.focus();
+      else if (openFriendMenuId) contactMenuTriggerRef.current?.focus();
+      else if (openChatMenuKey) chatMenuTriggerRef.current?.focus();
     };
     document.addEventListener('pointerdown', closeMenusFromOutside);
     document.addEventListener('keydown', closeMenusOnEscape);
@@ -505,91 +582,6 @@ export default function ChatListView({
     };
   }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions, showBatchProjectActions, showBatchNotificationActions]);
 
-  useLayoutEffect(() => {
-    if (
-      !openFriendMenuId.startsWith('agent:')
-      || !agentMenuTriggerRef.current
-      || !agentMenuRef.current
-    ) {
-      setAgentMenuPosition(null);
-      return undefined;
-    }
-
-    const trigger = agentMenuTriggerRef.current;
-    const menu = agentMenuRef.current;
-    const viewportGutter = 8;
-    const floatingGap = 4;
-    const updatePosition = () => {
-      const triggerRect = trigger.getBoundingClientRect();
-      const menuRect = menu.getBoundingClientRect();
-      const menuWidth = Math.max(172, menuRect.width || 0);
-      const menuHeight = Math.max(44, menu.scrollHeight || menuRect.height || 0);
-      const availableBelow = window.innerHeight - triggerRect.bottom - viewportGutter - floatingGap;
-      const availableAbove = triggerRect.top - viewportGutter - floatingGap;
-      const opensAbove = menuHeight > availableBelow && availableAbove > availableBelow;
-      const maxHeight = Math.max(44, Math.floor(opensAbove ? availableAbove : availableBelow));
-      const renderedHeight = Math.min(menuHeight, maxHeight);
-      const left = Math.min(
-        Math.max(viewportGutter, triggerRect.right - menuWidth),
-        Math.max(viewportGutter, window.innerWidth - viewportGutter - menuWidth),
-      );
-      const top = opensAbove
-        ? Math.max(viewportGutter, triggerRect.top - floatingGap - renderedHeight)
-        : Math.min(
-          window.innerHeight - viewportGutter - renderedHeight,
-          triggerRect.bottom + floatingGap,
-        );
-
-      setAgentMenuPosition({
-        left,
-        maxHeight,
-        position: 'fixed',
-        top,
-        visibility: 'visible',
-        width: menuWidth,
-      });
-      menu.dataset.placement = opensAbove ? 'top' : 'bottom';
-    };
-
-    updatePosition();
-    menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [openFriendMenuId]);
-
-  useLayoutEffect(() => {
-    if (!openChatMenuKey || !chatMenuTriggerRef.current || !chatMenuRef.current) return undefined;
-
-    const trigger = chatMenuTriggerRef.current;
-    const menu = chatMenuRef.current;
-    const scrollContainer = trigger.closest('.v3-chat-list');
-    const updatePlacement = () => {
-      const triggerRect = trigger.getBoundingClientRect();
-      const menuRect = menu.getBoundingClientRect();
-      const boundaryRect = scrollContainer?.getBoundingClientRect() || {
-        top: 0,
-        bottom: window.innerHeight,
-      };
-      const availableBelow = boundaryRect.bottom - triggerRect.bottom;
-      const availableAbove = triggerRect.top - boundaryRect.top;
-      const nextPlacement = menuRect.height > availableBelow && availableAbove > availableBelow
-        ? 'up'
-        : 'down';
-      setChatMenuPlacement((current) => current === nextPlacement ? current : nextPlacement);
-    };
-
-    updatePlacement();
-    scrollContainer?.addEventListener('scroll', updatePlacement, { passive: true });
-    window.addEventListener('resize', updatePlacement);
-    return () => {
-      scrollContainer?.removeEventListener('scroll', updatePlacement);
-      window.removeEventListener('resize', updatePlacement);
-    };
-  }, [openChatMenuKey]);
 
   useEffect(() => {
     const openNewTask = () => {
@@ -2381,6 +2373,25 @@ export default function ChatListView({
     </div>
   );
 
+  const renderConversationMain = (chat, children, selectable = false) => {
+    if (selectable && historySelectionMode) return children;
+    if (editingHistoryTopicId === chat.id) return <div className="cc-sidebar-row-main">{children}</div>;
+    return (
+      <button
+        type="button"
+        className="cc-sidebar-row-main"
+        aria-label={`打开 ${chat.name}`}
+        aria-current={activeTopic === chat.id ? 'page' : undefined}
+        onClick={(event) => {
+          event.stopPropagation();
+          selectConversation(chat);
+        }}
+      >
+        {children}
+      </button>
+    );
+  };
+
   const displayTimeForChat = (chat) => {
     const timestamp = conversationSortTime(chat);
     return timestamp ? formatSidebarTime(timestamp, sidebarTimeNowMs) : chat.time || '';
@@ -2481,7 +2492,6 @@ export default function ChatListView({
                     return;
                   }
                   chatMenuTriggerRef.current = event.currentTarget;
-                  setChatMenuPlacement('down');
                   setOpenChatMenuKey(menuKey);
                 }}
               >
@@ -2493,11 +2503,11 @@ export default function ChatListView({
           <TaskRowStatusIndicator status={visibleStatus} time={displayTime} showTime={showTime} />
         </SidebarRowTrailing>
         {openChatMenuKey === menuKey && (
-          <div
-            ref={chatMenuRef}
-            className={`v3-friend-action-menu cc-chat-action-menu ${chatMenuPlacement === 'up' ? 'cc-chat-action-menu-up' : ''}`}
-            role="menu"
-            onClick={(event) => event.stopPropagation()}
+          <SidebarFloatingMenu
+            anchorRef={chatMenuTriggerRef}
+            onClose={() => setOpenChatMenuKey('')}
+            className="cc-chat-action-menu"
+            aria-label={`${chat.name} 任务操作`}
           >
             <button type="button" role="menuitem" aria-label={`修改任务名称 ${chat.name}`} onClick={() => startRenamingHistoryTask(chat)}>
               <Pencil size={14} />
@@ -2569,7 +2579,7 @@ export default function ChatListView({
                 <span>{removeLabel}</span>
               </button>
             )}
-          </div>
+          </SidebarFloatingMenu>
         )}
       </>
     );
@@ -2599,8 +2609,7 @@ export default function ChatListView({
             selectConversation(chat);
           }}
         >
-          {renderTaskLeading(chat)}
-          {renderTaskCopy(chat, null, taskLabel)}
+          {renderConversationMain(chat, <>{renderTaskLeading(chat)}{renderTaskCopy(chat, null, taskLabel)}</>, true)}
           {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
         </SidebarItemRow>
       );
@@ -2618,8 +2627,8 @@ export default function ChatListView({
           data-conversation-kind="group"
           onClick={() => selectConversation(chat)}
         >
-          <Users size={14} className="prefix cc-chat-row-icon" aria-label="群聊" />
-          {renderTaskCopy(chat, chat.preview, '群聊')}
+          {renderConversationMain(chat, <><Users size={14} className="prefix cc-chat-row-icon" aria-label="群聊" />
+            {renderTaskCopy(chat, chat.preview, '群聊')}</>)}
           <SidebarRowTrailing
             actions={(
               <button
@@ -2632,6 +2641,7 @@ export default function ChatListView({
                 onClick={(event) => {
                   event.stopPropagation();
                   setOpenFriendMenuId('');
+                  contactMenuTriggerRef.current = event.currentTarget;
                   setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
                 }}
               >
@@ -2642,7 +2652,7 @@ export default function ChatListView({
             {displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
           </SidebarRowTrailing>
           {openChatMenuKey === menuKey && (
-            <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <SidebarFloatingMenu anchorRef={contactMenuTriggerRef} onClose={() => setOpenChatMenuKey('')} className="cc-chat-action-menu" aria-label={`${chat.name} 操作`}>
               <button
                 type="button"
                 role="menuitem"
@@ -2690,7 +2700,7 @@ export default function ChatListView({
                   <span>删除群聊</span>
                 </button>
               )}
-            </div>
+            </SidebarFloatingMenu>
           )}
         </SidebarItemRow>
       );
@@ -2706,8 +2716,8 @@ export default function ChatListView({
           data-conversation-kind="direct"
           onClick={() => selectConversation(chat)}
         >
-          <UserRound size={14} className="prefix cc-chat-row-icon" aria-label="单聊" />
-          {renderTaskCopy(chat, chat.preview, '单聊')}
+          {renderConversationMain(chat, <><UserRound size={14} className="prefix cc-chat-row-icon" aria-label="单聊" />
+            {renderTaskCopy(chat, chat.preview, '单聊')}</>)}
           <SidebarRowTrailing
             actions={(
               <button
@@ -2721,6 +2731,7 @@ export default function ChatListView({
                 onClick={(event) => {
                   event.stopPropagation();
                   setOpenChatMenuKey('');
+                  contactMenuTriggerRef.current = event.currentTarget;
                   setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
                 }}
               >
@@ -2731,7 +2742,7 @@ export default function ChatListView({
             {displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
           </SidebarRowTrailing>
           {openFriendMenuId === String(chat.friendId) && (
-            <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <SidebarFloatingMenu anchorRef={contactMenuTriggerRef} onClose={() => setOpenFriendMenuId('')} className="" aria-label={`${chat.name} 操作`}>
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
                 <UserX size={14} />
@@ -2741,7 +2752,7 @@ export default function ChatListView({
                 <Ban size={14} />
                 <span>拉黑好友</span>
               </button>
-            </div>
+            </SidebarFloatingMenu>
           )}
           <span className={`cc-conversation-presence ${isOnline ? 'online' : 'offline'}`} aria-label={isOnline ? '在线' : '离线'} />
         </SidebarItemRow>
@@ -2757,8 +2768,7 @@ export default function ChatListView({
         data-conversation-kind="agent"
         onClick={() => selectConversation(chat)}
       >
-        {renderTaskAgentIcon(chat, agentById, onlineUsers)}
-        {renderTaskCopy(chat, null, '任务')}
+        {renderConversationMain(chat, <>{renderTaskAgentIcon(chat, agentById, onlineUsers)}{renderTaskCopy(chat, null, '任务')}</>)}
         {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
       </SidebarItemRow>
     );
@@ -2779,8 +2789,8 @@ export default function ChatListView({
           data-contact-kind="group"
           onClick={() => selectConversation(chat)}
         >
-          <Users size={14} className="prefix cc-chat-row-icon" aria-label="群组" />
-          {renderTaskCopy(chat, chat.preview)}
+          {renderConversationMain(chat, <><Users size={14} className="prefix cc-chat-row-icon" aria-label="群组" />
+            {renderTaskCopy(chat, chat.preview)}</>)}
           <SidebarRowTrailing
             actions={(
               <button
@@ -2793,6 +2803,7 @@ export default function ChatListView({
                 onClick={(event) => {
                   event.stopPropagation();
                   setOpenFriendMenuId('');
+                  contactMenuTriggerRef.current = event.currentTarget;
                   setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
                 }}
               >
@@ -2803,7 +2814,7 @@ export default function ChatListView({
             {displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
           </SidebarRowTrailing>
           {openChatMenuKey === menuKey && (
-            <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <SidebarFloatingMenu anchorRef={contactMenuTriggerRef} onClose={() => setOpenChatMenuKey('')} className="cc-chat-action-menu" aria-label={`${chat.name} 操作`}>
               <button
                 type="button"
                 role="menuitem"
@@ -2851,7 +2862,7 @@ export default function ChatListView({
                   <span>删除群聊</span>
                 </button>
               )}
-            </div>
+            </SidebarFloatingMenu>
           )}
         </SidebarItemRow>
       );
@@ -2871,7 +2882,7 @@ export default function ChatListView({
           data-unread={hasUnreadMessage ? 'true' : undefined}
           onClick={() => selectConversation(chat)}
         >
-          <UserRound
+          {renderConversationMain(chat, <><UserRound
             size={16}
             className={`prefix cc-chat-row-icon cc-friend-contact-icon ${isOnline ? 'online' : 'offline'}`}
             title={isOnline ? '在线' : '离线'}
@@ -2882,7 +2893,7 @@ export default function ChatListView({
               <span className="v3-chat-item-label">{chat.name}</span>
               {renderConversationMutedIndicator(chat)}
             </span>
-          </div>
+          </div></>)}
           <SidebarRowTrailing
             actions={(
               <button
@@ -2896,6 +2907,7 @@ export default function ChatListView({
                 onClick={(event) => {
                   event.stopPropagation();
                   setOpenChatMenuKey('');
+                  contactMenuTriggerRef.current = event.currentTarget;
                   setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
                 }}
               >
@@ -2908,7 +2920,7 @@ export default function ChatListView({
               : displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
           </SidebarRowTrailing>
           {openFriendMenuId === String(chat.friendId) && (
-            <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <SidebarFloatingMenu anchorRef={contactMenuTriggerRef} onClose={() => setOpenFriendMenuId('')} className="" aria-label={`${chat.name} 操作`}>
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
                 <UserX size={14} />
@@ -2918,7 +2930,7 @@ export default function ChatListView({
                 <Ban size={14} />
                 <span>拉黑好友</span>
               </button>
-            </div>
+            </SidebarFloatingMenu>
           )}
         </SidebarItemRow>
       );
@@ -2931,30 +2943,6 @@ export default function ChatListView({
     const agentName = agent.display_name || agent.username;
     const isOnline = onlineStatusFor(onlineUsers, agentId, agent.is_online);
     const owned = isOwnedAgent(agent);
-    const handleAgentMenuKeyDown = (event) => {
-      if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape', 'Tab'].includes(event.key)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.key === 'Escape' || event.key === 'Tab') {
-        setOpenFriendMenuId('');
-        agentMenuTriggerRef.current?.focus();
-        return;
-      }
-      const items = Array.from(
-        agentMenuRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') || [],
-      );
-      if (items.length === 0) return;
-      const currentIndex = items.indexOf(document.activeElement);
-      let nextIndex;
-      if (event.key === 'Home') nextIndex = 0;
-      else if (event.key === 'End') nextIndex = items.length - 1;
-      else if (event.key === 'ArrowUp') {
-        nextIndex = currentIndex <= 0 ? items.length - 1 : currentIndex - 1;
-      } else {
-        nextIndex = currentIndex < 0 || currentIndex === items.length - 1 ? 0 : currentIndex + 1;
-      }
-      items[nextIndex]?.focus();
-    };
     return (
       <SidebarItemRow
         key={`agent:${agentId}`}
@@ -3008,23 +2996,14 @@ export default function ChatListView({
             </button>
           )}
         />
-        {openFriendMenuId === agentMenuKey && typeof document !== 'undefined' && createPortal(
-          <div
-            ref={agentMenuRef}
+        {openFriendMenuId === agentMenuKey && (
+          <SidebarFloatingMenu
+            anchorRef={agentMenuTriggerRef}
+            onClose={() => setOpenFriendMenuId('')}
             id={agentMenuId}
-            className="v3-friend-action-menu cc-agent-action-menu"
+            className="cc-agent-action-menu"
             role="menu"
             aria-label={`${agentName} 任务操作`}
-            style={agentMenuPosition || {
-              left: 0,
-              maxHeight: 240,
-              position: 'fixed',
-              top: 0,
-              visibility: 'hidden',
-              width: 172,
-            }}
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={handleAgentMenuKeyDown}
           >
             {owned && (
               <button
@@ -3066,8 +3045,7 @@ export default function ChatListView({
                 <span>移除助手</span>
               </button>
             )}
-          </div>,
-          document.body,
+          </SidebarFloatingMenu>
         )}
       </SidebarItemRow>
     );
@@ -3474,8 +3452,7 @@ export default function ChatListView({
                         selectConversation(chat);
                       }}
                     >
-                      {renderTaskLeading(chat)}
-                      {renderTaskCopy(chat, null, taskLabel)}
+                      {renderConversationMain(chat, <>{renderTaskLeading(chat)}{renderTaskCopy(chat, null, taskLabel)}</>, true)}
                       {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
                     </SidebarItemRow>
                   );

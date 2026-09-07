@@ -10,6 +10,7 @@ vi.mock('../api', () => ({
 }));
 
 import ProfileEditor from './profile-editor';
+import { api } from '../api';
 
 describe('ProfileEditor appearance settings', () => {
   let container;
@@ -17,6 +18,7 @@ describe('ProfileEditor appearance settings', () => {
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -26,6 +28,7 @@ describe('ProfileEditor appearance settings', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    localStorage.clear();
   });
 
   async function renderEditor(props = {}) {
@@ -53,6 +56,51 @@ describe('ProfileEditor appearance settings', () => {
 
     await act(async () => Simulate.click(container.querySelector('[aria-label="深色主题"]')));
     expect(onThemeChange).toHaveBeenCalledWith('dark');
+  });
+
+  it('makes display preferences immediate while leaving profile edits unsaved on close', async () => {
+    const onClose = vi.fn();
+    const onThemeChange = vi.fn();
+    await renderEditor({ onClose, onThemeChange });
+    expect(container.textContent).toContain('资料需保存，外观与使用偏好即时生效');
+    await act(async () => {
+      Simulate.change(container.querySelector('#profile-display-name'), { target: { value: 'New name' } });
+      Simulate.click(container.querySelector('[aria-label="显示 AI 思考过程"]'));
+      Simulate.click(container.querySelector('[aria-label="深色主题"]'));
+    });
+    expect(localStorage.getItem('cc_show_thinking')).toBe('false');
+    expect(container.querySelector('[role="switch"][aria-label="显示 AI 思考过程"]').getAttribute('aria-checked')).toBe('false');
+    expect(onThemeChange).toHaveBeenCalledWith('dark');
+    await act(async () => Simulate.click(container.querySelector('.oc-profile-editor-actions .oc-btn-default')));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(api.updateMe).not.toHaveBeenCalled();
+    expect(localStorage.getItem('cc_show_thinking')).toBe('false');
+  });
+
+  it('saves only personal details and retains immediate preferences on a profile save error', async () => {
+    const onClose = vi.fn();
+    api.updateMe.mockRejectedValueOnce(new Error('网络暂不可用'));
+    await renderEditor({ onClose });
+    await act(async () => Simulate.click(container.querySelector('[aria-label="显示 AI 思考过程"]')));
+    const save = container.querySelector('.oc-profile-editor-actions .oc-btn-primary');
+    expect(save.textContent).toBe('保存资料');
+    await act(async () => Simulate.click(save));
+    expect(api.updateMe).toHaveBeenCalledWith('Bruce', '');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('网络暂不可用');
+    expect(localStorage.getItem('cc_show_thinking')).toBe('false');
+  });
+
+  it('explains storage failure beside the immediate preference', async () => {
+    const failedStorage = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('denied'); });
+    try {
+      await renderEditor();
+      await act(async () => Simulate.click(container.querySelector('[aria-label="显示 AI 思考过程"]')));
+      expect(container.querySelector('[role="switch"][aria-label="显示 AI 思考过程"]').getAttribute('aria-checked')).toBe('true');
+      expect(container.querySelector('[role="alert"]').textContent).toContain('无法保存偏好');
+    } finally {
+      failedStorage.mockRestore();
+    }
   });
 
   it('renders the mobile-native profile hierarchy without removing desktop controls', async () => {

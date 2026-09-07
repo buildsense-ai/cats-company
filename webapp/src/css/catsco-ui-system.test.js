@@ -126,6 +126,33 @@ describe('CatsCo shell styling', () => {
     expect(root).toContain('--cc-secondary-action-text: color-mix(in srgb, var(--cc-text) 86%, var(--cc-panel));');
   });
 
+  it('shares a theme-aware menu item rhythm while preserving compact variants', () => {
+    const root = ruleFor(':root');
+    const actionMenuButton = ruleFor('.v3-friend-action-menu button');
+    const batchMenu = ruleFor('.v3-friend-action-menu.cc-batch-action-menu');
+    const batchMenuButton = ruleFor('.v3-friend-action-menu.cc-batch-action-menu button');
+    const pickerButtons = ruleFor('.v3-agent-picker-menu button,\n.v3-attachment-menu button');
+
+    expect(root).toContain('--cc-menu-item-height: 40px;');
+    expect(root).toContain('--cc-menu-item-gap: 10px;');
+    expect(root).toContain('--cc-menu-item-padding-inline: 11px;');
+    expect(root).toContain('--cc-menu-item-icon-size: 17px;');
+    expect(actionMenuButton).toContain('min-height: var(--cc-menu-item-height);');
+    expect(actionMenuButton).toContain('gap: var(--cc-menu-item-gap);');
+    expect(actionMenuButton).toContain('padding: 0 var(--cc-menu-item-padding-inline);');
+    expect(batchMenu).toContain('--cc-menu-item-height: 36px;');
+    expect(batchMenuButton).toContain('font-size: 12px;');
+    expect(pickerButtons).toContain('min-height: var(--cc-menu-item-height);');
+    expect(pickerButtons).toContain('border-radius: var(--cc-menu-item-radius);');
+  });
+
+  it('indents the explicitly marked first plain-text paragraph without changing paragraph spacing', () => {
+    expect(openchatCss).toMatch(
+      /\.oc-plain-text-paragraph\.is-first\s*\{[^}]*text-indent:\s*2em;[^}]*\}/s,
+    );
+    expect(openchatCss).toMatch(/\.oc-plain-text-paragraphs\s*\{[^}]*gap:\s*6px;[^}]*\}/s);
+  });
+
   it('uses one slightly deeper backdrop across secondary dialogs', () => {
     expect(ruleFor(':root')).toContain('--cc-modal-backdrop: rgba(0, 0, 0, 0.72);');
     expect(ruleFor('.name-dialog-overlay,\n.oc-modal-overlay'))
@@ -168,6 +195,23 @@ describe('CatsCo shell styling', () => {
     expect(activeHistoryInteractionRule).toContain('background: var(--cc-task-selected);');
     expect(activeHistoryInteractionRule).toContain('box-shadow: none;');
     expect(css).toContain('html[data-theme="liquid"] .v3-chat-item.active {\n  border-color: var(--cc-liquid-edge);\n  background: rgba(73, 86, 168, 0.12);');
+  });
+
+  it('shares the existing floating-menu layer above the mobile sidebar', () => {
+    const menu = ruleFor('.cc-sidebar-floating-menu,\n.cc-agent-action-menu');
+    expect(menu).toContain('z-index: 2600;');
+    expect(menu).toContain('right: auto;');
+    expect(menu).toContain('bottom: auto;');
+    expect(menu).toContain('max-width: calc(100vw - 16px);');
+    expect(menu).toContain('overflow-y: auto;');
+  });
+
+  it('keeps selected sidebar rows free of accent rails in liquid themes', () => {
+    expect(ruleFor('.v3-chat-item.active::before')).toContain('display: none;');
+    expect(ruleFor('html[data-theme="liquid"] .v3-chat-item.active'))
+      .toContain('box-shadow: none;');
+    expect(ruleIn(liquidGreenCss, 'html[data-theme="liquid"][data-liquid-variant="green"] .v3-chat-item.active'))
+      .toContain('box-shadow: none;');
   });
 
   it('keeps neutral borders quiet while focus remains a distinct semantic state', () => {
@@ -409,7 +453,8 @@ describe('CatsCo shell styling', () => {
     expect(actionRule).toContain('color: var(--v3-text-main);');
     expect(hoverRule).toContain('background: color-mix(in srgb, var(--v3-text-main) 18%, transparent);');
     expect(dangerRule).toContain('color: var(--v3-text-main);');
-    expect(confirmRule).toContain('background: #f3f3f3;');
+    expect(confirmRule).toContain('background: color-mix(in srgb, var(--cc-danger-text) 10%, var(--cc-history-panel-bg));');
+    expect(confirmRule).toContain('color: var(--cc-danger-text);');
     expect(confirmRule).not.toContain('#dc2626');
   });
 

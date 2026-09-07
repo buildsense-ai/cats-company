@@ -932,6 +932,35 @@ describe('SkillHubView', () => {
       .toBe('版本待确认 · 发布者待确认发布时间待确认');
   });
 
+  it('opens the full catalogue description without installing or requesting Agent version history', async () => {
+    const description = '第一段能力说明。\n'.repeat(15) + '这是安装前必须读到的最后一段。';
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [{
+      id: 'tools/long-description', name: 'Long Description', description,
+      author: { displayName: '作者', catsCoUid: '85' }, latestVersion: '3.0.0',
+    }] });
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+    const trigger = container.querySelector('button[aria-label="查看 Long Description 详情"]');
+    await act(async () => { trigger.focus(); Simulate.click(trigger); });
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog.querySelector('.cc-skillhub-detail-description').textContent).toBe(description);
+    expect(dialog.textContent).toContain('最新版本');
+    expect(dialog.textContent).toContain('v3.0.0');
+    expect(dialog.querySelector('.cc-skillhub-detail-meta').textContent).toContain('发布者作者 · UID 85');
+    expect(dialog.querySelector('.cc-skillhub-history')).toBeNull();
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+    expect(api.getSkillHubVersions).not.toHaveBeenCalled();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('explains account sync before adding a local-only ability from the library', async () => {
     api.getLocalSkills.mockResolvedValue({
       skills: [{
@@ -999,7 +1028,7 @@ describe('SkillHubView', () => {
     expect(cards[1].textContent).toContain('发布于');
 
     await act(async () => {
-      Simulate.click(cards[0].querySelector('button'));
+      Simulate.click(cards[0].querySelector('.cc-skillhub-card-footer button'));
       await Promise.resolve();
     });
 
@@ -1038,7 +1067,7 @@ describe('SkillHubView', () => {
     const localCard = [...container.querySelectorAll('.cc-skillhub-card')]
       .find((card) => card.textContent.includes('Local Writer'));
     await act(async () => {
-      Simulate.click(localCard.querySelector('button'));
+      Simulate.click(localCard.querySelector('.cc-skillhub-card-footer button'));
       await Promise.resolve();
     });
     const confirmation = document.body.querySelector('[role="alertdialog"]');
@@ -2332,11 +2361,11 @@ describe('SkillHubView', () => {
         contentHash: 'd'.repeat(64),
       }],
     });
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal('confirm', confirm);
+    const nativeConfirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', nativeConfirm);
 
     await act(async () => {
-      root.render(<SkillHubView user={{ uid: 7 }} />);
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -2348,10 +2377,18 @@ describe('SkillHubView', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
+    const confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation.textContent).toContain('发布“local-demo”的新版本');
+    expect(requestSkillHubDeviceTool.mock.calls.filter(([request]) => request.toolName === 'skillhub.localSkill.share')).toHaveLength(1);
+    await act(async () => {
+      Simulate.click([...confirmation.querySelectorAll('button')].find(button => button.textContent === '发布新版本'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
     const shareCalls = requestSkillHubDeviceTool.mock.calls
       .map(([request]) => request)
       .filter((request) => request.toolName === 'skillhub.localSkill.share');
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(nativeConfirm).not.toHaveBeenCalled();
     expect(shareCalls).toHaveLength(2);
     expect(shareCalls[0].payload.confirm_publish).toBeUndefined();
     expect(shareCalls[1].payload.confirm_publish).toBe(true);
