@@ -43,6 +43,7 @@ vi.mock('../api', () => ({
     getMyBots: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
     updateBotDefinitionSkills: vi.fn(),
+    syncSkillHubPublisherProfile: vi.fn(),
     searchSkillHubSkills: vi.fn(),
     getSkillHubSkill: vi.fn(),
     getSkillHubVersions: vi.fn(),
@@ -81,6 +82,7 @@ describe('SkillHubView', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
     globalThis.localStorage?.clear();
+    api.syncSkillHubPublisherProfile.mockResolvedValue({ synced: true });
     api.getMyBots.mockResolvedValue({
       bots: [
         { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
@@ -892,6 +894,24 @@ describe('SkillHubView', () => {
     expect(library.map((skill) => skill.sourceLabel)).toEqual(['本机', undefined]);
     expect(library[0]).toMatchObject({ isLocalSkill: true, canBind: false });
     expect(library[1]).toMatchObject({ latestVersion: '1.0.0', author: 'alice' });
+  });
+
+  it('calibrates the current publisher profile before loading the catalogue and tolerates sync failure', async () => {
+    const sync = deferred();
+    api.syncSkillHubPublisherProfile.mockReturnValueOnce(sync.promise);
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+    });
+    expect(api.syncSkillHubPublisherProfile).toHaveBeenCalledTimes(1);
+    expect(api.searchSkillHubSkills).not.toHaveBeenCalled();
+
+    await act(async () => {
+      sync.reject(new Error('SkillHub unavailable'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.searchSkillHubSkills).toHaveBeenCalledWith('', { searchMode: 'name' });
   });
 
   it('shows the stable version, CatsCo publisher, and publication time on catalogue cards', async () => {
