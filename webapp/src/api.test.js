@@ -327,7 +327,7 @@ describe('WebSocket connection recovery', () => {
     const socket = MockWebSocket.instances[0];
     socket.open();
 
-    await api.wsSendStreamCancel('grp_80', 42);
+    const request = api.wsSendStreamCancel('grp_80', 42);
 
     const envelope = JSON.parse(socket.send.mock.calls.at(-1)[0]);
     expect(envelope.pub).toMatchObject({
@@ -339,6 +339,48 @@ describe('WebSocket connection recovery', () => {
         target_bot_uid: 42,
       },
     });
+    const settled = vi.fn();
+    request.then(settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    socket.onmessage({ data: JSON.stringify({ ctrl: { id: envelope.pub.id, code: 200 } }) });
+    await expect(request).resolves.toBe(envelope.pub.id);
+  });
+
+  test('stop never falls back to sending an ordinary chat message while disconnected', async () => {
+    const sendMessage = vi.spyOn(api.api, 'sendMessage').mockResolvedValue({});
+    await expect(api.wsSendStreamCancel('p2p_7_42', 42)).rejects.toThrow(/连接/);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  test('stop rejects a server refusal instead of reporting success', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    const request = api.wsSendStreamCancel('grp_80', 42);
+    const rejected = expect(request).rejects.toMatchObject({ status: 403 });
+    const { pub } = JSON.parse(socket.send.mock.calls.at(-1)[0]);
+    socket.onmessage({ data: JSON.stringify({ ctrl: { id: pub.id, code: 403, text: 'not permitted' } }) });
+    await rejected;
+  });
+
+  test('stop rejects an acknowledgement timeout', async () => {
+    api.connectWS(vi.fn());
+    MockWebSocket.instances[0].open();
+    const request = api.wsSendStreamCancel('p2p_7_42', 42);
+    const rejected = expect(request).rejects.toThrow(/超时/);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejected;
+  });
+
+  test('stop rejects a disconnect before acknowledgement', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    const request = api.wsSendStreamCancel('p2p_7_42', 42);
+    const rejected = expect(request).rejects.toThrow(/连接/);
+    socket.serverClose();
+    await rejected;
   });
 
   test('retries quickly with capped backoff after a dropped socket', () => {

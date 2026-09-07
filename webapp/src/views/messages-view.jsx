@@ -2455,6 +2455,7 @@ export default function MessagesView({
     setIsStopRequested(true);
     try {
       await wsSendStreamCancel(topic, workingState.responderUid);
+      if (activeTopicRef.current !== topic) return;
       setSuppressedWorkingKey(workingState.key);
       clearRuntimePlan();
       clearLiveWorking();
@@ -2463,7 +2464,9 @@ export default function MessagesView({
       setAwaitingAgentReply(false);
       setIsStopRequested(false);
     } catch (err) {
+      if (activeTopicRef.current !== topic) return;
       setIsStopRequested(false);
+      setAttachmentStatus({ tone: 'error', message: err?.message || '停止请求失败，请重试。' });
     }
   }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key, workingState.responderUid]);
 
