@@ -54,6 +54,7 @@ export default function ProfileEditor({
   liquidThemeAccess = { loading: false, unlocked: false },
   onUnlockLiquidTheme,
   onClose,
+  returnFocusRef,
   onSaved,
   onOpenRelay,
   onOpenFeedback,
@@ -82,7 +83,7 @@ export default function ProfileEditor({
   const userUID = user?.uid || user?.id || '';
   const currentThemeLabel = THEME_OPTIONS.find(({ id }) => id === theme)?.label || '浅色';
 
-  useDialogBehavior(modalRef, { onClose });
+  useDialogBehavior(modalRef, { onClose, returnFocusRef });
 
   useEffect(() => {
     if (window.matchMedia?.('(max-width: 768px)').matches) {

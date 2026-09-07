@@ -44,7 +44,7 @@ function isolateBackground(dialog) {
 }
 
 // Shared behavior only: callers keep their existing dialog markup and visual styles.
-export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef, open = true } = {}) {
+export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef, returnFocusRef, open = true } = {}) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
@@ -92,9 +92,13 @@ export default function useDialogBehavior(dialogRef, { onClose, initialFocusRef,
       document.removeEventListener('keydown', handleKey);
       dialogStack.splice(dialogStack.indexOf(token), 1);
       releaseBackground();
-      if (opener instanceof HTMLElement && opener.isConnected && !opener.closest('[inert]')) {
-        opener.focus({ preventScroll: true });
+      // A menu item may unmount before the dialog opens. Prefer its stable trigger.
+      const returnTarget = [returnFocusRef?.current, opener].find((element) => (
+        element instanceof HTMLElement && element.isConnected && !element.matches(':disabled') && visible(element)
+      ));
+      if (returnTarget) {
+        returnTarget.focus({ preventScroll: true });
       }
     };
-  }, [dialogRef, initialFocusRef, open]);
+  }, [dialogRef, initialFocusRef, returnFocusRef, open]);
 }

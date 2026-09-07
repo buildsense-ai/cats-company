@@ -353,6 +353,7 @@ function TinodeWebApp({ location }) {
   const [showProfileEditor, setShowProfileEditor] = useState(false);
   const [showProfilePopover, setShowProfilePopover] = useState(false);
   const profilePopoverRef = useRef(null);
+  const profileTriggerRef = useRef(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
@@ -1444,6 +1445,7 @@ function TinodeWebApp({ location }) {
         </div>
         
         <ProfileFooter
+          triggerRef={profileTriggerRef}
           user={user}
           wsStatus={wsStatus}
           directSettings={mobileProfileSettingsDirect}
@@ -1587,6 +1589,7 @@ function TinodeWebApp({ location }) {
 
       {showProfileEditor && (
         <ProfileEditor
+          returnFocusRef={profileTriggerRef}
           user={user}
           theme={theme}
           onThemeChange={selectTheme}
@@ -1962,7 +1965,7 @@ export function ProfilePopover({ compact = false, popoverRef, children, onLogout
   );
 }
 
-function ProfileFooter({ user, wsStatus, popoverOpen, directSettings = false, onTogglePopover }) {
+function ProfileFooter({ user, wsStatus, popoverOpen, directSettings = false, onTogglePopover, triggerRef }) {
   const connected = wsStatus === 'connected';
   const reconnecting = wsStatus === 'connecting' || wsStatus === 'reconnecting';
   const statusClass = connected ? 'online' : reconnecting ? 'reconnecting' : 'offline';
@@ -1972,6 +1975,7 @@ function ProfileFooter({ user, wsStatus, popoverOpen, directSettings = false, on
     <button
       type="button"
       className="v3-profile-footer"
+      ref={triggerRef}
       onClick={onTogglePopover}
       aria-label={`${displayName}，${directSettings ? '打开设置' : '打开个人菜单'}`}
       aria-expanded={popoverOpen}
