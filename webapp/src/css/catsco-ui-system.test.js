@@ -197,6 +197,15 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('html[data-theme="liquid"] .v3-chat-item.active {\n  border-color: var(--cc-liquid-edge);\n  background: rgba(73, 86, 168, 0.12);');
   });
 
+  it('shares the existing floating-menu layer above the mobile sidebar', () => {
+    const menu = ruleFor('.cc-sidebar-floating-menu,\n.cc-agent-action-menu');
+    expect(menu).toContain('z-index: 2600;');
+    expect(menu).toContain('right: auto;');
+    expect(menu).toContain('bottom: auto;');
+    expect(menu).toContain('max-width: calc(100vw - 16px);');
+    expect(menu).toContain('overflow-y: auto;');
+  });
+
   it('keeps selected sidebar rows free of accent rails in liquid themes', () => {
     expect(ruleFor('.v3-chat-item.active::before')).toContain('display: none;');
     expect(ruleFor('html[data-theme="liquid"] .v3-chat-item.active'))

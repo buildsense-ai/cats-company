@@ -3597,6 +3597,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
 }
 
+.cc-sidebar-floating-menu,
 .cc-agent-action-menu {
   right: auto;
   bottom: auto;
