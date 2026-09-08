@@ -20,6 +20,7 @@ import SidebarResizeHandle, {
   saveSidebarWidth,
 } from '../widgets/sidebar-resizer';
 import ProfileEditor from '../widgets/profile-editor';
+import AgentSettingsMenu from '../widgets/agent-settings-menu';
 import FeedbackModal from '../widgets/feedback-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
@@ -1478,6 +1479,10 @@ function TinodeWebApp({ location }) {
             <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
               <KeyRound size={16} style={{marginRight: 10}} /> 套餐与权益
             </button>
+            <AgentSettingsMenu
+              onManage={() => { setShowProfilePopover(false); window.dispatchEvent(new Event('cc:open-agent-manager')); }}
+              onAdd={() => { setShowProfilePopover(false); window.dispatchEvent(new Event('cc:open-add-assistant')); }}
+            />
             <button type="button" role="menuitem" className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料
             </button>
@@ -1601,6 +1606,8 @@ function TinodeWebApp({ location }) {
           onOpenFeedback={() => setShowFeedbackModal(true)}
           onOpenDownload={() => openDesktopModal('download')}
           onOpenDesktopConnect={() => openDesktopModal('connect')}
+          onOpenAgentManager={() => window.dispatchEvent(new Event('cc:open-agent-manager'))}
+          onAddAssistant={() => window.dispatchEvent(new Event('cc:open-add-assistant'))}
           onLogout={handleLogout}
         />
       )}

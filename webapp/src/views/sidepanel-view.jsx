@@ -11,7 +11,7 @@ import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus, ListChecks } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, TextCursorInput, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus, ListChecks } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -361,6 +361,7 @@ export default function ChatListView({
   const [deletingTopicId, setDeletingTopicId] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showAddFriend, setShowAddFriend] = useState(false);
+  const [addFriendInitialFocus, setAddFriendInitialFocus] = useState('search');
   const [showAgentStore, setShowAgentStore] = useState(false);
   const [agentStoreInitialAgentId, setAgentStoreInitialAgentId] = useState(null);
   const [agentStoreInitialCloudWorker, setAgentStoreInitialCloudWorker] = useState(null);
@@ -436,7 +437,24 @@ export default function ChatListView({
       setShowAgentStore(true);
     };
     window.addEventListener('cc:open-cloud-worker-manager', openCloudManager);
-    return () => window.removeEventListener('cc:open-cloud-worker-manager', openCloudManager);
+    const openAgentManager = () => {
+      setShowAddFriend(false);
+      setAgentStoreInitialAgentId(null);
+      setAgentStoreInitialCloudWorker(null);
+      setShowAgentStore(true);
+    };
+    const openAddAssistant = () => {
+      setShowAgentStore(false);
+      setAddFriendInitialFocus('invite');
+      setShowAddFriend(true);
+    };
+    window.addEventListener('cc:open-agent-manager', openAgentManager);
+    window.addEventListener('cc:open-add-assistant', openAddAssistant);
+    return () => {
+      window.removeEventListener('cc:open-cloud-worker-manager', openCloudManager);
+      window.removeEventListener('cc:open-agent-manager', openAgentManager);
+      window.removeEventListener('cc:open-add-assistant', openAddAssistant);
+    };
   }, []);
   const pendingSidebarScrollAnchorRef = useRef(null);
   const pendingSidebarRevealRef = useRef('');
@@ -581,6 +599,20 @@ export default function ChatListView({
       document.removeEventListener('keydown', closeMenusOnEscape);
     };
   }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions, showBatchProjectActions, showBatchNotificationActions]);
+
+  useEffect(() => {
+    if (!editingHistoryTopicId || renamingTopicId) return undefined;
+    const cancelRenameFromOutside = (event) => {
+      const row = event.target instanceof Element
+        ? event.target.closest('.cc-sidebar-item-row')
+        : null;
+      if (row?.querySelector('.cc-history-rename-form')?.dataset.topicId === editingHistoryTopicId) return;
+      setEditingHistoryTopicId('');
+      setHistoryNameDraft('');
+    };
+    document.addEventListener('pointerdown', cancelRenameFromOutside, true);
+    return () => document.removeEventListener('pointerdown', cancelRenameFromOutside, true);
+  }, [editingHistoryTopicId, renamingTopicId]);
 
 
   useEffect(() => {
@@ -2342,7 +2374,7 @@ export default function ChatListView({
   const renderTaskCopy = (chat, fallback = null, kindLabel = '') => (
     <div className="cc-chat-row-copy">
       {editingHistoryTopicId === chat.id ? (
-        <form className="cc-history-rename-form" onSubmit={(event) => handleRenameHistoryTask(event, chat)} onClick={(event) => event.stopPropagation()}>
+        <form className="cc-history-rename-form" data-topic-id={chat.id} onSubmit={(event) => handleRenameHistoryTask(event, chat)} onClick={(event) => event.stopPropagation()}>
           <input
             value={historyNameDraft}
             onChange={(event) => setHistoryNameDraft(event.target.value)}
@@ -2510,7 +2542,7 @@ export default function ChatListView({
             aria-label={`${chat.name} 任务操作`}
           >
             <button type="button" role="menuitem" aria-label={`修改任务名称 ${chat.name}`} onClick={() => startRenamingHistoryTask(chat)}>
-              <Pencil size={14} />
+              <TextCursorInput size={14} aria-hidden="true" />
               <span>修改任务名称</span>
             </button>
             <button
@@ -3140,9 +3172,9 @@ export default function ChatListView({
                 if (compactHistoryCloseTimerRef.current) clearTimeout(compactHistoryCloseTimerRef.current);
               }}
               onPointerLeave={scheduleCompactHistoryClose}
-              onScroll={() => setCompactHistoryTooltip(null)}
             >
               <div className="cc-compact-history-heading">历史任务</div>
+              <div className="cc-compact-history-list" onScroll={() => setCompactHistoryTooltip(null)}>
               {compactChats.length === 0 ? (
                 <div className="cc-compact-history-empty">暂无历史任务</div>
               ) : compactChats.map((chat) => (
@@ -3171,6 +3203,7 @@ export default function ChatListView({
                   {activeTopic === chat.id && <Check size={14} aria-hidden="true" />}
                 </button>
               ))}
+              </div>
             </div>,
             document.body,
           )}
@@ -3286,11 +3319,12 @@ export default function ChatListView({
                 role="menuitem"
                 onClick={() => {
                   setShowContactActions(false);
+                  setAddFriendInitialFocus('search');
                   setShowAddFriend(true);
                 }}
               >
                 <UserPlus size={14} />
-                <span>添加好友</span>
+                <span>添加好友/助手</span>
               </button>
               <button
                 type="button"
@@ -3946,13 +3980,19 @@ export default function ChatListView({
         document.body,
       )}
       {showAddFriend && createPortal(
-        <AddFriend currentUser={user} onClose={() => setShowAddFriend(false)} onSent={() => loadAll()} />,
+        <AddFriend currentUser={user} initialFocus={addFriendInitialFocus} onClose={() => setShowAddFriend(false)} onSent={() => loadAll()} />,
         document.body,
       )}
       {showAgentStore && createPortal(
         <AgentStoreModal
           initialAgentId={agentStoreInitialAgentId}
           initialCloudWorker={agentStoreInitialCloudWorker}
+          onOpenAgentChat={(agent) => {
+            setShowAgentStore(false);
+            setAgentStoreInitialAgentId(null);
+            setAgentStoreInitialCloudWorker(null);
+            handleSelectAgent(agent);
+          }}
           onOpenSkillHub={(agentId, agent) => {
             setShowAgentStore(false);
             setAgentStoreInitialAgentId(null);

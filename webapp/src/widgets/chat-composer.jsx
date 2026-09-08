@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Bot, ChevronDown, FileText, Mic, Plus, Square, X } from 'lucide-react';
+import { ArrowUp, Bot, ChevronDown, FileText, LoaderCircle, Mic, Plus, Square, X } from 'lucide-react';
 
 import { createStreamingSTTSession, isStreamingSTTSupported } from '../stt-client';
 
@@ -122,6 +122,7 @@ export default function ChatComposer({
   separateStop = false,
   onStop,
   stopDisabled = false,
+  stopPending = false,
   agentReplyActive = false,
   onCloseMenus,
   onVoiceFinal,
@@ -825,31 +826,36 @@ export default function ChatComposer({
             <button
               type="button"
               className="v3-tool v3-stop-button"
-              disabled={stopDisabled}
+              disabled={stopDisabled || stopPending}
               onClick={onStop}
-              aria-label="停止当前工作"
-              title="停止当前工作"
+              aria-label={stopPending ? '正在停止' : '停止当前工作'}
+              title={stopPending ? '正在停止' : '停止当前工作'}
+              aria-busy={stopPending || undefined}
             >
-              <Square size={13} fill="currentColor" aria-hidden="true" />
+              {stopPending ? <LoaderCircle size={16} className="cc-stop-spinner" aria-hidden="true" />
+                : <Square size={13} fill="currentColor" aria-hidden="true" />}
             </button>
           )}
           <button
-            className={`v3-send${stop ? ' stop' : ''}`}
-            disabled={stop ? stopDisabled : sendDisabled}
+            className={`v3-send${stop ? ' stop' : ''}${stop && stopPending ? ' is-stopping' : ''}`}
+            disabled={stop ? stopDisabled || stopPending : sendDisabled}
             onClick={stop ? onStop : onSend}
-            aria-label={stop ? '停止当前工作' : '发送'}
-            title={stop ? '停止当前工作' : '发送'}
+            aria-label={stop ? (stopPending ? '正在停止' : '停止当前工作') : '发送'}
+            title={stop ? (stopPending ? '正在停止' : '停止当前工作') : '发送'}
+            aria-busy={stop && stopPending || undefined}
             type="button"
           >
-            {stop ? <Square size={13} fill="currentColor" /> : <ArrowUp size={18} />}
+            {stop ? (stopPending ? <LoaderCircle size={18} className="cc-stop-spinner" aria-hidden="true" />
+              : <Square size={13} fill="currentColor" />) : <ArrowUp size={18} />}
           </button>
         </div>
       </div>
       <div
         className={`v3-composer-hint${voiceFeedbackTone ? ` ${voiceFeedbackTone}` : ''}`}
-        aria-hidden={voiceNotice ? 'true' : undefined}
+        aria-hidden={voiceNotice && !stopPending ? 'true' : undefined}
+        role={stopPending ? 'status' : undefined}
       >
-        {voiceFeedbackText || CHAT_COMPOSER_HINT}
+        {stopPending ? '正在停止，请稍候…' : (voiceFeedbackText || CHAT_COMPOSER_HINT)}
       </div>
       {voiceHoldActive && (
         <div

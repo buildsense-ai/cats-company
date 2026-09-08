@@ -574,7 +574,7 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-send:disabled svg {
   filter: none;
 }
 
-html[data-theme="liquid"][data-liquid-variant="green"] .v3-send.stop:not(:disabled) {
+html[data-theme="liquid"][data-liquid-variant="green"] .v3-send.stop:is(:not(:disabled), .is-stopping) {
   border-color: color-mix(in srgb, var(--cc-danger) 62%, transparent);
   background: var(--cc-danger);
   color: #fff;
@@ -584,8 +584,8 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-send.stop:not(:disabl
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-send.stop:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--cc-danger) 78%, #fff);
-  background: color-mix(in srgb, var(--cc-danger) 88%, #8f2525);
+  border-color: color-mix(in srgb, var(--cc-danger) 62%, transparent);
+  background: var(--cc-danger);
   color: #fff;
 }
 
@@ -920,7 +920,6 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-wpi-plan-title {
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] .v3-wpi-plan-count {
-  background: rgba(41, 188, 149, 0.1);
   color: #b9d8cf;
 }
 

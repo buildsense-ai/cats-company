@@ -27,6 +27,7 @@ import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-prof
 import { startPwaInstallLifecycle } from './utils/pwa-install';
 import './css/auth-critical.css';
 import './css/catsco-focus-policy.css';
+import './css/catsco-input-states.css';
 
 const importWorkspace = () => import('./views/tinode-web');
 const TinodeWeb = lazy(importWorkspace);

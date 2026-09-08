@@ -1055,12 +1055,17 @@ describe('ChatMessage rich file rendering', () => {
       '更多操作',
     ]);
 
+    vi.useFakeTimers();
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="复制"]'));
       await Promise.resolve();
     });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('这是一条可以复制的消息');
     expect(container.querySelector('[aria-label="已复制"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="已复制"] .cc-copy-success-icon')).not.toBeNull();
+    await act(async () => { vi.advanceTimersByTime(1500); });
+    expect(container.querySelector('[aria-label="复制"] .lucide-copy')).not.toBeNull();
+    vi.useRealTimers();
     expect(container.querySelector('[aria-label="点赞"]')).toBeNull();
 
     await act(async () => {
@@ -1660,7 +1665,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-message')?.classList.contains('is-working')).toBe(false);
     expect(container.querySelector('.v3-message')?.classList.contains('is-complete')).toBe(true);
     expect(container.querySelectorAll('.v3-wpi-plan')).toHaveLength(1);
-    expect(container.querySelector('.v3-wpi-plan-count')?.textContent).toBe('2/2');
+    expect(container.querySelector('.v3-wpi-plan-count')?.textContent).toBe('2/2 已完成');
     expect(container.querySelectorAll('.v3-wpi-plan-step.completed')).toHaveLength(2);
     expect(container.querySelector('.v3-working-steps')).toBeNull();
     expect(container.querySelector('.v3-working-plan')?.classList.contains('is-after-details')).toBe(false);
@@ -1681,6 +1686,38 @@ describe('ChatMessage rich file rendering', () => {
     expect(persistentPlan?.classList.contains('is-after-details')).toBe(true);
     expect(inlineDetails?.querySelectorAll('.v3-wpi-tool-name')).toHaveLength(1);
     expect(inlineDetails?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+  });
+
+  it('animates only steps that become completed while the plan is mounted', async () => {
+    vi.useFakeTimers();
+    const renderPlan = async (status, extraCompleted = false) => {
+      await act(async () => root.render(
+        <ChatMessage
+          message={{ id: 22, from_uid: 2, content: '', created_at: '2026-06-09T00:00:00Z' }}
+          workingMessages={[{
+            type: 'tool_use', content: 'update_plan',
+            metadata: { id: `plan-${status}`, input: { steps: [
+              { status: 'completed', step: '已有完成步骤' },
+              { status, step: '实时更新步骤' },
+              ...(extraCompleted ? [{ status: 'completed', step: '补充历史步骤' }] : []),
+            ] } },
+          }]}
+          workingOnly isSelf={false} isGroup={false} senderName="CatsCo"
+        />,
+      ));
+    };
+    await renderPlan('in_progress');
+    expect(container.querySelector('.is-just-completed')).toBeNull();
+    await renderPlan('completed', true);
+    expect(container.querySelectorAll('.is-just-completed')).toHaveLength(1);
+    expect(container.querySelector('.is-just-completed').textContent).toBe('实时更新步骤');
+    await act(async () => vi.advanceTimersByTime(320));
+    expect(container.querySelector('.is-just-completed')).toBeNull();
+    await renderPlan('completed', true);
+    expect(container.querySelector('.is-just-completed')).toBeNull();
+    await act(async () => root.render(null));
+    await renderPlan('completed', true);
+    expect(container.querySelector('.is-just-completed')).toBeNull();
   });
 
   it('summarizes working steps and mounts large tool results only on demand', async () => {

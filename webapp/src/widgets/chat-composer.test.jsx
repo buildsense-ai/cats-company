@@ -232,6 +232,26 @@ describe('ChatComposer', () => {
     expect(container.querySelector('.v3-stop-button')).toBeNull();
   });
 
+  it.each([true, false])('shows a pending stop without clearing the draft (primary stop: %s)', async (primary) => {
+    const onStop = vi.fn();
+    const props = { stop: primary, separateStop: !primary, value: '保留草稿', onStop };
+    await renderComposer({ ...props, stopPending: true });
+    const button = container.querySelector('button[aria-label="正在停止"]');
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.querySelector('.cc-stop-spinner')).not.toBeNull();
+    expect(container.querySelector('.v3-composer-hint[role="status"]').textContent).toContain('正在停止');
+    await act(async () => button.click());
+    expect(onStop).not.toHaveBeenCalled();
+    expect(container.querySelector('textarea').value).toBe('保留草稿');
+    await renderComposer({ ...props, stopPending: false });
+    const retry = container.querySelector('button[aria-label="停止当前工作"]');
+    expect(retry.disabled).toBe(false);
+    expect(retry.querySelector('.cc-stop-spinner')).toBeNull();
+    await act(async () => retry.click());
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps streaming partial text local and commits only the final transcript', async () => {
 	const onVoiceFinal = vi.fn();
 	let callbacks;

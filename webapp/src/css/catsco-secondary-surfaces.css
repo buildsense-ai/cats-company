@@ -142,9 +142,24 @@
 .oc-friend-search-control {
   grid-template-columns: minmax(0, 1fr) 84px;
   padding-right: 0;
+  transition: border-color 140ms ease;
+}
+
+.oc-friend-search-control:focus-within {
+  border-color: var(--cc-focus-border);
+}
+
+.oc-friend-manager-dialog .oc-friend-search-control input.oc-friend-search-input {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .oc-friend-search-mode-select {
+  position: relative;
   display: flex;
   width: 84px;
   height: 100%;
@@ -152,12 +167,23 @@
   justify-content: center;
 }
 
-.oc-friend-search-mode-select .v3-custom-model-select-trigger,
+.oc-friend-search-mode-select::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 11px;
+  bottom: 11px;
+  width: 1px;
+  background: var(--cc-border);
+  pointer-events: none;
+}
+
+.oc-friend-manager-dialog .oc-friend-search-mode-select button.v3-custom-model-select-trigger,
 .oc-friend-search-mode-select .v3-custom-model-select-trigger:hover:not(:disabled),
 .oc-friend-search-mode-select .v3-custom-model-select-trigger:active:not(:disabled) {
   width: 84px;
-  height: 42px;
-  min-height: 42px;
+  height: 100%;
+  min-height: 0;
   gap: 6px;
   padding: 0 12px;
   border-color: transparent;
@@ -178,6 +204,7 @@
 }
 
 .oc-friend-search-mode-select .v3-custom-model-select-trigger:hover:not(:disabled) {
+  background: var(--cc-hover);
   color: var(--cc-text);
 }
 
@@ -195,7 +222,77 @@
 }
 
 .oc-friend-search-submit {
+  position: relative;
   align-self: stretch;
+}
+
+.oc-friend-search-label.is-hidden { opacity: 0; }
+.oc-friend-message-hint { color: var(--cc-muted); font-size: 11px; line-height: 1.5; }
+.oc-friend-result-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.oc-friend-assistant-badge { flex-shrink: 0; padding: 1px 5px; border-radius: 4px; background: var(--cc-hover); color: var(--cc-text-secondary); font-size: 10px; }
+
+.cc-agent-settings-menu { position: relative; }
+.cc-agent-settings-trigger { display: flex; align-items: center; width: 100%; gap: 10px; }
+.cc-agent-settings-chevron { margin-left: auto; transition: transform 140ms ease; }
+.cc-agent-settings-submenu {
+  position: absolute;
+  left: calc(100% + 8px);
+  bottom: 0;
+  z-index: 1;
+  width: 200px;
+  max-width: calc(100vw - 32px);
+  padding: 6px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: var(--cc-panel-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  animation: cc-agent-submenu-enter 120ms ease-out;
+}
+.cc-agent-settings-submenu::before { content: ''; position: absolute; top: 0; bottom: 0; left: -9px; width: 9px; }
+.cc-agent-settings-submenu > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+.cc-agent-settings-submenu > button:hover,
+.cc-agent-settings-submenu > button:focus-visible { background: var(--cc-hover); color: var(--cc-text); }
+.cc-agent-settings-submenu svg { flex-shrink: 0; }
+.cc-agent-settings-menu.is-inline .cc-agent-settings-submenu { position: static; width: 100%; margin-top: 4px; box-shadow: none; }
+.cc-agent-settings-menu.is-inline .cc-agent-settings-submenu::before { display: none; }
+.cc-agent-settings-menu.is-inline [aria-expanded='true'] > .cc-agent-settings-chevron { transform: rotate(90deg); }
+.oc-profile-mobile-home-card .cc-agent-settings-trigger { min-height: 56px; padding: 6px 12px; gap: 8px; background: transparent; color: var(--cc-text); font-size: var(--cc-mobile-text-body); }
+.oc-profile-mobile-home-card .cc-agent-settings-trigger > svg:first-child { width: 36px; height: 22px; }
+.oc-profile-mobile-home-card .cc-agent-settings-menu::before { content: ''; display: block; margin: 0 12px 0 56px; height: 1px; background: var(--cc-border); }
+@keyframes cc-agent-submenu-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .cc-agent-settings-submenu { animation: none; }
+  .cc-agent-settings-chevron,
+  .cc-agent-settings-submenu > button { transition: none; }
+}
+
+.oc-friend-search-spinner {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  animation: cc-message-regenerate-spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-friend-search-control,
+  .oc-friend-search-mode-select .v3-custom-model-select-chevron { transition: none; }
+  .oc-friend-search-spinner { animation: none; }
 }
 
 /* Appearance choices keep their existing geometry while removing the green

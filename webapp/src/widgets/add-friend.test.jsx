@@ -98,7 +98,7 @@ describe('AddFriend search mode', () => {
 
     const input = container.querySelector('.oc-friend-search-input');
     expect(input.name).toBe('friend-search');
-    expect(input.getAttribute('aria-label')).toBe('好友名称');
+    expect(input.getAttribute('aria-label')).toBe('好友或助手名字');
     await act(async () => Simulate.change(input, { target: { value: '开发者' } }));
     await act(async () => {
       Simulate.click(container.querySelector('.oc-friend-search-submit'));
@@ -125,6 +125,25 @@ describe('AddFriend search mode', () => {
 
     expect(container.querySelector('.oc-contact-item')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('disables empty searches and does not submit whitespace or an IME confirmation', async () => {
+    await mount();
+    const input = container.querySelector('.oc-friend-search-input');
+    const submit = container.querySelector('.oc-friend-search-submit');
+    expect(input.placeholder).toBe('输入名字…');
+    expect(submit.disabled).toBe(true);
+    await act(async () => Simulate.change(input, { target: { value: '   ' } }));
+    await act(async () => Simulate.keyDown(input, { key: 'Enter' }));
+    expect(submit.disabled).toBe(true);
+    expect(api.searchUsers).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => Simulate.change(input, { target: { value: '好友' } }));
+    expect(submit.disabled).toBe(false);
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })));
+    expect(api.searchUsers).not.toHaveBeenCalled();
+    await act(async () => Simulate.keyDown(input, { key: 'Enter' }));
+    expect(api.searchUsers).toHaveBeenCalledWith('好友', 'name');
   });
 
   it('focuses the search, isolates the background, wraps Tab and restores the opener', async () => {
@@ -161,7 +180,7 @@ describe('AddFriend search mode', () => {
     await mount();
     const input = container.querySelector('.oc-friend-search-input');
     await act(async () => Simulate.change(input, { target: { value: '没有此人' } }));
-    expect(container.textContent).not.toContain('没有找到匹配的好友');
+    expect(container.textContent).not.toContain('没有找到匹配的好友或助手');
     const submit = container.querySelector('.oc-friend-search-submit');
     await act(async () => {
       Simulate.click(submit);
@@ -169,9 +188,12 @@ describe('AddFriend search mode', () => {
     });
     expect(api.searchUsers).toHaveBeenCalledOnce();
     expect(submit.disabled).toBe(true);
+    expect(submit.getAttribute('aria-label')).toBe('正在搜索');
+    expect(submit.querySelector('.oc-friend-search-spinner')).not.toBeNull();
     await act(async () => resolve({ users: [] }));
     expect(submit.disabled).toBe(false);
-    expect(container.textContent).toContain('没有找到匹配的好友');
+    expect(submit.querySelector('.oc-friend-search-spinner')).toBeNull();
+    expect(container.textContent).toContain('没有找到匹配的好友或助手');
   });
 
   it('ignores earlier query results and errors after the mode changes', async () => {
@@ -191,12 +213,12 @@ describe('AddFriend search mode', () => {
     expect(container.textContent).not.toContain('过期结果');
     expect(submit.disabled).toBe(true);
     await act(async () => Simulate.click(container.querySelector('.oc-friend-search-mode-trigger')));
-    const uid = [...document.querySelectorAll('.oc-friend-search-mode-option')].find((node) => node.textContent === 'UID');
+    const uid = [...document.querySelectorAll('.oc-friend-search-mode-option')].find((node) => node.textContent === '按 UID');
     await act(async () => Simulate.click(uid));
     await act(async () => rejectNew(new Error('过期错误')));
     expect(container.textContent).not.toContain('过期错误');
     expect(submit.disabled).toBe(false);
-    expect(container.textContent).not.toContain('没有找到匹配的好友');
+    expect(container.textContent).not.toContain('没有找到匹配的好友或助手');
   });
 
   it('shows failed searches as an error rather than an empty result and permits retry', async () => {
@@ -206,7 +228,7 @@ describe('AddFriend search mode', () => {
     const submit = container.querySelector('.oc-friend-search-submit');
     await act(async () => Simulate.click(submit));
     expect(container.querySelector('[role="alert"]').textContent).toBe('网络暂不可用');
-    expect(container.textContent).not.toContain('没有找到匹配的好友');
+    expect(container.textContent).not.toContain('没有找到匹配的好友或助手');
     expect(submit.disabled).toBe(false);
   });
 
@@ -216,7 +238,7 @@ describe('AddFriend search mode', () => {
     );
     await mount();
 
-    const input = container.querySelector('[aria-label="机器人邀请码"]');
+    const input = container.querySelector('[aria-label="助手邀请码"]');
     await act(async () => Simulate.change(input, { target: { value: 'EXPIRED1' } }));
     const redeemButton = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent.trim() === '使用邀请码');
@@ -227,6 +249,33 @@ describe('AddFriend search mode', () => {
 
     expect(api.redeemBotInviteCode).toHaveBeenCalledWith('EXPIRED1');
     expect(container.querySelector('.oc-form-error').textContent).toBe('邀请码无效或已失效');
+  });
+
+  it('focuses assistant invitations from settings and confirms only a successful redemption', async () => {
+    let finish;
+    api.redeemBotInviteCode.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await mount({ initialFocus: 'invite' });
+    const invite = container.querySelector('[aria-label="助手邀请码"]');
+    expect(document.activeElement).toBe(invite);
+    await act(async () => Simulate.change(invite, { target: { value: 'code123' } }));
+    await act(async () => {
+      Simulate.keyDown(invite, { key: 'Enter' });
+      Simulate.keyDown(invite, { key: 'Enter' });
+    });
+    expect(api.redeemBotInviteCode).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain('已添加助手');
+    await act(async () => finish({}));
+    expect(container.querySelector('[role="status"]').textContent).toBe('已添加助手');
+    expect(invite.value).toBe('');
+    expect(api.sendFriendRequest).not.toHaveBeenCalled();
+  });
+
+  it('labels assistant results separately from human contacts', async () => {
+    api.searchUsers.mockResolvedValue({ users: [{ id: 42, display_name: '同名', account_type: 'bot' }, { id: 43, display_name: '同名', account_type: 'human' }] });
+    await mount();
+    await act(async () => Simulate.change(container.querySelector('.oc-friend-search-input'), { target: { value: '同名' } }));
+    await act(async () => Simulate.click(container.querySelector('.oc-friend-search-submit')));
+    expect(container.querySelectorAll('.oc-friend-assistant-badge')).toHaveLength(1);
   });
 
   it('opens a body portal aligned to the trigger and selects a mode', async () => {
@@ -262,9 +311,10 @@ describe('AddFriend search mode', () => {
 
     expect(document.body.querySelector('.oc-friend-search-mode-menu')).toBeNull();
     expect(trigger.textContent).toContain('UID');
-    expect(trigger.getAttribute('aria-label')).toBe('搜索模式：UID');
-    expect(document.activeElement).toBe(trigger);
-    expect(container.querySelector('.oc-friend-search-input').placeholder).toBe('搜索联系人');
+    expect(trigger.getAttribute('aria-label')).toBe('搜索模式：按 UID');
+    expect(document.activeElement).toBe(container.querySelector('.oc-friend-search-input'));
+    expect(container.querySelector('.oc-friend-search-input').placeholder).toBe('输入 UID…');
+    expect(container.querySelector('.oc-friend-search-input').inputMode).toBe('numeric');
   });
 
   it('supports keyboard navigation and Escape with focus restoration', async () => {
@@ -302,6 +352,7 @@ describe('AddFriend search mode', () => {
 
   it('closes on Tab and follows the dialog focus order in both directions', async () => {
     await mount();
+    await act(async () => Simulate.change(container.querySelector('.oc-friend-search-input'), { target: { value: '好友' } }));
 
     const trigger = container.querySelector('.oc-friend-search-mode-trigger');
     const searchInput = container.querySelector('.oc-friend-search-input');

@@ -4,6 +4,7 @@ import t from '../i18n';
 import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
 import NotificationSettings from './notification-settings';
+import AgentSettingsMenu from './agent-settings-menu';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 import { setShowThinkingPreference, useShowThinkingPreference } from '../utils/show-thinking-preference';
 import useDialogBehavior from '../utils/use-dialog-behavior';
@@ -60,6 +61,8 @@ export default function ProfileEditor({
   onOpenFeedback,
   onOpenDownload,
   onOpenDesktopConnect,
+  onOpenAgentManager,
+  onAddAssistant,
   onLogout,
 }) {
   const fileInputRef = useRef(null);
@@ -270,6 +273,12 @@ export default function ProfileEditor({
                   <span>AI 行为</span>
                   <ChevronRight size={21} aria-hidden="true" />
                 </button>
+                {onOpenAgentManager && onAddAssistant && (
+                  <AgentSettingsMenu inMenu={false}
+                    onManage={() => openMobileDestination(onOpenAgentManager)}
+                    onAdd={() => openMobileDestination(onAddAssistant)}
+                  />
+                )}
               </div>
             </section>
 

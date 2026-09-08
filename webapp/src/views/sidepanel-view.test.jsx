@@ -41,9 +41,9 @@ vi.mock('../widgets/create-group', () => ({
 }));
 
 vi.mock('../widgets/add-friend', () => ({
-  default: function MockAddFriend({ onClose }) {
+  default: function MockAddFriend({ onClose, initialFocus }) {
     return (
-      <div data-testid="add-friend-modal">
+      <div data-testid="add-friend-modal" data-initial-focus={initialFocus}>
         <button type="button" onClick={onClose}>关闭添加好友</button>
       </div>
     );
@@ -1413,6 +1413,59 @@ describe('ChatListView sidebar sections', () => {
     expect(api.disbandGroup).toHaveBeenCalledWith(91);
     expect(onSelectTopic).not.toHaveBeenCalled();
     expect(localStorage.getItem('cc_hidden_history_v1:7')).toBeNull();
+  });
+
+  it.each(['outside the sidebar', 'another task row'])('discards an unsaved task rename when clicking %s', async (destination) => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        { id: 'p2p_7_42', friend_id: 42, name: 'Review Task', is_group: false, is_bot: true },
+        { id: 'p2p_7_43', friend_id: 43, name: 'Other Task', is_group: false, is_bot: true },
+      ],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    await mount({ activeTopic: 'p2p_7_42' });
+    const openRename = async () => {
+      await act(async () => {
+        Simulate.click(container.querySelector('[aria-label="Review Task 更多操作"]'));
+      });
+      await act(async () => {
+        Simulate.click(document.querySelector('[aria-label="修改任务名称 Review Task"]'));
+      });
+    };
+    await openRename();
+    const input = container.querySelector('input[aria-label="修改任务名称 Review Task"]');
+    await act(async () => {
+      Simulate.change(input, { target: { value: 'Unsaved title' } });
+    });
+    const row = input.closest('.cc-sidebar-item-row');
+    for (const target of [input, row, row.querySelector('[aria-label="保存任务名称 Review Task"]')]) {
+      await act(async () => {
+        target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      });
+      expect(container.querySelector('.cc-history-rename-form')).not.toBeNull();
+    }
+    const outside = document.createElement('button');
+    outside.addEventListener('pointerdown', (event) => event.stopPropagation());
+    document.body.appendChild(outside);
+    try {
+      const target = destination === 'outside the sidebar'
+        ? outside
+        : container.querySelector('[aria-label="打开 Other Task"]');
+      await act(async () => {
+        target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+        target.click();
+      });
+      expect(container.querySelector('.cc-history-rename-form')).toBeNull();
+      expect(api.updateConversationTitle).not.toHaveBeenCalled();
+      expect(api.updateGroup).not.toHaveBeenCalled();
+      if (destination === 'another task row') {
+        expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_43' }));
+      }
+      await openRename();
+      expect(container.querySelector('input[aria-label="修改任务名称 Review Task"]').value).toBe('Review Task');
+    } finally {
+      outside.remove();
+    }
   });
 
   it('renames a history task from the three-dot menu and updates the active title', async () => {
@@ -3340,6 +3393,15 @@ describe('ChatListView sidebar sections', () => {
     expect(statusFor('Cancelled history task')?.className).toContain('cancelled');
   });
 
+  it('opens existing assistant dialogs from the redundant settings entries', async () => {
+    await mount();
+    await act(async () => window.dispatchEvent(new Event('cc:open-agent-manager')));
+    expect(document.querySelector('[data-testid="agent-store-modal"]')).not.toBeNull();
+    await act(async () => window.dispatchEvent(new Event('cc:open-add-assistant')));
+    expect(document.querySelector('[data-testid="agent-store-modal"]')).toBeNull();
+    expect(document.querySelector('[data-testid="add-friend-modal"]').dataset.initialFocus).toBe('invite');
+  });
+
   it('collects contact creation actions in one accessible menu and closes it appropriately', async () => {
     await mount();
 
@@ -3351,7 +3413,7 @@ describe('ChatListView sidebar sections', () => {
     expect(menu).toBeTruthy();
     expect(container.querySelector('[aria-label="联系人更多操作"]').getAttribute('aria-expanded')).toBe('true');
     const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', 'Agent 助手']);
+    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友/助手', '创建群组', 'Agent 助手']);
     expect(menuItems[0].querySelector('.lucide-user-plus')).toBeTruthy();
     expect(menuItems[1].querySelector('.lucide-users')).toBeTruthy();
     expect(menuItems[2].querySelector('.lucide-bot')).toBeTruthy();

@@ -1,0 +1,97 @@
+/* Shared text-field feedback. The composer and embedded code editors retain
+ * their own treatment. A dedicated important layer replaces the competing
+ * per-dialog focus overrides without increasing selector specificity.
+ * Geometry, typography, validation timing and submission remain component-owned.
+ */
+@layer cc-input-feedback {
+  :root {
+    --cc-field-ink: #303030;
+    --cc-field-border: #dedede;
+    --cc-field-hover-border: color-mix(in srgb, var(--cc-field-ink) 12%, var(--cc-field-border));
+    --cc-field-focus-border: color-mix(in srgb, var(--cc-field-ink) 28%, var(--cc-field-border));
+    --cc-field-error-border: color-mix(in srgb, var(--cc-field-ink) 40%, var(--cc-field-border));
+    --cc-field-transition: border-color 200ms ease, background-color 200ms ease, color 200ms ease, opacity 200ms ease;
+  }
+
+  html[data-theme='dark'],
+  html[data-theme='liquid'][data-liquid-variant='green'] {
+    --cc-field-ink: #e0e0e0;
+    --cc-field-border: #363636;
+  }
+
+  :is(
+    input:not([type]), input[type='text'], input[type='search'],
+    input[type='password'], input[type='email'], input[type='url'],
+    input[type='tel'], input[type='number'], input[type='date'],
+    input[type='datetime-local'], input[type='time'], textarea,
+    [contenteditable='true']
+  ):not(:where(
+    .v3-composer-input, .v3-composer-box *,
+    .monaco-editor *, .CodeMirror *, [data-cc-input-feedback='off']
+  )) {
+    border-color: var(--cc-field-border) !important;
+    background-color: var(--cc-input-surface, var(--cc-code)) !important;
+    outline: none !important;
+    box-shadow: none !important;
+    caret-color: var(--cc-field-ink) !important;
+    transition: var(--cc-field-transition) !important;
+
+    &:hover:not(:disabled):not([readonly]):not([aria-disabled='true']):not([aria-invalid='true']):not(:user-invalid) {
+      border-color: var(--cc-field-hover-border) !important;
+    }
+    &:focus:not(:disabled):not([readonly]):not([aria-disabled='true']):not([aria-invalid='true']):not(:user-invalid) {
+      border-color: var(--cc-field-focus-border) !important;
+    }
+    /* Explicit validation wins over hover and focus, without a flashing ring. */
+    &:is([aria-invalid='true'], :user-invalid) {
+      border-color: var(--cc-field-error-border) !important;
+    }
+    &:is(:disabled, [aria-disabled='true']) {
+      opacity: .55 !important;
+      cursor: not-allowed !important;
+    }
+    &[readonly] {
+      opacity: 1 !important;
+      cursor: text !important;
+    }
+    &::placeholder {
+      color: var(--cc-placeholder) !important;
+      opacity: 1 !important;
+    }
+
+    /* The enclosing search/message field owns the single visible border. */
+    &:where(
+      .oc-friend-search-control *, .oc-member-search *, .cc-global-search-field *,
+      .cc-agent-skill-search *, .cc-sidebar-search *, .oc-feedback-message-field *
+    ) {
+      border-color: transparent !important;
+      background-color: transparent !important;
+      box-shadow: none !important;
+    }
+  }
+
+  :is(
+    .oc-friend-search-control, .oc-member-search, .cc-global-search-field,
+    .cc-agent-skill-search, .cc-sidebar-search, .oc-feedback-message-field
+  ):has(input, textarea) {
+    border-color: var(--cc-field-border) !important;
+    background-color: var(--cc-input-surface, var(--cc-code)) !important;
+    outline: none !important;
+    box-shadow: none !important;
+    transition: var(--cc-field-transition) !important;
+
+    &:hover:has(:is(input, textarea):enabled:not([readonly])):not(:has([aria-invalid='true'], :user-invalid)) {
+      border-color: var(--cc-field-hover-border) !important;
+    }
+    &:focus-within:has(:is(input, textarea):enabled:not([readonly])):not(:has([aria-invalid='true'], :user-invalid)) {
+      border-color: var(--cc-field-focus-border) !important;
+    }
+    &:has(:is(input, textarea):is([aria-invalid='true'], :user-invalid)) {
+      border-color: var(--cc-field-error-border) !important;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root { --cc-field-transition: none; }
+  }
+}

@@ -82,6 +82,7 @@ describe('entry bundle split', () => {
       '../css/catsco-settings-controls.css',
       '../css/catsco-secondary-surfaces.css',
       '../css/search-overlay.css',
+      '../css/catsco-input-states.css',
     ]);
   });
 

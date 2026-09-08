@@ -188,6 +188,32 @@ export default function CloudArtifactsPanel({
   const [artifactScope, setArtifactScope] = useState('current');
   const requestSequenceRef = useRef(0);
   const publishInputRef = useRef(null);
+  const tabsRef = useRef(null);
+  const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0 });
+
+  useEffect(() => {
+    if (!copiedID) return undefined;
+    const timer = window.setTimeout(() => setCopiedID(''), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copiedID]);
+
+  useLayoutEffect(() => {
+    const tabs = tabsRef.current;
+    const active = tabs?.querySelector('[aria-selected="true"]');
+    if (!active) return undefined;
+    const measure = () => {
+      const left = active.offsetLeft;
+      const width = active.offsetWidth;
+      setTabIndicator(previous => previous.left === left && previous.width === width
+        ? previous : { left, width });
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(tabs);
+    observer?.observe(active);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [tab, agentUid]);
 
   const selectTab = (nextTab) => {
     if (nextTab === 'files' && !topicId) return;
@@ -282,7 +308,6 @@ export default function CloudArtifactsPanel({
     try {
       await navigator.clipboard.writeText(artifact.url);
       setCopiedID(artifact.id);
-      window.setTimeout(() => setCopiedID(''), 1600);
     } catch {
       setError('链接复制失败，请直接打开后从地址栏复制');
     }
@@ -558,10 +583,12 @@ export default function CloudArtifactsPanel({
               type="button"
               onClick={() => copyURL(artifact)}
               disabled={pendingID === artifact.id}
-              aria-label={'复制 ' + artifact.title + ' 链接'}
+              aria-label={copiedID === artifact.id ? '已复制 ' + artifact.title + ' 链接' : '复制 ' + artifact.title + ' 链接'}
               title={copiedID === artifact.id ? '已复制' : '复制链接'}
             >
-              <Copy size={17} />
+              {copiedID === artifact.id
+                ? <Check size={20} className="cc-copy-success-icon" aria-hidden="true" />
+                : <Copy size={17} />}
             </button>
             {(isOwner || artifact.can_delete) && (
               <button
@@ -638,7 +665,9 @@ export default function CloudArtifactsPanel({
           onClick={onClose}
         />
         <header className="cloud-artifacts-header">
-          <div className="cloud-artifacts-tabs" role="tablist" aria-label="云文件">
+          <div ref={tabsRef} className="cloud-artifacts-tabs" role="tablist" aria-label="云文件">
+            <span className="cloud-artifacts-tab-indicator" aria-hidden="true"
+              style={{ width: tabIndicator.width, transform: `translateX(${tabIndicator.left}px)` }} />
             <button
               type="button"
               role="tab"
@@ -1019,8 +1048,7 @@ function ArtifactFilters({
         width: 0,
       }}
     >
-      <fieldset className="cloud-artifact-filter-section cloud-artifact-filter-scope-section">
-        <legend>成果范围</legend>
+      <fieldset className="cloud-artifact-filter-section cloud-artifact-filter-scope-section" aria-label="成果范围">
         <div className="cloud-artifact-filter-scope-options">
           <label className={value === 'current' ? 'is-selected' : ''}>
             <input

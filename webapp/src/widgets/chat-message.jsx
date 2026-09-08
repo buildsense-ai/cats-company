@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -841,6 +841,31 @@ function SubAgentWorkingGroup({ item }) {
   );
 }
 
+function WorkingPlanStep({ step }) {
+  const previousStatus = useRef(step.status);
+  const [justCompleted, setJustCompleted] = useState(false);
+
+  useEffect(() => {
+    const transitioned = previousStatus.current !== 'completed' && step.status === 'completed';
+    previousStatus.current = step.status;
+    setJustCompleted(transitioned);
+    if (!transitioned) return;
+    const timer = window.setTimeout(() => setJustCompleted(false), 320);
+    return () => window.clearTimeout(timer);
+  }, [step.status]);
+
+  return (
+    <div className={`v3-wpi-plan-step ${step.status}${justCompleted ? ' is-just-completed' : ''}`}>
+      {step.status === 'completed'
+        ? <CheckCircle2 size={14} />
+        : step.status === 'in_progress'
+          ? <CircleDot size={14} />
+          : <Circle size={14} />}
+      <span>{step.text}</span>
+    </div>
+  );
+}
+
 function WorkingPlanCard({ item }) {
   const plan = planFromUpdatePlanTool(item);
   if (!plan) return null;
@@ -849,20 +874,13 @@ function WorkingPlanCard({ item }) {
   return (
     <div className="v3-wpi-plan" role="status">
       <div className="v3-wpi-plan-header">
-        <FileText size={14} className="v3-wpi-icon" />
+        <FileText size={14} className="v3-wpi-icon" aria-hidden="true" />
         <span className="v3-wpi-plan-title">计划</span>
-        <span className="v3-wpi-plan-count">{completed}/{plan.steps.length}</span>
+        <span className="v3-wpi-plan-count">{completed}/{plan.steps.length} 已完成</span>
       </div>
       <div className="v3-wpi-plan-steps">
         {plan.steps.map((step, index) => (
-          <div className={`v3-wpi-plan-step ${step.status}`} key={`${index}-${step.text}`}>
-            {step.status === 'completed'
-              ? <CheckCircle2 size={14} />
-              : step.status === 'in_progress'
-                ? <CircleDot size={14} />
-                : <Circle size={14} />}
-            <span>{step.text}</span>
-          </div>
+          <WorkingPlanStep step={step} key={`${index}-${step.text}`} />
         ))}
       </div>
     </div>
@@ -978,6 +996,11 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
 
 function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage }) {
   const [copyState, setCopyState] = useState('');
+  useEffect(() => {
+    if (!copyState) return undefined;
+    const timer = window.setTimeout(() => setCopyState(''), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
   const [regenerateState, setRegenerateState] = useState('');
   const [messageActionsOpen, setMessageActionsOpen] = useState(false);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
@@ -1323,7 +1346,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               disabled={!copyText}
               type="button"
             >
-              <Copy size={17} />
+              {copyState === 'copied'
+                ? <Check size={20} className="cc-copy-success-icon" aria-hidden="true" />
+                : <Copy size={17} />}
             </button>
             {onRegenerate && (
               <button
@@ -1440,7 +1465,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
     !renderableTable && hasPlainTextTableLikeBlock(text)
   ), [renderableTable, text]);
   const plainTextParagraphs = useMemo(() => (
-    // Presentation-only normalization: CSS owns the first-line indent.
+    // Presentation-only normalization: plain-text paragraphs start flush left.
     // Preserve line breaks and whitespace within each paragraph.
     plainText.split(/\r?\n(?:[\t \u3000]*\r?\n)+/)
       .map((paragraph) => paragraph.replace(/^[\t \u3000]+/, ''))

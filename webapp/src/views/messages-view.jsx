@@ -4662,7 +4662,6 @@ export default function MessagesView({
                     title={title}
                     onClick={() => jumpToQuestion(item.key)}
                   >
-                    <span className="cc-question-list-index">{index + 1}</span>
                     <span className="cc-question-list-label">{item.label}</span>
                   </button>
                 );
@@ -4736,6 +4735,7 @@ export default function MessagesView({
         stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
         separateStop={canStopActiveBotWorking && Boolean(input.trim() || pendingAttachments.length)}
         stopDisabled={isStopRequested}
+        stopPending={isStopRequested}
         onStop={handleStopGeneration}
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
