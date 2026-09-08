@@ -1452,7 +1452,11 @@ func TestWeixinClawBotQRCodeStatusSavesAgentToken(t *testing.T) {
 		t.Fatalf("unexpected status response: %+v", resp)
 	}
 	stored, err := db.GetWeixinClawBotTokenByHash(resp.Token.TokenHash)
-	if err != nil || stored == nil || stored.BotToken != "secret-bot-token" || stored.ILinkBotID != "ilink-bot-1" || stored.ILinkUserID != "wx-user-1" {
+	if err != nil || stored == nil ||
+		stored.BotToken != "secret-bot-token" ||
+		stored.ILinkBotID != "ilink-bot-1" ||
+		stored.ILinkUserID != "wx-user-1" ||
+		stored.BaseURL != "https://ilink.example" {
 		t.Fatalf("stored token = %+v err=%v", stored, err)
 	}
 	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
@@ -2363,6 +2367,97 @@ func TestWeixinClawBotOutboundRichFileReplyUsesDispatcherFallback(t *testing.T) 
 	text := api.sends[0].Text
 	if strings.Contains(text, `{"type":"file"`) || !strings.Contains(text, "report.pdf") || !strings.Contains(text, "https://app.example/uploads/files/report.pdf") {
 		t.Fatalf("fallback text=%q", text)
+	}
+}
+
+func TestWeixinClawBotPollUsesAuthorizedSessionBaseURL(t *testing.T) {
+	type observedRequest struct {
+		Path              string
+		Authorization     string
+		AuthorizationType string
+		WechatUIN         string
+		ContentType       string
+	}
+	defaultRequests := make(chan observedRequest, 1)
+	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defaultRequests <- observedRequest{Path: r.URL.Path}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "wrong base url"})
+	}))
+	defer defaultServer.Close()
+
+	regionalRequests := make(chan observedRequest, 1)
+	regionalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		regionalRequests <- observedRequest{
+			Path:              r.URL.Path,
+			Authorization:     r.Header.Get("Authorization"),
+			AuthorizationType: r.Header.Get("AuthorizationType"),
+			WechatUIN:         r.Header.Get("X-WECHAT-UIN"),
+			ContentType:       r.Header.Get("Content-Type"),
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ret":             0,
+			"msgs":            []interface{}{},
+			"get_updates_buf": "regional-cursor",
+		})
+	}))
+	defer regionalServer.Close()
+
+	db := newChannelAgentTestStore()
+	token, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash: hashWeixinClawBotToken("regional-token"),
+		BotToken:  "regional-token",
+		Status:    types.WeixinClawBotTokenActive,
+		OwnerUID:  1,
+		BaseURL:   regionalServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	handler := NewWeixinClawBotHandler(db, nil, WeixinClawBotConfig{
+		ILinkBaseURL:    defaultServer.URL,
+		LongPollTimeout: time.Second,
+	}, nil)
+	if err := handler.pollTokenOnce(context.Background(), token); err != nil {
+		t.Fatalf("poll token: %v", err)
+	}
+
+	select {
+	case request := <-defaultRequests:
+		t.Fatalf("poll used QR/default base URL: %s", request.Path)
+	default:
+	}
+	var request observedRequest
+	select {
+	case request = <-regionalRequests:
+	default:
+		t.Fatal("regional session base URL was not used")
+	}
+	if request.Path != "/ilink/bot/getupdates" {
+		t.Fatalf("path = %q", request.Path)
+	}
+	if request.Authorization != "Bearer regional-token" {
+		t.Fatalf("authorization = %q", request.Authorization)
+	}
+	if request.AuthorizationType != "ilink_bot_token" {
+		t.Fatalf("authorization type = %q", request.AuthorizationType)
+	}
+	if !strings.HasPrefix(request.ContentType, "application/json") {
+		t.Fatalf("content type = %q", request.ContentType)
+	}
+	decodedUIN, err := base64.StdEncoding.DecodeString(request.WechatUIN)
+	if err != nil {
+		t.Fatalf("X-WECHAT-UIN is not base64: %q: %v", request.WechatUIN, err)
+	}
+	uin, err := strconv.ParseUint(string(decodedUIN), 10, 32)
+	if err != nil || uin > 1<<32-1 {
+		t.Fatalf("X-WECHAT-UIN does not encode uint32: %q", string(decodedUIN))
+	}
+	updated, err := db.GetWeixinClawBotTokenByID(token.ID)
+	if err != nil {
+		t.Fatalf("load updated token: %v", err)
+	}
+	if updated.GetUpdatesBuf != "regional-cursor" {
+		t.Fatalf("cursor = %q", updated.GetUpdatesBuf)
 	}
 }
 
