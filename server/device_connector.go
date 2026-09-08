@@ -760,7 +760,7 @@ func (h *DeviceConnectorHandler) HandleRegisterDevice(w http.ResponseWriter, r *
 	if len(req.Capabilities) == 0 {
 		req.Capabilities = claims.Capabilities
 	} else {
-		req.Capabilities = limitConnectorCapabilities(req.Capabilities, claims.Capabilities)
+		req.Capabilities = limitConnectorRegistrationCapabilities(req.Capabilities, claims.Capabilities)
 	}
 	device, err := h.hub.userDevices.register(claims.UID, req)
 	if err != nil {
@@ -851,6 +851,35 @@ func limitConnectorCapabilities(requested []string, allowed []string) []string {
 		return allowed
 	}
 	return out
+}
+
+// Existing connector tokens intentionally cap executable capabilities to the
+// set approved at pairing time. Capability-only protocol markers are different:
+// an upgraded Runtime must be able to advertise newly supported wire behavior
+// without forcing the user to unlink and pair the same device again.
+//
+// Keep this exception narrowly scoped to markers that are never accepted by
+// isAllowedDeviceGrantRuntimeOperation. In particular, this must not become a
+// path for adding file, shell, or SkillHub mutation permissions.
+func limitConnectorRegistrationCapabilities(requested []string, allowed []string) []string {
+	limited := limitConnectorCapabilities(requested, allowed)
+	requestedCapabilities := normalizeDeviceConnectorCapabilityStrings(requested)
+	for _, capability := range requestedCapabilities {
+		if capability != string(DeviceCapabilitySkillHubWorkspacePagination) {
+			continue
+		}
+		found := false
+		for _, existing := range limited {
+			if existing == capability {
+				found = true
+				break
+			}
+		}
+		if !found {
+			limited = append(limited, capability)
+		}
+	}
+	return limited
 }
 
 func parseIntDefault(value string, fallback int) int {

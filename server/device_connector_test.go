@@ -318,6 +318,104 @@ func TestDeviceConnectorRefreshPreservesScopes(t *testing.T) {
 	}
 }
 
+func TestExistingConnectorCanAdvertisePaginationMarkerAfterRuntimeUpgrade(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("device-connector-pagination-upgrade-test")
+
+	store := &deviceHandlerStore{users: map[int64]*types.User{
+		7: {ID: 7, Username: "alice", AccountType: types.AccountHuman, State: 0},
+	}}
+	hub := NewHub(store, nil)
+	handler := NewDeviceConnectorHandler(store, hub)
+	legacyCapabilities := []string{
+		"skillhub.localWorkspace.get",
+		"skillhub.localSkill.share",
+		"skillhub.localSkill.finalize",
+	}
+	legacyToken, err := GenerateDeviceConnectorToken(DeviceConnectorTokenInput{
+		UID:            7,
+		Username:       "alice",
+		DeviceID:       "alice-server",
+		InstallationID: "install-alice",
+		Capabilities:   legacyCapabilities,
+	})
+	if err != nil {
+		t.Fatalf("GenerateDeviceConnectorToken: %v", err)
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/device-connectors/token/refresh", nil)
+	refreshReq.Header.Set("Authorization", "DeviceConnector "+legacyToken)
+	refreshRec := httptest.NewRecorder()
+	handler.HandleRefreshToken(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", refreshRec.Code, refreshRec.Body.String())
+	}
+	var refreshed struct {
+		ConnectorToken string `json:"connector_token"`
+	}
+	if err := json.Unmarshal(refreshRec.Body.Bytes(), &refreshed); err != nil {
+		t.Fatalf("decode refresh: %v", err)
+	}
+	refreshedClaims, err := ParseDeviceConnectorToken(refreshed.ConnectorToken)
+	if err != nil {
+		t.Fatalf("ParseDeviceConnectorToken refreshed: %v", err)
+	}
+	if len(refreshedClaims.Capabilities) != len(legacyCapabilities) {
+		t.Fatalf("refresh unexpectedly changed legacy token capabilities: %#v", refreshedClaims.Capabilities)
+	}
+
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/device-connectors/register", bytes.NewBufferString(`{
+		"device_id": "alice-server",
+		"runtime_role": "server",
+		"capabilities": [
+			"skillhub.localWorkspace.get",
+			"skillhub.localWorkspace.pagination.v1",
+			"skillhub.localSkill.share",
+			"skillhub.localSkill.finalize",
+			"execute_shell"
+		]
+	}`))
+	registerReq.Header.Set("Authorization", "DeviceConnector "+refreshed.ConnectorToken)
+	registerRec := httptest.NewRecorder()
+	handler.HandleRegisterDevice(registerRec, registerReq)
+	if registerRec.Code != http.StatusOK {
+		t.Fatalf("register upgraded Runtime status=%d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+	var registered struct {
+		Device UserDevice `json:"device"`
+	}
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode upgraded Runtime registration: %v", err)
+	}
+	wantCapabilities := []DeviceGrantOperation{
+		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubSkillShare,
+		DeviceGrantSkillHubSkillFinalize,
+		DeviceCapabilitySkillHubWorkspacePagination,
+	}
+	if len(registered.Device.Capabilities) != len(wantCapabilities) {
+		t.Fatalf("upgraded device capabilities=%#v", registered.Device.Capabilities)
+	}
+	for index, capability := range wantCapabilities {
+		if registered.Device.Capabilities[index] != capability {
+			t.Fatalf("upgraded device capability %d=%q, want %q", index, registered.Device.Capabilities[index], capability)
+		}
+	}
+	for _, capability := range registered.Device.Capabilities {
+		if capability == DeviceGrantExecuteShell {
+			t.Fatal("registration escalated executable capability beyond legacy token")
+		}
+	}
+	device, ok := hub.userDevices.activeDevice(7, "alice-server")
+	if !ok {
+		t.Fatal("upgraded existing device should remain visible")
+	}
+	if device.Capabilities[len(device.Capabilities)-1] != DeviceCapabilitySkillHubWorkspacePagination {
+		t.Fatalf("stored device is missing pagination marker: %#v", device.Capabilities)
+	}
+}
+
 func TestUnlinkDeviceRevokesConnectorToken(t *testing.T) {
 	oldSecret := append([]byte(nil), jwtSecret...)
 	defer func() { jwtSecret = oldSecret }()
