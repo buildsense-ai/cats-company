@@ -749,6 +749,12 @@ func (h *WeixinClawBotHandler) syncTokenWorkers(ctx context.Context) {
 		log.Printf("list weixin clawbot tokens failed: %v", err)
 		return
 	}
+	// A fresh QR authorization can return a new bot_token for a ClawBot that is
+	// already connected. Older versions kept every token active, which started
+	// multiple long-poll sessions for the same iLink bot. Those sessions race for
+	// updates and can also look like abusive reconnects to the upstream service.
+	// Keep the newest local authorization and retire the superseded sessions.
+	tokens = retireDuplicateWeixinClawBotTokens(bindings, tokens)
 	active := map[int64]*types.WeixinClawBotToken{}
 	for _, token := range tokens {
 		if token != nil && token.ID > 0 {
@@ -771,6 +777,44 @@ func (h *WeixinClawBotHandler) syncTokenWorkers(ctx context.Context) {
 		h.running[id] = cancel
 		go h.pollTokenLoop(tokenCtx, id)
 	}
+}
+
+func retireDuplicateWeixinClawBotTokens(bindings store.ChannelAgentBindingStore, tokens []*types.WeixinClawBotToken) []*types.WeixinClawBotToken {
+	type identity struct {
+		botID  string
+		userID string
+	}
+	newestByIdentity := make(map[identity]*types.WeixinClawBotToken)
+	for _, token := range tokens {
+		if token == nil || token.ID <= 0 {
+			continue
+		}
+		key := identity{botID: strings.TrimSpace(token.ILinkBotID), userID: strings.TrimSpace(token.ILinkUserID)}
+		if key.botID == "" {
+			continue
+		}
+		if current := newestByIdentity[key]; current == nil || token.ID > current.ID {
+			newestByIdentity[key] = token
+		}
+	}
+
+	active := make([]*types.WeixinClawBotToken, 0, len(tokens))
+	for _, token := range tokens {
+		if token == nil || token.ID <= 0 {
+			continue
+		}
+		key := identity{botID: strings.TrimSpace(token.ILinkBotID), userID: strings.TrimSpace(token.ILinkUserID)}
+		newest := newestByIdentity[key]
+		if key.botID == "" || newest == nil || newest.ID == token.ID {
+			active = append(active, token)
+			continue
+		}
+		message := fmt.Sprintf("superseded by newer ClawBot authorization token id=%d", newest.ID)
+		if err := bindings.MarkWeixinClawBotTokenError(token.ID, types.WeixinClawBotTokenRevoked, message); err != nil {
+			log.Printf("retire duplicate weixin clawbot token failed id=%d bot=%s: %v", token.ID, key.botID, err)
+		}
+	}
+	return active
 }
 
 func (h *WeixinClawBotHandler) pollTokenLoop(ctx context.Context, tokenID int64) {
@@ -863,8 +907,10 @@ func (h *WeixinClawBotHandler) pollTokenOnce(ctx context.Context, token *types.W
 	if err != nil {
 		return err
 	}
+	previousBuf := token.GetUpdatesBuf
+	nextBuf := previousBuf
 	if updates.GetUpdatesBuf != "" {
-		token.GetUpdatesBuf = updates.GetUpdatesBuf
+		nextBuf = updates.GetUpdatesBuf
 	}
 	contexts := copyWeixinClawBotContexts(token.ContextTokens)
 	for _, msg := range updates.Messages {
@@ -881,15 +927,23 @@ func (h *WeixinClawBotHandler) pollTokenOnce(ctx context.Context, token *types.W
 	if !ok {
 		return nil
 	}
-	if err := bindings.UpdateWeixinClawBotTokenPollState(token.ID, token.GetUpdatesBuf, contexts); err != nil {
-		return err
+	// Persist fresh context tokens before dispatching so an asynchronous agent
+	// reply can use them, but keep the previous cursor until every message in the
+	// batch has been accepted. Advancing first permanently dropped messages when
+	// binding lookup or delivery failed.
+	if len(updates.Messages) > 0 {
+		if err := bindings.UpdateWeixinClawBotTokenPollState(token.ID, previousBuf, contexts); err != nil {
+			return err
+		}
 	}
 	for _, msg := range updates.Messages {
 		if err := h.handleUpdateMessage(ctx, token, msg); err != nil {
-			log.Printf("handle weixin clawbot message failed token=%d message=%s: %v", token.ID, clawBotMessageID(msg), err)
+			return fmt.Errorf("handle weixin clawbot message token=%d message=%s: %w", token.ID, clawBotMessageID(msg), err)
 		}
 	}
-	return nil
+	token.ContextTokens = contexts
+	token.GetUpdatesBuf = nextBuf
+	return bindings.UpdateWeixinClawBotTokenPollState(token.ID, nextBuf, contexts)
 }
 
 func (h *WeixinClawBotHandler) handleUpdateMessage(ctx context.Context, token *types.WeixinClawBotToken, msg weixinClawBotMessage) error {
@@ -2262,10 +2316,22 @@ func encryptWeixinClawBotAESECBBlocks(block interface{ Encrypt(dst, src []byte) 
 }
 
 func setWeixinClawBotAuthHeaders(req *http.Request, botToken string) {
-	setWeixinClawBotAuthOnlyHeaders(req, botToken)
-	setWeixinClawBotCommonHeaders(req)
+	setWeixinClawBotJSONHeaders(req, botToken)
+}
+
+func setWeixinClawBotJSONHeaders(req *http.Request, botToken string) {
+	if req == nil {
+		return
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-WECHAT-UIN", randomWechatUIN())
+	req.Header.Set("AuthorizationType", "ilink_bot_token")
+	if token := strings.TrimSpace(botToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Del("Authorization")
+	}
+	setWeixinClawBotCommonHeaders(req)
 }
 
 func setWeixinClawBotCommonHeaders(req *http.Request) {

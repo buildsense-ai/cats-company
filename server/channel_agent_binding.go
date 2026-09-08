@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -1695,11 +1696,12 @@ func fetchWeixinClawBotQRCode(ctx context.Context) (*weixinClawBotQRCode, error)
 		return nil, fmt.Errorf("missing iLink base url or bot type")
 	}
 	endpoint := baseURL + "/ilink/bot/get_bot_qrcode?bot_type=" + url.QueryEscape(botType)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	body, _ := json.Marshal(map[string]interface{}{"local_token_list": []string{}})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	setWeixinClawBotCommonHeaders(req)
+	setWeixinClawBotJSONHeaders(req, "")
 	client := &http.Client{Timeout: configuredWeixinClawBotHTTPTimeout()}
 	resp, err := client.Do(req)
 	if err != nil {
