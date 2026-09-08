@@ -36,7 +36,11 @@ export default function App() {
 
 
   if (route?.page === 'login') {
-    return <AsyncLoginPage />
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-canvas" aria-hidden="true" />}>
+        <AsyncLoginPage />
+      </Suspense>
+    )
   }
 
   return (

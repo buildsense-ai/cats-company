@@ -50,6 +50,7 @@ test('public routes have unique metadata and page contracts', async () => {
   const app = await read('src/App.tsx')
   const main = await read('src/main.tsx')
   assert.doesNotMatch(app, /EnterprisePage/)
+  assert.match(app, /if \(route\?\.page === 'login'\)\s*\{[\s\S]*<Suspense[\s\S]*<AsyncLoginPage \/>/)
   assert.doesNotMatch(main, /pages\/enterprise\.css/)
 })
 
