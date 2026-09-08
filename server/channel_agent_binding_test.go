@@ -469,8 +469,20 @@ func TestCreateClawBotChannelIdentityMobileLinkUsesClawBotEntry(t *testing.T) {
 		if r.URL.Path != "/ilink/bot/get_bot_qrcode" {
 			t.Fatalf("unexpected iLink path: %s", r.URL.Path)
 		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method=%s, want POST", r.Method)
+		}
 		if r.Header.Get("iLink-App-Id") != weixinClawBotAppID || r.Header.Get("iLink-App-ClientVersion") != weixinClawBotAppClientVersion {
 			t.Fatalf("missing iLink app headers: %+v", r.Header)
+		}
+		if r.Header.Get("Authorization") != "" || r.Header.Get("AuthorizationType") != "ilink_bot_token" || r.Header.Get("X-WECHAT-UIN") == "" {
+			t.Fatalf("unexpected QR request auth headers: %+v", r.Header)
+		}
+		var body struct {
+			LocalTokens []string `json:"local_token_list"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.LocalTokens == nil || len(body.LocalTokens) != 0 {
+			t.Fatalf("QR request body=%+v err=%v", body, err)
 		}
 		if got := r.URL.Query().Get("bot_type"); got != "3" {
 			t.Fatalf("bot_type=%s, want 3", got)

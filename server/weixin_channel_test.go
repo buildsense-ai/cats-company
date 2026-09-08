@@ -1369,6 +1369,9 @@ func TestClawBotMobileEntryResponseUsesIlinkQRCode(t *testing.T) {
 		if r.URL.Path != "/ilink/bot/get_bot_qrcode" {
 			t.Fatalf("unexpected iLink path: %s", r.URL.Path)
 		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method=%s, want POST", r.Method)
+		}
 		if got := r.URL.Query().Get("bot_type"); got != "5" {
 			t.Fatalf("bot_type=%s, want 5", got)
 		}
@@ -1675,6 +1678,100 @@ func TestWeixinClawBotPollDeliversAgentMessageAndSendsReply(t *testing.T) {
 	}
 	if len(api.sends) != 1 || api.sends[0].Token != botToken || api.sends[0].ToUserID != "wx-user-1" || api.sends[0].ContextToken != "ctx-1" || api.sends[0].FromUserID != "wx-bot-1" {
 		t.Fatalf("unexpected sends: %+v", api.sends)
+	}
+}
+
+func TestWeixinClawBotPollDoesNotAdvanceCursorWhenDeliveryFails(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "virtual-catsco", DisplayName: "Virtual Catsco", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey: "scene-clawbot-retry", Channel: "weixin_clawbot", AccessMode: types.ChannelAgentAccessPublic,
+		OwnerUID: 7, AgentUID: 43, Status: "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	botToken := "poll-bot-token-retry"
+	tokenHash := hashWeixinClawBotToken(botToken)
+	token, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash: tokenHash, BotToken: botToken, Status: types.WeixinClawBotTokenActive,
+		OwnerUID: 7, GetUpdatesBuf: "buf-old",
+	})
+	if err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	api := &fakeWeixinClawBotAPI{updates: &weixinClawBotUpdates{
+		GetUpdatesBuf: "buf-next",
+		Messages: []weixinClawBotMessage{{
+			MessageID: json.RawMessage(`"msg-retry-1"`), MessageType: 1,
+			FromUserID: "wx-user-1", ToUserID: "wx-bot-1", ContextToken: "ctx-retry",
+			ItemList: []weixinClawBotMessageItem{clawBotTextItem("请重试")},
+		}},
+	}}
+	handler := NewWeixinClawBotHandler(db, nil, WeixinClawBotConfig{WorkerEnabled: false}, api)
+
+	if err := handler.pollTokenOnce(context.Background(), token); err == nil || !strings.Contains(err.Error(), "not bound") {
+		t.Fatalf("first poll error = %v", err)
+	}
+	stored, _ := db.GetWeixinClawBotTokenByID(token.ID)
+	if stored.GetUpdatesBuf != "buf-old" {
+		t.Fatalf("failed delivery advanced cursor to %q", stored.GetUpdatesBuf)
+	}
+	if stored.ContextTokens["wx-user-1"].ContextToken != "ctx-retry" {
+		t.Fatalf("fresh reply context was not persisted: %+v", stored.ContextTokens)
+	}
+
+	seedClawBotAgentBinding(t, db, tokenHash, "wx-user-1", 9, 43, entry)
+	if err := handler.pollTokenOnce(context.Background(), stored); err != nil {
+		t.Fatalf("retry poll: %v", err)
+	}
+	stored, _ = db.GetWeixinClawBotTokenByID(token.ID)
+	if stored.GetUpdatesBuf != "buf-next" || len(db.messages) != 1 {
+		t.Fatalf("retry state cursor=%q messages=%+v", stored.GetUpdatesBuf, db.messages)
+	}
+}
+
+func TestRetireDuplicateWeixinClawBotTokensKeepsNewestAuthorization(t *testing.T) {
+	db := newChannelAgentTestStore()
+	oldToken, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash: hashWeixinClawBotToken("duplicate-old"), BotToken: "duplicate-old",
+		Status: types.WeixinClawBotTokenActive, OwnerUID: 7, ILinkBotID: "ilink-bot-1",
+	})
+	if err != nil {
+		t.Fatalf("seed old token: %v", err)
+	}
+	newToken, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash: hashWeixinClawBotToken("duplicate-new"), BotToken: "duplicate-new",
+		Status: types.WeixinClawBotTokenActive, OwnerUID: 7, ILinkBotID: "ilink-bot-1",
+	})
+	if err != nil {
+		t.Fatalf("seed new token: %v", err)
+	}
+	otherToken, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash: hashWeixinClawBotToken("other-bot"), BotToken: "other-bot",
+		Status: types.WeixinClawBotTokenActive, OwnerUID: 7, ILinkBotID: "ilink-bot-2",
+	})
+	if err != nil {
+		t.Fatalf("seed other token: %v", err)
+	}
+
+	active := retireDuplicateWeixinClawBotTokens(db, []*types.WeixinClawBotToken{newToken, otherToken, oldToken})
+	if len(active) != 2 {
+		t.Fatalf("active tokens = %+v", active)
+	}
+	activeIDs := map[int64]bool{}
+	for _, token := range active {
+		activeIDs[token.ID] = true
+	}
+	if !activeIDs[newToken.ID] || !activeIDs[otherToken.ID] || activeIDs[oldToken.ID] {
+		t.Fatalf("active token ids = %+v", activeIDs)
+	}
+	retired, _ := db.GetWeixinClawBotTokenByID(oldToken.ID)
+	if retired.Status != types.WeixinClawBotTokenRevoked || !strings.Contains(retired.LastError, strconv.FormatInt(newToken.ID, 10)) {
+		t.Fatalf("retired token = %+v", retired)
 	}
 }
 
