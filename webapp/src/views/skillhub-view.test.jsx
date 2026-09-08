@@ -473,6 +473,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -503,6 +504,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
         ],
@@ -514,6 +516,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -537,6 +540,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -563,6 +567,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -586,6 +591,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -608,6 +614,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -629,6 +636,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -724,6 +732,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -797,6 +806,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -875,6 +885,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -1036,6 +1047,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -1049,6 +1061,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -1240,6 +1253,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localSkill.delete',
@@ -1386,6 +1400,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localSkill.delete',
@@ -1468,6 +1483,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localSkill.delete',
@@ -1482,6 +1498,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
       ],
@@ -1570,6 +1587,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -1582,7 +1600,13 @@ describe('SkillHubView', () => {
       active: true,
       routeConnected: true,
       routable: true,
-      capabilities: ['read_file'],
+      // This Runtime supports the original workspace tool but predates the
+      // pagination capability marker and would ignore limit: 10.
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+      ],
     }] });
     requestSkillHubDeviceTool.mockImplementation(async ({ toolName, payload }) => {
       if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '42') {
@@ -1592,6 +1616,21 @@ describe('SkillHubView', () => {
           active_bot_uid: '42',
           skills_path: 'C:\\xiaoba\\chandler\\skills',
           skills: [],
+        };
+      }
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '44') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '44',
+          active_bot_uid: '44',
+          skills_path: '/srv/legacy/skills',
+          // Simulate the unsafe legacy behavior: ignore limit and return the
+          // historical 200-item maximum in one transport message.
+          skills: Array.from({ length: 200 }, (_, index) => ({
+            local_skill_id: `legacy-${index}`,
+            name: `legacy-${index}`,
+            description: '旧 Runtime 的大体积能力描述'.repeat(80),
+          })),
         };
       }
       throw new Error(`unexpected tool ${toolName}`);
@@ -1620,6 +1659,10 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localBot.switch',
       payload: expect.objectContaining({ bot_uid: '44' }),
     }));
+    expect(requestSkillHubDeviceTool.mock.calls.some(([request]) => (
+      request.toolName === 'skillhub.localWorkspace.get'
+      && request.payload.bot_uid === '44'
+    ))).toBe(false);
   });
 
   it('keeps an offline server Runtime authoritative instead of switching the desktop Bot', async () => {
@@ -1656,6 +1699,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -1671,6 +1715,7 @@ describe('SkillHubView', () => {
       routable: false,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
       ],
@@ -1732,6 +1777,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -1799,6 +1845,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localSkill.delete',
@@ -2075,6 +2122,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2088,6 +2136,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2230,6 +2279,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2287,6 +2337,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2355,6 +2406,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2549,6 +2601,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2586,6 +2639,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2622,6 +2676,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -2731,6 +2786,7 @@ describe('SkillHubView', () => {
     vi.useFakeTimers();
     const capabilities = [
       'skillhub.localWorkspace.get',
+      'skillhub.localWorkspace.pagination.v1',
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localBot.switch',
@@ -2826,6 +2882,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2917,6 +2974,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -3016,6 +3074,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -3087,6 +3146,7 @@ describe('SkillHubView', () => {
     vi.useFakeTimers();
     const capabilities = [
       'skillhub.localWorkspace.get',
+      'skillhub.localWorkspace.pagination.v1',
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localBot.switch',
@@ -3152,6 +3212,7 @@ describe('SkillHubView', () => {
   it('clears an automatic route when a second desktop XiaoBa comes online', async () => {
     const capabilities = [
       'skillhub.localWorkspace.get',
+      'skillhub.localWorkspace.pagination.v1',
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localBot.switch',

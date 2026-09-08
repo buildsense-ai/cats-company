@@ -19,12 +19,14 @@ const SKILLHUB_DEVICE_TOOLS = {
   delete: 'skillhub.localSkill.delete',
   switchBot: 'skillhub.localBot.switch',
 };
+const SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY = 'skillhub.localWorkspace.pagination.v1';
 
 // Deletion remains an explicitly negotiated, newer capability. A desktop
 // Runtime may switch among the owner's Bots; a server Runtime is permanently
 // bound to the authenticated Bot that registered it.
 const SKILLHUB_WORKSPACE_CAPABILITIES = [
   SKILLHUB_DEVICE_TOOLS.workspace,
+  SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY,
   SKILLHUB_DEVICE_TOOLS.share,
   SKILLHUB_DEVICE_TOOLS.finalize,
 ];

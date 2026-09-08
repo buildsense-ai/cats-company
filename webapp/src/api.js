@@ -548,6 +548,7 @@ export const api = {
         'glob',
         'grep',
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',

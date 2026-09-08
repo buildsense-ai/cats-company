@@ -176,7 +176,8 @@ func normalizeDeviceConnectorCapabilityStrings(values []string) []string {
 }
 
 func isAllowedDeviceConnectorCapability(operation DeviceGrantOperation) bool {
-	return isAllowedDeviceRPCOperation(operation) || isSkillHubThinToolOperation(operation)
+	return operation == DeviceCapabilitySkillHubWorkspacePagination ||
+		isAllowedDeviceRPCOperation(operation) || isSkillHubThinToolOperation(operation)
 }
 
 func deviceConnectorHasScope(claims *DeviceConnectorClaims, scope string) bool {

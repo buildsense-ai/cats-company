@@ -202,6 +202,7 @@ func TestDeviceConnectorPreservesSkillHubCapabilitiesThroughEnrollment(t *testin
 	handler := NewDeviceConnectorHandler(store, hub)
 	capabilities := []DeviceGrantOperation{
 		DeviceGrantSkillHubWorkspaceGet,
+		DeviceCapabilitySkillHubWorkspacePagination,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubBotSwitch,
@@ -211,6 +212,7 @@ func TestDeviceConnectorPreservesSkillHubCapabilitiesThroughEnrollment(t *testin
 		"device_name": "Alice Laptop",
 		"capabilities": [
 			"skillhub.localWorkspace.get",
+			"skillhub.localWorkspace.pagination.v1",
 			"skillhub.localSkill.share",
 			"skillhub.localSkill.finalize",
 			"skillhub.localBot.switch"
@@ -239,6 +241,7 @@ func TestDeviceConnectorPreservesSkillHubCapabilitiesThroughEnrollment(t *testin
 		"installation_id": "install-alice",
 		"capabilities": [
 			"skillhub.localWorkspace.get",
+			"skillhub.localWorkspace.pagination.v1",
 			"skillhub.localSkill.share",
 			"skillhub.localSkill.finalize",
 			"skillhub.localBot.switch"

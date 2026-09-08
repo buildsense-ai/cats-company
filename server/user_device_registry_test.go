@@ -28,7 +28,7 @@ func TestUserDeviceRegistryRegistersAndIssuesScopedGrants(t *testing.T) {
 		BodyID:         " body-main ",
 		InstallationID: " install-main ",
 		RuntimeRole:    " DESKTOP ",
-		Capabilities:   []string{"read_file", "unknown", "resolve_common_directory", "write_file", "edit_file", "send_file", "read_file"},
+		Capabilities:   []string{"read_file", "unknown", "resolve_common_directory", "write_file", "edit_file", "send_file", "skillhub.localWorkspace.pagination.v1", "read_file"},
 	})
 	if err != nil {
 		t.Fatalf("register device: %v", err)
@@ -42,7 +42,7 @@ func TestUserDeviceRegistryRegistersAndIssuesScopedGrants(t *testing.T) {
 	if device.RuntimeRole != "desktop" {
 		t.Fatalf("device runtime role = %q, want desktop", device.RuntimeRole)
 	}
-	if got := device.Capabilities; len(got) != 5 || got[0] != DeviceGrantReadFile || got[1] != DeviceGrantResolveDir || got[2] != DeviceGrantWriteFile || got[3] != DeviceGrantEditFile || got[4] != DeviceGrantSendFile {
+	if got := device.Capabilities; len(got) != 6 || got[0] != DeviceGrantReadFile || got[1] != DeviceGrantResolveDir || got[2] != DeviceGrantWriteFile || got[3] != DeviceGrantEditFile || got[4] != DeviceGrantSendFile || got[5] != DeviceCapabilitySkillHubWorkspacePagination {
 		t.Fatalf("unexpected capabilities: %#v", got)
 	}
 
