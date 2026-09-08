@@ -469,6 +469,9 @@ func TestCreateClawBotChannelIdentityMobileLinkUsesClawBotEntry(t *testing.T) {
 		if r.URL.Path != "/ilink/bot/get_bot_qrcode" {
 			t.Fatalf("unexpected iLink path: %s", r.URL.Path)
 		}
+		if r.Header.Get("iLink-App-Id") != weixinClawBotAppID || r.Header.Get("iLink-App-ClientVersion") != weixinClawBotAppClientVersion {
+			t.Fatalf("missing iLink app headers: %+v", r.Header)
+		}
 		if got := r.URL.Query().Get("bot_type"); got != "3" {
 			t.Fatalf("bot_type=%s, want 3", got)
 		}

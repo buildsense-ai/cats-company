@@ -32,7 +32,13 @@ import (
 )
 
 const (
-	weixinClawBotChannelVersion      = "catsco-weixin-clawbot/1.0"
+	// Keep these wire values aligned with Tencent's current iLink client. The
+	// service uses the app headers for client routing/capability negotiation;
+	// omitting them can leave an otherwise valid QR session with an idle poll.
+	weixinClawBotChannelVersion      = "2.4.8"
+	weixinClawBotAgent               = "CatsCo/1.0"
+	weixinClawBotAppID               = "bot"
+	weixinClawBotAppClientVersion    = "132104" // 0x00020408 (2.4.8)
 	defaultWeixinClawBotCDNBaseURL   = "https://novac2c.cdn.weixin.qq.com/c2c"
 	weixinClawBotMaxOutboundMessages = 8
 )
@@ -56,6 +62,10 @@ type WeixinClawBotHandler struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	running map[int64]context.CancelFunc
+	// QR authorization can move to a regional iLink host before confirmation.
+	// Keep that short-lived routing state server-side so clients cannot supply
+	// arbitrary callback hosts.
+	qrRedirects map[string]weixinClawBotQRRedirect
 }
 
 type weixinClawBotAPI interface {
@@ -74,15 +84,29 @@ type weixinClawBotAPIBaseURLResolver interface {
 	ForBaseURL(baseURL string) (weixinClawBotAPI, error)
 }
 
+// weixinClawBotAPILifecycle mirrors the optional iLink online/offline
+// handshake. Keeping it optional preserves compatibility with test and custom
+// API implementations while the HTTP client can advertise a live session.
+type weixinClawBotAPILifecycle interface {
+	NotifyStart(ctx context.Context, botToken string) error
+	NotifyStop(ctx context.Context, botToken string) error
+}
+
+type weixinClawBotQRRedirect struct {
+	BaseURL   string
+	ExpiresAt time.Time
+}
+
 type weixinClawBotQRCodeStatus struct {
-	Ret         int    `json:"ret,omitempty"`
-	ErrCode     int    `json:"errcode,omitempty"`
-	ErrMsg      string `json:"errmsg,omitempty"`
-	Status      string `json:"status,omitempty"`
-	BotToken    string `json:"bot_token,omitempty"`
-	ILinkBotID  string `json:"ilink_bot_id,omitempty"`
-	ILinkUserID string `json:"ilink_user_id,omitempty"`
-	BaseURL     string `json:"baseurl,omitempty"`
+	Ret          int    `json:"ret,omitempty"`
+	ErrCode      int    `json:"errcode,omitempty"`
+	ErrMsg       string `json:"errmsg,omitempty"`
+	Status       string `json:"status,omitempty"`
+	BotToken     string `json:"bot_token,omitempty"`
+	ILinkBotID   string `json:"ilink_bot_id,omitempty"`
+	ILinkUserID  string `json:"ilink_user_id,omitempty"`
+	BaseURL      string `json:"baseurl,omitempty"`
+	RedirectHost string `json:"redirect_host,omitempty"`
 }
 
 type weixinClawBotUpdates struct {
@@ -203,11 +227,12 @@ func NewWeixinClawBotHandler(db store.Store, hub *Hub, cfg WeixinClawBotConfig, 
 		api = newHTTPWeixinClawBotAPI(cfg)
 	}
 	return &WeixinClawBotHandler{
-		db:      db,
-		hub:     hub,
-		config:  cfg,
-		api:     api,
-		running: map[int64]context.CancelFunc{},
+		db:          db,
+		hub:         hub,
+		config:      cfg,
+		api:         api,
+		running:     map[int64]context.CancelFunc{},
+		qrRedirects: map[string]weixinClawBotQRRedirect{},
 	}
 }
 
@@ -227,6 +252,46 @@ func (h *WeixinClawBotHandler) apiForToken(token *types.WeixinClawBotToken) (wei
 		return h.api, nil
 	}
 	return resolver.ForBaseURL(baseURL)
+}
+
+func (h *WeixinClawBotHandler) apiForQRCode(qrcode string) (weixinClawBotAPI, string, error) {
+	if h == nil || h.api == nil {
+		return nil, "", errors.New("weixin clawbot api is not configured")
+	}
+	h.mu.Lock()
+	redirect := h.qrRedirects[strings.TrimSpace(qrcode)]
+	if !redirect.ExpiresAt.IsZero() && time.Now().After(redirect.ExpiresAt) {
+		delete(h.qrRedirects, strings.TrimSpace(qrcode))
+		redirect = weixinClawBotQRRedirect{}
+	}
+	h.mu.Unlock()
+	baseURL := strings.TrimSpace(redirect.BaseURL)
+	if baseURL == "" {
+		return h.api, "", nil
+	}
+	resolver, ok := h.api.(weixinClawBotAPIBaseURLResolver)
+	if !ok {
+		return h.api, "", nil
+	}
+	api, err := resolver.ForBaseURL(baseURL)
+	return api, baseURL, err
+}
+
+func (h *WeixinClawBotHandler) setQRCodeRedirect(qrcode string, baseURL string) {
+	qrcode = strings.TrimSpace(qrcode)
+	if h == nil || qrcode == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if strings.TrimSpace(baseURL) == "" {
+		delete(h.qrRedirects, qrcode)
+		return
+	}
+	h.qrRedirects[qrcode] = weixinClawBotQRRedirect{
+		BaseURL:   strings.TrimSpace(baseURL),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
 }
 
 func weixinClawBotConfigFromEnv() WeixinClawBotConfig {
@@ -297,10 +362,27 @@ func (h *WeixinClawBotHandler) HandleQRCodeStatus(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing qrcode or scene_key"})
 		return
 	}
-	status, err := h.api.GetQRCodeStatus(r.Context(), qrcode)
+	api, effectiveBaseURL, err := h.apiForQRCode(qrcode)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
+	}
+	status, err := api.GetQRCodeStatus(r.Context(), qrcode)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	statusName := strings.ToLower(strings.TrimSpace(status.Status))
+	if statusName == "scaned_but_redirect" {
+		redirectBaseURL, redirectErr := weixinClawBotRedirectBaseURL(status.RedirectHost)
+		if redirectErr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": redirectErr.Error()})
+			return
+		}
+		h.setQRCodeRedirect(qrcode, redirectBaseURL)
+	}
+	if statusName == "confirmed" && strings.TrimSpace(status.BaseURL) == "" {
+		status.BaseURL = effectiveBaseURL
 	}
 	resp := map[string]interface{}{
 		"ret":            status.Ret,
@@ -309,7 +391,7 @@ func (h *WeixinClawBotHandler) HandleQRCodeStatus(w http.ResponseWriter, r *http
 		"status":         status.Status,
 		"token_received": strings.TrimSpace(status.BotToken) != "",
 	}
-	if strings.EqualFold(strings.TrimSpace(status.Status), "confirmed") && strings.TrimSpace(status.BotToken) != "" {
+	if statusName == "confirmed" && strings.TrimSpace(status.BotToken) != "" {
 		token, target, saveErr := h.saveAuthorizedTokenForScene(r, sceneKey, status)
 		if saveErr != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": saveErr.Error()})
@@ -321,6 +403,9 @@ func (h *WeixinClawBotHandler) HandleQRCodeStatus(w http.ResponseWriter, r *http
 		if h.config.WorkerEnabled {
 			h.syncTokenWorkers(context.Background())
 		}
+		h.setQRCodeRedirect(qrcode, "")
+	} else if statusName == "expired" || statusName == "binded_redirect" {
+		h.setQRCodeRedirect(qrcode, "")
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -690,6 +775,18 @@ func (h *WeixinClawBotHandler) syncTokenWorkers(ctx context.Context) {
 
 func (h *WeixinClawBotHandler) pollTokenLoop(ctx context.Context, tokenID int64) {
 	backoff := time.Second
+	var lifecycleAPI weixinClawBotAPILifecycle
+	var lifecycleToken string
+	defer func() {
+		if lifecycleAPI == nil || strings.TrimSpace(lifecycleToken) == "" {
+			return
+		}
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := lifecycleAPI.NotifyStop(stopCtx, lifecycleToken); err != nil {
+			log.Printf("notify weixin clawbot stop failed id=%d: %v", tokenID, err)
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -709,6 +806,34 @@ func (h *WeixinClawBotHandler) pollTokenLoop(ctx context.Context, tokenID int64)
 		}
 		if token == nil || token.Status != types.WeixinClawBotTokenActive {
 			return
+		}
+		if lifecycleAPI == nil {
+			api, resolveErr := h.apiForToken(token)
+			if resolveErr != nil {
+				_ = bindings.MarkWeixinClawBotTokenError(token.ID, "", resolveErr.Error())
+				log.Printf("resolve weixin clawbot lifecycle api failed id=%d: %v", token.ID, resolveErr)
+				sleepWithContext(ctx, backoff)
+				backoff = nextBackoff(backoff)
+				continue
+			} else if lifecycle, ok := api.(weixinClawBotAPILifecycle); ok {
+				startCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				notifyErr := lifecycle.NotifyStart(startCtx, token.BotToken)
+				cancel()
+				if notifyErr != nil {
+					var apiErr *weixinClawBotAPIError
+					if errors.As(notifyErr, &apiErr) && apiErr.ErrCode == -14 {
+						_ = bindings.MarkWeixinClawBotTokenError(token.ID, types.WeixinClawBotTokenExpired, notifyErr.Error())
+						return
+					}
+					_ = bindings.MarkWeixinClawBotTokenError(token.ID, "", notifyErr.Error())
+					log.Printf("notify weixin clawbot start failed id=%d: %v", token.ID, notifyErr)
+					sleepWithContext(ctx, backoff)
+					backoff = nextBackoff(backoff)
+					continue
+				}
+				lifecycleAPI = lifecycle
+				lifecycleToken = token.BotToken
+			}
 		}
 		if err := h.pollTokenOnce(ctx, token); err != nil {
 			var apiErr *weixinClawBotAPIError
@@ -1494,12 +1619,24 @@ func normalizeWeixinClawBotAPIBaseURL(raw string) (string, error) {
 	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
+func weixinClawBotRedirectBaseURL(rawHost string) (string, error) {
+	rawHost = strings.TrimSpace(rawHost)
+	if rawHost == "" {
+		return "", errors.New("weixin clawbot QR redirect response is missing redirect_host")
+	}
+	if !strings.Contains(rawHost, "://") {
+		rawHost = "https://" + rawHost
+	}
+	return normalizeWeixinClawBotAPIBaseURL(rawHost)
+}
+
 func (c *httpWeixinClawBotAPI) GetQRCodeStatus(ctx context.Context, qrcode string) (*weixinClawBotQRCodeStatus, error) {
 	endpoint := c.baseURL + "/ilink/bot/get_qrcode_status?qrcode=" + url.QueryEscape(qrcode)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+	setWeixinClawBotCommonHeaders(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -1518,9 +1655,7 @@ func (c *httpWeixinClawBotAPI) GetQRCodeStatus(ctx context.Context, qrcode strin
 func (c *httpWeixinClawBotAPI) GetUpdates(ctx context.Context, botToken string, getUpdatesBuf string) (*weixinClawBotUpdates, error) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"get_updates_buf": strings.TrimSpace(getUpdatesBuf),
-		"base_info": map[string]string{
-			"channel_version": weixinClawBotChannelVersion,
-		},
+		"base_info":       weixinClawBotBaseInfo(),
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/ilink/bot/getupdates", bytes.NewReader(body))
 	if err != nil {
@@ -1540,6 +1675,40 @@ func (c *httpWeixinClawBotAPI) GetUpdates(ctx context.Context, botToken string, 
 		return nil, &weixinClawBotAPIError{Operation: "getupdates", Status: resp.StatusCode, Ret: data.Ret, ErrCode: data.ErrCode, ErrMsg: data.ErrMsg}
 	}
 	return &data, nil
+}
+
+func (c *httpWeixinClawBotAPI) NotifyStart(ctx context.Context, botToken string) error {
+	return c.notifyLifecycle(ctx, botToken, "notifystart")
+}
+
+func (c *httpWeixinClawBotAPI) NotifyStop(ctx context.Context, botToken string) error {
+	return c.notifyLifecycle(ctx, botToken, "notifystop")
+}
+
+func (c *httpWeixinClawBotAPI) notifyLifecycle(ctx context.Context, botToken string, operation string) error {
+	body, _ := json.Marshal(map[string]interface{}{"base_info": weixinClawBotBaseInfo()})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/ilink/bot/msg/"+operation, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	setWeixinClawBotAuthHeaders(req, botToken)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var data struct {
+		Ret     int    `json:"ret,omitempty"`
+		ErrCode int    `json:"errcode,omitempty"`
+		ErrMsg  string `json:"errmsg,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || data.Ret != 0 || data.ErrCode != 0 {
+		return &weixinClawBotAPIError{Operation: operation, Status: resp.StatusCode, Ret: data.Ret, ErrCode: data.ErrCode, ErrMsg: data.ErrMsg}
+	}
+	return nil
 }
 
 func (c *httpWeixinClawBotAPI) DownloadMedia(ctx context.Context, botToken string, ref weixinClawBotMediaRef) (*channelMediaDownload, error) {
@@ -1846,9 +2015,7 @@ func (c *httpWeixinClawBotAPI) sendMessageItems(ctx context.Context, botToken st
 			"item_list":     items,
 			"context_token": strings.TrimSpace(contextToken),
 		},
-		"base_info": map[string]string{
-			"channel_version": weixinClawBotChannelVersion,
-		},
+		"base_info": weixinClawBotBaseInfo(),
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/ilink/bot/sendmessage", bytes.NewReader(body))
 	if err != nil {
@@ -1884,9 +2051,7 @@ func (c *httpWeixinClawBotAPI) requestMediaUploadURL(ctx context.Context, botTok
 		"filesize":      encryptedSize,
 		"no_need_thumb": true,
 		"aeskey":        hex.EncodeToString(aesKey),
-		"base_info": map[string]string{
-			"channel_version": weixinClawBotChannelVersion,
-		},
+		"base_info":     weixinClawBotBaseInfo(),
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/ilink/bot/getuploadurl", bytes.NewReader(body))
 	if err != nil {
@@ -2098,8 +2263,24 @@ func encryptWeixinClawBotAESECBBlocks(block interface{ Encrypt(dst, src []byte) 
 
 func setWeixinClawBotAuthHeaders(req *http.Request, botToken string) {
 	setWeixinClawBotAuthOnlyHeaders(req, botToken)
+	setWeixinClawBotCommonHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-WECHAT-UIN", randomWechatUIN())
+}
+
+func setWeixinClawBotCommonHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("iLink-App-Id", weixinClawBotAppID)
+	req.Header.Set("iLink-App-ClientVersion", weixinClawBotAppClientVersion)
+}
+
+func weixinClawBotBaseInfo() map[string]string {
+	return map[string]string{
+		"channel_version": weixinClawBotChannelVersion,
+		"bot_agent":       weixinClawBotAgent,
+	}
 }
 
 func setWeixinClawBotAuthOnlyHeaders(req *http.Request, botToken string) {
