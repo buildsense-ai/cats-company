@@ -388,6 +388,35 @@ describe('EmptyTaskComposer', () => {
     expect(container.querySelector('[aria-label="移除附件：phone-brief.pdf"]')).toBeNull();
   });
 
+  it('distinguishes the latest upload batch from attachments already in the draft', async () => {
+    api.uploadFile.mockImplementation(async (file) => ({
+      file_key: file.name, url: `/uploads/files/${file.name}`,
+      name: file.name, size: file.size, mime_type: file.type,
+    }));
+    await mountComposer();
+    const fileInput = [...container.querySelectorAll('input[type="file"]')]
+      .find((input) => !input.accept);
+    const upload = async (names) => {
+      Object.defineProperty(fileInput, 'files', { configurable: true,
+        value: names.map((name) => new File(['document'], name, { type: 'application/pdf' })),
+      });
+      await act(async () => {
+        Simulate.change(fileInput);
+        await flushPromises();
+      });
+    };
+    await upload(['first.pdf', 'second.pdf']);
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('本次已添加 2 个附件');
+    await upload(['third.pdf']);
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(3);
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('本次已添加 1 个附件');
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="移除附件：third.pdf"]'));
+    });
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(2);
+    expect(container.querySelector('.v3-attachment-notice').textContent).not.toContain('本次已添加');
+  });
+
   it('removes a just-uploaded attachment when X is clicked', async () => {
     const attachmentDrafts = new Map();
     const composerDraftStore = {
