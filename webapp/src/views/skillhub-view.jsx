@@ -19,12 +19,14 @@ const SKILLHUB_DEVICE_TOOLS = {
   delete: 'skillhub.localSkill.delete',
   switchBot: 'skillhub.localBot.switch',
 };
+const SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY = 'skillhub.localWorkspace.pagination.v1';
 
 // Deletion remains an explicitly negotiated, newer capability. A desktop
 // Runtime may switch among the owner's Bots; a server Runtime is permanently
 // bound to the authenticated Bot that registered it.
 const SKILLHUB_WORKSPACE_CAPABILITIES = [
   SKILLHUB_DEVICE_TOOLS.workspace,
+  SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY,
   SKILLHUB_DEVICE_TOOLS.share,
   SKILLHUB_DEVICE_TOOLS.finalize,
 ];
@@ -47,8 +49,16 @@ const SKILLHUB_SWITCH_INITIAL_DELAY_MS = 2_000;
 const SKILLHUB_SWITCH_RETRY_DELAY_MS = 1_500;
 const SKILLHUB_DEVICE_LIST_TIMEOUT_MS = 5_000;
 const SKILLHUB_WORKSPACE_TIMEOUT_MS = 8_000;
-const SKILLHUB_WORKSPACE_PAGE_SIZE = 200;
-const SKILLHUB_WORKSPACE_MAX_PAGES = 100;
+// Keep each thin-tool response comfortably below CatsCo's 64 KiB WebSocket
+// message limit. Older Runtime versions honor this item limit even though they
+// do not yet apply their own serialized-byte budget.
+const SKILLHUB_WORKSPACE_PAGE_SIZE = 10;
+const SKILLHUB_WORKSPACE_MAX_PAGES = 1_000;
+// Runtimes predating workspace pagination returned at most 200 Skills and
+// ignored the new paging arguments. Only that historical ceiling is evidence
+// that a legacy response may have been cut off; 10 items can be a complete
+// legacy workspace even though current clients request pages of 10.
+const SKILLHUB_LEGACY_WORKSPACE_MAX_SKILLS = 200;
 const SKILLHUB_WORKSPACE_REVISION_PATTERN = /^[0-9a-f]{64}$/;
 const RETRYABLE_SKILLHUB_SWITCH_ERRORS = new Set([
   'BOT_NOT_ACTIVE',
@@ -97,7 +107,7 @@ function skillHubDeviceListTimeoutError() {
 }
 
 function skillHubWorkspaceTimeoutError() {
-  const error = new Error('等待本地 XiaoBa 响应超时，请确认设备在线并已更新到最新版本。');
+  const error = new Error('等待目标 XiaoBa 响应超时，请确认其运行设备在线并已更新到最新版本。');
   error.code = 'skillhub_device_timeout';
   return error;
 }
@@ -411,7 +421,7 @@ export async function waitForSkillHubWorkspaceAfterSwitch({
     }
   }
   if (!isCurrent()) return null;
-  const error = new Error('本地 XiaoBa 切换超时，请确认 XiaoBa 仍在运行后重试。');
+  const error = new Error('目标 XiaoBa 切换超时，请确认其运行设备在线并已更新到最新版本后重试。');
   error.code = 'skillhub_device_switch_timeout';
   error.cause = lastError;
   throw error;
@@ -551,7 +561,7 @@ async function collectSkillHubWorkspacePageAttempt({
     return {
       ...firstPage,
       skills: firstSkills,
-      legacyTruncated: firstSkills.length >= pageLimit,
+      legacyTruncated: firstSkills.length >= SKILLHUB_LEGACY_WORKSPACE_MAX_SKILLS,
     };
   }
 
@@ -1226,16 +1236,28 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       && requestedDeviceID === selectedDeviceIDRef.current
     );
     try {
-      const invoke = async (toolName, payload, timeoutMs) => assertSkillHubDeviceResult(
-        await requestSkillHubDeviceTool({
-          deviceId: requestedDeviceID,
-          ownerUserId: user?.uid,
-          toolName,
-          payload: { bot_uid: requestedBotUID, ...payload },
-          timeoutMs,
-        }),
-        { toolName, botUID: requestedBotUID },
-      );
+      const invoke = async (toolName, payload, timeoutMs) => {
+        try {
+          return assertSkillHubDeviceResult(
+            await requestSkillHubDeviceTool({
+              deviceId: requestedDeviceID,
+              ownerUserId: user?.uid,
+              toolName,
+              payload: { bot_uid: requestedBotUID, ...payload },
+              timeoutMs,
+            }),
+            { toolName, botUID: requestedBotUID },
+          );
+        } catch (error) {
+          if (
+            toolName === SKILLHUB_DEVICE_TOOLS.workspace
+            && error?.code === 'skillhub_device_timeout'
+          ) {
+            throw skillHubWorkspaceTimeoutError();
+          }
+          throw error;
+        }
+      };
       let workspace;
       let switchAccepted = false;
       let recoverySwitchAttempted = false;
@@ -1255,7 +1277,9 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         deviceId: requestedDeviceID,
         readWorkspace: async (timeoutMs) => {
           try {
-            return await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, timeoutMs);
+            return await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {
+              limit: SKILLHUB_WORKSPACE_PAGE_SIZE,
+            }, timeoutMs);
           } catch (error) {
             if (
               error?.code === 'BOT_NOT_ACTIVE'
@@ -1285,7 +1309,9 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         if (!workspace) return;
       } else {
         try {
-          workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 20_000);
+          workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {
+            limit: SKILLHUB_WORKSPACE_PAGE_SIZE,
+          }, 20_000);
         } catch (error) {
           if (!isCurrentRequest()) return;
           if (error?.code === 'BOT_NOT_ACTIVE') {
@@ -1322,7 +1348,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setLocalSkills(normalizeLocalSkills(workspace));
       setLocalSkillsPath(String(workspace?.skills_path || '').trim());
       setLocalNotice(workspace?.legacyTruncated === true
-        ? '当前 XiaoBa Runtime 未提供分页信息，工作区可能只显示前 200 个 Skill；请升级该 Runtime 后刷新。'
+        ? `目标 XiaoBa Runtime 未提供分页信息，当前列表可能不完整（已读取 ${workspace.skills.length} 个 Skill）；请升级该 Runtime 后刷新。`
         : '');
     } catch (error) {
       if (!isCurrentRequest()) return;

@@ -251,6 +251,7 @@ describe('SkillHubView', () => {
     const result = await collectSkillHubWorkspacePages({
       initialWorkspace: page(0),
       readPage,
+      pageLimit: 200,
     });
 
     expect(result.skills).toHaveLength(450);
@@ -263,6 +264,26 @@ describe('SkillHubView', () => {
       limit: 200,
       workspace_revision: revision,
     });
+  });
+
+  it('requests transport-safe pages from existing Runtime workspaces', async () => {
+    const readPage = vi.fn().mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      workspace_revision: 'c'.repeat(64),
+      total_skills: 0,
+      page_offset: 0,
+      page_limit: 10,
+      next_offset: null,
+      truncated: false,
+      skills: [],
+    });
+
+    const result = await collectSkillHubWorkspacePages({ readPage });
+
+    expect(result.skills).toEqual([]);
+    expect(readPage).toHaveBeenCalledWith({ limit: 10 });
   });
 
   it('marks an old Runtime 200-item response as potentially truncated', async () => {
@@ -278,6 +299,21 @@ describe('SkillHubView', () => {
     });
     expect(result.skills).toHaveLength(200);
     expect(result.legacyTruncated).toBe(true);
+  });
+
+  it('does not flag an old Runtime workspace containing exactly one safe page as truncated', async () => {
+    const result = await collectSkillHubWorkspacePages({
+      initialWorkspace: {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        skills: Array.from({ length: 10 }, (_, index) => ({
+          local_skill_id: `legacy-${index}`,
+          name: `legacy-${index}`,
+        })),
+      },
+      readPage: vi.fn(),
+    });
+    expect(result.skills).toHaveLength(10);
+    expect(result.legacyTruncated).toBe(false);
   });
 
   it('restarts workspace pagination once when the Runtime reports a concurrent change', async () => {
@@ -317,7 +353,7 @@ describe('SkillHubView', () => {
     });
     expect(result.skills).toEqual([{ local_skill_id: 'fresh', name: 'fresh' }]);
     expect(readPage).toHaveBeenCalledTimes(2);
-    expect(readPage).toHaveBeenLastCalledWith({ limit: 200 });
+    expect(readPage).toHaveBeenLastCalledWith({ limit: 10 });
   });
 
   afterEach(async () => {
@@ -437,6 +473,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -467,6 +504,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
         ],
@@ -478,6 +516,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -501,6 +540,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -527,6 +567,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -550,6 +591,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -572,6 +614,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -593,6 +636,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -688,6 +732,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -761,6 +806,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -822,6 +868,7 @@ describe('SkillHubView', () => {
 
     await expect(result).resolves.toMatchObject({
       code: 'skillhub_device_switch_timeout',
+      message: expect.stringContaining('目标 XiaoBa 切换超时'),
       cause: { code: 'REQUEST_TIMEOUT' },
     });
     expect(getDevices).toHaveBeenCalledTimes(3);
@@ -838,6 +885,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -999,6 +1047,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -1012,6 +1061,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -1203,6 +1253,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localSkill.delete',
@@ -1349,6 +1400,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localSkill.delete',
@@ -1431,6 +1483,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localSkill.delete',
@@ -1445,6 +1498,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
       ],
@@ -1533,6 +1587,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -1545,7 +1600,13 @@ describe('SkillHubView', () => {
       active: true,
       routeConnected: true,
       routable: true,
-      capabilities: ['read_file'],
+      // This Runtime supports the original workspace tool but predates the
+      // pagination capability marker and would ignore limit: 10.
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+      ],
     }] });
     requestSkillHubDeviceTool.mockImplementation(async ({ toolName, payload }) => {
       if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '42') {
@@ -1555,6 +1616,21 @@ describe('SkillHubView', () => {
           active_bot_uid: '42',
           skills_path: 'C:\\xiaoba\\chandler\\skills',
           skills: [],
+        };
+      }
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '44') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '44',
+          active_bot_uid: '44',
+          skills_path: '/srv/legacy/skills',
+          // Simulate the unsafe legacy behavior: ignore limit and return the
+          // historical 200-item maximum in one transport message.
+          skills: Array.from({ length: 200 }, (_, index) => ({
+            local_skill_id: `legacy-${index}`,
+            name: `legacy-${index}`,
+            description: '旧 Runtime 的大体积能力描述'.repeat(80),
+          })),
         };
       }
       throw new Error(`unexpected tool ${toolName}`);
@@ -1583,6 +1659,10 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localBot.switch',
       payload: expect.objectContaining({ bot_uid: '44' }),
     }));
+    expect(requestSkillHubDeviceTool.mock.calls.some(([request]) => (
+      request.toolName === 'skillhub.localWorkspace.get'
+      && request.payload.bot_uid === '44'
+    ))).toBe(false);
   });
 
   it('keeps an offline server Runtime authoritative instead of switching the desktop Bot', async () => {
@@ -1619,6 +1699,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -1634,6 +1715,7 @@ describe('SkillHubView', () => {
       routable: false,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
       ],
@@ -1695,6 +1777,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -1762,6 +1845,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localSkill.delete',
@@ -2038,6 +2122,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2051,6 +2136,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2137,6 +2223,11 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-device-picker')).toBeNull();
     expect(container.textContent).toContain('local-demo');
     expect(container.textContent).toContain('C:\\xiaoba\\skills');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'alice-device',
+      toolName: 'skillhub.localWorkspace.get',
+      payload: expect.objectContaining({ bot_uid: '42', limit: 10 }),
+    }));
 
     const shareButton = container.querySelector('.cc-skillhub-local-card button');
     expect(container.querySelector('.cc-skillhub-local-card')?.textContent).toContain('未发布');
@@ -2188,6 +2279,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2245,6 +2337,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2313,6 +2406,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2507,6 +2601,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2534,6 +2629,43 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('当前 Bot 尚未在本地 XiaoBa 激活');
   });
 
+  it('uses target XiaoBa wording when the initial workspace request times out', async () => {
+    api.getDevices.mockResolvedValueOnce({
+      devices: [{
+        deviceId: 'alice-device',
+        runtimeRole: 'desktop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockRejectedValue(
+      Object.assign(new Error('等待本地 XiaoBa 响应超时'), { code: 'skillhub_device_timeout' }),
+    );
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCustomSkills();
+
+    expect(container.textContent).toContain('等待目标 XiaoBa 响应超时');
+    expect(container.textContent).not.toContain('等待本地 XiaoBa 响应超时');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localWorkspace.get',
+      payload: expect.objectContaining({ limit: 10 }),
+    }));
+  });
+
   it('recovers an unavailable route and workspace handoff during an explicit Bot switch', async () => {
     vi.useFakeTimers();
     const readyDevice = {
@@ -2544,6 +2676,7 @@ describe('SkillHubView', () => {
       routable: true,
       capabilities: [
         'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
@@ -2629,6 +2762,15 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localBot.switch',
       payload: expect.objectContaining({ bot_uid: '44' }),
     }));
+    expect(requestSkillHubDeviceTool.mock.calls
+      .map(([request]) => request)
+      .filter((request) => (
+        request.toolName === 'skillhub.localWorkspace.get'
+        && request.payload.bot_uid === '44'
+      )))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ payload: expect.objectContaining({ limit: 10 }) }),
+      ]));
 
     await act(async () => {
       await vi.runAllTimersAsync();
@@ -2644,6 +2786,7 @@ describe('SkillHubView', () => {
     vi.useFakeTimers();
     const capabilities = [
       'skillhub.localWorkspace.get',
+      'skillhub.localWorkspace.pagination.v1',
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localBot.switch',
@@ -2739,6 +2882,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2830,6 +2974,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -2929,6 +3074,7 @@ describe('SkillHubView', () => {
         routable: true,
         capabilities: [
           'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
           'skillhub.localSkill.share',
           'skillhub.localSkill.finalize',
           'skillhub.localBot.switch',
@@ -3000,6 +3146,7 @@ describe('SkillHubView', () => {
     vi.useFakeTimers();
     const capabilities = [
       'skillhub.localWorkspace.get',
+      'skillhub.localWorkspace.pagination.v1',
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localBot.switch',
@@ -3065,6 +3212,7 @@ describe('SkillHubView', () => {
   it('clears an automatic route when a second desktop XiaoBa comes online', async () => {
     const capabilities = [
       'skillhub.localWorkspace.get',
+      'skillhub.localWorkspace.pagination.v1',
       'skillhub.localSkill.share',
       'skillhub.localSkill.finalize',
       'skillhub.localBot.switch',

@@ -30,21 +30,22 @@ var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}
 type DeviceGrantOperation string
 
 const (
-	DeviceGrantReadFile              DeviceGrantOperation = "read_file"
-	DeviceGrantResolveDir            DeviceGrantOperation = "resolve_common_directory"
-	DeviceGrantWriteFile             DeviceGrantOperation = "write_file"
-	DeviceGrantEditFile              DeviceGrantOperation = "edit_file"
-	DeviceGrantSendFile              DeviceGrantOperation = "send_file"
-	DeviceGrantExecuteShell          DeviceGrantOperation = "execute_shell"
-	DeviceGrantGlob                  DeviceGrantOperation = "glob"
-	DeviceGrantGrep                  DeviceGrantOperation = "grep"
-	DeviceGrantBrowserControl        DeviceGrantOperation = "browser_control"
-	DeviceGrantDesktopControl        DeviceGrantOperation = "desktop_control"
-	DeviceGrantSkillHubWorkspaceGet  DeviceGrantOperation = "skillhub.localWorkspace.get"
-	DeviceGrantSkillHubSkillShare    DeviceGrantOperation = "skillhub.localSkill.share"
-	DeviceGrantSkillHubSkillFinalize DeviceGrantOperation = "skillhub.localSkill.finalize"
-	DeviceGrantSkillHubSkillDelete   DeviceGrantOperation = "skillhub.localSkill.delete"
-	DeviceGrantSkillHubBotSwitch     DeviceGrantOperation = "skillhub.localBot.switch"
+	DeviceGrantReadFile                         DeviceGrantOperation = "read_file"
+	DeviceGrantResolveDir                       DeviceGrantOperation = "resolve_common_directory"
+	DeviceGrantWriteFile                        DeviceGrantOperation = "write_file"
+	DeviceGrantEditFile                         DeviceGrantOperation = "edit_file"
+	DeviceGrantSendFile                         DeviceGrantOperation = "send_file"
+	DeviceGrantExecuteShell                     DeviceGrantOperation = "execute_shell"
+	DeviceGrantGlob                             DeviceGrantOperation = "glob"
+	DeviceGrantGrep                             DeviceGrantOperation = "grep"
+	DeviceGrantBrowserControl                   DeviceGrantOperation = "browser_control"
+	DeviceGrantDesktopControl                   DeviceGrantOperation = "desktop_control"
+	DeviceGrantSkillHubWorkspaceGet             DeviceGrantOperation = "skillhub.localWorkspace.get"
+	DeviceCapabilitySkillHubWorkspacePagination DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
+	DeviceGrantSkillHubSkillShare               DeviceGrantOperation = "skillhub.localSkill.share"
+	DeviceGrantSkillHubSkillFinalize            DeviceGrantOperation = "skillhub.localSkill.finalize"
+	DeviceGrantSkillHubSkillDelete              DeviceGrantOperation = "skillhub.localSkill.delete"
+	DeviceGrantSkillHubBotSwitch                DeviceGrantOperation = "skillhub.localBot.switch"
 )
 
 type UserDevice struct {
@@ -1010,6 +1011,7 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantBrowserControl,
 		DeviceGrantDesktopControl,
 		DeviceGrantSkillHubWorkspaceGet,
+		DeviceCapabilitySkillHubWorkspacePagination,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubSkillDelete,
