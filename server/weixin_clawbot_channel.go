@@ -66,6 +66,14 @@ type weixinClawBotAPI interface {
 	SendMediaMessage(ctx context.Context, botToken string, toUserID string, media weixinClawBotOutboundMedia, contextToken string, fromUserID string) error
 }
 
+// weixinClawBotAPIBaseURLResolver lets the HTTP implementation switch to the
+// per-session API base URL returned by a successful QR authorization. The
+// iLink service can assign a regional host; polling the QR host can otherwise
+// succeed with an empty message list and make the bot appear silently offline.
+type weixinClawBotAPIBaseURLResolver interface {
+	ForBaseURL(baseURL string) (weixinClawBotAPI, error)
+}
+
 type weixinClawBotQRCodeStatus struct {
 	Ret         int    `json:"ret,omitempty"`
 	ErrCode     int    `json:"errcode,omitempty"`
@@ -201,6 +209,24 @@ func NewWeixinClawBotHandler(db store.Store, hub *Hub, cfg WeixinClawBotConfig, 
 		api:     api,
 		running: map[int64]context.CancelFunc{},
 	}
+}
+
+func (h *WeixinClawBotHandler) apiForToken(token *types.WeixinClawBotToken) (weixinClawBotAPI, error) {
+	if h == nil || h.api == nil {
+		return nil, errors.New("weixin clawbot api is not configured")
+	}
+	baseURL := ""
+	if token != nil {
+		baseURL = strings.TrimSpace(token.BaseURL)
+	}
+	if baseURL == "" {
+		return h.api, nil
+	}
+	resolver, ok := h.api.(weixinClawBotAPIBaseURLResolver)
+	if !ok {
+		return h.api, nil
+	}
+	return resolver.ForBaseURL(baseURL)
 }
 
 func weixinClawBotConfigFromEnv() WeixinClawBotConfig {
@@ -445,12 +471,16 @@ func (h *WeixinClawBotHandler) SendOutboundMessage(ctx context.Context, binding 
 	if err != nil || token == nil || token.Status != types.WeixinClawBotTokenActive {
 		return err
 	}
+	api, err := h.apiForToken(token)
+	if err != nil {
+		return err
+	}
 	contextValue := token.ContextTokens[channelUserID]
 	if strings.TrimSpace(contextValue.ContextToken) == "" {
 		return fmt.Errorf("missing weixin clawbot context token for channel user")
 	}
 	if text := strings.TrimSpace(message.Text); text != "" {
-		if err := h.api.SendTextMessage(ctx, token.BotToken, channelUserID, text, contextValue.ContextToken, contextValue.BotUserID); err != nil {
+		if err := api.SendTextMessage(ctx, token.BotToken, channelUserID, text, contextValue.ContextToken, contextValue.BotUserID); err != nil {
 			return err
 		}
 	}
@@ -466,7 +496,7 @@ func (h *WeixinClawBotHandler) SendOutboundMessage(ctx context.Context, binding 
 			fallbackAttachments = append(fallbackAttachments, attachment)
 			continue
 		}
-		if err := h.api.SendMediaMessage(ctx, token.BotToken, channelUserID, media, contextValue.ContextToken, contextValue.BotUserID); err != nil {
+		if err := api.SendMediaMessage(ctx, token.BotToken, channelUserID, media, contextValue.ContextToken, contextValue.BotUserID); err != nil {
 			log.Printf("weixin clawbot outbound media send failed name=%s path=%s: %v", media.Name, media.Path, err)
 			fallbackAttachments = append(fallbackAttachments, attachment)
 			continue
@@ -475,7 +505,7 @@ func (h *WeixinClawBotHandler) SendOutboundMessage(ctx context.Context, binding 
 	if len(fallbackAttachments) > 0 {
 		fallbackText := channelOutboundMessage{Attachments: fallbackAttachments}.TextWithAttachmentLinks()
 		if strings.TrimSpace(fallbackText) != "" {
-			return h.api.SendTextMessage(ctx, token.BotToken, channelUserID, fallbackText, contextValue.ContextToken, contextValue.BotUserID)
+			return api.SendTextMessage(ctx, token.BotToken, channelUserID, fallbackText, contextValue.ContextToken, contextValue.BotUserID)
 		}
 	}
 	return nil
@@ -700,7 +730,11 @@ func (h *WeixinClawBotHandler) pollTokenOnce(ctx context.Context, token *types.W
 	if token == nil || token.ID <= 0 || strings.TrimSpace(token.BotToken) == "" {
 		return nil
 	}
-	updates, err := h.api.GetUpdates(ctx, token.BotToken, token.GetUpdatesBuf)
+	api, err := h.apiForToken(token)
+	if err != nil {
+		return err
+	}
+	updates, err := api.GetUpdates(ctx, token.BotToken, token.GetUpdatesBuf)
 	if err != nil {
 		return err
 	}
@@ -950,12 +984,20 @@ func (h *WeixinClawBotHandler) downloadClawBotMedia(ctx context.Context, token *
 	}
 	files := make([]uploadPayload, 0, len(refs))
 	failures := make([]weixinClawBotUnsupportedItem, 0)
+	api, err := h.apiForToken(token)
+	if err != nil {
+		log.Printf("resolve weixin clawbot api failed token=%d message=%s: %v", token.ID, clawBotMessageID(msg), err)
+		for _, ref := range refs {
+			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "invalid_api_base_url", Name: ref.Name, Raw: ref.Raw})
+		}
+		return nil, failures
+	}
 	for _, ref := range refs {
 		if strings.TrimSpace(ref.URL) == "" && strings.TrimSpace(ref.EncryptedQueryParam) == "" && strings.TrimSpace(ref.MediaID) == "" {
 			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "missing_media_resource", Name: ref.Name, Raw: ref.Raw})
 			continue
 		}
-		media, err := h.api.DownloadMedia(ctx, token.BotToken, ref)
+		media, err := api.DownloadMedia(ctx, token.BotToken, ref)
 		if err != nil {
 			log.Printf("download weixin clawbot media failed token=%d message=%s name=%q url=%q: %v", token.ID, clawBotMessageID(msg), ref.Name, ref.URL, err)
 			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "download_failed", Name: ref.Name, Raw: ref.Raw})
@@ -1413,6 +1455,45 @@ func newHTTPWeixinClawBotAPI(cfg WeixinClawBotConfig) *httpWeixinClawBotAPI {
 	}
 }
 
+func (c *httpWeixinClawBotAPI) ForBaseURL(rawBaseURL string) (weixinClawBotAPI, error) {
+	baseURL, err := normalizeWeixinClawBotAPIBaseURL(rawBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if baseURL == "" || strings.EqualFold(baseURL, c.baseURL) {
+		return c, nil
+	}
+	clone := *c
+	clone.baseURL = baseURL
+	clone.allowedMediaHosts = make(map[string]bool, len(c.allowedMediaHosts)+1)
+	for host, allowed := range c.allowedMediaHosts {
+		clone.allowedMediaHosts[host] = allowed
+	}
+	if parsed, parseErr := url.Parse(baseURL); parseErr == nil {
+		clone.allowedMediaHosts[weixinClawBotNormalizeMediaHost(parsed.Host)] = true
+	}
+	return &clone, nil
+}
+
+func normalizeWeixinClawBotAPIBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return "", errors.New("invalid weixin clawbot session base url")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("weixin clawbot session base url must use http or https")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("invalid weixin clawbot session base url components")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
 func (c *httpWeixinClawBotAPI) GetQRCodeStatus(ctx context.Context, qrcode string) (*weixinClawBotQRCodeStatus, error) {
 	endpoint := c.baseURL + "/ilink/bot/get_qrcode_status?qrcode=" + url.QueryEscape(qrcode)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -1774,7 +1855,6 @@ func (c *httpWeixinClawBotAPI) sendMessageItems(ctx context.Context, botToken st
 		return err
 	}
 	setWeixinClawBotAuthHeaders(req, botToken)
-	req.Header.Set("X-WECHAT-UIN", randomWechatUIN())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -1813,7 +1893,6 @@ func (c *httpWeixinClawBotAPI) requestMediaUploadURL(ctx context.Context, botTok
 		return "", err
 	}
 	setWeixinClawBotAuthHeaders(req, botToken)
-	req.Header.Set("X-WECHAT-UIN", randomWechatUIN())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -2020,6 +2099,7 @@ func encryptWeixinClawBotAESECBBlocks(block interface{ Encrypt(dst, src []byte) 
 func setWeixinClawBotAuthHeaders(req *http.Request, botToken string) {
 	setWeixinClawBotAuthOnlyHeaders(req, botToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-WECHAT-UIN", randomWechatUIN())
 }
 
 func setWeixinClawBotAuthOnlyHeaders(req *http.Request, botToken string) {
