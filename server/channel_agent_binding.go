@@ -1699,6 +1699,7 @@ func fetchWeixinClawBotQRCode(ctx context.Context) (*weixinClawBotQRCode, error)
 	if err != nil {
 		return nil, err
 	}
+	setWeixinClawBotCommonHeaders(req)
 	client := &http.Client{Timeout: configuredWeixinClawBotHTTPTimeout()}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -2377,6 +2377,9 @@ func TestWeixinClawBotPollUsesAuthorizedSessionBaseURL(t *testing.T) {
 		AuthorizationType string
 		WechatUIN         string
 		ContentType       string
+		AppID             string
+		AppClientVersion  string
+		Body              map[string]interface{}
 	}
 	defaultRequests := make(chan observedRequest, 1)
 	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2387,12 +2390,17 @@ func TestWeixinClawBotPollUsesAuthorizedSessionBaseURL(t *testing.T) {
 
 	regionalRequests := make(chan observedRequest, 1)
 	regionalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		regionalRequests <- observedRequest{
 			Path:              r.URL.Path,
 			Authorization:     r.Header.Get("Authorization"),
 			AuthorizationType: r.Header.Get("AuthorizationType"),
 			WechatUIN:         r.Header.Get("X-WECHAT-UIN"),
 			ContentType:       r.Header.Get("Content-Type"),
+			AppID:             r.Header.Get("iLink-App-Id"),
+			AppClientVersion:  r.Header.Get("iLink-App-ClientVersion"),
+			Body:              body,
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ret":             0,
@@ -2444,6 +2452,16 @@ func TestWeixinClawBotPollUsesAuthorizedSessionBaseURL(t *testing.T) {
 	if !strings.HasPrefix(request.ContentType, "application/json") {
 		t.Fatalf("content type = %q", request.ContentType)
 	}
+	if request.AppID != weixinClawBotAppID {
+		t.Fatalf("iLink-App-Id = %q", request.AppID)
+	}
+	if request.AppClientVersion != weixinClawBotAppClientVersion {
+		t.Fatalf("iLink-App-ClientVersion = %q", request.AppClientVersion)
+	}
+	baseInfo, _ := request.Body["base_info"].(map[string]interface{})
+	if baseInfo["channel_version"] != weixinClawBotChannelVersion || baseInfo["bot_agent"] != weixinClawBotAgent {
+		t.Fatalf("base_info = %+v", baseInfo)
+	}
 	decodedUIN, err := base64.StdEncoding.DecodeString(request.WechatUIN)
 	if err != nil {
 		t.Fatalf("X-WECHAT-UIN is not base64: %q: %v", request.WechatUIN, err)
@@ -2458,6 +2476,166 @@ func TestWeixinClawBotPollUsesAuthorizedSessionBaseURL(t *testing.T) {
 	}
 	if updated.GetUpdatesBuf != "regional-cursor" {
 		t.Fatalf("cursor = %q", updated.GetUpdatesBuf)
+	}
+}
+
+func TestWeixinClawBotQRCodeStatusFollowsScanRedirect(t *testing.T) {
+	regionalRequests := make(chan string, 1)
+	regionalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		regionalRequests <- r.URL.Path
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ret": 0, "status": "wait"})
+	}))
+	defer regionalServer.Close()
+	defaultRequests := make(chan string, 2)
+	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("iLink-App-Id") != weixinClawBotAppID || r.Header.Get("iLink-App-ClientVersion") != weixinClawBotAppClientVersion {
+			t.Errorf("missing iLink app headers: %+v", r.Header)
+		}
+		defaultRequests <- r.URL.Path
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ret":           0,
+			"status":        "scaned_but_redirect",
+			"redirect_host": regionalServer.URL,
+		})
+	}))
+	defer defaultServer.Close()
+
+	handler := NewWeixinClawBotHandler(newChannelAgentTestStore(), nil, WeixinClawBotConfig{
+		ILinkBaseURL:  defaultServer.URL,
+		WorkerEnabled: false,
+	}, nil)
+	requestURL := "/api/channel-agent-bindings/weixin-clawbot/qrcode-status?scene_key=m.redirect&qrcode=qr-redirect"
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, requestURL, nil)
+		rec := httptest.NewRecorder()
+		handler.HandleQRCodeStatus(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("poll %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	select {
+	case path := <-defaultRequests:
+		if path != "/ilink/bot/get_qrcode_status" {
+			t.Fatalf("default path = %q", path)
+		}
+	default:
+		t.Fatal("initial QR status did not use default host")
+	}
+	select {
+	case extra := <-defaultRequests:
+		t.Fatalf("redirected QR status returned to default host: %s", extra)
+	default:
+	}
+	select {
+	case path := <-regionalRequests:
+		if path != "/ilink/bot/get_qrcode_status" {
+			t.Fatalf("regional path = %q", path)
+		}
+	default:
+		t.Fatal("QR status did not follow redirect host")
+	}
+}
+
+func TestHTTPWeixinClawBotLifecycleUsesSessionProtocol(t *testing.T) {
+	type observedLifecycleRequest struct {
+		Path           string
+		Authorization  string
+		WechatUIN      string
+		AppID          string
+		ClientVersion  string
+		ChannelVersion string
+		BotAgent       string
+	}
+	requests := make(chan observedLifecycleRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			BaseInfo map[string]string `json:"base_info"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requests <- observedLifecycleRequest{
+			Path:           r.URL.Path,
+			Authorization:  r.Header.Get("Authorization"),
+			WechatUIN:      r.Header.Get("X-WECHAT-UIN"),
+			AppID:          r.Header.Get("iLink-App-Id"),
+			ClientVersion:  r.Header.Get("iLink-App-ClientVersion"),
+			ChannelVersion: body.BaseInfo["channel_version"],
+			BotAgent:       body.BaseInfo["bot_agent"],
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"ret": 0})
+	}))
+	defer server.Close()
+
+	api := newHTTPWeixinClawBotAPI(WeixinClawBotConfig{ILinkBaseURL: server.URL, LongPollTimeout: time.Second})
+	if err := api.NotifyStart(context.Background(), "lifecycle-token"); err != nil {
+		t.Fatalf("notify start: %v", err)
+	}
+	if err := api.NotifyStop(context.Background(), "lifecycle-token"); err != nil {
+		t.Fatalf("notify stop: %v", err)
+	}
+
+	for _, wantPath := range []string{"/ilink/bot/msg/notifystart", "/ilink/bot/msg/notifystop"} {
+		request := <-requests
+		if request.Path != wantPath {
+			t.Fatalf("path = %q, want %q", request.Path, wantPath)
+		}
+		if request.Authorization != "Bearer lifecycle-token" || request.WechatUIN == "" {
+			t.Fatalf("auth headers = %+v", request)
+		}
+		if request.AppID != weixinClawBotAppID || request.ClientVersion != weixinClawBotAppClientVersion {
+			t.Fatalf("app headers = %+v", request)
+		}
+		if request.ChannelVersion != weixinClawBotChannelVersion || request.BotAgent != weixinClawBotAgent {
+			t.Fatalf("base_info = %+v", request)
+		}
+	}
+}
+
+func TestWeixinClawBotWorkerNotifiesSessionLifecycle(t *testing.T) {
+	db := newChannelAgentTestStore()
+	token, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash: hashWeixinClawBotToken("worker-lifecycle-token"),
+		BotToken:  "worker-lifecycle-token",
+		Status:    types.WeixinClawBotTokenActive,
+		OwnerUID:  1,
+	})
+	if err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	api := &lifecycleWeixinClawBotAPI{
+		fakeWeixinClawBotAPI: &fakeWeixinClawBotAPI{},
+		starts:               make(chan string, 1),
+		stops:                make(chan string, 1),
+	}
+	handler := NewWeixinClawBotHandler(db, nil, WeixinClawBotConfig{}, api)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.pollTokenLoop(ctx, token.ID)
+	}()
+
+	select {
+	case got := <-api.starts:
+		if got != token.BotToken {
+			t.Fatalf("notify start token = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not notify start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop")
+	}
+	select {
+	case got := <-api.stops:
+		if got != token.BotToken {
+			t.Fatalf("notify stop token = %q", got)
+		}
+	default:
+		t.Fatal("worker did not notify stop")
 	}
 }
 
@@ -2975,6 +3153,22 @@ type fakeWeixinClawBotAPI struct {
 	downloadCalls []weixinClawBotMediaRef
 	sends         []fakeWeixinClawBotSend
 	mediaSends    []fakeWeixinClawBotMediaSend
+}
+
+type lifecycleWeixinClawBotAPI struct {
+	*fakeWeixinClawBotAPI
+	starts chan string
+	stops  chan string
+}
+
+func (f *lifecycleWeixinClawBotAPI) NotifyStart(_ context.Context, botToken string) error {
+	f.starts <- botToken
+	return nil
+}
+
+func (f *lifecycleWeixinClawBotAPI) NotifyStop(_ context.Context, botToken string) error {
+	f.stops <- botToken
+	return nil
 }
 
 type fakeWeixinClawBotSend struct {
