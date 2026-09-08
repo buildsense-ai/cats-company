@@ -2606,6 +2606,7 @@ func TestWeixinClawBotWorkerNotifiesSessionLifecycle(t *testing.T) {
 		fakeWeixinClawBotAPI: &fakeWeixinClawBotAPI{},
 		starts:               make(chan string, 1),
 		stops:                make(chan string, 1),
+		polls:                make(chan string, 1),
 	}
 	handler := NewWeixinClawBotHandler(db, nil, WeixinClawBotConfig{}, api)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2623,6 +2624,14 @@ func TestWeixinClawBotWorkerNotifiesSessionLifecycle(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker did not notify start")
 	}
+	select {
+	case got := <-api.polls:
+		if got != token.BotToken {
+			t.Fatalf("poll token = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not poll after notify start")
+	}
 	cancel()
 	select {
 	case <-done:
@@ -2636,6 +2645,61 @@ func TestWeixinClawBotWorkerNotifiesSessionLifecycle(t *testing.T) {
 		}
 	default:
 		t.Fatal("worker did not notify stop")
+	}
+}
+
+func TestWeixinClawBotWorkerRetriesFailedNotifyStartBeforePolling(t *testing.T) {
+	db := newChannelAgentTestStore()
+	token, err := db.UpsertWeixinClawBotToken(&types.WeixinClawBotToken{
+		TokenHash: hashWeixinClawBotToken("worker-start-retry-token"),
+		BotToken:  "worker-start-retry-token",
+		Status:    types.WeixinClawBotTokenActive,
+		OwnerUID:  1,
+	})
+	if err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	api := &lifecycleWeixinClawBotAPI{
+		fakeWeixinClawBotAPI: &fakeWeixinClawBotAPI{},
+		starts:               make(chan string, 2),
+		stops:                make(chan string, 1),
+		polls:                make(chan string, 1),
+		startErrors:          []error{errors.New("notify start unavailable")},
+	}
+	handler := NewWeixinClawBotHandler(db, nil, WeixinClawBotConfig{}, api)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.pollTokenLoop(ctx, token.ID)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	select {
+	case <-api.starts:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not attempt notify start")
+	}
+	select {
+	case got := <-api.polls:
+		t.Fatalf("worker polled before notify start succeeded: %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case <-api.starts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not retry notify start")
+	}
+	select {
+	case got := <-api.polls:
+		if got != token.BotToken {
+			t.Fatalf("poll token = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not poll after notify start retry succeeded")
 	}
 }
 
@@ -3157,18 +3221,35 @@ type fakeWeixinClawBotAPI struct {
 
 type lifecycleWeixinClawBotAPI struct {
 	*fakeWeixinClawBotAPI
-	starts chan string
-	stops  chan string
+	starts      chan string
+	stops       chan string
+	polls       chan string
+	startErrors []error
+	startCalls  int
 }
 
 func (f *lifecycleWeixinClawBotAPI) NotifyStart(_ context.Context, botToken string) error {
 	f.starts <- botToken
+	call := f.startCalls
+	f.startCalls++
+	if call < len(f.startErrors) {
+		return f.startErrors[call]
+	}
 	return nil
 }
 
 func (f *lifecycleWeixinClawBotAPI) NotifyStop(_ context.Context, botToken string) error {
 	f.stops <- botToken
 	return nil
+}
+
+func (f *lifecycleWeixinClawBotAPI) GetUpdates(ctx context.Context, botToken string, getUpdatesBuf string) (*weixinClawBotUpdates, error) {
+	if f.polls == nil {
+		return f.fakeWeixinClawBotAPI.GetUpdates(ctx, botToken, getUpdatesBuf)
+	}
+	f.polls <- botToken
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 type fakeWeixinClawBotSend struct {

@@ -812,16 +812,27 @@ func (h *WeixinClawBotHandler) pollTokenLoop(ctx context.Context, tokenID int64)
 			if resolveErr != nil {
 				_ = bindings.MarkWeixinClawBotTokenError(token.ID, "", resolveErr.Error())
 				log.Printf("resolve weixin clawbot lifecycle api failed id=%d: %v", token.ID, resolveErr)
+				sleepWithContext(ctx, backoff)
+				backoff = nextBackoff(backoff)
+				continue
 			} else if lifecycle, ok := api.(weixinClawBotAPILifecycle); ok {
-				lifecycleAPI = lifecycle
-				lifecycleToken = token.BotToken
 				startCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 				notifyErr := lifecycle.NotifyStart(startCtx, token.BotToken)
 				cancel()
 				if notifyErr != nil {
+					var apiErr *weixinClawBotAPIError
+					if errors.As(notifyErr, &apiErr) && apiErr.ErrCode == -14 {
+						_ = bindings.MarkWeixinClawBotTokenError(token.ID, types.WeixinClawBotTokenExpired, notifyErr.Error())
+						return
+					}
 					_ = bindings.MarkWeixinClawBotTokenError(token.ID, "", notifyErr.Error())
 					log.Printf("notify weixin clawbot start failed id=%d: %v", token.ID, notifyErr)
+					sleepWithContext(ctx, backoff)
+					backoff = nextBackoff(backoff)
+					continue
 				}
+				lifecycleAPI = lifecycle
+				lifecycleToken = token.BotToken
 			}
 		}
 		if err := h.pollTokenOnce(ctx, token); err != nil {
