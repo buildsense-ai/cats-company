@@ -301,6 +301,21 @@ describe('SkillHubView', () => {
     expect(result.legacyTruncated).toBe(true);
   });
 
+  it('does not flag an old Runtime workspace containing exactly one safe page as truncated', async () => {
+    const result = await collectSkillHubWorkspacePages({
+      initialWorkspace: {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        skills: Array.from({ length: 10 }, (_, index) => ({
+          local_skill_id: `legacy-${index}`,
+          name: `legacy-${index}`,
+        })),
+      },
+      readPage: vi.fn(),
+    });
+    expect(result.skills).toHaveLength(10);
+    expect(result.legacyTruncated).toBe(false);
+  });
+
   it('restarts workspace pagination once when the Runtime reports a concurrent change', async () => {
     const changed = new Error('workspace changed');
     changed.code = 'WORKSPACE_CHANGED';
@@ -843,6 +858,7 @@ describe('SkillHubView', () => {
 
     await expect(result).resolves.toMatchObject({
       code: 'skillhub_device_switch_timeout',
+      message: expect.stringContaining('目标 XiaoBa 切换超时'),
       cause: { code: 'REQUEST_TIMEOUT' },
     });
     expect(getDevices).toHaveBeenCalledTimes(3);
@@ -2158,6 +2174,11 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-device-picker')).toBeNull();
     expect(container.textContent).toContain('local-demo');
     expect(container.textContent).toContain('C:\\xiaoba\\skills');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'alice-device',
+      toolName: 'skillhub.localWorkspace.get',
+      payload: expect.objectContaining({ bot_uid: '42', limit: 10 }),
+    }));
 
     const shareButton = container.querySelector('.cc-skillhub-local-card button');
     expect(container.querySelector('.cc-skillhub-local-card')?.textContent).toContain('未发布');
@@ -2555,6 +2576,42 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('当前 Bot 尚未在本地 XiaoBa 激活');
   });
 
+  it('uses target XiaoBa wording when the initial workspace request times out', async () => {
+    api.getDevices.mockResolvedValueOnce({
+      devices: [{
+        deviceId: 'alice-device',
+        runtimeRole: 'desktop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockRejectedValue(
+      Object.assign(new Error('等待本地 XiaoBa 响应超时'), { code: 'skillhub_device_timeout' }),
+    );
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCustomSkills();
+
+    expect(container.textContent).toContain('等待目标 XiaoBa 响应超时');
+    expect(container.textContent).not.toContain('等待本地 XiaoBa 响应超时');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localWorkspace.get',
+      payload: expect.objectContaining({ limit: 10 }),
+    }));
+  });
+
   it('recovers an unavailable route and workspace handoff during an explicit Bot switch', async () => {
     vi.useFakeTimers();
     const readyDevice = {
@@ -2650,6 +2707,15 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localBot.switch',
       payload: expect.objectContaining({ bot_uid: '44' }),
     }));
+    expect(requestSkillHubDeviceTool.mock.calls
+      .map(([request]) => request)
+      .filter((request) => (
+        request.toolName === 'skillhub.localWorkspace.get'
+        && request.payload.bot_uid === '44'
+      )))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ payload: expect.objectContaining({ limit: 10 }) }),
+      ]));
 
     await act(async () => {
       await vi.runAllTimersAsync();
