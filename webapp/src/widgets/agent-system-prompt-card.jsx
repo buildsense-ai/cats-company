@@ -35,9 +35,9 @@ function PromptStatus({ state }) {
         ? Cloud
         : LoaderCircle;
   return (
-    <span className={`cc-agent-prompt-status is-${state.kind}`} role="status">
+    <span className={`cc-agent-prompt-status is-${state.kind}`} role="status" title={state.label}>
       <Icon size={14} aria-hidden="true" />
-      {state.label}
+      {state.kind === 'applied' ? '已生效' : state.label}
     </span>
   );
 }
@@ -51,6 +51,7 @@ export default function AgentSystemPromptCard({ agent }) {
   const [error, setError] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState('');
+  const [editorTouched, setEditorTouched] = useState(false);
   const mountedRef = useRef(true);
   const requestRef = useRef(0);
   const editorDialogRef = useRef(null);
@@ -179,6 +180,7 @@ export default function AgentSystemPromptCard({ agent }) {
     if (loading || saving || !remote?.configured) return;
     editorOpenerRef.current = event.currentTarget;
     setDraft(savedPrompt.customSystemPrompt);
+    setEditorTouched(false);
     setEditorOpen(true);
     setError('');
   };
@@ -335,8 +337,8 @@ export default function AgentSystemPromptCard({ agent }) {
             <div className="cc-agent-prompt-editor-field">
               <div>
                 <label htmlFor="cc-agent-prompt-editor-text">自定义内容</label>
-                <span className={promptTooLarge ? 'is-error' : ''}>
-                  {byteCount.toLocaleString()} / {MAX_SYSTEM_PROMPT_BYTES.toLocaleString()} 字节
+                <span className={promptTooLarge ? 'is-error' : ''} title={`已使用 ${byteCount.toLocaleString()} / ${MAX_SYSTEM_PROMPT_BYTES.toLocaleString()} 字节`}>
+                  {promptTooLarge ? '内容过长' : `${Array.from(draft).length.toLocaleString()} 字符`}
                 </span>
               </div>
               <textarea
@@ -344,16 +346,18 @@ export default function AgentSystemPromptCard({ agent }) {
                 id="cc-agent-prompt-editor-text"
                 value={draft}
                 disabled={saving}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => { setEditorTouched(true); setDraft(event.target.value); }}
                 placeholder="输入这个 Agent 应遵循的角色、边界、工作方式与限制..."
                 spellCheck="false"
               />
-              {customPromptEmpty && <p className="is-error">自定义系统提示词不能为空。</p>}
-              {promptTooLarge && <p className="is-error">内容超过后端允许的 1 MiB 限制。</p>}
+              {customPromptEmpty && (editorTouched
+                ? <p className="is-error">自定义系统提示词不能为空。</p>
+                : <p>填写助手的角色、工作方式和回答要求，保存后启用。</p>)}
+              {promptTooLarge && <p className="is-error">内容过长，请精简后再保存（最大 1 MiB）。</p>}
             </div>
 
             <footer className="cc-agent-prompt-editor-actions">
-              <span>{editorDirty ? '有未保存的修改' : '内容已保存'}</span>
+              <span>{saving ? '正在保存…' : editorContentDirty ? '有未保存的修改' : savedPrompt.selected === 'custom' ? '内容已保存' : customPromptEmpty ? '填写后可保存' : '保存后启用自定义提示词'}</span>
               <div>
                 <button type="button" className="oc-btn oc-btn-default" disabled={saving} onClick={() => closeEditor()}>
                   取消

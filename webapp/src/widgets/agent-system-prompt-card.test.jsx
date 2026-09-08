@@ -88,7 +88,8 @@ describe('AgentSystemPromptCard', () => {
     expect(api.getBotDefinitionPrompt).toHaveBeenCalledWith('42');
     expect(container.querySelector('.cc-agent-behavior-card')?.textContent).toContain('行为设定');
     expect(container.textContent).toContain('使用 XiaoBa 默认提示词');
-    expect(container.textContent).toContain('Agent 已应用 revision 3');
+    expect(container.querySelector('.cc-agent-prompt-status').textContent).toContain('已生效');
+    expect(container.querySelector('.cc-agent-prompt-status').title).toContain('Agent 已应用 revision 3');
     expect(container.querySelector('select')).toBeNull();
     expect(document.body.querySelector('.cc-agent-prompt-editor-overlay')).toBeNull();
   });
@@ -148,6 +149,9 @@ describe('AgentSystemPromptCard', () => {
     const textarea = overlay.querySelector('textarea');
     expect(overlay).not.toBeNull();
     expect(container.querySelector('.cc-agent-prompt-editor-overlay')).toBeNull();
+    expect(overlay.textContent).not.toContain('自定义系统提示词不能为空');
+    expect(overlay.textContent).not.toContain('有未保存的修改');
+    expect(overlay.textContent).toContain('填写后可保存');
 
     await act(async () => {
       Simulate.change(textarea, { target: { value: 'Review changes carefully.' } });

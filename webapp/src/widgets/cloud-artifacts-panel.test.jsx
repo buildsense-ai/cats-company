@@ -355,7 +355,8 @@ describe('CloudArtifactsPanel', () => {
     expect(scrollContainer.contains(filterPopover)).toBe(false);
     expect(scrollContainer.scrollTop).toBe(24);
     expect(filterPopover.getAttribute('data-cc-focus-group')).toBe('true');
-    expect(filterPopover.querySelector('.cloud-artifact-filter-scope-section legend')?.textContent)
+    expect(filterPopover.querySelector('.cloud-artifact-filter-scope-section legend')).toBeNull();
+    expect(filterPopover.querySelector('.cloud-artifact-filter-scope-section')?.getAttribute('aria-label'))
       .toBe('成果范围');
     expect(trigger.textContent).toContain('1');
     expect(filterPopover.textContent).not.toContain('选择后即时更新列表');
@@ -481,6 +482,17 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(activeArtifact.url);
+    expect(container.querySelector('[aria-label="已复制 课堂小游戏 链接"] .cc-copy-success-icon')).not.toBeNull();
+  });
+
+  test('does not show copy success when the clipboard rejects the request', async () => {
+    navigator.clipboard.writeText.mockRejectedValueOnce(new Error('clipboard denied'));
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="复制 课堂小游戏 链接"]').click();
+    });
+    expect(container.querySelector('.cc-copy-success-icon')).toBeNull();
+    expect(container.textContent).toContain('链接复制失败');
   });
 
   test('lets the Agent owner delete and restore a result', async () => {

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
@@ -8,10 +8,15 @@ import {
   Check,
   CheckCircle,
   ChevronDown,
+  ChevronRight,
   Cloud,
   Code2,
   Copy,
+  LoaderCircle,
+  MessageSquare,
+  MoreHorizontal,
   FileCheck2,
+  FolderOpen,
   Plus,
   Puzzle,
   QrCode,
@@ -19,6 +24,7 @@ import {
   Search,
   Settings2,
   Trash2,
+  UsersRound,
   X,
   XCircle,
   Zap,
@@ -497,14 +503,36 @@ export default function AgentStoreModal({
   onClose,
   onOpenSkillHub,
   onOpenCloudArtifacts,
+  onOpenAgentChat,
   user,
   onBotsChanged,
 }) {
   const feedback = useFeedback();
   const [bots, setBots] = useState([]);
+  const [rosterFilter, setRosterFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('hub'); // 'hub', 'create', 'manage'
   const [hubCloudView, setHubCloudView] = useState(false); // hub tab: show cloud manage panel instead of the roster
+  const rosterTabsRef = useRef(null);
+  const [rosterIndicator, setRosterIndicator] = useState({ left: 0, width: 0 });
+  useLayoutEffect(() => {
+    const tabs = rosterTabsRef.current;
+    const active = tabs?.querySelector('[aria-pressed="true"]');
+    if (!active) return undefined;
+    const measure = () => {
+      const left = active.offsetLeft;
+      const width = active.offsetWidth;
+      setRosterIndicator(previous => previous.left === left && previous.width === width
+        ? previous : { left, width });
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(tabs);
+    // Earlier labels can change width when counts or fonts change.
+    tabs.querySelectorAll('button').forEach(button => observer?.observe(button));
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [rosterFilter, tab, hubCloudView, loading, bots]);
   const [createForm, setCreateForm] = useState(initialForm);
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
@@ -540,6 +568,16 @@ export default function AgentStoreModal({
   const [cloudActions, setCloudActions] = useState(null); // configured cloud operation capabilities
   const [cloudActioning, setCloudActioning] = useState(null); // { name, action }
   const [editingBot, setEditingBot] = useState(null);
+  const [manageSaving, setManageSaving] = useState(false);
+  const manageSaveRef = useRef(false);
+  const [manageSavedId, setManageSavedId] = useState(null);
+  const [visibilityFeedback, setVisibilityFeedback] = useState(null);
+  const visibilityRequestRef = useRef(false);
+  useEffect(() => {
+    if (visibilityFeedback?.status !== 'saved') return;
+    const timer = setTimeout(() => setVisibilityFeedback(null), 2400);
+    return () => clearTimeout(timer);
+  }, [visibilityFeedback]);
   const [manageSection, setManageSection] = useState('basic');
   const [managedSkills, setManagedSkills] = useState({ count: 0, skills: [], loading: false, error: '' });
   const [artifactSummary, setArtifactSummary] = useState({
@@ -563,19 +601,44 @@ export default function AgentStoreModal({
   const editingBotRef = useRef(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const initialAgentAppliedRef = useRef(false);
+  const leaveConfirmationRef = useRef(false);
+  const manageDirty = Boolean(editingBot && (
+    editingBot.newDisplayName !== editingBot.display_name
+    || editingBot.newAvatarUrl !== (editingBot.avatar_url || '')
+    || editingBot.newRole !== normalizeAssistantRole(editingBot.role)
+    || editingBot.newDescription.trim() !== String(editingBot.description || '').trim()
+    || editingBot.newArtifactUploadEnabled !== (editingBot.artifact_upload_enabled !== false)
+  ));
+  const requestLeave = useCallback(async (destination = 'close') => {
+    if (manageSaveRef.current || leaveConfirmationRef.current) return;
+    if (tab === 'manage' && manageDirty) {
+      leaveConfirmationRef.current = true;
+      try {
+        const confirmed = await feedback.confirm({
+          title: '放弃未保存的修改？',
+          message: '尚未保存的名称、头像、用途和设置将被放弃。已即时生效的设置不受影响。',
+          confirmLabel: '放弃修改',
+          cancelLabel: '继续编辑',
+        });
+        if (!confirmed) return;
+      } finally {
+        leaveConfirmationRef.current = false;
+      }
+    }
+    if (typeof destination === 'function') destination();
+    else if (destination === 'hub') { setTab('hub'); setError(''); }
+    else onClose();
+  }, [feedback, manageDirty, onClose, tab]);
   const botOverview = useMemo(() => {
-    const online = bots.filter((bot) => bot.is_online === true || bot.online === true).length;
-    const publiclySearchable = bots.filter(
-      (bot) => normalizeBotVisibility(bot.visibility) === BOT_VISIBILITY.PUBLIC,
-    ).length;
-    const managed = bots.filter((bot) => Boolean(bot.tenant_name)).length;
+    const owned = bots.filter(isOwnedBot).length;
     return {
       total: bots.length,
-      online,
-      publiclySearchable,
-      selfHosted: bots.length - managed,
+      owned,
+      added: bots.length - owned,
     };
   }, [bots]);
+  const visibleBots = bots.filter((bot) => rosterFilter === 'all'
+    || (rosterFilter === 'owned' ? isOwnedBot(bot) : !isOwnedBot(bot)));
   const selectedRole = useMemo(
     () => ASSISTANT_ROLES.find((role) => role.value === createForm.role) || ASSISTANT_ROLES[0],
     [createForm.role],
@@ -736,7 +799,7 @@ export default function AgentStoreModal({
 
   // Cloud-managed workers shown in the dedicated cloud panel (create tab).
   const cloudWorkers = useMemo(
-    () => bots.filter((bot) => Boolean(bot.tenant_name)),
+    () => bots.filter((bot) => isOwnedBot(bot) && Boolean(bot.tenant_name)),
     [bots],
   );
 
@@ -996,13 +1059,14 @@ export default function AgentStoreModal({
     const handleDialogKeyDown = (event) => {
       if (
         document.querySelector('.cc-agent-prompt-editor-overlay')
+        || document.querySelector('.cc-confirm-overlay')
         || (event.target instanceof Element && event.target.closest('.cc-agent-prompt-editor-dialog'))
       ) {
         return;
       }
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        requestLeave();
         return;
       }
       if (event.key !== 'Tab' || !dialogRef.current) return;
@@ -1031,7 +1095,7 @@ export default function AgentStoreModal({
     };
     document.addEventListener('keydown', handleDialogKeyDown);
     return () => document.removeEventListener('keydown', handleDialogKeyDown);
-  }, [entryBot, onClose, skillDetail, skillPickerOpen]);
+  }, [entryBot, requestLeave, skillDetail, skillPickerOpen]);
 
   const loadBots = async ({ silent = false } = {}) => {
     const cloudRequest = api.getCloudWorkers
@@ -1051,12 +1115,12 @@ export default function AgentStoreModal({
         botsRes.bots || [],
         agentsRes.agents || [],
         friendsRes.friends || [],
-      ).filter(isOwnedBot);
+      );
       // Core assistant data is entirely local to CatsCompany and should render
       // without waiting for cloud-provider reconciliation.
       setBots(manageableBots);
       if (api.getBotInviteCode) {
-        const inviteEntries = await Promise.all(manageableBots.map(async (bot) => {
+        const inviteEntries = await Promise.all(manageableBots.filter(isOwnedBot).map(async (bot) => {
           const botId = bot?.id || bot?.uid;
           if (!botId) return null;
           try {
@@ -1081,7 +1145,7 @@ export default function AgentStoreModal({
         const requestedBot = manageableBots.find(
           (bot) => String(bot.id || bot.uid) === requestedAgentId,
         );
-        if (requestedBot) {
+        if (requestedBot && isOwnedBot(requestedBot)) {
           setEditingBot(editableBot(requestedBot));
           setTab('manage');
         }
@@ -1505,11 +1569,15 @@ export default function AgentStoreModal({
 
   const handleSaveEdit = async (e) => {
     e.preventDefault();
-    if (!editingBot) return;
+    if (!editingBot || !manageDirty || manageSaveRef.current || avatarUploading) return;
     if (!isOwnedBot(editingBot)) {
       setError('只能管理自己创建的助手');
       return;
     }
+    const savedBot = editingBot;
+    manageSaveRef.current = true;
+    setManageSaving(true);
+    setError('');
     try {
       await api.updateBot(editingBot.id, {
         display_name: editingBot.newDisplayName,
@@ -1520,17 +1588,30 @@ export default function AgentStoreModal({
       });
       await loadBots({ silent: true });
       if (onBotsChanged) onBotsChanged();
-      setEditingBot(null);
-      setTab('hub');
+      setEditingBot((current) => current?.id === savedBot.id ? {
+        ...current,
+        display_name: savedBot.newDisplayName,
+        avatar_url: savedBot.newAvatarUrl,
+        role: savedBot.newRole,
+        description: savedBot.newDescription.trim(),
+        artifact_upload_enabled: savedBot.newArtifactUploadEnabled,
+      } : current);
+      setManageSavedId(savedBot.id);
     } catch (e) {
       setError(e.message || t('error_server'));
+    } finally {
+      manageSaveRef.current = false;
+      setManageSaving(false);
     }
   };
 
   const handleSetVisibility = async (bot, visibility) => {
     const botId = bot?.id || bot?.uid;
-    if (!botId || !isOwnedBot(bot)) return;
+    if (!botId || !isOwnedBot(bot) || visibilityRequestRef.current) return;
     const nextVisibility = normalizeBotVisibility(visibility);
+    if (nextVisibility === normalizeBotVisibility(bot.visibility)) return;
+    visibilityRequestRef.current = true;
+    setVisibilityFeedback({ botId, status: 'saving' });
     try {
       setError('');
       await api.setBotVisibility(botId, nextVisibility);
@@ -1545,19 +1626,24 @@ export default function AgentStoreModal({
           : prev
       ));
       if (onBotsChanged) onBotsChanged();
+      setVisibilityFeedback({ botId, status: 'saved' });
     } catch (e) {
+      setVisibilityFeedback(null);
       setError(e.message || '更新助手可见性失败');
+    } finally {
+      visibilityRequestRef.current = false;
     }
   };
 
   const wsUrl = getWebSocketURL();
+  const currentVisibilityStatus = visibilityFeedback && visibilityFeedback.botId === (editingBot?.id || editingBot?.uid) ? visibilityFeedback.status : '';
 
   return (
-    <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1000 }}>
+    <div className="oc-modal-overlay" onClick={(event) => { if (event.target === event.currentTarget) requestLeave(); }} style={{ zIndex: 1000 }}>
       {/* Removed arbitrary background hardcoding to allow inheritance from the global .oc-modal V3 matrix */}
       <div
         ref={dialogRef}
-        className={`oc-modal cc-agent-manager cc-secondary-interface${tab === 'manage' ? ' cc-agent-manager-manage' : ''}`}
+        className={`oc-modal cc-agent-manager cc-secondary-interface${tab === 'manage' ? ' cc-agent-manager-manage' : ''}${tab === 'hub' && !hubCloudView ? ' cc-agent-manager-hub' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="cc-agent-manager-title"
@@ -1566,11 +1652,14 @@ export default function AgentStoreModal({
 
         <div className="oc-modal-header cc-agent-manager-header">
           <div className="cc-agent-manager-nav">
+            {tab === 'manage' && <button type="button" className="cc-agent-manager-header-action" aria-label="返回助手列表" disabled={manageSaving} onClick={() => requestLeave('hub')}><ArrowLeft size={16} aria-hidden="true" /></button>}
             <h3 id="cc-agent-manager-title" className="cc-agent-manager-title">
-              <Bot size={22} strokeWidth={1.8} /> AI 助手管理
+              <Bot size={22} strokeWidth={1.8} />
+              <span>{tab === 'manage' && editingBot ? <><span className="cc-agent-title-context">管理助手</span><span className="cc-agent-title-separator"> · </span><span className="cc-agent-title-name" title={editingBot.newDisplayName || editingBot.display_name}>{editingBot.newDisplayName || editingBot.display_name}</span></> : 'AI 助手管理'}</span>
             </h3>
           </div>
           <div className="cc-agent-manager-header-actions">
+            {tab === 'manage' && editingBot && <button type="button" className="cc-agent-manager-header-action" aria-label="入口码" disabled={manageSaving} onClick={() => setEntryBot(editingBot)}><QrCode size={15} aria-hidden="true" /><span>入口码</span></button>}
             {tab !== 'hub' && tab !== 'manage' && (
               <button
                 type="button"
@@ -1580,7 +1669,7 @@ export default function AgentStoreModal({
                 <ArrowLeft size={14} aria-hidden="true" /> <span>助手列表</span>
               </button>
             )}
-            <button className="cc-dialog-close" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+            <button className="cc-dialog-close" disabled={manageSaving} onClick={() => requestLeave()} aria-label="关闭"><X size={18} /></button>
           </div>
         </div>
 
@@ -1621,26 +1710,14 @@ export default function AgentStoreModal({
               ) : bots.length === 0 ? (
                 <div className="cc-agent-hub-empty">
                   <Bot size={48} strokeWidth={1.5} />
-                  <strong>还没有你创建的 AI 助手</strong>
+                  <strong>还没有 AI 助手</strong>
                   <p>
-                    已添加的助手会保留在左侧 AI 助手列表，可直接移动端使用或移除。
+                    创建自己的助手，或通过“添加好友/助手”添加已有助手。
                   </p>
                   <button className="oc-btn cc-agent-empty-action" onClick={openCreateTab}>创建新助手</button>
                 </div>
               ) : (
                 <>
-                  <section className="cc-agent-overview" aria-label="助手概览">
-                    <div className="cc-agent-overview-heading">
-                      <strong>助手概览</strong>
-                    </div>
-                    <div className="cc-agent-overview-stats">
-                      <div><strong>{botOverview.total}</strong><span>全部助手</span></div>
-                      <div><strong>{botOverview.online}</strong><span>当前在线</span></div>
-                      <div><strong>{botOverview.publiclySearchable}</strong><span>公开可搜索</span></div>
-                      <div><strong>{botOverview.selfHosted}</strong><span>自托管</span></div>
-                    </div>
-                  </section>
-
                   {/* 云托管管理入口（云员工独有：有配额或已有云托管员工时显示） */}
                   {(cloudQuota?.enabled || cloudWorkers.length > 0) && (
                     <button
@@ -1654,8 +1731,32 @@ export default function AgentStoreModal({
                     </button>
                   )}
 
+                  <div className="cc-agent-roster-toolbar">
+                  <div ref={rosterTabsRef} className="cc-agent-roster-filters" role="group" aria-label="助手分类">
+                    <span className="cc-agent-roster-indicator" aria-hidden="true"
+                      style={{ width: rosterIndicator.width, transform: `translateX(${rosterIndicator.left}px)` }} />
+                    {[
+                      ['all', '全部', botOverview.total],
+                      ['owned', '我创建的', botOverview.owned],
+                      ['added', '已添加的', botOverview.added],
+                    ].map(([value, label, count]) => (
+                      <button key={value} type="button" aria-pressed={rosterFilter === value}
+                        onClick={() => setRosterFilter(value)}>
+                        {label}<span>{count}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <button type="button" className="cc-agent-hub-create" onClick={openCreateTab}>
+                    <Plus size={15} aria-hidden="true" />创建新助手
+                  </button>
+                  </div>
+                  {visibleBots.length === 0 && (
+                    <p className="cc-agent-filter-empty" role="status">
+                      {rosterFilter === 'owned' ? '还没有创建助手，可点击右上角“创建新助手”。' : '还没有添加好友助手，可从联系人菜单“添加好友/助手”添加。'}
+                    </p>
+                  )}
                   <div className="v3-agent-grid cc-agent-hub-grid">
-                    {bots.map(bot => {
+                    {visibleBots.map(bot => {
                       const botId = bot.id || bot.uid;
                       const owned = isOwnedBot(bot);
                       const inviteCode = generatedInviteCodes[botId];
@@ -1678,7 +1779,7 @@ export default function AgentStoreModal({
                           <span style={{ fontSize: 13, color: 'var(--v3-text-muted)' }}>@{bot.username} · uid {botId}</span>
                         </div>
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 16, marginTop: 12 }}>
+                      <div className="cc-agent-card-meta" style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 16, marginTop: 12 }}>
                         {owned
                           ? (bot.tenant_name
                               ? `我创建的 · 云托管${bot.app_version ? ` · 版本 ${bot.app_version}` : ''}`
@@ -1687,23 +1788,11 @@ export default function AgentStoreModal({
                       </div>
                       <div className="v3-agent-actions">
                         {owned && (
-                          <button
-                            type="button"
-                            className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-manage"
-                            onClick={() => {
-                              setEditingBot(editableBot(bot));
-                              setTab('manage');
-                            }}
-                          >
-                            <Settings2 size={14} aria-hidden="true" />
-                            管理
-                          </button>
-                        )}
-                        {owned && (
-                          <>
+                          <div className="cc-agent-card-invite-row">
+                            <span className="cc-agent-card-invite-label">邀请码</span>
                             <button
                               type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-invite-code"
+                              className={`oc-btn oc-btn-default cc-agent-card-action cc-agent-card-invite-code${inviteCode ? '' : ' cc-agent-card-generate'}`}
                               onClick={() => handleGenerateBotInviteCode(bot)}
                               disabled={generatingInviteCode === botId}
                               aria-label={inviteCode ? `复制邀请码 ${inviteCode}` : '生成邀请码'}
@@ -1726,7 +1815,7 @@ export default function AgentStoreModal({
                             {inviteCode && (
                               <button
                                 type="button"
-                                className="oc-btn oc-btn-default cc-agent-card-action"
+                                className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-regenerate"
                                 onClick={async () => {
                                   const confirmed = await feedback.confirm({
                                     title: '重新生成邀请码？',
@@ -1741,7 +1830,20 @@ export default function AgentStoreModal({
                                 重新生成
                               </button>
                             )}
-                          </>
+                          </div>
+                        )}
+                        {owned && (
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-manage"
+                            onClick={() => {
+                              setEditingBot(editableBot(bot));
+                              setTab('manage');
+                            }}
+                          >
+                            <Settings2 size={14} aria-hidden="true" />
+                            管理
+                          </button>
                         )}
                         {owned && (
                           <button
@@ -1764,7 +1866,10 @@ export default function AgentStoreModal({
                             <Cloud size={14} aria-hidden="true" /> 云托管管理
                           </button>
                         )}
-                        {(!owned || !bot.tenant_name) && (
+                        {!owned && (
+                          <FriendAgentActions bot={bot} onOpenChat={onOpenAgentChat} onRemove={() => handleDelete(bot)} />
+                        )}
+                        {owned && !bot.tenant_name && (
                           <button
                             type="button"
                             className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
@@ -1780,10 +1885,6 @@ export default function AgentStoreModal({
                       );
                     })}
                   </div>
-                  <button type="button" className="cc-agent-hub-create" onClick={openCreateTab}>
-                    <Plus size={15} aria-hidden="true" />
-                    创建新助手
-                  </button>
                 </>
               )}
             </div>
@@ -2145,7 +2246,7 @@ export default function AgentStoreModal({
           {/* MANAGE / EDIT TAB */}
           {tab === 'manage' && editingBot && (
             <form className="cc-agent-manage-form" onSubmit={handleSaveEdit}>
-              <div className="cc-agent-manage-sections">
+              <fieldset className="cc-agent-manage-sections" disabled={manageSaving}>
                 <AgentManageSection
                   id={`cc-agent-manage-basic-${editingBot.id || editingBot.uid}`}
                   title="基本信息"
@@ -2277,7 +2378,7 @@ export default function AgentStoreModal({
                   </div>
                 ) : (
                   <div className="cc-agent-credentials">
-                  <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
+                  <div style={{ fontSize: 13, color: 'var(--v3-text-muted)', marginBottom: 8 }}>WebSocket 连接地址</div>
                   <div className="cc-agent-credential-row" style={{ display: 'flex', gap: 8 }}>
                     <code className="cc-agent-credential-value" style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
                       {wsUrl}
@@ -2288,6 +2389,10 @@ export default function AgentStoreModal({
                   </div>
                 </div>
                 )}
+                <section className="cc-agent-connection-access">
+                  <div><h3>入口码与访问权限</h3><p>查看助手入口码，管理已授权的用户。</p></div>
+                  <button type="button" className="oc-btn oc-btn-default" onClick={() => setEntryBot(editingBot)}><QrCode size={16} aria-hidden="true" /> 管理访问</button>
+                </section>
                 </AgentManageSection>
 
               <AgentManageSection
@@ -2303,44 +2408,45 @@ export default function AgentStoreModal({
                 <section className="cc-agent-collaboration-card cc-agent-visibility-settings">
                   <div className="cc-agent-collaboration-heading">
                     <div>
-                      <h3>好友添加方式</h3>
-                      <p>控制其他用户能否找到并申请添加这个 Agent。</p>
+                      <h3><UsersRound size={16} strokeWidth={1.8} aria-hidden="true" />好友添加方式</h3>
+                      <p>选择其他用户如何找到并添加助手。</p>
                     </div>
-                    <span className="cc-agent-collaboration-status">{botVisibilityLabel(editingBot.visibility)}</span>
                   </div>
-                  <div className="cc-agent-collaboration-options">
-                  <button
-                    type="button"
-                    className={`oc-btn ${normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PUBLIC ? 'oc-btn-primary' : 'oc-btn-default'}`}
-                    onClick={() => handleSetVisibility(editingBot, BOT_VISIBILITY.PUBLIC)}
-                  >
-                    公开可搜索
-                  </button>
-                  <button
-                    type="button"
-                    className={`oc-btn ${normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PRIVATE ? 'oc-btn-primary' : 'oc-btn-default'}`}
-                    onClick={() => handleSetVisibility(editingBot, BOT_VISIBILITY.PRIVATE)}
-                  >
-                    私有不可搜索
-                  </button>
+                  <div className="cc-agent-artifact-controls">
+                    <div className="cc-agent-artifact-policy-copy">
+                      <strong>允许被搜索</strong>
+                      <span id="cc-agent-search-visibility-description">{normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PUBLIC
+                        ? '可通过名字或 UID 搜索并申请添加'
+                        : '不出现在搜索结果中，保留已有授权'}</span>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      className="cc-agent-artifact-switch"
+                      aria-label="允许被搜索"
+                      aria-describedby="cc-agent-search-visibility-description"
+                      aria-checked={normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PUBLIC}
+                      aria-busy={currentVisibilityStatus === 'saving'}
+                      disabled={currentVisibilityStatus === 'saving'}
+                      onClick={() => handleSetVisibility(editingBot, normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PUBLIC ? BOT_VISIBILITY.PRIVATE : BOT_VISIBILITY.PUBLIC)}
+                    >
+                      <span aria-hidden="true" />
+                    </button>
                   </div>
+                  <small className="cc-agent-setting-feedback" role="status">{currentVisibilityStatus === 'saving' ? '正在更新…' : currentVisibilityStatus === 'saved' ? '已更新 · 即时生效' : '即时生效，无需保存'}</small>
                 </section>
 
                 <section className="cc-agent-collaboration-card cc-agent-artifact-settings">
                   <div className="cc-agent-collaboration-heading">
                     <div>
-                      <h3>共享成果</h3>
-                      <p>成员上传后直接展示，无需审批；你可以在成果列表中下架内容。</p>
+                      <h3><FolderOpen size={16} strokeWidth={1.8} aria-hidden="true" />共享成果</h3>
+                      <p>成员上传后直接展示，无需审批。</p>
                     </div>
-                    <span className="cc-agent-collaboration-status">
-                      {artifactSummary.loading ? '读取中' : `${artifactSummary.count} 项`}
-                    </span>
                   </div>
 
                   <div className="cc-agent-artifact-summary" aria-live="polite">
-                    <Cloud size={17} aria-hidden="true" />
                     <div>
-                      <strong>{artifactSummary.error || `共 ${artifactSummary.count} 项成果 · ${artifactSummary.uploaderCount} 位上传者`}</strong>
+                      <strong>{artifactSummary.loading ? '正在读取成果…' : artifactSummary.error || `共 ${artifactSummary.count} 项成果 · ${artifactSummary.uploaderCount} 位上传者`}</strong>
                       <span>所有者始终可以上传和管理全部成果</span>
                     </div>
                   </div>
@@ -2348,7 +2454,7 @@ export default function AgentStoreModal({
                   <div className="cc-agent-artifact-controls">
                     <div className="cc-agent-artifact-policy-copy">
                       <strong>允许成员上传</strong>
-                      <span>关闭后，普通成员只能查看已有成果</span>
+                      <span>{editingBot.newArtifactUploadEnabled ? '成员可以上传新成果' : '成员只能查看已有成果'} · 保存后生效</span>
                     </div>
                     <button
                       type="button"
@@ -2368,10 +2474,11 @@ export default function AgentStoreModal({
                   <button
                     type="button"
                     className="oc-btn oc-btn-default cc-agent-manage-artifacts"
-                    onClick={() => onOpenCloudArtifacts?.(editingBot.id || editingBot.uid, editingBot)}
+                    onClick={() => requestLeave(() => onOpenCloudArtifacts?.(editingBot.id || editingBot.uid, editingBot))}
                     disabled={!onOpenCloudArtifacts}
                   >
                     管理成果
+                    <ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" />
                   </button>
                 </section>
                 </div>
@@ -2424,23 +2531,22 @@ export default function AgentStoreModal({
                 <button
                   type="button"
                   className="oc-btn oc-btn-default cc-agent-open-skillhub"
-                  onClick={() => onOpenSkillHub?.(editingBot.id || editingBot.uid, editingBot)}
+                  onClick={() => requestLeave(() => onOpenSkillHub?.(editingBot.id || editingBot.uid, editingBot))}
                 >
                   前往 SkillHub 管理
                 </button>
               </section>
               </AgentManageSection>
-              </div>
+              </fieldset>
 
               <div className="cc-agent-manage-actions">
-                <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>
-                  取消
+                <span className="cc-agent-manage-save-status" role="status">{manageSaving ? '正在保存…' : manageDirty ? '有未保存的修改' : manageSavedId === editingBot.id ? '已保存' : '暂无修改'}</span>
+                <button type="button" className="oc-btn oc-btn-default" disabled={manageSaving} onClick={() => requestLeave('hub')}>
+                  返回
                 </button>
-                <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setEntryBot(editingBot)}>
-                  入口码
-                </button>
-                <button type="submit" className="oc-btn oc-btn-primary" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }}>
-                  保存
+                <button type="submit" className="oc-btn oc-btn-primary" disabled={!manageDirty || manageSaving || avatarUploading} aria-busy={manageSaving}>
+                  {manageSaving && <LoaderCircle size={15} className="cc-agent-save-spinner" aria-hidden="true" />}
+                  {manageSaving ? '保存中' : '保存'}
                 </button>
               </div>
             </form>
@@ -2681,10 +2787,66 @@ export default function AgentStoreModal({
   );
 }
 
+function FriendAgentActions({ bot, onOpenChat, onRemove }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef(null);
+  const moreButtonRef = useRef(null);
+  const botId = bot.id || bot.uid;
+  const name = bot.display_name || bot.username;
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const closeOutside = (event) => {
+      if (!moreRef.current?.contains(event.target)) setMoreOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, [moreOpen]);
+  return (
+    <>
+      <button type="button" className="oc-btn oc-btn-default cc-agent-card-action"
+        disabled={!onOpenChat} onClick={() => onOpenChat?.(bot)}>
+        <MessageSquare size={14} aria-hidden="true" />发起对话
+      </button>
+      <button type="button" className="oc-btn oc-btn-default cc-agent-card-action"
+        aria-expanded={detailsOpen} aria-controls={`cc-friend-agent-details-${botId}`}
+        onClick={() => setDetailsOpen(!detailsOpen)}>
+        {detailsOpen ? '收起资料' : '查看资料'}
+      </button>
+      <div className="cc-agent-friend-more" ref={moreRef}
+        onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setMoreOpen(false); }}
+        onKeyDown={(event) => {
+          if (moreOpen && event.key === 'Escape') {
+            event.preventDefault(); event.stopPropagation(); setMoreOpen(false); moreButtonRef.current?.focus();
+          }
+        }}>
+        <button ref={moreButtonRef} type="button" className="oc-btn oc-btn-default cc-agent-card-action"
+          aria-label={`${name} 更多操作`} aria-expanded={moreOpen}
+          aria-controls={moreOpen ? `cc-friend-agent-more-${botId}` : undefined}
+          onClick={() => setMoreOpen(!moreOpen)}>
+          <MoreHorizontal size={16} aria-hidden="true" />
+        </button>
+        {moreOpen && <div id={`cc-friend-agent-more-${botId}`} className="cc-agent-friend-more-popup">
+          <button type="button" onClick={() => { setMoreOpen(false); onRemove(); }}>移除好友</button>
+        </div>}
+      </div>
+      {detailsOpen && <section id={`cc-friend-agent-details-${botId}`} className="cc-agent-friend-details" aria-label={`${name} 资料`}>
+        <dl>
+          <div><dt>助手名称</dt><dd>{name}</dd></div>
+          <div><dt>UID</dt><dd>{botId}</dd></div>
+          <div><dt>用户名</dt><dd>@{bot.username}</dd></div>
+          {bot.owner_id && <div><dt>创建者 UID</dt><dd>{bot.owner_id}</dd></div>}
+          <div><dt>用途说明</dt><dd>{bot.description || '对方暂未提供用途说明'}</dd></div>
+        </dl>
+      </section>}
+    </>
+  );
+}
+
 function mergeManageableBots(rawBots, rawAgents, rawFriends = []) {
   const byID = new Map();
   const add = (item, fallback = {}) => {
-    const id = item?.id || item?.uid;
+    const id = item?.uid || item?.id;
     if (!id) return;
     byID.set(String(id), {
       ...fallback,
@@ -2710,6 +2872,7 @@ function mergeManageableBots(rawBots, rawAgents, rawFriends = []) {
           ...existing,
           avatar_url: agent.avatar_url || existing.avatar_url,
           display_name: agent.display_name || existing.display_name,
+          description: agent.description || existing.description,
           is_online: agent.is_online ?? existing.is_online,
           online: agent.online ?? existing.online,
           relation: owned ? existing.relation : (agent.relation || existing.relation),
@@ -2734,6 +2897,7 @@ function mergeManageableBots(rawBots, rawAgents, rawFriends = []) {
         username: friend.username,
         display_name: friend.display_name,
         avatar_url: friend.avatar_url,
+        description: friend.description,
         relation: 'friend',
         is_owner: false,
         visibility: 'friend',

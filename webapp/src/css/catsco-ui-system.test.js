@@ -146,9 +146,9 @@ describe('CatsCo shell styling', () => {
     expect(pickerButtons).toContain('border-radius: var(--cc-menu-item-radius);');
   });
 
-  it('indents the explicitly marked first plain-text paragraph without changing paragraph spacing', () => {
+  it('keeps the first plain-text paragraph flush left without changing paragraph spacing', () => {
     expect(openchatCss).toMatch(
-      /\.oc-plain-text-paragraph\.is-first\s*\{[^}]*text-indent:\s*2em;[^}]*\}/s,
+      /\.oc-plain-text-paragraph\.is-first\s*\{[^}]*text-indent:\s*0;[^}]*\}/s,
     );
     expect(openchatCss).toMatch(/\.oc-plain-text-paragraphs\s*\{[^}]*gap:\s*6px;[^}]*\}/s);
   });
@@ -834,18 +834,14 @@ describe('CatsCo shell styling', () => {
     const hoverRule = ruleFor('.cc-question-list-item:hover');
     const activeRule = ruleFor('.cc-question-list-item.is-active');
     const activeHoverRule = ruleFor('.cc-question-list-item.is-active:hover');
-    const activeIndexRule = ruleFor('.cc-question-list-item.is-active .cc-question-list-index');
 
     expect(hoverRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
     expect(activeRule).toContain('color: var(--cc-text);');
     expect(activeRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
     expect(activeHoverRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
-    expect(activeIndexRule).toContain('color: inherit;');
-    expect(activeIndexRule).toContain('background: color-mix(in srgb, var(--cc-text) 12%, transparent);');
     expect(hoverRule).not.toContain('var(--v3-primary)');
     expect(activeRule).not.toContain('var(--v3-primary)');
     expect(activeHoverRule).not.toContain('var(--v3-primary)');
-    expect(activeIndexRule).not.toContain('var(--v3-primary)');
   });
 
   it('keeps the light liquid composer legible with a single neutral focus border', () => {
@@ -1558,7 +1554,8 @@ describe('CatsCo shell styling', () => {
     expect(historyPanelRule).toContain('background: var(--cc-history-panel-bg);');
     expect(historyPanelRule).toContain('grid-template-columns: minmax(0, 1fr);');
     expect(historyPanelRule).toContain('overflow-x: hidden;');
-    expect(historyPanelRule).toContain('overflow-y: auto;');
+    expect(historyPanelRule).toContain('overflow-y: hidden;');
+    expect(ruleFor('.cc-compact-history-list')).toContain('overflow-y: auto;');
     expect(historyItemRule).toContain('min-width: 0;');
     expect(historyItemRule).toContain('overflow: hidden;');
     expect(historyLabelRule).toContain('flex: 1 1 auto;');

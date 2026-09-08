@@ -31,12 +31,15 @@ vi.mock('../api', () => ({
     updateBotDefinitionSkills: vi.fn(),
     updateBotDefinitionPrompt: vi.fn(),
     uploadFile: vi.fn(),
+    removeFriend: vi.fn(),
+    deleteBot: vi.fn(),
   },
   getWebSocketURL: vi.fn(() => 'wss://app.catsco.cc/v0/channels'),
   resolveMediaURL: vi.fn((url) => url),
 }));
 
 import { api } from '../api';
+import { FeedbackProvider } from '../components/feedback-system';
 import AgentStoreModal, {
   cloudWorkerActionMayStillRun,
   cloudWorkerActionMessage,
@@ -75,6 +78,8 @@ describe('AgentStoreModal', () => {
     api.getBotDefinitionSkills.mockReset().mockResolvedValue({ revision: 0, skills: [] });
     api.getBotInviteCode.mockReset().mockResolvedValue({});
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
+    api.removeFriend.mockReset().mockResolvedValue({});
+    api.deleteBot.mockReset().mockResolvedValue({});
     api.getLocalSkills.mockReset().mockResolvedValue({ skills: [] });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
     api.generateBotInviteCode.mockReset().mockResolvedValue({ code: 'NEWCODE12345' });
@@ -113,6 +118,164 @@ describe('AgentStoreModal', () => {
     document.body.querySelectorAll('.cc-agent-skill-detail-overlay').forEach((node) => node.remove());
     document.body.querySelectorAll('.cc-agent-prompt-editor-overlay').forEach((node) => node.remove());
     container.remove();
+  });
+
+  test('includes friend assistants, deduplicates owners, filters relations and limits management actions', async () => {
+    const owned = { id: 42, uid: 42, display_name: 'Owner assistant', relation: 'owner', is_owner: true };
+    const friend = { id: 51, uid: 51, display_name: 'Friend assistant', username: 'friend-ai', relation: 'friend', is_bot: true, is_online: true, description: 'Research helper', tenant_name: 'not-my-worker' };
+    api.getMyBots.mockResolvedValue({ bots: [owned, friend] });
+    api.getAgents.mockResolvedValue({ agents: [{ ...owned, relation: 'friend', is_owner: false }, friend] });
+    api.getFriends.mockResolvedValue({ friends: [
+      { ...friend, id: '51' }, { uid: 52, display_name: 'Fallback assistant', account_type: 'bot' },
+      { uid: 53, display_name: 'Human friend', account_type: 'user' },
+    ] });
+    const onOpenAgentChat = vi.fn();
+    await act(async () => {
+      root.render(<FeedbackProvider><AgentStoreModal initialAgentId={51} onClose={vi.fn()} onOpenAgentChat={onOpenAgentChat} user={{ uid: 7 }} /></FeedbackProvider>);
+    });
+    expect(container.querySelector('.cc-agent-manage-form')).toBeNull();
+    expect(container.querySelectorAll('.v3-agent-card')).toHaveLength(3);
+    expect(container.textContent).not.toContain('Human friend');
+    expect([...container.querySelectorAll('.cc-agent-roster-filters > button')].map(el => el.textContent)).toEqual(['全部3', '我创建的1', '已添加的2']);
+    expect(api.getBotInviteCode.mock.calls).toEqual([[42]]);
+    const filters = container.querySelectorAll('.cc-agent-roster-filters > button');
+    await act(async () => Simulate.click(filters[2]));
+    expect(container.querySelectorAll('.v3-agent-card')).toHaveLength(2);
+    expect(container.querySelector('.cc-agent-card-invite-row')).toBeNull();
+    expect(container.querySelector('.cc-agent-card-manage')).toBeNull();
+    expect(container.querySelector('.cc-agent-card-delete')).toBeNull();
+    const friendCard = [...container.querySelectorAll('.v3-agent-card')].find(el => el.textContent.includes('Friend assistant'));
+    await act(async () => Simulate.click([...friendCard.querySelectorAll('button')].find(el => el.textContent === '发起对话')));
+    expect(onOpenAgentChat).toHaveBeenCalledWith(expect.objectContaining({ uid: 51 }));
+    await act(async () => Simulate.click([...friendCard.querySelectorAll('button')].find(el => el.textContent === '查看资料')));
+    expect(friendCard.querySelector('.cc-agent-friend-details').textContent).toContain('Research helper');
+    await act(async () => Simulate.click(filters[1]));
+    expect(container.querySelectorAll('.v3-agent-card')).toHaveLength(1);
+    expect(container.querySelector('.cc-agent-card-manage')).not.toBeNull();
+    expect(api.updateBot).not.toHaveBeenCalled();
+  });
+
+  test('removing a friend requires confirmation and never deletes the assistant account', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [{ uid: 51, display_name: 'Friend assistant', relation: 'friend' }] });
+    await act(async () => root.render(<FeedbackProvider><AgentStoreModal onClose={vi.fn()} user={{ uid: 7 }} /></FeedbackProvider>));
+    const more = container.querySelector('[aria-label="Friend assistant 更多操作"]');
+    await act(async () => Simulate.click(more));
+    await act(async () => document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })));
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => Simulate.click(more));
+    await act(async () => Simulate.click(container.querySelector('.cc-agent-friend-more-popup button')));
+    expect(api.removeFriend).not.toHaveBeenCalled();
+    expect(document.querySelector('.cc-confirm-overlay').textContent).toContain('解除好友关系');
+    api.getMyBots.mockResolvedValue({ bots: [] });
+    const confirm = [...document.querySelectorAll('.cc-confirm-overlay button')].find(el => el.textContent.trim() === '移除');
+    await act(async () => Simulate.click(confirm));
+    expect(api.removeFriend).toHaveBeenCalledWith(51);
+    expect(api.deleteBot).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.v3-agent-card')).toHaveLength(0);
+  });
+
+  async function renderOwnedManagement(props = {}) {
+    api.getMyBots.mockResolvedValue({ bots: [{
+      id: 42, uid: 42, display_name: 'Dev Agent', relation: 'owner',
+      is_owner: true, visibility: 'public', description: 'Original',
+    }] });
+    await act(async () => {
+      root.render(<FeedbackProvider><AgentStoreModal initialAgentId={42} onClose={vi.fn()} user={{ uid: 7 }} {...props} /></FeedbackProvider>);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  test('tracks draft changes, prevents duplicate saves, and keeps the saved section open', async () => {
+    await renderOwnedManagement();
+    const form = container.querySelector('.cc-agent-manage-form');
+    const save = form.querySelector('[type="submit"]');
+    expect(save.disabled).toBe(true);
+    await act(async () => Simulate.change(form.querySelector('.cc-agent-manage-description'), {
+      target: { value: 'Revised description' },
+    }));
+    expect(save.disabled).toBe(false);
+    expect(form.textContent).toContain('有未保存的修改');
+    let resolveSave;
+    api.updateBot.mockImplementation(() => new Promise(resolve => { resolveSave = resolve; }));
+    await act(async () => { Simulate.submit(form); Simulate.submit(form); });
+    expect(api.updateBot).toHaveBeenCalledTimes(1);
+    expect(form.querySelector('fieldset').disabled).toBe(true);
+    expect(save.disabled).toBe(true);
+    await act(async () => { resolveSave({}); await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelector('.cc-agent-manage-form')).toBe(form);
+    expect(form.querySelector('.cc-agent-manage-save-status').textContent).toBe('已保存');
+    expect(save.disabled).toBe(true);
+    expect(form.querySelector('fieldset').disabled).toBe(false);
+
+    await act(async () => Simulate.change(form.querySelector('.cc-agent-manage-description'), {
+      target: { value: 'Keep on failure' },
+    }));
+    api.updateBot.mockRejectedValueOnce(new Error('保存失败，请重试'));
+    await act(async () => { Simulate.submit(form); await Promise.resolve(); });
+    expect(form.querySelector('.cc-agent-manage-description').value).toBe('Keep on failure');
+    expect(save.disabled).toBe(false);
+    expect(container.textContent).toContain('保存失败，请重试');
+  });
+
+  test.each(['back', 'close', 'escape', 'outside', 'skills', 'artifacts'])('protects unsaved changes when leaving via %s', async (route) => {
+    const onClose = vi.fn();
+    const onOpenSkillHub = vi.fn();
+    const onOpenCloudArtifacts = vi.fn();
+    await renderOwnedManagement({ onClose, onOpenSkillHub, onOpenCloudArtifacts });
+    await act(async () => Simulate.change(container.querySelector('.cc-agent-manage-description'), {
+      target: { value: 'Unsaved draft' },
+    }));
+    if (route === 'skills' || route === 'artifacts') {
+      const label = route === 'skills' ? '行为与能力' : '使用与协作';
+      await act(async () => Simulate.click(Array.from(container.querySelectorAll('.cc-agent-manage-section-trigger'))
+        .find(button => button.textContent.includes(label))));
+    }
+    const leave = () => {
+      if (route === 'escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      else if (route === 'outside') Simulate.click(container.querySelector('.oc-modal-overlay'));
+      else if (route === 'back') Simulate.click(container.querySelector('[aria-label="返回助手列表"]'));
+      else if (route === 'close') Simulate.click(container.querySelector('.cc-dialog-close'));
+      else Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent.includes(route === 'skills' ? '前往 SkillHub' : '管理成果')));
+    };
+    await act(async () => leave());
+    let confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation.textContent).toContain('放弃未保存的修改');
+    await act(async () => Simulate.click(Array.from(confirmation.querySelectorAll('button')).find(button => button.textContent === '继续编辑')));
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(container.querySelector('.cc-agent-manage-save-status').textContent).toBe('有未保存的修改');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onOpenSkillHub).not.toHaveBeenCalled();
+    expect(onOpenCloudArtifacts).not.toHaveBeenCalled();
+    await act(async () => leave());
+    confirmation = document.body.querySelector('[role="alertdialog"]');
+    await act(async () => Simulate.click(Array.from(confirmation.querySelectorAll('button')).find(button => button.textContent === '放弃修改')));
+    if (route === 'back') expect(container.querySelector('.cc-agent-manage-form')).toBeNull();
+    else if (route === 'skills') expect(onOpenSkillHub).toHaveBeenCalledTimes(1);
+    else if (route === 'artifacts') expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
+    else expect(onClose).toHaveBeenCalledTimes(1);
+    expect(api.updateBot).not.toHaveBeenCalled();
+  });
+
+  test('updates visibility immediately without marking the form dirty', async () => {
+    await renderOwnedManagement();
+    const trigger = Array.from(container.querySelectorAll('.cc-agent-manage-section-trigger'))
+      .find(button => button.textContent.includes('使用与协作'));
+    await act(async () => Simulate.click(trigger));
+    let resolveVisibility;
+    api.setBotVisibility.mockImplementation(() => new Promise(resolve => { resolveVisibility = resolve; }));
+    const privateButton = container.querySelector('[role="switch"][aria-label="允许被搜索"]');
+    expect(privateButton.getAttribute('aria-checked')).toBe('true');
+    await act(async () => { Simulate.click(privateButton); Simulate.click(privateButton); });
+    expect(api.setBotVisibility).toHaveBeenCalledTimes(1);
+    expect(privateButton.disabled).toBe(true);
+    expect(container.textContent).toContain('正在更新…');
+    await act(async () => { resolveVisibility({ visibility: 'private' }); await Promise.resolve(); });
+    expect(container.textContent).toContain('已更新 · 即时生效');
+    expect(privateButton.getAttribute('aria-checked')).toBe('false');
+    expect(api.setBotVisibility).toHaveBeenCalledWith(42, 'private');
+    expect(container.querySelector('.cc-agent-manage-form [type="submit"]').disabled).toBe(true);
+    expect(api.updateBot).not.toHaveBeenCalled();
   });
 
   test('keeps the action lock only for errors that may hide an accepted operation', () => {
@@ -755,7 +918,9 @@ describe('AgentStoreModal', () => {
     const settingTriggers = Array.from(container.querySelectorAll('button.cc-agent-manage-section-trigger'));
     expect(settingTriggers).toHaveLength(4);
     expect(container.querySelector('.cc-agent-manager-tabs')).toBeNull();
-    expect(container.querySelectorAll('.cc-agent-manager-header-action')).toHaveLength(0);
+    expect(container.querySelector('[aria-label="返回助手列表"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="入口码"]')).not.toBeNull();
+    expect(container.querySelector('.cc-agent-manager-title').textContent).toContain('管理助手 · Dev Agent');
     expect(container.querySelector('.cc-agent-manage-context')).toBeNull();
     const basicTrigger = settingTriggers.find((button) => button.textContent.includes('基本信息'));
     expect(basicTrigger?.getAttribute('aria-expanded')).toBe('true');
@@ -854,7 +1019,7 @@ describe('AgentStoreModal', () => {
     expect(focusedWorker.textContent).not.toContain('Worker A');
   });
 
-  test('uses the stable hub height for live overview data and practical usage guidance', async () => {
+  test('keeps roster counts and assistant actions without the overview panel', async () => {
     api.getMyBots.mockResolvedValue({
       bots: [
         {
@@ -896,11 +1061,10 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
-    const stats = Array.from(container.querySelectorAll('.cc-agent-overview-stats > div'))
+    const stats = Array.from(container.querySelectorAll('.cc-agent-roster-filters > button'))
       .map((item) => item.textContent);
-    expect(stats).toEqual(['2全部助手', '1当前在线', '1公开可搜索', '1自托管']);
-    expect(container.querySelector('.cc-agent-overview-heading span')).toBeNull();
-    expect(container.querySelector('.cc-agent-overview-heading strong')?.textContent).toBe('助手概览');
+    expect(stats).toEqual(['全部2', '我创建的2', '已添加的0']);
+    expect(container.querySelector('.cc-agent-overview')).toBeNull();
     expect(container.querySelector('.cc-agent-hub-grid')).not.toBeNull();
     expect(container.querySelectorAll('.cc-agent-hub-grid .v3-agent-card')).toHaveLength(2);
     expect(container.querySelector('.cc-agent-manager-create-action')).toBeNull();
@@ -1059,7 +1223,7 @@ describe('AgentStoreModal', () => {
     expect(api.uploadFile).toHaveBeenCalledTimes(1);
 
     const cancelManageButton = Array.from(container.querySelectorAll('.cc-agent-manage-actions button'))
-      .find((button) => button.textContent.includes('取消'));
+      .find((button) => button.textContent.includes('返回'));
     await act(async () => Simulate.click(cancelManageButton));
     const betaCard = Array.from(container.querySelectorAll('.v3-agent-card'))
       .find((card) => card.textContent.includes('Beta Agent'));

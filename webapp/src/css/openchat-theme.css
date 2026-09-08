@@ -1373,6 +1373,7 @@ body {
 }
 
 .cloud-artifacts-tabs {
+  position: relative;
   align-self: stretch;
   display: flex;
   align-items: stretch;
@@ -1389,23 +1390,19 @@ body {
   cursor: pointer;
 }
 
-.cloud-artifacts-tabs button::after {
+.cloud-artifacts-tab-indicator {
   position: absolute;
-  right: 0;
   bottom: -1px;
   left: 0;
   height: 2px;
-  background: transparent;
-  content: "";
+  background: var(--cc-accent);
+  pointer-events: none;
+  transition: transform 160ms ease, width 160ms ease;
 }
 
 .cloud-artifacts-tabs button.active {
   color: var(--v3-text-main);
   font-weight: 600;
-}
-
-.cloud-artifacts-tabs button.active::after {
-  background: #d4a853;
 }
 
 .cloud-artifacts-tabs button:focus-visible,
@@ -7891,7 +7888,7 @@ button.catsco-download-action:disabled {
 }
 .oc-plain-text-paragraph.is-first {
   display: block;
-  text-indent: 2em;
+  text-indent: 0;
 }
 .oc-markdown-table {
   display: block;
@@ -8426,26 +8423,28 @@ button.catsco-download-action:disabled {
   min-width: 0;
 }
 
+.v3-wpi-plan-header .v3-wpi-icon {
+  color: var(--cc-accent);
+}
+
 .v3-wpi-plan-title {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .v3-wpi-plan-count {
   flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.08);
+  margin-left: auto;
+  padding: 2px 0 2px 24px;
   color: var(--v3-text-muted);
   font-size: 11px;
-  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .v3-wpi-plan-steps {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-left: 20px;
 }
 
 .v3-wpi-plan-step {
@@ -8464,11 +8463,30 @@ button.catsco-download-action:disabled {
 }
 
 .v3-wpi-plan-step.completed {
-  color: rgba(139, 148, 158, 0.8);
+  color: var(--cc-text-secondary);
+}
+
+.v3-wpi-plan-step.completed svg {
+  color: var(--cc-accent);
+}
+
+.v3-wpi-plan-step.is-just-completed svg {
+  animation: cc-plan-step-complete 280ms ease-out;
+  transform-origin: center;
+}
+
+@keyframes cc-plan-step-complete {
+  from { opacity: 0.35; transform: scale(0.78); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-wpi-plan-step.is-just-completed svg { animation: none; }
 }
 
 .v3-wpi-plan-step.in_progress {
   color: var(--v3-text-main);
+  font-weight: 500;
 }
 
 .v3-wpi-plan-step span {
