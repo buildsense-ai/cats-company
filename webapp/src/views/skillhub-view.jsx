@@ -47,8 +47,11 @@ const SKILLHUB_SWITCH_INITIAL_DELAY_MS = 2_000;
 const SKILLHUB_SWITCH_RETRY_DELAY_MS = 1_500;
 const SKILLHUB_DEVICE_LIST_TIMEOUT_MS = 5_000;
 const SKILLHUB_WORKSPACE_TIMEOUT_MS = 8_000;
-const SKILLHUB_WORKSPACE_PAGE_SIZE = 200;
-const SKILLHUB_WORKSPACE_MAX_PAGES = 100;
+// Keep each thin-tool response comfortably below CatsCo's 64 KiB WebSocket
+// message limit. Older Runtime versions honor this item limit even though they
+// do not yet apply their own serialized-byte budget.
+const SKILLHUB_WORKSPACE_PAGE_SIZE = 10;
+const SKILLHUB_WORKSPACE_MAX_PAGES = 1_000;
 const SKILLHUB_WORKSPACE_REVISION_PATTERN = /^[0-9a-f]{64}$/;
 const RETRYABLE_SKILLHUB_SWITCH_ERRORS = new Set([
   'BOT_NOT_ACTIVE',
@@ -97,7 +100,7 @@ function skillHubDeviceListTimeoutError() {
 }
 
 function skillHubWorkspaceTimeoutError() {
-  const error = new Error('等待本地 XiaoBa 响应超时，请确认设备在线并已更新到最新版本。');
+  const error = new Error('等待目标 XiaoBa 响应超时，请确认其运行设备在线并已更新到最新版本。');
   error.code = 'skillhub_device_timeout';
   return error;
 }

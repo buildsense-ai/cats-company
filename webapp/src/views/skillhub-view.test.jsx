@@ -251,6 +251,7 @@ describe('SkillHubView', () => {
     const result = await collectSkillHubWorkspacePages({
       initialWorkspace: page(0),
       readPage,
+      pageLimit: 200,
     });
 
     expect(result.skills).toHaveLength(450);
@@ -263,6 +264,26 @@ describe('SkillHubView', () => {
       limit: 200,
       workspace_revision: revision,
     });
+  });
+
+  it('requests transport-safe pages from existing Runtime workspaces', async () => {
+    const readPage = vi.fn().mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      workspace_revision: 'c'.repeat(64),
+      total_skills: 0,
+      page_offset: 0,
+      page_limit: 10,
+      next_offset: null,
+      truncated: false,
+      skills: [],
+    });
+
+    const result = await collectSkillHubWorkspacePages({ readPage });
+
+    expect(result.skills).toEqual([]);
+    expect(readPage).toHaveBeenCalledWith({ limit: 10 });
   });
 
   it('marks an old Runtime 200-item response as potentially truncated', async () => {
@@ -317,7 +338,7 @@ describe('SkillHubView', () => {
     });
     expect(result.skills).toEqual([{ local_skill_id: 'fresh', name: 'fresh' }]);
     expect(readPage).toHaveBeenCalledTimes(2);
-    expect(readPage).toHaveBeenLastCalledWith({ limit: 200 });
+    expect(readPage).toHaveBeenLastCalledWith({ limit: 10 });
   });
 
   afterEach(async () => {
