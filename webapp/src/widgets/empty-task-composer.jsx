@@ -509,15 +509,13 @@ export default function EmptyTaskComposer({
         setAttachmentStatus({
           tone: 'error',
           message: uploadedCount > 0
-            ? `已添加 ${uploadedCount} 个附件，另有 ${failedCount} 个上传失败。`
+            ? `本次已添加 ${uploadedCount} 个附件，另有 ${failedCount} 个上传失败。`
             : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
         });
       } else if (uploadedCount > 0) {
         setAttachmentStatus({
           tone: 'success',
-          message: uploadedCount === 1
-            ? '已添加 1 个附件，发送后会加入新任务。'
-            : `已添加 ${uploadedCount} 个附件，发送后会加入新任务。`,
+          message: `本次已添加 ${uploadedCount} 个附件，发送后会加入新任务。`,
         });
       }
       if (uploadedCount > 0) window.setTimeout(() => textareaRef.current?.focus(), 0);

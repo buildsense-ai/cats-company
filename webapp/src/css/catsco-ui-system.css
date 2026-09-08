@@ -1330,8 +1330,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .cc-empty-task {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 24px;
   background: var(--cc-empty-task-bg);
@@ -1339,6 +1341,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .cc-empty-task-inner {
   width: min(760px, 100%);
+  min-width: 0;
   transform: translateY(-5vh);
   text-align: center;
 }
@@ -4287,6 +4290,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--cc-muted) 28%, transparent) transparent;
 }
 
 .v3-composer-attachment-chip {
