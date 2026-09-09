@@ -4696,10 +4696,19 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-send:disabled { background: var(--cc-accent); color: rgba(255, 255, 255, .92); opacity: .38; }
 .v3-composer-hint { margin: 8px auto 0; padding: 0 12px; color: var(--cc-muted); font-size: 12px; line-height: 18px; text-align: center; }
 .v3-composer-notices {
+  --cc-composer-notice-surface: #fafafa;
+  --cc-composer-notice-ink: #616161;
+  --cc-composer-notice-border: #ededed;
   position: relative;
   z-index: 1;
   width: 100%;
   margin: 0;
+}
+html[data-theme='dark'] .v3-composer-notices,
+html[data-theme='liquid'][data-liquid-variant='green'] .v3-composer-notices {
+  --cc-composer-notice-surface: #2a2a2a;
+  --cc-composer-notice-ink: #d4d4d4;
+  --cc-composer-notice-border: #373737;
 }
 .v3-composer-notices:empty { display: none; }
 .v3-composer-notices .v3-live-input-status {
@@ -4707,13 +4716,16 @@ html[data-theme="liquid"] .catsco-brand-mark {
   margin: 0;
   padding: 8px 14px 8px 28px;
   border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--cc-accent) 18%, var(--cc-border));
+  border-bottom: 1px solid var(--cc-composer-notice-border);
   border-radius: 0;
-  background: color-mix(in srgb, var(--cc-accent) 5%, var(--cc-panel));
-  color: var(--cc-text-secondary);
+  background: var(--cc-composer-notice-surface);
+  color: var(--cc-composer-notice-ink);
   font-size: 12px;
   line-height: 19px;
 }
+.v3-composer-agent-error { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.v3-composer-agent-error > svg { display: block; flex-shrink: 0; width: 14px; height: 14px; margin: 0; }
+.v3-composer-agent-error > span { display: block; min-width: 0; line-height: inherit; text-align: left; overflow-wrap: anywhere; }
 .v3-composer-notices .v3-live-input-status:last-child {
   margin: 0;
 }
@@ -5798,6 +5810,32 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   margin: 0;
 }
 
+/* Shared field titles: apply to title text, never whole labels containing controls. */
+.cc-field-title,
+.oc-modal .cc-field-title,
+.oc-modal .oc-settings-section-title,
+.oc-modal.oc-group-settings-modal .oc-settings-section-title,
+.oc-modal.oc-profile-editor-modal .oc-profile-editor-scroll :is(.oc-settings-section-title, .oc-profile-identity-label),
+.cc-agent-basic-card label > span,
+.oc-modal .oc-collaboration-field > span,
+.oc-modal .oc-feedback-contact-field > span,
+.v3-custom-model-editor :is(label, .v3-custom-model-field) > span,
+.cc-cloud-panel .cc-cloud-create-card label > span,
+.cc-cloud-panel .cc-cloud-version-field > span,
+.cc-agent-prompt-editor-dialog .cc-agent-prompt-editor-field label {
+  color: var(--v3-text-name) !important;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cc-field-title > small,
+.oc-modal .cc-field-title > small,
+.oc-modal .oc-feedback-contact-field > span > small {
+  color: var(--cc-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .oc-profile-thinking-toggle {
   display: flex;
   align-items: center;
@@ -6071,11 +6109,13 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 /* Collaboration dialogs share one compact hierarchy across friend and group flows. */
 .oc-modal.oc-collaboration-modal {
+  display: flex;
+  flex-direction: column;
   width: min(500px, calc(100vw - 32px)) !important;
   max-width: 500px !important;
-  max-height: min(760px, calc(100vh - 32px)) !important;
+  max-height: min(760px, calc(100dvh - 32px)) !important;
   padding: 20px !important;
-  overflow: auto !important;
+  overflow: hidden !important;
   border: 1px solid var(--cc-border) !important;
   border-radius: 14px !important;
   background: var(--cc-panel) !important;
@@ -6084,6 +6124,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 .oc-collaboration-modal-header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -6123,10 +6164,14 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 .oc-collaboration-modal-body {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 16px;
-  max-height: calc(min(760px, 100vh - 32px) - 68px);
-  padding: 0;
+  max-height: none;
+  margin-right: -20px;
+  padding: 0 20px 0 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .oc-collaboration-section {
@@ -6467,14 +6512,51 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 .oc-modal.oc-collaboration-modal.oc-create-group-dialog {
   width: min(860px, calc(100vw - 32px)) !important;
   max-width: 860px !important;
-  max-height: min(760px, calc(100vh - 32px)) !important;
+  max-height: min(760px, calc(100dvh - 32px)) !important;
   overflow: hidden !important;
 }
 
 .oc-create-group-dialog .oc-collaboration-modal-body {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   gap: 14px;
-  overflow: hidden;
+  overflow-y: auto;
+}
+
+.oc-create-group-dialog .oc-collaboration-section,
+.oc-create-group-dialog .oc-form-error { flex-shrink: 0; }
+.oc-create-group-dialog .oc-member-picker-shell {
+  flex: 1 1 auto;
+  height: min(400px, 45dvh);
+  min-height: 100px;
+}
+
+:is(.oc-collaboration-modal-body, .oc-member-picker-list, .oc-member-picker-selected-list,
+    .oc-profile-editor-scroll, .cc-agent-create-fields, .oc-group-settings-body,
+    .catsco-download-body, .relay-access-body, .cc-workspace-onboarding-help-body) {
+  --cc-scrollbar-inset: 0px;
+  --cc-scrollbar-track: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: var(--cc-scrollbar-thumb) transparent;
+}
+
+@supports selector(::-webkit-scrollbar) {
+  :is(.oc-collaboration-modal-body, .oc-member-picker-list, .oc-member-picker-selected-list,
+      .oc-profile-editor-scroll, .cc-agent-create-fields, .oc-group-settings-body,
+      .catsco-download-body, .relay-access-body, .cc-workspace-onboarding-help-body) {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+}
+
+@media (min-width: 561px) {
+  /* Independent columns keep their own scrollbars at the column edge. */
+  .oc-member-picker-list,
+  .oc-member-picker-selected-list {
+    margin-right: -14px;
+    padding-right: 14px;
+  }
 }
 
 .oc-member-picker-shell {
@@ -6844,7 +6926,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 
   .oc-collaboration-modal-body {
-    padding: 18px;
+    padding: 18px 38px 18px 18px;
   }
 
   .oc-friend-search-row {
@@ -6855,19 +6937,16 @@ html[data-theme="liquid"] .cc-confirm-dialog {
     width: 100%;
   }
 
-  .oc-modal.oc-collaboration-modal.oc-create-group-dialog {
-    overflow-y: auto !important;
-  }
-
   .oc-create-group-dialog .oc-collaboration-modal-body {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     max-height: none;
-    overflow: visible;
+    overflow-y: auto;
     gap: 12px;
-    padding: 12px 16px;
+    padding: 12px 36px 12px 16px;
   }
 
   .oc-create-group-dialog .oc-member-picker-shell {
+    flex: 0 0 auto;
     grid-template-columns: 1fr;
     height: auto;
     min-height: 0;
@@ -6881,13 +6960,15 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 
   .oc-create-group-dialog .oc-member-picker-list {
-    flex: 0 1 auto;
-    max-height: min(240px, 35dvh);
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
   }
 
   .oc-create-group-dialog .oc-member-picker-selected-list {
-    flex: 0 1 auto;
-    max-height: 160px;
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
   }
 
   .oc-create-group-dialog .oc-member-picker-shell .oc-collaboration-empty.compact {
@@ -7229,20 +7310,37 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 .cc-agent-manager-title svg { color: var(--v3-primary); }
 
-.cc-agent-empty-action {
-  min-height: 34px;
-  padding: 0 13px;
-  border: 1px solid var(--v3-border) !important;
-  border-radius: 7px;
+html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action,
+html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:is(:hover, :active, :focus-visible):not(:disabled) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  min-height: 64px;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  border: 0 !important;
+  border-radius: var(--cc-radius-md);
   background: transparent !important;
-  color: var(--v3-text-main) !important;
-  font-size: 12px;
-  font-weight: 500;
+  color: var(--cc-text-secondary) !important;
+  box-shadow: none !important;
+  transform: none !important;
+  transition: color 200ms ease;
 }
 
-.cc-agent-empty-action:hover {
-  background: var(--cc-hover) !important;
-  color: var(--v3-text-name) !important;
+html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:is(:hover, :active, :focus-visible):not(:disabled) {
+  color: var(--cc-text) !important;
+}
+
+html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action:focus-visible {
+  outline: 2px solid var(--cc-text-secondary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme] .cc-agent-manager .cc-agent-hub-empty .cc-agent-empty-action { transition: none; }
 }
 
 .cc-agent-manager-header-action {
@@ -8954,9 +9052,16 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   text-align: center;
 }
 
+.cc-agent-hub-empty {
+  box-sizing: border-box;
+  gap: 8px;
+  padding-bottom: clamp(24px, 6vh, 64px);
+}
+
 .cc-agent-hub-empty strong {
-  color: var(--v3-text-main);
-  font-size: 15px;
+  color: var(--cc-text-secondary);
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .cc-agent-hub-empty p {
@@ -9155,20 +9260,35 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   margin-bottom: 16px;
 }
 
-.cc-agent-create-form { display: grid; gap: 16px; }
-.cc-agent-create-intro { padding: 0 0 2px; text-align: center; }
-.cc-agent-create-intro h2 { margin: 0 0 4px; color: var(--v3-text-name); font-size: 18px; font-weight: 600; letter-spacing: 0; }
-.cc-agent-create-intro p { margin: 0; color: var(--v3-text-muted); font-size: 12px; }
+.oc-modal.cc-agent-manager-create { width: min(720px, calc(100% - 32px)); height: auto; max-height: calc(100dvh - 48px); }
+.cc-agent-manager-create .cc-agent-manager-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Extend to the modal edge without moving the form or footer content. */
+  margin-right: -24px;
+  padding-right: 44px;
+}
+.cc-agent-create-form { display: flex; flex-direction: column; min-height: 0; gap: 16px; }
+.cc-agent-create-fields {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-right: -44px;
+  padding: 2px 46px 2px 2px;
+}
 
 .cc-agent-create-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(260px, .82fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
 .cc-agent-create-card {
   min-width: 0;
-  padding: 14px;
+  padding: 18px;
   border: 1px solid var(--v3-border);
   border-radius: 8px;
   background: var(--v3-bg-app);
@@ -9187,9 +9307,9 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-create-card > h3 svg,
 .cc-agent-hosting legend svg { color: var(--v3-primary); }
-.cc-agent-basic-card { display: grid; gap: 10px; }
+.cc-agent-basic-card { display: grid; gap: 18px; }
 .cc-agent-basic-card label { position: relative; display: grid; gap: 6px; }
-.cc-agent-basic-card label > span { color: var(--v3-text-main); font-size: 12px; font-weight: 600; }
+.cc-agent-basic-card label > span > small { margin-left: 4px; color: var(--cc-muted); font-size: 12px; font-weight: 400; }
 .cc-agent-basic-card label > span b { color: #d85a5a; }
 
 .cc-agent-basic-card input,
@@ -9210,14 +9330,14 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-agent-basic-card textarea { min-height: 78px; padding-bottom: 24px; resize: none; }
 .cc-agent-role-field {
   position: relative;
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 
 .cc-agent-role-guidance {
   display: block;
   margin: 5px 2px 0;
   color: var(--v3-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   line-height: 1.45;
 }
@@ -9287,7 +9407,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   gap: 7px;
   margin: 0;
   color: var(--v3-text-name);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -9333,17 +9453,17 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   z-index: 1;
   display: inline-flex;
   min-width: 0;
-  min-height: 22px;
+  min-height: 28px;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 5px;
   border: 0;
   border-radius: 999px;
   padding: 0 5px;
   outline: 0;
   background: transparent;
   color: var(--cc-muted);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: color 140ms ease;
@@ -9363,7 +9483,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   padding: 0 3px;
   background: color-mix(in srgb, var(--cc-text) 7%, transparent);
   color: inherit;
-  font-size: 8px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   line-height: 1.45;
   text-align: center;
@@ -9403,7 +9523,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   padding: 7px 9px;
   background: color-mix(in srgb, var(--cc-accent) 7%, transparent);
   color: var(--cc-text-secondary);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -9422,7 +9542,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-agent-skill-group-title {
   margin: 0;
   color: var(--v3-text-name);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
 }
@@ -9433,23 +9553,23 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 4px;
   border: 1px dashed var(--v3-border);
   border-radius: 7px;
   padding: 8px 10px;
   color: var(--v3-text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .cc-agent-skill-group-empty strong {
   color: var(--v3-text-name);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .cc-agent-skill-group-empty small {
-  font-size: 10px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .cc-agent-skill-recommendation-state {
@@ -9466,13 +9586,13 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-skill-recommendation-state strong {
   color: var(--v3-text-name);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .cc-agent-skill-recommendation-state small {
-  font-size: 10px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .cc-agent-skill-recommendation {
@@ -9575,7 +9695,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-agent-skill-recommended-badge {
   flex: 0 0 auto;
   color: var(--v3-primary);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.35;
 }
@@ -9589,14 +9709,14 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 
 .cc-agent-selected-skill-copy strong {
   color: var(--v3-text-name);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
 }
 
 .cc-agent-selected-skill-copy small {
   color: var(--v3-text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .cc-agent-selected-skill > button:not(.cc-agent-skill-detail-trigger) {
@@ -9625,27 +9745,66 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   opacity: 0.45;
 }
 
-.cc-agent-add-skill {
+.cc-agent-manager .cc-agent-add-skill {
   display: flex;
   min-height: 38px;
   align-items: center;
   justify-content: center;
   gap: 7px;
   margin-top: auto;
-  border: 1px solid var(--cc-border-strong);
+  border: 1px solid var(--cc-border-strong) !important;
   border-radius: 7px;
-  background: transparent;
-  color: var(--v3-text-main);
-  font-size: 12px;
+  background: transparent !important;
+  color: var(--cc-text-secondary) !important;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: none !important;
+  transform: none !important;
+  transition: color 200ms ease;
 }
 
-.cc-agent-add-skill:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--cc-accent) 42%, var(--cc-border-strong));
-  background: var(--cc-hover);
-  color: var(--v3-text-name);
+.cc-agent-manager .cc-agent-add-skill:is(:hover, :active, :focus-visible):not(:disabled) {
+  color: var(--cc-text) !important;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-agent-manager .cc-agent-add-skill { transition: none; }
+}
+
+.cc-agent-skill-disclosure { padding: 0; }
+.cc-agent-skill-disclosure-trigger {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 58px; padding: 14px 18px;
+  border: 0; border-radius: inherit; background: transparent; color: var(--cc-text-secondary); text-align: left; cursor: pointer;
+  transition: color 200ms ease;
+}
+.cc-agent-skill-disclosure-trigger:hover:not(:disabled) { color: var(--cc-text); }
+.cc-agent-skill-disclosure-trigger:focus-visible { outline: 2px solid var(--cc-text-secondary); outline-offset: 2px; }
+.cc-agent-skill-disclosure-title { flex-shrink: 0; color: var(--cc-text); font-size: 13px; font-weight: 500; }
+.cc-agent-skill-disclosure-title small { margin-left: 4px; color: var(--cc-muted); font-size: 12px; font-weight: 400; }
+.cc-agent-skill-disclosure-count { font-size: 12px; color: var(--cc-muted); }
+.cc-agent-skill-disclosure-action { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; white-space: nowrap; font-size: 13px; }
+.cc-agent-skill-disclosure-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.cc-agent-skill-disclosure > .cc-agent-skill-card { padding: 0 18px 18px; max-height: 360px; }
+.cc-agent-skill-disclosure .cc-agent-add-skill { flex-shrink: 0; }
+.cc-agent-create-hosting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.cc-agent-create-hosting-copy { min-width: 0; }
+.cc-agent-create-hosting h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--cc-text); }
+.cc-agent-create-hosting p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; color: var(--cc-muted); }
+.cc-agent-hosting-select { width: 144px; flex-shrink: 0; }
+.cc-agent-hosting-select .v3-custom-model-select-trigger { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.cc-agent-hosting-options .v3-custom-model-select-option { height: auto; padding-block: 9px; align-items: flex-start; }
+.cc-agent-hosting-options .v3-custom-model-select-option-label { white-space: normal; text-overflow: clip; }
+.cc-agent-hosting-options .v3-custom-model-select-option-description { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; line-height: 1.5; color: var(--cc-muted); }
+.cc-agent-create-footer { display: flex; align-items: center; justify-content: flex-end; flex-shrink: 0; gap: 8px; padding: 0 2px 2px; }
+.cc-agent-create-footer > .oc-btn { min-width: 96px; min-height: 36px; padding: 0 16px; font-size: 13px; }
+@media (max-width: 480px) {
+  .cc-agent-create-hosting-row { align-items: stretch; flex-direction: column; gap: 12px; }
+  .cc-agent-hosting-select { width: 100%; }
+  .cc-agent-skill-disclosure-count { display: none; }
+  .cc-agent-skill-disclosure-trigger { padding-inline: 14px; }
+}
+@media (prefers-reduced-motion: reduce) { .cc-agent-skill-disclosure-trigger { transition: none; } }
 
 .cc-agent-hosting {
   display: grid;
@@ -9677,7 +9836,7 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
 .cc-agent-hosting label > span { display: grid; gap: 3px; }
 .cc-agent-hosting strong { color: var(--v3-text-name); font-size: 13px; }
 .cc-agent-hosting small { color: var(--v3-text-muted); font-size: 11px; }
-.cc-agent-create-submit { width: 100%; min-height: 40px; padding: 0 16px; border-radius: 7px; font-size: 13px; }
+.cc-agent-create-submit { width: auto; min-height: 36px; padding: 0 16px; border-radius: 7px; font-size: 13px; }
 
 /* ===== Cloud-managed worker panel (create tab, managed mode) ===== */
 .cc-cloud-panel { display: grid; gap: 16px; }
@@ -11355,13 +11514,15 @@ html[data-theme="liquid"] .v3-composer-box:focus-within {
   border-color: rgba(86, 98, 217, 0.42);
 }
 
-html[data-theme="liquid"] :is(.name-dialog-overlay, .oc-modal-overlay) {
+html[data-theme="liquid"] :is(.name-dialog-overlay, .oc-modal-overlay),
+html[data-theme="liquid"] .cc-workspace-onboarding-card::backdrop {
   background: rgba(42, 48, 82, 0.22);
   -webkit-backdrop-filter: blur(8px) saturate(108%);
   backdrop-filter: blur(8px) saturate(108%);
 }
 
-html[data-theme="liquid"] :is(.name-dialog, .oc-modal, .settings-panel, .collaboration-manager) {
+html[data-theme="liquid"] :is(.name-dialog, .oc-modal, .settings-panel, .collaboration-manager),
+html[data-theme="liquid"] .cc-workspace-onboarding-card {
   border-color: var(--cc-liquid-edge);
   background: rgba(255, 255, 255, 0.92);
   box-shadow:

@@ -42,7 +42,8 @@ const developmentWorkspacePreview = import.meta.env.DEV && (
   || ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
 );
 
-applyDocumentTheme(readStorageValue(THEME_STORAGE_KEY));
+applyDocumentTheme(['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
+  ? requestedThemePreview : readStorageValue(THEME_STORAGE_KEY));
 startPwaInstallLifecycle();
 
 function readBrowserLocation() {

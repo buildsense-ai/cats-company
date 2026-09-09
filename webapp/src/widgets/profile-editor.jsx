@@ -353,7 +353,6 @@ export default function ProfileEditor({
             </div>
             <div className="oc-profile-details-section">
               <div className="oc-settings-section-title oc-profile-mobile-section-title">个人资料</div>
-              <p className="oc-settings-secondary">头像与昵称修改后，点击“保存资料”生效。</p>
               <div className="oc-profile-mobile-group-card">
                 <div className="oc-profile-name-field oc-profile-mobile-settings-row">
                   <span className="oc-profile-mobile-row-icon" aria-hidden="true"><UserRound size={22} /></span>

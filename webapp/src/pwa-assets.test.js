@@ -74,8 +74,8 @@ describe('PWA notification badge', () => {
     const offlineHtml = readFileSync(resolve(process.cwd(), 'public/offline.html'), 'utf8');
     const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.js'), 'utf8');
 
-    expect(indexHtml).toContain('<meta name="theme-color" content="#f8f8f8" />');
-    expect(viteConfig).toContain("theme_color: '#f8f8f8'");
+    expect(indexHtml).toContain('<meta name="theme-color" content="#0f0f0f" />');
+    expect(viteConfig).toContain("theme_color: '#0f0f0f'");
     expect(offlineHtml).toContain('<meta name="theme-color" content="#111827" />');
   });
 
@@ -88,7 +88,7 @@ describe('PWA notification badge', () => {
     expect(indexHtml).toContain('<meta name="description" content="与 AI 员工协作、分派任务并接收结果。" />');
     expect(viteConfig).toContain("id: '/'");
     expect(viteConfig).toContain("description: '与 AI 员工协作、分派任务并接收结果。'");
-    expect(viteConfig).toContain("background_color: '#f8f8f8'");
+    expect(viteConfig).toContain("background_color: '#0f0f0f'");
   });
 
   it('uses a transparent monochrome asset distinct from the launcher icon', () => {

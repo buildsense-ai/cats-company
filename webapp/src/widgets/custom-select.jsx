@@ -32,6 +32,7 @@ export default function CustomSelect({
   const listboxID = React.useId();
   const options = React.Children.toArray(children).map((child, index) => ({
     disabled: Boolean(child.props.disabled),
+    description: child.props['data-description'],
     id: `${listboxID}-option-${index}`,
     key: child.key || `${child.props.value}-${index}`,
     label: child.props.children,
@@ -274,6 +275,8 @@ export default function CustomSelect({
           key={option.key}
           className={`v3-custom-model-select-option ${optionClassName} ${index === activeIndex ? 'is-active' : ''}`.trim()}
           role="option"
+          aria-label={option.description && typeof option.label === 'string' ? option.label : undefined}
+          aria-describedby={option.description ? `${option.id}-description` : undefined}
           aria-selected={option.value === String(value)}
           aria-disabled={option.disabled || undefined}
           disabled={option.disabled}
@@ -284,7 +287,10 @@ export default function CustomSelect({
           }}
           onClick={() => chooseOption(index)}
         >
-          <span className="v3-custom-model-select-option-label">{option.label}</span>
+          <span className="v3-custom-model-select-option-label">
+            {option.label}
+            {option.description && <small id={`${option.id}-description`} className="v3-custom-model-select-option-description">{option.description}</small>}
+          </span>
           {option.value === String(value) && <Check size={14} aria-hidden="true" />}
         </button>
       ))}

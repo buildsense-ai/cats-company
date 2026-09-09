@@ -94,6 +94,55 @@ describe('EmptyTaskComposer', () => {
     return { onResolveAgentTopic, onActivateTopic };
   }
 
+  it.each([
+    [Object.assign(new Error('invalid credentials'), { status: 401 }), '登录验证未通过，请重新登录。'],
+    [new Error('unauthorized'), '登录验证未通过，请重新登录。'],
+    [Object.assign(new Error('当前账号无访问权限'), { status: 403 }), '当前账号无访问权限'],
+    [new Error('暂时无法连接服务，请稍后重试'), '暂时无法连接服务，请稍后重试'],
+  ])('shows an actionable roster failure without confusing authentication and other errors', async (error, message) => {
+    api.getAgents.mockRejectedValueOnce(error);
+    await mountComposer();
+    const notice = container.querySelector('.v3-composer-agent-error');
+    expect(notice.textContent).toBe(message);
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(notice.querySelector('svg').getAttribute('aria-hidden')).toBe('true');
+
+    await act(async () => {
+      window.dispatchEvent(new Event('cc:data-changed'));
+      await flushPromises();
+    });
+    expect(container.querySelector('.v3-composer-agent-error')).toBeNull();
+  });
+
+  it.each([true, false])('consolidates upload authentication failures and preserves the draft (roster failure: %s)', async (rosterFailed) => {
+    const unauthorized = Object.assign(new Error('unauthorized'), { status: 401 });
+    if (rosterFailed) api.getAgents.mockRejectedValueOnce(unauthorized);
+    const store = createComposerDraftStore('authentication-failure');
+    api.uploadFile.mockResolvedValueOnce({ file_key: 'first.pdf', name: 'first.pdf', url: '/uploads/first.pdf', size: 4 });
+    api.uploadFile.mockRejectedValueOnce(unauthorized);
+    await mountComposer({ composerDraftStore: store });
+    await typeInto(container.querySelector('textarea'), '保留我的草稿');
+    const fileInput = [...container.querySelectorAll('input[type="file"]')].find(input => !input.accept);
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: ['first', 'second', 'third'].map(name => new File(['data'], `${name}.pdf`, { type: 'application/pdf' })) });
+    await act(async () => { Simulate.change(fileInput); await flushPromises(20); });
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(2);
+    expect(container.querySelectorAll('.v3-composer-notices [role="status"]')).toHaveLength(1);
+    expect(container.querySelector('.v3-composer-agent-error').textContent).toBe('登录验证未通过，请重新登录后重试上传。');
+    expect(container.textContent).not.toContain('unauthorized');
+    expect(container.querySelector('textarea').value).toBe('保留我的草稿');
+    expect(store.getAttachmentDraft('new-task')).toEqual([expect.objectContaining({ name: 'first.pdf' })]);
+
+    await act(async () => { window.dispatchEvent(new Event('cc:data-changed')); await flushPromises(); });
+    expect(container.querySelector('.v3-composer-agent-error')).toBeNull();
+    expect(container.textContent).toContain('附件未上传完成，请重新选择文件上传。');
+    api.uploadFile.mockResolvedValueOnce({ file_key: 'second.pdf', name: 'second.pdf', url: '/uploads/second.pdf', size: 4 });
+    Object.defineProperty(fileInput, 'files', { configurable: true, value: [new File(['data'], 'second.pdf', { type: 'application/pdf' })] });
+    await act(async () => { Simulate.change(fileInput); await flushPromises(20); });
+    expect(store.getAttachmentDraft('new-task')).toHaveLength(2);
+    expect(container.textContent).not.toContain('登录验证未通过');
+  });
+
   it('renders a real textarea in the shared composer and keeps all upload actions under plus', async () => {
     await mountComposer();
 

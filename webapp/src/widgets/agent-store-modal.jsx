@@ -536,6 +536,7 @@ export default function AgentStoreModal({
   }, [rosterFilter, tab, hubCloudView, loading, bots]);
   const [createForm, setCreateForm] = useState(initialForm);
   const [selectedSkills, setSelectedSkills] = useState([]);
+  const [skillSectionOpen, setSkillSectionOpen] = useState(false);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
   const [skillCatalogue, setSkillCatalogue] = useState([]);
@@ -611,7 +612,7 @@ export default function AgentStoreModal({
     || editingBot.newArtifactUploadEnabled !== (editingBot.artifact_upload_enabled !== false)
   ));
   const requestLeave = useCallback(async (destination = 'close') => {
-    if (manageSaveRef.current || leaveConfirmationRef.current) return;
+    if (isSubmitting || manageSaveRef.current || leaveConfirmationRef.current) return;
     if (tab === 'manage' && manageDirty) {
       leaveConfirmationRef.current = true;
       try {
@@ -629,7 +630,7 @@ export default function AgentStoreModal({
     if (typeof destination === 'function') destination();
     else if (destination === 'hub') { setTab('hub'); setError(''); }
     else onClose();
-  }, [feedback, manageDirty, onClose, tab]);
+  }, [feedback, isSubmitting, manageDirty, onClose, tab]);
   const botOverview = useMemo(() => {
     const owned = bots.filter(isOwnedBot).length;
     return {
@@ -692,6 +693,7 @@ export default function AgentStoreModal({
 
   const openCreateTab = () => {
     setSkillPanelTab('available');
+    setSkillSectionOpen(false);
     setTab('create');
   };
 
@@ -1646,7 +1648,7 @@ export default function AgentStoreModal({
       {/* Removed arbitrary background hardcoding to allow inheritance from the global .oc-modal V3 matrix */}
       <div
         ref={dialogRef}
-        className={`oc-modal cc-agent-manager cc-secondary-interface${tab === 'manage' ? ' cc-agent-manager-manage' : ''}${tab === 'hub' && !hubCloudView ? ' cc-agent-manager-hub' : ''}`}
+        className={`oc-modal cc-agent-manager cc-secondary-interface${tab === 'manage' ? ' cc-agent-manager-manage' : ''}${tab === 'hub' && !hubCloudView ? ' cc-agent-manager-hub' : ''}${tab === 'create' && createMode === CREATE_MODES.SELF_HOSTED ? ' cc-agent-manager-create' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="cc-agent-manager-title"
@@ -1655,15 +1657,15 @@ export default function AgentStoreModal({
 
         <div className="oc-modal-header cc-agent-manager-header">
           <div className="cc-agent-manager-nav">
-            {tab === 'manage' && <button type="button" className="cc-agent-manager-header-action" aria-label="返回助手列表" disabled={manageSaving} onClick={() => requestLeave('hub')}><ArrowLeft size={16} aria-hidden="true" /></button>}
+            {(tab === 'manage' || tab === 'create') && <button type="button" className="cc-agent-manager-header-action" aria-label="返回助手列表" disabled={manageSaving || isSubmitting} onClick={() => requestLeave('hub')}><ArrowLeft size={16} aria-hidden="true" /></button>}
             <h3 id="cc-agent-manager-title" className="cc-agent-manager-title">
-              <Bot size={22} strokeWidth={1.8} />
-              <span>{tab === 'manage' && editingBot ? <><span className="cc-agent-title-context">管理助手</span><span className="cc-agent-title-separator"> · </span><span className="cc-agent-title-name" title={editingBot.newDisplayName || editingBot.display_name}>{editingBot.newDisplayName || editingBot.display_name}</span></> : 'AI 助手管理'}</span>
+              {tab !== 'create' && <Bot size={22} strokeWidth={1.8} />}
+              <span>{tab === 'manage' && editingBot ? <><span className="cc-agent-title-context">管理助手</span><span className="cc-agent-title-separator"> · </span><span className="cc-agent-title-name" title={editingBot.newDisplayName || editingBot.display_name}>{editingBot.newDisplayName || editingBot.display_name}</span></> : tab === 'create' ? '创建 AI 助手' : 'AI 助手管理'}</span>
             </h3>
           </div>
           <div className="cc-agent-manager-header-actions">
             {tab === 'manage' && editingBot && <button type="button" className="cc-agent-manager-header-action" aria-label="入口码" disabled={manageSaving} onClick={() => setEntryBot(editingBot)}><QrCode size={15} aria-hidden="true" /><span>入口码</span></button>}
-            {tab !== 'hub' && tab !== 'manage' && (
+            {tab !== 'hub' && tab !== 'manage' && tab !== 'create' && (
               <button
                 type="button"
                 className="cc-agent-manager-header-action"
@@ -1672,7 +1674,7 @@ export default function AgentStoreModal({
                 <ArrowLeft size={14} aria-hidden="true" /> <span>助手列表</span>
               </button>
             )}
-            <button className="cc-dialog-close" disabled={manageSaving} onClick={() => requestLeave()} aria-label="关闭"><X size={18} /></button>
+            <button className="cc-dialog-close" disabled={manageSaving || isSubmitting} onClick={() => requestLeave()} aria-label="关闭"><X size={18} /></button>
           </div>
         </div>
 
@@ -1712,12 +1714,8 @@ export default function AgentStoreModal({
                 <div className="cc-agent-hub-state">加载中...</div>
               ) : bots.length === 0 ? (
                 <div className="cc-agent-hub-empty">
-                  <Bot size={48} strokeWidth={1.5} />
+                  <button type="button" className="oc-btn cc-agent-empty-action" aria-label="创建新助手" title="创建新助手" onClick={openCreateTab}><Plus size={40} strokeWidth={1.5} aria-hidden="true" /></button>
                   <strong>还没有 AI 助手</strong>
-                  <p>
-                    创建自己的助手，或通过“添加好友/助手”添加已有助手。
-                  </p>
-                  <button className="oc-btn cc-agent-empty-action" onClick={openCreateTab}>创建新助手</button>
                 </div>
               ) : (
                 <>
@@ -1913,16 +1911,11 @@ export default function AgentStoreModal({
               />
             ) : (
               <form onSubmit={handleCreate} className="cc-agent-create-form">
-                <div className="cc-agent-create-intro">
-                  <h2>创建你的专属助手</h2>
-                  <p>先定义助手身份，再配置运行方式。</p>
-                </div>
-
+                <div className="cc-agent-create-fields">
               <div className="cc-agent-create-grid">
-                <section className="cc-agent-create-card cc-agent-basic-card">
-                  <h3><FileCheck2 size={17} />基本信息</h3>
+                <section className="cc-agent-create-card cc-agent-basic-card" aria-label="基本信息">
                   <label>
-                    <span>助手名称 <b>*</b></span>
+                    <span>助手名称 <small>必填</small></span>
                     <input
                       type="text"
                       value={createForm.display_name}
@@ -1934,7 +1927,18 @@ export default function AgentStoreModal({
                     />
                   </label>
                   <label>
-                    <span>定位模板 <b>*</b></span>
+                    <span>用途说明 <small>选填</small></span>
+                    <textarea
+                      value={createForm.description}
+                      onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
+                      placeholder="例如：检查代码中的问题，并给出修改建议"
+                      disabled={isSubmitting}
+                      maxLength={500}
+                    />
+                    <em>{createForm.description.length}/500</em>
+                  </label>
+                  <label>
+                    <span>定位模板 <small>可调整</small></span>
                     <div className="cc-agent-role-field">
                       <CustomSelect
                         ariaLabel="定位模板"
@@ -1948,25 +1952,19 @@ export default function AgentStoreModal({
                         {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
                       </CustomSelect>
                       <small className="cc-agent-role-guidance">
-                        用于初始 Skill 推荐与能力画像，不会直接改变 Agent 行为。{selectedRole.description}
+                        用于推荐技能，创建后可调整。
                       </small>
                     </div>
                   </label>
-                  <label>
-                    <span>用途说明 <small>选填</small></span>
-                    <textarea
-                      value={createForm.description}
-                      onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
-                      placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
-                    />
-                    <em>{createForm.description.length}/500</em>
-                  </label>
                 </section>
 
-                <section className="cc-agent-create-card cc-agent-skill-card">
-                  <div className="cc-agent-skill-card-heading">
-                    <h3><Puzzle size={17} />Skills</h3>
-                  </div>
+                <section className="cc-agent-create-card cc-agent-skill-disclosure">
+                  <button type="button" className="cc-agent-skill-disclosure-trigger" aria-label="配置助手技能" aria-expanded={skillSectionOpen} aria-controls="cc-agent-create-skills" disabled={isSubmitting} onClick={() => setSkillSectionOpen(open => !open)}>
+                    <span className="cc-agent-skill-disclosure-title">技能 <small>选填</small></span>
+                    {selectedSkills.length > 0 && <span className="cc-agent-skill-disclosure-count">已选 {selectedSkills.length} 个</span>}
+                    <span className="cc-agent-skill-disclosure-action">{skillSectionOpen ? '收起' : selectedSkills.length ? '管理技能' : '添加技能'}<ChevronDown size={14} aria-hidden="true" /></span>
+                  </button>
+                  {skillSectionOpen && <div className="cc-agent-skill-card" id="cc-agent-create-skills">
                   <div
                     className="cc-agent-skill-tabs"
                     role="tablist"
@@ -2067,7 +2065,7 @@ export default function AgentStoreModal({
                           <strong>正在匹配推荐 Skill…</strong>
                         </div>
                       )}
-                      {skillRecommendationError && (
+                      {skillRecommendationError && availableSkills.length > 0 && (
                         <div className="cc-agent-skill-recommendation-state" role="status">
                           <strong>推荐暂时不可用</strong>
                           <small>已安装的 Skill 仍可正常添加。</small>
@@ -2121,8 +2119,8 @@ export default function AgentStoreModal({
                         </div>
                       ) : !skillRecommendationLoading && !localSkillsLoading && (
                         <div className="cc-agent-skill-group-empty">
-                          <strong>暂无可用 Skill</strong>
-                          <small>{localSkillsError ? '连接本地服务，或浏览 SkillHub 添加能力。' : '可以浏览完整目录并手动选择。'}</small>
+                          <strong>{skillRecommendationError || localSkillsError ? '暂时没有可用技能' : '暂无可用技能'}</strong>
+                          <small>可浏览技能目录，或创建后再添加。</small>
                         </div>
                       )}
                     </section>
@@ -2136,36 +2134,30 @@ export default function AgentStoreModal({
                   >
                     <Search size={15} /> 浏览全部 Skills
                   </button>
+                  </div>}
                 </section>
               </div>
-                <fieldset className="cc-agent-hosting">
-                  <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
-                  <label className={createMode === CREATE_MODES.SELF_HOSTED ? 'active' : ''}>
-                    <input type="radio" name="hosting" checked={createMode === CREATE_MODES.SELF_HOSTED} onChange={() => setCreateMode(CREATE_MODES.SELF_HOSTED)} />
-                    <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
-                  </label>
-                  <label className={createMode === CREATE_MODES.MANAGED ? 'active' : (cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0 ? 'disabled' : '')}>
-                    <input
-                      type="radio"
-                      name="hosting"
-                      checked={createMode === CREATE_MODES.MANAGED}
-                      disabled={cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0}
-                      onChange={() => setCreateMode(CREATE_MODES.MANAGED)}
-                    />
-                    <span>
-                      <strong>云托管</strong>
-                      <small>
-                        {cloudHostingSummary(cloudQuota, cloudQuotaError)}
-                      </small>
-                    </span>
-                  </label>
-                </fieldset>
-
-                <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting}>
+                <section className="cc-agent-create-card cc-agent-create-hosting" aria-labelledby="cc-agent-create-hosting-title">
+                  <div className="cc-agent-create-hosting-row">
+                    <div className="cc-agent-create-hosting-copy">
+                      <h3 id="cc-agent-create-hosting-title">部署方式</h3>
+                      <p>创建后使用连接凭证接入你的服务。</p>
+                    </div>
+                    <CustomSelect ariaLabel="部署方式" className="cc-agent-hosting-select" menuClassName="cc-agent-hosting-options" density="comfortable" value={createMode} disabled={isSubmitting} onValueChange={setCreateMode}>
+                      <option value={CREATE_MODES.SELF_HOSTED}>自托管</option>
+                      <option value={CREATE_MODES.MANAGED} disabled={Boolean(cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0)} data-description={cloudHostingSummary(cloudQuota, cloudQuotaError)}>云托管</option>
+                    </CustomSelect>
+                  </div>
+                </section>
+                </div>
+                <footer className="cc-agent-create-footer">
+                  <button type="button" className="oc-btn oc-btn-default" disabled={isSubmitting} onClick={() => requestLeave('hub')}>取消</button>
+                <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting || !createForm.display_name.trim()}>
                   {isSubmitting
                     ? (selectedSkills.length > 0 ? '正在创建并添加 Skill...' : '创建中...')
-                    : '创建我的专属助手'}
+                    : '创建助手'}
                 </button>
+                </footer>
               </form>
             )
           )}
@@ -2261,7 +2253,7 @@ export default function AgentStoreModal({
               <div className="cc-agent-manage-basic-layout">
                 <div className="cc-agent-manage-basic-fields">
               <div className="oc-form-group cc-agent-manage-avatar-field" style={{ marginBottom: 24 }}>
-                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>头像</label>
+                <label className="cc-field-title" style={{ display: 'block', marginBottom: 8 }}>头像</label>
                 <div className="cc-agent-manage-avatar-wrap">
                   <button
                     type="button"
@@ -2321,7 +2313,8 @@ export default function AgentStoreModal({
               <div className="oc-form-group" style={{ marginBottom: 0 }}>
                 <label
                   htmlFor={`cc-agent-name-${editingBot.id || editingBot.uid}`}
-                  style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}
+                  className="cc-field-title"
+                  style={{ display: 'block', marginBottom: 8 }}
                 >
                   名称
                 </label>
@@ -2339,7 +2332,8 @@ export default function AgentStoreModal({
               <div className="oc-form-group cc-agent-manage-description-field" style={{ marginBottom: 0 }}>
                 <label
                   htmlFor={`cc-agent-description-${editingBot.id || editingBot.uid}`}
-                  style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}
+                  className="cc-field-title"
+                  style={{ display: 'block', marginBottom: 8 }}
                 >
                   用途说明 <small>选填</small>
                 </label>
@@ -3269,8 +3263,8 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
 
           {!managedChannelAppID && (
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>
-                微信 AppID（可选）
+              <label className="cc-field-title" style={{ display: 'block', marginBottom: 8 }}>
+                微信 AppID <small>可选</small>
               </label>
               <input
                 value={channelAppId}
@@ -3283,7 +3277,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
           )}
 
           <div style={{ marginBottom: 16 }}>
-            <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>访问方式</div>
+            <div className="cc-field-title" style={{ marginBottom: 8 }}>访问方式</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
               {[
                 [CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED, '好友申请'],

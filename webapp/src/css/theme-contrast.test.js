@@ -52,7 +52,7 @@ describe('theme surface and primary action contrast', () => {
   it('lets mobile member sections fit content without forced blank height', () => {
     expect(system).toMatch(/\.oc-create-group-dialog \.oc-member-picker-shell\s*\{[^}]*min-height: 0;/);
     expect(system).not.toMatch(/min-height: 420px;/);
-    expect(system).toMatch(/\.oc-create-group-dialog \.oc-collaboration-modal-body\s*\{[^}]*flex: 0 0 auto;[^}]*max-height: none;/);
+    expect(system).toMatch(/\.oc-create-group-dialog \.oc-collaboration-modal-body\s*\{[^}]*flex: 1 1 auto;[^}]*max-height: none;/);
   });
 
   it('reuses the accessible action pair on primary form buttons without recoloring send or danger', () => {

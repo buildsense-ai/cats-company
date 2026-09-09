@@ -6382,8 +6382,9 @@ button.catsco-download-action:disabled {
 .oc-profile-editor-scroll {
   min-height: 0;
   overflow-y: auto;
-  margin-right: -12px;
-  padding-right: 12px;
+  /* Extend into the modal padding while preserving the content inset. */
+  margin-right: -24px;
+  padding-right: 24px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -9694,8 +9695,9 @@ button.catsco-download-action:disabled {
   overscroll-behavior: contain;
 }
 
-.oc-modal:not(.relay-access-modal):not(.oc-profile-editor-modal):not(.oc-group-settings-modal):not(.catsco-download-modal) {
-  overflow-y: auto !important;
+.oc-modal {
+  /* Simple dialogs scroll as needed; structured dialogs own their scroll area. */
+  overflow-y: auto;
 }
 
 .v3-profile-avatar {

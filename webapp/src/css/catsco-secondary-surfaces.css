@@ -978,9 +978,6 @@ html[data-theme='liquid'] .cc-settings-secondary-surface .oc-btn-primary {
     display: block;
     margin: 0 0 10px;
     padding: 0 18px;
-    color: var(--cc-muted) !important;
-    font-size: 15px;
-    font-weight: var(--cc-font-weight-medium);
     line-height: 22px;
   }
 

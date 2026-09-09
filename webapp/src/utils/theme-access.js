@@ -1,6 +1,7 @@
 import { getStorage } from './storage-access';
 
 export const THEME_STORAGE_KEY = 'catsco_theme';
+export const DEFAULT_THEME = 'dark';
 export const LIQUID_THEME_UNLOCK_STORAGE_KEY = 'catsco_liquid_theme_unlocked_v1';
 
 const THEME_COLORS = {
@@ -19,7 +20,7 @@ export function isLiquidTheme(value) {
 }
 
 export function normalizeTheme(value) {
-  return value === 'dark' || isLiquidTheme(value) ? value : 'light';
+  return value === 'light' || value === 'dark' || isLiquidTheme(value) ? value : DEFAULT_THEME;
 }
 
 export function themeColor(value) {

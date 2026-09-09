@@ -314,13 +314,15 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box:focus-wi
   border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-liquid-edge));
 }
 
-html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay) {
+html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay),
+html[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card::backdrop {
   background: rgba(0, 10, 8, 0.56);
   -webkit-backdrop-filter: blur(8px) saturate(108%);
   backdrop-filter: blur(8px) saturate(108%);
 }
 
-html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog, .oc-modal, .settings-panel, .collaboration-manager) {
+html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog, .oc-modal, .settings-panel, .collaboration-manager),
+html[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card {
   border-color: var(--cc-liquid-edge);
   background: #1a1c1d;
   box-shadow:
