@@ -127,6 +127,34 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	if err != nil || summary.TotalCNY != 227 {
 		t.Fatalf("plan change did not preserve manual adjustments: summary=%#v err=%v", summary, err)
 	}
+	// Reconciliation keeps a Free baseline alongside a paid package. Its
+	// presence must not block switching the current paid package back to Free.
+	if _, err := db.EnsureCommercialRelayBaseline(uid, "free", map[string]float64{"MiniMax-M3": 500}, startsAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "change_plan", PlanID: targetPlanID, OperationID: "same-paid", EffectiveAt: time.Now().UTC(),
+	}); err == nil {
+		t.Fatal("reapplying current paid plan should be rejected")
+	}
+	var freeID int64
+	var freeTotal float64
+	if err := db.db.QueryRow(`SELECT id, monthly_budget_cny + COALESCE((SELECT SUM(value::numeric) FROM jsonb_each_text(model_budgets)),0) FROM commercial_plans WHERE slug='catsco-free'`).Scan(&freeID, &freeTotal); err != nil {
+		t.Fatal(err)
+	}
+	expected = 727
+	downgraded, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "change_plan", PlanID: freeID, ExpectedTotalCNY: &expected,
+		OperationID: "downgrade-free", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !downgraded.Applied || downgraded.NextTotalCNY != freeTotal+27 {
+		t.Fatalf("Free downgrade with existing baseline failed: result=%#v err=%v", downgraded, err)
+	}
+	if _, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "change_plan", PlanID: freeID, OperationID: "same-free", EffectiveAt: time.Now().UTC(),
+	}); err == nil {
+		t.Fatal("reapplying current Free plan should be rejected")
+	}
 
 	resetAt := time.Now().UTC()
 	applied, recordedAt, err := db.RecordCommercialCycleReset(uid, "adjustment-reset", "contract reset", resetAt)
@@ -819,4 +847,30 @@ func testConcurrentCommercialOpenOrderCoalescing(t *testing.T, db *Adapter, uid 
 	if openOrders != 1 || aliases != workers {
 		t.Fatalf("concurrent order coalescing mismatch: open_orders=%d aliases=%d", openOrders, aliases)
 	}
+}
+func TestPostgresCommercialAdjustmentContract(t *testing.T) {
+	rawDSN := os.Getenv("CATS_PG_TEST_DSN")
+	if rawDSN == "" {
+		t.Skip("set CATS_PG_TEST_DSN to run PostgreSQL integration tests")
+	}
+	schemaName := fmt.Sprintf("cats_commercial_adjustment_test_%d", time.Now().UnixNano())
+	base := &Adapter{}
+	if err := base.Open(rawDSN); err != nil {
+		t.Fatalf("open base postgres connection: %v", err)
+	}
+	defer base.Close()
+	if _, err := base.db.Exec(`CREATE SCHEMA ` + quoteIdent(schemaName)); err != nil {
+		t.Fatalf("create commercial baseline test schema: %v", err)
+	}
+	defer base.db.Exec(`DROP SCHEMA ` + quoteIdent(schemaName) + ` CASCADE`)
+
+	db := &Adapter{}
+	if err := db.Open(dsnWithSearchPath(t, rawDSN, schemaName)); err != nil {
+		t.Fatalf("open commercial baseline postgres connection: %v", err)
+	}
+	defer db.Close()
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("create commercial baseline schema objects: %v", err)
+	}
+	testCommercialAdjustmentContract(t, db)
 }
