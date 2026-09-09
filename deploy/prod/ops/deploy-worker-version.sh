@@ -35,6 +35,9 @@ for cmd in ctyun-cli jq tos-fetch sha256sum tar ssh scp timeout awk cut sort; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "error: missing required command: $cmd" >&2; exit 2; }
 done
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
+worker_profile_load "$NAME"
+
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 STATE_ROOT="${CTYUN_WORKER_STATE_ROOT:-}"
@@ -101,12 +104,12 @@ find_instance() {
   # filter and return an empty page. Fall back to the same paginated full scan
   # used by status-worker.sh so updates do not report a running worker missing.
   page=1
-  total_page="$(jq -r '.returnObj.totalPage // 1' <<<"$resp")"
+  total_page=1
   while (( page <= total_page )); do
-    if (( page > 1 )); then
-      resp="$(ctyun ecs ListEcsInstances --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-        --pageNo "$page" --pageSize 100)"
-    fi
+    (( page <= 100 )) || { echo 'error: instance pagination exceeded limit' >&2; return 1; }
+    resp="$(ctyun ecs ListEcsInstances --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+      --pageNo "$page" --pageSize 100)"
+    total_page="$(jq -r '.returnObj.totalPage // 1' <<<"$resp")"
     match="$(jq -c --arg n "$name" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" | head -n1)"
     if [[ -n "$match" ]]; then
       printf '%s\n' "$match"
@@ -128,7 +131,7 @@ fi
 
 inst="$(find_instance "worker-$NAME")"
 [[ -n "$inst" ]] || { echo "error: instance worker-$NAME not found" >&2; exit 1; }
-INSTANCE_IP="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
+INSTANCE_IP="$(worker_connection_ip <<<"$inst")"
 [[ -n "$INSTANCE_IP" ]] || { echo "error: instance has no IP" >&2; exit 1; }
 
 if [[ $DRY_RUN -eq 1 ]]; then

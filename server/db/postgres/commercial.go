@@ -192,6 +192,7 @@ func scanCommercialInvite(scanner interface {
 		&invite.MaxRedemptions,
 		&invite.RedeemedCount,
 		&invite.CloudWorkerCredits,
+		&invite.CloudWorkerProfile,
 		&invite.State,
 		&expiresAt,
 		&invite.Note,
@@ -210,7 +211,7 @@ func (a *Adapter) ListCommercialInviteCodes(limit int) ([]*types.CommercialInvit
 		limit = 50
 	}
 	rows, err := a.db.Query(`
-		SELECT c.id, c.code, c.plan_id, p.slug, p.name, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.state,
+		SELECT c.id, c.code, c.plan_id, p.slug, p.name, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.state,
 		       c.expires_at, c.note, COALESCE(c.created_by_uid, 0), c.created_at, c.updated_at
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
@@ -238,23 +239,28 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	if invite.CloudWorkerCredits < 0 || invite.CloudWorkerCredits > 100 {
 		return 0, fmt.Errorf("commercial invite cloud worker credits must be between 0 and 100")
 	}
+	profile, valid := types.NormalizeCloudWorkerProfile(invite.CloudWorkerProfile)
+	if !valid {
+		return 0, fmt.Errorf("invalid cloud worker profile")
+	}
 	maxRedemptions := invite.MaxRedemptions
 	if maxRedemptions <= 0 {
 		maxRedemptions = 1
 	}
 	var id int64
 	err := a.db.QueryRow(`
-		INSERT INTO commercial_invite_codes(code, plan_id, max_redemptions, cloud_worker_credits, state, expires_at, note, created_by_uid)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0))
+		INSERT INTO commercial_invite_codes(code, plan_id, max_redemptions, cloud_worker_credits, state, expires_at, note, created_by_uid, cloud_worker_profile)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0), $9)
 		ON CONFLICT(code) DO UPDATE SET
 			plan_id = EXCLUDED.plan_id,
 			max_redemptions = EXCLUDED.max_redemptions,
 			cloud_worker_credits = EXCLUDED.cloud_worker_credits,
+			cloud_worker_profile = EXCLUDED.cloud_worker_profile,
 			state = EXCLUDED.state,
 			expires_at = EXCLUDED.expires_at,
 			note = EXCLUDED.note,
 			created_by_uid = EXCLUDED.created_by_uid
-		WHERE NOT $9
+		WHERE NOT $10
 		RETURNING id`,
 		strings.ToUpper(strings.TrimSpace(invite.Code)),
 		invite.PlanID,
@@ -264,6 +270,7 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 		invite.ExpiresAt,
 		strings.TrimSpace(invite.Note),
 		invite.CreatedByUID,
+		profile,
 		invite.CreateOnly,
 	).Scan(&id)
 	if err != nil {
@@ -351,11 +358,11 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	var inviteID, planID int64
 	var maxRedemptions, redeemedCount, cloudWorkerCredits, inviteState, planState, durationDays int
 	var expiresAt sql.NullTime
-	var planSlug, planName string
+	var planSlug, planName, cloudWorkerProfile string
 	var monthlyBudget float64
 	var budgetsRaw []byte
 	err = tx.QueryRow(`
-		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.state, c.expires_at,
+		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.state, c.expires_at,
 		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
@@ -366,6 +373,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&maxRedemptions,
 		&redeemedCount,
 		&cloudWorkerCredits,
+		&cloudWorkerProfile,
 		&inviteState,
 		&expiresAt,
 		&planSlug,
@@ -440,9 +448,9 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires); err != nil {
+			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}

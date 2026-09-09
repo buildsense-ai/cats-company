@@ -964,6 +964,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			PlanID             int64  `json:"plan_id"`
 			MaxRedemptions     int    `json:"max_redemptions"`
 			CloudWorkerCredits int    `json:"cloud_worker_credits"`
+			CloudWorkerProfile string `json:"cloud_worker_profile"`
 			State              int    `json:"state"`
 			ExpiresAt          string `json:"expires_at"`
 			Note               string `json:"note"`
@@ -1007,12 +1008,18 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			}
 			expiresAt = &parsed
 		}
+		profile, valid := types.NormalizeCloudWorkerProfile(req.CloudWorkerProfile)
+		if !valid {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker profile"})
+			return
+		}
 		id, err := store.CreateCommercialInviteCode(&types.CommercialInviteCode{
 			CreateOnly:         req.CreateOnly,
 			Code:               code,
 			PlanID:             req.PlanID,
 			MaxRedemptions:     req.MaxRedemptions,
 			CloudWorkerCredits: req.CloudWorkerCredits,
+			CloudWorkerProfile: profile,
 			State:              req.State,
 			ExpiresAt:          expiresAt,
 			Note:               req.Note,

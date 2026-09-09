@@ -172,7 +172,9 @@ while IFS=$'\t' read -r name st img private_ip public_ip; do
   if [[ -n "$img" ]]; then
     ver="$(awk -F'\t' -v id="$img" '$1 == id { print $2; exit }' <<<"$version_map")"
   fi
-  app_ver="$(read_app_version "$name" "$st" "$private_ip")"
+  connect_ip="$private_ip"
+  [[ "${CTYUN_WORKER_EXT_IP:-0}" != 1 ]] || connect_ip="$public_ip"
+  app_ver="$(read_app_version "$name" "$st" "$connect_ip")"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$st" "$img" "$ver" "$app_ver" "$private_ip" "$public_ip"
 done <<<"$instance_rows"
 

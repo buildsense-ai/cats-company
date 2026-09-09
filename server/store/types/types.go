@@ -175,6 +175,7 @@ type CommercialInviteCode struct {
 	MaxRedemptions     int        `json:"max_redemptions"`
 	RedeemedCount      int        `json:"redeemed_count"`
 	CloudWorkerCredits int        `json:"cloud_worker_credits"`
+	CloudWorkerProfile string     `json:"cloud_worker_profile"`
 	State              int        `json:"state"`
 	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
 	Note               string     `json:"note,omitempty"`

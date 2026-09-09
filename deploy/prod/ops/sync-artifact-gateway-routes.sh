@@ -11,8 +11,8 @@ OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARTIFACT_ROUTE_SCRIPT="${CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT:-$OPS_DIR/artifact-gateway-route.sh}"
 STATE_ROOT="${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
 CLEANUP_DIR="${CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR:-$STATE_ROOT/.artifact-route-cleanup}"
-REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
-PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
+REGION_ID="${CATSCO_WORKER_DEFAULT_REGION_ID:-${CTYUN_WORKER_REGION_ID:-}}"
+PROJECT_ID="${CATSCO_WORKER_DEFAULT_PROJECT_ID:-${CTYUN_WORKER_PROJECT_ID:-0}}"
 [[ -n "$REGION_ID" ]] || { echo "error: CTYUN_WORKER_REGION_ID is required" >&2; exit 2; }
 
 ctyun() {
@@ -25,6 +25,26 @@ ctyun() {
   printf '%s' "$raw"
 }
 
+source "$OPS_DIR/worker-deployment-profile.sh"
+# Each subshell starts from the NAT defaults; a previous public tenant cannot
+# contaminate a legacy tenant. Any failed query aborts the full replacement.
+resolve_route() (
+  local tenant="$1" response instance state ip mode=private
+  unset CATSCO_WORKER_DEPLOYMENT_JSON CTYUN_WORKER_STATE_DIR
+  export CTYUN_WORKER_REGION_ID="$REGION_ID" CTYUN_WORKER_PROJECT_ID="$PROJECT_ID" CTYUN_WORKER_EXT_IP=0
+  worker_profile_load "$tenant" || return 1
+  response="$(ctyun ecs ListEcsInstances --regionID "$CTYUN_WORKER_REGION_ID" --projectID "$CTYUN_WORKER_PROJECT_ID" \
+    --instanceName "worker-$tenant" --pageNo 1 --pageSize 10)" || return 1
+  instance="$(jq -c --arg name "worker-$tenant" '.returnObj.results[]? | select(.instanceName == $name)' <<<"$response" | head -n1)" || return 1
+  [[ -n "$instance" ]] || return 0
+  state="$(jq -r '.instanceStatus // .state // ""' <<<"$instance" | tr '[:upper:]' '[:lower:]')"
+  [[ "$state" == running || "$state" == active ]] || return 0
+  ip="$(worker_connection_ip <<<"$instance")" || return 1
+  [[ -n "$ip" ]] || { echo 'error: active worker has no routable address' >&2; return 1; }
+  [[ "$CTYUN_WORKER_EXT_IP" != 1 ]] || mode=public
+  node "$OPS_DIR/artifact-gateway-route.mjs" validate-ip "$ip" "$mode" >/dev/null || return 1
+  jq -cn --arg ip "$ip" --arg mode "$mode" '{private_ip:$ip,network_mode:$mode}'
+)
 routes='{}'
 shopt -s nullglob
 for state_dir in "$STATE_ROOT"/*; do
@@ -33,15 +53,9 @@ for state_dir in "$STATE_ROOT"/*; do
   agent_uid="$(sed -n 's/^CATSCO_BOT_UID=//p' "$state_dir/inject.env" | tail -n1)"
   [[ "$agent_uid" =~ ^[1-9][0-9]{0,18}$ ]] || continue
   [[ ! -f "$CLEANUP_DIR/$agent_uid.pending" ]] || continue
-  response="$(ctyun ecs ListEcsInstances --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-    --instanceName "worker-$tenant" --pageNo 1 --pageSize 10)"
-  instance="$(jq -c --arg name "worker-$tenant" '.returnObj.results[]? | select(.instanceName == $name)' <<<"$response" | head -n1)"
-  [[ -n "$instance" ]] || continue
-  state="$(jq -r '.instanceStatus // .state // ""' <<<"$instance" | tr '[:upper:]' '[:lower:]')"
-  [[ "$state" == "running" || "$state" == "active" ]] || continue
-  private_ip="$(jq -r '(.fixedIPList[0] // .privateIP // "")' <<<"$instance")"
-  [[ "$private_ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.) ]] || continue
-  routes="$(jq -c --arg uid "$agent_uid" --arg ip "$private_ip" '. + {($uid):$ip}' <<<"$routes")"
+  route="$(resolve_route "$tenant")"
+  [[ -n "$route" ]] || continue
+  routes="$(jq -c --arg uid "$agent_uid" --argjson route "$route" '. + {($uid):$route}' <<<"$routes")"
 done
 
 printf '%s\n' "$routes" | "$ARTIFACT_ROUTE_SCRIPT" sync

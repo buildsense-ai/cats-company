@@ -57,6 +57,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateCloudWorkerCreditsEntitlement,
 		createCloudWorkerLifecyclesTable,
 		createCloudWorkerBindingsTable,
+		migrateCloudWorkerDeploymentProfiles,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,

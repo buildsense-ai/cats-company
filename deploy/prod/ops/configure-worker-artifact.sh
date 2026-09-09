@@ -16,8 +16,10 @@ while (($#)); do
   esac
 done
 
-[[ "$WORKER_IP" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.) ]] \
-  || { echo "error: --worker-ip must be a private IPv4 address" >&2; exit 2; }
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NETWORK_MODE=private
+[[ "${CTYUN_WORKER_EXT_IP:-0}" != 1 ]] || NETWORK_MODE=public
+node "$OPS_DIR/artifact-gateway-route.mjs" validate-ip "$WORKER_IP" "$NETWORK_MODE" >/dev/null
 [[ "$AGENT_UID" =~ ^[1-9][0-9]{0,18}$ ]] \
   || { echo "error: --agent-uid must be a positive integer" >&2; exit 2; }
 [[ -f "$SSH_KEY" ]] || { echo "error: worker SSH key is unavailable" >&2; exit 2; }
@@ -84,12 +86,16 @@ ssh_run "root@$WORKER_IP" \
 ssh_run "root@$WORKER_IP" \
   "'$NODE_PATH' '$RUNTIME_FILE' probe --url 'http://127.0.0.1:$BACKEND_PORT/__artifact_health' --port '$BACKEND_PORT' --timeout-ms 15000"
 
-if [[ -n "$JUMP_IP" ]]; then
-  jump_opts=(-i "$JUMP_KEY" -p "$JUMP_PORT" -o BatchMode=yes -o ConnectTimeout=10
+GATEWAY_IP="${CATSCO_ARTIFACT_GATEWAY_SSH_IP:-$JUMP_IP}"
+GATEWAY_KEY="${CATSCO_ARTIFACT_GATEWAY_SSH_KEY:-$JUMP_KEY}"
+GATEWAY_PORT="${CATSCO_ARTIFACT_GATEWAY_SSH_PORT:-$JUMP_PORT}"
+GATEWAY_USER="${CATSCO_ARTIFACT_GATEWAY_SSH_USER:-$JUMP_USER}"
+if [[ -n "$GATEWAY_IP" ]]; then
+  jump_opts=(-i "$GATEWAY_KEY" -p "$GATEWAY_PORT" -o BatchMode=yes -o ConnectTimeout=10
     -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${KNOWN_HOSTS}.jump")
-  timeout -s TERM -k 15 30s ssh "${jump_opts[@]}" "$JUMP_USER@$JUMP_IP" \
+  timeout -s TERM -k 15 30s ssh "${jump_opts[@]}" "$GATEWAY_USER@$GATEWAY_IP" \
     "curl --fail --silent --show-error --max-time 5 'http://$WORKER_IP:$BACKEND_PORT/__artifact_health' >/dev/null"
 fi
 
-"$ROUTE_CLIENT" register "$AGENT_UID" "$WORKER_IP" >/dev/null
+"$ROUTE_CLIENT" register "$AGENT_UID" "$WORKER_IP" "$NETWORK_MODE" >/dev/null
 printf '{"ok":true,"status":"ready","agent_uid":"%s","worker_ip":"%s"}\n' "$AGENT_UID" "$WORKER_IP"

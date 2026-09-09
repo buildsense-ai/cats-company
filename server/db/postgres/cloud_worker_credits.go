@@ -28,6 +28,14 @@ func (a *Adapter) CloudWorkerCreditSummary(uid int64) (total, available int, err
 // duplicate credits. A nullable expiry is supported for short-lived internal
 // test grants as well as explicitly perpetual operational grants.
 func (a *Adapter) GrantCloudWorkerCredits(uid int64, count int, sourceRef string, expiresAt *time.Time) (int, error) {
+	return a.GrantCloudWorkerProfileCredits(uid, count, sourceRef, expiresAt, types.CloudWorkerPrivateNAT)
+}
+
+func (a *Adapter) GrantCloudWorkerProfileCredits(uid int64, count int, sourceRef string, expiresAt *time.Time, profile string) (int, error) {
+	profile, valid := types.NormalizeCloudWorkerProfile(profile)
+	if !valid {
+		return 0, fmt.Errorf("invalid cloud worker deployment profile")
+	}
 	sourceRef = strings.TrimSpace(sourceRef)
 	if uid <= 0 || count <= 0 || count > 100 || sourceRef == "" || len(sourceRef) > 96 {
 		return 0, fmt.Errorf("invalid cloud worker credit grant")
@@ -41,14 +49,23 @@ func (a *Adapter) GrantCloudWorkerCredits(uid int64, count int, sourceRef string
 	for i := 1; i <= count; i++ {
 		ref := fmt.Sprintf("manual:%s:%d", sourceRef, i)
 		result, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, source_ref, expires_at)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, ref, expiresAt)
+			INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, ref, expiresAt, profile)
 		if err != nil {
 			return 0, fmt.Errorf("grant cloud worker credit: %w", err)
 		}
 		if n, _ := result.RowsAffected(); n == 1 {
 			granted++
+		} else {
+			var previousUID int64
+			var previousProfile string
+			if err := tx.QueryRow(`SELECT uid, deployment_profile FROM cloud_worker_credits WHERE source_ref=$1`, ref).Scan(&previousUID, &previousProfile); err != nil {
+				return 0, err
+			}
+			if previousUID != uid || previousProfile != profile {
+				return 0, fmt.Errorf("operation already belongs to a different owner or deployment profile")
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -119,6 +136,74 @@ func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool,
 		return false, fmt.Errorf("commit cloud worker credit reservation: %w", err)
 	}
 	return true, nil
+}
+
+func (a *Adapter) ReserveCloudWorkerProfileCredit(uid int64, reservation, profile string) (string, bool, error) {
+	if profile != "" {
+		if _, ok := types.NormalizeCloudWorkerProfile(profile); !ok {
+			return "", false, fmt.Errorf("invalid deployment profile")
+		}
+	}
+	reservation = strings.TrimSpace(reservation)
+	if uid <= 0 || reservation == "" {
+		return "", false, fmt.Errorf("invalid cloud worker credit reservation")
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return "", false, fmt.Errorf("begin cloud worker credit reservation: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		UPDATE cloud_worker_credits c
+		SET state = CASE
+			WHEN c.entitlement_id IS NOT NULL
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM commercial_entitlements e
+				WHERE e.id = c.entitlement_id AND e.uid = c.uid
+				  AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+				  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+			 ) THEN 'revoked'
+			WHEN c.source_ref LIKE 'order:%'
+			 AND NOT EXISTS (
+				SELECT 1
+				FROM commercial_entitlements e
+				WHERE e.uid = c.uid AND e.source = 'order'
+				  AND c.source_ref = 'order:' || e.source_ref
+				  AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
+				  AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
+			 ) THEN 'revoked'
+			ELSE 'available'
+		END,
+		reservation_ref = '', reserved_at = NULL
+		WHERE c.uid = $1 AND c.state = 'reserved'
+		  AND c.reserved_at < CURRENT_TIMESTAMP - INTERVAL '20 minutes'`, uid); err != nil {
+		return "", false, fmt.Errorf("release stale cloud worker credit reservation: %w", err)
+	}
+	var id int64
+	var selectedProfile string
+	err = tx.QueryRow(`
+		SELECT id, deployment_profile FROM cloud_worker_credits
+		WHERE uid = $1 AND state = 'available' AND ($2 = '' OR deployment_profile = $2)
+		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		ORDER BY CASE WHEN deployment_profile = 'public_ip' THEN 0 ELSE 1 END, created_at, id
+		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile).Scan(&id, &selectedProfile)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("select cloud worker credit: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE cloud_worker_credits
+		SET state = 'reserved', reservation_ref = $2, reserved_at = CURRENT_TIMESTAMP
+		WHERE id = $1`, id, reservation); err != nil {
+		return "", false, fmt.Errorf("mark cloud worker credit reserved: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, fmt.Errorf("commit cloud worker credit reservation: %w", err)
+	}
+	return selectedProfile, true, nil
 }
 
 func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerUID int64, tenantName string, graceDays int) error {

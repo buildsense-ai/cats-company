@@ -35,6 +35,9 @@ while (($#)); do
   esac
 done
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
+worker_profile_load "$NAME"
+
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 STATE_ROOT="${CTYUN_WORKER_STATE_ROOT:-}"
@@ -101,7 +104,7 @@ find_instance() {
 inst="$(find_instance "$INSTANCE_NAME")"
 [[ -n "$inst" ]] || { echo "error: instance worker-${NAME} not found" >&2; exit 1; }
 # 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
-INSTANCE_IP="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
+INSTANCE_IP="$(worker_connection_ip <<<"$inst")"
 [[ -n "$INSTANCE_IP" ]] || { echo "error: instance has no IP" >&2; exit 1; }
 mkdir -p "$STATE_DIR"
 PRIVATE_KEY="$STATE_DIR/id_rsa"
