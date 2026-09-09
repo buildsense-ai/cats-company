@@ -247,6 +247,9 @@ jobs:
           python3 deploy/prod/update-nginx-cloud-worker-route_test.py
           python3 deploy/prod/update-nginx-v1-timeout_test.py
 
+      - name: Test cloud worker provisioning and rollback
+        run: node --test deploy/prod/ops/provision-worker.test.mjs
+
       - name: Validate deploy env updates
         run: |
           python3 deploy/cloud-worker-project-config_test.py
