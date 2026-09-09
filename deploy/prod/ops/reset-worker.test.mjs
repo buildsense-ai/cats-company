@@ -63,9 +63,23 @@ if (op === "ecs ListEcsInstances") {
   state.rebuilds = state.rebuilds || [];
   state.rebuilds.push({ id, imageID, keyPairID: val("--keyPairID") });
   state.instances = (state.instances || []).map(i => i.instanceID === id
-    ? { ...i, state: "running", instanceStatus: "running", image: { imageID }, imageID } : i);
+    ? { ...i, state: state.rebuildStopped ? "stopped" : "running", instanceStatus: state.rebuildStopped ? "stopped" : "running", image: { imageID }, imageID } : i);
   fs.writeFileSync(statePath, JSON.stringify(state));
-  json({ statusCode: "800", returnObj: { jobID: "job-rebuild-1" } });
+  json({ statusCode: "800", returnObj: state.missingJobID ? {} : { jobID: "job-rebuild-1" } });
+} else if (op === "ecs QueryEcsJob") {
+  if(val("--jobIDs") !== "job-rebuild-1") throw Error("wrong job queried");
+  state.jobQueries = (state.jobQueries || 0) + 1;
+  const statuses = state.jobStatuses || [1];
+  state.lastJobStatus = statuses[Math.min(state.jobQueries-1,statuses.length-1)];
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  json({statusCode:800,returnObj:{jobList:[{jobID:state.foreignJob ? "other-job" : "job-rebuild-1",jobStatus:state.lastJobStatus}]}});
+} else if (op === "ecs StartEcsInstance") {
+  if(state.lastJobStatus!==1) throw Error("started before rebuild success");
+  const id=val("--instanceID");
+  state.starts = [...(state.starts || []),id];
+  state.instances = state.instances.map(i=>i.instanceID===id ? {...i,state:"running",instanceStatus:"running"} : i);
+  fs.writeFileSync(statePath,JSON.stringify(state));
+  json({statusCode:800,returnObj:{}});
 } else if (op === "ecs DeleteEcsInstance") {
   state.deletedInstances = state.deletedInstances || [];
   state.deletedInstances.push(val("--instanceID"));
@@ -93,6 +107,11 @@ const remote = rest[rest.length - 1];
 const idx = args.indexOf(remote);
 const cmd = args.slice(idx + 1).join(" ").trim();
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const hostFileArg=args.find(a=>a.startsWith("UserKnownHostsFile="));
+if(hostFileArg) {
+  const file=hostFileArg.slice("UserKnownHostsFile=".length);
+  if(fs.existsSync(file)&&fs.readFileSync(file,"utf8").includes("OLD_TEST_HOST_KEY")) process.exit(255);
+}
 state.sshCalls = state.sshCalls || [];
 state.sshCalls.push(cmd);
 if (cmd.includes("cloud-init status")) {
@@ -240,6 +259,52 @@ const SNAPSHOT = [
   "CATSCO_USER_DISPLAY_NAME=Alice",
   "CATSCO_LOG_UPLOAD_ENABLED=true",
 ].join("\n") + "\n";
+
+function stoppedRebuild(extra={}) {
+  return setupSandbox({rebuildStopped:true,
+    instances:[{instanceName:"worker-bot-a",instanceID:"i-old",state:"running",keypairName:"worker-key-bot-a",floatingIP:"10.0.0.9"}],
+    keypairs:[{keyPairName:"worker-key-bot-a",keyPairID:"kp-legacy"}],...extra});
+}
+const resetArgs=["--name","bot-a","--login-token","JWT","--api-key","KEY","--image-id","img-1"];
+test("reset-worker: starts a stopped rebuild only after this job succeeds",()=>{
+  const sb=stoppedRebuild({jobStatuses:[0,0,1]});
+  const r=run(sb,resetArgs);
+  assert.equal(r.status,0,r.stderr);
+  const state=JSON.parse(fs.readFileSync(sb.statePath,"utf8"));
+  assert.equal(state.jobQueries,3);
+  assert.deepEqual(state.starts,["i-old"]);
+  assert.equal(state.instances[0].instanceID,"i-old");
+  assert.ok(state.serviceEnabled);
+});
+test("reset-worker: replaces only the rebuilt host pin after success",()=>{
+  const sb=stoppedRebuild();
+  const known=path.join(sb.sandbox,"state","bot-a","known_hosts");
+  fs.writeFileSync(known,"10.0.0.9 ssh-ed25519 OLD_TEST_HOST_KEY\nother-host ssh-ed25519 KEEP_OTHER_HOST_KEY\n");
+  const jump=path.join(sb.sandbox,"state","bot-a","jump_known_hosts");
+  fs.writeFileSync(jump,"jump-host ssh-ed25519 KEEP_JUMP_HOST_KEY\n");
+  const r=run(sb,resetArgs);
+  assert.equal(r.status,0,r.stderr);
+  assert.equal(fs.readFileSync(known,"utf8"),"other-host ssh-ed25519 KEEP_OTHER_HOST_KEY\n");
+  assert.equal(fs.readFileSync(jump,"utf8"),"jump-host ssh-ed25519 KEEP_JUMP_HOST_KEY\n");
+});
+for(const [name,extra,error] of [
+  ["failed job",{jobStatuses:[2]},/rebuild job failed/],
+  ["unknown status",{jobStatuses:[99]},/status is missing or unknown/],
+  ["foreign job",{foreignJob:true},/status is missing or unknown/],
+  ["missing job ID",{missingJobID:true},/no jobID/],
+  ["unfinished job",{jobStatuses:[0]},/timed out waiting for rebuild job/],
+]) test(`reset-worker: ${name} never starts or injects identity`,()=>{
+  const sb=stoppedRebuild(extra);
+  const known=path.join(sb.sandbox,"state","bot-a","known_hosts");
+  fs.writeFileSync(known,"10.0.0.9 ssh-ed25519 OLD_TEST_HOST_KEY\n");
+  const r=run(sb,resetArgs);
+  assert.notEqual(r.status,0);
+  assert.match(r.stderr,error);
+  const state=JSON.parse(fs.readFileSync(sb.statePath,"utf8"));
+  assert.deepEqual(state.starts||[],[]);
+  assert.ok(!state.injectedEnv);
+  assert.match(fs.readFileSync(known,"utf8"),/OLD_TEST_HOST_KEY/);
+});
 
 test("reset-worker: missing args fails", () => {
   const sb = setupSandbox({});

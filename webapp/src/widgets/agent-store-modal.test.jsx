@@ -1515,6 +1515,26 @@ describe('AgentStoreModal', () => {
     expect(container.textContent).toContain('版本 1.4.8');
   });
 
+  test('shows the trial expiry payment and retention notice from the cloud API', async () => {
+    const notice = '试用已到期，请在套餐页付费继续使用。数据预计保留至 2026-09-12 07:52 UTC ，之后将释放实例并删除数据。';
+    api.getMyBots.mockResolvedValue({ bots: [{ id: 92, uid: 92, tenant_name: 'tenant-trial', username: 'trial-worker', display_name: '试用员工', is_owner: true, relation: 'owner' }] });
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [{ uid: 92, tenant_name: 'tenant-trial', cloud_status: 'shelve', trial_notice: notice }],
+    });
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, { onClose: vi.fn(), user: { uid: 7 } }));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-agent-cloud-manage-entry'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.cc-cloud-worker').textContent).toContain(notice);
+    const reset = Array.from(container.querySelectorAll('.cc-cloud-worker button')).find(b => b.textContent.trim() === '重置');
+    expect(reset.disabled).toBe(true);
+  });
+
   test('creates a cloud worker from the managed panel', async () => {
     api.getMyBots.mockResolvedValue({ bots: [] });
     api.getCloudWorkers.mockResolvedValue({
