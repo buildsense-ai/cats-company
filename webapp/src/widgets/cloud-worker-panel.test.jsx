@@ -58,6 +58,19 @@ describe('CloudWorkerPanel', () => {
     container.remove();
   });
 
+  test('keeps reset images scoped to each worker and never falls back across regions', async () => {
+    const workers = [worker(), worker({id:92,uid:92,tenant_name:'tenant-b'})];
+    await renderPanel({workers, images:[{version:'wrong-region'}], imagesByWorker:{'tenant-a':[{version:'1.5.5'}],'tenant-b':[{version:'1.5.4'}]}});
+    let selects = [...container.querySelectorAll('.cc-cloud-image-select')];
+    expect([...selects[0].options].map(x=>x.value)).toEqual(['1.5.5']);
+    expect([...selects[1].options].map(x=>x.value)).toEqual(['1.5.4']);
+    await renderPanel({workers, images:[{version:'wrong-region'}], imagesByWorker:{'tenant-a':[{version:'1.5.5'}]}});
+    selects = [...container.querySelectorAll('.cc-cloud-image-select')];
+    expect(selects[1].disabled).toBe(true);
+    expect(selects[1].value).toBe('');
+    expect([...selects[0].options].map(x=>x.value)).toEqual(['1.5.5']);
+  });
+
   test.each([
     ['connected', '已连接'],
     ['not_connected', '未连接，等待上线'],

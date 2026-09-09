@@ -57,6 +57,7 @@ if (op === "ecs ListEcsInstances") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs RebuildEcsInstance") {
+  if (val("--keyPairID") && val("--userName")) { json({statusCode:"900", errorCode:"Ecs.Instance.NotSupported", message:"username is only supported for password login"}); process.exit(1); }
   const id = val("--instanceID");
   const imageID = val("--imageID");
   state.rebuilds = state.rebuilds || [];

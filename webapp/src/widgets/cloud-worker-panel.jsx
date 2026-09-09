@@ -101,6 +101,7 @@ export default function CloudWorkerPanel({
   quotaError,
   workers = [],
   images = [],
+  imagesByWorker = null,
   releases = [],
   actions = null,
   actioning = null,
@@ -139,6 +140,9 @@ export default function CloudWorkerPanel({
   const imageVersions = [...new Set(
     (images || []).map((img) => img?.version).filter(Boolean),
   )];
+  const workerImageVersions = (worker) => imagesByWorker == null
+    ? imageVersions
+    : [...new Set((imagesByWorker[worker.tenant_name] || []).map(image => image?.version).filter(Boolean))];
   const releaseVersions = [...new Set(
     (releases || []).map((release) => release?.version).filter(Boolean),
   )];
@@ -205,7 +209,10 @@ export default function CloudWorkerPanel({
       setResetErrors({ [tenantName]: true });
       return;
     }
-    const version = imageSelections[tenantName] || worker.cloud_version || imageVersions[0] || '';
+    const imageVersions = workerImageVersions(worker);
+    const selected = imageSelections[tenantName] || worker.cloud_version;
+    const version = imageVersions.includes(selected) ? selected : (imageVersions[0] || '');
+    if (!version) { setResetErrors({ [tenantName]: true }); return; }
     Promise.resolve(onReset(worker, version, { verified: true }))
       .then(cancelReset, () => {});
   };
@@ -331,6 +338,7 @@ export default function CloudWorkerPanel({
         ) : (
           <div className="cc-cloud-worker-list">
             {workers.map((worker) => {
+              const imageVersions = workerImageVersions(worker);
               const id = worker.id || worker.uid;
               const workerKey = String(worker.tenant_name || id);
               const isFocusedWorker = workerKey === focusedWorkerKey;
@@ -351,7 +359,7 @@ export default function CloudWorkerPanel({
                 : [];
               const updateTarget = updateSelections[worker.tenant_name] || upgradeVersions[0] || '';
               const rollbackTarget = rollbackSelections[worker.tenant_name] || rollbackVersions[0] || '';
-              const imageTarget = imageSelections[worker.tenant_name]
+              const imageTarget = (imageVersions.includes(imageSelections[worker.tenant_name]) ? imageSelections[worker.tenant_name] : '')
                 || (imageVersions.includes(worker.cloud_version) ? worker.cloud_version : '')
                 || imageVersions[0] || '';
               return (

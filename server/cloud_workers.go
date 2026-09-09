@@ -100,6 +100,7 @@ type CloudWorkerHandler struct {
 	imagesLoaded        bool
 	imagesRefreshing    bool
 	imageRefreshPending bool
+	regionalImageCaches map[string]*cloudRegionalImageCache
 
 	releaseSnapshot       []cloudReleaseSummary
 	releaseUpdatedAt      time.Time
@@ -853,6 +854,24 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 			meta["images"] = images
 			meta["images_cached_at"] = imagesUpdatedAt.UTC().Format(time.RFC3339Nano)
 		}
+	}
+	if h.imagesScript != "" {
+		byWorker := map[string][]cloudImageSummary{}
+		for _, worker := range workers {
+			byWorker[worker.TenantName] = []cloudImageSummary{}
+			deployment, err := h.deploymentForTenant(worker.TenantName)
+			if err != nil {
+				continue
+			}
+			images, loaded, refreshing := h.regionalCloudImageSnapshot(deployment)
+			if loaded && images != nil {
+				byWorker[worker.TenantName] = images
+			}
+			if refreshing {
+				meta["images_refreshing"] = true
+			}
+		}
+		meta["images_by_worker"] = byWorker
 	}
 	if h.releasesScript != "" {
 		releases, releasesLoaded, releasesRefreshing, releasesUpdatedAt := h.cloudReleaseSnapshot()

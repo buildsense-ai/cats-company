@@ -237,7 +237,7 @@ keypair_id="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID
 [[ -n "$keypair_id" ]] || { echo "error: keypair $keypair_name cannot be resolved" >&2; exit 1; }
 
 rebuild="$(ctyun ecs RebuildEcsInstance --regionID "$REGION_ID" --instanceID "$instance_id" \
-  --imageID "$IMAGE_ID" --keyPairID "$keypair_id" --monitorService false --userName root)"
+  --imageID "$IMAGE_ID" --keyPairID "$keypair_id" --monitorService false)"
 job_id="$(jq -r '.returnObj.jobID // empty' <<<"$rebuild")"
 echo "[cloud-worker] rebuild submitted instance_id=$instance_id job_id=${job_id:-none}" >&2
 
