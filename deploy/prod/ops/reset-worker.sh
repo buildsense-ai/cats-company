@@ -280,6 +280,12 @@ for _ in $(seq 1 90); do
 done
 [[ -n "$INSTANCE_IP" ]] || { echo "error: timed out waiting for rebuilt instance to be running" >&2; exit 1; }
 
+# Reinstalling regenerates SSH host keys. Invalidate only this rebuilt host's
+# old pin, after provider-confirmed success; keep the jump host pins intact.
+if [[ -f "$STATE_DIR/known_hosts" ]]; then
+  ssh-keygen -f "$STATE_DIR/known_hosts" -R "$INSTANCE_IP" >/dev/null
+fi
+
 ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")

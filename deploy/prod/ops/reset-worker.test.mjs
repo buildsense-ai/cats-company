@@ -107,6 +107,11 @@ const remote = rest[rest.length - 1];
 const idx = args.indexOf(remote);
 const cmd = args.slice(idx + 1).join(" ").trim();
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const hostFileArg=args.find(a=>a.startsWith("UserKnownHostsFile="));
+if(hostFileArg) {
+  const file=hostFileArg.slice("UserKnownHostsFile=".length);
+  if(fs.existsSync(file)&&fs.readFileSync(file,"utf8").includes("OLD_TEST_HOST_KEY")) process.exit(255);
+}
 state.sshCalls = state.sshCalls || [];
 state.sshCalls.push(cmd);
 if (cmd.includes("cloud-init status")) {
@@ -271,6 +276,17 @@ test("reset-worker: starts a stopped rebuild only after this job succeeds",()=>{
   assert.equal(state.instances[0].instanceID,"i-old");
   assert.ok(state.serviceEnabled);
 });
+test("reset-worker: replaces only the rebuilt host pin after success",()=>{
+  const sb=stoppedRebuild();
+  const known=path.join(sb.sandbox,"state","bot-a","known_hosts");
+  fs.writeFileSync(known,"10.0.0.9 ssh-ed25519 OLD_TEST_HOST_KEY\nother-host ssh-ed25519 KEEP_OTHER_HOST_KEY\n");
+  const jump=path.join(sb.sandbox,"state","bot-a","jump_known_hosts");
+  fs.writeFileSync(jump,"jump-host ssh-ed25519 KEEP_JUMP_HOST_KEY\n");
+  const r=run(sb,resetArgs);
+  assert.equal(r.status,0,r.stderr);
+  assert.equal(fs.readFileSync(known,"utf8"),"other-host ssh-ed25519 KEEP_OTHER_HOST_KEY\n");
+  assert.equal(fs.readFileSync(jump,"utf8"),"jump-host ssh-ed25519 KEEP_JUMP_HOST_KEY\n");
+});
 for(const [name,extra,error] of [
   ["failed job",{jobStatuses:[2]},/rebuild job failed/],
   ["unknown status",{jobStatuses:[99]},/status is missing or unknown/],
@@ -279,12 +295,15 @@ for(const [name,extra,error] of [
   ["unfinished job",{jobStatuses:[0]},/timed out waiting for rebuild job/],
 ]) test(`reset-worker: ${name} never starts or injects identity`,()=>{
   const sb=stoppedRebuild(extra);
+  const known=path.join(sb.sandbox,"state","bot-a","known_hosts");
+  fs.writeFileSync(known,"10.0.0.9 ssh-ed25519 OLD_TEST_HOST_KEY\n");
   const r=run(sb,resetArgs);
   assert.notEqual(r.status,0);
   assert.match(r.stderr,error);
   const state=JSON.parse(fs.readFileSync(sb.statePath,"utf8"));
   assert.deepEqual(state.starts||[],[]);
   assert.ok(!state.injectedEnv);
+  assert.match(fs.readFileSync(known,"utf8"),/OLD_TEST_HOST_KEY/);
 });
 
 test("reset-worker: missing args fails", () => {
