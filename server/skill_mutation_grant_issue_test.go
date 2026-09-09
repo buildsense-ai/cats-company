@@ -436,6 +436,23 @@ func TestWebSocketRejectsAPIKeyOnlyAndExpiredRuntimeCredentialGrantRequests(t *t
 	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
 		t.Fatalf("mismatched Runtime credential status=%v err=%v, want 403", responseStatus(response), err)
 	}
+	deniedTrusted, response, err := dialSkillMutationRuntime(wsURL, apiKey, "trusted-body", "trusted-install", rawCredential)
+	if deniedTrusted != nil {
+		deniedTrusted.Close()
+	}
+	closeResponse(response)
+	if err == nil || response == nil || response.StatusCode != http.StatusConflict {
+		t.Fatalf("cross-body trusted Runtime status=%v err=%v, want 409 before owner transfer", responseStatus(response), err)
+	}
+	if boundBodyID, lookupErr := db.GetBotBodyID(42); lookupErr != nil || boundBodyID != "self-reported-body" {
+		t.Fatalf("denied trusted Runtime changed binding: body=%q err=%v", boundBodyID, lookupErr)
+	}
+	// A valid Runtime credential proves the connecting installation, but does
+	// not authorize moving an existing durable Bot binding. Simulate the
+	// separate owner-authorized transfer before testing the credential flow.
+	if err := db.SetBotBodyBinding(42, "trusted-body"); err != nil {
+		t.Fatalf("owner-authorized Runtime transfer: %v", err)
+	}
 	trusted, response, err := dialSkillMutationRuntime(wsURL, apiKey, "trusted-body", "trusted-install", rawCredential)
 	closeResponse(response)
 	if err != nil {
