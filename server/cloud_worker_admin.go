@@ -35,6 +35,9 @@ type CloudWorkerAdminImporter interface {
 }
 
 type cloudWorkerAdminItem struct {
+	BillingMode        string     `json:"billing_mode,omitempty"`
+	ConversionPending  bool       `json:"conversion_pending"`
+	BillingAction      string     `json:"billing_action,omitempty"`
 	DeploymentProfile  string     `json:"deployment_profile,omitempty"`
 	SSHKeyPath         string     `json:"ssh_key_path,omitempty"`
 	SSHExecutionHost   string     `json:"ssh_execution_host,omitempty"`
@@ -208,6 +211,13 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 			LastVerifiedAt:     record.LastVerifiedAt,
 		}
 		if record.ManagementMode != "manual_import" && record.LifecycleMode != "external" {
+			if billing, ok := h.credits.(cloudWorkerBillingStore); ok {
+				if lifecycle, err := billing.GetCloudWorkerBillingLifecycle(record.TenantName); err == nil {
+					item.BillingMode = lifecycle.BillingMode
+					item.ConversionPending = lifecycle.ConversionPending
+					item.BillingAction = lifecycle.BillingAction
+				}
+			}
 			deployment, err := h.deploymentForTenant(record.TenantName)
 			if err != nil {
 				return nil, err

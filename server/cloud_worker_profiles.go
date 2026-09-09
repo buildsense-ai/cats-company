@@ -12,6 +12,13 @@ import (
 )
 
 type cloudWorkerProfileContextKey struct{}
+type cloudWorkerBillingContextKey struct{}
+
+type cloudWorkerBillingCredits interface {
+	CloudWorkerConfiguredCreditSummary(int64, string, string) (int, int, error)
+	ReserveCloudWorkerConfiguredCredit(int64, string, string, string) (types.CloudWorkerCreditSelection, bool, error)
+	GrantCloudWorkerConfiguredCredits(int64, int, string, *time.Time, string, string) (int, error)
+}
 
 type cloudWorkerDeploymentStore interface {
 	SetCloudWorkerDeployment(int64, types.CloudWorkerDeployment) error

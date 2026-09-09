@@ -386,6 +386,7 @@ type cloudWorkerSummary struct {
 	OperationID     string `json:"operation_id,omitempty"`
 	OperationAction string `json:"operation_action,omitempty"`
 	OperationStatus string `json:"operation_status,omitempty"`
+	TrialNotice     string `json:"trial_notice,omitempty"`
 }
 
 // cloudWorkerOperation is a short-lived, in-memory record for a long-running
@@ -409,6 +410,16 @@ const cloudWorkerOperationRetention = 30 * time.Minute
 // cloudWorkersOfOwner returns the cloud-managed workers owned by uid
 // (bots with a non-empty tenant_name).
 func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummary, error) {
+	lifecycleByTenant := map[string]types.CloudWorkerLifecycle{}
+	if store, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]types.CloudWorkerLifecycle, error)
+	}); ok {
+		if rows, err := store.ListCloudWorkerLifecycles(uid); err == nil {
+			for _, row := range rows {
+				lifecycleByTenant[row.TenantName] = row
+			}
+		}
+	}
 	bots, err := h.db.ListBotsByOwner(uid)
 	if err != nil {
 		return nil, err
@@ -433,6 +444,9 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 			w.DisplayName = s
 		}
 		w.RuntimeStatus = h.cloudWorkerRuntimeStatus(uid, w.UID)
+		if lifecycle, ok := lifecycleByTenant[tenantName]; ok {
+			w.TrialNotice = trialNotice(lifecycle, time.Now().UTC())
+		}
 		workers = append(workers, w)
 	}
 	sort.Slice(workers, func(i, j int) bool { return workers[i].Username < workers[j].Username })
@@ -863,6 +877,8 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return
 	}
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	lifecycleStore, ok := h.credits.(interface {
 		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
 	})
@@ -877,6 +893,9 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	}
 	for _, lifecycle := range lifecycles {
 		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		if h.renewTrial(lifecycle) {
 			continue
 		}
 		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName)
@@ -1028,8 +1047,20 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
 	reservedCredit := false
 	profile := types.CloudWorkerPrivateNAT
+	billing := types.CloudWorkerMonthly
 	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
-	if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
+	requestedBilling, _ := r.Context().Value(cloudWorkerBillingContextKey{}).(string)
+	if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
+		selected, reserved, reserveErr := configured.ReserveCloudWorkerConfiguredCredit(uid, reservation, requestedProfile, requestedBilling)
+		if reserveErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reserve cloud worker credit", "code": "cloud_worker_create_failed"})
+			return
+		}
+		reservedCredit = reserved
+		if reserved {
+			profile, billing = selected.Profile, selected.BillingMode
+		}
+	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
 		if reserveErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reserve cloud worker credit", "code": "cloud_worker_create_failed"})
@@ -1047,7 +1078,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if !reservedCredit && (staticRemaining == 0 || requestedProfile == types.CloudWorkerPublicIP) {
+	if !reservedCredit && (staticRemaining == 0 || requestedProfile == types.CloudWorkerPublicIP || requestedBilling == types.CloudWorkerOnDemand) {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation quota exhausted",
 			"code":  "cloud_worker_quota_exhausted",
@@ -1055,6 +1086,9 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	deployment, deploymentErr := h.deploymentForProfile(profile)
+	if deploymentErr == nil {
+		deployment.Env["CTYUN_WORKER_BILLING_MODE"] = billing
+	}
 	if deploymentErr != nil {
 		if reservedCredit {
 			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
@@ -1299,6 +1333,10 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // It is deliberately best-effort and idempotent; a failed destroy remains
 // visible as delete_failed for operator retry and never silently disappears.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
+	if !h.opMu.TryLock() {
+		return
+	}
+	defer h.opMu.Unlock()
 	started := time.Now()
 	store, ok := h.credits.(interface {
 		ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error)
@@ -1319,6 +1357,17 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 	}
 	markedPending, claimedCount, deleted, failed := 0, 0, 0, 0
 	for _, item := range items {
+		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") {
+			action := "suspend"
+			if item.ConversionPending {
+				action = "convert"
+			}
+			if err := h.runBillingAction(item, action, true); err != nil {
+				failed++
+				log.Printf("[cloud-worker] trial %s tenant=%s failed: %v", action, item.TenantName, err)
+			}
+			continue
+		}
 		if item.State == "active" {
 			if err := store.MarkCloudWorkerLifecyclePending(item.ID, item.DeleteAfter); err != nil {
 				log.Printf("[cloud-worker] lifecycle %s archive failed: %v", item.TenantName, err)

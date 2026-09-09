@@ -39,6 +39,7 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		SourceRef         string `json:"source_ref"`
 		ExpiresAt         string `json:"expires_at"`
 		DeploymentProfile string `json:"deployment_profile"`
+		BillingMode       string `json:"billing_mode"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&input); err != nil {
@@ -78,12 +79,23 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid deployment profile"})
 		return
 	}
+	billing, valid := types.NormalizeCloudWorkerBilling(input.BillingMode)
+	if !valid {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing mode"})
+		return
+	}
+	if _, ok := h.credits.(cloudWorkerBillingCredits); !ok && billing != types.CloudWorkerMonthly {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "billing configuration unavailable"})
+		return
+	}
 	if _, err := h.deploymentForProfile(profile); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "selected deployment profile is not configured"})
 		return
 	}
 	_, available, err := h.credits.CloudWorkerCreditSummary(input.UID)
-	if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
+	if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
+		_, available, err = configured.CloudWorkerConfiguredCreditSummary(input.UID, profile, billing)
+	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		_, available, err = profiled.CloudWorkerProfileCreditSummary(input.UID, profile)
 	}
 	if err != nil {
@@ -106,7 +118,9 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 			return
 		}
 		var grantErr error
-		if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
+		if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
+			_, grantErr = configured.GrantCloudWorkerConfiguredCredits(input.UID, 1, input.SourceRef, expiresAt, profile, billing)
+		} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 			_, grantErr = profiled.GrantCloudWorkerProfileCredits(input.UID, 1, input.SourceRef, expiresAt, profile)
 		} else if profile == types.CloudWorkerPrivateNAT {
 			_, grantErr = admin.GrantCloudWorkerCredits(input.UID, 1, input.SourceRef, expiresAt)
@@ -122,6 +136,7 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 	createBody, _ := json.Marshal(BotRegisterRequest{Username: input.Username, DisplayName: input.DisplayName, Role: "general"})
 	createReq := r.Clone(context.WithValue(r.Context(), uidKey, input.UID))
 	createReq = createReq.WithContext(context.WithValue(createReq.Context(), cloudWorkerProfileContextKey{}, profile))
+	createReq = createReq.WithContext(context.WithValue(createReq.Context(), cloudWorkerBillingContextKey{}, billing))
 	createReq.Body = io.NopCloser(bytes.NewReader(createBody))
 	h.HandleCreate(w, createReq)
 }

@@ -393,7 +393,9 @@ if [[ "$EXT_IP" == "1" ]]; then
   # demandBillingType applies only to an automatically allocated EIP on an
   # on-demand instance. Monthly EIPs follow the provider's cycle purchase.
   if [[ "$BILLING_MODE" == "ondemand" ]]; then
-    create_args+=(--demandBillingType upflowc)
+    # Foshan 7 rejects ConvertEcsToCycle for traffic-billed EIPs. Trials must
+    # use bandwidth billing so the existing instance can become monthly.
+    create_args+=(--demandBillingType bandwidth)
   fi
 fi
 create_resp="$(ctyun "${create_args[@]}")"

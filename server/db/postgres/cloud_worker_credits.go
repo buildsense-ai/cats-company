@@ -32,6 +32,14 @@ func (a *Adapter) GrantCloudWorkerCredits(uid int64, count int, sourceRef string
 }
 
 func (a *Adapter) GrantCloudWorkerProfileCredits(uid int64, count int, sourceRef string, expiresAt *time.Time, profile string) (int, error) {
+	return a.GrantCloudWorkerConfiguredCredits(uid, count, sourceRef, expiresAt, profile, types.CloudWorkerMonthly)
+}
+
+func (a *Adapter) GrantCloudWorkerConfiguredCredits(uid int64, count int, sourceRef string, expiresAt *time.Time, profile, billing string) (int, error) {
+	billing, billingValid := types.NormalizeCloudWorkerBilling(billing)
+	if !billingValid || (billing == types.CloudWorkerOnDemand && (expiresAt == nil || !expiresAt.After(time.Now()))) {
+		return 0, fmt.Errorf("on-demand trial requires a future expiry")
+	}
 	profile, valid := types.NormalizeCloudWorkerProfile(profile)
 	if !valid {
 		return 0, fmt.Errorf("invalid cloud worker deployment profile")
@@ -49,9 +57,9 @@ func (a *Adapter) GrantCloudWorkerProfileCredits(uid int64, count int, sourceRef
 	for i := 1; i <= count; i++ {
 		ref := fmt.Sprintf("manual:%s:%d", sourceRef, i)
 		result, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, ref, expiresAt, profile)
+			INSERT INTO cloud_worker_credits(uid, source_ref, expires_at, deployment_profile, billing_mode)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, ref, expiresAt, profile, billing)
 		if err != nil {
 			return 0, fmt.Errorf("grant cloud worker credit: %w", err)
 		}
@@ -59,11 +67,11 @@ func (a *Adapter) GrantCloudWorkerProfileCredits(uid int64, count int, sourceRef
 			granted++
 		} else {
 			var previousUID int64
-			var previousProfile string
-			if err := tx.QueryRow(`SELECT uid, deployment_profile FROM cloud_worker_credits WHERE source_ref=$1`, ref).Scan(&previousUID, &previousProfile); err != nil {
+			var previousProfile, previousBilling string
+			if err := tx.QueryRow(`SELECT uid, deployment_profile, billing_mode FROM cloud_worker_credits WHERE source_ref=$1`, ref).Scan(&previousUID, &previousProfile, &previousBilling); err != nil {
 				return 0, err
 			}
-			if previousUID != uid || previousProfile != profile {
+			if previousUID != uid || previousProfile != profile || previousBilling != billing {
 				return 0, fmt.Errorf("operation already belongs to a different owner or deployment profile")
 			}
 		}
@@ -139,18 +147,28 @@ func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool,
 }
 
 func (a *Adapter) ReserveCloudWorkerProfileCredit(uid int64, reservation, profile string) (string, bool, error) {
+	selection, reserved, err := a.ReserveCloudWorkerConfiguredCredit(uid, reservation, profile, types.CloudWorkerMonthly)
+	return selection.Profile, reserved, err
+}
+
+func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, profile, billing string) (selection types.CloudWorkerCreditSelection, reserved bool, err error) {
+	if billing != "" {
+		if _, ok := types.NormalizeCloudWorkerBilling(billing); !ok {
+			return selection, false, fmt.Errorf("invalid billing mode")
+		}
+	}
 	if profile != "" {
 		if _, ok := types.NormalizeCloudWorkerProfile(profile); !ok {
-			return "", false, fmt.Errorf("invalid deployment profile")
+			return selection, false, fmt.Errorf("invalid deployment profile")
 		}
 	}
 	reservation = strings.TrimSpace(reservation)
 	if uid <= 0 || reservation == "" {
-		return "", false, fmt.Errorf("invalid cloud worker credit reservation")
+		return selection, false, fmt.Errorf("invalid cloud worker credit reservation")
 	}
 	tx, err := a.db.Begin()
 	if err != nil {
-		return "", false, fmt.Errorf("begin cloud worker credit reservation: %w", err)
+		return selection, false, fmt.Errorf("begin cloud worker credit reservation: %w", err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`
@@ -178,32 +196,32 @@ func (a *Adapter) ReserveCloudWorkerProfileCredit(uid int64, reservation, profil
 		reservation_ref = '', reserved_at = NULL
 		WHERE c.uid = $1 AND c.state = 'reserved'
 		  AND c.reserved_at < CURRENT_TIMESTAMP - INTERVAL '20 minutes'`, uid); err != nil {
-		return "", false, fmt.Errorf("release stale cloud worker credit reservation: %w", err)
+		return selection, false, fmt.Errorf("release stale cloud worker credit reservation: %w", err)
 	}
 	var id int64
-	var selectedProfile string
+	var selectedProfile, selectedBilling string
 	err = tx.QueryRow(`
-		SELECT id, deployment_profile FROM cloud_worker_credits
-		WHERE uid = $1 AND state = 'available' AND ($2 = '' OR deployment_profile = $2)
+		SELECT id, deployment_profile, billing_mode FROM cloud_worker_credits
+		WHERE uid = $1 AND state = 'available' AND ($2 = '' OR deployment_profile = $2) AND ($3 = '' OR billing_mode = $3)
 		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-		ORDER BY CASE WHEN deployment_profile = 'public_ip' THEN 0 ELSE 1 END, created_at, id
-		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile).Scan(&id, &selectedProfile)
+		ORDER BY CASE WHEN billing_mode = 'month' THEN 0 ELSE 1 END, CASE WHEN deployment_profile = 'public_ip' THEN 0 ELSE 1 END, created_at, id
+		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile, billing).Scan(&id, &selectedProfile, &selectedBilling)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return selection, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("select cloud worker credit: %w", err)
+		return selection, false, fmt.Errorf("select cloud worker credit: %w", err)
 	}
 	if _, err := tx.Exec(`
 		UPDATE cloud_worker_credits
 		SET state = 'reserved', reservation_ref = $2, reserved_at = CURRENT_TIMESTAMP
 		WHERE id = $1`, id, reservation); err != nil {
-		return "", false, fmt.Errorf("mark cloud worker credit reserved: %w", err)
+		return selection, false, fmt.Errorf("mark cloud worker credit reserved: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", false, fmt.Errorf("commit cloud worker credit reservation: %w", err)
+		return selection, false, fmt.Errorf("commit cloud worker credit reservation: %w", err)
 	}
-	return selectedProfile, true, nil
+	return types.CloudWorkerCreditSelection{Profile: selectedProfile, BillingMode: selectedBilling}, true, nil
 }
 
 func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerUID int64, tenantName string, graceDays int) error {
@@ -219,11 +237,12 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 	}
 	defer tx.Rollback()
 	var expiresAt sql.NullTime
+	var billing string
 	if err := tx.QueryRow(`
 		UPDATE cloud_worker_credits
 		SET state = 'consumed', worker_uid = $3, consumed_at = CURRENT_TIMESTAMP
 		WHERE uid = $1 AND reservation_ref = $2 AND state = 'reserved'
-		RETURNING expires_at`, uid, strings.TrimSpace(reservation), workerUID).Scan(&expiresAt); err != nil {
+		RETURNING expires_at, billing_mode`, uid, strings.TrimSpace(reservation), workerUID).Scan(&expiresAt, &billing); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("cloud worker credit reservation not found")
 		}
@@ -234,15 +253,18 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 	// notional immediately-due lifecycle row; package-backed credits always
 	// carry an expiry and retain the normal cleanup schedule.
 	if expiresAt.Valid {
+		if billing == types.CloudWorkerOnDemand {
+			graceDays = 3
+		}
 		deleteAfter := expiresAt.Time.AddDate(0, 0, graceDays)
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
-			VALUES ($1, $2, $3, $4, $5, 'active')
+			INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode)
+			VALUES ($1, $2, $3, $4, $5, 'active', $6)
 			ON CONFLICT (worker_uid) DO UPDATE SET owner_uid = EXCLUDED.owner_uid,
 			  tenant_name = EXCLUDED.tenant_name, package_expires_at = EXCLUDED.package_expires_at,
-			  delete_after = EXCLUDED.delete_after, state = 'active', archived_at = NULL,
+			  delete_after = EXCLUDED.delete_after, billing_mode = EXCLUDED.billing_mode, state = 'active', archived_at = NULL,
 			  delete_started_at = NULL, last_error = '', updated_at = CURRENT_TIMESTAMP`,
-			workerUID, uid, strings.TrimSpace(tenantName), expiresAt.Time, deleteAfter); err != nil {
+			workerUID, uid, strings.TrimSpace(tenantName), expiresAt.Time, deleteAfter, billing); err != nil {
 			return fmt.Errorf("register cloud worker lifecycle: %w", err)
 		}
 	}
@@ -342,7 +364,7 @@ func (a *Adapter) ExtendCloudWorkerLifecycle(id int64, expiresAt time.Time, grac
 
 func (a *Adapter) ListCloudWorkerLifecycles(uid int64) ([]types.CloudWorkerLifecycle, error) {
 	rows, err := a.db.Query(`
-		SELECT id, worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state
+		SELECT id, worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode, conversion_pending, billing_action
 		FROM cloud_worker_lifecycles WHERE owner_uid = $1 AND state <> 'deleted'
 		ORDER BY created_at, id`, uid)
 	if err != nil {
@@ -352,7 +374,7 @@ func (a *Adapter) ListCloudWorkerLifecycles(uid int64) ([]types.CloudWorkerLifec
 	var records []types.CloudWorkerLifecycle
 	for rows.Next() {
 		var item types.CloudWorkerLifecycle
-		if err := rows.Scan(&item.ID, &item.WorkerUID, &item.OwnerUID, &item.TenantName, &item.PackageExpiresAt, &item.DeleteAfter, &item.State); err != nil {
+		if err := rows.Scan(&item.ID, &item.WorkerUID, &item.OwnerUID, &item.TenantName, &item.PackageExpiresAt, &item.DeleteAfter, &item.State, &item.BillingMode, &item.ConversionPending, &item.BillingAction); err != nil {
 			return nil, fmt.Errorf("scan cloud worker lifecycle: %w", err)
 		}
 		records = append(records, item)
@@ -368,9 +390,10 @@ func (a *Adapter) ListCloudWorkerLifecycleDue(now time.Time, limit int) ([]types
 		limit = 100
 	}
 	rows, err := a.db.Query(`
-		SELECT id, worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state
+		SELECT id, worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode, conversion_pending, billing_action
 		FROM cloud_worker_lifecycles
-		WHERE (state = 'active' AND package_expires_at <= $1)
+		WHERE (state IN ('active','delete_pending','delete_failed') AND conversion_pending AND updated_at <= $1 - INTERVAL '1 minute')
+		   OR (state = 'active' AND package_expires_at <= $1)
 		   OR (state IN ('delete_pending','delete_failed') AND delete_after <= $1)
 		   OR (state = 'delete_running' AND delete_started_at <= $1 - INTERVAL '30 minutes')
 		ORDER BY delete_after, id LIMIT $2`, now, limit)
@@ -381,7 +404,7 @@ func (a *Adapter) ListCloudWorkerLifecycleDue(now time.Time, limit int) ([]types
 	var records []types.CloudWorkerLifecycle
 	for rows.Next() {
 		var item types.CloudWorkerLifecycle
-		if err := rows.Scan(&item.ID, &item.WorkerUID, &item.OwnerUID, &item.TenantName, &item.PackageExpiresAt, &item.DeleteAfter, &item.State); err != nil {
+		if err := rows.Scan(&item.ID, &item.WorkerUID, &item.OwnerUID, &item.TenantName, &item.PackageExpiresAt, &item.DeleteAfter, &item.State, &item.BillingMode, &item.ConversionPending, &item.BillingAction); err != nil {
 			return nil, fmt.Errorf("scan due cloud worker lifecycle: %w", err)
 		}
 		records = append(records, item)
@@ -406,7 +429,9 @@ func (a *Adapter) ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error) {
 	result, err := a.db.Exec(`
 		UPDATE cloud_worker_lifecycles
 		SET state = 'delete_running', delete_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND (state IN ('delete_pending','delete_failed')
+		WHERE id = $1 AND NOT conversion_pending AND billing_action=''
+		   AND package_expires_at<=CURRENT_TIMESTAMP AND delete_after<=CURRENT_TIMESTAMP
+		   AND (state IN ('delete_pending','delete_failed')
 		   OR (state = 'delete_running' AND delete_started_at <= CURRENT_TIMESTAMP - INTERVAL '30 minutes'))`, id)
 	if err != nil {
 		return false, err

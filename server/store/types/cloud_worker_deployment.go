@@ -4,7 +4,21 @@ package types
 const (
 	CloudWorkerPrivateNAT = "private_nat"
 	CloudWorkerPublicIP   = "public_ip"
+	CloudWorkerMonthly    = "month"
+	CloudWorkerOnDemand   = "ondemand"
 )
+
+func NormalizeCloudWorkerBilling(mode string) (string, bool) {
+	if mode == "" || mode == CloudWorkerMonthly {
+		return CloudWorkerMonthly, true
+	}
+	return mode, mode == CloudWorkerOnDemand
+}
+
+type CloudWorkerCreditSelection struct {
+	Profile     string
+	BillingMode string
+}
 
 func NormalizeCloudWorkerProfile(profile string) (string, bool) {
 	if profile == "" || profile == CloudWorkerPrivateNAT {

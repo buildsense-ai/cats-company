@@ -252,7 +252,8 @@ jobs:
           node --test deploy/prod/ops/provision-worker.test.mjs
           deploy/prod/ops/reset-worker.test.mjs deploy/prod/ops/destroy-worker.test.mjs
           deploy/prod/ops/deploy-worker-version.test.mjs deploy/prod/ops/rollback-worker.test.mjs
-          deploy/prod/ops/status-worker.test.mjs deploy/prod/ops/worker-deployment-profile.test.mjs
+            deploy/prod/ops/status-worker.test.mjs deploy/prod/ops/worker-deployment-profile.test.mjs
+            deploy/prod/ops/billing-worker.test.mjs
           deploy/prod/ops/artifact-gateway-route.test.mjs
 
       - name: Validate deploy env updates

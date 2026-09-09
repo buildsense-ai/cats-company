@@ -35,6 +35,7 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 		SourceRef         string `json:"source_ref"`
 		ExpiresAt         string `json:"expires_at"`
 		DeploymentProfile string `json:"deployment_profile"`
+		BillingMode       string `json:"billing_mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid credit grant request"})
@@ -70,7 +71,17 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 	}
 	var granted int
 	var err error
-	if profiled, ok := h.cloudWorkerCredits.(cloudWorkerProfileCredits); ok {
+	billing, valid := types.NormalizeCloudWorkerBilling(req.BillingMode)
+	if !valid || (billing == types.CloudWorkerOnDemand && expiresAt == nil) {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "on-demand trial requires a valid billing mode and future expiry"})
+		return
+	}
+	if configured, ok := h.cloudWorkerCredits.(cloudWorkerBillingCredits); ok {
+		granted, err = configured.GrantCloudWorkerConfiguredCredits(req.UID, req.Count, req.SourceRef, expiresAt, profile, billing)
+	} else if billing != types.CloudWorkerMonthly {
+		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "billing configuration unavailable"})
+		return
+	} else if profiled, ok := h.cloudWorkerCredits.(cloudWorkerProfileCredits); ok {
 		granted, err = profiled.GrantCloudWorkerProfileCredits(req.UID, req.Count, req.SourceRef, expiresAt, profile)
 	} else if profile == types.CloudWorkerPrivateNAT {
 		granted, err = admin.GrantCloudWorkerCredits(req.UID, req.Count, req.SourceRef, expiresAt)
@@ -89,5 +100,6 @@ func (h *AccountAdminHandler) HandleCloudWorkerCredits(w http.ResponseWriter, r 
 		"granted":            granted,
 		"source_ref":         req.SourceRef,
 		"deployment_profile": profile,
+		"billing_mode":       billing,
 	})
 }

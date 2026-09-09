@@ -14,16 +14,32 @@ ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS deployment_profile VAR
 ALTER TABLE commercial_invite_codes ADD COLUMN IF NOT EXISTS cloud_worker_profile VARCHAR(24) NOT NULL DEFAULT 'private_nat'
     CHECK (cloud_worker_profile IN ('private_nat','public_ip'));
 ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS cloud_deployment JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(16) NOT NULL DEFAULT 'month' CHECK (billing_mode IN ('month','ondemand'));
+ALTER TABLE commercial_invite_codes ADD COLUMN IF NOT EXISTS cloud_worker_billing_mode VARCHAR(16) NOT NULL DEFAULT 'month' CHECK (cloud_worker_billing_mode IN ('month','ondemand'));
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS cloud_worker_billing_mode VARCHAR(16) NOT NULL DEFAULT 'month' CHECK (cloud_worker_billing_mode IN ('month','ondemand'));
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(16) NOT NULL DEFAULT 'month' CHECK (billing_mode IN ('month','ondemand'));
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS conversion_pending BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_action VARCHAR(24) NOT NULL DEFAULT '';
+ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS billing_action_started_at TIMESTAMPTZ;
 `
 
 func (a *Adapter) CloudWorkerProfileCreditSummary(uid int64, profile string) (total, available int, err error) {
+	return a.CloudWorkerConfiguredCreditSummary(uid, profile, "")
+}
+
+func (a *Adapter) CloudWorkerConfiguredCreditSummary(uid int64, profile, billing string) (total, available int, err error) {
+	if billing != "" {
+		if _, ok := types.NormalizeCloudWorkerBilling(billing); !ok {
+			return 0, 0, fmt.Errorf("invalid billing mode")
+		}
+	}
 	profile, valid := types.NormalizeCloudWorkerProfile(profile)
 	if !valid || uid <= 0 {
 		return 0, 0, fmt.Errorf("invalid deployment profile owner")
 	}
 	err = a.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE state IN ('available','reserved','consumed')),
 		COUNT(*) FILTER (WHERE state='available') FROM cloud_worker_credits
-		WHERE uid=$1 AND deployment_profile=$2 AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)`, uid, profile).Scan(&total, &available)
+		WHERE uid=$1 AND deployment_profile=$2 AND ($3='' OR billing_mode=$3) AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)`, uid, profile, billing).Scan(&total, &available)
 	return
 }
 

@@ -96,6 +96,129 @@ func testCloudWorkerDeploymentContract(t *testing.T, db *Adapter) {
 	if !found {
 		t.Fatal("admin invite list lost profile")
 	}
+	testCloudWorkerTrialBilling(t, db, ownerID)
+}
+
+func testCloudWorkerTrialBilling(t *testing.T, db *Adapter, owner int64) {
+	expiry := time.Now().UTC().Add(time.Hour)
+	if _, err := db.GrantCloudWorkerConfiguredCredits(owner, 1, "trial-no-expiry", nil, "public_ip", "ondemand"); err == nil {
+		t.Fatal("unbounded trial granted")
+	}
+	if _, err := db.GrantCloudWorkerConfiguredCredits(owner, 1, "trial", &expiry, "public_ip", "ondemand"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GrantCloudWorkerConfiguredCredits(owner, 1, "trial", &expiry, "public_ip", "month"); err == nil {
+		t.Fatal("idempotency changed billing mode")
+	}
+	selection, reserved, err := db.ReserveCloudWorkerConfiguredCredit(owner, "trial-reservation", "public_ip", "ondemand")
+	if err != nil || !reserved || selection.BillingMode != "ondemand" {
+		t.Fatalf("trial reservation: %+v %v", selection, err)
+	}
+	worker, err := db.CreateUser(&types.User{Username: "trial-billing-bot", AccountType: types.AccountBot, PassHash: []byte("test-only")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.SaveBotConfigWithOwner(worker, owner, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.SetTenantName(worker, "bot-trial-billing"); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.SetCloudWorkerDeployment(worker, types.CloudWorkerDeployment{Profile: "public_ip", Env: map[string]string{"CTYUN_WORKER_REGION_ID": "foshan", "CTYUN_WORKER_BILLING_MODE": "ondemand"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CommitCloudWorkerCredit(owner, "trial-reservation", worker, "bot-trial-billing", 15); err != nil {
+		t.Fatal(err)
+	}
+	item, err := db.GetCloudWorkerBillingLifecycle("bot-trial-billing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.BillingMode != "ondemand" || item.DeleteAfter.Sub(item.PackageExpiresAt) != 72*time.Hour {
+		t.Fatalf("trial retention %+v", item)
+	}
+	if ok, err := db.ClaimCloudWorkerBillingAction(item.ID, "suspend", true); err != nil || ok {
+		t.Fatal("trial stopped before expiry", err)
+	}
+	if _, err = db.db.Exec(`UPDATE cloud_worker_lifecycles SET package_expires_at=CURRENT_TIMESTAMP-INTERVAL '1 minute',delete_after=CURRENT_TIMESTAMP+INTERVAL '3 days' WHERE id=$1`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := db.ClaimCloudWorkerBillingAction(item.ID, "suspend", true); err != nil || !ok {
+		t.Fatal("expiry suspension not claimed", err)
+	}
+	if ok, _ := db.ClaimCloudWorkerTrialRelease(item.ID); ok {
+		t.Fatal("release raced pending stop")
+	}
+	if err = db.CompleteCloudWorkerBillingAction(item.ID, "suspend", time.Time{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	item, err = db.GetCloudWorkerBillingLifecycle(item.TenantName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.State != "delete_pending" || time.Until(item.DeleteAfter) < 71*time.Hour {
+		t.Fatalf("stopped trial retention %+v", item)
+	}
+	if ok, err := db.ClaimCloudWorkerLifecycleDeletion(item.ID); err != nil || ok {
+		t.Fatal("retention released early", err)
+	}
+	if ok, err := db.RequestCloudWorkerConversion(item.ID); err != nil || !ok {
+		t.Fatal("conversion request", err)
+	}
+	if _, err = db.db.Exec(`UPDATE cloud_worker_lifecycles SET delete_after=CURRENT_TIMESTAMP-INTERVAL '1 day' WHERE id=$1`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := db.ClaimCloudWorkerLifecycleDeletion(item.ID); ok {
+		t.Fatal("stale deletion overrode conversion intent")
+	}
+	if ok, _ := db.ClaimCloudWorkerTrialRelease(item.ID); ok {
+		t.Fatal("manual release overrode conversion intent")
+	}
+	if _, err = db.db.Exec(`UPDATE cloud_worker_lifecycles SET billing_action='suspend',billing_action_started_at=CURRENT_TIMESTAMP WHERE id=$1`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := db.ClaimCloudWorkerBillingAction(item.ID, "convert", false); err != nil || ok {
+		t.Fatal("conversion raced a live suspension", err)
+	}
+	if _, err = db.db.Exec(`UPDATE cloud_worker_lifecycles SET billing_action_started_at=CURRENT_TIMESTAMP-INTERVAL '31 minutes' WHERE id=$1`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := db.ClaimCloudWorkerBillingAction(item.ID, "convert", false); err != nil || !ok {
+		t.Fatal("conversion claim", err)
+	}
+	if err = db.CompleteCloudWorkerBillingAction(item.ID, "convert", time.Now().UTC().AddDate(0, 1, 0), ""); err != nil {
+		t.Fatal(err)
+	}
+	item, err = db.GetCloudWorkerBillingLifecycle(item.TenantName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.BillingMode != "month" || item.ConversionPending || item.State != "active" {
+		t.Fatalf("conversion completion %+v", item)
+	}
+	deployment, err := db.GetCloudWorkerDeployment(item.TenantName)
+	if err != nil || deployment.Env["CTYUN_WORKER_BILLING_MODE"] != "month" {
+		t.Fatal("deployment billing not reconciled", err)
+	}
+	if ok, _ := db.ClaimCloudWorkerLifecycleDeletion(item.ID); ok {
+		t.Fatal("converted monthly worker deleted by stale task")
+	}
+	plan, err := db.CreateCommercialPlan(&types.CommercialPlan{Slug: "trial-plan", Name: "Trial", SaleState: "hidden", DurationDays: 3, CloudWorkerBillingMode: "ondemand"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.CreateCommercialInviteCode(&types.CommercialInviteCode{Code: "TRIAL-PLAN-INVITE", PlanID: plan, CloudWorkerCredits: 1}); err != nil {
+		t.Fatal(err)
+	}
+	invites, err := db.ListCommercialInviteCodes(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invite := range invites {
+		if invite.Code == "TRIAL-PLAN-INVITE" && invite.CloudWorkerBillingMode != "ondemand" {
+			t.Fatal("invite did not inherit plan billing")
+		}
+	}
 }
 
 func TestPostgresCloudWorkerDeploymentContract(t *testing.T) {

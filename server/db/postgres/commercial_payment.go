@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-	monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at`
+	monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at, cloud_worker_billing_mode`
 
 func (a *Adapter) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
 	if id <= 0 {
@@ -574,6 +574,7 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		if _, err := tx.Exec(`
 			UPDATE cloud_worker_lifecycles
 			SET package_expires_at = $2::timestamptz,
+			    conversion_pending = CASE WHEN billing_mode='ondemand' THEN true ELSE conversion_pending END,
 			    delete_after = $2::timestamptz + INTERVAL '15 days',
 			    state = 'active', archived_at = NULL, delete_started_at = NULL,
 			    last_error = '', updated_at = CURRENT_TIMESTAMP

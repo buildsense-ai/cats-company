@@ -242,6 +242,34 @@ func (h *CommercialOpsHandler) HandleCloudWorkerImport(w http.ResponseWriter, r 
 	}
 }
 
+func (h *CommercialOpsHandler) HandleCloudWorkerBilling(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	service, ok := h.requireService(w, r, true)
+	if !ok {
+		return
+	}
+	handler, ok := h.cloudWorkers.(CloudWorkerAdminBillingHandler)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "billing operations unavailable"})
+		return
+	}
+	target := commercialOpsTargetRef(r)
+	tracked := &commercialOpsResponseWriter{ResponseWriter: w}
+	handler.HandleAdminBilling(tracked, withCommercialOpsService(r, service))
+	status := tracked.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if h.store != nil {
+		if err := h.store.RecordCommercialOperatorEvent(&types.CommercialOperatorEvent{Service: service.Slug, Action: "cloud_worker.billing", TargetType: "cloud_worker", TargetRef: target, StatusCode: status}); err != nil {
+			log.Printf("failed to record cloud billing event: %v", err)
+		}
+	}
+}
+
 func (h *CommercialOpsHandler) HandleAdjustments(w http.ResponseWriter, r *http.Request) {
 	h.forward(w, r, "adjustments.apply", "user", h.admin.HandleCommercialAdjustment)
 }

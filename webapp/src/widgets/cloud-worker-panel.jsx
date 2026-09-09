@@ -20,6 +20,8 @@ const CLOUD_STATUS_META = {
   online: { label: '在线', tone: 'ok' },
   offline: { label: '离线', tone: 'muted' },
   stopped: { label: '已停止', tone: 'warn' },
+  shelve: { label: '已暂停，保留数据', tone: 'warn' },
+  shelved: { label: '已暂停，保留数据', tone: 'warn' },
   expired: { label: '已到期，等待续费', tone: 'warn' },
   freezing: { label: '冻结保留中', tone: 'warn' },
   frozen: { label: '冻结保留中', tone: 'warn' },
@@ -50,7 +52,7 @@ const cloudLifecycleHint = (status) => {
 };
 
 const cloudActionsBlocked = (status) => (
-  ['expired', 'freezing', 'frozen', 'unsubscribed', 'released', 'deleted', 'missing']
+  ['shelve', 'shelved', 'expired', 'freezing', 'frozen', 'unsubscribed', 'released', 'deleted', 'missing']
     .includes(String(status || '').toLowerCase())
 );
 
@@ -333,7 +335,7 @@ export default function CloudWorkerPanel({
               const workerKey = String(worker.tenant_name || id);
               const isFocusedWorker = workerKey === focusedWorkerKey;
               const meta = statusMeta(worker.cloud_status);
-              const lifecycleHint = cloudLifecycleHint(worker.cloud_status);
+              const lifecycleHint = worker.trial_notice || cloudLifecycleHint(worker.cloud_status);
               const managementBlocked = cloudActionsBlocked(worker.cloud_status);
               const remoteActing = worker.cloud_operation_status === 'running';
               const acting = activeAction.name === worker.tenant_name || remoteActing;
