@@ -375,6 +375,9 @@ export default function CloudWorkerPanel({
                   </div>
 
                   <div className="cc-cloud-worker-meta">
+                    <span>员工连接 <b>{worker.runtime_status === 'connected'
+                      ? '已连接'
+                      : worker.runtime_status === 'not_connected' ? '未连接，等待上线' : '暂未确认'}</b></span>
                     <span>应用版本 <b>{worker.app_version || '暂未读取'}</b></span>
                     <span>基础镜像 <b>{worker.cloud_version || '暂未读取'}</b></span>
                     {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (

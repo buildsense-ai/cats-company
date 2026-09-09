@@ -1342,10 +1342,12 @@ export default function AgentStoreModal({
     const username = `bot-${slug || 'bot'}-${suffix}`;
     try {
       setError('');
-      await api.createCloudWorker({ username, display_name: trimmed });
+      const created = await api.createCloudWorker({ username, display_name: trimmed });
       await loadBots({ silent: true });
       if (onBotsChanged) onBotsChanged();
-      feedback.notify({ tone: 'success', message: '云托管员工创建成功，云端实例供给中…' });
+      feedback.notify({ tone: 'success', message: created.runtime_status === 'connected'
+        ? '云托管员工已创建并连接'
+        : '云端实例已创建，正在等待员工连接，请勿重复创建' });
     } catch (e) {
       // 按后端错误码区分提示；具体技术原因（如云资源配额）只进后端日志
       const message = cloudWorkerCreateMessage(e);
