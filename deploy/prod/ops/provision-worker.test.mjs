@@ -220,7 +220,7 @@ function toMsys(p) {
 function run(sandbox, args, extra = {}) {
   // Git Bash reorders PATH at startup (puts /usr/bin first), so re-export the
   // fake bin to the front inside the session to override real timeout/ssh.
-  const cmd = `export PATH="${toMsys(sandbox.bin)}:$PATH"; exec "${toMsys(scriptPath)}" "$@"`;
+  const cmd = `export PATH="${toMsys(sandbox.bin)}:$PATH"; exec bash "${toMsys(scriptPath)}" "$@"`;
   const res = spawnSync(BASH, ["-c", cmd, "bash", ...args], {
     cwd: sandbox.sandbox,
     encoding: "utf8",
