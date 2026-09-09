@@ -245,7 +245,8 @@ export default function EmptyTaskComposer({
     }
     selectedAgentIdRef.current = preferredKey;
     setSelectedAgentId(preferredKey);
-    setAttachmentStatus(null);
+    // Initial agent metadata can arrive after an upload has failed. Only an
+    // explicit composer action should replace that upload's status.
   }, [initialAgent]);
 
   const replaceAttachments = useCallback((nextAttachments) => {
@@ -299,9 +300,7 @@ export default function EmptyTaskComposer({
         }
         agentsRef.current = nextAgents;
         setAgents(nextAgents);
-        setAttachmentStatus((current) => current?.kind === 'authentication'
-          ? { tone: 'error', message: '附件未上传完成，请重新选择文件上传。' }
-          : current);
+        // A successful roster read does not prove upload authentication recovered.
         setSelectedAgentId((current) => {
           const currentKey = String(current || '');
           const currentExists = nextAgents.some((agent) => agentKey(agent) === currentKey);
