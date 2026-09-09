@@ -1011,8 +1011,8 @@ func TestCloudWorkerHandleCreateSuccess(t *testing.T) {
 	if out["tenant_name"] != "bot-bot-x" {
 		t.Fatalf("tenant_name=%v", out["tenant_name"])
 	}
-	if out["deployment_status"] != "running" {
-		t.Fatalf("deployment_status=%v want running", out["deployment_status"])
+	if out["deployment_status"] != "provisioned" || out["runtime_status"] != "unknown" {
+		t.Fatalf("systemd alone must not imply a connected runtime: %v", out)
 	}
 	botUID := int64(out["uid"].(float64))
 	if ts.tenantNames[botUID] != "bot-bot-x" {

@@ -360,14 +360,15 @@ func parseWorkerCreateQuota(raw string) map[int64]int {
 
 // cloudWorkerSummary is a roster item for a cloud-managed virtual employee.
 type cloudWorkerSummary struct {
-	UID         int64  `json:"uid"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	TenantName  string `json:"tenant_name"`
-	Status      string `json:"status"`
-	Version     string `json:"version,omitempty"`
-	ImageID     string `json:"image_id,omitempty"`
-	CreatedTime string `json:"created_time,omitempty"`
+	UID           int64  `json:"uid"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"display_name"`
+	TenantName    string `json:"tenant_name"`
+	Status        string `json:"status"`
+	RuntimeStatus string `json:"runtime_status"`
+	Version       string `json:"version,omitempty"`
+	ImageID       string `json:"image_id,omitempty"`
+	CreatedTime   string `json:"created_time,omitempty"`
 
 	// Cloud-side facts resolved via the status script (empty = unknown).
 	CloudStatus  string `json:"cloud_status,omitempty"`
@@ -427,6 +428,7 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		if s, ok := b["display_name"].(string); ok {
 			w.DisplayName = s
 		}
+		w.RuntimeStatus = h.cloudWorkerRuntimeStatus(uid, w.UID)
 		workers = append(workers, w)
 	}
 	sort.Slice(workers, func(i, j int) bool { return workers[i].Username < workers[j].Username })
@@ -1233,14 +1235,21 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		friendAutoAdded = true
 	}
 
-	// The provision script ran synchronously to completion, so the worker is
-	// provisioned/running rather than still "provisioning".
+	// A completed provider script only proves that the VM/service was started.
+	// Keep the created account and credit while its runtime connects; never
+	// claim running from systemd alone or encourage another paid create.
+	runtimeStatus := h.cloudWorkerRuntimeStatus(uid, result.UID)
+	deploymentStatus := "provisioned"
+	if runtimeStatus == "connected" {
+		deploymentStatus = "running"
+	}
 	h.requestCloudStatusRefresh(true)
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"uid":               result.UID,
 		"username":          result.Username,
 		"tenant_name":       tenantName,
-		"deployment_status": "running",
+		"deployment_status": deploymentStatus,
+		"runtime_status":    runtimeStatus,
 		"friend_auto_added": friendAutoAdded,
 	})
 }

@@ -58,6 +58,24 @@ describe('CloudWorkerPanel', () => {
     container.remove();
   });
 
+  test.each([
+    ['connected', '已连接'],
+    ['not_connected', '未连接，等待上线'],
+    [undefined, '暂未确认'],
+  ])('shows runtime %s separately from a running VM', async (runtime_status, label) => {
+    await renderPanel({ workers: [worker({ runtime_status })] });
+    expect(container.textContent).toContain('员工连接');
+    expect(container.textContent).toContain(label);
+  });
+
+  test('updates connection status when the roster refreshes', async () => {
+    await renderPanel({ workers: [worker({ runtime_status: 'not_connected' })] });
+    expect(container.textContent).toContain('未连接，等待上线');
+    await renderPanel({ workers: [worker({ runtime_status: 'connected' })] });
+    expect(container.textContent).toContain('已连接');
+    expect(container.textContent).not.toContain('未连接，等待上线');
+  });
+
   test('shows quota usage and remaining capacity', async () => {
     await renderPanel();
     expect(container.textContent).toContain('云托管创建权益');

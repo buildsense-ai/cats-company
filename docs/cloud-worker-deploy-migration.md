@@ -15,6 +15,10 @@
 
 ## 升级影响
 
+- 创建成功的 HTTP 201 仅证明实例供给脚本完成。`deployment_status=provisioned` 表示等待运行时连接；只有观察到属于该 owner 和 Bot 的活跃、可路由 server 设备且已上报模型，才返回 `deployment_status=running`。
+- 创建响应和云员工列表新增 `runtime_status`：`connected` / `not_connected` / `unknown`（控制面无法确认）。它独立于云平台 `cloud_status`；列表随现有轮询刷新，断线或注册过期后不再显示已连接。连接确认不等于模型推理或完整用户任务验收通过。
+- 尚未连接不会触发重复供给、退还已使用权益或销毁已创建实例；应先查询现有实例并排查运行时。Relay Commercial Ops 同步自动部署需要覆盖 600 秒脚本预算的独立等待超时（默认 630 秒）。
+
 - 仍调用 `/api/bots/deploy`、`Deployer.Status`、`Deployer.Remove` 的旧客户端会收到 404/405。由于前端零引用且同仓部署，实际无存量调用方；如需兼容，见"回滚方案"。
 - 数据库里已有 `tenant_name` 的 bot（旧链路托管或历史标记）会被新控制面 `/api/cloud-workers` 列表归为 cloud worker：
   - 列表 `status` 为 `unknown`（新控制面不反查旧 gauz-platform 状态；回滚/重置/删除的操作结果由脚本反馈）。
