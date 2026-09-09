@@ -159,7 +159,7 @@ func TestPublicModelsStartupMigrationMatchesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(up)) != strings.TrimSpace(migrateCommercialPublicModels) {
+	if strings.TrimSpace(strings.ReplaceAll(string(up), "\r\n", "\n")) != strings.TrimSpace(migrateCommercialPublicModels) {
 		t.Fatal("startup migration diverged from numbered SQL migration")
 	}
 }
