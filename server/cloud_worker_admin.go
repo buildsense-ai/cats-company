@@ -35,6 +35,12 @@ type CloudWorkerAdminImporter interface {
 }
 
 type cloudWorkerAdminItem struct {
+	BillingMode        string     `json:"billing_mode,omitempty"`
+	ConversionPending  bool       `json:"conversion_pending"`
+	BillingAction      string     `json:"billing_action,omitempty"`
+	DeploymentProfile  string     `json:"deployment_profile,omitempty"`
+	SSHKeyPath         string     `json:"ssh_key_path,omitempty"`
+	SSHExecutionHost   string     `json:"ssh_execution_host,omitempty"`
 	UID                int64      `json:"uid"`
 	OwnerUID           int64      `json:"owner_uid"`
 	OwnerUsername      string     `json:"owner_username,omitempty"`
@@ -82,15 +88,16 @@ type cloudWorkerAdminItem struct {
 }
 
 type cloudWorkerAdminOverview struct {
-	GeneratedAt              time.Time              `json:"generated_at"`
-	WorkerCount              int                    `json:"worker_count"`
-	ProviderStatusAvailable  bool                   `json:"provider_status_available"`
-	ProviderStatusRefreshing bool                   `json:"provider_status_refreshing"`
-	ProviderStatusUpdatedAt  *time.Time             `json:"provider_status_updated_at,omitempty"`
-	StatusCounts             map[string]int         `json:"status_counts"`
-	LifecycleCounts          map[string]int         `json:"lifecycle_counts"`
-	CreditCounts             map[string]int         `json:"credit_counts"`
-	Workers                  []cloudWorkerAdminItem `json:"workers"`
+	DeploymentProfiles       []cloudWorkerProfileOption `json:"deployment_profiles"`
+	GeneratedAt              time.Time                  `json:"generated_at"`
+	WorkerCount              int                        `json:"worker_count"`
+	ProviderStatusAvailable  bool                       `json:"provider_status_available"`
+	ProviderStatusRefreshing bool                       `json:"provider_status_refreshing"`
+	ProviderStatusUpdatedAt  *time.Time                 `json:"provider_status_updated_at,omitempty"`
+	StatusCounts             map[string]int             `json:"status_counts"`
+	LifecycleCounts          map[string]int             `json:"lifecycle_counts"`
+	CreditCounts             map[string]int             `json:"credit_counts"`
+	Workers                  []cloudWorkerAdminItem     `json:"workers"`
 }
 
 // CloudWorkerAdminOverview returns a read-only, platform-wide roster. The
@@ -112,6 +119,7 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 
 	infos, statusLoaded, statusRefreshing, statusUpdatedAt := h.cloudStatusSnapshot()
 	overview := &cloudWorkerAdminOverview{
+		DeploymentProfiles:       h.deploymentProfileOptions(),
 		GeneratedAt:              now.UTC(),
 		WorkerCount:              len(records),
 		ProviderStatusAvailable:  statusLoaded,
@@ -201,6 +209,32 @@ func (h *CloudWorkerHandler) CloudWorkerAdminOverview(now time.Time) (*cloudWork
 			BindingSource:      record.BindingSource,
 			BindingStatus:      record.BindingStatus,
 			LastVerifiedAt:     record.LastVerifiedAt,
+		}
+		if record.ManagementMode != "manual_import" && record.LifecycleMode != "external" {
+			if billing, ok := h.credits.(cloudWorkerBillingStore); ok {
+				if lifecycle, err := billing.GetCloudWorkerBillingLifecycle(record.TenantName); err == nil {
+					item.BillingMode = lifecycle.BillingMode
+					item.ConversionPending = lifecycle.ConversionPending
+					item.BillingAction = lifecycle.BillingAction
+				}
+			}
+			deployment, err := h.deploymentForTenant(record.TenantName)
+			if err != nil {
+				return nil, err
+			}
+			item.DeploymentProfile = deployment.Profile
+			item.Provider = "ctyun"
+			item.RegionID = deployment.Env["CTYUN_WORKER_REGION_ID"]
+			item.ProjectID = deployment.Env["CTYUN_WORKER_PROJECT_ID"]
+			item.AZName = deployment.Env["CTYUN_WORKER_AZ_NAME"]
+			item.InstanceName = "worker-" + record.TenantName
+			if h.sshHostStateRoot != "" && workerUsernameRe.MatchString(record.TenantName) {
+				item.SSHKeyPath = strings.TrimRight(h.sshHostStateRoot, "/") + "/" + record.TenantName + "/id_rsa"
+				item.SSHExecutionHost = "cats-ctyun"
+			}
+			if deployment.Profile == types.CloudWorkerPublicIP {
+				item.SSHJumpHost, item.SSHJumpAlias, item.SSHJumpKey, item.SSHHostJumpKey = "", "", "", ""
+			}
 		}
 		overview.StatusCounts[providerStatus]++
 		if item.LifecycleState != "" {

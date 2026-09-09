@@ -63,3 +63,15 @@ test("sync replaces stale routes and rejects unsafe identity or public backends"
   assert.throws(() => registerRoute({ agentUid: "worker-407", privateIp: "192.168.2.3" }, sb.options));
   assert.throws(() => registerRoute({ agentUid: "407", privateIp: "8.8.8.8" }, sb.options));
 });
+
+test("explicit public routes coexist with NAT and reject reserved addresses", (t) => {
+  const sb = sandbox();
+  t.after(() => fs.rmSync(sb.root, {recursive:true, force:true}));
+  syncRoutes({"11":"10.0.0.3", "12":{private_ip:"8.8.8.8", network_mode:"public"}}, sb.options);
+  assert.equal(readRoute({agentUid:"12"}, sb.options).private_ip,"8.8.8.8");
+  registerRoute({agentUid:"13",privateIp:"172.27.7.2"},sb.options);
+  assert.equal(readRoute({agentUid:"12"}, sb.options).private_ip,"8.8.8.8");
+  for(const ip of ['127.0.0.1','169.254.169.254','224.0.0.1','0.0.0.0','10.0.0.9','100.64.0.1']) {
+    assert.throws(()=>registerRoute({agentUid:"12",privateIp:ip,networkMode:"public"},sb.options));
+  }
+});

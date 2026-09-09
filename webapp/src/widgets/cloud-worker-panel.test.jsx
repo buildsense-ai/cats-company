@@ -225,6 +225,16 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).toContain('请联系支持清理旧记录');
   });
 
+  test('shows expired trial retention and blocks actions while saving stopped', async () => {
+    await renderPanel({workers:[worker({cloud_status:'shelve',trial_notice:'试用已到期，请在套餐页付费；数据保留 3 天后释放。'})],images:[{version:'1.4.9'}],releases:[{version:'1.4.10'}]});
+    expect(container.textContent).toContain('已暂停，保留数据');
+    expect(container.textContent).toContain('数据保留 3 天后释放');
+    expect(container.textContent).not.toContain('15 天保留期');
+    for (const button of container.querySelectorAll('.cc-cloud-worker-actions button')) {
+      if (['更新','回滚','重置'].some(label=>button.textContent.includes(label))) expect(button.disabled).toBe(true);
+    }
+  });
+
   test('calls update/rollback/reset callbacks without exposing permanent deletion', async () => {
     const onUpdate = vi.fn();
     const onRollback = vi.fn();

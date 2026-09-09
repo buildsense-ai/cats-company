@@ -75,6 +75,9 @@ if [[ ! "$NAME" =~ ^[a-z0-9][a-z0-9_-]{1,63}$ ]]; then
   exit 2
 fi
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
+worker_profile_load "$NAME"
+
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
@@ -248,7 +251,7 @@ for _ in $(seq 1 90); do
     exit 1
   fi
   if [[ "$state" == "running" || "$state" == "active" ]]; then
-    INSTANCE_IP="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$instance")"
+    INSTANCE_IP="$(worker_connection_ip <<<"$instance")"
     [[ -n "$INSTANCE_IP" ]] && break
   fi
   sleep 10

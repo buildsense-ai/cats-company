@@ -58,6 +58,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.SortOrder,
 		&plan.CreatedAt,
 		&plan.UpdatedAt,
+		&plan.CloudWorkerBillingMode,
 	); err != nil {
 		return nil, err
 	}
@@ -72,7 +73,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at
+		       monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at, cloud_worker_billing_mode
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -101,6 +102,10 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if err := validateCommercialOfficialPaidPlanModels(plan.Slug, plan.ModelBudgets); err != nil {
 		return 0, err
 	}
+	billing, valid := types.NormalizeCloudWorkerBilling(plan.CloudWorkerBillingMode)
+	if !valid || (billing == types.CloudWorkerOnDemand && normalizeCommercialSaleState(plan.SaleState) != "hidden") {
+		return 0, fmt.Errorf("trial billing is only allowed for hidden internal plans")
+	}
 	budgets, err := encodeModelBudgets(plan.ModelBudgets)
 	if err != nil {
 		return 0, fmt.Errorf("encode model budgets: %w", err)
@@ -117,9 +122,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order
+			monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -132,7 +137,8 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			internal_quota_tokens = EXCLUDED.internal_quota_tokens,
 			duration_days = EXCLUDED.duration_days,
 			state = EXCLUDED.state,
-			sort_order = EXCLUDED.sort_order
+			sort_order = EXCLUDED.sort_order,
+			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode
 		RETURNING id`,
 		strings.TrimSpace(plan.Slug),
 		strings.TrimSpace(plan.Name),
@@ -147,6 +153,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		durationDays,
 		plan.State,
 		sortOrder,
+		billing,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create commercial plan: %w", err)
@@ -192,6 +199,8 @@ func scanCommercialInvite(scanner interface {
 		&invite.MaxRedemptions,
 		&invite.RedeemedCount,
 		&invite.CloudWorkerCredits,
+		&invite.CloudWorkerProfile,
+		&invite.CloudWorkerBillingMode,
 		&invite.State,
 		&expiresAt,
 		&invite.Note,
@@ -210,7 +219,7 @@ func (a *Adapter) ListCommercialInviteCodes(limit int) ([]*types.CommercialInvit
 		limit = 50
 	}
 	rows, err := a.db.Query(`
-		SELECT c.id, c.code, c.plan_id, p.slug, p.name, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.state,
+		SELECT c.id, c.code, c.plan_id, p.slug, p.name, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state,
 		       c.expires_at, c.note, COALESCE(c.created_by_uid, 0), c.created_at, c.updated_at
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
@@ -238,23 +247,39 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	if invite.CloudWorkerCredits < 0 || invite.CloudWorkerCredits > 100 {
 		return 0, fmt.Errorf("commercial invite cloud worker credits must be between 0 and 100")
 	}
+	profile, valid := types.NormalizeCloudWorkerProfile(invite.CloudWorkerProfile)
+	if !valid {
+		return 0, fmt.Errorf("invalid cloud worker profile")
+	}
+	billing := invite.CloudWorkerBillingMode
+	if billing == "" {
+		if err := a.db.QueryRow(`SELECT cloud_worker_billing_mode FROM commercial_plans WHERE id=$1`, invite.PlanID).Scan(&billing); err != nil {
+			return 0, err
+		}
+	}
+	billing, valid = types.NormalizeCloudWorkerBilling(billing)
+	if !valid {
+		return 0, fmt.Errorf("invalid cloud worker billing mode")
+	}
 	maxRedemptions := invite.MaxRedemptions
 	if maxRedemptions <= 0 {
 		maxRedemptions = 1
 	}
 	var id int64
 	err := a.db.QueryRow(`
-		INSERT INTO commercial_invite_codes(code, plan_id, max_redemptions, cloud_worker_credits, state, expires_at, note, created_by_uid)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0))
+		INSERT INTO commercial_invite_codes(code, plan_id, max_redemptions, cloud_worker_credits, state, expires_at, note, created_by_uid, cloud_worker_profile, cloud_worker_billing_mode)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, 0), $9, $10)
 		ON CONFLICT(code) DO UPDATE SET
 			plan_id = EXCLUDED.plan_id,
 			max_redemptions = EXCLUDED.max_redemptions,
 			cloud_worker_credits = EXCLUDED.cloud_worker_credits,
+			cloud_worker_profile = EXCLUDED.cloud_worker_profile,
+			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode,
 			state = EXCLUDED.state,
 			expires_at = EXCLUDED.expires_at,
 			note = EXCLUDED.note,
 			created_by_uid = EXCLUDED.created_by_uid
-		WHERE NOT $9
+		WHERE NOT $11
 		RETURNING id`,
 		strings.ToUpper(strings.TrimSpace(invite.Code)),
 		invite.PlanID,
@@ -264,6 +289,8 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 		invite.ExpiresAt,
 		strings.TrimSpace(invite.Note),
 		invite.CreatedByUID,
+		profile,
+		billing,
 		invite.CreateOnly,
 	).Scan(&id)
 	if err != nil {
@@ -351,11 +378,11 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	var inviteID, planID int64
 	var maxRedemptions, redeemedCount, cloudWorkerCredits, inviteState, planState, durationDays int
 	var expiresAt sql.NullTime
-	var planSlug, planName string
+	var planSlug, planName, cloudWorkerProfile, cloudWorkerBilling string
 	var monthlyBudget float64
 	var budgetsRaw []byte
 	err = tx.QueryRow(`
-		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.state, c.expires_at,
+		SELECT c.id, c.plan_id, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state, c.expires_at,
 		       p.slug, p.name, p.monthly_budget_cny, p.model_budgets, p.duration_days, p.state
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
@@ -366,6 +393,8 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		&maxRedemptions,
 		&redeemedCount,
 		&cloudWorkerCredits,
+		&cloudWorkerProfile,
+		&cloudWorkerBilling,
 		&inviteState,
 		&expiresAt,
 		&planSlug,
@@ -440,9 +469,9 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires); err != nil {
+			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}

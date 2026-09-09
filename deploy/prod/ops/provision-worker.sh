@@ -65,6 +65,9 @@ if [[ -n "$CREDENTIAL_FILE" ]]; then
   BOT_API_KEY="$(sed -n '2p' "$CREDENTIAL_FILE")"
 fi
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
+worker_profile_load "$NAME"
+
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 AZ_NAME="${CTYUN_WORKER_AZ_NAME:-}"
@@ -259,7 +262,7 @@ if [[ -n "$existing" ]]; then
     exit 1
   fi
   artifact_status="disabled"
-  existing_ip="$(jq -r '(.fixedIPList[0] // .privateIP // "")' <<<"$existing")"
+  existing_ip="$(worker_connection_ip <<<"$existing")"
   existing_key="$STATE_DIR/id_rsa"
   if [[ "$FORWARDED_ARTIFACT_ENABLED" == "1" ]]; then
     artifact_status="warning"
@@ -310,6 +313,7 @@ fi
 # --- 4. key pair（固定名 worker-key-<tenant>，已存在则复用） ---
 KEYPAIR_NAME="worker-key-${NAME}"
 mkdir -p "$STATE_DIR"
+worker_profile_load "$NAME" 1
 PRIVATE_KEY="$STATE_DIR/id_rsa"
 
 keypair_id="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
@@ -385,7 +389,14 @@ else
   create_args+=(--onDemand true)
 fi
 if [[ "$EXT_IP" == "1" ]]; then
-  create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone --demandBillingType upflowc)
+  create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone)
+  # demandBillingType applies only to an automatically allocated EIP on an
+  # on-demand instance. Monthly EIPs follow the provider's cycle purchase.
+  if [[ "$BILLING_MODE" == "ondemand" ]]; then
+    # Foshan 7 rejects ConvertEcsToCycle for traffic-billed EIPs. Trials must
+    # use bandwidth billing so the existing instance can become monthly.
+    create_args+=(--demandBillingType bandwidth)
+  fi
 fi
 create_resp="$(ctyun "${create_args[@]}")"
 CREATED_INSTANCE_ID="$(jq -r '.returnObj.masterResourceID // empty' <<<"$create_resp")"
@@ -401,7 +412,7 @@ for _ in $(seq 1 60); do
     [[ -z "$resolved_instance_id" ]] || CREATED_INSTANCE_UUID="$resolved_instance_id"
     state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$inst")"
     # 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
-    ip="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
+    ip="$(worker_connection_ip <<<"$inst")"
     if [[ "$state" == "running" || "$state" == "active" ]]; then
       [[ -n "$ip" ]] && { INSTANCE_IP="$ip"; break; }
     fi

@@ -18,11 +18,13 @@ const defaults = {
 export function registerRoute(input, options = {}) {
   const config = resolveConfig(options);
   const agentUid = normalizeAgentUid(input.agentUid);
-  const privateIp = normalizePrivateIPv4(input.privateIp);
+  const mode = normalizeNetworkMode(input.networkMode);
+  const privateIp = normalizeBackendIPv4(input.privateIp, mode);
   return mutateRegistry(config, registry => {
     const previous = registry.routes[agentUid] || null;
     registry.routes[agentUid] = {
       private_ip: privateIp,
+      network_mode: mode,
       backend_port: config.backendPort,
       updated_at: new Date().toISOString()
     };
@@ -51,10 +53,10 @@ export function syncRoutes(input, options = {}) {
   const config = resolveConfig(options);
   const routes = normalizeRouteMap(input?.routes ?? input);
   return mutateRegistry(config, registry => {
-    registry.routes = Object.fromEntries(Object.entries(routes).map(([agentUid, privateIp]) => [
+    registry.routes = Object.fromEntries(Object.entries(routes).map(([agentUid, route]) => [
       agentUid,
       {
-        private_ip: privateIp,
+        ...route,
         backend_port: config.backendPort,
         updated_at: new Date().toISOString()
       }
@@ -179,7 +181,8 @@ function readRegistry(target) {
     const uid = normalizeAgentUid(agentUid);
     if (!isPlainObject(route)) throw new Error(`Artifact route ${uid} is invalid`);
     routes[uid] = {
-      private_ip: normalizePrivateIPv4(route.private_ip),
+      private_ip: normalizeBackendIPv4(route.private_ip, normalizeNetworkMode(route.network_mode)),
+      network_mode: normalizeNetworkMode(route.network_mode),
       backend_port: positivePort(route.backend_port),
       updated_at: cleanText(route.updated_at)
     };
@@ -192,10 +195,9 @@ function normalizeRouteMap(value) {
   const routes = {};
   for (const [uidValue, routeValue] of Object.entries(value)) {
     const agentUid = normalizeAgentUid(uidValue);
-    const privateIp = isPlainObject(routeValue)
-      ? normalizePrivateIPv4(routeValue.private_ip)
-      : normalizePrivateIPv4(routeValue);
-    routes[agentUid] = privateIp;
+    const mode = normalizeNetworkMode(isPlainObject(routeValue) ? routeValue.network_mode : undefined);
+    const ip = normalizeBackendIPv4(isPlainObject(routeValue) ? routeValue.private_ip : routeValue, mode);
+    routes[agentUid] = { private_ip: ip, network_mode: mode };
   }
   return routes;
 }
@@ -214,6 +216,25 @@ function normalizePrivateIPv4(value) {
     || (a === 172 && b >= 16 && b <= 31)
     || (a === 192 && b === 168);
   if (!privateRange) throw new Error("worker backend must use a private IPv4 address");
+  return text;
+}
+
+function normalizeNetworkMode(value = "private") {
+  if (value !== "private" && value !== "public") throw new Error("invalid backend network mode");
+  return value;
+}
+
+export function normalizeBackendIPv4(value, mode = "private") {
+  normalizeNetworkMode(mode);
+  if (mode === "private") return normalizePrivateIPv4(value);
+  const text = cleanText(value);
+  if (net.isIP(text) !== 4) throw new Error("worker public IP must be IPv4");
+  const [a, b, c] = text.split(".").map(Number);
+  if (a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || (b === 0 && (c === 0 || c === 2)))) ||
+      (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+      (a === 203 && b === 0 && c === 113)) throw new Error("worker backend must use a public unicast IPv4 address");
   return text;
 }
 
@@ -275,7 +296,9 @@ async function runCli() {
   const [command, ...args] = process.argv.slice(2);
   let result;
   if (command === "register") {
-    result = registerRoute({ agentUid: args[0], privateIp: args[1] });
+    result = registerRoute({ agentUid: args[0], privateIp: args[1], networkMode: args[2] });
+  } else if (command === "validate-ip") {
+    result = { ok: true, ip: normalizeBackendIPv4(args[0], args[1]) };
   } else if (command === "remove") {
     result = removeRoute({ agentUid: args[0] });
   } else if (command === "status") {

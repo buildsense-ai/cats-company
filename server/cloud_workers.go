@@ -50,26 +50,27 @@ type CloudWorkerHandler struct {
 	quota map[int64]int
 
 	// Executable scripts invoked for heavy cloud operations (empty = disabled).
-	provisionScript  string
-	resetScript      string
-	renewScript      string
-	updateScript     string
-	rollbackScript   string
-	destroyScript    string
-	imagesScript     string
-	releasesScript   string
-	statusScript     string
-	sshJumpHost      string
-	sshJumpAlias     string
-	sshJumpPort      string
-	sshJumpUser      string
-	sshJumpKey       string
-	sshHostJumpKey   string
-	sshStateRoot     string
-	sshHostStateRoot string
-	sshUser          string
-	sshPort          string
-	credits          CloudWorkerCreditStore
+	provisionScript   string
+	resetScript       string
+	renewScript       string
+	updateScript      string
+	rollbackScript    string
+	destroyScript     string
+	imagesScript      string
+	releasesScript    string
+	statusScript      string
+	sshJumpHost       string
+	sshJumpAlias      string
+	sshJumpPort       string
+	sshJumpUser       string
+	sshJumpKey        string
+	sshHostJumpKey    string
+	sshStateRoot      string
+	sshHostStateRoot  string
+	sshUser           string
+	sshPort           string
+	credits           CloudWorkerCreditStore
+	publicProfileJSON string
 
 	scriptTimeout time.Duration
 
@@ -138,21 +139,22 @@ func cloudWorkerTenantName(username string) string {
 
 // CloudWorkerConfig configures the cloud worker control plane.
 type CloudWorkerConfig struct {
-	CreateQuota     string // CATSCO_WORKER_CREATE_QUOTA "<uid>=<n>;<uid>=<n>" — unset means 0 (disabled)
-	ProvisionScript string // CATSCO_WORKER_PROVISION_SCRIPT
-	ResetScript     string // CATSCO_WORKER_RESET_SCRIPT
-	RenewScript     string // CATSCO_WORKER_RENEW_SCRIPT
-	UpdateScript    string // CATSCO_WORKER_UPDATE_SCRIPT
-	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
-	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
-	ImagesScript    string // CATSCO_WORKER_IMAGES_SCRIPT
-	ReleasesScript  string // CATSCO_WORKER_RELEASES_SCRIPT
-	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
-	SSHJumpHost     string
-	SSHJumpAlias    string
-	SSHJumpPort     string
-	SSHJumpUser     string
-	SSHJumpKey      string
+	PublicProfileJSON string // CATSCO_WORKER_PUBLIC_PROFILE_JSON; non-secret resource configuration only
+	CreateQuota       string // CATSCO_WORKER_CREATE_QUOTA "<uid>=<n>;<uid>=<n>" — unset means 0 (disabled)
+	ProvisionScript   string // CATSCO_WORKER_PROVISION_SCRIPT
+	ResetScript       string // CATSCO_WORKER_RESET_SCRIPT
+	RenewScript       string // CATSCO_WORKER_RENEW_SCRIPT
+	UpdateScript      string // CATSCO_WORKER_UPDATE_SCRIPT
+	RollbackScript    string // CATSCO_WORKER_ROLLBACK_SCRIPT
+	DestroyScript     string // CATSCO_WORKER_DESTROY_SCRIPT
+	ImagesScript      string // CATSCO_WORKER_IMAGES_SCRIPT
+	ReleasesScript    string // CATSCO_WORKER_RELEASES_SCRIPT
+	StatusScript      string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
+	SSHJumpHost       string
+	SSHJumpAlias      string
+	SSHJumpPort       string
+	SSHJumpUser       string
+	SSHJumpKey        string
 	// SSHHostJumpKey and SSHHostStateRoot are paths as seen from the
 	// cats-ctyun host, where copied admin commands are executed. They must
 	// never contain key material itself.
@@ -211,57 +213,59 @@ const cloudWorkerExpiryGraceDays = 15
 // CloudWorkerConfigFromEnv reads configuration from the environment.
 func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 	return CloudWorkerConfig{
-		CreateQuota:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
-		ProvisionScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
-		ResetScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
-		RenewScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
-		UpdateScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
-		RollbackScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
-		DestroyScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
-		ImagesScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
-		ReleasesScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
-		StatusScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
-		SSHJumpHost:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
-		SSHJumpAlias:     strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
-		SSHJumpPort:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
-		SSHJumpUser:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
-		SSHJumpKey:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_KEY")),
-		SSHHostJumpKey:   strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_JUMP_KEY")),
-		SSHStateRoot:     strings.TrimSpace(os.Getenv("CTYUN_WORKER_STATE_ROOT")),
-		SSHHostStateRoot: strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_STATE_ROOT")),
-		SSHUser:          strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_USER")),
-		SSHPort:          strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_PORT")),
+		PublicProfileJSON: os.Getenv("CATSCO_WORKER_PUBLIC_PROFILE_JSON"),
+		CreateQuota:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_CREATE_QUOTA")),
+		ProvisionScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
+		ResetScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
+		RenewScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
+		UpdateScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
+		RollbackScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
+		DestroyScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
+		ImagesScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
+		ReleasesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_RELEASES_SCRIPT")),
+		StatusScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
+		SSHJumpHost:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_IP")),
+		SSHJumpAlias:      strings.TrimSpace(os.Getenv("CTYUN_JUMP_ALIAS")),
+		SSHJumpPort:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_PORT")),
+		SSHJumpUser:       strings.TrimSpace(os.Getenv("CTYUN_JUMP_USER")),
+		SSHJumpKey:        strings.TrimSpace(os.Getenv("CTYUN_JUMP_KEY")),
+		SSHHostJumpKey:    strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_JUMP_KEY")),
+		SSHStateRoot:      strings.TrimSpace(os.Getenv("CTYUN_WORKER_STATE_ROOT")),
+		SSHHostStateRoot:  strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_STATE_ROOT")),
+		SSHUser:           strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_USER")),
+		SSHPort:           strings.TrimSpace(os.Getenv("CTYUN_WORKER_SSH_PORT")),
 	}
 }
 
 // NewCloudWorkerHandler creates a CloudWorkerHandler.
 func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConfig) *CloudWorkerHandler {
 	handler := &CloudWorkerHandler{
-		db:               db,
-		bots:             bots,
-		quota:            parseWorkerCreateQuota(cfg.CreateQuota),
-		provisionScript:  cfg.ProvisionScript,
-		resetScript:      cfg.ResetScript,
-		renewScript:      cfg.RenewScript,
-		updateScript:     cfg.UpdateScript,
-		rollbackScript:   cfg.RollbackScript,
-		destroyScript:    cfg.DestroyScript,
-		imagesScript:     cfg.ImagesScript,
-		releasesScript:   cfg.ReleasesScript,
-		statusScript:     cfg.StatusScript,
-		sshJumpHost:      cfg.SSHJumpHost,
-		sshJumpAlias:     cfg.SSHJumpAlias,
-		sshJumpPort:      cfg.SSHJumpPort,
-		sshJumpUser:      cfg.SSHJumpUser,
-		sshJumpKey:       cfg.SSHJumpKey,
-		sshHostJumpKey:   cfg.SSHHostJumpKey,
-		sshStateRoot:     cfg.SSHStateRoot,
-		sshHostStateRoot: cfg.SSHHostStateRoot,
-		sshUser:          cfg.SSHUser,
-		sshPort:          cfg.SSHPort,
-		credits:          nil,
-		scriptTimeout:    10 * time.Minute,
-		operations:       make(map[string]cloudWorkerOperation),
+		publicProfileJSON: cfg.PublicProfileJSON,
+		db:                db,
+		bots:              bots,
+		quota:             parseWorkerCreateQuota(cfg.CreateQuota),
+		provisionScript:   cfg.ProvisionScript,
+		resetScript:       cfg.ResetScript,
+		renewScript:       cfg.RenewScript,
+		updateScript:      cfg.UpdateScript,
+		rollbackScript:    cfg.RollbackScript,
+		destroyScript:     cfg.DestroyScript,
+		imagesScript:      cfg.ImagesScript,
+		releasesScript:    cfg.ReleasesScript,
+		statusScript:      cfg.StatusScript,
+		sshJumpHost:       cfg.SSHJumpHost,
+		sshJumpAlias:      cfg.SSHJumpAlias,
+		sshJumpPort:       cfg.SSHJumpPort,
+		sshJumpUser:       cfg.SSHJumpUser,
+		sshJumpKey:        cfg.SSHJumpKey,
+		sshHostJumpKey:    cfg.SSHHostJumpKey,
+		sshStateRoot:      cfg.SSHStateRoot,
+		sshHostStateRoot:  cfg.SSHHostStateRoot,
+		sshUser:           cfg.SSHUser,
+		sshPort:           cfg.SSHPort,
+		credits:           nil,
+		scriptTimeout:     10 * time.Minute,
+		operations:        make(map[string]cloudWorkerOperation),
 	}
 	if credits, ok := db.(CloudWorkerCreditStore); ok {
 		handler.credits = credits
@@ -382,6 +386,7 @@ type cloudWorkerSummary struct {
 	OperationID     string `json:"operation_id,omitempty"`
 	OperationAction string `json:"operation_action,omitempty"`
 	OperationStatus string `json:"operation_status,omitempty"`
+	TrialNotice     string `json:"trial_notice,omitempty"`
 }
 
 // cloudWorkerOperation is a short-lived, in-memory record for a long-running
@@ -405,6 +410,16 @@ const cloudWorkerOperationRetention = 30 * time.Minute
 // cloudWorkersOfOwner returns the cloud-managed workers owned by uid
 // (bots with a non-empty tenant_name).
 func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummary, error) {
+	lifecycleByTenant := map[string]types.CloudWorkerLifecycle{}
+	if store, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]types.CloudWorkerLifecycle, error)
+	}); ok {
+		if rows, err := store.ListCloudWorkerLifecycles(uid); err == nil {
+			for _, row := range rows {
+				lifecycleByTenant[row.TenantName] = row
+			}
+		}
+	}
 	bots, err := h.db.ListBotsByOwner(uid)
 	if err != nil {
 		return nil, err
@@ -429,6 +444,9 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 			w.DisplayName = s
 		}
 		w.RuntimeStatus = h.cloudWorkerRuntimeStatus(uid, w.UID)
+		if lifecycle, ok := lifecycleByTenant[tenantName]; ok {
+			w.TrialNotice = trialNotice(lifecycle, time.Now().UTC())
+		}
 		workers = append(workers, w)
 	}
 	sort.Slice(workers, func(i, j int) bool { return workers[i].Username < workers[j].Username })
@@ -650,11 +668,11 @@ func (h *CloudWorkerHandler) requestCloudStatusRefresh(force bool) {
 }
 
 func (h *CloudWorkerHandler) refreshCloudStatusSnapshot() {
-	out, err := h.runScriptTimeout(cloudWorkerStatusProbeTimeout, h.statusScript)
+	infos, err := h.collectDeploymentStatus()
 
 	h.cacheMu.Lock()
 	if err == nil {
-		h.statusSnapshot = parseCloudWorkerStatusTSV(out)
+		h.statusSnapshot = infos
 		h.statusUpdatedAt = time.Now()
 		h.statusLoaded = true
 	}
@@ -859,6 +877,8 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return
 	}
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	lifecycleStore, ok := h.credits.(interface {
 		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
 	})
@@ -873,6 +893,9 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	}
 	for _, lifecycle := range lifecycles {
 		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		if h.renewTrial(lifecycle) {
 			continue
 		}
 		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName)
@@ -1023,7 +1046,31 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	}
 	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
 	reservedCredit := false
-	if staticRemaining == 0 && h.credits != nil {
+	profile := types.CloudWorkerPrivateNAT
+	billing := types.CloudWorkerMonthly
+	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
+	requestedBilling, _ := r.Context().Value(cloudWorkerBillingContextKey{}).(string)
+	if configured, ok := h.credits.(cloudWorkerBillingCredits); ok {
+		selected, reserved, reserveErr := configured.ReserveCloudWorkerConfiguredCredit(uid, reservation, requestedProfile, requestedBilling)
+		if reserveErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reserve cloud worker credit", "code": "cloud_worker_create_failed"})
+			return
+		}
+		reservedCredit = reserved
+		if reserved {
+			profile, billing = selected.Profile, selected.BillingMode
+		}
+	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
+		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
+		if reserveErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reserve cloud worker credit", "code": "cloud_worker_create_failed"})
+			return
+		}
+		reservedCredit = reserved
+		if reserved {
+			profile = selected
+		}
+	} else if staticRemaining == 0 && h.credits != nil {
 		var reserveErr error
 		reservedCredit, reserveErr = h.credits.ReserveCloudWorkerCredit(uid, reservation)
 		if reserveErr != nil {
@@ -1031,11 +1078,22 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if staticRemaining == 0 && !reservedCredit {
+	if !reservedCredit && (staticRemaining == 0 || requestedProfile == types.CloudWorkerPublicIP || requestedBilling == types.CloudWorkerOnDemand) {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": "cloud worker creation quota exhausted",
 			"code":  "cloud_worker_quota_exhausted",
 		})
+		return
+	}
+	deployment, deploymentErr := h.deploymentForProfile(profile)
+	if deploymentErr == nil {
+		deployment.Env["CTYUN_WORKER_BILLING_MODE"] = billing
+	}
+	if deploymentErr != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "assigned deployment is not available; contact support", "code": "cloud_worker_profile_unavailable"})
 		return
 	}
 
@@ -1063,6 +1121,20 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker", "code": "cloud_worker_create_failed"})
+		return
+	}
+
+	if deploymentStore, ok := h.db.(cloudWorkerDeploymentStore); ok {
+		deploymentErr = deploymentStore.SetCloudWorkerDeployment(result.UID, deployment)
+	} else if profile == types.CloudWorkerPublicIP {
+		deploymentErr = fmt.Errorf("deployment store unavailable")
+	}
+	if deploymentErr != nil {
+		if reservedCredit {
+			_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+		}
+		_ = h.db.DeleteBot(result.UID)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist cloud worker deployment", "code": "cloud_worker_create_failed"})
 		return
 	}
 
@@ -1261,6 +1333,10 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // It is deliberately best-effort and idempotent; a failed destroy remains
 // visible as delete_failed for operator retry and never silently disappears.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
+	if !h.opMu.TryLock() {
+		return
+	}
+	defer h.opMu.Unlock()
 	started := time.Now()
 	store, ok := h.credits.(interface {
 		ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error)
@@ -1281,6 +1357,17 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 	}
 	markedPending, claimedCount, deleted, failed := 0, 0, 0, 0
 	for _, item := range items {
+		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") {
+			action := "suspend"
+			if item.ConversionPending {
+				action = "convert"
+			}
+			if err := h.runBillingAction(item, action, true); err != nil {
+				failed++
+				log.Printf("[cloud-worker] trial %s tenant=%s failed: %v", action, item.TenantName, err)
+			}
+			continue
+		}
 		if item.State == "active" {
 			if err := store.MarkCloudWorkerLifecyclePending(item.ID, item.DeleteAfter); err != nil {
 				log.Printf("[cloud-worker] lifecycle %s archive failed: %v", item.TenantName, err)
@@ -1661,6 +1748,21 @@ func (h *CloudWorkerHandler) runScript(script string, args ...string) (string, e
 // background context, so callers can bound short probes (image listing) and
 // long operations (provision/reset) independently.
 func (h *CloudWorkerHandler) runScriptTimeout(timeout time.Duration, script string, args ...string) (string, error) {
+	tenant := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--name" {
+			tenant = args[i+1]
+			break
+		}
+	}
+	deployment, err := h.deploymentForTenant(tenant)
+	if err != nil {
+		return "", err
+	}
+	return h.runDeploymentScript(timeout, deployment, script, args...)
+}
+
+func (h *CloudWorkerHandler) runDeploymentScript(timeout time.Duration, deployment types.CloudWorkerDeployment, script string, args ...string) (string, error) {
 	if script == "" {
 		return "", fmt.Errorf("cloud worker script not configured")
 	}
@@ -1668,6 +1770,11 @@ func (h *CloudWorkerHandler) runScriptTimeout(timeout time.Duration, script stri
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, script, args...)
+	env, envErr := deploymentEnvironment(cmd.Environ(), deployment)
+	if envErr != nil {
+		return "", envErr
+	}
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {

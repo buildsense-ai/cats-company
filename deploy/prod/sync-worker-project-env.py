@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import stat
@@ -24,11 +25,32 @@ def normalize_project_id(value: str, name: str) -> str:
     return normalized
 
 
-def render(source: str, worker_project_id: str, image_project_id: str) -> str:
+def render(source: str, worker_project_id: str, image_project_id: str, public_profile: str | None = None) -> str:
     updates = {
         WORKER_KEY: normalize_project_id(worker_project_id, WORKER_KEY),
         IMAGE_KEY: normalize_project_id(image_project_id, IMAGE_KEY),
     }
+    if public_profile is not None:
+        raw = public_profile.strip()
+        if raw:
+            value = json.loads(raw)
+            if not isinstance(value, dict) or not value:
+                raise ValueError("public worker profile must be a non-empty object")
+            if any(not isinstance(v, str) or any(c in v for c in "\r\n\0'$`") for v in value.values()):
+                raise ValueError("invalid public worker profile value")
+            allowed = {
+                "CTYUN_WORKER_" + suffix for suffix in (
+                    "REGION_ID", "PROJECT_ID", "AZ_NAME", "FLAVOR_ID", "VPC_ID", "SUBNET_ID",
+                    "SECURITY_GROUP_ID", "EXT_IP", "BILLING_MODE", "CYCLE_COUNT"
+                )
+            } | {"CTYUN_IMAGE_PROJECT_ID", "CATSCO_WORKER_HTTP_BASE_URL", "CATSCO_WORKER_SERVER_URL"}
+            if not set(value) <= allowed:
+                raise ValueError("unsupported public worker profile field")
+            required = {"CTYUN_WORKER_" + suffix for suffix in ("REGION_ID", "PROJECT_ID", "AZ_NAME", "FLAVOR_ID", "VPC_ID", "SUBNET_ID", "SECURITY_GROUP_ID")} | {"CTYUN_IMAGE_PROJECT_ID"}
+            if any(not value.get(key, "").strip() for key in required):
+                raise ValueError("incomplete public worker profile")
+            raw = json.dumps(value, separators=(",", ":"))
+        updates["CATSCO_WORKER_PUBLIC_PROFILE_JSON"] = "'" + raw + "'"
     lines: list[str] = []
     seen: set[str] = set()
     for raw_line in source.replace("\ufeff", "").replace("\r\n", "\n").splitlines():
@@ -41,15 +63,15 @@ def render(source: str, worker_project_id: str, image_project_id: str) -> str:
                 seen.add(key)
             continue
         lines.append(raw_line)
-    for key in MANAGED_KEYS:
+    for key in updates:
         if key not in seen:
             lines.append(f"{key}={updates[key]}")
     return "\n".join(lines) + "\n"
 
 
-def update_file(env_file: Path, worker_project_id: str, image_project_id: str) -> None:
+def update_file(env_file: Path, worker_project_id: str, image_project_id: str, public_profile: str | None = None) -> None:
     source = env_file.read_text(encoding="utf-8", errors="replace")
-    rendered = render(source, worker_project_id, image_project_id)
+    rendered = render(source, worker_project_id, image_project_id, public_profile)
     current_mode = stat.S_IMODE(env_file.stat().st_mode)
     temporary = env_file.with_name(f".{env_file.name}.{os.getpid()}.tmp")
     try:
@@ -75,6 +97,7 @@ def main() -> None:
             args.env_file,
             values[0].decode("utf-8"),
             values[1].decode("utf-8"),
+            values[2].decode("utf-8") if len(values) > 3 else None,
         )
     except ValueError as error:
         raise SystemExit(str(error)) from error

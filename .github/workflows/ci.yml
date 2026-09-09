@@ -68,7 +68,7 @@ jobs:
       - name: Test PostgreSQL store contract
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: go test ./server/db/postgres -run 'TestPostgres(StoreContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|ArtifactRuntimeEventSequenceFollowsCommitOrder)' -count=1 -v
+        run: go test ./server/db/postgres -run 'TestPostgres(StoreContract|CloudWorkerDeploymentContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|ArtifactRuntimeEventSequenceFollowsCommitOrder)' -count=1 -v
 
       - name: Test MySQL Artifact Runtime event ordering
         env:
@@ -248,7 +248,13 @@ jobs:
           python3 deploy/prod/update-nginx-v1-timeout_test.py
 
       - name: Test cloud worker provisioning and rollback
-        run: node --test deploy/prod/ops/provision-worker.test.mjs
+        run: >-
+          node --test deploy/prod/ops/provision-worker.test.mjs
+          deploy/prod/ops/reset-worker.test.mjs deploy/prod/ops/destroy-worker.test.mjs
+          deploy/prod/ops/deploy-worker-version.test.mjs deploy/prod/ops/rollback-worker.test.mjs
+          deploy/prod/ops/status-worker.test.mjs deploy/prod/ops/worker-deployment-profile.test.mjs
+          deploy/prod/ops/billing-worker.test.mjs
+          deploy/prod/ops/artifact-gateway-route.test.mjs
 
       - name: Validate deploy env updates
         run: |

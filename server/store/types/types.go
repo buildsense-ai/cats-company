@@ -61,16 +61,17 @@ type AuthService struct {
 // CommercialPlan describes an operator-managed relay package. It is the
 // commercial source record; relay-admin/Bifrost remain the execution layer.
 type CommercialPlan struct {
-	ID            int64              `json:"id"`
-	Slug          string             `json:"slug"`
-	Name          string             `json:"name"`
-	Description   string             `json:"description,omitempty"`
-	PriceFen      int64              `json:"price_fen"`
-	Currency      string             `json:"currency"`
-	SaleState     string             `json:"sale_state"`
-	PurchaseLimit int                `json:"purchase_limit"`
-	MonthlyBudget float64            `json:"monthly_budget_cny,omitempty"`
-	ModelBudgets  map[string]float64 `json:"model_budgets,omitempty"`
+	CloudWorkerBillingMode string             `json:"cloud_worker_billing_mode,omitempty"`
+	ID                     int64              `json:"id"`
+	Slug                   string             `json:"slug"`
+	Name                   string             `json:"name"`
+	Description            string             `json:"description,omitempty"`
+	PriceFen               int64              `json:"price_fen"`
+	Currency               string             `json:"currency"`
+	SaleState              string             `json:"sale_state"`
+	PurchaseLimit          int                `json:"purchase_limit"`
+	MonthlyBudget          float64            `json:"monthly_budget_cny,omitempty"`
+	ModelBudgets           map[string]float64 `json:"model_budgets,omitempty"`
 	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
 	// Relay enforcement continues to use the CNY budgets above.
 	InternalQuotaTokens int64     `json:"internal_quota_tokens,omitempty"`
@@ -166,21 +167,23 @@ type CommercialManagedRelayBudget struct {
 
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.
 type CommercialInviteCode struct {
-	CreateOnly         bool       `json:"-"`
-	ID                 int64      `json:"id"`
-	Code               string     `json:"code"`
-	PlanID             int64      `json:"plan_id"`
-	PlanSlug           string     `json:"plan_slug,omitempty"`
-	PlanName           string     `json:"plan_name,omitempty"`
-	MaxRedemptions     int        `json:"max_redemptions"`
-	RedeemedCount      int        `json:"redeemed_count"`
-	CloudWorkerCredits int        `json:"cloud_worker_credits"`
-	State              int        `json:"state"`
-	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
-	Note               string     `json:"note,omitempty"`
-	CreatedByUID       int64      `json:"created_by_uid,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	CloudWorkerBillingMode string     `json:"cloud_worker_billing_mode"`
+	CreateOnly             bool       `json:"-"`
+	ID                     int64      `json:"id"`
+	Code                   string     `json:"code"`
+	PlanID                 int64      `json:"plan_id"`
+	PlanSlug               string     `json:"plan_slug,omitempty"`
+	PlanName               string     `json:"plan_name,omitempty"`
+	MaxRedemptions         int        `json:"max_redemptions"`
+	RedeemedCount          int        `json:"redeemed_count"`
+	CloudWorkerCredits     int        `json:"cloud_worker_credits"`
+	CloudWorkerProfile     string     `json:"cloud_worker_profile"`
+	State                  int        `json:"state"`
+	ExpiresAt              *time.Time `json:"expires_at,omitempty"`
+	Note                   string     `json:"note,omitempty"`
+	CreatedByUID           int64      `json:"created_by_uid,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 // CommercialEntitlement is a user's active or historical package assignment.
@@ -317,13 +320,16 @@ type CommercialSummary struct {
 
 // CloudWorkerLifecycle tracks monthly package expiry and delayed deletion.
 type CloudWorkerLifecycle struct {
-	ID               int64
-	WorkerUID        int64
-	OwnerUID         int64
-	TenantName       string
-	PackageExpiresAt time.Time
-	DeleteAfter      time.Time
-	State            string
+	BillingMode       string
+	ConversionPending bool
+	BillingAction     string
+	ID                int64
+	WorkerUID         int64
+	OwnerUID          int64
+	TenantName        string
+	PackageExpiresAt  time.Time
+	DeleteAfter       time.Time
+	State             string
 }
 
 // CloudWorkerAdminRecord is the read-only operator view of a cloud worker.

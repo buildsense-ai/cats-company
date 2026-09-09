@@ -125,7 +125,7 @@ function runScript(t, { env = {}, fakeState = {}, appVersions = {}, remoteVersio
     fs.writeFileSync(path.join(tenantDir, "app_version"), `${version}\n`);
   }
   for (const instance of fakeState.instances || []) {
-    const ip = instance.fixedIPList?.[0] || "";
+    const ip = env.CTYUN_WORKER_EXT_IP === "1" ? instance.floatingIP : (instance.fixedIPList?.[0] || "");
     if (!remoteVersions[ip] || !instance.instanceName?.startsWith("worker-")) continue;
     const tenantDir = path.join(stateRoot, instance.instanceName.slice("worker-".length));
     fs.mkdirSync(tenantDir, { recursive: true });
@@ -175,7 +175,7 @@ test("status-worker: emits TSV with version joined from bake images", (t) => {
   assert.equal(r.status, 0, r.stderr);
   const lines = r.stdout.trim().split("\n").filter(Boolean);
   assert.equal(lines.length, 2);
-  assert.equal(lines[0], "worker-aaa\trunning\timg-running-1\t1.4.8\t1.4.9");
+  assert.equal(lines[0], "worker-aaa\trunning\timg-running-1\t1.4.8\t1.4.9\t\t");
   assert.equal(lines[1], "worker-bbb\tcreating\timg-old-2\t1.4.7\t1.4.8");
 });
 
@@ -185,7 +185,14 @@ test("status-worker: discovers and caches an old worker's active application ver
     remoteVersions: { "10.0.0.7": "1.4.7" },
   });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim(), "worker-legacy\trunning\timg-running-1\t1.4.8\t1.4.7", r.stderr);
+  assert.equal(r.stdout.trim(), "worker-legacy\trunning\timg-running-1\t1.4.8\t1.4.7\t10.0.0.7", r.stderr);
+});
+
+test("status-worker: public profile probes the EIP instead of the private IP", t => {
+  const worker = {...inst("worker-public", "running", "img-running-1", "172.27.7.2"),floatingIP:"8.8.8.8"};
+  const r = runScript(t,{env:{CTYUN_WORKER_EXT_IP:"1"},fakeState:{instances:[worker]},remoteVersions:{"8.8.8.8":"1.5.0"}});
+  assert.equal(r.status,0,r.stderr);
+  assert.equal(r.stdout.trim(),"worker-public\trunning\timg-running-1\t1.4.8\t1.5.0\t172.27.7.2\t8.8.8.8");
 });
 
 test("status-worker: no workers yields empty output and exit 0", (t) => {

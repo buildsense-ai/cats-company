@@ -165,6 +165,10 @@ if docker inspect catsco-website-preview >/dev/null 2>&1; then
   docker rm -f catsco-website-preview >/dev/null
 fi
 compose -f "$compose_file" --env-file "$env_file" up -d
+
+# Gateway tooling must understand both route kinds before public workers are
+# issued. Ship it through the same deployment as the control-plane scripts.
+compose -f "$compose_file" --env-file "$env_file" exec -T server /opt/catsco/ops/update-artifact-gateway-route.sh
 compose -f "$compose_file" --env-file "$env_file" ps
 
 printf '%s\n' "$revision" > "$root/CURRENT_REVISION"

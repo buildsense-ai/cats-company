@@ -59,6 +59,7 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	copy.MonthlyBudget = 0
 	copy.ModelBudgets = nil
 	copy.InternalQuotaTokens = 0
+	copy.CloudWorkerBillingMode = ""
 	return &copy
 }
 
@@ -857,19 +858,20 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"plans": plans})
 	case http.MethodPost:
 		var req struct {
-			Slug          string             `json:"slug"`
-			Name          string             `json:"name"`
-			Description   string             `json:"description"`
-			PriceFen      int64              `json:"price_fen"`
-			Currency      string             `json:"currency"`
-			SaleState     string             `json:"sale_state"`
-			PurchaseLimit int                `json:"purchase_limit"`
-			MonthlyBudget float64            `json:"monthly_budget_cny"`
-			ModelBudgets  map[string]float64 `json:"model_budgets"`
-			InternalQuota int64              `json:"internal_quota_tokens"`
-			DurationDays  int                `json:"duration_days"`
-			State         int                `json:"state"`
-			SortOrder     int                `json:"sort_order"`
+			Slug                   string             `json:"slug"`
+			Name                   string             `json:"name"`
+			Description            string             `json:"description"`
+			PriceFen               int64              `json:"price_fen"`
+			Currency               string             `json:"currency"`
+			SaleState              string             `json:"sale_state"`
+			PurchaseLimit          int                `json:"purchase_limit"`
+			MonthlyBudget          float64            `json:"monthly_budget_cny"`
+			ModelBudgets           map[string]float64 `json:"model_budgets"`
+			InternalQuota          int64              `json:"internal_quota_tokens"`
+			DurationDays           int                `json:"duration_days"`
+			State                  int                `json:"state"`
+			SortOrder              int                `json:"sort_order"`
+			CloudWorkerBillingMode string             `json:"cloud_worker_billing_mode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid plan request"})
@@ -914,24 +916,30 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			return
 		}
 		modelBudgets := parseCommercialBudgets(req.ModelBudgets)
+		billing, validBilling := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode)
+		if !validBilling || (billing == types.CloudWorkerOnDemand && req.SaleState != "hidden") {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "按量试用仅可用于隐藏的内部套餐"})
+			return
+		}
 		if err := validateCommercialOfficialPaidPlanModels(req.Slug, modelBudgets); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
-			Slug:                req.Slug,
-			Name:                req.Name,
-			Description:         req.Description,
-			PriceFen:            req.PriceFen,
-			Currency:            req.Currency,
-			SaleState:           req.SaleState,
-			PurchaseLimit:       req.PurchaseLimit,
-			MonthlyBudget:       req.MonthlyBudget,
-			ModelBudgets:        modelBudgets,
-			InternalQuotaTokens: req.InternalQuota,
-			DurationDays:        req.DurationDays,
-			State:               req.State,
-			SortOrder:           req.SortOrder,
+			Slug:                   req.Slug,
+			Name:                   req.Name,
+			Description:            req.Description,
+			PriceFen:               req.PriceFen,
+			Currency:               req.Currency,
+			SaleState:              req.SaleState,
+			PurchaseLimit:          req.PurchaseLimit,
+			MonthlyBudget:          req.MonthlyBudget,
+			ModelBudgets:           modelBudgets,
+			InternalQuotaTokens:    req.InternalQuota,
+			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
+			DurationDays:           req.DurationDays,
+			State:                  req.State,
+			SortOrder:              req.SortOrder,
 		})
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save plan"})
@@ -959,14 +967,16 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"invites": invites})
 	case http.MethodPost:
 		var req struct {
-			Code               string `json:"code"`
-			CreateOnly         bool   `json:"create_only"`
-			PlanID             int64  `json:"plan_id"`
-			MaxRedemptions     int    `json:"max_redemptions"`
-			CloudWorkerCredits int    `json:"cloud_worker_credits"`
-			State              int    `json:"state"`
-			ExpiresAt          string `json:"expires_at"`
-			Note               string `json:"note"`
+			Code                   string `json:"code"`
+			CreateOnly             bool   `json:"create_only"`
+			PlanID                 int64  `json:"plan_id"`
+			MaxRedemptions         int    `json:"max_redemptions"`
+			CloudWorkerCredits     int    `json:"cloud_worker_credits"`
+			CloudWorkerProfile     string `json:"cloud_worker_profile"`
+			CloudWorkerBillingMode string `json:"cloud_worker_billing_mode"`
+			State                  int    `json:"state"`
+			ExpiresAt              string `json:"expires_at"`
+			Note                   string `json:"note"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid invite request"})
@@ -1007,15 +1017,28 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			}
 			expiresAt = &parsed
 		}
+		profile, valid := types.NormalizeCloudWorkerProfile(req.CloudWorkerProfile)
+		if req.CloudWorkerBillingMode != "" {
+			if _, ok := types.NormalizeCloudWorkerBilling(req.CloudWorkerBillingMode); !ok {
+				writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker billing mode"})
+				return
+			}
+		}
+		if !valid {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker profile"})
+			return
+		}
 		id, err := store.CreateCommercialInviteCode(&types.CommercialInviteCode{
-			CreateOnly:         req.CreateOnly,
-			Code:               code,
-			PlanID:             req.PlanID,
-			MaxRedemptions:     req.MaxRedemptions,
-			CloudWorkerCredits: req.CloudWorkerCredits,
-			State:              req.State,
-			ExpiresAt:          expiresAt,
-			Note:               req.Note,
+			CreateOnly:             req.CreateOnly,
+			Code:                   code,
+			PlanID:                 req.PlanID,
+			MaxRedemptions:         req.MaxRedemptions,
+			CloudWorkerCredits:     req.CloudWorkerCredits,
+			CloudWorkerProfile:     profile,
+			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
+			State:                  req.State,
+			ExpiresAt:              expiresAt,
+			Note:                   req.Note,
 		})
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save invite code"})

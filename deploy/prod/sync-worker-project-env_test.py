@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import stat
 import sys
@@ -22,6 +23,19 @@ spec.loader.exec_module(sync)
 
 
 class SyncWorkerProjectEnvTest(unittest.TestCase):
+    def test_public_profile_roundtrip_and_explicit_disable(self):
+        profile = {"CTYUN_WORKER_" + key: "public-" + key for key in ("REGION_ID", "PROJECT_ID", "AZ_NAME", "FLAVOR_ID", "VPC_ID", "SUBNET_ID", "SECURITY_GROUP_ID")}
+        profile["CTYUN_IMAGE_PROJECT_ID"] = "0"
+        rendered = sync.render("KEEP=value\n", "0", "0", json.dumps(profile))
+        self.assertIn("CATSCO_WORKER_PUBLIC_PROFILE_JSON='", rendered)
+        value = rendered.split("CATSCO_WORKER_PUBLIC_PROFILE_JSON=", 1)[1].strip().strip("'")
+        self.assertEqual(json.loads(value), profile)
+        self.assertIn("CATSCO_WORKER_PUBLIC_PROFILE_JSON=''", sync.render(rendered, "0", "0", ""))
+        self.assertEqual(sync.render(rendered, "0", "0"), rendered)
+        for raw in ('{"CTYUN_AK":"fake"}', '{"CTYUN_WORKER_REGION_ID":"$(bad)"}', '{}'):
+            with self.assertRaises(ValueError):
+                sync.render("", "0", "0", raw)
+
     def test_replaces_duplicates_and_keeps_projects_independent(self) -> None:
         project = "a" * 32
         rendered = sync.render(

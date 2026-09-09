@@ -31,6 +31,9 @@ while (($#)); do
   esac
 done
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worker-deployment-profile.sh"
+worker_profile_load "$NAME"
+
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 
