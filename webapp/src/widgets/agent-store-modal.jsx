@@ -564,7 +564,8 @@ export default function AgentStoreModal({
   const [generatedInviteCodes, setGeneratedInviteCodes] = useState({});
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
-  const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
+  const [cloudImages, setCloudImages] = useState([]);
+  const [cloudImagesByWorker, setCloudImagesByWorker] = useState(null); // available worker image versions from the control plane meta
   const [cloudReleases, setCloudReleases] = useState([]); // published application releases for update/rollback
   const [cloudActions, setCloudActions] = useState(null); // configured cloud operation capabilities
   const [cloudActioning, setCloudActioning] = useState(null); // { name, action }
@@ -814,6 +815,7 @@ export default function AgentStoreModal({
     loadBots();
   }, [initialAgentId, initialCloudWorker]);
 
+  const cloudWorkerCatalogKey = cloudWorkers.map(worker => worker.tenant_name || '').sort().join('|');
   // Application releases and base images are independent catalogs. A cold
   // backend snapshot gets one short follow-up poll; settled responses do not
   // keep polling.
@@ -825,6 +827,7 @@ export default function AgentStoreModal({
         const meta = await api.getCloudWorkerMeta?.();
         if (cancelled) return;
         setCloudImages(meta?.images || []);
+        setCloudImagesByWorker(meta?.images_by_worker ?? null);
         setCloudReleases(meta?.releases || []);
         setCloudActions(meta?.actions || null);
         if (meta?.images_refreshing || meta?.releases_refreshing) {
@@ -839,7 +842,7 @@ export default function AgentStoreModal({
       cancelled = true;
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, []);
+  }, [cloudWorkerCatalogKey]);
 
   useEffect(() => {
     editingBotRef.current = editingBot;
@@ -1694,6 +1697,7 @@ export default function AgentStoreModal({
                   quotaError={cloudQuotaError}
                   workers={cloudWorkers}
                   images={cloudImages}
+                  imagesByWorker={cloudImagesByWorker}
                   releases={cloudReleases}
                   actions={cloudActions}
                   actioning={cloudActioning}
@@ -1902,6 +1906,7 @@ export default function AgentStoreModal({
                 quotaError={cloudQuotaError}
                 workers={cloudWorkers}
                 images={cloudImages}
+                  imagesByWorker={cloudImagesByWorker}
                 releases={cloudReleases}
                 actions={cloudActions}
                 actioning={cloudActioning}
