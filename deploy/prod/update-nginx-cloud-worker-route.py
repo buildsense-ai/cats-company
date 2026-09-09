@@ -37,6 +37,12 @@ def block_spans(text: str, pattern: str) -> list[tuple[int, int]]:
 
 
 def render(source: str, server_name: str) -> str:
+    for route_path in ("/api/cloud-workers", "/api/admin/relay/local/commercial-ops/api/cloud-worker-provision"):
+        source = render_route(source, server_name, route_path)
+    return source
+
+
+def render_route(source: str, server_name: str, route_path: str) -> str:
     servers = block_spans(source, r"^[ \t]*server[ \t]*\{")
     candidates: list[tuple[int, int]] = []
     for start, end in servers:
@@ -56,7 +62,7 @@ def render(source: str, server_name: str) -> str:
     # vhost must not make this target look configured.
     worker_locations = block_spans(
         server,
-        r"^[ \t]*location[ \t]+\^~[ \t]+/api/cloud-workers[ \t]*\{",
+        rf"^[ \t]*location[ \t]+\^~[ \t]+{re.escape(route_path)}[ \t]*\{{",
     )
     if len(worker_locations) > 1:
         raise ValueError(f"expected at most one cloud-worker location for {server_name}, found {len(worker_locations)}")
@@ -71,7 +77,7 @@ def render(source: str, server_name: str) -> str:
 
     indent = re.match(r"^[ \t]*", api_block).group(0)
     route = (
-        f"{indent}location ^~ /api/cloud-workers {{\n"
+        f"{indent}location ^~ {route_path} {{\n"
         f"{indent}    proxy_pass {proxy.group(1)};\n"
         f"{indent}    proxy_http_version 1.1;\n"
         f"{indent}    proxy_set_header Host $host;\n"
