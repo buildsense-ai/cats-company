@@ -92,6 +92,12 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/local/pricing-analytics/data?window=24h",
 		"/local/pricing-analytics/user?uid=2",
 		"/local/pricing-rules",
+		"/local/provider-capacity",
+		"/local/provider-capacity/api/accounts",
+		"/local/provider-capacity/api/accounts/",
+		"/local/provider-capacity/api/accounts?refresh=1",
+		"/local/provider-capacity/api/accounts/state",
+		"/local/provider-capacity/api/accounts/state/",
 		"/local/commercial-ops",
 		"/local/commercial-ops/api/overview",
 		"/local/commercial-ops/api/relay-sync?uid=38",
@@ -115,6 +121,13 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/health", "/api/foo", "/local/other",
 		"/local/commercial-ops/api/unknown",
 		"/local/commercial-ops/private",
+		"/local/provider-capacity-extra",
+		"/local/provider-capacity/private",
+		"/local/provider-capacity/api/accounts-extra",
+		"/local/provider-capacity/api/accounts/delete",
+		"/local/provider-capacity/api/accounts/state/extra",
+		"/local/provider-capacity/api/accounts/../../internal/keys",
+		"/local/provider-capacity/api/accounts/%2e%2e/state",
 	}
 	for _, p := range bad {
 		if relayAdminPathAllowed(p) {
@@ -364,6 +377,110 @@ func TestRelayAdminCommercialOpsWriteMarker(t *testing.T) {
 	}
 	if !sawMarker {
 		t.Fatal("relay did not receive the local commercial write marker")
+	}
+}
+
+func TestRelayAdminProviderCapacityThroughPortal(t *testing.T) {
+	const payload = `{"provider":"test-provider","enabled":false}`
+	for _, tc := range []struct {
+		method, path, marker string
+	}{
+		{http.MethodGet, "/local/usage-admin", ""},
+		{http.MethodGet, "/local/provider-capacity", ""},
+		{http.MethodGet, "/local/provider-capacity/api/accounts?refresh=1", ""},
+		{http.MethodPost, "/local/provider-capacity/api/accounts", "provider-capacity"},
+		{http.MethodPost, "/local/provider-capacity/api/accounts/", "provider-capacity"},
+		{http.MethodPost, "/local/provider-capacity/api/accounts/state", "provider-capacity"},
+		{http.MethodPost, "/local/provider-capacity/api/accounts/state/", "provider-capacity"},
+		{http.MethodPost, "/local/provider-capacity", ""},
+		{http.MethodDelete, "/local/provider-capacity/api/accounts", ""},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			calls := 0
+			relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != tc.method || r.URL.RequestURI() != tc.path {
+					t.Errorf("upstream request: %s %s", r.Method, r.URL.RequestURI())
+				}
+				if got := r.Header.Get("X-Cats-Relay-Local-Write"); got != tc.marker {
+					t.Errorf("write marker=%q want=%q", got, tc.marker)
+				}
+				for _, header := range []string{"Authorization", "Cookie", "Origin"} {
+					if r.Header.Get(header) != "" {
+						t.Errorf("forwarded sensitive header: %s", header)
+					}
+				}
+				if r.Method == http.MethodPost {
+					body, err := io.ReadAll(r.Body)
+					if err != nil || string(body) != payload || r.ContentLength != int64(len(payload)) || r.Header.Get("Content-Type") != "application/json" {
+						t.Error("capacity write body or content headers were not preserved")
+					}
+				}
+				switch r.URL.Path {
+				case "/local/usage-admin":
+					w.Header().Set("Content-Type", "text/html")
+					fmt.Fprint(w, `<a href="/local/provider-capacity">上游容量</a>`)
+				case "/local/provider-capacity":
+					w.Header().Set("Content-Type", "text/html")
+					fmt.Fprint(w, `<script>const api = "/local/provider-capacity/api"; fetch(api + "/accounts");</script>`)
+				default:
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprint(w, `{"accounts":[],"note":"/local/provider-capacity"}`)
+				}
+			}))
+			defer relay.Close()
+			h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+			access := httptest.NewRequest(http.MethodGet, "/api/admin/relay/access", nil)
+			access = access.WithContext(context.WithValue(access.Context(), uidKey, int64(38)))
+			accessRec := httptest.NewRecorder()
+			h.HandleAccess(accessRec, access)
+			cookies := accessRec.Result().Cookies()
+			if len(cookies) != 1 {
+				t.Fatal("missing portal session cookie")
+			}
+			req := httptest.NewRequest(tc.method, relayAdminRewritePrefix+tc.path, strings.NewReader(payload))
+			req.AddCookie(cookies[0]) // iframe requests have no context UID or JWT.
+			req.Header.Set("Origin", "https://portal.example")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Cats-Relay-Local-Write", "caller-controlled")
+			rec := httptest.NewRecorder()
+			h.AuthMiddleware(func(http.HandlerFunc) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) }
+			})(h.HandleProxy)(rec, req)
+			if rec.Code != http.StatusOK || calls != 1 {
+				t.Fatalf("portal status=%d upstream calls=%d", rec.Code, calls)
+			}
+			body := rec.Body.String()
+			if strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
+				if !strings.Contains(body, relayAdminRewritePrefix+"/local/provider-capacity") {
+					t.Fatalf("capacity link/API not rewritten: %s", body)
+				}
+			} else if !strings.Contains(body, `"note":"/local/provider-capacity"`) {
+				t.Fatalf("JSON response was rewritten: %s", body)
+			}
+		})
+	}
+}
+
+func TestRelayAdminProviderCapacityRejectsUnauthorizedAccess(t *testing.T) {
+	for _, path := range []string{"/local/provider-capacity", "/local/provider-capacity/api/accounts", "/local/provider-capacity/api/accounts/state"} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			for _, uid := range []int64{0, 7} {
+				h := NewRelayAdminProxyHandler(relayAdminConfig{allowedUIDs: []int64{38}})
+				req := httptest.NewRequest(method, relayAdminRewritePrefix+path, nil)
+				req = req.WithContext(context.WithValue(req.Context(), uidKey, uid))
+				req.Header.Set("X-Cats-Relay-Local-Write", "provider-capacity")
+				rec := httptest.NewRecorder()
+				h.HandleProxy(rec, req)
+				want := http.StatusForbidden
+				if uid == 0 {
+					want = http.StatusUnauthorized
+				}
+				if rec.Code != want {
+					t.Errorf("%s %s uid=%d: status=%d want=%d", method, path, uid, rec.Code, want)
+				}
+			}
+		}
 	}
 }
 
