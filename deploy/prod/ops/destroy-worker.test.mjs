@@ -31,6 +31,11 @@ const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 const val = f => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : ""; };
 const json = o => process.stdout.write(JSON.stringify(o));
 if (op === "ecs ListEcsInstances") {
+  if (state.pendingDeleteID && state.deleteReadsLeft > 0) {
+    state.deleteReadsLeft--;
+    if(state.deleteReadsLeft===0) state.instances=state.instances.filter(i=>i.instanceID!==state.pendingDeleteID);
+    fs.writeFileSync(statePath,JSON.stringify(state));
+  }
   const name = val("--instanceName");
   json({ statusCode: "800", returnObj: { results: (state.instances || []).filter(i => !name || i.instanceName === name) } });
 } else if (op === "ecs GetEcsKeypairDetails") {
@@ -40,7 +45,9 @@ if (op === "ecs ListEcsInstances") {
   if (state.failDeleteInstance) { json({ statusCode: "900", errorCode: "E.DEL", message: "boom" }); process.exit(0); }
   state.deletedInstances = state.deletedInstances || [];
   state.deletedInstances.push(val("--instanceID"));
-  if (!state.deferDeleteInstance) {
+  if(state.deletePolls) {
+    state.pendingDeleteID=val("--instanceID");state.deleteReadsLeft=state.deletePolls;
+  } else if (!state.deferDeleteInstance) {
     state.instances = (state.instances || []).filter(i => i.instanceID !== val("--instanceID"));
   }
   fs.writeFileSync(statePath, JSON.stringify(state));
@@ -78,11 +85,20 @@ if (op === "ecs ListEcsInstances") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs DeleteEcsKeypair") {
+  state.keyDeleteAttempts=(state.keyDeleteAttempts||0)+1;
+  fs.writeFileSync(statePath,JSON.stringify(state));
+  if((state.instances||[]).some(i=>"worker-key-"+i.instanceName.replace(/^worker-/,"")===val("--keyPairName"))) {
+    json({statusCode:900,errorCode:"Ecs.Keypair.HasAttached",message:"instance still exists"});process.exit(0);
+  }
+  if(state.failDeleteKeypairAttempts>=state.keyDeleteAttempts) {
+    json({statusCode:900,errorCode:"Ecs.Keypair.HasAttached",message:"attachment release pending"});process.exit(0);
+  }
   if (state.failDeleteKeypair) { json({ statusCode: "900", errorCode: "E.DELKP", message: "boom" }); process.exit(0); }
   state.deletedKeypairs = state.deletedKeypairs || [];
   state.deletedKeypairs.push(val("--keyPairName"));
   state.keypairs = (state.keypairs || []).filter(k => k.keyPairName !== val("--keyPairName"));
   fs.writeFileSync(statePath, JSON.stringify(state));
+  if(state.deleteKeypairResponseLost) {json({statusCode:900,errorCode:"E.RESPONSE",message:"response unavailable"});process.exit(0);}
   json({ statusCode: "800", returnObj: {} });
 } else {
   process.stderr.write("unexpected: " + op); process.exit(2);
@@ -136,6 +152,7 @@ function setupSandbox(state) {
   fs.mkdirSync(bin);
   writeCommand(bin, "ctyun-cli", FAKE_CTYUN);
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
+  writeCommand(bin, "sleep", "process.exit(0);");
   const statePath = path.join(sandbox, "state.json");
   fs.writeFileSync(statePath, JSON.stringify(state || {}));
   const jqDir = process.env.CATSCO_JQ ? path.dirname(process.env.CATSCO_JQ) : "";
@@ -278,7 +295,7 @@ test("destroy-worker: keeps a cleanup marker when route repair is unavailable", 
   assert.equal(fs.readFileSync(path.join(cleanupDir, "42.pending"), "utf8"), "42\n");
 });
 
-test("destroy-worker: full sync excludes a pending route while async deletion remains visible", () => {
+test("destroy-worker: keeps route and retry state until async deletion is confirmed", () => {
   const sb = setupSandbox({
     instances: [{ instanceName: "worker-bot-a", instanceID: "i-1", state: "running", floatingIP: "10.0.0.9" }],
     keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
@@ -307,9 +324,11 @@ esac
     CATSCO_ARTIFACT_GATEWAY_ROUTE_SCRIPT: toMsys(routeScript),
     CATSCO_ARTIFACT_ROUTE_CLEANUP_DIR: toMsys(cleanupDir),
   });
-  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-  assert.deepEqual(JSON.parse(fs.readFileSync(syncedRoutes, "utf8")), {});
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /timed out waiting for instance deletion/);
+  assert.equal(fs.existsSync(syncedRoutes), false, "route cleanup must not run before confirmed deletion");
   assert.equal(fs.existsSync(path.join(cleanupDir, "42.pending")), false);
+  assert.ok(fs.existsSync(path.join(workerState,"inject.env")),"retain retry identity");
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.equal(state.instances[0].state, "running", "the cloud API still exposes the asynchronously deleting instance");
 });
@@ -422,9 +441,47 @@ test("destroy-worker: keypair delete failure fails closed with aggregate error",
     keypairs: [{ keyPairName: "worker-key-bot-a", keyPairID: "kp-1" }],
     failDeleteKeypair: true,
   });
+  const localState=path.join(sb.sandbox,"state");
+  fs.mkdirSync(localState,{recursive:true});
+  fs.writeFileSync(path.join(localState,"retry-marker"),"keep regional retry state");
   const r = run(sb, ["--name", "bot-a"]);
   assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stderr, /key pair delete failed/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.deepEqual(state.deletedInstances, ["i-1"], "instance delete happened before keypair failure");
+  assert.equal(state.keyDeleteAttempts,6,"key cleanup retry must be bounded");
+  assert.ok(fs.existsSync(path.join(localState,"retry-marker")),"keep local state on incomplete cleanup");
+});
+
+function cleanupFixture(extra={}) {
+  return setupSandbox({instances:[{instanceName:"worker-bot-a",instanceID:"i-1",state:"running"}],keypairs:[{keyPairName:"worker-key-bot-a",keyPairID:"kp-1"}],...extra});
+}
+test("destroy-worker: confirms async deletion and retries delayed key detach",()=>{
+  const sb=cleanupFixture({deletePolls:3,failDeleteKeypairAttempts:2});
+  const r=run(sb,["--name","bot-a"]);
+  assert.equal(r.status,0,r.stderr);
+  const state=JSON.parse(fs.readFileSync(sb.statePath,"utf8"));
+  assert.equal(state.deleteReadsLeft,0);
+  assert.equal(state.keyDeleteAttempts,3);
+  assert.deepEqual(state.deletedInstances,["i-1"]);
+  assert.deepEqual(state.deletedKeypairs,["worker-key-bot-a"]);
+});
+test("destroy-worker: reconciles a key deletion after a lost response",()=>{
+  const sb=cleanupFixture({deleteKeypairResponseLost:true});
+  const r=run(sb,["--name","bot-a"]);
+  assert.equal(r.status,0,r.stderr);
+  const state=JSON.parse(fs.readFileSync(sb.statePath,"utf8"));
+  assert.equal(state.keyDeleteAttempts,1);
+  assert.deepEqual(state.keypairs,[]);
+});
+test("destroy-worker: a still-present instance keeps key and local retry state",()=>{
+  const sb=cleanupFixture({deferDeleteInstance:true});
+  const localState=path.join(sb.sandbox,"state");fs.mkdirSync(localState,{recursive:true});
+  fs.writeFileSync(path.join(localState,"retry-marker"),"keep");
+  const r=run(sb,["--name","bot-a"]);
+  assert.notEqual(r.status,0);
+  assert.match(r.stderr,/timed out waiting for instance deletion/);
+  const state=JSON.parse(fs.readFileSync(sb.statePath,"utf8"));
+  assert.equal(state.keyDeleteAttempts||0,0);
+  assert.ok(fs.existsSync(path.join(localState,"retry-marker")));
 });
