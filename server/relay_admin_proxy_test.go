@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -45,6 +46,40 @@ func TestRelayAdminProxyTimeoutCoversLongPricingWindows(t *testing.T) {
 	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: "http://127.0.0.1:18090"})
 	if h.client.Timeout != relayAdminProxyTimeout {
 		t.Fatalf("relay admin proxy timeout=%s, want %s", h.client.Timeout, relayAdminProxyTimeout)
+	}
+}
+
+func TestRelayAdminProvisionSurvivesOrdinaryProxyTimeout(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"deployment_status":"provisioned","runtime_status":"not_connected"}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.client.Timeout = 10 * time.Millisecond
+	for _, tc := range []struct {
+		method, path string
+		status       int
+	}{
+		{http.MethodPost, "/local/commercial-ops/api/cloud-worker-provision", http.StatusCreated},
+		{http.MethodPost, "/local/commercial-ops/api/cloud-worker-provision/", http.StatusCreated},
+		{http.MethodGet, "/local/commercial-ops/api/cloud-workers", http.StatusBadGateway},
+	} {
+		req := httptest.NewRequest(tc.method, relayAdminRewritePrefix+tc.path, strings.NewReader(`{"uid":38}`))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+		rec := httptest.NewRecorder()
+		h.HandleProxy(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("%s: status=%d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+		if tc.status == http.StatusCreated && !strings.Contains(rec.Body.String(), `"runtime_status":"not_connected"`) {
+			t.Fatal(rec.Body.String())
+		}
+	}
+	if h.client.Timeout != 10*time.Millisecond {
+		t.Fatal("shared client timeout changed")
 	}
 }
 

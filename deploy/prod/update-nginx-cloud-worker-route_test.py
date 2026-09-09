@@ -30,6 +30,8 @@ class CloudWorkerNginxRouteTest(unittest.TestCase):
     def test_inserts_route_only_in_tls_vhost(self):
         rendered = module.render(APP, "app.catsco.cn")
         self.assertEqual(rendered.count("location ^~ /api/cloud-workers"), 1)
+        self.assertEqual(rendered.count("location ^~ /api/admin/relay/local/commercial-ops/api/cloud-worker-provision"), 1)
+        self.assertEqual(rendered.count("proxy_read_timeout 660s;"), 2)
         self.assertIn("proxy_read_timeout 660s;", rendered)
         self.assertIn("proxy_send_timeout 660s;", rendered)
         self.assertEqual(rendered.count("server_name app.catsco.cn;"), 2)

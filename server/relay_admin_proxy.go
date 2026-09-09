@@ -56,6 +56,9 @@ const relayAdminRewritePrefix = "/api/admin/relay"
 // a successful internal response into a misleading "upstream unavailable".
 const relayAdminProxyTimeout = 60 * time.Second
 
+// The nested Relay provision client waits up to 630s for a 600s script.
+const relayAdminProvisionProxyTimeout = 650 * time.Second
+
 type relayAdminConfig struct {
 	relayURL    string
 	allowedUIDs []int64
@@ -268,16 +271,32 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 	}
 	// Deliberately do NOT forward Authorization/Cookie/Origin/other sensitive headers.
 
-	resp, err := h.client.Do(upReq)
+	provision := r.Method == http.MethodPost && strings.TrimRight(relayPath, "/") == "/local/commercial-ops/api/cloud-worker-provision"
+	client := h.client
+	if provision {
+		// Copy per request; changing the shared client races with ordinary reads.
+		provisionClient := *h.client
+		provisionClient.Timeout = relayAdminProvisionProxyTimeout
+		client = &provisionClient
+	}
+	resp, err := client.Do(upReq)
 	if err != nil {
 		h.audit(r, uid, http.StatusBadGateway, "relay-unreachable")
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream unavailable"})
+		message := "upstream unavailable"
+		if provision {
+			message = "部署连接中断，实例可能仍在创建；请先检查云员工列表，勿直接重复创建"
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": message})
 		return
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
 	if readErr != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream read failed"})
+		message := "upstream read failed"
+		if provision {
+			message = "部署响应中断，实例状态尚未确认；请先检查云员工列表，勿直接重复创建"
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": message})
 		return
 	}
 	if len(body) > 8<<20 {
