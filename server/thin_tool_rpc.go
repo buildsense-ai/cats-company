@@ -493,6 +493,7 @@ func (h *Hub) hasRoutableServerRuntimeForBot(ownerUID int64, botUID int64, exclu
 func isSkillHubThinToolOperation(operation DeviceGrantOperation) bool {
 	switch operation {
 	case DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubSkillDelete,

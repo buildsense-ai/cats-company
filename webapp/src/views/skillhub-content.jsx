@@ -14,6 +14,12 @@ export default function SkillHubContent(props) {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
     isReadOnly, loadingDefinition, onChangeSection, saving, selectedAgentName, selectedAgentRelation, skillAction,
   } = props;
+  // A friend Bot is metadata-only. Keep this guard in the rendering boundary
+  // as well as in the Agent-switch handler so stale UI state can never expose
+  // the owner's Runtime workspace actions, even for a single render.
+  const visibleSection = activeSection === 'custom' && !isLocalEnabled
+    ? 'added'
+    : activeSection;
   return (
     <main className='cc-skillhub-page'>
       <div className='cc-skillhub-shell'>
@@ -28,16 +34,16 @@ export default function SkillHubContent(props) {
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
         {runtimeRouteError && <div className='cc-skillhub-alert error' role='alert'>{runtimeRouteError}</div>}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
-        {activeSection === 'custom' ? <CustomSkills {...props} /> : (
+        {visibleSection === 'custom' ? <CustomSkills {...props} /> : (
           <>
-            <SkillNavigation {...props} addedCount={definition.skills.length} />
+            <SkillNavigation {...props} activeSection={visibleSection} addedCount={definition.skills.length} />
             {(loadingDefinition || saving) && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
                 {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : '正在添加能力…'}
               </div>
             )}
-            {activeSection === 'added' ? <AddedSkills {...props} /> : <Catalogue {...props} />}
+            {visibleSection === 'added' ? <AddedSkills {...props} /> : <Catalogue {...props} />}
           </>
         )}
       </div>
@@ -46,9 +52,9 @@ export default function SkillHubContent(props) {
 }
 
 function AgentContext({
-  agentOptions, loadingBots, onSelectAgent, saving, selectedAgentRelation, selectedBotUID, sharingSkill,
+  agentOptions, loadingBots, onSelectAgent, saving, selectedAgentRelation, selectedBotUID, sharingSkill, syncingWorkspace,
 }) {
-  const disabled = loadingBots || agentOptions.length === 0 || Boolean(sharingSkill) || saving;
+  const disabled = loadingBots || agentOptions.length === 0 || Boolean(sharingSkill) || saving || syncingWorkspace;
   return (
     <div className='cc-skillhub-agent-context'>
       <label className='cc-skillhub-bot-picker'>
@@ -689,9 +695,31 @@ function CustomSkills(props) {
   );
 }
 
-function CustomToolbar({ devices, loadingDevices, loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, saving, selectedBotUID, selectedDeviceID, sharingSkill }) {
+function CustomToolbar({
+  devices, loadingDevices, loadingLocalSkills, localSkills, localSkillsPath,
+  localWorkspaceRevision, onCopyLocalPath, onRefreshLocal, onSyncWorkspace,
+  saving, selectedBotUID, selectedDeviceID, sharingSkill, supportsWorkspaceSync,
+  syncingWorkspace,
+}) {
   const selectedDevice = devices?.find(device => String(device?.deviceId || '') === String(selectedDeviceID || ''));
   const isServerRuntime = selectedDevice?.runtimeRole === 'server';
+  const hasInvalidSkill = localSkills.some(skill => Boolean(skill.shareError));
+  const syncDisabled = !selectedBotUID
+    || !selectedDeviceID
+    || !supportsWorkspaceSync
+    || !localWorkspaceRevision
+    || localSkills.length === 0
+    || hasInvalidSkill
+    || loadingDevices
+    || loadingLocalSkills
+    || saving
+    || Boolean(sharingSkill)
+    || syncingWorkspace;
+  const syncTitle = !supportsWorkspaceSync
+    ? '目标 XiaoBa 尚不支持批量同步，请更新到最新 main 并重启。'
+    : hasInvalidSkill
+      ? '工作区中存在无法同步的 Skill，请先修复。'
+      : '将当前运行工作区设为该 Agent 的正式能力；未发布 Skill 保持 Bot 私有。';
   return (
     <div className='cc-skillhub-custom-toolbar'>
       <div className='cc-skillhub-local-path'><FolderOpen size={15} aria-hidden='true' />{isServerRuntime
@@ -699,7 +727,10 @@ function CustomToolbar({ devices, loadingDevices, loadingLocalSkills, localSkill
         : <code>{localSkillsPath || '尚未读取本地 Skills 目录'}</code>}</div>
       <div className='cc-skillhub-local-actions'>
         {!isServerRuntime && <button type='button' onClick={onCopyLocalPath} disabled={!localSkillsPath}><Clipboard size={14} aria-hidden='true' /> 复制路径</button>}
-        <button type='button' onClick={onRefreshLocal} disabled={!selectedBotUID || loadingDevices || loadingLocalSkills || saving || Boolean(sharingSkill)}>
+        <button type='button' className='primary' onClick={onSyncWorkspace} disabled={syncDisabled} title={syncTitle}>
+          <Share2 size={14} aria-hidden='true' /> {syncingWorkspace ? '同步中…' : '同步到当前 Agent'}
+        </button>
+        <button type='button' onClick={onRefreshLocal} disabled={!selectedBotUID || loadingDevices || loadingLocalSkills || saving || Boolean(sharingSkill) || syncingWorkspace}>
           <RefreshCw className={loadingLocalSkills ? 'is-spinning' : ''} size={14} aria-hidden='true' /> {loadingLocalSkills ? '刷新中…' : '刷新'}
         </button>
       </div>
@@ -711,7 +742,7 @@ function CustomGrid(props) {
   return <div className='cc-skillhub-local-grid'>{props.localSkills.map((skill) => <CustomCard key={`${skill.relativePath}:${skill.name}`} skill={skill} {...props} />)}</div>;
 }
 
-function CustomCard({ definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill }) {
+function CustomCard({ definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, syncingWorkspace }) {
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
   const shared = isLocalSkillShared(skill, installedReference);
@@ -726,7 +757,7 @@ function CustomCard({ definitionReady, installedByID, isLocalSkillShared, loadin
         {skill.shareError || skill.description || '这个自定义能力暂时没有补充说明。'}
       </p>
       <code>{skill.relativePath || skill.path}</code>
-      <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)} onClick={() => onShareLocalSkill(skill)} title={blocked ? skill.shareError : undefined}>
+      <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill) || syncingWorkspace} onClick={() => onShareLocalSkill(skill)} title={blocked ? skill.shareError : undefined}>
         {blocked ? <Info size={14} aria-hidden='true' /> : shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
         {blocked ? '请先修复此 Skill' : shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}
       </button>

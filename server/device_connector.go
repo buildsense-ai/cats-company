@@ -858,14 +858,23 @@ func limitConnectorCapabilities(requested []string, allowed []string) []string {
 // an upgraded Runtime must be able to advertise newly supported wire behavior
 // without forcing the user to unlink and pair the same device again.
 //
-// Keep this exception narrowly scoped to markers that are never accepted by
-// isAllowedDeviceGrantRuntimeOperation. In particular, this must not become a
-// path for adding file, shell, or SkillHub mutation permissions.
+// Keep protocol-marker upgrades narrowly scoped. The one executable upgrade
+// below is a derived SkillHub permission: a legacy token must already contain
+// the three operations that separately expose, upload, and bind the same
+// workspace content. It never derives from generic file or shell permissions.
 func limitConnectorRegistrationCapabilities(requested []string, allowed []string) []string {
 	limited := limitConnectorCapabilities(requested, allowed)
 	requestedCapabilities := normalizeDeviceConnectorCapabilityStrings(requested)
 	for _, capability := range requestedCapabilities {
-		if capability != string(DeviceCapabilitySkillHubWorkspacePagination) {
+		allowUpgrade := capability == string(DeviceCapabilitySkillHubWorkspacePagination)
+		if capability == string(DeviceGrantSkillHubWorkspaceSync) {
+			allowUpgrade = containsAllConnectorCapabilities(allowed,
+				DeviceGrantSkillHubWorkspaceGet,
+				DeviceGrantSkillHubSkillShare,
+				DeviceGrantSkillHubSkillFinalize,
+			)
+		}
+		if !allowUpgrade {
 			continue
 		}
 		found := false
@@ -880,6 +889,20 @@ func limitConnectorRegistrationCapabilities(requested []string, allowed []string
 		}
 	}
 	return limited
+}
+
+func containsAllConnectorCapabilities(values []string, required ...DeviceGrantOperation) bool {
+	normalized := normalizeDeviceConnectorCapabilityStrings(values)
+	available := make(map[string]struct{}, len(normalized))
+	for _, value := range normalized {
+		available[value] = struct{}{}
+	}
+	for _, requirement := range required {
+		if _, ok := available[string(requirement)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func parseIntDefault(value string, fallback int) int {

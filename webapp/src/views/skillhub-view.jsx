@@ -14,6 +14,7 @@ export { normalizeSkillHubSkills, resolveSkillHubEntry } from '../utils/skillhub
 
 const SKILLHUB_DEVICE_TOOLS = {
   workspace: 'skillhub.localWorkspace.get',
+  syncWorkspace: 'skillhub.localWorkspace.syncToAgent',
   share: 'skillhub.localSkill.share',
   finalize: 'skillhub.localSkill.finalize',
   delete: 'skillhub.localSkill.delete',
@@ -36,6 +37,7 @@ const SKILLHUB_DESKTOP_CAPABILITIES = [
 ];
 const SKILLHUB_DEVICE_SCHEMAS = {
   [SKILLHUB_DEVICE_TOOLS.workspace]: 'xiaoba.skillhub.local_workspace.v1',
+  [SKILLHUB_DEVICE_TOOLS.syncWorkspace]: 'xiaoba.skillhub.workspace_sync.v1',
   [SKILLHUB_DEVICE_TOOLS.share]: 'xiaoba.skillhub.local_share.v1',
   [SKILLHUB_DEVICE_TOOLS.finalize]: 'xiaoba.skillhub.local_finalize.v1',
   [SKILLHUB_DEVICE_TOOLS.delete]: 'xiaoba.skillhub.local_delete.v1',
@@ -825,6 +827,7 @@ export function assertSkillHubDeviceResult(result, {
   botUID,
   reference,
   localSkillID,
+  workspaceRevision,
 } = {}) {
   const expectedSchema = SKILLHUB_DEVICE_SCHEMAS[toolName];
   if (!expectedSchema || result?.schema !== expectedSchema) {
@@ -843,6 +846,14 @@ export function assertSkillHubDeviceResult(result, {
   ) {
     const error = new Error('本地 XiaoBa 的活动 Skill 工作区与当前 Bot 不一致。');
     error.code = 'skillhub_device_workspace_mismatch';
+    throw error;
+  }
+  if (toolName === SKILLHUB_DEVICE_TOOLS.syncWorkspace && (
+    String(result?.workspace_revision || '') !== String(workspaceRevision || '')
+    || result?.apply_status !== 'applied'
+  )) {
+    const error = new Error('本地 XiaoBa 未确认当前工作区已完整同步，已停止显示成功状态。');
+    error.code = 'skillhub_device_workspace_sync_mismatch';
     throw error;
   }
   if (toolName === SKILLHUB_DEVICE_TOOLS.finalize && reference && (
@@ -912,6 +923,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const [definitionError, setDefinitionError] = useState('');
   const [localSkills, setLocalSkills] = useState([]);
   const [localSkillsPath, setLocalSkillsPath] = useState('');
+  const [localWorkspaceRevision, setLocalWorkspaceRevision] = useState('');
   const [localSkillsError, setLocalSkillsError] = useState('');
   const [localNotice, setLocalNotice] = useState('');
   const [loadingLocalSkills, setLoadingLocalSkills] = useState(false);
@@ -919,6 +931,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const [libraryLocalError, setLibraryLocalError] = useState('');
   const [loadingLibraryLocalSkills, setLoadingLibraryLocalSkills] = useState(true);
   const [sharingSkill, setSharingSkill] = useState('');
+  const [syncingWorkspace, setSyncingWorkspace] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState('added');
   const [skillAction, setSkillAction] = useState(null);
@@ -1035,6 +1048,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         localRequestRef.current += 1;
         setLocalSkills([]);
         setLocalSkillsPath('');
+        setLocalWorkspaceRevision('');
         setLocalNotice('');
         setLocalSkillsError('');
         if (route.kind === 'server-upgrade-required') {
@@ -1208,6 +1222,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     if (!requestedBotUID || !requestedDeviceID) {
       setLocalSkills([]);
       setLocalSkillsPath('');
+      setLocalWorkspaceRevision('');
       setLocalNotice('');
       setLoadingLocalSkills(false);
       return;
@@ -1228,6 +1243,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     // workspace, so stale cards could otherwise upload the wrong Skill.
     setLocalSkills([]);
     setLocalSkillsPath('');
+    setLocalWorkspaceRevision('');
     setLocalSkillsError('');
     setLocalNotice('');
     const isCurrentRequest = () => (
@@ -1347,6 +1363,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       }
       setLocalSkills(normalizeLocalSkills(workspace));
       setLocalSkillsPath(String(workspace?.skills_path || '').trim());
+      setLocalWorkspaceRevision(String(workspace?.workspace_revision || '').trim().toLowerCase());
       setLocalNotice(workspace?.legacyTruncated === true
         ? `目标 XiaoBa Runtime 未提供分页信息，当前列表可能不完整（已读取 ${workspace.skills.length} 个 Skill）；请升级该 Runtime 后刷新。`
         : '');
@@ -1354,6 +1371,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       if (!isCurrentRequest()) return;
       setLocalSkills([]);
       setLocalSkillsPath('');
+      setLocalWorkspaceRevision('');
       if (error?.code === 'BOT_ACTIVE_ON_SERVER_RUNTIME') {
         setLocalSkillsError('当前 Agent 已在服务器运行，已停止切换本地 XiaoBa。请刷新页面；若服务器版本较旧，请升级后重试。');
       } else if (error?.code === 'BOT_BOUND_TO_OTHER_RUNTIME') {
@@ -1384,6 +1402,83 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     );
   }, [loadDevices, loadLocalWorkspace]);
 
+  const syncWorkspaceToAgent = useCallback(async () => {
+    const requestedBotUID = selectedBotUIDRef.current;
+    const requestedDeviceID = selectedDeviceIDRef.current;
+    const selectedDevice = devicesRef.current.find(
+      device => String(device?.deviceId || '') === requestedDeviceID,
+    );
+    const supportsSync = selectedDevice?.capabilities?.includes(
+      SKILLHUB_DEVICE_TOOLS.syncWorkspace,
+    ) === true;
+    if (
+      !requestedBotUID
+      || !requestedDeviceID
+      || !supportsSync
+      || !localWorkspaceRevision
+      || localSkills.length === 0
+      || localSkills.some(skill => Boolean(skill.shareError))
+      || syncingWorkspace
+    ) return;
+    const agentName = botLabel(selectedAgent);
+    const confirmed = await feedback.confirm({
+      title: `同步工作区到“${agentName}”？`,
+      message: `将把当前运行工作区中的 ${localSkills.length} 个 Skill 设为该 Agent 的正式能力。未发布 Skill 会保存为仅该 Bot 可用的私有版本，不会发布到团队能力库；BotDefinition 中不在当前工作区的能力会被移除。`,
+      confirmLabel: '确认同步',
+    });
+    if (
+      !confirmed
+      || requestedBotUID !== selectedBotUIDRef.current
+      || requestedDeviceID !== selectedDeviceIDRef.current
+    ) return;
+    setSyncingWorkspace(true);
+    setLocalNotice('');
+    setLocalSkillsError('');
+    try {
+      const result = assertSkillHubDeviceResult(await requestSkillHubDeviceTool({
+        deviceId: requestedDeviceID,
+        ownerUserId: user?.uid,
+        toolName: SKILLHUB_DEVICE_TOOLS.syncWorkspace,
+        payload: {
+          bot_uid: requestedBotUID,
+          workspace_revision: localWorkspaceRevision,
+        },
+        timeoutMs: 120_000,
+      }), {
+        toolName: SKILLHUB_DEVICE_TOOLS.syncWorkspace,
+        botUID: requestedBotUID,
+        workspaceRevision: localWorkspaceRevision,
+      });
+      if (
+        requestedBotUID !== selectedBotUIDRef.current
+        || requestedDeviceID !== selectedDeviceIDRef.current
+      ) return;
+      await Promise.all([
+        loadDefinition(requestedBotUID),
+        loadLocalWorkspace(requestedBotUID, requestedDeviceID),
+      ]);
+      if (
+        requestedBotUID === selectedBotUIDRef.current
+        && requestedDeviceID === selectedDeviceIDRef.current
+      ) {
+        setLocalNotice(`已将 ${Number(result?.synced_skills || 0)} 个工作区 Skill 同步到 Agent“${agentName}”；未发布内容保持 Bot 私有。`);
+      }
+    } catch (error) {
+      if (
+        requestedBotUID !== selectedBotUIDRef.current
+        || requestedDeviceID !== selectedDeviceIDRef.current
+      ) return;
+      setLocalSkillsError(error?.code === 'WORKSPACE_CHANGED'
+        ? '同步前工作区内容发生了变化。已停止写入，请刷新、检查后重新确认。'
+        : error?.message || '工作区同步失败，当前 Agent 配置未完成更新。');
+      if (error?.code === 'WORKSPACE_CHANGED') {
+        await loadLocalWorkspace(requestedBotUID, requestedDeviceID);
+      }
+    } finally {
+      if (requestedBotUID === selectedBotUIDRef.current) setSyncingWorkspace(false);
+    }
+  }, [feedback, loadDefinition, loadLocalWorkspace, localSkills, localWorkspaceRevision, selectedAgent, syncingWorkspace, user?.uid]);
+
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Agent 列表'));
     api.syncSkillHubPublisherProfile()
@@ -1412,6 +1507,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       localRequestRef.current += 1;
       setLocalSkills([]);
       setLocalSkillsPath('');
+      setLocalWorkspaceRevision('');
       setLocalSkillsError('');
       setLoadingLocalSkills(false);
       return;
@@ -1882,6 +1978,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     localSkills={localSkills}
     localSkillsError={localSkillsError}
     localSkillsPath={localSkillsPath}
+    localWorkspaceRevision={localWorkspaceRevision}
     runtimeRouteError={runtimeRouteError}
     onChangeSection={setActiveSection}
     onCopyLocalPath={copyLocalSkillsPath}
@@ -1894,6 +1991,10 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     onRemoveSkill={removeSkill}
     onSearch={searchCatalogue}
     onSelectAgent={(nextBotUID) => {
+      // Friends expose BotDefinition metadata only. Leave an owner's Runtime
+      // workspace before entering that read-only context, while preserving the
+      // workspace view when switching between Bots the user owns.
+      if (isFriendBotUID(bots, nextBotUID)) setActiveSection('added');
       selectedBotUIDRef.current = nextBotUID;
       // Clear the previous Bot's route before selecting a new one. Device
       // discovery will either bind an exact server Runtime (and cancel this
@@ -1909,6 +2010,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setSelectedBotUID(nextBotUID);
     }}
     onShareLocalSkill={shareLocalSkill}
+    onSyncWorkspace={syncWorkspaceToAgent}
     query={query}
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
@@ -1916,6 +2018,8 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     selectedBotUID={selectedBotUID}
     selectedDeviceID={selectedDeviceID}
     sharingSkill={sharingSkill}
+    supportsWorkspaceSync={devices.find(device => String(device?.deviceId || '') === String(selectedDeviceID || ''))?.capabilities?.includes(SKILLHUB_DEVICE_TOOLS.syncWorkspace) === true}
+    syncingWorkspace={syncingWorkspace}
     skillAction={skillAction}
   />;
 }
