@@ -587,7 +587,7 @@ func commercialRelayHasBaselineEntitlement(summary *types.CommercialSummary) boo
 			continue
 		}
 		source := strings.ToLower(strings.TrimSpace(entitlement.Source))
-		if source == commercialRelayBaselineProfileFree || source == commercialRelayBaselineProfileLegacy {
+		if source == commercialRelayBaselineProfileFree || source == commercialRelayBaselineProfileLegacy || entitlement.PlanSlug == "catsco-free" {
 			return true
 		}
 	}

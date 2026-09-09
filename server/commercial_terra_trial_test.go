@@ -39,8 +39,8 @@ func TestFreeTerraTrialPackageTransitions(t *testing.T) {
 }
 
 func TestTerraTrialSyncRestoresPaidAndInternalWithoutRefillingTrial(t *testing.T) {
-	free := &types.CommercialEntitlement{PlanSlug: "catsco-free", Source: "free", State: "active"}
-	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{UID: 38}}
+	free := &types.CommercialEntitlement{PlanSlug: "catsco-free", Source: "operator", State: "active"}
+	store := &commercialRelayBaselineTestStore{commercialRelaySyncTestStore: &commercialRelaySyncTestStore{summary: &types.CommercialSummary{UID: 38}}}
 	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{
 		FreeTerraTrial: &commercialRelayTerraTrial{MaxLimit: 100, CurrentUsage: 100, ResetDuration: "never"},
 		AvailableModelLimits: []commercialRelayModelLimit{
@@ -108,6 +108,9 @@ func TestTerraTrialSyncRestoresPaidAndInternalWithoutRefillingTrial(t *testing.T
 		}
 		if state.Limits.MonthlyBudget.MaxLimit != store.summary.TotalCNY {
 			t.Fatalf("%s shared quota changed", plan)
+		}
+		if store.created != 0 {
+			t.Fatalf("%s received a duplicate Free baseline", plan)
 		}
 		before := writes
 		if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
