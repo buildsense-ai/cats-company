@@ -1134,12 +1134,13 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 					http.Error(w, fmt.Sprintf("bot already connected from body %s", existing.bodyID), http.StatusConflict)
 					return
 				}
-				if err := hub.db.SetBotBodyBinding(uid, bodyID); err != nil {
-					log.Printf("bot body auto rebind failed: uid=%d old_body=%s new_body=%s err=%v", uid, boundBodyID, bodyID, err)
-					http.Error(w, "failed to update bot body binding", http.StatusInternalServerError)
-					return
-				}
-				log.Printf("bot body auto rebound: uid=%d old_body=%s new_body=%s addr=%s", uid, boundBodyID, bodyID, requestRemoteAddr(r))
+				// A missing in-memory lease only means the previous Runtime is
+				// currently disconnected. It is not owner authorization to move a
+				// durable Bot identity to another body. Keep the binding unchanged;
+				// an explicit owner-authorized transfer flow must perform migration.
+				log.Printf("bot body rebind denied: uid=%d bound_body=%s requested_body=%s addr=%s", uid, boundBodyID, bodyID, requestRemoteAddr(r))
+				http.Error(w, fmt.Sprintf("bot is bound to body %s; explicit owner-authorized Runtime transfer required", boundBodyID), http.StatusConflict)
+				return
 			}
 		}
 		if existing, ok := hub.bodyLeases.conflicts(uid, bodyID); ok {

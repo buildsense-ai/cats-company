@@ -237,7 +237,7 @@ func TestServeWSRejectsDifferentActiveBotBody(t *testing.T) {
 	}
 }
 
-func TestServeWSAllowsSameBodyReconnectAndRebindsDifferentBodyAfterDisconnect(t *testing.T) {
+func TestServeWSAllowsSameBodyReconnectAndRejectsDifferentBodyAfterDisconnect(t *testing.T) {
 	botUID := int64(44)
 	apiKey := GenerateAPIKey(botUID)
 	wsURL, hub, cleanup := newBotBodyTestServer(apiKey, botUID)
@@ -267,15 +267,20 @@ func TestServeWSAllowsSameBodyReconnectAndRebindsDifferentBodyAfterDisconnect(t 
 	waitForClientCount(t, hub, botUID, 0)
 
 	next, resp, err := dialBotBody(wsURL, apiKey, "body-b")
-	closeResponse(resp)
-	if err != nil {
-		t.Fatalf("expected inactive persistent body binding to rebind automatically: %v", err)
+	if next != nil {
+		next.Close()
 	}
-	defer next.Close()
-	waitForClientCount(t, hub, botUID, 1)
+	closeResponse(resp)
+	if err == nil {
+		t.Fatal("expected inactive persistent body binding to reject another body")
+	}
+	if resp == nil || resp.StatusCode != http.StatusConflict {
+		t.Fatalf("different inactive body status = %v, want 409", responseStatus(resp))
+	}
+	waitForClientCount(t, hub, botUID, 0)
 	store := hub.db.(*wsBotBodyStore)
-	if got, err := store.GetBotBodyID(botUID); err != nil || got != "body-b" {
-		t.Fatalf("body binding after auto rebind = %q, %v; want body-b", got, err)
+	if got, err := store.GetBotBodyID(botUID); err != nil || got != "body-a" {
+		t.Fatalf("body binding after rejected rebind = %q, %v; want body-a", got, err)
 	}
 }
 
