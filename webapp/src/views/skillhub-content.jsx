@@ -14,6 +14,12 @@ export default function SkillHubContent(props) {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
     isReadOnly, loadingDefinition, onChangeSection, saving, selectedAgentName, selectedAgentRelation, skillAction,
   } = props;
+  // A friend Bot is metadata-only. Keep this guard in the rendering boundary
+  // as well as in the Agent-switch handler so stale UI state can never expose
+  // the owner's Runtime workspace actions, even for a single render.
+  const visibleSection = activeSection === 'custom' && !isLocalEnabled
+    ? 'added'
+    : activeSection;
   return (
     <main className='cc-skillhub-page'>
       <div className='cc-skillhub-shell'>
@@ -28,16 +34,16 @@ export default function SkillHubContent(props) {
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
         {runtimeRouteError && <div className='cc-skillhub-alert error' role='alert'>{runtimeRouteError}</div>}
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
-        {activeSection === 'custom' ? <CustomSkills {...props} /> : (
+        {visibleSection === 'custom' ? <CustomSkills {...props} /> : (
           <>
-            <SkillNavigation {...props} addedCount={definition.skills.length} />
+            <SkillNavigation {...props} activeSection={visibleSection} addedCount={definition.skills.length} />
             {(loadingDefinition || saving) && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
                 {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : '正在添加能力…'}
               </div>
             )}
-            {activeSection === 'added' ? <AddedSkills {...props} /> : <Catalogue {...props} />}
+            {visibleSection === 'added' ? <AddedSkills {...props} /> : <Catalogue {...props} />}
           </>
         )}
       </div>

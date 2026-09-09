@@ -2095,6 +2095,8 @@ describe('SkillHubView', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    await openCustomSkills();
+    expect(container.textContent).toContain('同步到当前 Agent');
     api.getDevices.mockClear();
     await act(async () => {
       Simulate.change(container.querySelector('.cc-skillhub-agent-native-select'), {
@@ -2115,6 +2117,8 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('已同步能力');
     expect(container.textContent).toContain('来自该 Agent 已同步到 BotDefinition 的只读元数据');
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
+    expect(container.textContent).not.toContain('同步到当前 Agent');
+    expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.cc-skillhub-copy-action')).toBeNull();
     expect(container.querySelector('.cc-skillhub-more-action')).toBeNull();
 

@@ -1991,6 +1991,10 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     onRemoveSkill={removeSkill}
     onSearch={searchCatalogue}
     onSelectAgent={(nextBotUID) => {
+      // Friends expose BotDefinition metadata only. Leave an owner's Runtime
+      // workspace before entering that read-only context, while preserving the
+      // workspace view when switching between Bots the user owns.
+      if (isFriendBotUID(bots, nextBotUID)) setActiveSection('added');
       selectedBotUIDRef.current = nextBotUID;
       // Clear the previous Bot's route before selecting a new one. Device
       // discovery will either bind an exact server Runtime (and cancel this
