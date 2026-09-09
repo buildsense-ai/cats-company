@@ -137,7 +137,11 @@ func (h *CommercialOpsHandler) HandleOverview(w http.ResponseWriter, r *http.Req
 }
 
 func (h *CommercialOpsHandler) HandlePlans(w http.ResponseWriter, r *http.Request) {
-	h.forward(w, r, "plans.upsert", "plan", h.admin.HandleCommercialPlans)
+	action := "plans.upsert"
+	if r.URL.Query().Get("action") == "delete" {
+		action = "plans.delete"
+	}
+	h.forward(w, r, action, "plan", h.admin.HandleCommercialPlans)
 }
 
 func (h *CommercialOpsHandler) HandleInvites(w http.ResponseWriter, r *http.Request) {

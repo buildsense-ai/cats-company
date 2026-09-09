@@ -309,13 +309,14 @@ type CommercialOperationsOverview struct {
 
 // CommercialSummary is the user/admin view of commercial relay allocation.
 type CommercialSummary struct {
-	UID           int64                    `json:"uid"`
-	Plans         []*CommercialPlan        `json:"plans,omitempty"`
-	Entitlements  []*CommercialEntitlement `json:"entitlements,omitempty"`
-	Grants        []*CommercialQuotaGrant  `json:"grants,omitempty"`
-	Ledger        []*CommercialLedgerEntry `json:"ledger,omitempty"`
-	TotalsByModel map[string]float64       `json:"totals_by_model,omitempty"`
-	TotalCNY      float64                  `json:"total_cny"`
+	CurrentEntitlement *CommercialEntitlement   `json:"current_entitlement,omitempty"`
+	UID                int64                    `json:"uid"`
+	Plans              []*CommercialPlan        `json:"plans,omitempty"`
+	Entitlements       []*CommercialEntitlement `json:"entitlements,omitempty"`
+	Grants             []*CommercialQuotaGrant  `json:"grants,omitempty"`
+	Ledger             []*CommercialLedgerEntry `json:"ledger,omitempty"`
+	TotalsByModel      map[string]float64       `json:"totals_by_model,omitempty"`
+	TotalCNY           float64                  `json:"total_cny"`
 }
 
 // CloudWorkerLifecycle tracks monthly package expiry and delayed deletion.

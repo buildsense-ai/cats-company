@@ -198,17 +198,9 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 		UID: req.UID, Action: req.Action, CurrentTotalCNY: summary.TotalCNY,
 		NextTotalCNY: summary.TotalCNY, EnforceEnabled: h.commercialRelayEnforcedFor(req.UID),
 	}
-	for _, entitlement := range summary.Entitlements {
-		if entitlement == nil || entitlement.State != "active" {
-			continue
-		}
-		if preview.CurrentPlan == nil {
-			preview.CurrentPlan = planByID[entitlement.PlanID]
-			preview.ExpiresAt = entitlement.ExpiresAt
-		}
-		if entitlement.ExpiresAt != nil && (preview.ExpiresAt == nil || entitlement.ExpiresAt.After(*preview.ExpiresAt)) {
-			preview.ExpiresAt = entitlement.ExpiresAt
-		}
+	if entitlement := types.PrimaryCommercialEntitlement(summary.Entitlements, now); entitlement != nil {
+		preview.CurrentPlan = planByID[entitlement.PlanID]
+		preview.ExpiresAt = entitlement.ExpiresAt
 	}
 
 	switch req.Action {
@@ -297,7 +289,7 @@ func commercialPreservedQuota(summary *types.CommercialSummary) float64 {
 }
 
 func commercialPreviewPlanExpiry(plan *types.CommercialPlan, now time.Time) *time.Time {
-	if plan == nil || plan.Slug == "catsco-free" || plan.Slug == "catsco-legacy-custom" {
+	if plan == nil || plan.DurationDays == -1 || plan.Slug == "catsco-free" || plan.Slug == "catsco-legacy-custom" {
 		return nil
 	}
 	days := plan.DurationDays

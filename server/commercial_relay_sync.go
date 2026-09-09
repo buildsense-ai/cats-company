@@ -470,7 +470,7 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 	if relayUser == nil || !relayUser.Configured {
 		return nil, fmt.Errorf("relay key is not configured")
 	}
-	if s.EnforcedFor(uid) && !commercialRelayHasBaselineEntitlement(summary) {
+	if s.EnforcedFor(uid) && !commercialRelayHasBaselineEntitlement(summary) && !commercialRelayHasPermanentPackage(summary, time.Now().UTC()) {
 		if baselineStore, ok := s.store.(commercialRelayBaselineStore); ok {
 			profile, budgets, baselineErr := commercialRelayBaselineForSummary(summary, relayUser)
 			if baselineErr != nil {
@@ -588,6 +588,25 @@ func commercialRelayHasBaselineEntitlement(summary *types.CommercialSummary) boo
 		}
 		source := strings.ToLower(strings.TrimSpace(entitlement.Source))
 		if source == commercialRelayBaselineProfileFree || source == commercialRelayBaselineProfileLegacy || entitlement.PlanSlug == "catsco-free" {
+			return true
+		}
+	}
+	return false
+}
+
+// A permanent internal replacement already supplies its full monthly pool.
+// Do not recreate Free grants after the operator revoked the previous package:
+// that would silently inflate a 50,000 package to 53,200 on the next sync.
+func commercialRelayHasPermanentPackage(summary *types.CommercialSummary, now time.Time) bool {
+	if summary == nil {
+		return false
+	}
+	current := types.PrimaryCommercialEntitlement(summary.Entitlements, now)
+	if current == nil {
+		return false
+	}
+	for _, plan := range summary.Plans {
+		if plan != nil && plan.ID == current.PlanID && plan.State == 0 && plan.DurationDays == -1 {
 			return true
 		}
 	}

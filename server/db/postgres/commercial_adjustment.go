@@ -310,7 +310,7 @@ func commercialPrimaryPackageExpiry(tx *sql.Tx, uid int64, now time.Time) (*time
 }
 
 func commercialOperatorPlanExpiry(plan *types.CommercialPlan, now time.Time) *time.Time {
-	if plan == nil || plan.Slug == "catsco-free" || plan.Slug == "catsco-legacy-custom" {
+	if plan == nil || plan.DurationDays == -1 || plan.Slug == "catsco-free" || plan.Slug == "catsco-legacy-custom" {
 		return nil
 	}
 	days := plan.DurationDays
