@@ -61,6 +61,11 @@ if (op === "ecs ListEcsInstances") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   json({ statusCode: "800", returnObj: { masterResourceID: id } });
 } else if (op === "ecs UpdateEcsAutoRenewConfig") {
+  state.renewAttempts = (state.renewAttempts || 0) + 1;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  if (state.renewAttempts <= (state.transientRenewFailures || 0)) {
+    json({ statusCode: "900", errorCode: "Ecs.Instance.UpdateError", message: "instances update renew status failed" }); process.exit(0);
+  }
   if (state.failAutoRenew) { json({ statusCode: "900", errorCode: "E.RENEW", message: "boom" }); process.exit(0); }
   state.renewCalls = state.renewCalls || [];
   state.renewCalls.push({ instanceIDList: val("--instanceIDList"), autoRenewStatus: val("--autoRenewStatus"), autoRenewCycleType: val("--autoRenewCycleType"), autoRenewCycleCount: val("--autoRenewCycleCount") });
@@ -497,6 +502,27 @@ test("provision-worker: fails closed when provider auto-renew cannot be disabled
   assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stderr, /E\.RENEW/);
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.deepEqual(state.unsubscribedInstances, ["i-worker-bot-a"]);
+});
+
+test("provision-worker: retries new-instance renewal update without recreating the VM", () => {
+  const sb = setupSandbox({ transientRenewFailures: 2 });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.renewAttempts, 3);
+  assert.equal(state.instances.length, 1);
+  assert.equal(state.renewCalls[0].autoRenewStatus, "0");
+});
+
+test("provision-worker: persistent renewal update error still rolls back after bounded retries", () => {
+  const sb = setupSandbox({ transientRenewFailures: 10 });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k",
+    "--bot-uid", "42", "--user-uid", "7", "--image-id", "img-1", "--body-id", "b", "--installation-id", "i"]);
+  assert.notEqual(r.status, 0);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.renewAttempts, 5);
   assert.deepEqual(state.unsubscribedInstances, ["i-worker-bot-a"]);
 });
 

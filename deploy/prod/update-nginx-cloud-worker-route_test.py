@@ -27,6 +27,17 @@ server {
 
 
 class CloudWorkerNginxRouteTest(unittest.TestCase):
+    def test_every_browser_gateway_hop_has_the_provision_budget(self):
+        root = Path(__file__).resolve().parents[2]
+        route = "location ^~ /api/admin/relay/local/commercial-ops/api/cloud-worker-provision"
+        for config in (root / "deploy/nginx/nginx.conf", root / "deploy/tencent/nginx/catscompany-app.conf"):
+            source = config.read_text()
+            start = source.index(route)
+            end = module.matching_brace(source, source.index("{", start))
+            block = source[start:end]
+            self.assertIn("proxy_read_timeout 660s;", block, str(config))
+            self.assertIn("proxy_send_timeout 660s;", block, str(config))
+
     def test_inserts_route_only_in_tls_vhost(self):
         rendered = module.render(APP, "app.catsco.cn")
         self.assertEqual(rendered.count("location ^~ /api/cloud-workers"), 1)

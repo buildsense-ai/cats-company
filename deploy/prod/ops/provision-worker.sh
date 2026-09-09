@@ -413,8 +413,20 @@ done
 # 包月订单必须显式关闭天翼云自动续费。若云侧拒绝该设置，供给失败并进入
 # 清理流程，避免创建一台可能在用户未续订 CatsCo 套餐时继续扣费的实例。
 if [[ "$BILLING_MODE" == "month" ]]; then
-  ctyun ecs UpdateEcsAutoRenewConfig --regionID "$REGION_ID" \
-    --instanceIDList "$CREATED_INSTANCE_UUID" --autoRenewStatus 0 >/dev/null
+  for attempt in 1 2 3 4 5; do
+    if renew_result="$(ctyun ecs UpdateEcsAutoRenewConfig --regionID "$REGION_ID" \
+      --instanceIDList "$CREATED_INSTANCE_UUID" --autoRenewStatus 0 2>&1)"; then
+      break
+    fi
+    # A new running VM can precede its billing record becoming updateable.
+    # Retry only this provider update error, never the paid create operation.
+    if [[ "$renew_result" != *"Ecs.Instance.UpdateError"* || "$attempt" == "5" ]]; then
+      echo "$renew_result" >&2
+      exit 1
+    fi
+    echo "warning: new instance renewal state not ready; retry $attempt/5" >&2
+    sleep 5
+  done
 fi
 
 # SSH 跳板（NAT 架构）：ProxyCommand 经跳板机转发，凭据全来自环境变量
