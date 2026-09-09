@@ -540,6 +540,9 @@ func buildRelaySharedUsageResponse(user *commercialRelayUsageUser, model string)
 	if user == nil || !user.Configured {
 		return relayUsageResponse{Configured: false}
 	}
+	if trial := user.Limits.FreeTerraTrial; trial != nil && trial.Enabled && normalizeRelayModelName(model) == normalizeRelayModelName(commercialTerraTrialModel) {
+		return buildRelayUsageResponse(user, model)
+	}
 	budget := user.Limits.MonthlyBudget
 	maxLimit := budget.MaxLimit
 	used := budget.CurrentUsage

@@ -66,13 +66,16 @@ export function resolveConversationModelDisplay(currentModelName, agentModelStat
   const quotaMeta = quota || (custom ? '自备模型' : '额度未同步');
   const meta = [reasoningEffort, quotaMeta].filter(Boolean).join(' · ');
   const reasoningTitle = reasoningEffort ? `；推理强度 ${reasoningEffort}` : '';
+  const quotaSource = summary.reset_duration === 'never'
+    ? '使用该账号一次性新人试用额度，用完不恢复'
+    : '使用该虚拟员工所属账号的共享额度';
   return {
     model,
     meta,
     title: custom
       ? `${model}${reasoningTitle}；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
       : quota
-        ? `${model}${reasoningTitle}；使用该虚拟员工所属账号的共享额度，${quota}`
+        ? `${model}${reasoningTitle}；${quotaSource}，${quota}`
         : `${model}${reasoningTitle}；当前额度暂未同步`,
   };
 }

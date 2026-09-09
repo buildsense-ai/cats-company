@@ -132,3 +132,24 @@ func TestFreeTerraTrialDoesNotIncreaseOrMutateRecurringPool(t *testing.T) {
 		t.Fatal("trial cannot grant scoped Terra access")
 	}
 }
+
+func TestTerraTrialModelUsageDoesNotReportSharedPoolBalance(t *testing.T) {
+	user := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		FreeTerraTrial: &commercialRelayTerraTrial{Enabled: true, MaxLimit: 100, CurrentUsage: 100, ResetDuration: "never"},
+		MonthlyBudget:  commercialRelayBudget{MaxLimit: 1700, CurrentUsage: 170, ResetDuration: "1M"},
+		ModelLimits:    []commercialRelayModelLimit{{Model: commercialTerraTrialModel, Budget: commercialRelayBudget{MaxLimit: 1700, CurrentUsage: 170, ResetDuration: "1M"}}},
+	}}
+	trial := buildRelaySharedUsageResponse(user, commercialTerraTrialModel).Summary
+	if trial == nil || trial.RemainingPercent != 0 || trial.ResetDuration != "never" {
+		t.Fatalf("trial displayed recurring pool: %#v", trial)
+	}
+	total := buildRelayTotalUsageResponse(user, nil).Summary
+	if total.RemainingPercent != 90 || total.ResetDuration != "1M" {
+		t.Fatalf("trial replaced total pool: %#v", total)
+	}
+	user.Limits.FreeTerraTrial.Enabled = false
+	paid := buildRelaySharedUsageResponse(user, commercialTerraTrialModel).Summary
+	if paid.RemainingPercent != 90 || paid.ResetDuration != "1M" {
+		t.Fatalf("paid balance not restored: %#v", paid)
+	}
+}
