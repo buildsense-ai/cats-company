@@ -20,7 +20,7 @@ func (a *Adapter) GetCommercialOperationsOverview(now time.Time) (*types.Commerc
 	var closedOrders, failedOrders, refundingOrders, refundedOrders int64
 	err := a.db.QueryRow(`
 		SELECT
-			(SELECT COUNT(*) FROM commercial_plans),
+			(SELECT COUNT(*) FROM commercial_plans WHERE archived_at IS NULL),
 			(SELECT COUNT(*) FROM commercial_plans WHERE state = 0 AND sale_state IN ('test','public')),
 			(SELECT COUNT(*) FROM commercial_invite_codes
 			 WHERE state = 0 AND redeemed_count < max_redemptions AND (expires_at IS NULL OR expires_at > $1)),

@@ -67,9 +67,9 @@ func scanCommercialPlan(scanner interface {
 }
 
 func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.CommercialPlan, error) {
-	where := ""
+	where := "WHERE archived_at IS NULL"
 	if !includeDisabled {
-		where = "WHERE state = 0"
+		where += " AND state = 0"
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
@@ -111,8 +111,11 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		return 0, fmt.Errorf("encode model budgets: %w", err)
 	}
 	durationDays := plan.DurationDays
-	if durationDays <= 0 {
+	if durationDays == 0 {
 		durationDays = 30
+	}
+	if durationDays < -1 || (durationDays == -1 && (plan.PriceFen != 0 || normalizeCommercialSaleState(plan.SaleState) != "hidden")) {
+		return 0, fmt.Errorf("permanent plans must be hidden and free to assign")
 	}
 	sortOrder := plan.SortOrder
 	if sortOrder == 0 {
@@ -139,6 +142,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			state = EXCLUDED.state,
 			sort_order = EXCLUDED.sort_order,
 			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode
+		WHERE commercial_plans.archived_at IS NULL
 		RETURNING id`,
 		strings.TrimSpace(plan.Slug),
 		strings.TrimSpace(plan.Name),
@@ -437,7 +441,11 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	if err := activateCommercialOfficialPlan(tx, uid, planSlug, startsAt); err != nil {
 		return nil, err
 	}
-	entitlementExpires := startsAt.AddDate(0, 0, durationDays)
+	var entitlementExpires *time.Time
+	if durationDays != -1 {
+		expiry := startsAt.AddDate(0, 0, durationDays)
+		entitlementExpires = &expiry
+	}
 	var entitlementID int64
 	if err := tx.QueryRow(`
 		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)

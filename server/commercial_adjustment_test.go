@@ -99,6 +99,24 @@ func TestCommercialAdjustmentRequestRequiresPreviewVersion(t *testing.T) {
 	}
 }
 
+func TestCommercialAdjustmentPreviewPrefersPackageOverFreeAndSupportsPermanent(t *testing.T) {
+	now := time.Now().UTC()
+	expiry := now.Add(time.Hour)
+	free := &types.CommercialPlan{ID: 1, Slug: "catsco-free", Name: "Free"}
+	paid := &types.CommercialPlan{ID: 2, Slug: "catsco-pro", Name: "Pro"}
+	permanent := &types.CommercialPlan{ID: 3, Slug: "internal-permanent", DurationDays: -1, ModelBudgets: map[string]float64{"gpt-5.6-sol": 50000}}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{UID: 826, TotalCNY: 100, Entitlements: []*types.CommercialEntitlement{
+		{PlanID: 1, Source: "free", State: "active", StartsAt: now.Add(-time.Minute)},
+		{PlanID: 2, Source: "operator", State: "active", StartsAt: now.Add(-time.Hour), ExpiresAt: &expiry},
+	}}}
+	s.plans = []*types.CommercialPlan{free, paid, permanent}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	preview, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 826, Action: commercialAdjustmentChangePlan, PlanID: 3, Preview: true}, now)
+	if err != nil || preview.CurrentPlan == nil || preview.CurrentPlan.ID != paid.ID || preview.ExpiresAt != nil || preview.NextTotalCNY != 50000 {
+		t.Fatalf("primary/permanent preview: %+v %v", preview, err)
+	}
+}
+
 func TestCommercialAdjustmentDoesNotReplayOlderRelayCycle(t *testing.T) {
 	currentAt := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)
 	requestedAt := currentAt.Add(-time.Hour)

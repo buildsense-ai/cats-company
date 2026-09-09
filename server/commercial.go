@@ -848,6 +848,10 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 	if !ok {
 		return
 	}
+	if r.URL.Query().Get("view") != "" || r.URL.Query().Get("action") != "" {
+		h.handleCommercialPlanManagement(w, r, store)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		plans, err := store.ListCommercialPlans(true)
@@ -913,6 +917,10 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		}
 		if req.State != 0 && req.State != 1 {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported plan state"})
+			return
+		}
+		if req.DurationDays < -1 || (req.DurationDays == -1 && (req.SaleState != "hidden" || req.PriceFen != 0)) {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "永久套餐仅限隐藏、免费发放的内部套餐"})
 			return
 		}
 		modelBudgets := parseCommercialBudgets(req.ModelBudgets)
@@ -1208,6 +1216,11 @@ func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter,
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load commercial summary"})
 		return
+	}
+	if summary != nil {
+		copy := *summary
+		copy.CurrentEntitlement = types.PrimaryCommercialEntitlement(summary.Entitlements, time.Now().UTC())
+		summary = &copy
 	}
 	payload := map[string]interface{}{"summary": summary}
 	if h.users != nil {
