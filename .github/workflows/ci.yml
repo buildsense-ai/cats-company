@@ -68,7 +68,7 @@ jobs:
       - name: Test PostgreSQL store contract
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
-        run: go test ./server/db/postgres -run 'TestPostgres(StoreContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|ArtifactRuntimeEventSequenceFollowsCommitOrder)' -count=1 -v
+        run: go test ./server/db/postgres -run 'TestPostgres(StoreContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|ArtifactRuntimeEventSequenceFollowsCommitOrder)' -count=1 -v
 
       - name: Test MySQL Artifact Runtime event ordering
         env:

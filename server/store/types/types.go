@@ -166,6 +166,7 @@ type CommercialManagedRelayBudget struct {
 
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.
 type CommercialInviteCode struct {
+	CreateOnly         bool       `json:"-"`
 	ID                 int64      `json:"id"`
 	Code               string     `json:"code"`
 	PlanID             int64      `json:"plan_id"`

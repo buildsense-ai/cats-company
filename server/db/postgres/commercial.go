@@ -254,6 +254,7 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 			expires_at = EXCLUDED.expires_at,
 			note = EXCLUDED.note,
 			created_by_uid = EXCLUDED.created_by_uid
+		WHERE NOT $9
 		RETURNING id`,
 		strings.ToUpper(strings.TrimSpace(invite.Code)),
 		invite.PlanID,
@@ -263,6 +264,7 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 		invite.ExpiresAt,
 		strings.TrimSpace(invite.Note),
 		invite.CreatedByUID,
+		invite.CreateOnly,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create commercial invite code: %w", err)

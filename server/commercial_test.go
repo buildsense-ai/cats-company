@@ -15,13 +15,23 @@ import (
 
 func TestValidateCommercialOfficialPaidPlanModelsRequiresAllPublicModels(t *testing.T) {
 	complete := map[string]float64{
-		"MiniMax-M2.7": 1500, "MiniMax-M3": 1500, "deepseek-v4-flash": 1500, "glm-5.3-flash": 1500,
-		"gpt-5.6-terra": 1500, "gpt-5.6-sol": 1500, "gpt-5.6-luna": 1500,
+		"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-v4-flash": 2100, "glm-5.3-flash": 2100,
+		"gpt-5.6-terra": 2100,
 	}
 	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err != nil {
 		t.Fatalf("complete paid plan rejected: %v", err)
 	}
-	delete(complete, "gpt-5.6-luna")
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-luna"} {
+		complete[model] = 100
+		if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err == nil {
+			t.Fatalf("public plan accepted %s", model)
+		}
+		if err := validateCommercialOfficialPaidPlanModels("internal-custom", complete); err != nil {
+			t.Fatal(err)
+		}
+		delete(complete, model)
+	}
+	delete(complete, "gpt-5.6-terra")
 	if err := validateCommercialOfficialPaidPlanModels("catsco-pro", complete); err == nil {
 		t.Fatal("incomplete paid plan was accepted")
 	}
@@ -125,6 +135,9 @@ func (s *commercialTestStore) CreateCommercialInviteCode(invite *types.Commercia
 	}
 	for index, existing := range s.invites {
 		if existing.Code == cp.Code {
+			if cp.CreateOnly {
+				return 0, fmt.Errorf("invite already exists")
+			}
 			cp.ID = existing.ID
 			cp.RedeemedCount = existing.RedeemedCount
 			s.invites[index] = &cp

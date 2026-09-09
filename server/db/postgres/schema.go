@@ -62,6 +62,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateCommercialRefundColumns,
 		migrateCommercialPaidPlansAllModels,
 		migrateCommercialPlansGLM53Flash,
+		migrateCommercialPublicModels,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,

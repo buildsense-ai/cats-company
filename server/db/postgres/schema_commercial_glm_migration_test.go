@@ -72,14 +72,13 @@ func TestPostgresCommercialGLM53MigrationPreservesManualQuotaAndRollsBack(t *tes
 	}
 	seedGLM53OrderSnapshots(t, db, personalUID, personalPlanID)
 
-	// This is the production startup path. It must migrate old active packages
-	// and remain safe when every server restart executes CreateSchema again.
-	if err := db.CreateSchema(); err != nil {
+	// Exercise this historical migration independently of newer startup policy.
+	if _, err := db.db.Exec(migrateCommercialPlansGLM53Flash); err != nil {
 		t.Fatalf("run GLM migration through CreateSchema: %v", err)
 	}
 	assertGLM53MigrationUp(t, db, personalUID, proUID, freeUID, 1)
 	assertGLM53GrantRowCount(t, db, "personal-order", 13)
-	if err := db.CreateSchema(); err != nil {
+	if _, err := db.db.Exec(migrateCommercialPlansGLM53Flash); err != nil {
 		t.Fatalf("GLM startup migration should be idempotent: %v", err)
 	}
 	assertGLM53MigrationUp(t, db, personalUID, proUID, freeUID, 1)

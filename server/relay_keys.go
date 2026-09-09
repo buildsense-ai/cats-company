@@ -500,6 +500,11 @@ func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel stri
 	}
 	used := limit.Budget.CurrentUsage
 	maxLimit := limit.Budget.MaxLimit
+	if trial := user.Limits.FreeTerraTrial; trial != nil && trial.Enabled && normalizeRelayModelName(limit.Model) == normalizeRelayModelName(commercialTerraTrialModel) {
+		used, maxLimit = trial.CurrentUsage, trial.MaxLimit
+		limit.Budget.ResetDuration = "never"
+		limit.Budget.LastReset = ""
+	}
 	percent := 0.0
 	remainingPercent := 0.0
 	status := "normal"
@@ -534,6 +539,9 @@ func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel stri
 func buildRelaySharedUsageResponse(user *commercialRelayUsageUser, model string) relayUsageResponse {
 	if user == nil || !user.Configured {
 		return relayUsageResponse{Configured: false}
+	}
+	if trial := user.Limits.FreeTerraTrial; trial != nil && trial.Enabled && normalizeRelayModelName(model) == normalizeRelayModelName(commercialTerraTrialModel) {
+		return buildRelayUsageResponse(user, model)
 	}
 	budget := user.Limits.MonthlyBudget
 	maxLimit := budget.MaxLimit
@@ -574,6 +582,12 @@ func commercialQuotaModelAllowed(summary *types.CommercialSummary, model string)
 		return false
 	}
 	target := normalizeRelayModelName(model)
+	if target == normalizeRelayModelName("gpt-5.6-luna") {
+		return false
+	}
+	if target == normalizeRelayModelName(commercialTerraTrialModel) && commercialFreeTerraTrialEnabled(summary, time.Now().UTC()) {
+		return true
+	}
 	for candidate, amount := range summary.TotalsByModel {
 		if amount <= 0 {
 			continue

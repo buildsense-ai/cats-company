@@ -712,6 +712,7 @@ func main() {
 	mux.HandleFunc("/api/account/introspect", accountCenterHandler.HandleIntrospect)
 	mux.HandleFunc("/api/account/users/", accountCenterHandler.HandleGetUser)
 	mux.HandleFunc("/api/account/commercial-ops/overview", commercialOpsHandler.HandleOverview)
+	mux.HandleFunc("/api/account/commercial-ops/records", commercialOpsHandler.HandleRecords)
 	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
 	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)

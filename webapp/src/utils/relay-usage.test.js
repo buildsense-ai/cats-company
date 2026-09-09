@@ -6,6 +6,13 @@ import {
 } from './relay-usage';
 
 describe('relay usage labels', () => {
+  test('identifies lifetime trial separately from the recurring shared pool', () => {
+    const result = resolveConversationModelDisplay('gpt-5.6-terra', {
+      isBot: true, summary: { source: 'relay', model: 'gpt-5.6-terra', remaining_percent: 0, reset_duration: 'never' },
+    });
+    expect(result.title).toContain('一次性新人试用额度，用完不恢复');
+    expect(result.title).not.toContain('共享额度');
+  });
   test('shows the reported custom model name', () => {
     expect(formatRelayUsagePill(
       { source: 'custom', status: 'custom', model: 'gpt-5.6-terra' },
