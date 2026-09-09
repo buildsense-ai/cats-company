@@ -489,6 +489,21 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 			}
 		}
 	}
+	trialEnabled := commercialFreeTerraTrialEnabled(summary, time.Now().UTC())
+	if trialEnabled {
+		// Do not grant trial access through an older Relay that would silently
+		// interpret it as renewable/shared credit.
+		if relayUser.Limits.FreeTerraTrial == nil {
+			return nil, fmt.Errorf("Relay must support the lifetime Terra trial before Free access can be enabled")
+		}
+		summary = commercialSummaryWithTerraTrial(summary)
+		for _, model := range commercialRelayMissingRequiredModels(summary, relayUser, managed) {
+			if normalizeRelayModelName(model) == normalizeRelayModelName(commercialTerraTrialModel) {
+				return nil, fmt.Errorf("Relay must expose Terra before Free trial access can be enabled")
+			}
+		}
+	}
+	trialChanged := relayUser.Limits.FreeTerraTrial != nil && relayUser.Limits.FreeTerraTrial.Enabled != trialEnabled
 	s.logMissingRelayModels(uid, commercialRelayMissingRequiredModels(summary, relayUser, managed))
 	updates, nextManaged := commercialRelayManagedPlan(uid, summary, relayUser, managed)
 	modelScopes := commercialRelayModelScopes(summary, relayUser, managed)
@@ -502,8 +517,11 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 	policyNeedsSync := sharedQuota && (!nearlyEqual(relayUser.Limits.MonthlyBudget.MaxLimit, sharedLimit) ||
 		defaultRelayResetDuration(relayUser.Limits.MonthlyBudget.ResetDuration) != "1M" ||
 		!sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart))
-	if len(updates) > 0 || scopesChanged || policyNeedsSync {
+	if len(updates) > 0 || scopesChanged || policyNeedsSync || trialChanged {
 		payload := map[string]interface{}{}
+		if relayUser.Limits.FreeTerraTrial != nil {
+			payload["free_terra_trial"] = trialEnabled
+		}
 		if len(updates) > 0 {
 			payload["provider_config_budgets"] = updates
 		}
@@ -532,6 +550,9 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		}
 		if err := verifyCommercialRelayModelScopes(modelScopes, verified); err != nil {
 			return nil, err
+		}
+		if relayUser.Limits.FreeTerraTrial != nil && (verified.Limits.FreeTerraTrial == nil || verified.Limits.FreeTerraTrial.Enabled != trialEnabled) {
+			return nil, fmt.Errorf("Relay Terra trial policy verification failed")
 		}
 		if sharedQuota {
 			if err := verifyCommercialRelaySharedPolicy(sharedLimit, usageWindowStart, verified); err != nil {
@@ -1147,7 +1168,7 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 
 func commercialRelayGovernedGrant(grantType string) bool {
 	switch strings.ToLower(strings.TrimSpace(grantType)) {
-	case "order", "invite", "trial", "bonus", "free", "legacy", "operator_plan", "adjustment_credit", "adjustment_debit":
+	case "order", "invite", "trial", "free_trial", "bonus", "free", "legacy", "operator_plan", "adjustment_credit", "adjustment_debit":
 		return true
 	default:
 		return false

@@ -61,6 +61,9 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 }
 
 func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercialUserSummary {
+	if commercialFreeTerraTrialEnabled(summary, time.Now().UTC()) {
+		summary = commercialSummaryWithTerraTrial(summary)
+	}
 	out := &commercialUserSummary{
 		Plans:        []*types.CommercialPlan{},
 		Entitlements: []*types.CommercialEntitlement{},
@@ -72,7 +75,7 @@ func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercial
 	out.UID = summary.UID
 	out.Entitlements = summary.Entitlements
 	for model, amount := range summary.TotalsByModel {
-		if strings.TrimSpace(model) != "" && amount > 0 {
+		if strings.TrimSpace(model) != "" && amount > 0 && normalizeRelayModelName(model) != normalizeRelayModelName("gpt-5.6-luna") {
 			out.Models = append(out.Models, strings.TrimSpace(model))
 		}
 	}
@@ -240,6 +243,9 @@ type relayCommercialPublicEntitlement struct {
 }
 
 func publicCommercialSummary(summary *types.CommercialSummary) relayCommercialPublicSummary {
+	if commercialFreeTerraTrialEnabled(summary, time.Now().UTC()) {
+		summary = commercialSummaryWithTerraTrial(summary)
+	}
 	out := relayCommercialPublicSummary{
 		Models:       []string{},
 		Entitlements: []relayCommercialPublicEntitlement{},
@@ -263,7 +269,7 @@ func publicCommercialSummary(summary *types.CommercialSummary) relayCommercialPu
 	}
 	for model, amount := range summary.TotalsByModel {
 		model = strings.TrimSpace(model)
-		if model != "" && amount > 0 {
+		if model != "" && amount > 0 && normalizeRelayModelName(model) != normalizeRelayModelName("gpt-5.6-luna") {
 			out.Models = append(out.Models, model)
 		}
 	}
@@ -305,6 +311,7 @@ type commercialRelayModelScope struct {
 }
 
 type commercialRelayLimits struct {
+	FreeTerraTrial       *commercialRelayTerraTrial  `json:"free_terra_trial,omitempty"`
 	MonthlyBudget        commercialRelayBudget       `json:"monthly_budget"`
 	ModelLimits          []commercialRelayModelLimit `json:"model_limits"`
 	AvailableModelLimits []commercialRelayModelLimit `json:"available_model_limits,omitempty"`
@@ -355,19 +362,21 @@ type commercialRelayProviderBudgetUpdate struct {
 }
 
 type commercialRelayDryRun struct {
-	UID                  int64                                 `json:"uid"`
-	EnforceEnabled       bool                                  `json:"enforce_enabled"`
-	RelayAdminConfigured bool                                  `json:"relay_admin_configured"`
-	RelayKeyConfigured   bool                                  `json:"relay_key_configured"`
-	RelayUsername        string                                `json:"relay_username,omitempty"`
-	RelayKey             *commercialRelayKeySummary            `json:"relay_key,omitempty"`
-	RelayGovernanceError string                                `json:"relay_governance_error,omitempty"`
-	Summary              *types.CommercialSummary              `json:"summary"`
-	Comparisons          []commercialRelayBudgetComparison     `json:"comparisons"`
-	ProposedUpdates      []commercialRelayProviderBudgetUpdate `json:"proposed_updates"`
-	ProposedModelScopes  []commercialRelayModelScope           `json:"proposed_model_scopes,omitempty"`
-	CanApply             bool                                  `json:"can_apply"`
-	Note                 string                                `json:"note"`
+	FreeTerraTrial         *commercialRelayTerraTrial            `json:"free_terra_trial,omitempty"`
+	ProposedFreeTerraTrial bool                                  `json:"proposed_free_terra_trial"`
+	UID                    int64                                 `json:"uid"`
+	EnforceEnabled         bool                                  `json:"enforce_enabled"`
+	RelayAdminConfigured   bool                                  `json:"relay_admin_configured"`
+	RelayKeyConfigured     bool                                  `json:"relay_key_configured"`
+	RelayUsername          string                                `json:"relay_username,omitempty"`
+	RelayKey               *commercialRelayKeySummary            `json:"relay_key,omitempty"`
+	RelayGovernanceError   string                                `json:"relay_governance_error,omitempty"`
+	Summary                *types.CommercialSummary              `json:"summary"`
+	Comparisons            []commercialRelayBudgetComparison     `json:"comparisons"`
+	ProposedUpdates        []commercialRelayProviderBudgetUpdate `json:"proposed_updates"`
+	ProposedModelScopes    []commercialRelayModelScope           `json:"proposed_model_scopes,omitempty"`
+	CanApply               bool                                  `json:"can_apply"`
+	Note                   string                                `json:"note"`
 }
 
 func (h *AccountAdminHandler) HandleCommercialRelayDryRun(w http.ResponseWriter, r *http.Request) {
@@ -444,6 +453,10 @@ func (h *AccountAdminHandler) HandleCommercialRelaySync(w http.ResponseWriter, r
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"applied": true, "updates": updates, "dry_run": updated})
 		return
 	}
+	if dryRun.ProposedFreeTerraTrial || (dryRun.FreeTerraTrial != nil && dryRun.FreeTerraTrial.Enabled) {
+		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Terra trial policy changes require the commercial relay syncer"})
+		return
+	}
 	if len(dryRun.ProposedUpdates) == 0 {
 		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"applied": false, "dry_run": dryRun, "note": "no syncable model budgets"})
 		return
@@ -484,13 +497,26 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 		}
 		relayUser = user
 	}
+	originalSummary := summary
+	trialEnabled := commercialFreeTerraTrialEnabled(summary, time.Now().UTC())
+	if trialEnabled {
+		summary = commercialSummaryWithTerraTrial(summary)
+	}
 	dryRun := compareCommercialRelayBudgets(uid, summary, relayUser)
+	dryRun.Summary = originalSummary
+	dryRun.ProposedFreeTerraTrial = trialEnabled
+	if relayUser != nil {
+		dryRun.FreeTerraTrial = relayUser.Limits.FreeTerraTrial
+	}
 	var managed []*types.CommercialManagedRelayBudget
 	var managedErr error
 	if managedStore, ok := store.(CommercialRelayManagedStore); ok {
 		managed, managedErr = managedStore.ListCommercialManagedRelayBudgets(uid)
 		if managedErr == nil {
 			plannedUpdates, _ := commercialRelayManagedPlan(uid, summary, relayUser, managed)
+			if h.commercialRelayEnforcedFor(uid) {
+				plannedUpdates, _ = commercialRelaySharedManagedPlan(uid, summary, relayUser, managed)
+			}
 			dryRun.ProposedUpdates = plannedUpdates
 			dryRun.ProposedModelScopes = commercialRelayModelScopes(summary, relayUser, managed)
 			for _, item := range managed {
@@ -527,6 +553,33 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 		}
 	}
 	dryRun.EnforceEnabled = h.commercialRelayEnforcedFor(uid)
+	if relayUser != nil && relayUser.Limits.FreeTerraTrial != nil && relayUser.Limits.FreeTerraTrial.Enabled != trialEnabled {
+		dryRun.CanApply = true
+	}
+	if dryRun.EnforceEnabled && summary != nil {
+		for index := range dryRun.Comparisons {
+			row := &dryRun.Comparisons[index]
+			if summary.TotalsByModel[row.Model] <= 0 {
+				continue
+			}
+			row.CommercialLimit = commercialRelaySharedLimit(summary)
+			if trialEnabled && normalizeRelayModelName(row.Model) == normalizeRelayModelName(commercialTerraTrialModel) {
+				row.CommercialLimit = 100
+				if trial := dryRun.FreeTerraTrial; trial != nil && trial.Enabled {
+					row.RelayLimit = trial.MaxLimit
+					row.RelayUsage = trial.CurrentUsage
+					row.ResetDuration = "never"
+				}
+			}
+			row.Delta = row.CommercialLimit - row.RelayLimit
+			row.Remaining = math.Max(0, row.RelayLimit-row.RelayUsage)
+			if nearlyEqual(row.CommercialLimit, row.RelayLimit) {
+				row.Status = "match"
+			} else {
+				row.Status = "mismatch"
+			}
+		}
+	}
 	dryRun.RelayAdminConfigured = h.relayAdmin != nil
 	if h.relayAdmin == nil {
 		dryRun.Note = "relay admin is not configured; only commercial ledger was loaded"
@@ -733,8 +786,6 @@ var commercialOfficialPaidModels = []string{
 	"deepseek-v4-flash",
 	"glm-5.3-flash",
 	"gpt-5.6-terra",
-	"gpt-5.6-sol",
-	"gpt-5.6-luna",
 }
 
 func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
@@ -747,6 +798,9 @@ func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]fl
 		expectedTotal = 31500
 	default:
 		return nil
+	}
+	if len(budgets) != len(commercialOfficialPaidModels) {
+		return fmt.Errorf("official paid plan must contain only the five public models")
 	}
 	total := 0.0
 	for _, model := range commercialOfficialPaidModels {

@@ -108,11 +108,6 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-sol",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
-	{
-		ID: "gpt-5.6-luna", Label: "GPT-5.6 Luna", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-luna",
-		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
-	},
 }
 
 type botModelUpdateRequest struct {

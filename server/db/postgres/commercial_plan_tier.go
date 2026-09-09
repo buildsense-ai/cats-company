@@ -21,8 +21,6 @@ var commercialOfficialPaidModels = []string{
 	"deepseek-v4-flash",
 	"glm-5.3-flash",
 	"gpt-5.6-terra",
-	"gpt-5.6-sol",
-	"gpt-5.6-luna",
 }
 
 func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
@@ -34,6 +32,9 @@ func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]fl
 		expectedTotal = 31500
 	default:
 		return nil
+	}
+	if len(budgets) != len(commercialOfficialPaidModels) {
+		return fmt.Errorf("official paid plan must contain only the five public models")
 	}
 	total := 0.0
 	for _, model := range commercialOfficialPaidModels {

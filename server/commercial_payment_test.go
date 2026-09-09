@@ -1346,7 +1346,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 	reset := "2026-08-01 08:30:00.123456789+00:00"
 	baseStore := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{}}}
 	store := &commercialRelayBaselineTestStore{commercialRelaySyncTestStore: baseStore}
-	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{
+	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{},
 		ModelLimits: []commercialRelayModelLimit{
 			{Provider: "m27", Model: "MiniMax-M2.7", AllowedModels: []string{"MiniMax-M2.7"}, Budget: commercialRelayBudget{MaxLimit: 1000, ResetDuration: "1M", LastReset: reset}},
 			{Provider: "m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500, ResetDuration: "1M", LastReset: reset}},
@@ -1354,6 +1354,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 			{Provider: "glm", Model: "glm-5.3-flash", AllowedModels: []string{"glm-5.3-flash"}, Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M", LastReset: reset}},
 		},
 	}}
+	state.Limits.ModelLimits = append(state.Limits.ModelLimits, commercialRelayModelLimit{Provider: "gpt", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"}, Budget: commercialRelayBudget{ResetDuration: "1M"}})
 	state.Limits.AvailableModelLimits = append([]commercialRelayModelLimit(nil), state.Limits.ModelLimits...)
 	var posted map[string]interface{}
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1364,6 +1365,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
 				t.Fatal(err)
 			}
+			state.Limits.FreeTerraTrial.Enabled = posted["free_terra_trial"].(bool)
 			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: posted["monthly_budget"].(float64), ResetDuration: "1M"}
 			state.UsageWindowStart = posted["usage_window_start"].(string)
 			for index := range state.Limits.ModelLimits {
@@ -1391,7 +1393,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 	if posted["monthly_budget"] != float64(1700) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
 		t.Fatalf("shared policy mismatch: %#v", posted)
 	}
-	if len(state.Limits.ModelScopes) != 4 {
+	if len(state.Limits.ModelScopes) != 5 || !state.Limits.FreeTerraTrial.Enabled {
 		t.Fatalf("free models were not scoped: %#v", state.Limits.ModelScopes)
 	}
 }
@@ -1438,7 +1440,7 @@ func TestCommercialRelayRequiredModelsIsolatesMissingCatalogEntries(t *testing.T
 	modelLimits := []commercialRelayModelLimit{{
 		Provider: "minimax-m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"},
 	}}
-	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{},
 		ModelLimits:          modelLimits,
 		AvailableModelLimits: modelLimits,
 	}}
@@ -1459,7 +1461,7 @@ func TestCommercialRelayRequiredModelsIsolatesMissingCatalogEntries(t *testing.T
 }
 
 func TestCommercialRelayCatalogMatchesAliasesAndAllowedModels(t *testing.T) {
-	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{AvailableModelLimits: []commercialRelayModelLimit{{
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{}, AvailableModelLimits: []commercialRelayModelLimit{{
 		Provider: "deepseek-openai", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"},
 	}}}}
 	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
@@ -1486,13 +1488,13 @@ func TestCommercialRelaySharedPolicyUsesEarliestActiveEntitlement(t *testing.T) 
 	if got := commercialRelayUsageWindowStart(summary); got != "2026-08-01T00:00:00Z" {
 		t.Fatalf("usage window=%q", got)
 	}
-	user := &commercialRelayUsageUser{Configured: true, UsageWindowStart: "2026-08-01T00:00:00Z", Limits: commercialRelayLimits{
+	user := &commercialRelayUsageUser{Configured: true, UsageWindowStart: "2026-08-01T00:00:00Z", Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{},
 		MonthlyBudget: commercialRelayBudget{MaxLimit: 33600, ResetDuration: "1M"},
 	}}
 	if err := verifyCommercialRelaySharedPolicy(33600, commercialRelayUsageWindowStart(summary), user); err != nil {
 		t.Fatal(err)
 	}
-	cleared := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+	cleared := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{},
 		MonthlyBudget: commercialRelayBudget{MaxLimit: commercialRelayBlockedLimit, ResetDuration: "1M"},
 	}}
 	if err := verifyCommercialRelaySharedPolicy(commercialRelayBlockedLimit, "", cleared); err != nil {
@@ -1534,7 +1536,7 @@ func TestCommercialRelaySyncWritesAndVerifiesSharedPoolPolicy(t *testing.T) {
 		TotalsByModel: map[string]float64{"MiniMax-M3": 10, "gpt-5.6-terra": 20},
 		Entitlements:  []*types.CommercialEntitlement{{State: "active", StartsAt: start}},
 	}}
-	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{
+	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active"}, Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{},
 		MonthlyBudget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M"},
 		ModelLimits: []commercialRelayModelLimit{
 			{Provider: "minimax", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 10, ResetDuration: "1M"}},
@@ -1604,7 +1606,7 @@ func TestCommercialRelaySyncClearsExpiredPackageWindow(t *testing.T) {
 		Configured:       true,
 		UsageWindowStart: "2026-08-14T07:32:08Z",
 		Key:              &commercialRelayKeySummary{State: "active"},
-		Limits: commercialRelayLimits{MonthlyBudget: commercialRelayBudget{
+		Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{}, MonthlyBudget: commercialRelayBudget{
 			MaxLimit: 30, ResetDuration: "1M",
 		}},
 	}
@@ -1645,7 +1647,7 @@ func TestCommercialRelaySyncClearsExpiredPackageWindow(t *testing.T) {
 
 func TestCommercialRelayDryRunRecognizesSharedProviderBudget(t *testing.T) {
 	shared := []string{"model-a", "model-b"}
-	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{}, ModelLimits: []commercialRelayModelLimit{
 		{Provider: "shared-provider", Model: "model-a", AllowedModels: shared, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 30}},
 		{Provider: "shared-provider", Model: "model-b", AllowedModels: shared, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 30}},
 	}}}

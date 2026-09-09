@@ -214,7 +214,7 @@ func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 		t.Fatalf("selection model=%+v effort=%q ok=%v", model, effort, ok)
 	}
 
-	for _, modelID := range []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"} {
+	for _, modelID := range []string{"gpt-5.6-terra", "gpt-5.6-sol"} {
 		catalogModel, defaultEffort, valid := normalizeBotModelSelection(modelID, "")
 		if !valid || catalogModel.ContextWindowTokens != 256000 || defaultEffort != "medium" {
 			t.Fatalf("default selection for %s: model=%+v effort=%q valid=%v", modelID, catalogModel, defaultEffort, valid)
@@ -224,6 +224,7 @@ func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 	if _, _, valid := normalizeBotModelSelection("gpt-5.6-terra", "max"); valid {
 		t.Fatal("GPT-5.6 must reject DeepSeek-only max effort")
 	}
+	if _, _, valid := normalizeBotModelSelection("gpt-5.6-luna", ""); valid { t.Fatal("retired Luna must not be selectable") }
 	if _, _, valid := normalizeBotModelSelection("deepseek-v4-flash", "xhigh"); valid {
 		t.Fatal("DeepSeek must reject GPT-5.6-only xhigh effort")
 	}
