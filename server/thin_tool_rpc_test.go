@@ -9,6 +9,21 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+type changingBotBodyStore struct {
+	*agentTestStore
+	bodyIDs []string
+	reads   int
+}
+
+func (s *changingBotBodyStore) GetBotBodyID(botUID int64) (string, error) {
+	if s.reads >= len(s.bodyIDs) {
+		return s.agentTestStore.GetBotBodyID(botUID)
+	}
+	bodyID := s.bodyIDs[s.reads]
+	s.reads++
+	return bodyID, nil
+}
+
 func TestThinToolRPCRejectsWrongDeviceResultWithoutConsumingPending(t *testing.T) {
 	hub := NewHub(nil, nil)
 	agent := &Client{
@@ -670,6 +685,62 @@ func TestSkillHubBotSwitchRejectsDesktopWhenBotIsBoundToOfflineRuntime(t *testin
 	}
 	if drainOne(desktopTarget.send) {
 		t.Fatal("denied desktop switch was forwarded to the desktop Runtime")
+	}
+}
+
+func TestSkillHubBotSwitchRevalidatesBindingBeforeForward(t *testing.T) {
+	db := &changingBotBodyStore{
+		agentTestStore: &agentTestStore{
+			owners:     map[int64]int64{42: 7},
+			botBodyIDs: map[int64]string{42: "fermi-server-body"},
+		},
+		bodyIDs: []string{"boss-desktop-body", "fermi-server-body"},
+	}
+	hub := NewHub(db, nil)
+	desktop, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "boss-desktop",
+		BodyID:       "boss-desktop-body",
+		RuntimeRole:  "desktop",
+		Status:       "online",
+		Capabilities: []string{string(DeviceGrantSkillHubBotSwitch)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+	desktopTarget := &Client{uid: 77, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	hub.addClient(requester)
+	hub.addClient(desktopTarget)
+	hub.bindDeviceClient(7, desktop, desktopTarget)
+
+	hub.handleThinToolRPCRequest(requester, &MsgThinToolRPC{
+		ID:                "changing-binding-msg",
+		Type:              thinToolRPCTypeRequest,
+		RequestID:         "changing-binding-request",
+		TargetOwnerUserID: "usr7",
+		TargetDeviceID:    desktop.DeviceID,
+		ToolName:          string(DeviceGrantSkillHubBotSwitch),
+		Payload:           map[string]interface{}{"bot_uid": "42"},
+	})
+
+	var denied ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &denied)
+	if denied.ThinToolRPC == nil || denied.ThinToolRPC.Error == nil {
+		t.Fatalf("denied response = %#v, want thin_tool_rpc error", denied.ThinToolRPC)
+	}
+	if denied.ThinToolRPC.Error.Code != thinToolRPCBotBoundElsewhereCode {
+		t.Fatalf("denied code = %q, want %q", denied.ThinToolRPC.Error.Code, thinToolRPCBotBoundElsewhereCode)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, requester.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("request ack = %#v, want 200", ack.Ctrl)
+	}
+	if _, ok := hub.thinToolRPC.get("changing-binding-request"); ok {
+		t.Fatal("denied desktop switch was left pending")
+	}
+	if drainOne(desktopTarget.send) {
+		t.Fatal("Bot switch was forwarded after its binding changed")
 	}
 }
 

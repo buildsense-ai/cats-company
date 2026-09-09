@@ -294,6 +294,19 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 			h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
 			return
 		}
+	} else if DeviceGrantOperation(toolName) == DeviceGrantSkillHubBotSwitch {
+		// Bot binding can change after the initial authorization but before the
+		// request is forwarded. Revalidate the only SkillHub operation that can
+		// mutate Runtime identity so a stale decision cannot migrate a Bot.
+		if err := h.authorizeSkillHubThinToolRPC(client, msg, ownerUID, deviceID, toolName); err != nil {
+			code := thinToolRPCAuthorizationErrorCode(err)
+			log.Printf("[thin_tool_rpc] SkillHub Bot switch authorization changed before forward: request_id=%s target_owner=%s target_device=%s code=%s reason=%s", requestID, formatUID(ownerUID), deviceID, code, err.Error())
+			if _, ok := h.thinToolRPC.finishMatching(pending); ok {
+				h.sendThinToolRPCResultToRequester(client, requestID, msg, code, err.Error())
+			}
+			h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
+			return
+		}
 	}
 
 	if !h.sendThinToolRPCToRoute(route, &forward) {

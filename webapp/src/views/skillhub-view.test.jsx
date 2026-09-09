@@ -573,6 +573,29 @@ describe('SkillHubView', () => {
         'skillhub.localBot.switch',
       ],
     }] }, '42')).toMatchObject({
+      kind: 'binding-unavailable',
+      devices: [],
+    });
+    expect(resolveSkillHubRuntimeRouteForBot({ devices: [{
+      deviceId: 'desktop',
+      bodyId: 'desktop-body',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] }, '42', {
+      bot_uid: 42,
+      state: 'unbound',
+      active: false,
+      bound: false,
+    })).toMatchObject({
       kind: 'desktop-fallback',
       devices: [expect.objectContaining({ deviceId: 'desktop' })],
     });
@@ -1848,6 +1871,58 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localBot.switch',
       payload: expect.objectContaining({ bot_uid: '44' }),
     }));
+  });
+
+  it('fails closed when the Bot body binding cannot be verified', async () => {
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Local Bot', relation: 'owner' },
+        { id: 44, display_name: 'Fermi', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid),
+      revision: 1,
+      skills: [],
+    }));
+    api.getBotBodyStatus.mockRejectedValue(new Error('temporary gateway failure'));
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'desktop-7',
+      bodyId: 'desktop-body',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCustomSkills();
+    const picker = container.querySelector('.cc-skillhub-bot-picker select');
+    await act(async () => {
+      picker.value = '44';
+      Simulate.change(picker);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain('暂时无法确认当前 Agent 的运行环境绑定');
+    expect(container.textContent).toContain('已停止操作');
+    expect(requestSkillHubDeviceTool.mock.calls.some(([request]) => (
+      request.toolName === 'skillhub.localBot.switch'
+    ))).toBe(false);
   });
 
   it('explains a server-side Bot switch safety rejection without retrying', async () => {
