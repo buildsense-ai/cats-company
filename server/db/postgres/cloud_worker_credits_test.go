@@ -113,9 +113,9 @@ func TestCommitCloudWorkerCreditAllowsPerpetualManualGrant(t *testing.T) {
 		UPDATE cloud_worker_credits
 		SET state = 'consumed', worker_uid = $3, consumed_at = CURRENT_TIMESTAMP
 		WHERE uid = $1 AND reservation_ref = $2 AND state = 'reserved'
-		RETURNING expires_at`)).
+		RETURNING expires_at, billing_mode`)).
 		WithArgs(int64(784), "create-784-test", int64(928)).
-		WillReturnRows(sqlmock.NewRows([]string{"expires_at"}).AddRow(nil))
+		WillReturnRows(sqlmock.NewRows([]string{"expires_at", "billing_mode"}).AddRow(nil, "month"))
 	mock.ExpectCommit()
 
 	if err := adapter.CommitCloudWorkerCredit(784, "create-784-test", 928, "bot-bot-123-9879", 15); err != nil {
