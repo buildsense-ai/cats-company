@@ -356,6 +356,10 @@ var relayAdminUserKeyLimitsPath = regexp.MustCompile(`^/local/users/([0-9]+)/key
 var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|records|plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers(?:/import)?|users|orders|order-refunds|relay-dry-run|relay-sync))?/?$`)
 var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|adjustments|cloud-worker-credits|cloud-worker-provision|cloud-workers/import|order-refunds|relay-sync)/?$`)
 
+// Keep this aligned with Relay's explicit capacity endpoints, not its entire
+// /local namespace. Both account registration and state changes require a marker.
+var relayAdminProviderCapacityAPIPath = regexp.MustCompile(`^/local/provider-capacity/api/accounts(?:/state)?/?$`)
+
 func relayAdminLimitsTargetUID(path string) (int64, bool) {
 	matches := relayAdminUserKeyLimitsPath.FindStringSubmatch(path)
 	if len(matches) != 2 {
@@ -375,6 +379,9 @@ func relayAdminLocalWriteMarker(method, path string) string {
 	if relayAdminCommercialOpsWritePath.MatchString(path) {
 		return "commercial-ops"
 	}
+	if relayAdminProviderCapacityAPIPath.MatchString(path) {
+		return "provider-capacity"
+	}
 	return ""
 }
 
@@ -390,6 +397,9 @@ func relayAdminPathAllowed(rawPath string) bool {
 		return true
 	}
 	if relayAdminCommercialOpsPath.MatchString(path) {
+		return true
+	}
+	if path == "/local/provider-capacity" || relayAdminProviderCapacityAPIPath.MatchString(path) {
 		return true
 	}
 	for _, prefix := range relayAdminAllowedPrefixes {
