@@ -41,6 +41,22 @@ func TestPostgresCommercialRecordsBeyondFirstHundred(t *testing.T) {
 	db := commercialPolicyTestDB(t)
 	uid := createGLM53MigrationUser(t, db, "records")
 	planID := seedGLM53MigrationPlan(t, db, "records-plan", "Records", `{}`)
+	invite := &types.CommercialInviteCode{Code: "TEST-GENERATED-INVITE", PlanID: planID, MaxRedemptions: 3, CreateOnly: true}
+	if _, err := db.CreateCommercialInviteCode(invite); err != nil {
+		t.Fatal(err)
+	}
+	invite.MaxRedemptions = 99
+	if _, err := db.CreateCommercialInviteCode(invite); err == nil {
+		t.Fatal("create-only collision overwrote existing invite")
+	}
+	var remaining int
+	if err := db.db.QueryRow(`SELECT max_redemptions FROM commercial_invite_codes WHERE code=$1`, invite.Code).Scan(&remaining); err != nil || remaining != 3 {
+		t.Fatalf("invite collision mutated original: %v %d", err, remaining)
+	}
+	invite.CreateOnly = false
+	if _, err := db.CreateCommercialInviteCode(invite); err != nil {
+		t.Fatal(err)
+	}
 	_, err := db.db.Exec(`INSERT INTO commercial_orders(order_no, uid, plan_id, plan_slug, plan_name,
 		plan_duration_days, plan_model_budgets, amount_fen, channel, status, client_request_id)
 		SELECT 'page-' || n, $1, $2, 'records-plan', 'Records', 30, '{}'::jsonb, 1, 'test',

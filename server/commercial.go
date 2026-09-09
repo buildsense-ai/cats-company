@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -958,6 +960,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 	case http.MethodPost:
 		var req struct {
 			Code               string `json:"code"`
+			CreateOnly         bool   `json:"create_only"`
 			PlanID             int64  `json:"plan_id"`
 			MaxRedemptions     int    `json:"max_redemptions"`
 			CloudWorkerCredits int    `json:"cloud_worker_credits"`
@@ -970,6 +973,15 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			return
 		}
 		code := strings.ToUpper(strings.TrimSpace(req.Code))
+		if code == "" {
+			var random [12]byte
+			if _, err := rand.Read(random[:]); err != nil {
+				writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate invite code"})
+				return
+			}
+			code = "CC-" + strings.ToUpper(hex.EncodeToString(random[:]))
+			req.CreateOnly = true
+		}
 		if !commercialCodePattern.MatchString(code) {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid invite code"})
 			return
@@ -996,6 +1008,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			expiresAt = &parsed
 		}
 		id, err := store.CreateCommercialInviteCode(&types.CommercialInviteCode{
+			CreateOnly:         req.CreateOnly,
 			Code:               code,
 			PlanID:             req.PlanID,
 			MaxRedemptions:     req.MaxRedemptions,
@@ -1009,7 +1022,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			return
 		}
 		invites, _ := store.ListCommercialInviteCodes(80)
-		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "id": id, "invites": invites})
+		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "id": id, "code": code, "invites": invites})
 	default:
 		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}

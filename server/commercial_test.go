@@ -135,6 +135,9 @@ func (s *commercialTestStore) CreateCommercialInviteCode(invite *types.Commercia
 	}
 	for index, existing := range s.invites {
 		if existing.Code == cp.Code {
+			if cp.CreateOnly {
+				return 0, fmt.Errorf("invite already exists")
+			}
 			cp.ID = existing.ID
 			cp.RedeemedCount = existing.RedeemedCount
 			s.invites[index] = &cp
