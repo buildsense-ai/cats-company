@@ -210,6 +210,18 @@ if [[ -n "$inst" ]]; then
       ctyun_retry 3 5 ecs DeleteEcsInstance \
         --regionID "$REGION_ID" --clientToken "$delete_token" --instanceID "$instance_id" >/dev/null 2>&1 \
         || { echo "error: instance delete failed (instance_id=$instance_id)" >&2; exit 1; }
+      # Deletion is asynchronous. Do not remove credentials or local retry
+      # state while the provider still reports the original instance.
+      removed=0
+      for _ in $(seq 1 60); do
+        current="$(find_instance "$INSTANCE_NAME")"
+        if [[ -z "$current" ]]; then removed=1; break; fi
+        sleep 2
+      done
+      if [[ "$removed" -eq 0 ]]; then
+        echo "error: timed out waiting for instance deletion (instance_id=$instance_id)" >&2
+        exit 1
+      fi
     fi
   fi
 fi
@@ -246,11 +258,28 @@ kp="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJE
   | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
 if [[ -n "$kp" ]]; then
   # 实测（2026-08-07）：DeleteEcsKeypair 不接受 --projectID，会报 unknown flag
-  if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
-    : # ok
-  else
-    errors="key pair delete failed; "
-  fi
+  # The instance can disappear before its key attachment is released. Also
+  # reconcile an accepted delete whose response was lost before retrying it.
+  key_removed=0
+  for attempt in $(seq 1 6); do
+    if key_error="$(ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" 2>&1)"; then
+      key_removed=1; break
+    fi
+    echo "warning: key pair cleanup attempt $attempt failed: $key_error" >&2
+    if [[ "$attempt" -lt 6 ]]; then sleep 5; fi
+    kp="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+      --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
+      | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
+    if [[ -z "$kp" ]]; then key_removed=1; break; fi
+  done
+  if [[ "$key_removed" -ne 1 ]]; then errors="key pair delete failed; "; fi
+fi
+
+# Keep deployment and identity state for a subsequent cleanup retry. In
+# particular, a direct operator retry still needs its original region.
+if [[ -n "$errors" ]]; then
+  echo "error: destroy incomplete: ${errors}" >&2
+  exit 1
 fi
 
 # --- 3. 清理本地 state（尽力，不阻塞结果） ---
@@ -263,10 +292,6 @@ else
   [[ ! -d "$STATE_DIR" ]] || rm -rf "$STATE_DIR" 2>/dev/null || true
 fi
 
-if [[ -n "$errors" ]]; then
-  echo "error: destroy incomplete: ${errors}" >&2
-  exit 1
-fi
 
 if [[ -z "$instance_id" ]]; then
   echo "{\"status\":\"not-found\",\"instance_name\":\"$INSTANCE_NAME\"}"
