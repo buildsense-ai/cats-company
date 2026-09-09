@@ -389,7 +389,12 @@ else
   create_args+=(--onDemand true)
 fi
 if [[ "$EXT_IP" == "1" ]]; then
-  create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone --demandBillingType upflowc)
+  create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone)
+  # demandBillingType applies only to an automatically allocated EIP on an
+  # on-demand instance. Monthly EIPs follow the provider's cycle purchase.
+  if [[ "$BILLING_MODE" == "ondemand" ]]; then
+    create_args+=(--demandBillingType upflowc)
+  fi
 fi
 create_resp="$(ctyun "${create_args[@]}")"
 CREATED_INSTANCE_ID="$(jq -r '.returnObj.masterResourceID // empty' <<<"$create_resp")"

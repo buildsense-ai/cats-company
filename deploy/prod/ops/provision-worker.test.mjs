@@ -469,6 +469,20 @@ test("provision-worker: public IP is an explicit legacy override", () => {
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.match(state.createArgs, /--extIP 1/);
   assert.match(state.createArgs, /--bandwidth 10/);
+  assert.match(state.createArgs, /--onDemand false/);
+  assert.doesNotMatch(state.createArgs, /--demandBillingType/);
+});
+
+test("provision-worker: public on-demand EIP uses traffic billing without a monthly cycle", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k", "--image-id", "img-1"],
+    { CTYUN_WORKER_EXT_IP: "1", CTYUN_WORKER_BILLING_MODE: "ondemand" });
+  assert.equal(r.status, 0, r.stderr);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.match(state.createArgs, /--extIP 1/);
+  assert.match(state.createArgs, /--onDemand true/);
+  assert.match(state.createArgs, /--demandBillingType upflowc/);
+  assert.doesNotMatch(state.createArgs, /--cycleType|--cycleCount/);
 });
 
 test("provision-worker: ondemand billing mode keeps on-demand and skips auto-renew", () => {
