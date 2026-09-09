@@ -42,6 +42,7 @@ const (
 	DeviceGrantDesktopControl                   DeviceGrantOperation = "desktop_control"
 	DeviceGrantSkillHubWorkspaceGet             DeviceGrantOperation = "skillhub.localWorkspace.get"
 	DeviceCapabilitySkillHubWorkspacePagination DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
+	DeviceGrantSkillHubWorkspaceSync            DeviceGrantOperation = "skillhub.localWorkspace.syncToAgent"
 	DeviceGrantSkillHubSkillShare               DeviceGrantOperation = "skillhub.localSkill.share"
 	DeviceGrantSkillHubSkillFinalize            DeviceGrantOperation = "skillhub.localSkill.finalize"
 	DeviceGrantSkillHubSkillDelete              DeviceGrantOperation = "skillhub.localSkill.delete"
@@ -909,6 +910,7 @@ func isAllowedDeviceGrantRuntimeOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantSendFile,
 		DeviceGrantExecuteShell,
 		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubSkillDelete,
@@ -1012,6 +1014,7 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantDesktopControl,
 		DeviceGrantSkillHubWorkspaceGet,
 		DeviceCapabilitySkillHubWorkspacePagination,
+		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubSkillDelete,

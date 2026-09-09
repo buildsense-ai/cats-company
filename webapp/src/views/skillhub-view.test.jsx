@@ -1566,6 +1566,99 @@ describe('SkillHubView', () => {
     ))).toBe(false);
   });
 
+  it('lets the owner explicitly sync a reviewed server Runtime workspace as Bot-private abilities', async () => {
+    const workspaceRevision = 'a'.repeat(64);
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'server-42',
+      displayName: 'Developer Runtime',
+      runtimeRole: 'server',
+      botUid: 42,
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
+        'skillhub.localWorkspace.syncToAgent',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+      ],
+    }] });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+      if (toolName === 'skillhub.localWorkspace.get') return {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        skills_path: '/srv/xiaoba/skills',
+        workspace_revision: workspaceRevision,
+        total_skills: 1,
+        page_offset: 0,
+        page_limit: 200,
+        next_offset: null,
+        truncated: false,
+        skills: [{
+          local_skill_id: 'server-private-id',
+          name: 'server-private',
+          description: 'Private server ability',
+          relative_path: 'server-private',
+          source: 'user',
+          can_share: true,
+        }],
+      };
+      if (toolName === 'skillhub.localWorkspace.syncToAgent') return {
+        schema: 'xiaoba.skillhub.workspace_sync.v1',
+        bot_uid: '42',
+        workspace_revision: workspaceRevision,
+        workspace_skills: 1,
+        synced_skills: 1,
+        private_skills: 1,
+        public_skills: 0,
+        cloud_revision: 4,
+        direction: 'local_to_cloud',
+        apply_status: 'applied',
+      };
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCustomSkills();
+    const syncButton = [...container.querySelectorAll('button')]
+      .find(button => button.textContent.includes('同步到当前 Agent'));
+    expect(syncButton).toBeTruthy();
+    expect(syncButton.disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(syncButton);
+      await Promise.resolve();
+    });
+    const confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation.textContent).toContain('不会发布到团队能力库');
+    expect(confirmation.textContent).toContain('不在当前工作区的能力会被移除');
+    await act(async () => {
+      Simulate.click([...confirmation.querySelectorAll('button')]
+        .find(button => button.textContent === '确认同步'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'server-42',
+      toolName: 'skillhub.localWorkspace.syncToAgent',
+      payload: {
+        bot_uid: '42',
+        workspace_revision: workspaceRevision,
+      },
+      timeoutMs: 120_000,
+    }));
+    expect(container.textContent).toContain('未发布内容保持 Bot 私有');
+  });
+
   it('blocks desktop fallback when the selected Bot runs on an older server Runtime', async () => {
     api.getMyBots.mockResolvedValueOnce({
       bots: [

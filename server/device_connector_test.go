@@ -203,6 +203,7 @@ func TestDeviceConnectorPreservesSkillHubCapabilitiesThroughEnrollment(t *testin
 	capabilities := []DeviceGrantOperation{
 		DeviceGrantSkillHubWorkspaceGet,
 		DeviceCapabilitySkillHubWorkspacePagination,
+		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubBotSwitch,
@@ -213,6 +214,7 @@ func TestDeviceConnectorPreservesSkillHubCapabilitiesThroughEnrollment(t *testin
 		"capabilities": [
 			"skillhub.localWorkspace.get",
 			"skillhub.localWorkspace.pagination.v1",
+			"skillhub.localWorkspace.syncToAgent",
 			"skillhub.localSkill.share",
 			"skillhub.localSkill.finalize",
 			"skillhub.localBot.switch"
@@ -242,6 +244,7 @@ func TestDeviceConnectorPreservesSkillHubCapabilitiesThroughEnrollment(t *testin
 		"capabilities": [
 			"skillhub.localWorkspace.get",
 			"skillhub.localWorkspace.pagination.v1",
+			"skillhub.localWorkspace.syncToAgent",
 			"skillhub.localSkill.share",
 			"skillhub.localSkill.finalize",
 			"skillhub.localBot.switch"
@@ -371,6 +374,7 @@ func TestExistingConnectorCanAdvertisePaginationMarkerAfterRuntimeUpgrade(t *tes
 		"capabilities": [
 			"skillhub.localWorkspace.get",
 			"skillhub.localWorkspace.pagination.v1",
+			"skillhub.localWorkspace.syncToAgent",
 			"skillhub.localSkill.share",
 			"skillhub.localSkill.finalize",
 			"execute_shell"
@@ -393,6 +397,7 @@ func TestExistingConnectorCanAdvertisePaginationMarkerAfterRuntimeUpgrade(t *tes
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceCapabilitySkillHubWorkspacePagination,
+		DeviceGrantSkillHubWorkspaceSync,
 	}
 	if len(registered.Device.Capabilities) != len(wantCapabilities) {
 		t.Fatalf("upgraded device capabilities=%#v", registered.Device.Capabilities)
@@ -411,8 +416,21 @@ func TestExistingConnectorCanAdvertisePaginationMarkerAfterRuntimeUpgrade(t *tes
 	if !ok {
 		t.Fatal("upgraded existing device should remain visible")
 	}
-	if device.Capabilities[len(device.Capabilities)-1] != DeviceCapabilitySkillHubWorkspacePagination {
-		t.Fatalf("stored device is missing pagination marker: %#v", device.Capabilities)
+	if device.Capabilities[len(device.Capabilities)-1] != DeviceGrantSkillHubWorkspaceSync {
+		t.Fatalf("stored device is missing derived workspace sync capability: %#v", device.Capabilities)
+	}
+}
+
+func TestExistingConnectorCannotAdvertiseWorkspaceSyncWithoutLegacyPrerequisites(t *testing.T) {
+	got := limitConnectorRegistrationCapabilities([]string{
+		"skillhub.localWorkspace.get",
+		"skillhub.localWorkspace.syncToAgent",
+		"execute_shell",
+	}, []string{
+		"skillhub.localWorkspace.get",
+	})
+	if len(got) != 1 || got[0] != string(DeviceGrantSkillHubWorkspaceGet) {
+		t.Fatalf("workspace sync capability escalated from incomplete legacy grant: %#v", got)
 	}
 }
 
