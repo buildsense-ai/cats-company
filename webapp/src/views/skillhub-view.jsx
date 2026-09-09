@@ -192,6 +192,14 @@ export function resolveSkillHubRuntimeRouteForBot(response, botUID, bodyStatus =
     return { kind: 'server-offline', devices: [], blockedServers: boundExactServers };
   }
 
+  // A desktop fallback can change which XiaoBa Runtime owns the selected Bot.
+  // If the durable binding lookup failed or returned an unexpected payload, we
+  // cannot distinguish an unbound Bot from a temporarily unreachable server
+  // Bot. Fail closed instead of treating an unknown binding as unbound.
+  if (!bodyStatusKnown) {
+    return { kind: 'binding-unavailable', devices: [], blockedServers: [] };
+  }
+
   const desktopCandidates = activeRoutable.filter((device) => (
     device.runtimeRole === 'desktop' && supportsSkillHubDesktop(device)
   ));
@@ -1043,6 +1051,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         route.kind === 'server-upgrade-required'
         || route.kind === 'server-offline'
         || route.kind === 'runtime-offline'
+        || route.kind === 'binding-unavailable'
       ) {
         requestedBotSwitchRef.current = '';
         localRequestRef.current += 1;
@@ -1055,6 +1064,8 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
           setRuntimeRouteError('当前 Agent 已在服务器运行，但该服务器 XiaoBa 版本尚不支持远程 SkillHub 工作区。为避免切换本地 XiaoBa，已停止操作；请升级服务器 XiaoBa 后刷新。');
         } else if (route.kind === 'server-offline') {
           setRuntimeRouteError('当前 Agent 已绑定服务器 Runtime，但服务器暂时离线或正在重连。为避免切换本地 XiaoBa，已停止操作；待服务器恢复后刷新。');
+        } else if (route.kind === 'binding-unavailable') {
+          setRuntimeRouteError('暂时无法确认当前 Agent 的运行环境绑定。为避免误切换，已停止操作；请稍后刷新。');
         } else {
           setRuntimeRouteError('当前 Agent 已绑定其他 XiaoBa Runtime，但该运行环境暂时不可达。为避免改变现有绑定，已停止切换本地 XiaoBa。');
         }
@@ -1078,6 +1089,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setSelectedDeviceID(next);
       return capable;
     } catch (error) {
+      requestedBotSwitchRef.current = '';
       setRuntimeRouteError('');
       devicesRef.current = [];
       setDevices([]);
