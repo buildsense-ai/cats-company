@@ -203,11 +203,14 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		}
 		var samePlan bool
 		if err := tx.QueryRow(`
-			SELECT EXISTS(
-				SELECT 1 FROM commercial_entitlements
-				WHERE uid = $1 AND plan_id = $2 AND state = 'active'
+			SELECT COALESCE((
+				SELECT plan_id = $2 FROM commercial_entitlements
+				WHERE uid = $1 AND state = 'active'
 				  AND starts_at <= $3 AND (expires_at IS NULL OR expires_at > $3)
-			)`, adjustment.UID, adjustment.PlanID, now).Scan(&samePlan); err != nil {
+				ORDER BY CASE WHEN source IN ('free', 'legacy') THEN 1 ELSE 0 END,
+				         expires_at DESC NULLS LAST, starts_at DESC, id DESC
+				LIMIT 1
+			), FALSE)`, adjustment.UID, adjustment.PlanID, now).Scan(&samePlan); err != nil {
 			return nil, fmt.Errorf("check active commercial plan: %w", err)
 		}
 		if samePlan {
