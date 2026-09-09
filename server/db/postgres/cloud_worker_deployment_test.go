@@ -143,6 +143,19 @@ func testCloudWorkerTrialBilling(t *testing.T, db *Adapter, owner int64) {
 	if _, err = db.db.Exec(`UPDATE cloud_worker_lifecycles SET package_expires_at=CURRENT_TIMESTAMP-INTERVAL '1 minute',delete_after=CURRENT_TIMESTAMP+INTERVAL '3 days' WHERE id=$1`, item.ID); err != nil {
 		t.Fatal(err)
 	}
+	due, err := db.ListCloudWorkerLifecycleDue(time.Now().UTC(), 100)
+	if err != nil {
+		t.Fatalf("production expiry scan: %v", err)
+	}
+	found := false
+	for _, candidate := range due {
+		if candidate.ID == item.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expiry scan omitted expired trial")
+	}
 	if ok, err := db.ClaimCloudWorkerBillingAction(item.ID, "suspend", true); err != nil || !ok {
 		t.Fatal("expiry suspension not claimed", err)
 	}
