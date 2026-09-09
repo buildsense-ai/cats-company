@@ -241,7 +241,25 @@ rebuild="$(ctyun ecs RebuildEcsInstance --regionID "$REGION_ID" --instanceID "$i
 job_id="$(jq -r '.returnObj.jobID // empty' <<<"$rebuild")"
 echo "[cloud-worker] rebuild submitted instance_id=$instance_id job_id=${job_id:-none}" >&2
 
+# A completed rebuild can leave the instance stopped (for example Foshan 7).
+# Confirm this exact async job succeeded before starting it; a stopped state or
+# a changed image alone does not prove that disk reconstruction has finished.
+[[ -n "$job_id" ]] || { echo "error: rebuild response has no jobID" >&2; exit 1; }
+rebuild_done=""
+for _ in $(seq 1 60); do
+  job="$(ctyun ecs QueryEcsJob --regionID "$REGION_ID" --jobIDs "$job_id")"
+  job_status="$(jq -r --arg id "$job_id" '.returnObj.jobList[]? | select(.jobID == $id) | .jobStatus' <<<"$job")"
+  case "$job_status" in
+    1) rebuild_done=1; break ;;
+    0) sleep 5 ;;
+    2) echo "error: rebuild job failed (job_id=$job_id)" >&2; exit 1 ;;
+    *) echo "error: rebuild job status is missing or unknown (job_id=$job_id)" >&2; exit 1 ;;
+  esac
+done
+[[ -n "$rebuild_done" ]] || { echo "error: timed out waiting for rebuild job $job_id" >&2; exit 1; }
+
 INSTANCE_IP=""
+start_requested=""
 for _ in $(seq 1 90); do
   instance="$(find_instance "$INSTANCE_NAME")"
   [[ -n "$instance" ]] || { sleep 10; continue; }
@@ -249,6 +267,10 @@ for _ in $(seq 1 90); do
   if [[ "$state" == "error" || "$state" == "unsubscribed" ]]; then
     echo "error: rebuild entered terminal state=$state (instance_id=$instance_id)" >&2
     exit 1
+  fi
+  if [[ "$state" == "stopped" && -z "$start_requested" ]]; then
+    ctyun ecs StartEcsInstance --regionID "$REGION_ID" --instanceID "$instance_id" >/dev/null
+    start_requested=1
   fi
   if [[ "$state" == "running" || "$state" == "active" ]]; then
     INSTANCE_IP="$(worker_connection_ip <<<"$instance")"
