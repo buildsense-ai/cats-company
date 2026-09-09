@@ -1560,7 +1560,11 @@ describe('AgentStoreModal', () => {
     expect(api.createCloudWorker).toHaveBeenCalledWith(expect.objectContaining({ display_name: '云端审查助手' }));
   });
 
-  test('refreshes transient cloud status when the managed panel becomes visible', async () => {
+  test.each([
+    ['connected', '已连接'],
+    ['not_connected', '未连接，等待上线'],
+    [undefined, '暂未确认'],
+  ])('refreshes cloud runtime %s through the assistant roster into the managed panel', async (runtime_status, label) => {
     api.getMyBots.mockResolvedValue({
       bots: [{
         id: 92,
@@ -1585,6 +1589,7 @@ describe('AgentStoreModal', () => {
           cloud_status: 'running',
           cloud_version: '1.4.8',
           cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+          runtime_status,
         }],
       });
 
@@ -1608,6 +1613,7 @@ describe('AgentStoreModal', () => {
     });
 
     expect(api.getCloudWorkers).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain(`员工连接 ${label}`);
     expect(container.textContent).toContain('运行中');
     expect(container.textContent).toContain('基础镜像 1.4.8');
     expect(container.textContent).not.toContain('状态同步中');

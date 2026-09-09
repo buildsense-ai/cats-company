@@ -421,6 +421,7 @@ const mergeCloudWorkerFacts = (bots, workers) => {
     return {
       ...bot,
       cloud_status: cloudStatus,
+      runtime_status: cloud.runtime_status || 'unknown',
       // The cloud-worker API owns runtime version truth. An explicit empty
       // value means unknown and must not fall back to the assistant definition.
       app_version: Object.prototype.hasOwnProperty.call(cloud, 'app_version')
