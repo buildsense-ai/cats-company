@@ -50,6 +50,28 @@ describe('AgentStoreModal', () => {
   let container;
   let root;
 
+  const expandSkills = async () => {
+    const trigger = container.querySelector('[aria-label="配置助手技能"]');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.cc-agent-skill-tabs')).toBeNull();
+    await act(async () => Simulate.click(trigger));
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  };
+
+  const selectManagedHosting = async () => {
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-custom-model-select-trigger[aria-label="部署方式"]'));
+    });
+    const managedOption = Array.from(document.body.querySelectorAll('.v3-custom-model-select-option'))
+      .find((option) => option.getAttribute('aria-label') === '云托管');
+    expect(managedOption.disabled).toBe(false);
+    await act(async () => {
+      Simulate.click(managedOption);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     api.createBot.mockReset().mockResolvedValue({ uid: 91 });
@@ -326,7 +348,7 @@ describe('AgentStoreModal', () => {
     });
 
     const createTab = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('创建新助手'));
+      .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手'));
 
     expect(container.querySelector('.cc-agent-manager-title .lucide-bot')).not.toBeNull();
     expect(container.querySelector('.cc-agent-manager-title .lucide-zap')).toBeNull();
@@ -342,7 +364,10 @@ describe('AgentStoreModal', () => {
     const roleSelect = form.querySelector('.v3-custom-model-select-trigger[aria-label="定位模板"]');
 
     expect(description.required).toBe(false);
-    expect(submit.disabled).toBe(false);
+    expect(submit.disabled).toBe(true);
+    expect(submit.textContent).toBe('创建助手');
+    expect(container.querySelector('[aria-label="配置助手技能"]').getAttribute('aria-expanded')).toBe('false');
+    expect(form.querySelector('.cc-agent-skill-tabs')).toBeNull();
     expect(roleSelect).not.toBeNull();
     expect(roleSelect.closest('.cc-agent-role-select')).not.toBeNull();
     expect(roleSelect.querySelector('.v3-custom-model-select-chevron')).not.toBeNull();
@@ -369,6 +394,7 @@ describe('AgentStoreModal', () => {
     await act(async () => {
       Simulate.change(nameInput, { target: { value: '测试助手' } });
     });
+    expect(submit.disabled).toBe(false);
 
     await act(async () => {
       Simulate.submit(form);
@@ -431,7 +457,7 @@ describe('AgentStoreModal', () => {
 
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
       await Promise.resolve();
     });
 
@@ -446,6 +472,7 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
+    await expandSkills();
     const skillTabs = Array.from(container.querySelectorAll('.cc-agent-skill-tabs [role="tab"]'));
     expect(skillTabs.map((button) => button.textContent)).toEqual(['已选0', '可用3']);
     expect(skillTabs[0].getAttribute('aria-selected')).toBe('false');
@@ -552,11 +579,12 @@ describe('AgentStoreModal', () => {
     });
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
       await Promise.resolve();
       await Promise.resolve();
     });
 
+    await expandSkills();
     const installedGroup = container.querySelector('.cc-agent-available-group');
     expect(installedGroup.querySelectorAll('.cc-agent-selected-skill')).toHaveLength(3);
     expect(installedGroup.textContent).toContain('My Private Review');
@@ -617,11 +645,12 @@ describe('AgentStoreModal', () => {
     });
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
       await Promise.resolve();
       await Promise.resolve();
     });
 
+    await expandSkills();
     const localRow = Array.from(container.querySelectorAll('.cc-agent-available-group .cc-agent-selected-skill'))
       .find((row) => row.textContent.includes('Local Draft Skill'));
     await act(async () => {
@@ -680,11 +709,12 @@ describe('AgentStoreModal', () => {
     });
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
       await Promise.resolve();
       await Promise.resolve();
     });
 
+    await expandSkills();
     const localRow = container.querySelector('.cc-agent-available-group .cc-agent-selected-skill');
     await act(async () => {
       Simulate.click(localRow.querySelector('.cc-agent-skill-row-action'));
@@ -722,14 +752,15 @@ describe('AgentStoreModal', () => {
     });
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
       await Promise.resolve();
       await Promise.resolve();
     });
 
+    await expandSkills();
     expect(container.querySelector('.cc-agent-skill-recommended-badge')).toBeNull();
     expect(container.querySelector('.cc-agent-skill-group-empty')?.textContent)
-      .toContain('暂无可用 Skill');
+      .toContain('暂无可用技能');
   });
 
   test('distinguishes an unavailable recommendation service from no matching Skill', async () => {
@@ -744,15 +775,17 @@ describe('AgentStoreModal', () => {
     });
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    const recommendationState = container.querySelector('.cc-agent-available-group .cc-agent-skill-recommendation-state');
-    expect(recommendationState?.textContent).toContain('推荐暂时不可用');
-    expect(recommendationState?.textContent).toContain('已安装的 Skill 仍可正常添加');
-    expect(recommendationState?.textContent).not.toContain('暂无可用 Skill');
+    await expandSkills();
+    const recommendationState = container.querySelector('.cc-agent-available-group .cc-agent-skill-group-empty');
+    expect(recommendationState?.textContent).toContain('暂时没有可用技能');
+    expect(recommendationState?.textContent).toContain('可浏览技能目录，或创建后再添加');
+    expect(recommendationState?.textContent).not.toContain('暂无可用技能');
+    expect(container.querySelector('.cc-agent-skill-recommendation-state')).toBeNull();
   });
 
   test('selects SkillHub abilities in a portal and binds them after creating the assistant', async () => {
@@ -780,10 +813,11 @@ describe('AgentStoreModal', () => {
 
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
     });
 
     const form = container.querySelector('.cc-agent-create-form');
+    await expandSkills();
     expect(form.querySelector('.cc-agent-skill-recommended-badge')).not.toBeNull();
 
     await act(async () => {
@@ -858,8 +892,9 @@ describe('AgentStoreModal', () => {
     });
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent.includes('创建新助手')));
+        .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手')));
     });
+    await expandSkills();
     await act(async () => {
       Simulate.click(container.querySelector('.cc-agent-add-skill'));
       await Promise.resolve();
@@ -1397,7 +1432,7 @@ describe('AgentStoreModal', () => {
     });
 
     const createTab = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('创建新助手'));
+      .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手'));
     await act(async () => {
       Simulate.click(createTab);
       await Promise.resolve();
@@ -1405,15 +1440,11 @@ describe('AgentStoreModal', () => {
 
     // Self-hosted form is shown by default.
     expect(Array.from(container.querySelectorAll('button'))
-      .some((button) => button.textContent.includes('创建我的专属助手'))).toBe(true);
+      .some((button) => button.textContent === '创建助手')).toBe(true);
     expect(container.textContent).not.toContain('云托管创建权益');
 
     // Select managed hosting -> the cloud panel replaces the self-hosted form.
-    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
-    await act(async () => {
-      Simulate.change(managedRadio, { target: { checked: true } });
-      await Promise.resolve();
-    });
+    await selectManagedHosting();
 
     expect(container.textContent).toContain('云托管创建权益');
     expect(container.textContent).toContain('1/3 已使用');
@@ -1425,7 +1456,7 @@ describe('AgentStoreModal', () => {
     expect(container.textContent).not.toContain('应用版本 1.4.9');
     expect(container.textContent).not.toContain('状态同步中');
     // Self-hosted form is gone while managed is active.
-    expect(container.textContent).not.toContain('创建我的专属助手');
+    expect(container.querySelector('.cc-agent-create-form')).toBeNull();
 
     // Switching back to self-hosted restores the original form.
     const selfHostedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[0];
@@ -1434,7 +1465,7 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
     expect(Array.from(container.querySelectorAll('button'))
-      .some((button) => button.textContent.includes('创建我的专属助手'))).toBe(true);
+      .some((button) => button.textContent === '创建助手')).toBe(true);
     expect(container.textContent).not.toContain('创建云托管员工');
   });
 
@@ -1454,16 +1485,21 @@ describe('AgentStoreModal', () => {
     });
 
     const createTab = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('创建新助手'));
+      .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手'));
     await act(async () => {
       Simulate.click(createTab);
       await Promise.resolve();
     });
 
-    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
-    expect(managedRadio.disabled).toBe(true);
-    expect(managedRadio.closest('label').textContent).toContain('云端虚拟员工创建权益已用完');
-    expect(managedRadio.closest('label').textContent).not.toContain('可创建 0/1');
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-custom-model-select-trigger[aria-label="部署方式"]'));
+    });
+    const managedOption = Array.from(document.body.querySelectorAll('.v3-custom-model-select-option'))
+      .find((option) => option.getAttribute('aria-label') === '云托管');
+    expect(managedOption.disabled).toBe(true);
+    expect(document.getElementById(managedOption.getAttribute('aria-describedby')).textContent)
+      .toBe('云端虚拟员工创建权益已用完');
+    expect(managedOption.textContent).not.toContain('可创建 0/1');
   });
 
   test('renders the assistant roster without waiting for cloud reconciliation', async () => {
@@ -1553,16 +1589,12 @@ describe('AgentStoreModal', () => {
     });
 
     const createTab = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('创建新助手'));
+      .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手'));
     await act(async () => {
       Simulate.click(createTab);
     });
 
-    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
-    await act(async () => {
-      Simulate.change(managedRadio, { target: { checked: true } });
-      await Promise.resolve();
-    });
+    await selectManagedHosting();
 
     const input = container.querySelector('.cc-cloud-create-card input');
     await act(async () => {
@@ -1623,14 +1655,9 @@ describe('AgentStoreModal', () => {
     });
 
     const createTab = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('创建新助手'));
+      .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手'));
     await act(async () => Simulate.click(createTab));
-    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
-    await act(async () => {
-      Simulate.change(managedRadio, { target: { checked: true } });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await selectManagedHosting();
 
     expect(api.getCloudWorkers).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain(`员工连接 ${label}`);
@@ -1725,15 +1752,11 @@ describe('AgentStoreModal', () => {
     });
 
     const createTab = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('创建新助手'));
+      .find((button) => button.getAttribute('aria-label') === '创建新助手' || button.textContent.includes('创建新助手'));
     await act(async () => {
       Simulate.click(createTab);
     });
-    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
-    await act(async () => {
-      Simulate.change(managedRadio, { target: { checked: true } });
-      await Promise.resolve();
-    });
+    await selectManagedHosting();
 
     const input = container.querySelector('.cc-cloud-create-card input');
     await act(async () => {

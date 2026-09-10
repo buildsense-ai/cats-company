@@ -292,6 +292,12 @@ export function AuthView({
           </span>
         )}
       </div>
+      {import.meta.env.DEV && mode === 'register'
+        && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) && (
+          <div className="oc-auth-link">
+            <a href="/__dev/onboarding">本地测试：体验注册后引导</a>
+          </div>
+        )}
     </form>
   );
 }

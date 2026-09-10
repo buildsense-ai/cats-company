@@ -5,7 +5,10 @@
  */
 @layer cc-input-feedback {
   :root {
+    --cc-field-surface: #f5f5f5;
+    --cc-field-disabled-surface: #ededed;
     --cc-field-ink: #303030;
+    --cc-field-placeholder: #757575;
     --cc-field-border: #dedede;
     --cc-field-hover-border: color-mix(in srgb, var(--cc-field-ink) 12%, var(--cc-field-border));
     --cc-field-focus-border: color-mix(in srgb, var(--cc-field-ink) 28%, var(--cc-field-border));
@@ -15,7 +18,10 @@
 
   html[data-theme='dark'],
   html[data-theme='liquid'][data-liquid-variant='green'] {
+    --cc-field-surface: #191919;
+    --cc-field-disabled-surface: #202020;
     --cc-field-ink: #e0e0e0;
+    --cc-field-placeholder: #909090;
     --cc-field-border: #363636;
   }
 
@@ -30,7 +36,8 @@
     .monaco-editor *, .CodeMirror *, [data-cc-input-feedback='off']
   )) {
     border-color: var(--cc-field-border) !important;
-    background-color: var(--cc-input-surface, var(--cc-code)) !important;
+    background-color: var(--cc-field-surface) !important;
+    color: var(--cc-field-ink) !important;
     outline: none !important;
     box-shadow: none !important;
     caret-color: var(--cc-field-ink) !important;
@@ -47,7 +54,9 @@
       border-color: var(--cc-field-error-border) !important;
     }
     &:is(:disabled, [aria-disabled='true']) {
-      opacity: .55 !important;
+      opacity: 1 !important;
+      background-color: var(--cc-field-disabled-surface) !important;
+      color: var(--cc-field-placeholder) !important;
       cursor: not-allowed !important;
     }
     &[readonly] {
@@ -55,7 +64,7 @@
       cursor: text !important;
     }
     &::placeholder {
-      color: var(--cc-placeholder) !important;
+      color: var(--cc-field-placeholder) !important;
       opacity: 1 !important;
     }
 
@@ -68,6 +77,13 @@
       background-color: transparent !important;
       box-shadow: none !important;
     }
+
+    /* Browser autofill must use the same neutral surface and text, including
+     * fields inside a search wrapper. */
+    &:is(:autofill, :-webkit-autofill) {
+      -webkit-text-fill-color: currentColor !important;
+      box-shadow: inset 0 0 0 1000px var(--cc-field-surface) !important;
+    }
   }
 
   :is(
@@ -75,7 +91,8 @@
     .cc-agent-skill-search, .cc-sidebar-search, .oc-feedback-message-field
   ):has(input, textarea) {
     border-color: var(--cc-field-border) !important;
-    background-color: var(--cc-input-surface, var(--cc-code)) !important;
+    background-color: var(--cc-field-surface) !important;
+    color: var(--cc-field-ink) !important;
     outline: none !important;
     box-shadow: none !important;
     transition: var(--cc-field-transition) !important;

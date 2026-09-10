@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
+import { Check, CircleAlert, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
@@ -33,6 +33,10 @@ import QRCode from './qr-code';
 
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
+const AUTHENTICATION_MESSAGE = '登录验证未通过，请重新登录。';
+const UPLOAD_AUTHENTICATION_MESSAGE = '登录验证未通过，请重新登录后重试上传。';
+const isAuthenticationError = (error) => Number(error?.status) === 401
+  || /^unauthorized$/i.test(String(error?.message || '').trim());
 
 export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
@@ -241,7 +245,8 @@ export default function EmptyTaskComposer({
     }
     selectedAgentIdRef.current = preferredKey;
     setSelectedAgentId(preferredKey);
-    setAttachmentStatus(null);
+    // Initial agent metadata can arrive after an upload has failed. Only an
+    // explicit composer action should replace that upload's status.
   }, [initialAgent]);
 
   const replaceAttachments = useCallback((nextAttachments) => {
@@ -295,6 +300,7 @@ export default function EmptyTaskComposer({
         }
         agentsRef.current = nextAgents;
         setAgents(nextAgents);
+        // A successful roster read does not prove upload authentication recovered.
         setSelectedAgentId((current) => {
           const currentKey = String(current || '');
           const currentExists = nextAgents.some((agent) => agentKey(agent) === currentKey);
@@ -311,7 +317,9 @@ export default function EmptyTaskComposer({
         setAgents([]);
         selectedAgentIdRef.current = '';
         setSelectedAgentId('');
-        setAgentsError(error?.message || 'Agent 列表加载失败，请稍后重试。');
+        setAgentsError(isAuthenticationError(error)
+          ? AUTHENTICATION_MESSAGE
+          : error?.message || '助手列表加载失败，请稍后重试。');
       } finally {
         if (!cancelled && mountedRef.current) setAgentsLoading(false);
       }
@@ -499,7 +507,15 @@ export default function EmptyTaskComposer({
             normalizedDraftKey,
             uploadRevision,
           )) return;
-          if (mountedRef.current) setAttachmentStatus({ tone: 'error', message: formatUploadError(error) });
+          const authenticationFailed = isAuthenticationError(error);
+          if (mountedRef.current) setAttachmentStatus({
+            tone: 'error',
+            kind: authenticationFailed ? 'authentication' : undefined,
+            message: formatUploadError(error),
+          });
+          // Further files require the same session. Keep successful attachments
+          // and stop here so a batch summary cannot replace the login guidance.
+          if (authenticationFailed) return;
           failedCount += 1;
         }
       }
@@ -799,12 +815,19 @@ export default function EmptyTaskComposer({
     </div>
   ) : null;
 
+  const uploadAuthenticationFailed = attachmentStatus?.kind === 'authentication';
+  const composerErrorNotice = uploadAuthenticationFailed
+    ? UPLOAD_AUTHENTICATION_MESSAGE
+    : agents.length === 0 ? agentsError : '';
   const notices = (
     <>
-      {agentsError && agents.length === 0 && (
-        <div className="v3-live-input-status v3-live-input-status-error" role="status">{agentsError}</div>
+      {composerErrorNotice && (
+        <div className="v3-live-input-status v3-live-input-status-error v3-composer-agent-error" role="status">
+          <CircleAlert size={14} aria-hidden="true" />
+          <span>{composerErrorNotice}</span>
+        </div>
       )}
-      {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
+      {!uploadAuthenticationFailed && (attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
         <div
           className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
           role="status"
@@ -1014,6 +1037,7 @@ function validateAttachmentBeforeUpload(file, type) {
 }
 
 function formatUploadError(error) {
+  if (isAuthenticationError(error)) return UPLOAD_AUTHENTICATION_MESSAGE;
   const message = String(error?.message || '上传失败');
   if (message.includes('413') || message.includes('Payload Too Large')) {
     return `上传失败：文件超过 ${MAX_ATTACHMENT_SIZE_MB}MB 限制。`;

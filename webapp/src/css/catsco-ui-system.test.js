@@ -665,8 +665,8 @@ describe('CatsCo shell styling', () => {
     expect(globalSingleButtonRule).toContain('width: 0;');
     expect(globalSingleButtonRule).toContain('height: 0;');
     expect(globalSingleButtonRule).toContain('background-image: none;');
-    expect(profileEditorScrollRule).toContain('margin-right: -12px;');
-    expect(profileEditorScrollRule).toContain('padding-right: 12px;');
+    expect(profileEditorScrollRule).toContain('margin-right: -24px;');
+    expect(profileEditorScrollRule).toContain('padding-right: 24px;');
     expect(profileEditorScrollRule).toContain('scrollbar-gutter: stable;');
     expect(directionalButtonRule).toContain('display: none !important;');
     expect(directionalButtonRule).toContain('min-width: 0 !important;');
@@ -2102,8 +2102,8 @@ describe('CatsCo shell styling', () => {
     expect(skillTabsRule).toContain('padding: 1px;');
     expect(skillTabsThumbRule).toContain('background: var(--cc-selected);');
     expect(skillTabsThumbRule).toContain('transition: transform 160ms');
-    expect(skillTabButtonRule).toContain('min-height: 22px;');
-    expect(skillTabButtonRule).toContain('font-size: 10px;');
+    expect(skillTabButtonRule).toContain('min-height: 28px;');
+    expect(skillTabButtonRule).toContain('font-size: 13px;');
     expect(availableTabRule).toContain('transform: translateX(100%);');
     expect(skillTabFocusRule).toContain('var(--cc-focus-ring)');
     expect(overlayRule).toContain('z-index: 2300;');

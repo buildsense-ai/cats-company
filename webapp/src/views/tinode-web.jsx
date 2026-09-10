@@ -112,6 +112,8 @@ const TABS = {
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
+const WorkspaceOnboardingPreview = import.meta.env.DEV
+  ? React.lazy(() => import('../dev/workspace-onboarding-card')) : null;
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
 const DEV_PREVIEW_ACCOUNT = import.meta.env.VITE_DEV_PREVIEW_ACCOUNT || 'ui-reviewer';
 const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo123456';
@@ -286,6 +288,11 @@ export default function TinodeWeb({ location = window.location } = {}) {
 function TinodeWebApp({ location }) {
   const feedback = useFeedback();
   const { pathname = '/', search = '', hash = '' } = location;
+  // Preview the new-task surface even when this browser restores an old conversation.
+  // Keep the saved conversation intact so the regular workspace can resume it.
+  const showOnboardingPreview = import.meta.env.DEV
+    && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+    && new URLSearchParams(search).get('onboarding_preview') === '1';
   const entryMatch = pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = pathname === '/channel-device-link';
@@ -1043,7 +1050,7 @@ function TinodeWebApp({ location }) {
   useEffect(() => {
     if (!user?.uid) return undefined;
     let cancelled = false;
-    refreshLocalAgentStatus({ allowDailyPrompt: true }).catch(() => {
+    refreshLocalAgentStatus({ allowDailyPrompt: !showOnboardingPreview }).catch(() => {
       if (!cancelled) setLocalAgentStatus('unknown');
     });
     const onDataChanged = () => refreshLocalAgentStatus().catch(() => {});
@@ -1052,7 +1059,7 @@ function TinodeWebApp({ location }) {
       cancelled = true;
       window.removeEventListener('cc:data-changed', onDataChanged);
     };
-  }, [user?.uid, refreshLocalAgentStatus]);
+  }, [user?.uid, refreshLocalAgentStatus, showOnboardingPreview]);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -1335,10 +1342,10 @@ function TinodeWebApp({ location }) {
       currentModelName={currentModelName}
       onDownload={() => openDesktopModal('download')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
-      title={activeTopic?.name || taskDraftTitle(taskDraft || persistedTaskContext)}
+      title={showOnboardingPreview ? '新任务' : activeTopic?.name || taskDraftTitle(taskDraft || persistedTaskContext)}
       mobileModelInfo={mobileModelInfo}
       onNewTask={() => setNewTaskRequest((request) => request + 1)}
-      onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
+      onRenameTitle={!showOnboardingPreview && activeTopic ? handleRenameActiveTopic : undefined}
       relayAdminAllowed={relayAdminAllowed}
       onOpenRelayAdmin={() => setRelayAdminOpen(true)}
     />
@@ -1517,11 +1524,11 @@ function TinodeWebApp({ location }) {
         </button>
         <div className="v3-main-body">
           <div className="v3-main-content">
-            {activeView === 'skillhub' ? (
+            {!showOnboardingPreview && activeView === 'skillhub' ? (
               <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
                 <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
               </Suspense>
-            ) : activeTopic ? (
+            ) : !showOnboardingPreview && activeTopic ? (
               <MessagesView
                 key={composerDraftOwner || 'anonymous'}
                 topBar={localAssistantBar}
@@ -1550,6 +1557,9 @@ function TinodeWebApp({ location }) {
                 <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
+                    showOnboardingPreview={showOnboardingPreview}
+                    onDownloadDashboard={() => openDesktopModal('download')}
+                    dashboardDownloadOpen={showDesktopConnectModal}
                     user={user}
                     initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
                     composerDraftStore={composerDraftStoreRef.current}
@@ -1869,6 +1879,9 @@ function resolveDisplayedActiveAgent(
 
 function NoActiveTask({
   user,
+  showOnboardingPreview = false,
+  onDownloadDashboard,
+  dashboardDownloadOpen = false,
   initialAgent,
   composerDraftStore,
   draftKey,
@@ -1884,6 +1897,9 @@ function NoActiveTask({
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
           <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
+        {import.meta.env.DEV && WorkspaceOnboardingPreview && showOnboardingPreview && (
+            <Suspense fallback={null}><WorkspaceOnboardingPreview onDownloadDashboard={onDownloadDashboard} dashboardDownloadOpen={dashboardDownloadOpen} /></Suspense>
+          )}
         <EmptyTaskComposer
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}

@@ -17,7 +17,10 @@ describe('theme access', () => {
     expect(normalizeTheme('dark')).toBe('dark');
     expect(normalizeTheme('liquid')).toBe('liquid');
     expect(normalizeTheme('liquid-green')).toBe('liquid-green');
-    expect(normalizeTheme('neon')).toBe('light');
+    expect(normalizeTheme('neon')).toBe('dark');
+    expect(normalizeTheme(null)).toBe('dark');
+    expect(normalizeTheme(undefined)).toBe('dark');
+    expect(normalizeTheme('')).toBe('dark');
     expect(isLiquidTheme('liquid')).toBe(true);
     expect(isLiquidTheme('liquid-green')).toBe(true);
     expect(isLiquidTheme('dark')).toBe(false);
@@ -28,7 +31,7 @@ describe('theme access', () => {
     expect(themeColor('dark')).toBe('#0f0f0f');
     expect(themeColor('liquid')).toBe('#f5f7fc');
     expect(themeColor('liquid-green')).toBe('#151718');
-    expect(themeColor('neon')).toBe('#f8f8f8');
+    expect(themeColor('neon')).toBe('#0f0f0f');
   });
 
   it('syncs the browser theme-color metadata', () => {
