@@ -43,6 +43,14 @@ services:
       OC_REDIS_KEY_PREFIX: "${OC_REDIS_KEY_PREFIX:-}"
       CATSCO_NODE_ID: "${CATSCO_NODE_ID:-}"
       OC_JWT_SECRET: "${OC_JWT_SECRET}"
+      CATSCO_SHIMO_ACTOR_SECRET: "${CATSCO_SHIMO_ACTOR_SECRET:-}"
+      CATSCO_SHIMO_PUBLIC_BASE_URL: "${CATSCO_SHIMO_PUBLIC_BASE_URL:-https://app.catsco.cc}"
+      CATSCO_SHIMO_CONNECTOR_URL: "${CATSCO_SHIMO_CONNECTOR_URL:-https://app.catsco.cc}"
+      CATSCO_SHIMO_SKILL_ID: "${CATSCO_SHIMO_SKILL_ID:-catsco/shimo-reader}"
+      CATSCO_SHIMO_WORKER_URL: "${CATSCO_SHIMO_WORKER_URL:-}"
+      CATSCO_SHIMO_WORKER_TOKEN: "${CATSCO_SHIMO_WORKER_TOKEN:-}"
+      CATSCO_SHIMO_WORKER_CALLBACK_URL: "${CATSCO_SHIMO_WORKER_CALLBACK_URL:-http://server:6061/internal/shimo/login-complete}"
+      CATSCO_SHIMO_CONNECTOR_REVISION: "${CATSCO_SHIMO_CONNECTOR_REVISION:-}"
       OC_ADMIN_USERNAMES: "${OC_ADMIN_USERNAMES:-}"
       CATSCO_STT_ENABLED: "${CATSCO_STT_ENABLED:-0}"
       CATSCO_STT_PROVIDER: "${CATSCO_STT_PROVIDER:-volcengine-doubao-streaming-v2}"
@@ -225,6 +233,29 @@ services:
       - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - textnet
+
+  shimo-worker:
+    profiles: ["shimo"]
+    image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-shimo-worker:${IMAGE_TAG}"
+    restart: unless-stopped
+    environment:
+      SHIMO_WORKER_TOKEN: "${CATSCO_SHIMO_WORKER_TOKEN:-}"
+      SHIMO_WORKER_SESSION_KEY: "${SHIMO_WORKER_SESSION_KEY:-}"
+      SHIMO_WORKER_PUBLIC_BASE_URL: "${SHIMO_WORKER_PUBLIC_BASE_URL:-https://app.catsco.cc/shimo-login}"
+      SHIMO_WORKER_STATE_DIR: /var/lib/catsco-shimo
+      TZ: Asia/Shanghai
+    ports:
+      - "${TEST_SHIMO_WORKER_BIND_HOST:-127.0.0.1}:${TEST_SHIMO_WORKER_HOST_PORT:-16070}:7070"
+    volumes:
+      - "${TEST_STACK_ROOT}/data/shimo-sessions:/var/lib/catsco-shimo"
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 10

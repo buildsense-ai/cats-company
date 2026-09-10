@@ -142,6 +142,32 @@ jobs:
         working-directory: bots/xiaoba-ts
         run: npm run build
 
+  shimo_worker:
+    name: Shimo browser worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: services/shimo-browser-worker/package-lock.json
+
+      - name: Install dependencies
+        working-directory: services/shimo-browser-worker
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Test worker
+        working-directory: services/shimo-browser-worker
+        run: npm test
+
+      - name: Build worker image
+        run: docker build -f services/shimo-browser-worker/Dockerfile -t cats-company-shimo-worker-ci services/shimo-browser-worker
+
   webapp:
     name: Web and SkillHub tests
     runs-on: ubuntu-latest
@@ -317,6 +343,7 @@ jobs:
       - backend
       - node_sdk
       - bot_example
+      - shimo_worker
       - webapp
       - dependency_review
       - validation
@@ -329,14 +356,15 @@ jobs:
           BACKEND: ${{ needs.backend.result }}
           NODE_SDK: ${{ needs.node_sdk.result }}
           BOT_EXAMPLE: ${{ needs.bot_example.result }}
+          SHIMO_WORKER: ${{ needs.shimo_worker.result }}
           WEBAPP: ${{ needs.webapp.result }}
           DEPENDENCY_REVIEW: ${{ needs.dependency_review.result }}
           VALIDATION: ${{ needs.validation.result }}
           DOCKER_IMAGES: ${{ needs.docker_images.result }}
         run: |
-          printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nwebapp=%s\ndependency-review=%s\nvalidation=%s\ndocker-images=%s\n' \
-            "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$WEBAPP" "$DEPENDENCY_REVIEW" "$VALIDATION" "$DOCKER_IMAGES"
-          if [[ "$BACKEND" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$WEBAPP" != success || \
+          printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nshimo-worker=%s\nwebapp=%s\ndependency-review=%s\nvalidation=%s\ndocker-images=%s\n' \
+            "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$SHIMO_WORKER" "$WEBAPP" "$DEPENDENCY_REVIEW" "$VALIDATION" "$DOCKER_IMAGES"
+          if [[ "$BACKEND" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
                 "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
                 ("$DEPENDENCY_REVIEW" != success && "$DEPENDENCY_REVIEW" != skipped) ]]; then
             echo 'One or more CI suites did not succeed.' >&2

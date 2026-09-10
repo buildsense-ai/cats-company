@@ -56,6 +56,18 @@ else
     .
 fi
 
+shimo_worker_image="ghcr.io/${owner}/cats-company-shimo-worker:${revision}"
+if docker image inspect "$shimo_worker_image" >/dev/null 2>&1; then
+  echo "Shimo worker image already present: ${shimo_worker_image}"
+else
+  shimo_worker_build_timeout="${REMOTE_SHIMO_WORKER_BUILD_TIMEOUT_SECONDS:-900}"
+  echo "Building Shimo worker image: ${shimo_worker_image} (timeout ${shimo_worker_build_timeout}s)"
+  timeout "$shimo_worker_build_timeout" docker build --progress=plain \
+    -f services/shimo-browser-worker/Dockerfile \
+    -t "$shimo_worker_image" \
+    services/shimo-browser-worker
+fi
+
 web_image="ghcr.io/${owner}/cats-company-web:${revision}"
 pull_timeout="${REMOTE_WEB_PULL_TIMEOUT_SECONDS:-120}"
 login_timeout="${REMOTE_GHCR_LOGIN_TIMEOUT_SECONDS:-20}"

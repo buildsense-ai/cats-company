@@ -14,6 +14,14 @@ services:
       OC_REDIS_KEY_PREFIX: "${OC_REDIS_KEY_PREFIX:-}"
       CATSCO_NODE_ID: "${CATSCO_NODE_ID:-}"
       OC_JWT_SECRET: "${OC_JWT_SECRET}"
+      CATSCO_SHIMO_ACTOR_SECRET: "${CATSCO_SHIMO_ACTOR_SECRET:-}"
+      CATSCO_SHIMO_PUBLIC_BASE_URL: "${CATSCO_SHIMO_PUBLIC_BASE_URL:-https://app.catsco.cc}"
+      CATSCO_SHIMO_CONNECTOR_URL: "${CATSCO_SHIMO_CONNECTOR_URL:-https://app.catsco.cc}"
+      CATSCO_SHIMO_SKILL_ID: "${CATSCO_SHIMO_SKILL_ID:-catsco/shimo-reader}"
+      CATSCO_SHIMO_WORKER_URL: "${CATSCO_SHIMO_WORKER_URL:-}"
+      CATSCO_SHIMO_WORKER_TOKEN: "${CATSCO_SHIMO_WORKER_TOKEN:-}"
+      CATSCO_SHIMO_WORKER_CALLBACK_URL: "${CATSCO_SHIMO_WORKER_CALLBACK_URL:-http://server:6061/internal/shimo/login-complete}"
+      CATSCO_SHIMO_CONNECTOR_REVISION: "${CATSCO_SHIMO_CONNECTOR_REVISION:-}"
       # Comma-separated human usernames allowed to use the protected admin API.
       # Keep the real value only in the server-side prod.env.
       OC_ADMIN_USERNAMES: "${OC_ADMIN_USERNAMES:-}"
@@ -253,6 +261,29 @@ services:
       - "/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro"
       - "${PROD_STACK_ROOT}/data/dreamina-home:/home/dreamina"
       - "${PROD_STACK_ROOT}/data/dreamina-worker:/var/lib/dreamina-worker"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - prodnet
+
+  shimo-worker:
+    profiles: ["shimo"]
+    image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-shimo-worker:${IMAGE_TAG}"
+    restart: unless-stopped
+    environment:
+      SHIMO_WORKER_TOKEN: "${CATSCO_SHIMO_WORKER_TOKEN:-}"
+      SHIMO_WORKER_SESSION_KEY: "${SHIMO_WORKER_SESSION_KEY:-}"
+      SHIMO_WORKER_PUBLIC_BASE_URL: "${SHIMO_WORKER_PUBLIC_BASE_URL:-https://app.catsco.cc/shimo-login}"
+      SHIMO_WORKER_STATE_DIR: /var/lib/catsco-shimo
+      TZ: Asia/Shanghai
+    ports:
+      - "${PROD_SHIMO_WORKER_BIND_HOST:-127.0.0.1}:${PROD_SHIMO_WORKER_HOST_PORT:-26070}:7070"
+    volumes:
+      - "${PROD_STACK_ROOT}/data/shimo-sessions:/var/lib/catsco-shimo"
+    shm_size: 1gb
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
