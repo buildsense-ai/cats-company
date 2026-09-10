@@ -1094,6 +1094,10 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		return
 	}
 	model, expiresAt, err := resolveCommercialBonusGrant(summary, req.Model, req.ExpiresAt, time.Now().UTC())
+	if commercialLegacyGrantEligible(summary, time.Now().UTC()) {
+		options := h.commercialGrantOptions(r.Context(), req.UID, summary)
+		model, expiresAt, err = resolveCommercialLegacyGrant(options, req.Model, req.ExpiresAt, time.Now().UTC())
+	}
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -1229,6 +1233,9 @@ func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter,
 		summary = &copy
 	}
 	payload := map[string]interface{}{"summary": summary}
+	if r.URL.Query().Get("grant_options") == "1" {
+		payload["grant_options"] = h.commercialGrantOptions(r.Context(), uid, summary)
+	}
 	if h.users != nil {
 		if user, userErr := h.users.GetUser(uid); userErr == nil && user != nil {
 			payload["user"] = accountUserPayload(user)
