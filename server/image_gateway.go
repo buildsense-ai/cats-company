@@ -52,19 +52,20 @@ type ImageGenerationProxyOptions struct {
 
 // ImageGenerationProxyHandler keeps the provider credential on the CatsCo server.
 type ImageGenerationProxyHandler struct {
-	providers               []imageUpstreamProvider
-	raceDeadline            time.Duration
-	retryBackoff            time.Duration
-	maxAttemptsPerProvider  int
-	maxResponseBytes        int64
-	raceEnabled             bool
-	dreaminaWorker          *dreaminaWorkerClient
-	dreaminaConfigError     error
-	image2CircuitMu         sync.Mutex
-	image2CircuitFailures   int
-	image2CircuitOpenUntil  time.Time
-	circuitFailureThreshold int
-	circuitCooldown         time.Duration
+	providers                  []imageUpstreamProvider
+	raceDeadline               time.Duration
+	retryBackoff               time.Duration
+	maxAttemptsPerProvider     int
+	maxResponseBytes           int64
+	raceEnabled                bool
+	dreaminaWorker             *dreaminaWorkerClient
+	dreaminaConfigError        error
+	image2CircuitMu            sync.Mutex
+	image2CircuitFailures      int
+	image2CircuitOpenUntil     time.Time
+	image2CircuitProbeInFlight bool
+	circuitFailureThreshold    int
+	circuitCooldown            time.Duration
 
 	// These aliases keep the single-provider constructor and rollback path stable.
 	upstreamURL         string
@@ -509,27 +510,33 @@ func (h *ImageGenerationProxyHandler) forwardImageRequest(
 	requesterUID := UIDFromContext(r.Context())
 	startedAt := time.Now()
 	raceID := newImageRaceID()
-	if providerPolicy == "auto" && h.image2CircuitOpen(startedAt) {
-		execution := imageRaceExecution{
-			outcome:          imageRaceCircuitOpen,
-			providerAttempts: map[string]int{},
-		}
-		if h.forwardDreaminaFallback(
-			w,
-			r,
-			payload,
-			operation,
-			referenceCount,
-			referenceBytes,
-			raceID,
-			execution,
-			startedAt,
-		) {
-			return
+	halfOpenProbe := false
+	if providerPolicy == "auto" {
+		circuitOpen, claimedProbe := h.image2CircuitOpen(startedAt)
+		halfOpenProbe = claimedProbe
+		if circuitOpen {
+			execution := imageRaceExecution{
+				outcome:          imageRaceCircuitOpen,
+				providerAttempts: map[string]int{},
+			}
+			if h.forwardDreaminaFallback(
+				w,
+				r,
+				payload,
+				operation,
+				referenceCount,
+				referenceBytes,
+				raceID,
+				execution,
+				startedAt,
+			) {
+				return
+			}
 		}
 	}
 	providers := h.eligibleImageProviders(operation, nil, payload)
 	if len(providers) == 0 {
+		h.recordImage2RaceOutcome(imageRaceProvidersUnavailable, time.Now(), halfOpenProbe)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image operation has no configured provider"})
 		return
 	}
@@ -539,7 +546,7 @@ func (h *ImageGenerationProxyHandler) forwardImageRequest(
 	execution := h.runImageRace(ctx, payload, operation, func(attemptNumber int, attempt imageAttemptResult) {
 		log.Printf("[image-race] attempt operation=%s race_id=%s attempt=%d provider=%s uid=%d category=%s reason=%s status=%d duration_ms=%d", operation, raceID, attemptNumber, attempt.providerID, requesterUID, attempt.category, attempt.reason, attempt.status, attempt.duration.Milliseconds())
 	})
-	h.recordImage2RaceOutcome(execution.outcome, time.Now())
+	h.recordImage2RaceOutcome(execution.outcome, time.Now(), halfOpenProbe)
 	if execution.outcome == imageRaceCancelled {
 		log.Printf("[image-race] cancelled operation=%s race_id=%s attempts=%d uid=%d duration_ms=%d", operation, raceID, execution.totalAttempts, requesterUID, time.Since(startedAt).Milliseconds())
 		return

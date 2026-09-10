@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,6 +126,50 @@ func TestImage2CircuitBypassesRaceAfterConsecutiveFailures(t *testing.T) {
 	}
 	if len(fallbackReasons) != 3 || fallbackReasons[2] != "image2_circuit_open" {
 		t.Fatalf("fallback reasons=%v", fallbackReasons)
+	}
+}
+
+func TestImage2CircuitHalfOpenAllowsOneConcurrentProbe(t *testing.T) {
+	now := time.Now()
+	handler := &ImageGenerationProxyHandler{
+		image2CircuitFailures:   3,
+		image2CircuitOpenUntil:  now.Add(-time.Second),
+		circuitFailureThreshold: 3,
+		circuitCooldown:         time.Minute,
+	}
+
+	const callers = 64
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	var image2Callers atomic.Int32
+	var claimedProbes atomic.Int32
+	waitGroup.Add(callers)
+	for range callers {
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			circuitOpen, claimedProbe := handler.image2CircuitOpen(now)
+			if !circuitOpen {
+				image2Callers.Add(1)
+			}
+			if claimedProbe {
+				claimedProbes.Add(1)
+			}
+		}()
+	}
+	close(start)
+	waitGroup.Wait()
+
+	if got := image2Callers.Load(); got != 1 {
+		t.Fatalf("callers reaching Image2=%d, want exactly 1", got)
+	}
+	if got := claimedProbes.Load(); got != 1 {
+		t.Fatalf("claimed half-open probes=%d, want exactly 1", got)
+	}
+
+	handler.recordImage2RaceOutcome(imageRaceCompleted, now, true)
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); circuitOpen || claimedProbe {
+		t.Fatalf("circuit did not close after successful probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
 	}
 }
 
