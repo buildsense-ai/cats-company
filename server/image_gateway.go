@@ -532,6 +532,13 @@ func (h *ImageGenerationProxyHandler) forwardImageRequest(
 			) {
 				return
 			}
+			writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+				"error": map[string]string{
+					"code":    "dreamina_unavailable",
+					"message": "Image2 circuit is open and Dreamina fallback is unavailable.",
+				},
+			})
+			return
 		}
 	}
 	providers := h.eligibleImageProviders(operation, nil, payload)

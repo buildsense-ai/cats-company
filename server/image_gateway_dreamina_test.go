@@ -173,6 +173,76 @@ func TestImage2CircuitHalfOpenAllowsOneConcurrentProbe(t *testing.T) {
 	}
 }
 
+func TestOpenImage2CircuitWithoutDreaminaDoesNotReachImage2(t *testing.T) {
+	upstream := newScriptedImageUpstream(t, scriptedImageStep{body: testImageResponse(t, 11)})
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("image2", upstream.URL(), upstream.server.URL+"/v1/images/edits", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{
+		RaceDeadline:           time.Second,
+		MaxAttemptsPerProvider: 1,
+	})
+	handler.image2CircuitFailures = handler.circuitFailureThreshold
+	handler.image2CircuitOpenUntil = time.Now().Add(time.Minute)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"must bypass image2"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.HandleGenerate(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	requests, _, _ := upstream.Snapshot()
+	if requests != 0 {
+		t.Fatalf("Image2 requests=%d, want 0 while circuit is open without Dreamina", requests)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error.Code != "dreamina_unavailable" {
+		t.Fatalf("error code=%q, want dreamina_unavailable", body.Error.Code)
+	}
+}
+
+func TestExplicitImage2OutcomeCannotInvalidateActiveHalfOpenProbe(t *testing.T) {
+	upstream := newScriptedImageUpstream(t, scriptedImageStep{body: testImageResponse(t, 12)})
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("image2", upstream.URL(), upstream.server.URL+"/v1/images/edits", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{
+		RaceDeadline:           time.Second,
+		MaxAttemptsPerProvider: 1,
+	})
+	now := time.Now()
+	handler.image2CircuitFailures = handler.circuitFailureThreshold
+	handler.image2CircuitOpenUntil = now.Add(-time.Second)
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); circuitOpen || !claimedProbe {
+		t.Fatalf("failed to claim automatic half-open probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"explicit diagnostic"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(imageProviderPolicyHeader, "image2")
+	response := httptest.NewRecorder()
+	handler.HandleGenerate(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("explicit Image2 status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); !circuitOpen || claimedProbe {
+		t.Fatalf("explicit outcome invalidated active probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
+	}
+
+	handler.recordImage2RaceOutcome(imageRaceCompleted, now, true)
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); circuitOpen || claimedProbe {
+		t.Fatalf("circuit did not close after automatic probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
+	}
+}
+
 func TestImageRequestRejectionDoesNotFallBack(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("Dreamina worker must not receive a rejected request")

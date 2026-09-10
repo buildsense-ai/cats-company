@@ -10,13 +10,13 @@ func (h *ImageGenerationProxyHandler) image2CircuitOpen(now time.Time) (bool, bo
 	h.image2CircuitMu.Lock()
 	defer h.image2CircuitMu.Unlock()
 
+	if h.image2CircuitProbeInFlight {
+		return true, false
+	}
 	if h.image2CircuitOpenUntil.IsZero() {
 		return false, false
 	}
 	if now.Before(h.image2CircuitOpenUntil) {
-		return true, false
-	}
-	if h.image2CircuitProbeInFlight {
 		return true, false
 	}
 
@@ -34,6 +34,11 @@ func (h *ImageGenerationProxyHandler) image2CircuitOpen(now time.Time) (bool, bo
 func (h *ImageGenerationProxyHandler) recordImage2RaceOutcome(outcome imageRaceOutcome, now time.Time, halfOpenProbe bool) {
 	h.image2CircuitMu.Lock()
 	defer h.image2CircuitMu.Unlock()
+	// While an automatic half-open probe owns recovery, outcomes from explicit
+	// Image2 diagnostics or older races must not invalidate that probe's lock.
+	if h.image2CircuitProbeInFlight && !halfOpenProbe {
+		return
+	}
 	if halfOpenProbe {
 		h.image2CircuitProbeInFlight = false
 	}
