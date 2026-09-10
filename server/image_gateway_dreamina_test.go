@@ -90,6 +90,44 @@ func TestImageRaceFallsBackToDreaminaWorker(t *testing.T) {
 	}
 }
 
+func TestImage2CircuitBypassesRaceAfterConsecutiveFailures(t *testing.T) {
+	var fallbackReasons []string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackReasons = append(fallbackReasons, r.Header.Get("X-CatsCo-Dreamina-Fallback-Reason"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"task_id":"dreamina_task_1","status":"processing"}`))
+	}))
+	t.Cleanup(worker.Close)
+	handler, calls, image2Providers := dreaminaFallbackTestHandler(t, worker, http.StatusServiceUnavailable)
+	handler.circuitFailureThreshold = 2
+	handler.circuitCooldown = time.Minute
+
+	for requestNumber := 0; requestNumber < 3; requestNumber++ {
+		request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"fallback test"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(42)))
+		response := httptest.NewRecorder()
+		handler.HandleGenerate(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("request %d status=%d body=%s", requestNumber+1, response.Code, response.Body.String())
+		}
+	}
+
+	if calls.Load() != 3 {
+		t.Fatalf("Dreamina calls=%d, want 3", calls.Load())
+	}
+	for index, provider := range image2Providers {
+		requests, _, _ := provider.Snapshot()
+		if requests != 2 {
+			t.Fatalf("Image2 provider %d requests=%d, want 2 before circuit bypass", index+1, requests)
+		}
+	}
+	if len(fallbackReasons) != 3 || fallbackReasons[2] != "image2_circuit_open" {
+		t.Fatalf("fallback reasons=%v", fallbackReasons)
+	}
+}
+
 func TestImageRequestRejectionDoesNotFallBack(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("Dreamina worker must not receive a rejected request")

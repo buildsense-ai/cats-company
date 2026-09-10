@@ -48,6 +48,7 @@ const (
 	imageRaceExhausted            imageRaceOutcome = "race_exhausted"
 	imageRaceRequestRejected      imageRaceOutcome = "request_rejected"
 	imageRaceProvidersUnavailable imageRaceOutcome = "providers_unavailable"
+	imageRaceCircuitOpen          imageRaceOutcome = "circuit_open"
 	imageRaceCancelled            imageRaceOutcome = "cancelled"
 )
 
