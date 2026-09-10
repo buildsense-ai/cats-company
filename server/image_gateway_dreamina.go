@@ -133,8 +133,15 @@ func (h *ImageGenerationProxyHandler) forwardDreaminaRequest(
 	request.Header.Set("X-CatsCo-Owner-UID", strconv.FormatInt(UIDFromContext(r.Context()), 10))
 	request.Header.Set("X-CatsCo-Dreamina-Provider-Role", providerRole)
 	if providerRole == "fallback" {
+		fallbackReason := "image2_race_exhausted"
+		switch execution.outcome {
+		case imageRaceProvidersUnavailable:
+			fallbackReason = "image2_providers_unavailable"
+		case imageRaceCircuitOpen:
+			fallbackReason = "image2_circuit_open"
+		}
 		request.Header.Set("X-CatsCo-Dreamina-Fallback-From", "image2")
-		request.Header.Set("X-CatsCo-Dreamina-Fallback-Reason", "image2_race_exhausted")
+		request.Header.Set("X-CatsCo-Dreamina-Fallback-Reason", fallbackReason)
 	}
 
 	response, err := h.dreaminaWorker.client.Do(request)

@@ -174,6 +174,8 @@ func TestImageGenerationProxyHandlerFromEnvPrefersCompleteProviderPool(t *testin
 	t.Setenv("CATSCO_IMAGE_RACE_DEADLINE_SECONDS", "270")
 	t.Setenv("CATSCO_IMAGE_RACE_BACKOFF_MS", "250")
 	t.Setenv("CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER", "3")
+	t.Setenv("CATSCO_IMAGE_CIRCUIT_FAILURE_THRESHOLD", "4")
+	t.Setenv("CATSCO_IMAGE_CIRCUIT_COOLDOWN_SECONDS", "120")
 	t.Setenv("CATSCO_IMAGE_MAX_RESPONSE_BYTES", "123456")
 
 	handler := NewImageGenerationProxyHandlerFromEnv()
@@ -185,6 +187,9 @@ func TestImageGenerationProxyHandlerFromEnvPrefersCompleteProviderPool(t *testin
 	}
 	if handler.raceDeadline != 270*time.Second || handler.retryBackoff != 250*time.Millisecond || handler.maxAttemptsPerProvider != 3 {
 		t.Fatalf("race settings not applied: deadline=%s backoff=%s max_attempts=%d", handler.raceDeadline, handler.retryBackoff, handler.maxAttemptsPerProvider)
+	}
+	if handler.circuitFailureThreshold != 4 || handler.circuitCooldown != 2*time.Minute {
+		t.Fatalf("circuit settings not applied: threshold=%d cooldown=%s", handler.circuitFailureThreshold, handler.circuitCooldown)
 	}
 	if handler.maxResponseBytes != 123456 {
 		t.Fatalf("max response bytes=%d", handler.maxResponseBytes)

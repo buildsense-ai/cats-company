@@ -111,9 +111,11 @@ Then point the container at the mounted file from the persistent
 CATSCO_IMAGE_UPSTREAMS_FILE=/run/catsco-secrets/image-providers.json
 CATSCO_IMAGE_MODEL=gpt-image-2
 CATSCO_IMAGE_TIMEOUT_SECONDS=260
-CATSCO_IMAGE_RACE_DEADLINE_SECONDS=270
+CATSCO_IMAGE_RACE_DEADLINE_SECONDS=90
 CATSCO_IMAGE_RACE_BACKOFF_MS=750
 CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER=2
+CATSCO_IMAGE_CIRCUIT_FAILURE_THRESHOLD=3
+CATSCO_IMAGE_CIRCUIT_COOLDOWN_SECONDS=300
 CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES=25165824
 CATSCO_IMAGE_MAX_RESPONSE_BYTES=41943040
 ```
@@ -137,6 +139,10 @@ accepted or billed the job without returning a trustworthy status.
 `CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER` defaults to 2 and is hard-capped
 at 4. With three providers, the default absolute request bound is six provider
 calls. The race also stops when `CATSCO_IMAGE_RACE_DEADLINE_SECONDS` expires.
+After three consecutive exhausted or unavailable Image2 races, automatic
+requests bypass Image2 for five minutes and go directly to Dreamina. Explicit
+`image2` requests still probe Image2, and any completed Image2 result closes
+the circuit. Request validation and content-policy failures never open it.
 The deadline is capped at 285 seconds so the gateway can return a structured
 failure before the caller's roughly 300-second connection budget ends.
 

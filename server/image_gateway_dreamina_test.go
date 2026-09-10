@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,6 +88,158 @@ func TestImageRaceFallsBackToDreaminaWorker(t *testing.T) {
 	}
 	if response.Header().Get("X-CatsCo-Image-Provider") != "dreamina" {
 		t.Fatalf("provider=%q", response.Header().Get("X-CatsCo-Image-Provider"))
+	}
+}
+
+func TestImage2CircuitBypassesRaceAfterConsecutiveFailures(t *testing.T) {
+	var fallbackReasons []string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackReasons = append(fallbackReasons, r.Header.Get("X-CatsCo-Dreamina-Fallback-Reason"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"task_id":"dreamina_task_1","status":"processing"}`))
+	}))
+	t.Cleanup(worker.Close)
+	handler, calls, image2Providers := dreaminaFallbackTestHandler(t, worker, http.StatusServiceUnavailable)
+	handler.circuitFailureThreshold = 2
+	handler.circuitCooldown = time.Minute
+
+	for requestNumber := 0; requestNumber < 3; requestNumber++ {
+		request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"fallback test"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(42)))
+		response := httptest.NewRecorder()
+		handler.HandleGenerate(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("request %d status=%d body=%s", requestNumber+1, response.Code, response.Body.String())
+		}
+	}
+
+	if calls.Load() != 3 {
+		t.Fatalf("Dreamina calls=%d, want 3", calls.Load())
+	}
+	for index, provider := range image2Providers {
+		requests, _, _ := provider.Snapshot()
+		if requests != 2 {
+			t.Fatalf("Image2 provider %d requests=%d, want 2 before circuit bypass", index+1, requests)
+		}
+	}
+	if len(fallbackReasons) != 3 || fallbackReasons[2] != "image2_circuit_open" {
+		t.Fatalf("fallback reasons=%v", fallbackReasons)
+	}
+}
+
+func TestImage2CircuitHalfOpenAllowsOneConcurrentProbe(t *testing.T) {
+	now := time.Now()
+	handler := &ImageGenerationProxyHandler{
+		image2CircuitFailures:   3,
+		image2CircuitOpenUntil:  now.Add(-time.Second),
+		circuitFailureThreshold: 3,
+		circuitCooldown:         time.Minute,
+	}
+
+	const callers = 64
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	var image2Callers atomic.Int32
+	var claimedProbes atomic.Int32
+	waitGroup.Add(callers)
+	for range callers {
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			circuitOpen, claimedProbe := handler.image2CircuitOpen(now)
+			if !circuitOpen {
+				image2Callers.Add(1)
+			}
+			if claimedProbe {
+				claimedProbes.Add(1)
+			}
+		}()
+	}
+	close(start)
+	waitGroup.Wait()
+
+	if got := image2Callers.Load(); got != 1 {
+		t.Fatalf("callers reaching Image2=%d, want exactly 1", got)
+	}
+	if got := claimedProbes.Load(); got != 1 {
+		t.Fatalf("claimed half-open probes=%d, want exactly 1", got)
+	}
+
+	handler.recordImage2RaceOutcome(imageRaceCompleted, now, true)
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); circuitOpen || claimedProbe {
+		t.Fatalf("circuit did not close after successful probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
+	}
+}
+
+func TestOpenImage2CircuitWithoutDreaminaDoesNotReachImage2(t *testing.T) {
+	upstream := newScriptedImageUpstream(t, scriptedImageStep{body: testImageResponse(t, 11)})
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("image2", upstream.URL(), upstream.server.URL+"/v1/images/edits", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{
+		RaceDeadline:           time.Second,
+		MaxAttemptsPerProvider: 1,
+	})
+	handler.image2CircuitFailures = handler.circuitFailureThreshold
+	handler.image2CircuitOpenUntil = time.Now().Add(time.Minute)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"must bypass image2"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.HandleGenerate(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	requests, _, _ := upstream.Snapshot()
+	if requests != 0 {
+		t.Fatalf("Image2 requests=%d, want 0 while circuit is open without Dreamina", requests)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error.Code != "dreamina_unavailable" {
+		t.Fatalf("error code=%q, want dreamina_unavailable", body.Error.Code)
+	}
+}
+
+func TestExplicitImage2OutcomeCannotInvalidateActiveHalfOpenProbe(t *testing.T) {
+	upstream := newScriptedImageUpstream(t, scriptedImageStep{body: testImageResponse(t, 12)})
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("image2", upstream.URL(), upstream.server.URL+"/v1/images/edits", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{
+		RaceDeadline:           time.Second,
+		MaxAttemptsPerProvider: 1,
+	})
+	now := time.Now()
+	handler.image2CircuitFailures = handler.circuitFailureThreshold
+	handler.image2CircuitOpenUntil = now.Add(-time.Second)
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); circuitOpen || !claimedProbe {
+		t.Fatalf("failed to claim automatic half-open probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"explicit diagnostic"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(imageProviderPolicyHeader, "image2")
+	response := httptest.NewRecorder()
+	handler.HandleGenerate(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("explicit Image2 status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); !circuitOpen || claimedProbe {
+		t.Fatalf("explicit outcome invalidated active probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
+	}
+
+	handler.recordImage2RaceOutcome(imageRaceCompleted, now, true)
+	if circuitOpen, claimedProbe := handler.image2CircuitOpen(now); circuitOpen || claimedProbe {
+		t.Fatalf("circuit did not close after automatic probe: open=%t claimed_probe=%t", circuitOpen, claimedProbe)
 	}
 }
 
