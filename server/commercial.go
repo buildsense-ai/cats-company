@@ -1188,12 +1188,18 @@ func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter,
 		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	if r.URL.Query().Has("search_by") {
+		h.handleCommercialUserFieldSearch(w, r)
+		return
+	}
 	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
 		if h.users == nil {
 			writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user lookup unavailable"})
 			return
 		}
-		users, err := h.users.SearchUsers(query, 20)
+		// Use the admin lookup so numeric UIDs cannot be displaced by fuzzy
+		// username matches, and exact emails resolve complete account records.
+		users, err := h.searchUsers(query)
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to search users"})
 			return
