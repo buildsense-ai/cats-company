@@ -92,6 +92,7 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000, Vision: true, RuntimeModel: "MiniMax-M3",
 	},
 	deepSeekModelCatalogItem(),
+	deepSeekFlashModelCatalogItem(),
 	{
 		ID: "glm-5.3-flash", Label: "GLM 5.3 Flash", Description: "高性价比多模态模型，适合长上下文与工具任务",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
