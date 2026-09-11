@@ -300,6 +300,7 @@ jobs:
           python3 deploy/sync-vapid-env_test.py
           python3 deploy/sync-stt-env_test.py
           python3 deploy/stt-nginx-config_test.py
+          python3 deploy/shimo-skill-connector-nginx_test.py
           python3 deploy/website-nginx-config_test.py
 
   docker_images:

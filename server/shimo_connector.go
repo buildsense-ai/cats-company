@@ -70,6 +70,12 @@ type shimoLoginAttempt struct {
 	tokenHash string
 	expiresAt time.Time
 	used      bool
+	// claimed marks the window in which a request has taken the one-time
+	// login link and is starting the isolated browser session. It is set
+	// under h.mu before StartLogin runs so concurrent requests cannot open a
+	// second session or deliver a duplicate resume, and it is rolled back if
+	// StartLogin fails so the user can retry the same link.
+	claimed bool
 }
 
 type shimoLoginResume struct {
@@ -424,7 +430,7 @@ func (h *ShimoConnectorHandler) HandleLoginAttempt(w http.ResponseWriter, r *htt
 	h.mu.Lock()
 	h.pruneAttemptsLocked(now)
 	attempt := h.attempts[tokenHash]
-	if attempt == nil || attempt.used || !hmac.Equal([]byte(attempt.tokenHash), []byte(tokenHash)) {
+	if attempt == nil || attempt.used || attempt.claimed || !hmac.Equal([]byte(attempt.tokenHash), []byte(tokenHash)) {
 		h.mu.Unlock()
 		h.writeLoginPage(w, http.StatusGone, "连接链接已失效，请回到聊天重新发起", false)
 		return
@@ -432,20 +438,24 @@ func (h *ShimoConnectorHandler) HandleLoginAttempt(w http.ResponseWriter, r *htt
 	if r.Method == http.MethodGet {
 		if lifecycle, remote := h.backend.(shimoConnectionLifecycleBackend); remote {
 			actor := shimoActor{agentUID: attempt.key.agentUID, actorUID: attempt.key.actorUID, taskRef: attempt.taskRef}
+			attempt.claimed = true
 			completionToken, resume := h.newLoginResumeLocked(attempt, now)
 			h.mu.Unlock()
 			loginURL, err := lifecycle.StartLogin(r.Context(), actor, completionToken)
 			if err != nil {
+				h.mu.Lock()
 				if resume != nil {
-					h.mu.Lock()
 					delete(h.resumes, resume.tokenHash)
-					h.mu.Unlock()
 				}
+				if current := h.attempts[tokenHash]; current == attempt {
+					attempt.claimed = false
+				}
+				h.mu.Unlock()
 				h.writeLoginPage(w, http.StatusBadGateway, "暂时无法打开石墨登录，请返回聊天后重试", false)
 				return
 			}
 			h.mu.Lock()
-			if current := h.attempts[tokenHash]; current != nil {
+			if current := h.attempts[tokenHash]; current == attempt {
 				current.used = true
 			}
 			h.mu.Unlock()

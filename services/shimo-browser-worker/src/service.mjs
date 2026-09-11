@@ -4,8 +4,48 @@ import { ShimoWorkerError } from './reader.mjs';
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 const RANGE_PATTERN = /^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/;
 
-export function createShimoWorkerServer({ internalToken, store, reader, loginManager }) {
+export const DEFAULT_MAX_CONCURRENCY = 2;
+export const DEFAULT_MAX_QUEUE = 8;
+
+// One browser session costs hundreds of megabytes, so the number of concurrent
+// Chromium contexts must stay well below the container memory limit. Work over
+// that bound waits in a short FIFO queue and is rejected with 503 once the queue
+// is full, which keeps a burst of requests from taking the Worker down.
+export function createConcurrencyLimiter({ maxConcurrency = DEFAULT_MAX_CONCURRENCY, maxQueue = DEFAULT_MAX_QUEUE } = {}) {
+  const concurrency = Math.max(1, Math.floor(Number(maxConcurrency)) || 1);
+  const queueLimit = Math.max(0, Math.floor(Number(maxQueue)) || 0);
+  let active = 0;
+  const waiting = [];
+  function release() {
+    active -= 1;
+    while (active < concurrency && waiting.length > 0) {
+      const entry = waiting.shift();
+      active += 1;
+      Promise.resolve().then(entry.task).then(entry.resolve, entry.reject).finally(release);
+    }
+  }
+  return {
+    run(task) {
+      return new Promise((resolve, reject) => {
+        if (active < concurrency && waiting.length === 0) {
+          active += 1;
+          Promise.resolve().then(task).then(resolve, reject).finally(release);
+          return;
+        }
+        if (waiting.length >= queueLimit) {
+          reject(new ShimoWorkerError('WORKER_BUSY', '浏览器 Worker 繁忙，请稍后重试。', 503));
+          return;
+        }
+        waiting.push({ task, resolve, reject });
+      });
+    },
+    stats: () => ({ active, queued: waiting.length }),
+  };
+}
+
+export function createShimoWorkerServer({ internalToken, store, reader, loginManager, limits }) {
   if (String(internalToken || '').length < 32) throw new Error('SHIMO_WORKER_TOKEN must contain at least 32 characters');
+  const limiter = createConcurrencyLimiter(limits);
   return http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://worker.local');
@@ -43,14 +83,14 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
 		    throw new ShimoWorkerError('INVALID_ARGUMENTS', '登录完成回调地址无效。', 400);
 		  }
 		}
-		const result = await loginManager.start(binding, callbackURL ? { callbackURL, completionToken } : null);
+		const result = await limiter.run(() => loginManager.start(binding, callbackURL ? { callbackURL, completionToken } : null));
         return sendJSON(response, 200, { ok: true, data: result });
       }
 
       const record = store.load(binding);
       if (!record) throw new ShimoWorkerError('LOGIN_REQUIRED', '当前用户尚未连接石墨。', 409);
       if (url.pathname === '/v1/sheets/list') {
-        const data = await reader.listSheets(record.storageState, String(body.url || ''));
+        const data = await limiter.run(() => reader.listSheets(record.storageState, String(body.url || '')));
         return sendJSON(response, 200, { ok: true, data });
       }
       if (url.pathname === '/v1/sheets/read') {
@@ -59,7 +99,7 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
         if (!sheetName || [...sheetName].length > 200 || !RANGE_PATTERN.test(cellRange)) {
           throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称或范围无效。', 400);
         }
-        const data = await reader.readSheet(record.storageState, String(body.url || ''), sheetName, cellRange);
+        const data = await limiter.run(() => reader.readSheet(record.storageState, String(body.url || ''), sheetName, cellRange));
         return sendJSON(response, 200, { ok: true, data });
       }
       if (url.pathname === '/v1/documents/read') {
@@ -67,7 +107,7 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
         if (!Number.isInteger(maxChars) || maxChars < 1000 || maxChars > 500000) {
           throw new ShimoWorkerError('INVALID_ARGUMENTS', 'max_chars 必须介于 1000 与 500000。', 400);
         }
-        const data = await reader.readDocument(record.storageState, String(body.url || ''), maxChars);
+        const data = await limiter.run(() => reader.readDocument(record.storageState, String(body.url || ''), maxChars));
         return sendJSON(response, 200, { ok: true, data });
       }
       throw new ShimoWorkerError('NOT_FOUND', '接口不存在。', 404);

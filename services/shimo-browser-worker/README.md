@@ -19,8 +19,17 @@ SHIMO_WORKER_TOKEN=<at-least-32-random-characters>
 SHIMO_WORKER_SESSION_KEY=<64-hex-characters-or-base64-for-exactly-32-bytes>
 SHIMO_WORKER_PUBLIC_BASE_URL=https://app.catsco.cc/shimo-login
 SHIMO_WORKER_STATE_DIR=/var/lib/catsco-shimo
+SHIMO_WORKER_MAX_CONCURRENCY=2
+SHIMO_WORKER_MAX_QUEUE=8
 CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 ```
+
+`SHIMO_WORKER_MAX_CONCURRENCY` bounds how many Chromium sessions run at once and
+`SHIMO_WORKER_MAX_QUEUE` bounds how many further requests wait for a slot. Over
+that bound the Worker answers `503 WORKER_BUSY` instead of starting another
+browser, which keeps a burst of reads from exhausting container memory. The
+compose stacks also cap the container (`deploy.resources.limits`); raise both
+together.
 
 The internal API listens on port `7070`. Only `/shimo-login/` should be exposed through the CatsCo HTTPS origin. `/v1/` must remain on the private Docker network and requires `SHIMO_WORKER_TOKEN`.
 
@@ -32,4 +41,4 @@ npm test
 docker build -t cats-company-shimo-worker .
 ```
 
-The unit suite verifies service authentication, identity-field rejection, per-binding isolation, encrypted-at-rest state, authenticated-encryption binding, and disconnect behavior. A real smoke test additionally needs an authorized Shimo test account.
+The unit suite verifies service authentication, identity-field rejection, per-binding isolation, encrypted-at-rest state, authenticated-encryption binding, disconnect behavior, and the global concurrency bound. A real smoke test additionally needs an authorized Shimo test account.

@@ -248,12 +248,21 @@ services:
       SHIMO_WORKER_SESSION_KEY: "${SHIMO_WORKER_SESSION_KEY:-}"
       SHIMO_WORKER_PUBLIC_BASE_URL: "${SHIMO_WORKER_PUBLIC_BASE_URL:-https://app.catsco.cc/shimo-login}"
       SHIMO_WORKER_STATE_DIR: /var/lib/catsco-shimo
+      SHIMO_WORKER_MAX_CONCURRENCY: "${TEST_SHIMO_WORKER_MAX_CONCURRENCY:-2}"
+      SHIMO_WORKER_MAX_QUEUE: "${TEST_SHIMO_WORKER_MAX_QUEUE:-8}"
       TZ: Asia/Shanghai
     ports:
       - "${TEST_SHIMO_WORKER_BIND_HOST:-127.0.0.1}:${TEST_SHIMO_WORKER_HOST_PORT:-16070}:7070"
     volumes:
       - "${TEST_STACK_ROOT}/data/shimo-sessions:/var/lib/catsco-shimo"
     shm_size: 1gb
+    # Each read opens a fresh Chromium context, so cap the container memory
+    # alongside the in-process concurrency limit to avoid OOM kills.
+    deploy:
+      resources:
+        limits:
+          cpus: "${TEST_SHIMO_WORKER_CPUS:-2}"
+          memory: "${TEST_SHIMO_WORKER_MEMORY:-2g}"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s

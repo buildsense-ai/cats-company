@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
-import { createShimoWorkerServer } from '../src/service.mjs';
+import { createConcurrencyLimiter, createShimoWorkerServer } from '../src/service.mjs';
 
 const internalToken = 'worker-token-that-is-longer-than-thirty-two-characters';
 const bindingA = 'a'.repeat(32);
@@ -17,10 +17,10 @@ class MemoryStore {
   delete(binding) { return this.records.delete(binding); }
 }
 
-async function startWorker() {
+async function startWorker({ reader: readerOverride, limits } = {}) {
   const store = new MemoryStore();
   const calls = [];
-  const reader = {
+  const reader = readerOverride || {
     async listSheets(state, url) { calls.push(['list', state, url]); return { sheets: [{ name: '项目表', index: 0 }] }; },
     async readSheet(state, url, sheet, range) { calls.push(['sheet', state, url, sheet, range]); return { values: [['金额'], [8500]] }; },
     async readDocument(state, url, maxChars) { calls.push(['document', state, url, maxChars]); return { text: '正文', truncated: false }; },
@@ -31,7 +31,7 @@ async function startWorker() {
     async screenshot() { return Buffer.from('png'); },
     async input() { return { state: 'waiting', message: '等待登录' }; },
   };
-  const server = createShimoWorkerServer({ internalToken, store, reader, loginManager });
+  const server = createShimoWorkerServer({ internalToken, store, reader, loginManager, limits });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { store, calls, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolve => server.close(resolve)) };
 }
@@ -48,6 +48,61 @@ async function request(worker, path, body, token = internalToken) {
     req.end(payload);
   });
 }
+
+test('concurrency limiter bounds active work and queue depth', async () => {
+  const limiter = createConcurrencyLimiter({ maxConcurrency: 1, maxQueue: 1 });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const order = [];
+  const first = limiter.run(async () => { order.push('first-start'); await gate; order.push('first-end'); });
+  const second = limiter.run(async () => { order.push('second-start'); });
+  await assert.rejects(
+    () => limiter.run(async () => { order.push('third'); }),
+    error => error.code === 'WORKER_BUSY' && error.status === 503,
+  );
+  assert.deepEqual(order, ['first-start']);
+  assert.deepEqual(limiter.stats(), { active: 1, queued: 1 });
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['first-start', 'first-end', 'second-start']);
+  assert.deepEqual(limiter.stats(), { active: 0, queued: 0 });
+});
+
+test('worker rejects read requests beyond the concurrency bound', async () => {
+  let enteredResolve;
+  const entered = new Promise(resolve => { enteredResolve = resolve; });
+  let releaseRead;
+  const gate = new Promise(resolve => { releaseRead = resolve; });
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const reader = {
+    async listSheets() { return { sheets: [] }; },
+    async readDocument() { return { text: '', truncated: false }; },
+    async readSheet() {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      enteredResolve();
+      await gate;
+      inFlight -= 1;
+      return { values: [['金额'], [8500]] };
+    },
+  };
+  const worker = await startWorker({ reader, limits: { maxConcurrency: 1, maxQueue: 0 } });
+  try {
+    worker.store.save(bindingA, { storageState: { cookies: [] }, accountHint: 'A', verifiedAt: 'now' });
+    const payload = { connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:C20' };
+    const first = request(worker, '/v1/sheets/read', payload);
+    await entered;
+    const second = await request(worker, '/v1/sheets/read', payload);
+    assert.equal(second.status, 503);
+    assert.equal(second.body.error.code, 'WORKER_BUSY');
+    assert.equal(maxInFlight, 1);
+    releaseRead();
+    const firstResult = await first;
+    assert.equal(firstResult.status, 200);
+    assert.equal(maxInFlight, 1);
+  } finally { await worker.close(); }
+});
 
 test('internal endpoints require service authentication', async () => {
   const worker = await startWorker();
