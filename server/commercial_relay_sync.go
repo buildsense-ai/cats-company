@@ -854,10 +854,6 @@ func commercialRelayRequiredModels(summary *types.CommercialSummary, managed []*
 				required[model] = true
 			}
 		}
-		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
-			totals[commercialRelayUniversalModel] = 1
-			normalizedTotals[strings.ToLower(commercialRelayUniversalModel)] = 1
-		}
 	}
 	models := make([]string, 0, len(required))
 	for model := range required {
@@ -1268,6 +1264,10 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 				totals[model] = amount
 				normalizedTotals[strings.ToLower(model)] = amount
 			}
+		}
+		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
+			totals[commercialRelayUniversalModel] = 1
+			normalizedTotals[strings.ToLower(commercialRelayUniversalModel)] = 1
 		}
 	}
 	relayByModel := map[string][]commercialRelayModelLimit{}
