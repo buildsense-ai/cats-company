@@ -854,6 +854,10 @@ func commercialRelayRequiredModels(summary *types.CommercialSummary, managed []*
 				required[model] = true
 			}
 		}
+		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
+			totals[commercialRelayUniversalModel] = 1
+			normalizedTotals[strings.ToLower(commercialRelayUniversalModel)] = 1
+		}
 	}
 	models := make([]string, 0, len(required))
 	for model := range required {
@@ -1289,6 +1293,12 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 	sharedLimit := commercialRelaySharedLimit(summary)
 	for model, amount := range totals {
 		candidateByKey := map[string]*types.CommercialManagedRelayBudget{}
+		if strings.EqualFold(model, commercialRelayUniversalModel) && len(relayByModel[normalizeRelayModelName(model)]) == 0 {
+			relayByModel[normalizeRelayModelName(model)] = []commercialRelayModelLimit{{
+				Model: model, Provider: "deepseek-flash-openai", AllowedModels: []string{model},
+				Budget: commercialRelayBudget{ResetDuration: "1M"},
+			}}
+		}
 		for _, limit := range relayByModel[normalizeRelayModelName(model)] {
 			allowedModels := commercialRelayScopedAllowedModels(limit.AllowedModels, normalizedTotals)
 			if len(allowedModels) == 0 {
