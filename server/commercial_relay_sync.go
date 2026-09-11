@@ -569,6 +569,7 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 const (
 	commercialRelayBaselineProfileFree   = "free"
 	commercialRelayBaselineProfileLegacy = "legacy"
+	commercialRelayUniversalModel        = "deepseek-flash"
 )
 
 var commercialRelayFreeBudgets = map[string]float64{
@@ -1145,6 +1146,7 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 		for _, scope := range relayUser.Limits.ModelScopes {
 			models := normalizedCommercialModels(scope.ManagedModels)
 			if len(models) > 0 {
+				models = appendCommercialRelayModel(models, commercialRelayUniversalModel)
 				families[commercialRelayModelSetKey(models)] = models
 				for _, model := range models {
 					governed[strings.ToLower(model)] = true
@@ -1173,7 +1175,7 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 	for _, models := range families {
 		allowed := make([]string, 0, len(models))
 		for _, model := range models {
-			if totals[strings.ToLower(model)] > 0 {
+			if totals[strings.ToLower(model)] > 0 || strings.EqualFold(model, commercialRelayUniversalModel) {
 				allowed = append(allowed, model)
 			}
 		}
@@ -1183,6 +1185,15 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 		return commercialRelayModelSetKey(scopes[i].ManagedModels) < commercialRelayModelSetKey(scopes[j].ManagedModels)
 	})
 	return scopes
+}
+
+func appendCommercialRelayModel(models []string, wanted string) []string {
+	for _, model := range models {
+		if strings.EqualFold(model, wanted) {
+			return models
+		}
+	}
+	return append(models, wanted)
 }
 
 func commercialRelayGovernedGrant(grantType string) bool {
@@ -1213,7 +1224,7 @@ func commercialRelayGrantGoverned(summary *types.CommercialSummary, grantType st
 func commercialRelayScopedAllowedModels(models []string, totals map[string]float64) []string {
 	allowed := []string{}
 	for _, model := range normalizedCommercialModels(models) {
-		if totals[strings.ToLower(model)] > 0 {
+		if totals[strings.ToLower(model)] > 0 || strings.EqualFold(model, commercialRelayUniversalModel) {
 			allowed = append(allowed, model)
 		}
 	}
