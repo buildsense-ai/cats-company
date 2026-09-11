@@ -30,13 +30,34 @@ fi
 touch "$source_bundle" "$source_root"
 
 cd "$source_root"
+
+# Reuse layers from the last deployed revision whenever that image is still
+# present on the build host. Without an explicit cache source, every new
+# commit can reinstall large runtime dependencies (notably Chromium for the
+# Shimo worker), even though the Dockerfile layers are unchanged.
+previous_tag=""
+if [ -f "$root/env/test.env" ]; then
+  previous_tag="$(sed -n 's/^IMAGE_TAG=//p' "$root/env/test.env" | tail -n 1)"
+elif [ -f "$root/env/prod.env" ]; then
+  previous_tag="$(sed -n 's/^IMAGE_TAG=//p' "$root/env/prod.env" | tail -n 1)"
+fi
+
+cache_args_for() {
+  local image="$1"
+  if [ -n "$previous_tag" ] && docker image inspect "$image:$previous_tag" >/dev/null 2>&1; then
+    printf '%s\n' "--cache-from=$image:$previous_tag"
+  fi
+}
+
 server_image="ghcr.io/${owner}/cats-company-server:${revision}"
 if docker image inspect "$server_image" >/dev/null 2>&1; then
   echo "Server image already present: ${server_image}"
 else
   server_build_timeout="${REMOTE_SERVER_BUILD_TIMEOUT_SECONDS:-1800}"
   echo "Building server image: ${server_image} (timeout ${server_build_timeout}s)"
-  timeout "$server_build_timeout" docker build --progress=plain \
+  server_cache_args=()
+  while IFS= read -r arg; do [ -n "$arg" ] && server_cache_args+=("$arg"); done < <(cache_args_for "ghcr.io/${owner}/cats-company-server")
+  timeout "$server_build_timeout" docker build --progress=plain "${server_cache_args[@]}" \
     --build-arg GOPROXY="${REMOTE_GOPROXY:-https://goproxy.cn,direct}" \
     --build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}" \
     -f deploy/Dockerfile.server \
@@ -50,7 +71,9 @@ if docker image inspect "$dreamina_image" >/dev/null 2>&1; then
 else
   dreamina_build_timeout="${REMOTE_DREAMINA_BUILD_TIMEOUT_SECONDS:-600}"
   echo "Building Dreamina worker image: ${dreamina_image} (timeout ${dreamina_build_timeout}s)"
-  timeout "$dreamina_build_timeout" docker build --progress=plain \
+  dreamina_cache_args=()
+  while IFS= read -r arg; do [ -n "$arg" ] && dreamina_cache_args+=("$arg"); done < <(cache_args_for "ghcr.io/${owner}/cats-company-dreamina-worker")
+  timeout "$dreamina_build_timeout" docker build --progress=plain "${dreamina_cache_args[@]}" \
     -f deploy/Dockerfile.dreamina \
     -t "$dreamina_image" \
     .
@@ -62,7 +85,9 @@ if docker image inspect "$shimo_worker_image" >/dev/null 2>&1; then
 else
   shimo_worker_build_timeout="${REMOTE_SHIMO_WORKER_BUILD_TIMEOUT_SECONDS:-900}"
   echo "Building Shimo worker image: ${shimo_worker_image} (timeout ${shimo_worker_build_timeout}s)"
-  timeout "$shimo_worker_build_timeout" docker build --progress=plain \
+  shimo_cache_args=()
+  while IFS= read -r arg; do [ -n "$arg" ] && shimo_cache_args+=("$arg"); done < <(cache_args_for "ghcr.io/${owner}/cats-company-shimo-worker")
+  timeout "$shimo_worker_build_timeout" docker build --progress=plain "${shimo_cache_args[@]}" \
     -f services/shimo-browser-worker/Dockerfile \
     -t "$shimo_worker_image" \
     services/shimo-browser-worker
