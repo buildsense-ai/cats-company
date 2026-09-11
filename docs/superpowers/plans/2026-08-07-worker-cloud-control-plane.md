@@ -6,7 +6,7 @@
 
 ## 当前状态（2026-08-07）
 
-- **XiaoBa-CLI 侧（Part A）已完成：** worker 镜像 bake 闭环（v1.4.8 验收通过） + 镜像生命周期模块 A（`Manage-WorkerImages.ps1`：`-Action List/Latest/Prune -Keep 6`，bake 后自动清理）。详见 `E:\work\xiaoba\XiaoBa-CLI\docs\superpowers\plans\2026-08-07-worker-cloud-control-image-lifecycle.md`。
+- **XiaoBa-CLI 侧（Part A）已完成：** worker 镜像 bake 闭环（v1.4.8 验收通过） + 镜像生命周期模块 A（`Manage-WorkerImages.ps1`：`-Action List/Latest/Prune -Keep 3`，bake 后自动清理）。详见 `E:\work\xiaoba\XiaoBa-CLI\docs\superpowers\plans\2026-08-07-worker-cloud-control-image-lifecycle.md`。
 - **本文档（Part B，cats-company 侧）：** 在「AI 助手管理」对话框的**「云托管」入口**启用云虚拟员工的统一管理：创建（带配额）、版本展示、**回滚 / 重置两个动作分开**、单 worker 逐个操作。
 - **关联：** 用户确认 —— 回滚（保留数据，Part A 制品切版本）与重置（丢弃数据，销毁重建到镜像）**两个都提供且 UI/文档写清楚分开**；创建配额用**环境变量控制，初始 0**；协作规则：**文档更新可直推 main，代码一律走 PR，不用 admin 合并**。
 
@@ -33,7 +33,7 @@
 1. **「云托管」员工的技术底座**：现有 `deployer.go` 走 **gauz-platform**；而用户说的"云虚拟员工 / 镜像 / 部署云机器拉最新镜像"指向 **天翼云 worker 镜像实例**（XiaoBa-CLI `ops/ctyun-worker-image` 管线）。
    - 方案 A：云托管 = **天翼云 worker 镜像实例**（新增管理面，对接 `Manage-WorkerImages.ps1` 与云 API/脚本创建、回滚、重置）。
    - 方案 B：云托管 = 现有 gauz-platform bot 部署（仅启用 MANAGED radio + 补镜像/回滚/重置能力到 deployer）。
-   - **倾向方案 A**（与用户"镜像保留 6/回滚/重置/部署拉最新镜像"完全对应），但需与现有 `/api/bots/deploy` 关系理清（可能并存：gauz 部署 vs 天翼云镜像 worker）。
+   - **倾向方案 A**（与用户"镜像保留 3/回滚/重置/部署拉最新镜像"完全对应），但需与现有 `/api/bots/deploy` 关系理清（可能并存：gauz 部署 vs 天翼云镜像 worker）。
 2. **创建/销毁/重置的云操作由谁执行**：cats-company 直接调天翼云 API，还是经 XiaoBa-CLI 脚本（`Manage-WorkerImages.ps1`/新建 `Provision-WorkerInstance.ps1`）代理？建议由 XiaoBa-CLI 侧提供脚本（凭据集中在 CI/服务侧），cats-company 经 HTTP/脚本调用。
 
 ## 模块
