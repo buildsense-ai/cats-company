@@ -36,7 +36,9 @@ cd "$source_root"
 # commit can reinstall large runtime dependencies (notably Chromium for the
 # Shimo worker), even though the Dockerfile layers are unchanged.
 previous_tag=""
-if [ -f "$root/env/test.env" ]; then
+if [ -f "$root/CURRENT_REVISION" ]; then
+  previous_tag="$(tr -d '[:space:]' < "$root/CURRENT_REVISION")"
+elif [ -f "$root/env/test.env" ]; then
   previous_tag="$(sed -n 's/^IMAGE_TAG=//p' "$root/env/test.env" | tail -n 1)"
 elif [ -f "$root/env/prod.env" ]; then
   previous_tag="$(sed -n 's/^IMAGE_TAG=//p' "$root/env/prod.env" | tail -n 1)"
