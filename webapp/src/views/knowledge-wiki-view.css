@@ -1,0 +1,20 @@
+.cc-knowledge-wiki { min-height: 100vh; padding: 28px clamp(20px, 5vw, 72px); background: var(--v3-surface, #171717); color: var(--v3-text-name, #f5f5f5); }
+.cc-knowledge-wiki-header { display: flex; align-items: center; gap: 24px; max-width: 1180px; margin: 0 auto 30px; }
+.cc-knowledge-wiki-title { display: flex; align-items: center; gap: 12px; }
+.cc-knowledge-wiki-title h1 { margin: 0; font-size: 22px; }
+.cc-knowledge-wiki-title span { color: var(--v3-text-muted, #a0a0a0); font-size: 13px; }
+.cc-knowledge-wiki-content { max-width: 1180px; margin: 0 auto; }
+.cc-knowledge-wiki-summary { display: flex; align-items: baseline; gap: 12px; padding: 18px 20px; border: 1px solid var(--v3-border, #343434); border-radius: 14px; margin-bottom: 18px; }
+.cc-knowledge-wiki-summary strong { font-size: 30px; }
+.cc-knowledge-wiki-summary span { color: var(--v3-text-muted, #a0a0a0); }
+.cc-knowledge-wiki-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.cc-knowledge-wiki-card { display: flex; justify-content: space-between; gap: 16px; min-height: 120px; padding: 18px; border: 1px solid var(--v3-border, #343434); border-radius: 14px; background: var(--v3-surface-elevated, #202020); }
+.cc-knowledge-wiki-card h2 { margin: 0 0 8px; font-size: 16px; }
+.cc-knowledge-wiki-card p { margin: 0; color: var(--v3-text-muted, #a0a0a0); font-size: 13px; line-height: 1.5; }
+.cc-knowledge-wiki-card > span { flex: none; color: var(--v3-accent, #38c9a4); font-size: 12px; }
+.cc-knowledge-wiki-state { display: flex; justify-content: center; align-items: center; gap: 10px; min-height: 45vh; color: var(--v3-text-muted, #a0a0a0); }
+.cc-knowledge-wiki-state.error { color: var(--v3-text-name, #f5f5f5); text-align: center; }
+.cc-knowledge-wiki-state.error p { color: var(--v3-text-muted, #a0a0a0); margin: 8px 0; }
+.cc-knowledge-wiki-empty { color: var(--v3-text-muted, #a0a0a0); }
+.spin { animation: cc-knowledge-spin 1s linear infinite; }
+@keyframes cc-knowledge-spin { to { transform: rotate(360deg); } }

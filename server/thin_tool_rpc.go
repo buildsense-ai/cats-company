@@ -510,7 +510,9 @@ func isSkillHubThinToolOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubSkillDelete,
-		DeviceGrantSkillHubBotSwitch:
+		DeviceGrantSkillHubBotSwitch,
+		DeviceGrantKnowledgeDocumentList,
+		DeviceGrantKnowledgeDocumentRead:
 		return true
 	default:
 		return false

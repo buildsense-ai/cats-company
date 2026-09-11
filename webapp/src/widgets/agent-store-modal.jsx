@@ -5,6 +5,7 @@ import t from '../i18n';
 import {
   ArrowLeft,
   Bot,
+  BookOpen,
   Check,
   CheckCircle,
   ChevronDown,
@@ -47,6 +48,29 @@ const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
   MANAGED: 'managed',
 };
+
+function knowledgeWikiURL(botId) {
+  const host = String(window.location.hostname || '').toLowerCase();
+  const wikiHost = host === 'app.catsco.cn' || host === 'catsco.cn'
+    ? 'wiki.catsco.cn'
+    : host === 'app.catsco.cc' || host === 'catsco.cc'
+      ? 'wiki.catsco.cc'
+      : '';
+  const path = `/wiki/agents/${encodeURIComponent(String(botId))}`;
+  return wikiHost ? `${window.location.protocol}//${wikiHost}${path}` : `${window.location.origin}${path}`;
+}
+
+async function openKnowledgeWiki(botId) {
+  const handoff = await api.issueKnowledgeWikiHandoff(botId);
+  const target = knowledgeWikiURL(botId);
+  const url = new URL(target);
+  const form = document.createElement('form');
+  form.method = 'POST'; form.action = `${url.origin}/wiki/handoff`; form.target = '_blank'; form.hidden = true;
+  for (const [name, value] of [['token', handoff.token], ['agent_uid', String(botId)]]) {
+    const input = document.createElement('input'); input.name = name; input.value = value; form.appendChild(input);
+  }
+  document.body.appendChild(form); form.submit(); form.remove();
+}
 
 // Cloud worker creation failure → user-facing message, keyed by the backend
 // error code. Concrete technical reasons (e.g. cloud quota) stay in server
@@ -1860,6 +1884,20 @@ export default function AgentStoreModal({
                           >
                             <QrCode size={14} aria-hidden="true" />
                             入口码
+                          </button>
+                        )}
+                        {botId && (
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-knowledge"
+                            onClick={async () => {
+                              try { await openKnowledgeWiki(botId); }
+                              catch (error) { window.dispatchEvent(new CustomEvent('catsco:notice', { detail: { type: 'error', message: error?.message || '知识库入口暂时不可用' } })); }
+                            }}
+                            title="查看此助手的知识库"
+                          >
+                            <BookOpen size={14} aria-hidden="true" />
+                            知识库
                           </button>
                         )}
                         {owned && bot.tenant_name && (

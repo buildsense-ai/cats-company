@@ -33,6 +33,7 @@ import LiquidFlowBackground, {
 } from '../components/liquid-flow-background';
 import { useFeedback } from '../components/feedback-system';
 import ArtifactFullscreenViewer from './artifact-fullscreen-viewer';
+import KnowledgeWikiView from './knowledge-wiki-view';
 import { ARTIFACT_VIEWER_PATH } from '../artifact-preview-coordinator';
 import Avatar from '../widgets/avatar';
 
@@ -262,6 +263,9 @@ export default function TinodeWeb({ location = window.location } = {}) {
   const { pathname = '/', search = '' } = location;
   if (pathname === ARTIFACT_VIEWER_PATH) {
     return <ArtifactFullscreenViewer location={location} />;
+  }
+  if (/^\/wiki\/agents\/[^/]+\/?$/.test(pathname)) {
+    return <KnowledgeWikiView location={location} />;
   }
   const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
   if (mobileUploadMatch) {

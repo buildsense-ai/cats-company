@@ -552,6 +552,8 @@ export const api = {
         'skillhub.localSkill.share',
         'skillhub.localSkill.finalize',
         'skillhub.localBot.switch',
+        'knowledge.document.list',
+        'knowledge.document.read',
       ],
     }),
   getDeviceConnectorPairing: (pairingId) =>
@@ -563,6 +565,10 @@ export const api = {
 
   // Virtual employee roster
   getAgents: () => request('GET', '/api/agents'),
+  getKnowledgeWikiManifest: (agentUid, options = {}) =>
+    request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/manifest`, undefined, options),
+  issueKnowledgeWikiHandoff: (agentUid) =>
+    request('POST', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/handoff`, {}),
   getAgentQuota: (agentUid) => request('GET', `/api/agents/quota?uid=${encodeURIComponent(agentUid)}`),
   openAgent: (agentUid) => request('POST', '/api/agents/open', { agent_uid: agentUid }),
   createDesktopConnectSession: () => request('POST', '/api/desktop-connect/session', {}),
