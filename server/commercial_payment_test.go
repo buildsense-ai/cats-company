@@ -980,6 +980,39 @@ func TestCommercialRelayScopeExcludesUnpurchasedSharedAlias(t *testing.T) {
 	}
 }
 
+func TestCommercialRelaySharedPlanAddsDeepSeekFlashToSharedPool(t *testing.T) {
+	now := time.Now()
+	newLimit := commercialRelayModelLimit{Provider: "deepseek-flash-openai", Model: "deepseek-flash", AllowedModels: []string{"deepseek-flash"}, Budget: commercialRelayBudget{ResetDuration: "1M"}}
+	oldLimit := commercialRelayModelLimit{Provider: "minimax", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500, ResetDuration: "1M"}}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		ModelLimits:          []commercialRelayModelLimit{oldLimit},
+		AvailableModelLimits: []commercialRelayModelLimit{oldLimit, newLimit},
+	}}
+	summary := &types.CommercialSummary{
+		UID: 38, TotalCNY: 5000,
+		TotalsByModel: map[string]float64{"MiniMax-M3": 5000},
+		Entitlements:  []*types.CommercialEntitlement{{PlanSlug: "catsco-pro", State: "active", StartsAt: now.Add(-time.Hour)}},
+	}
+	updates, next := commercialRelaySharedManagedPlan(38, summary, relayUser, nil)
+	var found bool
+	for _, update := range updates {
+		if update.Provider == "deepseek-flash-openai" {
+			found = true
+			if update.MaxLimit != 5000 || commercialRelayModelSetKey(update.AllowedModels) != commercialRelayModelSetKey([]string{"deepseek-flash"}) {
+				t.Fatalf("DeepSeek Flash did not use the shared pool: %#v", update)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("DeepSeek Flash shared provider update missing: %#v", updates)
+	}
+	for _, item := range next {
+		if item.Model == "deepseek-flash" && item.MaxLimit != 5000 {
+			t.Fatalf("managed DeepSeek Flash budget is not shared: %#v", item)
+		}
+	}
+}
+
 func TestCommercialRelayModelScopesMatchRelayAdminOverlapMerge(t *testing.T) {
 	triple := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
 	pair := []string{"gpt-5.6-terra", "gpt-5.6-sol"}

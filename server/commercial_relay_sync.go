@@ -1274,10 +1274,6 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 				normalizedTotals[strings.ToLower(model)] = amount
 			}
 		}
-		if commercialRelayHasActivePackage(summary) {
-			totals[commercialRelayUniversalModel] = 1
-			normalizedTotals[strings.ToLower(commercialRelayUniversalModel)] = 1
-		}
 	}
 	relayByModel := map[string][]commercialRelayModelLimit{}
 	if relayUser != nil {
@@ -1330,6 +1326,22 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 				UID: uid, Model: model, Provider: item.Provider, AllowedModels: append([]string(nil), item.AllowedModels...),
 				ResetDuration: defaultRelayResetDuration(item.ResetDuration),
 			}
+		}
+	}
+	if shared && commercialRelayHasActivePackage(summary) && commercialRelayCatalogHasExactModel(relayUser, commercialRelayUniversalModel) {
+		for _, limit := range commercialRelayCatalogLimits(relayUser) {
+			if !strings.EqualFold(strings.TrimSpace(limit.Model), commercialRelayUniversalModel) || strings.TrimSpace(limit.Provider) == "" || len(limit.AllowedModels) == 0 {
+				continue
+			}
+			allowedModels := []string{commercialRelayUniversalModel}
+			key := commercialManagedBudgetKey(limit.Provider, allowedModels)
+			configByKey[key] = &types.CommercialManagedRelayBudget{
+				UID: uid, Model: commercialRelayUniversalModel, Provider: limit.Provider,
+				AllowedModels: allowedModels, ResetDuration: defaultRelayResetDuration(limit.Budget.ResetDuration),
+			}
+			desiredByKey[key] = sharedLimit
+			nextByKey[commercialRelayUniversalModel+"\x00"+key] = configByKey[key]
+			break
 		}
 	}
 	for key, amount := range desiredByKey {
