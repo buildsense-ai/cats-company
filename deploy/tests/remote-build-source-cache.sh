@@ -81,6 +81,7 @@ fallback_output="$(run_build "$fallback_revision" pull 2>&1)"
 [ -f "$cache_root/source/$revision/reuse-marker" ]
 grep -q 'Building web image locally' <<<"$first_output"
 grep -q -- '--build-arg APK_REPOSITORY=https://mirrors.aliyun.com/alpine' "$docker_log"
+grep -q -- '--build-arg APT_DEBIAN_MIRROR=https://mirrors.aliyun.com' "$docker_log"
 grep -q 'timed out after 120s' <<<"$fallback_output"
 grep -q 'Source tree already present' <<<"$second_output"
 grep -q 'Server image already present' <<<"$second_output"

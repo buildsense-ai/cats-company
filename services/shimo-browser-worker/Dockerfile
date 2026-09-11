@@ -1,6 +1,23 @@
 FROM node:22-bookworm-slim
 
-RUN apt-get update \
+# Installing Chromium pulls a large dependency set. The deploy hosts reach
+# deb.debian.org too slowly to finish that inside the build budget, so
+# deploy/remote-build-source.sh points apt at a nearby mirror through this
+# argument. Leaving it empty keeps the base image's own sources, which is what
+# CI and local builds use.
+ARG APT_DEBIAN_MIRROR=
+RUN if [ -n "${APT_DEBIAN_MIRROR}" ]; then \
+      mirror="${APT_DEBIAN_MIRROR%/}"; \
+      for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do \
+        [ -f "$file" ] || continue; \
+        sed -i \
+          -e "s#https\?://deb\.debian\.org/debian-security#${mirror}/debian-security#g" \
+          -e "s#https\?://security\.debian\.org/debian-security#${mirror}/debian-security#g" \
+          -e "s#https\?://deb\.debian\.org/debian#${mirror}/debian#g" \
+          "$file"; \
+      done; \
+    fi; \
+    apt-get update \
     && apt-get install -y --no-install-recommends chromium fonts-noto-cjk ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
