@@ -1146,12 +1146,15 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 		for _, scope := range relayUser.Limits.ModelScopes {
 			models := normalizedCommercialModels(scope.ManagedModels)
 			if len(models) > 0 {
-				models = appendCommercialRelayModel(models, commercialRelayUniversalModel)
 				families[commercialRelayModelSetKey(models)] = models
 				for _, model := range models {
 					governed[strings.ToLower(model)] = true
 				}
 			}
+		}
+		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
+			families[commercialRelayModelSetKey([]string{commercialRelayUniversalModel})] = []string{commercialRelayUniversalModel}
+			governed[strings.ToLower(commercialRelayUniversalModel)] = true
 		}
 		for _, limit := range commercialRelayCatalogLimits(relayUser) {
 			models := normalizedCommercialModels(limit.AllowedModels)
@@ -1185,15 +1188,6 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 		return commercialRelayModelSetKey(scopes[i].ManagedModels) < commercialRelayModelSetKey(scopes[j].ManagedModels)
 	})
 	return scopes
-}
-
-func appendCommercialRelayModel(models []string, wanted string) []string {
-	for _, model := range models {
-		if strings.EqualFold(model, wanted) {
-			return models
-		}
-	}
-	return append(models, wanted)
 }
 
 func commercialRelayGovernedGrant(grantType string) bool {
