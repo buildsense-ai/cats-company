@@ -645,6 +645,18 @@ func desiredModelConfigResponse(kind, modelID, reasoning string, config *types.B
 		if tokens, ok := catalogContextWindowTokens(modelID); ok {
 			desired["context_window_tokens"] = tokens
 		}
+		// Keep the legacy model-config contract compatible with dynamically
+		// registered Relay models. XiaoBa versions which do not have the newer
+		// BotDefinition endpoint use this descriptor to materialize the local
+		// runtime without a hard-coded model profile.
+		for _, item := range botModelCatalog {
+			if strings.EqualFold(item.ID, strings.TrimSpace(modelID)) {
+				if runtime := catalogRuntimeDescriptor(item); runtime != nil {
+					desired["runtime"] = runtime
+				}
+				break
+			}
+		}
 	}
 	return desired
 }

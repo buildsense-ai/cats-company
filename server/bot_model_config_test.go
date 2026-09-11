@@ -80,6 +80,21 @@ func enableBotModelEncryption(t *testing.T) {
 	t.Setenv(botModelEncryptionKeyEnv, base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 }
 
+func TestLegacyModelConfigIncludesCatalogRuntimeDescriptor(t *testing.T) {
+	config := &types.BotModelConfig{Revision: 7, UpdatedAt: "2026-09-11T00:00:00Z"}
+	desired := desiredModelConfigResponse(botModelKindCatalog, "deepseek-flash", "", config)
+	runtime, ok := desired["runtime"].(*botModelRuntimeDescriptor)
+	if !ok || runtime == nil {
+		t.Fatalf("runtime descriptor missing: %#v", desired["runtime"])
+	}
+	if runtime.CatalogModelID != "deepseek-flash" || runtime.Model != "deepseek-flash" || runtime.Provider != "openai" {
+		t.Fatalf("unexpected runtime descriptor: %+v", runtime)
+	}
+	if runtime.ContextWindowTokens != 1_000_000 || runtime.OpenAIAPIMode != "responses" {
+		t.Fatalf("unexpected runtime metadata: %+v", runtime)
+	}
+}
+
 func markTestBotModelRuntime(t *testing.T, db *botModelConfigTestStore, botUID int64) {
 	t.Helper()
 	if _, err := db.MarkBotModelRuntimeProtocol(botUID, botModelRuntimeProtocol); err != nil {
@@ -224,7 +239,9 @@ func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 	if _, _, valid := normalizeBotModelSelection("gpt-5.6-terra", "max"); valid {
 		t.Fatal("GPT-5.6 must reject DeepSeek-only max effort")
 	}
-	if _, _, valid := normalizeBotModelSelection("gpt-5.6-luna", ""); valid { t.Fatal("retired Luna must not be selectable") }
+	if _, _, valid := normalizeBotModelSelection("gpt-5.6-luna", ""); valid {
+		t.Fatal("retired Luna must not be selectable")
+	}
 	if _, _, valid := normalizeBotModelSelection("deepseek-v4-flash", "xhigh"); valid {
 		t.Fatal("DeepSeek must reject GPT-5.6-only xhigh effort")
 	}
