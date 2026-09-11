@@ -60,9 +60,13 @@ shimo_worker_image="ghcr.io/${owner}/cats-company-shimo-worker:${revision}"
 if docker image inspect "$shimo_worker_image" >/dev/null 2>&1; then
   echo "Shimo worker image already present: ${shimo_worker_image}"
 else
-  shimo_worker_build_timeout="${REMOTE_SHIMO_WORKER_BUILD_TIMEOUT_SECONDS:-900}"
+  shimo_worker_build_timeout="${REMOTE_SHIMO_WORKER_BUILD_TIMEOUT_SECONDS:-1800}"
   echo "Building Shimo worker image: ${shimo_worker_image} (timeout ${shimo_worker_build_timeout}s)"
+  # A cold build installs Chromium and its dependency set. From
+  # deb.debian.org that took longer than 15 minutes on the deploy hosts, so
+  # the build fetches those packages from a nearby mirror instead.
   timeout "$shimo_worker_build_timeout" docker build --progress=plain \
+    --build-arg APT_DEBIAN_MIRROR="${REMOTE_DEBIAN_MIRROR:-https://mirrors.aliyun.com}" \
     -f services/shimo-browser-worker/Dockerfile \
     -t "$shimo_worker_image" \
     services/shimo-browser-worker
