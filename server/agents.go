@@ -1,6 +1,9 @@
 package server
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -21,6 +24,18 @@ type AgentHandler struct {
 	deviceModelStatusResolver func(uid int64, bodyID string) (DeviceModelStatus, bool)
 	quotaMu                   sync.Mutex
 	quotaCache                map[string]agentQuotaCacheEntry
+	wikiMu                    sync.Mutex
+	wikiTickets               map[string]wikiTicket
+	wikiSessions              map[string]wikiSession
+}
+
+type wikiTicket struct {
+	viewerUID, agentUID int64
+	expiresAt           time.Time
+}
+type wikiSession struct {
+	viewerUID, agentUID int64
+	expiresAt           time.Time
 }
 
 const agentQuotaCacheTTL = 30 * time.Second
@@ -52,9 +67,10 @@ type botModelConfigReader interface {
 // NewAgentHandler creates an AgentHandler.
 func NewAgentHandler(db store.Store, hub *Hub) *AgentHandler {
 	return &AgentHandler{
-		db:         db,
-		hub:        hub,
-		quotaCache: make(map[string]agentQuotaCacheEntry),
+		db:          db,
+		hub:         hub,
+		quotaCache:  make(map[string]agentQuotaCacheEntry),
+		wikiTickets: make(map[string]wikiTicket), wikiSessions: make(map[string]wikiSession),
 	}
 }
 
@@ -119,6 +135,11 @@ func (h *AgentHandler) HandleKnowledgeWikiManifest(w http.ResponseWriter, r *htt
 	}
 	viewerUID := UIDFromContext(r.Context())
 	if viewerUID <= 0 {
+		if sessionUID, ok := h.wikiSessionForRequest(r, agentUIDFromPath(r.URL.Path)); ok {
+			viewerUID = sessionUID
+		}
+	}
+	if viewerUID <= 0 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
@@ -153,6 +174,104 @@ func (h *AgentHandler) HandleKnowledgeWikiManifest(w http.ResponseWriter, r *htt
 		"owner_user_id": formatUID(ownerUID), "target_device_id": deviceID,
 		"online": online,
 	})
+}
+
+func agentUIDFromPath(value string) int64 {
+	parts := strings.Split(strings.Trim(value, "/"), "/")
+	if len(parts) >= 3 {
+		uid, _ := strconv.ParseInt(parts[2], 10, 64)
+		return uid
+	}
+	return 0
+}
+
+// HandleKnowledgeWikiHandoff consumes the POSTed one-time handoff and sets a
+// host-scoped cookie. The credential is never put in the Wiki URL.
+func (h *AgentHandler) HandleKnowledgeWikiHandoff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid handoff", http.StatusBadRequest)
+		return
+	}
+	token := strings.TrimSpace(r.FormValue("token"))
+	if token == "" {
+		http.Error(w, "invalid handoff", http.StatusBadRequest)
+		return
+	}
+	h.wikiMu.Lock()
+	ticket, ok := h.wikiTickets[token]
+	if ok {
+		delete(h.wikiTickets, token)
+	}
+	h.wikiMu.Unlock()
+	if !ok || time.Now().After(ticket.expiresAt) {
+		http.Error(w, "handoff expired", http.StatusUnauthorized)
+		return
+	}
+	sessionBytes := make([]byte, 32)
+	if _, err := rand.Read(sessionBytes); err != nil {
+		http.Error(w, "handoff unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	session := hex.EncodeToString(sessionBytes)
+	h.wikiMu.Lock()
+	h.wikiSessions[session] = wikiSession{viewerUID: ticket.viewerUID, agentUID: ticket.agentUID, expiresAt: time.Now().Add(8 * time.Hour)}
+	h.wikiMu.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: "catsco_wiki_session", Value: session, Path: "/api/agents/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: 8 * 60 * 60})
+	http.Redirect(w, r, "/wiki/agents/"+strconv.FormatInt(ticket.agentUID, 10), http.StatusSeeOther)
+}
+
+func (h *AgentHandler) IssueKnowledgeWikiHandoff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	viewerUID := UIDFromContext(r.Context())
+	agentUID := agentUIDFromPath(r.URL.Path)
+	if viewerUID <= 0 || agentUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if _, _, status, err := accessibleAgentUser(h.db, viewerUID, agentUID); err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "handoff_unavailable"})
+		return
+	}
+	token := hex.EncodeToString(raw)
+	h.wikiMu.Lock()
+	h.wikiTickets[token] = wikiTicket{viewerUID: viewerUID, agentUID: agentUID, expiresAt: time.Now().Add(60 * time.Second)}
+	h.wikiMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]string{"token": token, "agent_uid": strconv.FormatInt(agentUID, 10)})
+}
+
+func (h *AgentHandler) wikiSessionForRequest(r *http.Request, agentUID int64) (int64, bool) {
+	cookie, err := r.Cookie("catsco_wiki_session")
+	if err != nil || cookie.Value == "" {
+		return 0, false
+	}
+	h.wikiMu.Lock()
+	session, ok := h.wikiSessions[cookie.Value]
+	h.wikiMu.Unlock()
+	return session.viewerUID, ok && session.agentUID == agentUID && time.Now().Before(session.expiresAt)
+}
+
+// WikiAuth accepts the ordinary JWT on same-origin development URLs and the
+// host-scoped, single-account cookie after a cross-subdomain handoff.
+func (h *AgentHandler) WikiAuth(next http.HandlerFunc, jwtFallback http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if uid, ok := h.wikiSessionForRequest(r, agentUIDFromPath(r.URL.Path)); ok {
+			next(w, r.WithContext(context.WithValue(r.Context(), uidKey, uid)))
+			return
+		}
+		jwtFallback(w, r)
+	}
 }
 
 // HandleOpenAgent handles POST /api/agents/open.
