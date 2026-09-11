@@ -26,6 +26,7 @@ import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import { hasRoutableDesktopDevice } from '../widgets/catsco-desktop-shared';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
+import StandaloneCloudArtifactsPanel from '../widgets/standalone-cloud-artifacts-panel';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import IdentityOnboarding from '../components/identity-onboarding';
 import LiquidFlowBackground, {
@@ -1575,16 +1576,15 @@ function TinodeWebApp({ location }) {
                   />
                   {standaloneCloudArtifactsRequest && (
                     <div className="v3-file-preview-shell">
-                        <CloudArtifactsPanel
-                          key={standaloneCloudArtifactsRequest.requestId}
-                          agentUid={standaloneCloudArtifactsRequest.agentUid}
-                          topicId={standaloneCloudArtifactsRequest.topicId}
-                          initialTab={standaloneCloudArtifactsRequest.initialTab}
+                      <StandaloneCloudArtifactsPanel
+                        key={standaloneCloudArtifactsRequest.requestId}
+                        agentUid={standaloneCloudArtifactsRequest.agentUid}
+                        topicId={standaloneCloudArtifactsRequest.topicId}
+                        initialTab={standaloneCloudArtifactsRequest.initialTab}
                         tab={standaloneCloudArtifactsTab}
                         onTabChange={setStandaloneCloudArtifactsTab}
                         onClose={() => setStandaloneCloudArtifactsRequest(null)}
-                        onPreviewArtifact={openExternalArtifact}
-                        onPreviewFile={openExternalArtifact}
+                        onOpenArtifact={openExternalArtifact}
                       />
                     </div>
                   )}
