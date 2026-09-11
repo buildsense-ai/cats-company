@@ -569,6 +569,7 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 const (
 	commercialRelayBaselineProfileFree   = "free"
 	commercialRelayBaselineProfileLegacy = "legacy"
+	commercialRelayUniversalModel        = "deepseek-flash"
 )
 
 var commercialRelayFreeBudgets = map[string]float64{
@@ -1151,6 +1152,10 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 				}
 			}
 		}
+		if commercialRelayHasActivePackage(summary) && commercialRelayCatalogHasExactModel(relayUser, commercialRelayUniversalModel) {
+			families[commercialRelayModelSetKey([]string{commercialRelayUniversalModel})] = []string{commercialRelayUniversalModel}
+			governed[strings.ToLower(commercialRelayUniversalModel)] = true
+		}
 		for _, limit := range commercialRelayCatalogLimits(relayUser) {
 			models := normalizedCommercialModels(limit.AllowedModels)
 			if len(models) == 0 {
@@ -1173,7 +1178,7 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 	for _, models := range families {
 		allowed := make([]string, 0, len(models))
 		for _, model := range models {
-			if totals[strings.ToLower(model)] > 0 {
+			if totals[strings.ToLower(model)] > 0 || strings.EqualFold(model, commercialRelayUniversalModel) {
 				allowed = append(allowed, model)
 			}
 		}
@@ -1213,11 +1218,26 @@ func commercialRelayGrantGoverned(summary *types.CommercialSummary, grantType st
 func commercialRelayScopedAllowedModels(models []string, totals map[string]float64) []string {
 	allowed := []string{}
 	for _, model := range normalizedCommercialModels(models) {
-		if totals[strings.ToLower(model)] > 0 {
+		if totals[strings.ToLower(model)] > 0 || strings.EqualFold(model, commercialRelayUniversalModel) {
 			allowed = append(allowed, model)
 		}
 	}
 	return allowed
+}
+
+func commercialRelayHasActivePackage(summary *types.CommercialSummary) bool {
+	if summary == nil {
+		return false
+	}
+	if summary.CurrentEntitlement != nil && strings.EqualFold(strings.TrimSpace(summary.CurrentEntitlement.State), "active") {
+		return true
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement != nil && strings.EqualFold(strings.TrimSpace(entitlement.State), "active") {
+			return true
+		}
+	}
+	return false
 }
 
 func commercialRelayScopeOwnsModels(scopes []commercialRelayModelScope, models []string) bool {
@@ -1278,6 +1298,9 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 	sharedLimit := commercialRelaySharedLimit(summary)
 	for model, amount := range totals {
 		candidateByKey := map[string]*types.CommercialManagedRelayBudget{}
+		if strings.EqualFold(model, commercialRelayUniversalModel) && !commercialRelayCatalogHasExactModel(relayUser, model) {
+			continue
+		}
 		for _, limit := range relayByModel[normalizeRelayModelName(model)] {
 			allowedModels := commercialRelayScopedAllowedModels(limit.AllowedModels, normalizedTotals)
 			if len(allowedModels) == 0 {
@@ -1303,6 +1326,22 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 				UID: uid, Model: model, Provider: item.Provider, AllowedModels: append([]string(nil), item.AllowedModels...),
 				ResetDuration: defaultRelayResetDuration(item.ResetDuration),
 			}
+		}
+	}
+	if shared && commercialRelayHasActivePackage(summary) && commercialRelayCatalogHasExactModel(relayUser, commercialRelayUniversalModel) {
+		for _, limit := range commercialRelayCatalogLimits(relayUser) {
+			if !strings.EqualFold(strings.TrimSpace(limit.Model), commercialRelayUniversalModel) || strings.TrimSpace(limit.Provider) == "" || len(limit.AllowedModels) == 0 {
+				continue
+			}
+			allowedModels := []string{commercialRelayUniversalModel}
+			key := commercialManagedBudgetKey(limit.Provider, allowedModels)
+			configByKey[key] = &types.CommercialManagedRelayBudget{
+				UID: uid, Model: commercialRelayUniversalModel, Provider: limit.Provider,
+				AllowedModels: allowedModels, ResetDuration: defaultRelayResetDuration(limit.Budget.ResetDuration),
+			}
+			desiredByKey[key] = sharedLimit
+			nextByKey[commercialRelayUniversalModel+"\x00"+key] = configByKey[key]
+			break
 		}
 	}
 	for key, amount := range desiredByKey {

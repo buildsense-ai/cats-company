@@ -1028,6 +1028,38 @@ func TestOwnerModelCatalogOnlyReturnsModelsIncludedInFreePlan(t *testing.T) {
 	}
 }
 
+func TestOwnerModelCatalogAddsDeepSeekFlashForActiveSharedPlan(t *testing.T) {
+	summary := &types.CommercialSummary{
+		TotalCNY: 1700,
+		TotalsByModel: map[string]float64{
+			"MiniMax-M2.7":      1000,
+			"MiniMax-M3":        500,
+			"deepseek-v4-flash": 100,
+			"glm-5.3-flash":     100,
+		},
+		Entitlements: []*types.CommercialEntitlement{{PlanSlug: "catsco-pro", State: "active"}},
+	}
+	handler := NewBotModelConfigHandler(nil, nil)
+	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: summary}, true, nil)
+
+	catalog, quotaError := handler.catalogWithUsage(context.Background(), 7, false)
+	if quotaError != "" {
+		t.Fatalf("quota error=%q", quotaError)
+	}
+	seenFlash := false
+	for _, item := range catalog {
+		if item.ID == "deepseek-flash" {
+			seenFlash = true
+			if !item.Available {
+				t.Fatalf("DeepSeek Flash was exposed as unavailable: %#v", item)
+			}
+		}
+	}
+	if !seenFlash {
+		t.Fatalf("active shared plan did not expose DeepSeek Flash: %#v", catalog)
+	}
+}
+
 func TestOwnerModelCatalogKeepsCurrentRevokedModelVisibleButDisabled(t *testing.T) {
 	summary := &types.CommercialSummary{TotalsByModel: map[string]float64{
 		"MiniMax-M2.7":      1000,
