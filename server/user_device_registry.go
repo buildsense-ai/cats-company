@@ -47,6 +47,8 @@ const (
 	DeviceGrantSkillHubSkillFinalize            DeviceGrantOperation = "skillhub.localSkill.finalize"
 	DeviceGrantSkillHubSkillDelete              DeviceGrantOperation = "skillhub.localSkill.delete"
 	DeviceGrantSkillHubBotSwitch                DeviceGrantOperation = "skillhub.localBot.switch"
+	DeviceGrantKnowledgeDocumentList            DeviceGrantOperation = "knowledge.document.list"
+	DeviceGrantKnowledgeDocumentRead            DeviceGrantOperation = "knowledge.document.read"
 )
 
 type UserDevice struct {
@@ -914,7 +916,9 @@ func isAllowedDeviceGrantRuntimeOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubSkillDelete,
-		DeviceGrantSkillHubBotSwitch:
+		DeviceGrantSkillHubBotSwitch,
+		DeviceGrantKnowledgeDocumentList,
+		DeviceGrantKnowledgeDocumentRead:
 		return true
 	default:
 		return false
@@ -1018,7 +1022,9 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,
 		DeviceGrantSkillHubSkillDelete,
-		DeviceGrantSkillHubBotSwitch:
+		DeviceGrantSkillHubBotSwitch,
+		DeviceGrantKnowledgeDocumentList,
+		DeviceGrantKnowledgeDocumentRead:
 		return true
 	default:
 		return false

@@ -108,6 +108,53 @@ func (h *AgentHandler) HandleListAgents(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": agents})
 }
 
+// HandleKnowledgeWikiManifest returns the short-lived, account-bound runtime
+// handoff used by the read-only Wiki page. The page never receives a filesystem
+// path; the local Skill is queried through the selected Agent device.
+func (h *AgentHandler) HandleKnowledgeWikiManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	viewerUID := UIDFromContext(r.Context())
+	if viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) != 5 || parts[0] != "api" || parts[1] != "agents" || parts[3] != "knowledge" || parts[4] != "manifest" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "knowledge_wiki_not_found"})
+		return
+	}
+	agentUID, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || agentUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid agent uid"})
+		return
+	}
+	if _, _, status, accessErr := accessibleAgentUser(h.db, viewerUID, agentUID); accessErr != nil {
+		writeJSON(w, status, map[string]string{"error": accessErr.Error()})
+		return
+	}
+	ownerUID, err := h.db.GetBotOwner(agentUID)
+	bodyID, bodyErr := h.db.GetBotBodyID(agentUID)
+	if err != nil || bodyErr != nil || ownerUID <= 0 || strings.TrimSpace(bodyID) == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge_runtime_unbound"})
+		return
+	}
+	deviceID := strings.TrimSpace(bodyID)
+	online := false
+	if h.hub != nil {
+		route, _ := h.hub.findDeviceRPCTarget(ownerUID, UserDevice{DeviceID: deviceID})
+		online = route.validAt(nowForRoute(h.hub)) && h.hub.routeConnected(route)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"schema": "catsco.knowledge_wiki.handoff.v1", "agent_uid": agentUID,
+		"owner_user_id": formatUID(ownerUID), "target_device_id": deviceID,
+		"online": online,
+	})
+}
+
 // HandleOpenAgent handles POST /api/agents/open.
 func (h *AgentHandler) HandleOpenAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

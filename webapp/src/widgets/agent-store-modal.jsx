@@ -5,6 +5,7 @@ import t from '../i18n';
 import {
   ArrowLeft,
   Bot,
+  BookOpen,
   Check,
   CheckCircle,
   ChevronDown,
@@ -47,6 +48,17 @@ const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
   MANAGED: 'managed',
 };
+
+function knowledgeWikiURL(botId) {
+  const host = String(window.location.hostname || '').toLowerCase();
+  const wikiHost = host === 'app.catsco.cn' || host === 'catsco.cn'
+    ? 'wiki.catsco.cn'
+    : host === 'app.catsco.cc' || host === 'catsco.cc'
+      ? 'wiki.catsco.cc'
+      : '';
+  const path = `/agents/${encodeURIComponent(String(botId))}`;
+  return wikiHost ? `${window.location.protocol}//${wikiHost}${path}` : `${window.location.origin}/wiki${path}`;
+}
 
 // Cloud worker creation failure → user-facing message, keyed by the backend
 // error code. Concrete technical reasons (e.g. cloud quota) stay in server
@@ -1860,6 +1872,17 @@ export default function AgentStoreModal({
                           >
                             <QrCode size={14} aria-hidden="true" />
                             入口码
+                          </button>
+                        )}
+                        {botId && (
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-knowledge"
+                            onClick={() => { window.location.assign(knowledgeWikiURL(botId)); }}
+                            title="查看此助手的知识库"
+                          >
+                            <BookOpen size={14} aria-hidden="true" />
+                            知识库
                           </button>
                         )}
                         {owned && bot.tenant_name && (
