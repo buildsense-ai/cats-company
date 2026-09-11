@@ -716,6 +716,62 @@ func (h *BotHandler) HandleGetBotBodyStatus(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, status)
 }
 
+// HandleTransferBotBody moves an owner's bot binding to a new Runtime body.
+// The operation is deliberately owner-authenticated and refuses to transfer
+// while the old body still has an active lease.
+func (h *BotHandler) HandleTransferBotBody(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var input struct {
+		BotUID int64  `json:"bot_uid"`
+		BodyID string `json:"body_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.BotUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bot_uid and body_id are required"})
+		return
+	}
+	bodyID, err := normalizeBotBodyID(input.BodyID)
+	if err != nil || isLegacyBotBodyID(bodyID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid non-legacy body_id is required"})
+		return
+	}
+	actualOwner, err := h.db.GetBotOwner(input.BotUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	if actualOwner != ownerUID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+	if h.hub != nil {
+		active := h.hub.BotBodyStatus(input.BotUID)
+		if active.Active && active.BodyID != "" && active.BodyID != bodyID {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":   "bot is still connected from the current body; stop it before transferring",
+				"body_id": active.BodyID,
+			})
+			return
+		}
+	}
+	if err := h.db.SetBotBodyBinding(input.BotUID, bodyID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to transfer bot body binding"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"bot_uid": input.BotUID,
+		"body_id": bodyID,
+	})
+}
+
 var globalBotStats *BotStats
 
 // SetBotStats sets the global bot stats reference for the API.
