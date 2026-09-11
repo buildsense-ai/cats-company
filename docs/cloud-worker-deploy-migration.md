@@ -43,7 +43,7 @@
 - **重置**：使用所选镜像销毁并重建 worker，数据会丢失。控制面必须从当前
   数据库和请求重新传入该机器人的 API key、拥有者身份及登录凭证，不信任旧
   `inject.env` 作为主要来源。
-- 控制面只展示最近 6 个镜像版本。worker 已安装版本保留在
+- 控制面只展示最近 3 个镜像版本。worker 已安装版本保留在
   `/opt/catsco/releases`，再次选择时不下载。
 - `CATSCO_WORKER_ARTIFACT_CACHE_DIR` 是 CatsCompany 控制服务器上的共享制品
   下载缓存：它只让不同 worker 复用同一个 tar.gz，worker 仍然是一台云服务器
