@@ -1152,7 +1152,7 @@ func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *com
 				}
 			}
 		}
-		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
+		if commercialRelayHasActivePackage(summary) && commercialRelayCatalogHasExactModel(relayUser, commercialRelayUniversalModel) {
 			families[commercialRelayModelSetKey([]string{commercialRelayUniversalModel})] = []string{commercialRelayUniversalModel}
 			governed[strings.ToLower(commercialRelayUniversalModel)] = true
 		}
@@ -1225,6 +1225,21 @@ func commercialRelayScopedAllowedModels(models []string, totals map[string]float
 	return allowed
 }
 
+func commercialRelayHasActivePackage(summary *types.CommercialSummary) bool {
+	if summary == nil {
+		return false
+	}
+	if summary.CurrentEntitlement != nil && strings.EqualFold(strings.TrimSpace(summary.CurrentEntitlement.State), "active") {
+		return true
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement != nil && strings.EqualFold(strings.TrimSpace(entitlement.State), "active") {
+			return true
+		}
+	}
+	return false
+}
+
 func commercialRelayScopeOwnsModels(scopes []commercialRelayModelScope, models []string) bool {
 	wanted := map[string]bool{}
 	for _, model := range models {
@@ -1259,7 +1274,7 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 				normalizedTotals[strings.ToLower(model)] = amount
 			}
 		}
-		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
+		if commercialRelayHasActivePackage(summary) {
 			totals[commercialRelayUniversalModel] = 1
 			normalizedTotals[strings.ToLower(commercialRelayUniversalModel)] = 1
 		}
@@ -1287,11 +1302,8 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 	sharedLimit := commercialRelaySharedLimit(summary)
 	for model, amount := range totals {
 		candidateByKey := map[string]*types.CommercialManagedRelayBudget{}
-		if strings.EqualFold(model, commercialRelayUniversalModel) && len(relayByModel[normalizeRelayModelName(model)]) == 0 {
-			relayByModel[normalizeRelayModelName(model)] = []commercialRelayModelLimit{{
-				Model: model, Provider: "deepseek-flash-openai", AllowedModels: []string{model},
-				Budget: commercialRelayBudget{ResetDuration: "1M"},
-			}}
+		if strings.EqualFold(model, commercialRelayUniversalModel) && !commercialRelayCatalogHasExactModel(relayUser, model) {
+			continue
 		}
 		for _, limit := range relayByModel[normalizeRelayModelName(model)] {
 			allowedModels := commercialRelayScopedAllowedModels(limit.AllowedModels, normalizedTotals)

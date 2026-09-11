@@ -582,6 +582,9 @@ func commercialQuotaModelAllowed(summary *types.CommercialSummary, model string)
 		return false
 	}
 	target := normalizeRelayModelName(model)
+	if target == normalizeRelayModelName("deepseek-flash") && commercialRelayHasActivePackage(summary) {
+		return true
+	}
 	if target == normalizeRelayModelName("gpt-5.6-luna") {
 		return false
 	}
