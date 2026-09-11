@@ -90,6 +90,8 @@ else
   shimo_cache_args=()
   while IFS= read -r arg; do [ -n "$arg" ] && shimo_cache_args+=("$arg"); done < <(cache_args_for "ghcr.io/${owner}/cats-company-shimo-worker")
   timeout "$shimo_worker_build_timeout" docker build --progress=plain "${shimo_cache_args[@]}" \
+    --build-arg DEBIAN_MIRROR="${REMOTE_DEBIAN_MIRROR:-http://mirrors.ustc.edu.cn/debian}" \
+    --build-arg DEBIAN_SECURITY_MIRROR="${REMOTE_DEBIAN_SECURITY_MIRROR:-http://mirrors.ustc.edu.cn/debian-security}" \
     -f services/shimo-browser-worker/Dockerfile \
     -t "$shimo_worker_image" \
     services/shimo-browser-worker
