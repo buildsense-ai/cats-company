@@ -889,6 +889,7 @@ func main() {
 	mux.HandleFunc("/api/bots/invite-code", ownerAuthWithDB(botHandler.HandleBotInviteCode))
 	mux.HandleFunc("/api/bots/invite/redeem", chainHTTP(botHandler.HandleRedeemBotInvite, botInviteRedeemIPLimit, jwtAuthWithDB, botInviteRedeemUserLimit))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
+	mux.HandleFunc("/api/bots/body-transfer", ownerAuthWithDB(botHandler.HandleTransferBotBody))
 	mux.HandleFunc("/api/bots/runtime-credential", ownerAuthWithDB(botHandler.HandleIssueRuntimeCredential))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))
 	mux.HandleFunc("/api/bots/skills-visibility", ownerAuthWithDB(botHandler.HandleSetBotSkillsVisibility))

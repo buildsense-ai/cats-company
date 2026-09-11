@@ -164,6 +164,17 @@ type botBodyStatusStore struct {
 	err      error
 }
 
+func (s *botBodyStatusStore) SetBotBodyBinding(botUID int64, bodyID string) error {
+	if s.err != nil {
+		return s.err
+	}
+	if botUID != 42 {
+		return errors.New("bot not found")
+	}
+	s.bodyID = bodyID
+	return nil
+}
+
 func (s *botBodyStatusStore) GetBotOwner(botUID int64) (int64, error) {
 	if s.err != nil {
 		return 0, s.err
@@ -323,6 +334,41 @@ func TestHandleGetBotBodyStatusRejectsInvalidRequests(t *testing.T) {
 				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandleTransferBotBodyAllowsOwnerTransferFromOfflineBinding(t *testing.T) {
+	store := &botBodyStatusStore{ownerUID: 7, bodyID: "body-old"}
+	handler := NewBotHandler(store)
+	handler.SetHub(NewHub(nil, nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/bots/body-transfer", strings.NewReader(`{"bot_uid":42,"body_id":"body-new"}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleTransferBotBody(rec, req)
+
+	if rec.Code != http.StatusOK || store.bodyID != "body-new" {
+		t.Fatalf("status=%d body=%s binding=%q", rec.Code, rec.Body.String(), store.bodyID)
+	}
+}
+
+func TestHandleTransferBotBodyRejectsActiveDifferentBody(t *testing.T) {
+	store := &botBodyStatusStore{ownerUID: 7, bodyID: "body-old"}
+	hub := NewHub(nil, nil)
+	if _, err := hub.bodyLeases.acquire(42, "body-old", "conn-a"); err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+	hub.addRegisteredClient(&Client{uid: 42, accountType: types.AccountBot, bodyID: "body-old", connectionID: "conn-a", send: make(chan []byte, 1)})
+	handler := NewBotHandler(store)
+	handler.SetHub(hub)
+	req := httptest.NewRequest(http.MethodPost, "/api/bots/body-transfer", strings.NewReader(`{"bot_uid":42,"body_id":"body-new"}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleTransferBotBody(rec, req)
+
+	if rec.Code != http.StatusConflict || store.bodyID != "body-old" {
+		t.Fatalf("status=%d body=%s binding=%q", rec.Code, rec.Body.String(), store.bodyID)
 	}
 }
 
