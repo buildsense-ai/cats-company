@@ -35,6 +35,18 @@ The internal API listens on port `7070`. Only `/shimo-login/` should be exposed 
 
 ## Checks
 
+Domestic test and production builds via `deploy/remote-build-source.sh` use
+USTC for both Debian Bookworm and security packages. Override
+`REMOTE_DEBIAN_MIRROR` and `REMOTE_DEBIAN_SECURITY_MIRROR` when needed.
+Standalone Docker builds retain Debian's official sources unless the
+`DEBIAN_MIRROR` / `DEBIAN_SECURITY_MIRROR` build arguments are supplied.
+HTTP supports bootstrapping `ca-certificates` in the slim base image;
+Debian's archive keyring, signature checks, suites and package list are unchanged.
+APT retries transient failures three times, with a 30-second connection timeout,
+and fails the build if any required repository index cannot be fetched.
+
+Mirror documentation: https://mirrors.ustc.edu.cn/help/debian.html
+
 ```bash
 npm ci
 npm test
