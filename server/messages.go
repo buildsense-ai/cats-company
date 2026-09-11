@@ -512,6 +512,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		validatedTaskDelivery,
 		recipientUID,
 	)
+	metadata = withSkillConnectorMetadata(metadata, h.buildShimoSkillConnectorMetadata(uid, recipientUID, topicID, msgID))
 	return &ServerMessage{
 		Data: &MsgServerData{
 			Topic:         topicID,
@@ -530,6 +531,45 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		artifactContextRef:       payload.ArtifactContextRef,
 		artifactTaskRef:          validatedTaskDelivery,
 	}
+}
+
+// DeliverShimoLoginResume sends a trusted, transient continuation prompt only
+// to the original virtual employee. It is not saved and therefore never
+// appears as a synthetic user message in conversation history.
+func (h *Hub) DeliverShimoLoginResume(resume ShimoLoginResume) bool {
+	if h == nil || resume.AgentUID <= 0 || resume.ActorUID <= 0 || resume.MessageID <= 0 || extractPeerUID(resume.TopicID, resume.ActorUID) != resume.AgentUID || !h.isBotUser(resume.AgentUID) {
+		return false
+	}
+	clients := h.getClients(resume.AgentUID)
+	hasRuntime := false
+	for _, client := range clients {
+		if client != nil && client.deviceConnector == nil && client.accountType == types.AccountBot {
+			hasRuntime = true
+			break
+		}
+	}
+	if !hasRuntime {
+		return false
+	}
+	payload := &normalizedMessagePayload{
+		StoredContent:  "石墨账号已连接成功。请继续执行刚才因等待石墨登录而中断的任务；先检查连接状态，再读取原任务中的石墨链接。",
+		DisplayContent: "石墨账号已连接成功。请继续执行刚才因等待石墨登录而中断的任务；先检查连接状态，再读取原任务中的石墨链接。",
+		StoredType:     "text",
+		DisplayType:    "text",
+		Metadata: map[string]interface{}{
+			"catsco_transient":          true,
+			"catsco_skill_login_resume": true,
+			"catsco_event":              "provider_connection_ready",
+			"provider":                  "shimo",
+		},
+	}
+	message := h.messageForRecipient(resume.ActorUID, resume.AgentUID, resume.TopicID, 0, payload, resume.MessageID)
+	if message == nil || message.Data == nil {
+		return false
+	}
+	message.Data.SeqID = 0
+	h.SendToUser(resume.AgentUID, message)
+	return true
 }
 
 func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.Message, identityUsers ...map[int64]*types.User) *MsgServerData {
@@ -611,6 +651,23 @@ func withXiaobaRuntimeMetadata(metadata map[string]interface{}, runtime map[stri
 		next[key] = value
 	}
 	next["xiaoba_runtime"] = runtime
+	return next
+}
+
+func withSkillConnectorMetadata(metadata map[string]interface{}, connectors map[string]interface{}) map[string]interface{} {
+	next := make(map[string]interface{}, len(metadata)+1)
+	for key, value := range metadata {
+		if key == "catsco_skill_connectors" {
+			continue
+		}
+		next[key] = value
+	}
+	if connectors != nil {
+		next["catsco_skill_connectors"] = connectors
+	}
+	if len(next) == 0 {
+		return nil
+	}
 	return next
 }
 

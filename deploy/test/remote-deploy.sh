@@ -53,6 +53,7 @@ mkdir -p \
   "$root/secrets" \
   "$root/data/mysql" \
   "$root/data/uploads" \
+  "$root/data/shimo-sessions" \
   "${TEST_WEBSITE_PUBLIC_ROOT:-$root/website-public}" \
   "$root/logs"
 

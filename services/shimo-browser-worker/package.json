@@ -1,0 +1,13 @@
+{
+  "name": "@catscompany/shimo-browser-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.58.0"
+  }
+}
