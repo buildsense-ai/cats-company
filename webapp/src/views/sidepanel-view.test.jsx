@@ -1658,6 +1658,82 @@ describe('ChatListView sidebar sections', () => {
     expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_42', name: 'Project Task' }));
   });
 
+  function mockProjectTasks(count, projectName = 'Xiaoba') {
+    api.getConversations.mockResolvedValue({
+      conversations: Array.from({ length: count }, (_, index) => ({
+        id: `p2p_7_${42 + index}`,
+        friend_id: 42 + index,
+        name: `${projectName} Task ${index + 1}`,
+        is_group: false,
+        is_bot: true,
+        project_id: 12,
+        project_name: projectName,
+      })),
+    });
+    api.getProjects.mockResolvedValue({ projects: [{ id: 12, name: projectName, task_count: count }] });
+  }
+
+  it('previews five project tasks and reveals the rest from the muted row', async () => {
+    mockProjectTasks(8);
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Xiaoba"]'));
+    });
+
+    expect(container.querySelectorAll('.cc-project-task-item')).toHaveLength(5);
+    const reveal = container.querySelector('.cc-project-task-more');
+    expect(reveal).toBeTruthy();
+    expect(reveal.textContent).toBe('展开显示');
+    expect(reveal.getAttribute('aria-label')).toBe('展开显示 Xiaoba 的其余 3 个任务');
+
+    await act(async () => {
+      Simulate.click(reveal);
+    });
+
+    expect(container.querySelectorAll('.cc-project-task-item')).toHaveLength(8);
+    expect(container.querySelector('.cc-project-task-more')).toBeFalsy();
+    const taskNames = Array.from(container.querySelectorAll('.cc-project-task-item'))
+      .map((row) => row.textContent);
+    expect(taskNames.join('|')).toContain('Xiaoba Task 8');
+  });
+
+  it('keeps the revealed project tasks until the folder is collapsed and reopened', async () => {
+    mockProjectTasks(7);
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Xiaoba"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-project-task-more'));
+    });
+    expect(container.querySelectorAll('.cc-project-task-item')).toHaveLength(7);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="收起项目 Xiaoba"]'));
+    });
+    expect(container.querySelectorAll('.cc-project-task-item')).toHaveLength(0);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Xiaoba"]'));
+    });
+    expect(container.querySelectorAll('.cc-project-task-item')).toHaveLength(5);
+    expect(container.querySelector('.cc-project-task-more')).toBeTruthy();
+  });
+
+  it('does not add the reveal row when a project holds at most five tasks', async () => {
+    mockProjectTasks(5);
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Xiaoba"]'));
+    });
+
+    expect(container.querySelectorAll('.cc-project-task-item')).toHaveLength(5);
+    expect(container.querySelector('.cc-project-task-more')).toBeFalsy();
+  });
+
   it('replaces a task time with a running spinner for active and background tasks', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{

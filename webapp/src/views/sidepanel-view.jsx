@@ -15,6 +15,9 @@ import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Ch
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
+// An opened project folder previews a handful of tasks so a large folder cannot
+// swallow the sidebar; the rest stay behind a muted "展开显示" row.
+const PROJECT_TASK_PREVIEW_LIMIT = 5;
 const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
 const PINNED_HISTORY_STORAGE_PREFIX = 'cc_pinned_history_v1';
 const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
@@ -392,6 +395,7 @@ export default function ChatListView({
   const [newProjectName, setNewProjectName] = useState('');
   const [projectActionTopicId, setProjectActionTopicId] = useState('');
   const [expandedProjectIds, setExpandedProjectIds] = useState(() => new Set());
+  const [revealedProjectIds, setRevealedProjectIds] = useState(() => new Set());
   const [editingProject, setEditingProject] = useState(null);
   const [projectNameDraft, setProjectNameDraft] = useState('');
   const [projectActionId, setProjectActionId] = useState(null);
@@ -1381,9 +1385,14 @@ export default function ChatListView({
       )),
       pinnedTaskIds,
     );
+    const previewOnly = projectTasks.length > PROJECT_TASK_PREVIEW_LIMIT
+      && !isSearching
+      && !compact
+      && !revealedProjectIds.has(projectId);
     return [projectId, {
       expanded: isSearching ? projectTasks.length > 0 : expandedProjectIds.has(projectId),
-      tasks: projectTasks,
+      tasks: previewOnly ? projectTasks.slice(0, PROJECT_TASK_PREVIEW_LIMIT) : projectTasks,
+      hiddenTaskCount: previewOnly ? projectTasks.length - PROJECT_TASK_PREVIEW_LIMIT : 0,
     }];
   }));
 
@@ -1798,10 +1807,32 @@ export default function ChatListView({
   const toggleProjectExpansion = (projectId) => {
     const normalizedProjectId = Number(projectId);
     if (!normalizedProjectId) return;
+    const collapsing = expandedProjectIds.has(normalizedProjectId);
     setExpandedProjectIds((previous) => {
       const next = new Set(previous);
       if (next.has(normalizedProjectId)) next.delete(normalizedProjectId);
       else next.add(normalizedProjectId);
+      return next;
+    });
+    // Closing the folder forgets its "展开显示" state so reopening it starts from
+    // the compact preview again.
+    if (collapsing) {
+      setRevealedProjectIds((previous) => {
+        if (!previous.has(normalizedProjectId)) return previous;
+        const next = new Set(previous);
+        next.delete(normalizedProjectId);
+        return next;
+      });
+    }
+  };
+
+  const revealProjectTasks = (projectId) => {
+    const normalizedProjectId = Number(projectId);
+    if (!normalizedProjectId) return;
+    setRevealedProjectIds((previous) => {
+      if (previous.has(normalizedProjectId)) return previous;
+      const next = new Set(previous);
+      next.add(normalizedProjectId);
       return next;
     });
   };
@@ -3400,8 +3431,8 @@ export default function ChatListView({
         ) : (
           filteredProjects.map((project) => {
             const projectId = Number(project.id);
-            const projectRows = projectTaskRowsById.get(projectId) || { expanded: false, tasks: [] };
-            const { expanded, tasks: projectTasks } = projectRows;
+            const projectRows = projectTaskRowsById.get(projectId) || { expanded: false, tasks: [], hiddenTaskCount: 0 };
+            const { expanded, tasks: projectTasks, hiddenTaskCount = 0 } = projectRows;
             return (
               <React.Fragment key={project.id}>
                 <SidebarItemRow className="cc-project-row">
@@ -3463,7 +3494,9 @@ export default function ChatListView({
                     </div>
                   )}
                 </SidebarItemRow>
-                {expanded && (projectTasks.length > 0 ? projectTasks.map((chat) => {
+                {expanded && (projectTasks.length > 0 ? (
+                  <>
+                    {projectTasks.map((chat) => {
                   const menuKey = `project:${chat.id}`;
                   const taskKind = conversationKind(chat);
                   const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
@@ -3490,7 +3523,19 @@ export default function ChatListView({
                       {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
                     </SidebarItemRow>
                   );
-                }) : (
+                })}
+                    {hiddenTaskCount > 0 && (
+                      <button
+                        type="button"
+                        className="cc-project-task-more"
+                        aria-label={`展开显示 ${project.name} 的其余 ${hiddenTaskCount} 个任务`}
+                        onClick={() => revealProjectTasks(projectId)}
+                      >
+                        展开显示
+                      </button>
+                    )}
+                  </>
+                ) : (
                   <div className="cc-sidebar-empty cc-project-task-empty">暂无任务</div>
                 ))}
               </React.Fragment>
