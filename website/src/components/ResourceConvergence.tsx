@@ -381,17 +381,17 @@ export function ResourceConvergenceScene() {
               </svg>
               <m.img
                 className="resource-logo-outline"
-                src="/catsco-logo.webp"
+                src="/catsco-logo-resource.webp"
                 alt=""
-                width="2800" height="1050" decoding="async"
+                width="400" height="150" decoding="async"
                 style={reduceMotion ? { opacity: 0 } : { opacity: logoOutlineOpacity }}
               />
               <m.img
                 className="resource-logo-color"
-                src="/catsco-logo.webp"
+                src="/catsco-logo-resource.webp"
                 alt=""
-                width="2800"
-                height="1050"
+                width="400"
+                height="150"
                 decoding="async"
                 style={reduceMotion ? { clipPath: 'inset(0% 0 0 0)' } : { clipPath: logoReveal }}
               />
