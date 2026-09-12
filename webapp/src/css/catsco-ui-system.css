@@ -2251,15 +2251,18 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-project-task-more {
+  /* Sits under the project's own task rows, before the next project folder. */
+  order: 20;
   display: block;
   width: 100%;
-  padding: 6px var(--cc-sidebar-row-padding-x) 6px 28px;
+  margin: var(--cc-sidebar-row-gap) 0;
+  padding: var(--cc-sidebar-row-padding-y) var(--cc-sidebar-row-padding-x) var(--cc-sidebar-row-padding-y) 32px;
   border: 0;
   border-radius: var(--cc-radius-sm);
   background: transparent;
   color: color-mix(in srgb, var(--cc-text) 52%, transparent);
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 13px;
+  line-height: 19px;
   text-align: left;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
