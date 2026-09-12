@@ -1722,6 +1722,69 @@ describe('ChatListView sidebar sections', () => {
     expect(container.querySelector('.cc-project-task-more')).toBeTruthy();
   });
 
+  it('keeps the reveal state of each project folder independent', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        ...Array.from({ length: 8 }, (_, index) => ({
+          id: `p2p_7_${42 + index}`,
+          friend_id: 42 + index,
+          name: `Alpha Task ${index + 1}`,
+          is_group: false,
+          is_bot: true,
+          project_id: 12,
+          project_name: 'Alpha',
+        })),
+        ...Array.from({ length: 8 }, (_, index) => ({
+          id: `p2p_7_${62 + index}`,
+          friend_id: 62 + index,
+          name: `Beta Task ${index + 1}`,
+          is_group: false,
+          is_bot: true,
+          project_id: 13,
+          project_name: 'Beta',
+        })),
+      ],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [
+        { id: 12, name: 'Alpha', task_count: 8 },
+        { id: 13, name: 'Beta', task_count: 8 },
+      ],
+    });
+
+    const rowsFor = (prefix) => Array.from(container.querySelectorAll('.cc-project-task-item'))
+      .filter((row) => row.textContent.includes(`${prefix} Task`));
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Alpha"]'));
+      Simulate.click(container.querySelector('[aria-label="打开项目 Beta"]'));
+    });
+
+    expect(rowsFor('Alpha')).toHaveLength(5);
+    expect(rowsFor('Beta')).toHaveLength(5);
+    expect(container.querySelectorAll('.cc-project-task-more')).toHaveLength(2);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="展开显示 Alpha 的其余 3 个任务"]'));
+    });
+    expect(rowsFor('Alpha')).toHaveLength(8);
+    expect(rowsFor('Beta')).toHaveLength(5);
+    expect(container.querySelector('[aria-label="展开显示 Beta 的其余 3 个任务"]')).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="收起项目 Beta"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Beta"]'));
+    });
+
+    expect(rowsFor('Alpha')).toHaveLength(8);
+    expect(rowsFor('Beta')).toHaveLength(5);
+    expect(container.querySelector('[aria-label="展开显示 Beta 的其余 3 个任务"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="展开显示 Alpha 的其余 3 个任务"]')).toBeFalsy();
+  });
+
   it('does not add the reveal row when a project holds at most five tasks', async () => {
     mockProjectTasks(5);
 
