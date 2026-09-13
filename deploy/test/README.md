@@ -26,14 +26,17 @@ Before running the deploy workflow for the first time:
 2. Create `<test-stack-root>/env/test.env`
 3. Copy values from `deploy/test/env.test.example`
 
+4. Keep `TEST_STACK_ROOT=<test-stack-root>`
+5. Fill real secrets in `test.env`
+
 To test live Shimo login, add `CATSCO_SHIMO_ACTOR_SECRET`,
 `CATSCO_SHIMO_WORKER_TOKEN`, and `SHIMO_WORKER_SESSION_KEY` to the `test`
 GitHub Environment. The deployment workflow synchronizes these values over
 standard input, enables the `shimo` Compose profile, and uses
-`http://shimo-worker:7070` for the internal Worker URL. Keep the skill id as
-`arrowhaken/shimo-reader` to match XiaoBa.
-4. Keep `TEST_STACK_ROOT=<test-stack-root>`
-5. Fill real secrets in `test.env`
+`http://shimo-worker:7070` for the internal Worker URL. Set the
+`SHIMO_WORKER_ENABLED` GitHub Environment variable to `0` to disable it again;
+the next deployment removes the profile and stale Worker credentials from
+`test.env`. Keep the skill id as `arrowhaken/shimo-reader` to match XiaoBa.
 
 The deploy workflow only touches the configured test stack root and uses:
 

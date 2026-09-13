@@ -72,8 +72,11 @@ GitHub Environment. The deployment workflow writes it to `prod.env` over
 standard input and keeps the file owner-only. To enable the browser Worker,
 also set `CATSCO_SHIMO_WORKER_TOKEN` and `SHIMO_WORKER_SESSION_KEY` secrets in
 the same Environment. The deployment then writes the internal Worker URL,
-adds the `shimo` Compose profile, and starts the Worker. The skill id must be
-`arrowhaken/shimo-reader`, matching the package installed in XiaoBa.
+adds the `shimo` Compose profile, and starts the Worker. Set the
+`SHIMO_WORKER_ENABLED` GitHub Environment variable to `0` to disable it again;
+the next deployment removes the profile and stale Worker credentials from
+`prod.env`. The skill id must be `arrowhaken/shimo-reader`, matching the
+package installed in XiaoBa.
 
 ## Web Push deployment secrets
 

@@ -25,6 +25,7 @@ WORKER_TOKEN = "CATSCO_SHIMO_WORKER_TOKEN"
 SESSION_KEY = "SHIMO_WORKER_SESSION_KEY"
 WORKER_URL = "CATSCO_SHIMO_WORKER_URL"
 PROFILES = "COMPOSE_PROFILES"
+ENABLED = "SHIMO_WORKER_ENABLED"
 HEX_KEY = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
@@ -38,14 +39,18 @@ def _valid_session_key(value: str) -> bool:
     return len(decoded) == 32
 
 
-def normalize_values(token: str, session_key: str, worker_url: str) -> tuple[str, str, str]:
-    raw = ((token, WORKER_TOKEN), (session_key, SESSION_KEY), (worker_url, WORKER_URL))
+def normalize_values(token: str, session_key: str, worker_url: str, enabled: str) -> tuple[str, str, str, bool]:
+    raw = ((token, WORKER_TOKEN), (session_key, SESSION_KEY), (worker_url, WORKER_URL), (enabled, ENABLED))
     for value, name in raw:
         if "\n" in value or "\r" in value or "\0" in value:
             raise ValueError(f"{name} must be a single-line value")
-    token, session_key, worker_url = (value.strip() for value, _ in raw)
-    if not any((token, session_key, worker_url)):
-        return "", "", ""
+    token, session_key, worker_url, enabled = (value.strip() for value, _ in raw)
+    if enabled not in {"", "0", "1"}:
+        raise ValueError(f"{ENABLED} must be 0 or 1")
+    if not any((token, session_key, worker_url)) and enabled in {"", "0"}:
+        return "", "", "", False
+    if enabled != "1":
+        raise ValueError(f"{ENABLED}=1 is required when Worker credentials are provided")
     if len(token) < 32:
         raise ValueError(f"{WORKER_TOKEN} must contain at least 32 characters")
     if not _valid_session_key(session_key):
@@ -53,13 +58,13 @@ def normalize_values(token: str, session_key: str, worker_url: str) -> tuple[str
     parsed = urlparse(worker_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.query or parsed.fragment:
         raise ValueError(f"{WORKER_URL} must be an http(s) URL without query or fragment")
-    return token, session_key, worker_url.rstrip("/")
+    return token, session_key, worker_url.rstrip("/"), True
 
 
 def read_values(stream: BinaryIO) -> tuple[str, str, str]:
     parts = stream.read().split(b"\0")
-    if len(parts) != 4 or parts[-1] != b"":
-        raise ValueError("expected exactly three NUL-delimited Shimo Worker values")
+    if len(parts) != 5 or parts[-1] != b"":
+        raise ValueError("expected exactly four NUL-delimited Shimo Worker values")
     try:
         decoded = [part.decode("utf-8") for part in parts[:-1]]
     except UnicodeDecodeError as error:
@@ -67,12 +72,27 @@ def read_values(stream: BinaryIO) -> tuple[str, str, str]:
     return normalize_values(*decoded)
 
 
-def render(source: str, token: str, session_key: str, worker_url: str) -> str:
-    token, session_key, worker_url = normalize_values(token, session_key, worker_url)
-    if not any((token, session_key, worker_url)):
-        return source.replace("\ufeff", "").replace("\r\n", "\n")
+def render(source: str, token: str, session_key: str, worker_url: str, enabled: str) -> str:
+    token, session_key, worker_url, active = normalize_values(token, session_key, worker_url, enabled)
+    if not active:
+        # Explicitly disabled payloads remove stale Worker credentials and the
+        # profile, while an entirely empty legacy payload remains a no-op.
+        if enabled.strip() == "":
+            return source.replace("\ufeff", "").replace("\r\n", "\n")
+        lines: list[str] = []
+        for raw_line in source.replace("\ufeff", "").replace("\r\n", "\n").splitlines():
+            key = raw_line.partition("=")[0].strip() if "=" in raw_line else ""
+            if key in {WORKER_TOKEN, SESSION_KEY, WORKER_URL, ENABLED}:
+                continue
+            if key == PROFILES:
+                profiles = [item.strip() for item in raw_line.partition("=")[2].split(",") if item.strip()]
+                profiles = [item for item in profiles if item != "shimo"]
+                lines.append(f"{PROFILES}={','.join(profiles)}")
+            else:
+                lines.append(raw_line)
+        return "\n".join(lines) + "\n"
 
-    updates = {WORKER_TOKEN: token, SESSION_KEY: session_key, WORKER_URL: worker_url}
+    updates = {WORKER_TOKEN: token, SESSION_KEY: session_key, WORKER_URL: worker_url, ENABLED: "1"}
     lines: list[str] = []
     seen: set[str] = set()
     current_profiles = ""
@@ -81,6 +101,7 @@ def render(source: str, token: str, session_key: str, worker_url: str) -> str:
         value = ""
         if "=" in raw_line and not raw_line.lstrip().startswith("#"):
             key, _, value = raw_line.partition("=")
+            key = key.strip()
         if key in updates:
             if key not in seen:
                 lines.append(f"{key}={updates[key]}")
@@ -105,9 +126,9 @@ def render(source: str, token: str, session_key: str, worker_url: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def update_file(env_file: Path, token: str, session_key: str, worker_url: str) -> None:
+def update_file(env_file: Path, token: str, session_key: str, worker_url: str, enabled: str) -> None:
     source = env_file.read_text(encoding="utf-8", errors="replace")
-    rendered = render(source, token, session_key, worker_url)
+    rendered = render(source, token, session_key, worker_url, enabled)
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(

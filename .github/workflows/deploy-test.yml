@@ -102,6 +102,7 @@ jobs:
           CATSCO_SHIMO_ACTOR_SECRET: ${{ secrets.CATSCO_SHIMO_ACTOR_SECRET }}
           CATSCO_SHIMO_WORKER_TOKEN: ${{ secrets.CATSCO_SHIMO_WORKER_TOKEN }}
           SHIMO_WORKER_SESSION_KEY: ${{ secrets.SHIMO_WORKER_SESSION_KEY }}
+          SHIMO_WORKER_ENABLED: ${{ vars.SHIMO_WORKER_ENABLED || '0' }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
@@ -109,13 +110,13 @@ jobs:
           printf '%s\0%s\0' "$CATSCO_SHIMO_ACTOR_SECRET" "arrowhaken/shimo-reader" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "python3 ${TEST_STACK_ROOT}/compose/sync-shimo-env.py ${TEST_STACK_ROOT}/env/test.env"
-          if [ -n "$CATSCO_SHIMO_WORKER_TOKEN" ] || [ -n "$SHIMO_WORKER_SESSION_KEY" ]; then
-            if [ -z "$CATSCO_SHIMO_ACTOR_SECRET" ]; then
-              echo "CATSCO_SHIMO_ACTOR_SECRET is required when Shimo Worker secrets are configured" >&2
+          if [ "$SHIMO_WORKER_ENABLED" = "1" ]; then
+            if [ -z "$CATSCO_SHIMO_ACTOR_SECRET" ] || [ -z "$CATSCO_SHIMO_WORKER_TOKEN" ] || [ -z "$SHIMO_WORKER_SESSION_KEY" ]; then
+              echo "Shimo Worker enablement requires actor, Worker, and session secrets" >&2
               exit 1
             fi
           fi
-          printf '%s\0%s\0%s\0' "$CATSCO_SHIMO_WORKER_TOKEN" "$SHIMO_WORKER_SESSION_KEY" "http://shimo-worker:7070" |
+          printf '%s\0%s\0%s\0%s\0' "$CATSCO_SHIMO_WORKER_TOKEN" "$SHIMO_WORKER_SESSION_KEY" "http://shimo-worker:7070" "$SHIMO_WORKER_ENABLED" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "python3 ${TEST_STACK_ROOT}/compose/sync-shimo-worker-env.py ${TEST_STACK_ROOT}/env/test.env"
           printf '%s\0%s\0%s\0%s\0%s\0' \
