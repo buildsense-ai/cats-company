@@ -64,6 +64,15 @@ Before enabling automatic production deploys:
 5. Fill real secrets in `prod.env`
 6. Point `OC_DB_DSN` at the active database and set `OC_DB_DRIVER`
 
+### Shimo connector
+
+To enable live Shimo reads, configure a random `CATSCO_SHIMO_ACTOR_SECRET`
+(at least 32 bytes) as the `CATSCO_SHIMO_ACTOR_SECRET` secret in the `prod`
+GitHub Environment. The deployment workflow writes it to `prod.env` over
+standard input and keeps the file owner-only. Set the worker token and session
+key separately when enabling the `shimo` Compose profile. The skill id must be
+`arrowhaken/shimo-reader`, matching the package installed in XiaoBa.
+
 ## Web Push deployment secrets
 
 Web Push is disabled by default, so these GitHub Environment secrets are not

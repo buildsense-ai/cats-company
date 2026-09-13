@@ -52,6 +52,7 @@ jobs:
           cp deploy/shared/cache-source-bundle.sh "${tmpdir}/compose/"
           cp deploy/test/remote-deploy.sh "${tmpdir}/compose/"
           cp deploy/test/remote-status.sh "${tmpdir}/compose/"
+          cp deploy/sync-shimo-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/test/docker-compose.yml "${tmpdir}/compose/"
@@ -97,10 +98,14 @@ jobs:
           CATSCO_PUSH_RELAY_URL: ${{ secrets.CATSCO_PUSH_RELAY_URL }}
           CATSCO_PUSH_RELAY_TOKEN: ${{ secrets.CATSCO_PUSH_RELAY_TOKEN }}
           VOLCENGINE_STT_API_KEY: ${{ secrets.VOLCENGINE_STT_API_KEY }}
+          CATSCO_SHIMO_ACTOR_SECRET: ${{ secrets.CATSCO_SHIMO_ACTOR_SECRET }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
           ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/bootstrap-server.sh ${TEST_STACK_ROOT}"
+          printf '%s\0%s\0' "$CATSCO_SHIMO_ACTOR_SECRET" "arrowhaken/shimo-reader" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "python3 ${TEST_STACK_ROOT}/compose/sync-shimo-env.py ${TEST_STACK_ROOT}/env/test.env"
           printf '%s\0%s\0%s\0%s\0%s\0' \
             "$VAPID_PUBLIC_KEY" "$VAPID_PRIVATE_KEY" "$VAPID_SUBJECT" "$CATSCO_PUSH_RELAY_URL" "$CATSCO_PUSH_RELAY_TOKEN" |
             ssh ${SSH_OPTS} "${REMOTE}" \

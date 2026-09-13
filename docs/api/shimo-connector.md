@@ -10,11 +10,17 @@ Set these values only in a local development environment:
 CATSCO_SHIMO_ACTOR_SECRET=<at-least-32-random-bytes>
 CATSCO_SHIMO_PUBLIC_BASE_URL=http://127.0.0.1:6061
 CATSCO_SHIMO_CONNECTOR_URL=http://127.0.0.1:6061
-CATSCO_SHIMO_SKILL_ID=catsco/shimo-reader
+CATSCO_SHIMO_SKILL_ID=arrowhaken/shimo-reader
 CATSCO_SHIMO_MOCK_ENABLED=true
 ```
 
 Mock mode exercises the product contract without a real Shimo account. It creates a one-time connection URL, shows a mock completion button, isolates connection state by agent and actor, and returns fixed spreadsheet or document data. Production must leave `CATSCO_SHIMO_MOCK_ENABLED` disabled.
+
+For live bot messages, `CATSCO_SHIMO_ACTOR_SECRET` must be a random value of
+at least 32 bytes. Provision it separately in the CatsCo deployment environment
+and the deployment workflow secret; never commit it or place it on a remote
+command line. `CATSCO_SHIMO_SKILL_ID` must exactly match the SkillHub package
+installed in XiaoBa. The current package is `arrowhaken/shimo-reader`.
 
 ## API
 
