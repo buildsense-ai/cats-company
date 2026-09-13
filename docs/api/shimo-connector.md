@@ -64,7 +64,7 @@ For a live server-canonical user message, CatsCo adds an ephemeral `catsco_skill
 - uses the connection binding as authenticated encryption AAD, so copying one user's encrypted file to another binding cannot decrypt it.
 - calls the private CatsCo completion endpoint after the session is safely stored, retrying temporary bot-offline or network failures for a short window.
 
-Enable the Worker with Compose profile `shimo` only after setting independent random values for `CATSCO_SHIMO_ACTOR_SECRET`, `CATSCO_SHIMO_WORKER_TOKEN`, and `SHIMO_WORKER_SESSION_KEY`. Set `CATSCO_SHIMO_WORKER_CALLBACK_URL=http://server:6061/internal/shimo/login-complete` in Compose. The Worker API and completion callback stay on the internal Docker network; only `/shimo-login/`, `/connect/shimo/`, and the Skill API are publicly routed.
+Enable the Worker with Compose profile `shimo` only after setting independent random values for `CATSCO_SHIMO_ACTOR_SECRET`, `CATSCO_SHIMO_WORKER_TOKEN`, and `SHIMO_WORKER_SESSION_KEY`. The deployment workflows accept the three values as environment secrets, write them to the owner-only env file over standard input, and enable the profile only when the Worker values are complete. Set `CATSCO_SHIMO_WORKER_CALLBACK_URL=http://server:6061/internal/shimo/login-complete` in Compose. The Worker API and completion callback stay on the internal Docker network; only `/shimo-login/`, `/connect/shimo/`, and the Skill API are publicly routed.
 
 ## Current limitation
 

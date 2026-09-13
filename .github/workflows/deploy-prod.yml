@@ -76,6 +76,7 @@ jobs:
           cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
           cp deploy/prod/sync-worker-project-env.py "${tmpdir}/compose/"
           cp deploy/sync-shimo-env.py "${tmpdir}/compose/"
+          cp deploy/sync-shimo-worker-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
@@ -124,6 +125,8 @@ jobs:
           CATSCO_PUSH_RELAY_TOKEN: ${{ secrets.CATSCO_PUSH_RELAY_TOKEN }}
           VOLCENGINE_STT_API_KEY: ${{ secrets.VOLCENGINE_STT_API_KEY }}
           CATSCO_SHIMO_ACTOR_SECRET: ${{ secrets.CATSCO_SHIMO_ACTOR_SECRET }}
+          CATSCO_SHIMO_WORKER_TOKEN: ${{ secrets.CATSCO_SHIMO_WORKER_TOKEN }}
+          SHIMO_WORKER_SESSION_KEY: ${{ secrets.SHIMO_WORKER_SESSION_KEY }}
           CATSCO_ARTIFACT_DNS_ACCESS_KEY: ${{ secrets.CATSCO_ARTIFACT_DNS_ACCESS_KEY }}
           CATSCO_ARTIFACT_DNS_SECRET_KEY: ${{ secrets.CATSCO_ARTIFACT_DNS_SECRET_KEY }}
         run: |
@@ -133,6 +136,15 @@ jobs:
           printf '%s\0%s\0' "$CATSCO_SHIMO_ACTOR_SECRET" "arrowhaken/shimo-reader" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-shimo-env.py ${PROD_STACK_ROOT}/env/prod.env"
+          if [ -n "$CATSCO_SHIMO_WORKER_TOKEN" ] || [ -n "$SHIMO_WORKER_SESSION_KEY" ]; then
+            if [ -z "$CATSCO_SHIMO_ACTOR_SECRET" ]; then
+              echo "CATSCO_SHIMO_ACTOR_SECRET is required when Shimo Worker secrets are configured" >&2
+              exit 1
+            fi
+          fi
+          printf '%s\0%s\0%s\0' "$CATSCO_SHIMO_WORKER_TOKEN" "$SHIMO_WORKER_SESSION_KEY" "http://shimo-worker:7070" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "sudo -n python3 ${PROD_STACK_ROOT}/compose/sync-shimo-worker-env.py ${PROD_STACK_ROOT}/env/prod.env"
           CATSCO_ARTIFACT_NODES_JSON_B64="$(printf '%s' "${CATSCO_ARTIFACT_NODES_JSON}" | base64 -w 0)"
           CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64="$(printf '%s' "${CATSCO_ARTIFACT_DNS_ACCESS_KEY}" | base64 -w 0)"
           CATSCO_ARTIFACT_DNS_SECRET_KEY_B64="$(printf '%s' "${CATSCO_ARTIFACT_DNS_SECRET_KEY}" | base64 -w 0)"

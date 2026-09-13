@@ -25,6 +25,13 @@ Before running the deploy workflow for the first time:
    create the directories automatically.
 2. Create `<test-stack-root>/env/test.env`
 3. Copy values from `deploy/test/env.test.example`
+
+To test live Shimo login, add `CATSCO_SHIMO_ACTOR_SECRET`,
+`CATSCO_SHIMO_WORKER_TOKEN`, and `SHIMO_WORKER_SESSION_KEY` to the `test`
+GitHub Environment. The deployment workflow synchronizes these values over
+standard input, enables the `shimo` Compose profile, and uses
+`http://shimo-worker:7070` for the internal Worker URL. Keep the skill id as
+`arrowhaken/shimo-reader` to match XiaoBa.
 4. Keep `TEST_STACK_ROOT=<test-stack-root>`
 5. Fill real secrets in `test.env`
 
