@@ -23,7 +23,7 @@ spec.loader.exec_module(sync)
 
 class SyncShimoWorkerEnvTest(unittest.TestCase):
     def test_empty_payload_is_a_noop(self) -> None:
-        self.assertEqual(sync.read_values(io.BytesIO(b"\0\0\0\0")), ("", "", "", False))
+        self.assertEqual(sync.read_values(io.BytesIO(b"\0\0\0\0")), ("", "", "", ""))
         source = "KEEP=value\nCOMPOSE_PROFILES=mysql\n"
         self.assertEqual(sync.render(source, "", "", "", ""), source)
         disabled = sync.render(
@@ -32,6 +32,19 @@ class SyncShimoWorkerEnvTest(unittest.TestCase):
         )
         self.assertNotIn("shimo", disabled)
         self.assertNotIn("CATSCO_SHIMO_WORKER_TOKEN", disabled)
+
+    def test_stdin_values_flow_through_update_file_for_enable_and_disable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "test.env"
+            env_file.write_text("COMPOSE_PROFILES=mysql\n", encoding="utf-8")
+            enabled = sync.read_values(io.BytesIO(b"\0".join((b"t" * 32, b"a" * 64, b"http://shimo-worker:7070", b"1")) + b"\0"))
+            sync.update_file(env_file, *enabled)
+            self.assertIn("SHIMO_WORKER_ENABLED=1", env_file.read_text(encoding="utf-8"))
+            disabled = sync.read_values(io.BytesIO(b"\0".join((b"old-token", b"old-key", b"http://shimo-worker:7070", b"0")) + b"\0"))
+            sync.update_file(env_file, *disabled)
+            content = env_file.read_text(encoding="utf-8")
+            self.assertNotIn("SHIMO_WORKER_ENABLED", content)
+            self.assertNotIn("CATSCO_SHIMO_WORKER_TOKEN", content)
 
     def test_valid_payload_enables_shimo_profile_and_preserves_existing_profiles(self) -> None:
         source = "KEEP=value\nCOMPOSE_PROFILES=mysql\n"

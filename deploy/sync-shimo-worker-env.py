@@ -47,7 +47,9 @@ def normalize_values(token: str, session_key: str, worker_url: str, enabled: str
     token, session_key, worker_url, enabled = (value.strip() for value, _ in raw)
     if enabled not in {"", "0", "1"}:
         raise ValueError(f"{ENABLED} must be 0 or 1")
-    if not any((token, session_key, worker_url)) and enabled in {"", "0"}:
+    if enabled == "0":
+        return "", "", "", False
+    if not any((token, session_key, worker_url)) and enabled == "":
         return "", "", "", False
     if enabled != "1":
         raise ValueError(f"{ENABLED}=1 is required when Worker credentials are provided")
@@ -61,7 +63,7 @@ def normalize_values(token: str, session_key: str, worker_url: str, enabled: str
     return token, session_key, worker_url.rstrip("/"), True
 
 
-def read_values(stream: BinaryIO) -> tuple[str, str, str]:
+def read_values(stream: BinaryIO) -> tuple[str, str, str, str]:
     parts = stream.read().split(b"\0")
     if len(parts) != 5 or parts[-1] != b"":
         raise ValueError("expected exactly four NUL-delimited Shimo Worker values")
@@ -69,7 +71,10 @@ def read_values(stream: BinaryIO) -> tuple[str, str, str]:
         decoded = [part.decode("utf-8") for part in parts[:-1]]
     except UnicodeDecodeError as error:
         raise ValueError("Shimo Worker values must be valid UTF-8") from error
-    return normalize_values(*decoded)
+    normalize_values(*decoded)
+    # Keep the wire representation for update_file/render. The normalized
+    # boolean is an internal convenience and must not cross this boundary.
+    return decoded[0].strip(), decoded[1].strip(), decoded[2].strip(), decoded[3].strip()
 
 
 def render(source: str, token: str, session_key: str, worker_url: str, enabled: str) -> str:
