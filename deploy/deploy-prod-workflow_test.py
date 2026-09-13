@@ -11,7 +11,7 @@ class DeployProdWorkflowTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for script in ("sync-vapid-env.py", "sync-stt-env.py", "sync-worker-project-env.py"):
+        for script in ("sync-vapid-env.py", "sync-stt-env.py", "sync-worker-project-env.py", "sync-shimo-env.py", "sync-shimo-worker-env.py"):
             self.assertIn(
                 f'"sudo -n python3 ${{PROD_STACK_ROOT}}/compose/{script}',
                 workflow,
@@ -33,6 +33,8 @@ class DeployProdWorkflowTest(unittest.TestCase):
             'sudo -n bash ${PROD_STACK_ROOT}/compose/remote-status.sh',
             workflow,
         )
+        self.assertIn("SHIMO_WORKER_ENABLED", workflow)
+        self.assertIn("Shimo Worker enablement requires actor, Worker, and session secrets", workflow)
 
     def test_prod_deploy_installs_and_starts_worker_release_prune_timer(self):
         workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(

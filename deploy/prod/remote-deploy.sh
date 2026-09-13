@@ -178,6 +178,12 @@ wait_for_health "api" "$health_api"
 wait_for_health "web" "$health_web"
 wait_for_health "website" "$health_website"
 
+compose_profiles="$(sed -n 's/^COMPOSE_PROFILES=//p' "$env_file" | tail -n 1)"
+if printf '%s' "$compose_profiles" | tr ',' '\n' | grep -qx 'shimo'; then
+  shimo_worker_port="$(sed -n 's/^PROD_SHIMO_WORKER_HOST_PORT=//p' "$env_file" | tail -n 1)"
+  wait_for_health "Shimo worker" "http://127.0.0.1:${shimo_worker_port:-26070}/healthz"
+fi
+
 worker_health="$(compose -f "$compose_file" --env-file "$env_file" ps --format json dreamina-worker 2>/dev/null || true)"
 if ! printf '%s' "$worker_health" | grep -q '"Health":"healthy"'; then
   echo "Dreamina worker is not healthy" >&2

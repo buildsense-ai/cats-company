@@ -18,6 +18,10 @@ class DeployTestWorkflowTest(unittest.TestCase):
         self.assertIn("pack '${DEPLOY_CACHE_ROOT}'", workflow)
         self.assertNotIn("Build and push web image", workflow)
         self.assertNotIn("Build and push public website image", workflow)
+        self.assertIn("sync-shimo-env.py", workflow)
+        self.assertIn("sync-shimo-worker-env.py", workflow)
+        self.assertIn("SHIMO_WORKER_ENABLED", workflow)
+        self.assertIn("Shimo Worker enablement requires actor, Worker, and session secrets", workflow)
 
 
 if __name__ == "__main__":
