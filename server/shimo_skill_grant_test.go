@@ -1,13 +1,116 @@
 package server
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+func TestShimoErrorCategory(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "not found", err: sql.ErrNoRows, want: "not_found"},
+		{name: "validation", err: func() error {
+			_, err := GenerateShimoActorToken([]byte("short"), "usr43", "usr7", "catsco:p2p_7_43:91", "catsco/shimo-reader", shimoSkillGrantTTL)
+			return err
+		}(), want: "validation"},
+		{name: "entropy", err: errors.New("random source failed"), want: "entropy"},
+		{name: "signing", err: errors.New("key is invalid"), want: "signing"},
+		{name: "other", err: errors.New("unexpected failure"), want: "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shimoErrorCategory(tc.err); got != tc.want {
+				t.Fatalf("shimoErrorCategory(%q) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShimoGrantDiagnosticsAreQuietByDefaultAndClassifyConfiguredFailures(t *testing.T) {
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+	log.SetFlags(0)
+
+	data := &agentIdentityE2EStore{users: map[int64]*types.User{
+		7:  {ID: 7, AccountType: types.AccountHuman},
+		43: {ID: 43, AccountType: types.AccountBot},
+	}}
+	hub := NewHub(data, nil)
+	var output bytes.Buffer
+	log.SetOutput(&output)
+
+	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", "")
+	t.Setenv("CATSCO_SHIMO_SKILL_ID", "")
+	t.Setenv("CATSCO_SHIMO_CONNECTOR_URL", "")
+	t.Setenv("CATSCO_SHIMO_GRANT_DEBUG", "")
+	hub.buildShimoSkillConnectorMetadata(7, 7, "p2p_7_7", 91)
+	if strings.Contains(output.String(), "[shimo_connector]") {
+		t.Fatalf("unconfigured Shimo should not log, got %q", output.String())
+	}
+	output.Reset()
+	hub.buildShimoSkillConnectorMetadata(7, 43, "p2p_7_43", 92)
+	if strings.Contains(output.String(), "[shimo_connector]") {
+		t.Fatalf("unconfigured Shimo should not log configured-path failures, got %q", output.String())
+	}
+
+	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
+	t.Setenv("CATSCO_SHIMO_SKILL_ID", "catsco/shimo-reader")
+	t.Setenv("CATSCO_SHIMO_CONNECTOR_URL", "https://app.catsco.test")
+	hub.buildShimoSkillConnectorMetadata(7, 43, "p2p_7_43", 91)
+	if !strings.Contains(output.String(), "grant issued") || strings.Contains(output.String(), string(shimoTestSecret)) {
+		t.Fatalf("success diagnostic is missing or leaked a credential: %q", output.String())
+	}
+
+	output.Reset()
+	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", "short")
+	hub.buildShimoSkillConnectorMetadata(7, 43, "p2p_7_43", 92)
+	if !strings.Contains(output.String(), "reason=invalid_secret") {
+		t.Fatalf("invalid secret reason missing: %q", output.String())
+	}
+
+	output.Reset()
+	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
+	t.Setenv("CATSCO_SHIMO_SKILL_ID", "invalid")
+	hub.buildShimoSkillConnectorMetadata(7, 43, "p2p_7_43", 93)
+	if !strings.Contains(output.String(), "reason=invalid_skill_id") {
+		t.Fatalf("invalid Skill ID reason missing: %q", output.String())
+	}
+
+	output.Reset()
+	t.Setenv("CATSCO_SHIMO_SKILL_ID", "catsco/shimo-reader")
+	t.Setenv("CATSCO_SHIMO_CONNECTOR_URL", "http://remote.example")
+	hub.buildShimoSkillConnectorMetadata(7, 43, "p2p_7_43", 94)
+	if !strings.Contains(output.String(), "reason=invalid_connector_url") {
+		t.Fatalf("invalid connector URL reason missing: %q", output.String())
+	}
+
+	output.Reset()
+	hub.buildShimoSkillConnectorMetadata(7, 7, "p2p_7_7", 95)
+	if strings.Contains(output.String(), "[shimo_connector]") {
+		t.Fatalf("non-bot delivery should stay quiet by default, got %q", output.String())
+	}
+	t.Setenv("CATSCO_SHIMO_GRANT_DEBUG", "1")
+	hub.buildShimoSkillConnectorMetadata(7, 7, "p2p_7_7", 96)
+	if !strings.Contains(output.String(), "reason=same_actor_recipient") {
+		t.Fatalf("debug-only non-bot reason missing: %q", output.String())
+	}
+}
 
 func TestShimoLoginResumeIsTransientAndCarriesFreshSkillGrant(t *testing.T) {
 	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
