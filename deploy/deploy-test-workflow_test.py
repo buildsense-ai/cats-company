@@ -23,6 +23,14 @@ class DeployTestWorkflowTest(unittest.TestCase):
         self.assertIn("SHIMO_WORKER_ENABLED", workflow)
         self.assertIn("Shimo Worker enablement requires actor, Worker, and session secrets", workflow)
 
+    def test_test_deploy_refreshes_web_after_api_recreation(self):
+        script = (ROOT / "deploy/test/remote-deploy.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'compose -f "$compose_file" --env-file "$env_file" up -d --force-recreate --no-deps web',
+            script,
+        )
+        self.assertLess(script.index('wait_for_health "api" "$health_api"'), script.index("--force-recreate --no-deps web"))
+
 
 if __name__ == "__main__":
     unittest.main()
