@@ -100,6 +100,39 @@ func TestLiveBotMessageCarriesBoundShimoSkillGrantButHistoryDoesNot(t *testing.T
 	}
 }
 
+func TestGroupBotDeliveryCarriesBoundShimoSkillGrant(t *testing.T) {
+	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
+	t.Setenv("CATSCO_SHIMO_SKILL_ID", "catsco/shimo-reader")
+	t.Setenv("CATSCO_SHIMO_CONNECTOR_URL", "https://app.catsco.test")
+	db := &groupStreamCancelStore{members: []*types.GroupMember{
+		{UserID: 7, IsBot: false},
+		{UserID: 43, IsBot: true},
+	}}
+	hub := NewHub(db, nil)
+	client := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.clients[43] = map[*Client]struct{}{client: {}}
+
+	message := &ServerMessage{Data: &MsgServerData{
+		Topic:    "grp_80",
+		From:     "usr7",
+		SeqID:    91,
+		Content:  "读取石墨表格",
+		Type:     "text",
+		Metadata: map[string]interface{}{},
+	}}
+	// A normal message is not a task delivery; the return value is unrelated
+	// to whether the bot received the message.
+	_ = hub.broadcastToGroupWithMentions(80, message, 7, nil, 7, false)
+	var delivered ServerMessage
+	if err := json.Unmarshal(<-client.send, &delivered); err != nil {
+		t.Fatal(err)
+	}
+	connectors := metadataMapFromServerMessage(t, &delivered, "catsco_skill_connectors")
+	if connectors["schema"] != "catsco.skill_connectors.v1" {
+		t.Fatalf("group bot delivery lost connector grant: %#v", connectors)
+	}
+}
+
 func TestShimoSkillGrantFailsClosedForUnsafeConfiguration(t *testing.T) {
 	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
 	t.Setenv("CATSCO_SHIMO_SKILL_ID", "catsco/shimo-reader")

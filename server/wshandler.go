@@ -2404,6 +2404,10 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				validatedTaskDelivery,
 				m.UserID,
 			)
+			metadata = withSkillConnectorMetadata(
+				metadata,
+				h.buildShimoSkillConnectorMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID)),
+			)
 			out = cloneDataMessageWithMetadata(
 				msg,
 				metadata,
