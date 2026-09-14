@@ -52,7 +52,7 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
     try {
       const url = new URL(request.url, 'http://worker.local');
       if (request.method === 'GET' && url.pathname === '/healthz') return sendJSON(response, 200, { ok: true });
-      if (url.pathname.startsWith('/shimo-login/')) return handlePublicLogin(request, response, url, loginManager);
+      if (url.pathname.startsWith('/shimo-login/')) return await handlePublicLogin(request, response, url, loginManager);
       if (request.headers.authorization !== `Bearer ${internalToken}`) {
         return sendError(response, new ShimoWorkerError('UNAUTHORIZED', '无权访问浏览器 Worker。', 401));
       }
@@ -123,11 +123,19 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
 
 async function handlePublicLogin(request, response, url, manager) {
   const match = url.pathname.match(/^\/shimo-login\/([0-9a-f]{64})\/(status|screenshot|input)?$/);
-  if (!match) throw new ShimoWorkerError('NOT_FOUND', '登录链接不存在。', 404);
-  const [, token, action = 'page'] = match;
   setPublicHeaders(response);
+  if (!match) {
+    if (request.method === 'GET') return sendLoginNotice(response, 404, '登录链接无效', '这个地址不完整，请回到聊天重新打开一次性登录链接。');
+    throw new ShimoWorkerError('NOT_FOUND', '登录链接不存在。', 404);
+  }
+  const [, token, action = 'page'] = match;
   if (request.method === 'GET' && action === 'page') {
-    manager.status(token);
+    try {
+      manager.status(token);
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return sendLoginNotice(response, normalized.status || 410, '登录链接已失效', '请回到聊天重新发起，虚拟员工会给你一条新的登录链接。');
+    }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return response.end(loginHTML(token));
   }
@@ -143,6 +151,26 @@ async function handlePublicLogin(request, response, url, manager) {
     return sendJSON(response, 200, { ok: true, data: await manager.input(token, body) });
   }
   throw new ShimoWorkerError('METHOD_NOT_ALLOWED', '请求方法不受支持。', 405);
+}
+
+function sendLoginNotice(response, status, title, detail) {
+  const body = Buffer.from(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${title}</title>
+  <style>
+    body{margin:0;background:#f4f7f4;color:#142019;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{width:min(560px,100%);margin:14vh auto;padding:0 18px;text-align:center}
+    h1{font-size:22px;margin:0 0 10px}
+    p{margin:0;color:#526158;font-size:15px;line-height:1.6}
+  </style>
+</head>
+<body><main><h1>${title}</h1><p>${detail}</p></main></body>
+</html>`, 'utf8');
+  response.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': body.length });
+  response.end(body);
 }
 
 function allowedFields(pathname) {
