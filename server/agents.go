@@ -196,7 +196,7 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 			h.hub.mu.RLock()
 			for client := range h.hub.clients[agentUID] {
 				if client != nil && client.deviceOwnerUID == ownerUID && client.deviceID == device.DeviceID && client.bodyID == device.BodyID {
-					connected = true
+					connected = h.knowledgeWikiLeaseAllows(client)
 					break
 				}
 			}
@@ -224,6 +224,17 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 		}
 	}
 	return strings.TrimSpace(bodyID), false
+}
+
+func (h *AgentHandler) knowledgeWikiLeaseAllows(client *Client) bool {
+	if client == nil || h == nil || h.hub == nil || h.hub.bodyLeases == nil {
+		return client != nil
+	}
+	lease, ok := h.hub.bodyLeases.status(client.uid)
+	if !ok {
+		return true
+	}
+	return h.hub.bodyLeases.isCurrent(client.uid, client.bodyID, client.connectionID)
 }
 
 func hasKnowledgeWikiCapabilities(capabilities []DeviceGrantOperation) bool {
