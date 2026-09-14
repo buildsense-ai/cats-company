@@ -169,7 +169,10 @@ compose -f "$compose_file" --env-file "$env_file" up -d
 
 # Gateway tooling must understand both route kinds before public workers are
 # issued. Ship it through the same deployment as the control-plane scripts.
-compose -f "$compose_file" --env-file "$env_file" exec -T server /opt/catsco/ops/update-artifact-gateway-route.sh
+# `docker compose exec` inherits stdin.  This script is streamed to the host
+# through `ssh ... bash -s`, so an inheriting child would swallow every command
+# after this line and silently skip them.  Keep stdin detached.
+compose -f "$compose_file" --env-file "$env_file" exec -T server /opt/catsco/ops/update-artifact-gateway-route.sh < /dev/null
 compose -f "$compose_file" --env-file "$env_file" ps
 
 printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
