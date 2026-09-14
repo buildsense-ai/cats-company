@@ -95,6 +95,13 @@ def route_block(indent: str, path: str, upstream: str) -> str:
         "proxy_cache_bypass 1;",
         'add_header Cache-Control "no-store" always;',
     ]
+    if path == "/shimo-login/":
+        directives[2:2] = [
+            "proxy_set_header Upgrade $http_upgrade;",
+            'proxy_set_header Connection "upgrade";',
+        ]
+        directives.insert(directives.index("proxy_hide_header Cache-Control;"), "proxy_buffering off;")
+        directives.append("access_log off;")
     return "\n".join(
         (f"{indent}location {path} {{", *(f"{child}{item}" for item in directives), f"{indent}}}")
     )

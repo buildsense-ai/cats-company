@@ -1,5 +1,7 @@
 import http from 'node:http';
 import { ShimoWorkerError } from './reader.mjs';
+import { loginHTML } from './login_page.mjs';
+import { attachLoginStream } from './login_stream.mjs';
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 const RANGE_PATTERN = /^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/;
@@ -46,7 +48,7 @@ export function createConcurrencyLimiter({ maxConcurrency = DEFAULT_MAX_CONCURRE
 export function createShimoWorkerServer({ internalToken, store, reader, loginManager, limits }) {
   if (String(internalToken || '').length < 32) throw new Error('SHIMO_WORKER_TOKEN must contain at least 32 characters');
   const limiter = createConcurrencyLimiter(limits);
-  return http.createServer(async (request, response) => {
+  const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://worker.local');
       if (request.method === 'GET' && url.pathname === '/healthz') return sendJSON(response, 200, { ok: true });
@@ -115,6 +117,8 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
       sendError(response, normalizeError(error));
     }
   });
+  attachLoginStream(server, loginManager);
+  return server;
 }
 
 async function handlePublicLogin(request, response, url, manager) {
@@ -135,7 +139,7 @@ async function handlePublicLogin(request, response, url, manager) {
   }
   if (request.method === 'POST' && action === 'input') {
     const body = await readJSON(request, 4096);
-    rejectUnknown(body, new Set(['action', 'x', 'y', 'value']));
+    rejectUnknown(body, new Set(['action', 'x', 'y', 'count', 'value', 'delta_x', 'delta_y']));
     return sendJSON(response, 200, { ok: true, data: await manager.input(token, body) });
   }
   throw new ShimoWorkerError('METHOD_NOT_ALLOWED', '请求方法不受支持。', 405);
@@ -190,10 +194,5 @@ function setPublicHeaders(response) {
   response.setHeader('cache-control', 'no-store');
   response.setHeader('referrer-policy', 'no-referrer');
   response.setHeader('x-content-type-options', 'nosniff');
-  response.setHeader('content-security-policy', "default-src 'self'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
-}
-
-function loginHTML(token) {
-  const base = `/shimo-login/${token}`;
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>连接石墨</title><style>body{margin:0;background:#f5f7f5;color:#142019;font-family:system-ui,sans-serif}main{max-width:1280px;margin:auto;padding:16px}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.screen{width:100%;height:auto;border:1px solid #cad6cd;border-radius:10px;background:white;cursor:crosshair}.text{flex:1;min-width:220px;padding:10px;border:1px solid #aebbb1;border-radius:8px}button{padding:10px 14px;border:0;border-radius:8px;background:#2f7d42;color:white}.hint{color:#526158}</style></head><body><main><h2>连接石墨</h2><p id="status" class="hint">正在加载登录页面…</p><div class="bar"><input id="text" class="text" placeholder="需要输入手机号或验证码时：先点击下方对应输入框，再在这里输入"><button id="send">输入文字</button><button data-key="Tab">Tab</button><button data-key="Enter">Enter</button><button data-key="Backspace">退格</button></div><img id="screen" class="screen" alt="石墨登录页面"></main><script>const base=${JSON.stringify(base)};const img=document.getElementById('screen');const status=document.getElementById('status');async function api(path,options){const r=await fetch(base+path,options);const j=await r.json();if(!r.ok)throw new Error(j.error?.message||'操作失败');return j.data}async function refresh(){try{const s=await api('/status');status.textContent=s.message;if(s.state==='waiting'||s.state==='opening'){img.src=base+'/screenshot?t='+Date.now();setTimeout(refresh,1200)}else{img.remove()}}catch(e){status.textContent=e.message}}img.onclick=async e=>{const r=img.getBoundingClientRect();await api('/input',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'click',x:(e.clientX-r.left)*img.naturalWidth/r.width,y:(e.clientY-r.top)*img.naturalHeight/r.height})});refresh()};document.getElementById('send').onclick=async()=>{const el=document.getElementById('text');if(el.value){await api('/input',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'text',value:el.value})});el.value=''}};document.querySelectorAll('[data-key]').forEach(b=>b.onclick=()=>api('/input',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'key',value:b.dataset.key})}));refresh();</script></body></html>`;
+  response.setHeader('content-security-policy', "default-src 'self'; connect-src 'self'; img-src 'self' blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
 }
