@@ -182,12 +182,9 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 	}
 	now := nowForRoute(h.hub)
 	boundBodyID := strings.TrimSpace(bodyID)
-	var matched string
+	var candidates []UserDevice
 	for _, device := range h.hub.userDevices.activeDevices(ownerUID) {
 		if device.BotUID != agentUID {
-			continue
-		}
-		if boundBodyID == "" || strings.TrimSpace(device.BodyID) != boundBodyID {
 			continue
 		}
 		if !hasKnowledgeWikiCapabilities(device.Capabilities) {
@@ -209,14 +206,22 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 			connected = route.validAt(now) && h.hub.routeConnected(route)
 		}
 		if connected {
-			if matched != "" && matched != strings.TrimSpace(device.DeviceID) {
-				return "", false
-			}
-			matched = strings.TrimSpace(device.DeviceID)
+			candidates = append(candidates, device)
 		}
 	}
-	if matched != "" {
-		return matched, true
+	if len(candidates) == 1 {
+		return strings.TrimSpace(candidates[0].DeviceID), true
+	}
+	if len(candidates) > 1 && boundBodyID != "" {
+		var exact []UserDevice
+		for _, candidate := range candidates {
+			if strings.TrimSpace(candidate.BodyID) == boundBodyID {
+				exact = append(exact, candidate)
+			}
+		}
+		if len(exact) == 1 {
+			return strings.TrimSpace(exact[0].DeviceID), true
+		}
 	}
 	return strings.TrimSpace(bodyID), false
 }
