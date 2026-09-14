@@ -268,8 +268,10 @@ jobs:
       - name: Validate host Nginx timeout update
         run: |
           bash -n deploy/prod/ensure-image-timeout-nginx.sh
+          bash -n deploy/prod/ensure-shimo-login-nginx.sh
           bash -n deploy/prod/ensure-cloud-worker-nginx.sh
           bash -n deploy/prod/ensure-wecom-agent-nginx.sh
+          python3 deploy/prod/update-nginx-shimo-login_test.py
           python3 deploy/prod/update-nginx-cloud-worker-route_test.py
           python3 deploy/prod/update-nginx-v1-timeout_test.py
 

@@ -55,6 +55,12 @@ class DeployProdWorkflowTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("ensure-cloud-worker-nginx.sh", workflow)
+        self.assertIn("ensure-shimo-login-nginx.sh", workflow)
+        self.assertIn("update-nginx-shimo-login.py", workflow)
+        self.assertIn(
+            'sudo -n "$root/compose/ensure-shimo-login-nginx.sh" /etc/nginx/sites-available/catscompany-app "$root/env/prod.env"',
+            workflow,
+        )
         for route in (
             "/etc/nginx/sites-available/catscompany-app:app.catsco.cc",
             "/etc/nginx/sites-available/catscompany-api:api.catsco.cc",
