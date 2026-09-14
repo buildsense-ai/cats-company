@@ -172,23 +172,51 @@ func (h *AgentHandler) HandleKnowledgeWikiManifest(w http.ResponseWriter, r *htt
 }
 
 // BodyID is a persistent bot identity and may differ from the runtime
-// DeviceID. Match BotUID first so one account's other Agent cannot be used.
+// DeviceID. Match the server-derived BotUID and body identity before using a
+// live route, so one account's other Agent cannot be used. More than one live
+// match is treated as ambiguous rather than selecting whichever was listed
+// first.
 func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID string) (string, bool) {
 	if h.hub == nil {
 		return strings.TrimSpace(bodyID), false
 	}
 	now := nowForRoute(h.hub)
+	boundBodyID := strings.TrimSpace(bodyID)
+	var matched string
 	for _, device := range h.hub.userDevices.activeDevices(ownerUID) {
-		if device.BotUID != agentUID || !device.Active || !device.Routable {
+		if device.BotUID != agentUID {
+			continue
+		}
+		if boundBodyID == "" || strings.TrimSpace(device.BodyID) != boundBodyID {
 			continue
 		}
 		if !hasKnowledgeWikiCapabilities(device.Capabilities) {
 			continue
 		}
-		route, _ := h.hub.findDeviceRPCTarget(ownerUID, device)
-		if route.validAt(now) && h.hub.routeConnected(route) {
-			return strings.TrimSpace(device.DeviceID), true
+		route, target := h.hub.findDeviceRPCTarget(ownerUID, device)
+		connected := target != nil && h.hub.isClientRegistered(target)
+		if !connected {
+			h.hub.mu.RLock()
+			for client := range h.hub.clients[agentUID] {
+				if client != nil && client.deviceOwnerUID == ownerUID && client.deviceID == device.DeviceID && client.bodyID == device.BodyID {
+					connected = true
+					break
+				}
+			}
+			h.hub.mu.RUnlock()
 		}
+		if !connected {
+			connected = route.validAt(now) && h.hub.routeConnected(route)
+		}
+		if connected {
+			if matched != "" && matched != strings.TrimSpace(device.DeviceID) {
+				return "", false
+			}
+			matched = strings.TrimSpace(device.DeviceID)
+		}
+	}
+	if matched != "" {
+		return matched, true
 	}
 	return strings.TrimSpace(bodyID), false
 }
