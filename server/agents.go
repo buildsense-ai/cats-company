@@ -163,17 +163,47 @@ func (h *AgentHandler) HandleKnowledgeWikiManifest(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge_runtime_unbound"})
 		return
 	}
-	deviceID := strings.TrimSpace(bodyID)
-	online := false
-	if h.hub != nil {
-		route, _ := h.hub.findDeviceRPCTarget(ownerUID, UserDevice{DeviceID: deviceID})
-		online = route.validAt(nowForRoute(h.hub)) && h.hub.routeConnected(route)
-	}
+	deviceID, online := h.knowledgeWikiDevice(ownerUID, agentUID, bodyID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"schema": "catsco.knowledge_wiki.handoff.v1", "agent_uid": agentUID,
 		"owner_user_id": formatUID(ownerUID), "target_device_id": deviceID,
 		"online": online,
 	})
+}
+
+// BodyID is a persistent bot identity and may differ from the runtime
+// DeviceID. Match BotUID first so one account's other Agent cannot be used.
+func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID string) (string, bool) {
+	if h.hub == nil {
+		return strings.TrimSpace(bodyID), false
+	}
+	now := nowForRoute(h.hub)
+	for _, device := range h.hub.userDevices.activeDevices(ownerUID) {
+		if device.BotUID != agentUID || !device.Active || !device.Routable {
+			continue
+		}
+		if !hasKnowledgeWikiCapabilities(device.Capabilities) {
+			continue
+		}
+		route, _ := h.hub.findDeviceRPCTarget(ownerUID, device)
+		if route.validAt(now) && h.hub.routeConnected(route) {
+			return strings.TrimSpace(device.DeviceID), true
+		}
+	}
+	return strings.TrimSpace(bodyID), false
+}
+
+func hasKnowledgeWikiCapabilities(capabilities []DeviceGrantOperation) bool {
+	var list, read bool
+	for _, capability := range capabilities {
+		switch capability {
+		case DeviceGrantKnowledgeDocumentList:
+			list = true
+		case DeviceGrantKnowledgeDocumentRead:
+			read = true
+		}
+	}
+	return list && read
 }
 
 func agentUIDFromPath(value string) int64 {
