@@ -230,7 +230,7 @@ func (h *AgentHandler) knowledgeWikiLeaseAllows(client *Client) bool {
 	if client == nil || h == nil || h.hub == nil || h.hub.bodyLeases == nil {
 		return client != nil
 	}
-	lease, ok := h.hub.bodyLeases.status(client.uid)
+	_, ok := h.hub.bodyLeases.status(client.uid)
 	if !ok {
 		return true
 	}
