@@ -325,6 +325,32 @@ func (h *AgentHandler) IssueKnowledgeWikiHandoff(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]string{"token": token, "agent_uid": strconv.FormatInt(agentUID, 10)})
 }
 
+// HandleKnowledgeWikiWebSocketTicket issues a short-lived, agent-scoped
+// credential for the standalone Wiki page. It deliberately requires the
+// handoff cookie so a copied URL or ordinary JWT cannot select another agent.
+func (h *AgentHandler) HandleKnowledgeWikiWebSocketTicket(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	agentUID := agentUIDFromPath(r.URL.Path)
+	viewerUID, ok := h.wikiSessionForRequest(r, agentUID)
+	if !ok || viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "wiki_session_required"})
+		return
+	}
+	if _, _, status, err := accessibleAgentUser(h.db, viewerUID, agentUID); err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	token, err := GenerateKnowledgeWikiWebSocketToken(viewerUID, agentUID)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "wiki_ws_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"token": token, "agent_uid": agentUID, "expires_in": 300})
+}
+
 func (h *AgentHandler) wikiSessionForRequest(r *http.Request, agentUID int64) (int64, bool) {
 	cookie, err := r.Cookie("catsco_wiki_session")
 	if err != nil || cookie.Value == "" {

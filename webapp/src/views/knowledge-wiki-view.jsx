@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BookOpen, CloudOff, LoaderCircle } from 'lucide-react';
-import { api, requestSkillHubDeviceTool } from '../api';
+import { api, connectWS, disconnectWS, requestSkillHubDeviceTool } from '../api';
 import './knowledge-wiki-view.css';
 
 function parseAgentID(pathname) {
@@ -26,6 +26,18 @@ export default function KnowledgeWikiView({ location = window.location } = {}) {
     api.getKnowledgeWikiManifest(agentUid)
       .then(async (handoff) => {
         if (!handoff?.online) throw Object.assign(new Error('当前 Agent 设备不在线，请先启动本地 XiaoBa。'), { code: 'INSTANCE_OFFLINE' });
+        const ticket = await api.getKnowledgeWikiWebSocketTicket(agentUid);
+        if (!ticket?.token) throw new Error('无法建立知识库实时连接，请重新从 AI 助手管理进入。');
+        await new Promise((resolve, reject) => {
+          let done = false;
+          const finish = (fn) => { if (!done) { done = true; clearTimeout(timer); fn(); } };
+          const timer = setTimeout(() => finish(() => reject(new Error('知识库实时连接超时，请稍后重试。'))), 10000);
+          const started = connectWS((message) => {
+            if (message?._type === 'ws_open') finish(resolve);
+            if (message?._type === 'ws_auth_expired') finish(() => reject(new Error('知识库会话已过期，请重新进入。')));
+          }, { authToken: ticket.token, authQueryName: 'wiki_token' });
+          if (!started) finish(() => reject(new Error('无法建立知识库实时连接，请稍后重试。')));
+        });
         const result = await requestSkillHubDeviceTool({
           ownerUserId: handoff.owner_user_id,
           deviceId: handoff.target_device_id,
@@ -37,7 +49,7 @@ export default function KnowledgeWikiView({ location = window.location } = {}) {
       .catch((error) => {
         if (active) setState({ status: 'error', data: null, error: error?.message || '暂时无法读取知识库' });
       });
-    return () => { active = false; };
+    return () => { active = false; disconnectWS(); };
   }, [agentUid]);
 
   const data = state.data || {};
