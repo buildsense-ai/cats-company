@@ -163,17 +163,75 @@ func (h *AgentHandler) HandleKnowledgeWikiManifest(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "knowledge_runtime_unbound"})
 		return
 	}
-	deviceID := strings.TrimSpace(bodyID)
-	online := false
-	if h.hub != nil {
-		route, _ := h.hub.findDeviceRPCTarget(ownerUID, UserDevice{DeviceID: deviceID})
-		online = route.validAt(nowForRoute(h.hub)) && h.hub.routeConnected(route)
-	}
+	deviceID, online := h.knowledgeWikiDevice(ownerUID, agentUID, bodyID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"schema": "catsco.knowledge_wiki.handoff.v1", "agent_uid": agentUID,
 		"owner_user_id": formatUID(ownerUID), "target_device_id": deviceID,
 		"online": online,
 	})
+}
+
+// BodyID is a persistent bot identity and may differ from the runtime
+// DeviceID. Match the server-derived BotUID and body identity before using a
+// live route, so one account's other Agent cannot be used. More than one live
+// match is treated as ambiguous rather than selecting whichever was listed
+// first.
+func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID string) (string, bool) {
+	if h.hub == nil {
+		return strings.TrimSpace(bodyID), false
+	}
+	now := nowForRoute(h.hub)
+	boundBodyID := strings.TrimSpace(bodyID)
+	var matched string
+	for _, device := range h.hub.userDevices.activeDevices(ownerUID) {
+		if device.BotUID != agentUID {
+			continue
+		}
+		if boundBodyID == "" || strings.TrimSpace(device.BodyID) != boundBodyID {
+			continue
+		}
+		if !hasKnowledgeWikiCapabilities(device.Capabilities) {
+			continue
+		}
+		route, target := h.hub.findDeviceRPCTarget(ownerUID, device)
+		connected := target != nil && h.hub.isClientRegistered(target)
+		if !connected {
+			h.hub.mu.RLock()
+			for client := range h.hub.clients[agentUID] {
+				if client != nil && client.deviceOwnerUID == ownerUID && client.deviceID == device.DeviceID && client.bodyID == device.BodyID {
+					connected = true
+					break
+				}
+			}
+			h.hub.mu.RUnlock()
+		}
+		if !connected {
+			connected = route.validAt(now) && h.hub.routeConnected(route)
+		}
+		if connected {
+			if matched != "" && matched != strings.TrimSpace(device.DeviceID) {
+				return "", false
+			}
+			matched = strings.TrimSpace(device.DeviceID)
+		}
+	}
+	if matched != "" {
+		return matched, true
+	}
+	return strings.TrimSpace(bodyID), false
+}
+
+func hasKnowledgeWikiCapabilities(capabilities []DeviceGrantOperation) bool {
+	var list, read bool
+	for _, capability := range capabilities {
+		switch capability {
+		case DeviceGrantKnowledgeDocumentList:
+			list = true
+		case DeviceGrantKnowledgeDocumentRead:
+			read = true
+		}
+	}
+	return list && read
 }
 
 func agentUIDFromPath(value string) int64 {

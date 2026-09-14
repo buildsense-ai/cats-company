@@ -10,10 +10,71 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+func TestHasKnowledgeWikiCapabilitiesRequiresBothReadOperations(t *testing.T) {
+	tests := []struct {
+		name string
+		caps []DeviceGrantOperation
+		want bool
+	}{
+		{"both", []DeviceGrantOperation{DeviceGrantKnowledgeDocumentList, DeviceGrantKnowledgeDocumentRead}, true},
+		{"list-only", []DeviceGrantOperation{DeviceGrantKnowledgeDocumentList}, false},
+		{"read-only", []DeviceGrantOperation{DeviceGrantKnowledgeDocumentRead}, false},
+		{"other-agent", []DeviceGrantOperation{DeviceGrantReadFile, DeviceGrantKnowledgeDocumentList}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasKnowledgeWikiCapabilities(tc.caps); got != tc.want {
+				t.Fatalf("hasKnowledgeWikiCapabilities(%v)=%v, want %v", tc.caps, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestKnowledgeWikiDeviceBindsLiveRuntimeByAgentIdentity(t *testing.T) {
+	h := &AgentHandler{hub: NewHub(nil, nil)}
+	hub := h.hub
+	hub.userDevices.ttl = time.Hour
+	register := func(bot int64, deviceID, bodyID string) UserDevice {
+		d, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+			BotUID: bot, DeviceID: deviceID, BodyID: bodyID, InstallationID: deviceID,
+			RuntimeRole: "server", Status: "online",
+			Capabilities: []string{"knowledge.document.list", "knowledge.document.read"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &Client{hub: hub, uid: bot, accountType: types.AccountBot, bodyID: d.BodyID, installationID: d.InstallationID, connectionID: deviceID + "-connection", deviceID: d.DeviceID, deviceBodyID: d.BodyID, deviceInstallationID: d.InstallationID, deviceOwnerUID: 7, send: make(chan []byte, 1)}
+		hub.addClient(client)
+		hub.bindDeviceClient(7, d, client)
+		hub.mu.Lock()
+		if hub.deviceClients[7] == nil {
+			hub.deviceClients[7] = make(map[string]*Client)
+		}
+		hub.deviceClients[7][d.DeviceID] = client
+		hub.mu.Unlock()
+		return d
+	}
+
+	register(999, "other-device", "body-1")
+	target := register(42, "runtime-device", "body-1")
+	if got, online := h.knowledgeWikiDevice(7, 42, "body-1"); got != target.DeviceID || !online {
+		t.Fatalf("got device=%q online=%v, want %q/true", got, online, target.DeviceID)
+	}
+	if got, online := h.knowledgeWikiDevice(7, 42, "wrong-body"); online || got != "wrong-body" {
+		t.Fatalf("wrong body must fail closed: got device=%q online=%v", got, online)
+	}
+
+	register(42, "second-runtime", "body-1")
+	if got, online := h.knowledgeWikiDevice(7, 42, "body-1"); online || got != "" {
+		t.Fatalf("ambiguous live runtimes must fail closed: got device=%q online=%v", got, online)
+	}
+}
 
 type agentTestStore struct {
 	store.Store
