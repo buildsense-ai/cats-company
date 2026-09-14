@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import { createConcurrencyLimiter, createShimoWorkerServer } from '../src/service.mjs';
+import { ShimoWorkerError } from '../src/reader.mjs';
 
 const internalToken = 'worker-token-that-is-longer-than-thirty-two-characters';
 const bindingA = 'a'.repeat(32);
@@ -17,7 +18,7 @@ class MemoryStore {
   delete(binding) { return this.records.delete(binding); }
 }
 
-async function startWorker({ reader: readerOverride, limits } = {}) {
+async function startWorker({ reader: readerOverride, loginManager: loginManagerOverride, limits } = {}) {
   const store = new MemoryStore();
   const calls = [];
   const reader = readerOverride || {
@@ -25,7 +26,7 @@ async function startWorker({ reader: readerOverride, limits } = {}) {
     async readSheet(state, url, sheet, range) { calls.push(['sheet', state, url, sheet, range]); return { values: [['金额'], [8500]] }; },
     async readDocument(state, url, maxChars) { calls.push(['document', state, url, maxChars]); return { text: '正文', truncated: false }; },
   };
-  const loginManager = {
+  const loginManager = loginManagerOverride || {
     async start(binding, completion) { calls.push(['login', binding, completion]); return { login_url: `https://app.catsco.test/shimo-login/${'c'.repeat(64)}/` }; },
     status() { return { state: 'waiting', message: '等待登录' }; },
     async screenshot() { return Buffer.from('png'); },
@@ -46,6 +47,18 @@ async function request(worker, path, body, token = internalToken) {
     });
     req.on('error', reject);
     req.end(payload);
+  });
+}
+
+async function fetchText(worker, path) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(worker.url + path, { method: 'GET' }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -176,5 +189,26 @@ test('login start rejects a partial or malformed completion callback', async () 
       completion_token: 'd'.repeat(64),
     });
     assert.equal(unsafe.status, 400);
+  } finally { await worker.close(); }
+});
+
+test('expired or malformed login links answer with a notice instead of killing the worker', async () => {
+  const expired = new ShimoWorkerError('LOGIN_LINK_EXPIRED', '登录链接已失效，请回到聊天重新发起。', 410);
+  const worker = await startWorker({ loginManager: {
+    async start() { throw new Error('login start is not expected in this test'); },
+    status() { throw expired; },
+    async screenshot() { throw expired; },
+    async input() { throw expired; },
+  } });
+  try {
+    const malformed = await fetchText(worker, '/shimo-login/not-a-token');
+    assert.equal(malformed.status, 404);
+    const page = await fetchText(worker, `/shimo-login/${'e'.repeat(64)}/`);
+    assert.equal(page.status, 410);
+    assert.match(page.body, /登录链接已失效/);
+    const status = await fetchText(worker, `/shimo-login/${'e'.repeat(64)}/status`);
+    assert.equal(status.status, 410);
+    const health = await fetchText(worker, '/healthz');
+    assert.equal(health.status, 200);
   } finally { await worker.close(); }
 });
