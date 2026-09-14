@@ -66,12 +66,12 @@ func TestKnowledgeWikiDeviceBindsLiveRuntimeByAgentIdentity(t *testing.T) {
 	if got, online := h.knowledgeWikiDevice(7, 42, "body-1"); got != target.DeviceID || !online {
 		t.Fatalf("got device=%q online=%v, want %q/true", got, online, target.DeviceID)
 	}
-	if got, online := h.knowledgeWikiDevice(7, 42, "wrong-body"); online || got != "wrong-body" {
-		t.Fatalf("wrong body must fail closed: got device=%q online=%v", got, online)
+	if got, online := h.knowledgeWikiDevice(7, 42, "wrong-body"); got != target.DeviceID || !online {
+		t.Fatalf("unique BotUID candidate should survive body mismatch: got device=%q online=%v", got, online)
 	}
 
 	register(42, "second-runtime", "body-1")
-	if got, online := h.knowledgeWikiDevice(7, 42, "body-1"); online || got != "" {
+	if got, online := h.knowledgeWikiDevice(7, 42, "body-1"); online || got != "body-1" {
 		t.Fatalf("ambiguous live runtimes must fail closed: got device=%q online=%v", got, online)
 	}
 }

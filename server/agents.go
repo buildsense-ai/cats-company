@@ -182,12 +182,9 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 	}
 	now := nowForRoute(h.hub)
 	boundBodyID := strings.TrimSpace(bodyID)
-	var matched string
+	var candidates []UserDevice
 	for _, device := range h.hub.userDevices.activeDevices(ownerUID) {
 		if device.BotUID != agentUID {
-			continue
-		}
-		if boundBodyID == "" || strings.TrimSpace(device.BodyID) != boundBodyID {
 			continue
 		}
 		if !hasKnowledgeWikiCapabilities(device.Capabilities) {
@@ -199,7 +196,7 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 			h.hub.mu.RLock()
 			for client := range h.hub.clients[agentUID] {
 				if client != nil && client.deviceOwnerUID == ownerUID && client.deviceID == device.DeviceID && client.bodyID == device.BodyID {
-					connected = true
+					connected = h.knowledgeWikiLeaseAllows(client)
 					break
 				}
 			}
@@ -209,16 +206,35 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 			connected = route.validAt(now) && h.hub.routeConnected(route)
 		}
 		if connected {
-			if matched != "" && matched != strings.TrimSpace(device.DeviceID) {
-				return "", false
-			}
-			matched = strings.TrimSpace(device.DeviceID)
+			candidates = append(candidates, device)
 		}
 	}
-	if matched != "" {
-		return matched, true
+	if len(candidates) == 1 {
+		return strings.TrimSpace(candidates[0].DeviceID), true
+	}
+	if len(candidates) > 1 && boundBodyID != "" {
+		var exact []UserDevice
+		for _, candidate := range candidates {
+			if strings.TrimSpace(candidate.BodyID) == boundBodyID {
+				exact = append(exact, candidate)
+			}
+		}
+		if len(exact) == 1 {
+			return strings.TrimSpace(exact[0].DeviceID), true
+		}
 	}
 	return strings.TrimSpace(bodyID), false
+}
+
+func (h *AgentHandler) knowledgeWikiLeaseAllows(client *Client) bool {
+	if client == nil || h == nil || h.hub == nil || h.hub.bodyLeases == nil {
+		return client != nil
+	}
+	_, ok := h.hub.bodyLeases.status(client.uid)
+	if !ok {
+		return true
+	}
+	return h.hub.bodyLeases.isCurrent(client.uid, client.bodyID, client.connectionID)
 }
 
 func hasKnowledgeWikiCapabilities(capabilities []DeviceGrantOperation) bool {
