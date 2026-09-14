@@ -15,6 +15,26 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+func TestHasKnowledgeWikiCapabilitiesRequiresBothReadOperations(t *testing.T) {
+	tests := []struct {
+		name string
+		caps []DeviceGrantOperation
+		want bool
+	}{
+		{"both", []DeviceGrantOperation{DeviceGrantKnowledgeDocumentList, DeviceGrantKnowledgeDocumentRead}, true},
+		{"list-only", []DeviceGrantOperation{DeviceGrantKnowledgeDocumentList}, false},
+		{"read-only", []DeviceGrantOperation{DeviceGrantKnowledgeDocumentRead}, false},
+		{"other-agent", []DeviceGrantOperation{DeviceGrantReadFile, DeviceGrantKnowledgeDocumentList}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasKnowledgeWikiCapabilities(tc.caps); got != tc.want {
+				t.Fatalf("hasKnowledgeWikiCapabilities(%v)=%v, want %v", tc.caps, got, tc.want)
+			}
+		})
+	}
+}
+
 type agentTestStore struct {
 	store.Store
 	ownerBots      []map[string]interface{}
