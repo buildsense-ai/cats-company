@@ -6,7 +6,7 @@ This internal CatsCo service owns interactive Shimo login and read-only browser 
 
 1. CatsCo calls `POST /v1/sessions/login` with an opaque `connection_binding`.
 2. The Worker starts a temporary Chromium context and returns a random `/shimo-login/{token}/` URL.
-3. The user operates that isolated page through screenshots, clicks, text input, or supported keys. QR login works by opening the WeChat option and scanning the displayed code.
+3. The user operates the isolated Shimo page directly in a live canvas. A same-origin WebSocket streams frames and forwards pointer, keyboard, paste, Chinese IME, and wheel input; the older HTTP screenshot endpoints remain as a connection fallback. QR login works by opening the WeChat option and scanning the displayed code.
 4. The Worker detects `https://shimo.im/lizard-api/users/me`, exports Playwright storage state, encrypts it with AES-256-GCM, and closes the login browser.
 5. Every read creates a fresh headless browser context from that user's encrypted state.
 
@@ -31,7 +31,7 @@ browser, which keeps a burst of reads from exhausting container memory. The
 compose stacks also cap the container (`deploy.resources.limits`); raise both
 together.
 
-The internal API listens on port `7070`. Only `/shimo-login/` should be exposed through the CatsCo HTTPS origin. `/v1/` must remain on the private Docker network and requires `SHIMO_WORKER_TOKEN`.
+The internal API listens on port `7070`. Only `/shimo-login/` should be exposed through the CatsCo HTTPS origin. Its reverse proxy must forward WebSocket upgrades and must not buffer or access-log the bearer-token path. `/v1/` must remain on the private Docker network and requires `SHIMO_WORKER_TOKEN`.
 
 ## Checks
 
@@ -53,4 +53,4 @@ npm test
 docker build -t cats-company-shimo-worker .
 ```
 
-The unit suite verifies service authentication, identity-field rejection, per-binding isolation, encrypted-at-rest state, authenticated-encryption binding, disconnect behavior, and the global concurrency bound. A real smoke test additionally needs an authorized Shimo test account.
+The unit suite verifies service authentication, identity-field rejection, per-binding isolation, encrypted-at-rest state, authenticated-encryption binding, disconnect behavior, the global concurrency bound, and the live login stream's input and origin checks. A real smoke test additionally needs an authorized Shimo test account.

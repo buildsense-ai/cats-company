@@ -25,6 +25,17 @@ class UpdateNginxShimoLoginTest(unittest.TestCase):
     def test_repository_config_is_idempotent(self) -> None:
         self.assertEqual(renderer.render(self.source), self.source)
 
+    def test_shimo_login_route_supports_websocket_streaming(self) -> None:
+        rendered = renderer.render(self.source)
+        server_start, server_end = renderer.app_tls_server_span(rendered)
+        server = rendered[server_start:server_end]
+        start, end = renderer.location_spans(server, "/shimo-login/")[0]
+        route = server[start:end]
+        self.assertIn("proxy_set_header Upgrade $http_upgrade;", route)
+        self.assertIn('proxy_set_header Connection "upgrade";', route)
+        self.assertIn("proxy_buffering off;", route)
+        self.assertIn("access_log off;", route)
+
     def test_repairs_missing_routes_without_replacing_other_routes(self) -> None:
         source = self.source.replace("    location /shimo-login/ {", "    location /shimo-login-old/ {", 1)
         source = source.replace("    location /connect/shimo/ {", "    location /connect/shimo-old/ {", 1)

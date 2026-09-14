@@ -98,18 +98,27 @@ export class ShimoLoginManager {
     if (input.action === 'click') {
       const x = Number(input.x);
       const y = Number(input.y);
+      const count = Number(input.count || 1);
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 1280 || y > 900) {
         throw new ShimoWorkerError('INVALID_ARGUMENTS', '点击位置无效。', 400);
       }
-      await attempt.page.mouse.click(x, y);
+      if (![1, 2].includes(count)) throw new ShimoWorkerError('INVALID_ARGUMENTS', '点击次数无效。', 400);
+      await attempt.page.mouse.click(x, y, { clickCount: count });
     } else if (input.action === 'text') {
       const value = String(input.value || '');
       if (!value || [...value].length > 200) throw new ShimoWorkerError('INVALID_ARGUMENTS', '输入文字为空或过长。', 400);
       await attempt.page.keyboard.type(value, { delay: 20 });
     } else if (input.action === 'key') {
-      const allowed = new Set(['Enter', 'Tab', 'Escape', 'Backspace', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+      const allowed = new Set(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
       if (!allowed.has(input.value)) throw new ShimoWorkerError('INVALID_ARGUMENTS', '按键不受支持。', 400);
       await attempt.page.keyboard.press(input.value);
+    } else if (input.action === 'wheel') {
+      const deltaX = Number(input.delta_x || 0);
+      const deltaY = Number(input.delta_y || 0);
+      if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY) || Math.abs(deltaX) > 5000 || Math.abs(deltaY) > 5000 || (!deltaX && !deltaY)) {
+        throw new ShimoWorkerError('INVALID_ARGUMENTS', '滚动距离无效。', 400);
+      }
+      await attempt.page.mouse.wheel(deltaX, deltaY);
     } else {
       throw new ShimoWorkerError('INVALID_ARGUMENTS', '交互类型不受支持。', 400);
     }
