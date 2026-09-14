@@ -12,7 +12,16 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 renderer="$script_dir/update-nginx-shimo-login.py"
 config_path="${1:-/etc/nginx/sites-available/catscompany-app}"
-worker_port="${2:-${PROD_SHIMO_WORKER_HOST_PORT:-26070}}"
+env_file="${2:-/srv/catscompany-prod/env/prod.env}"
+worker_port="${PROD_SHIMO_WORKER_HOST_PORT:-}"
+
+# This script runs as root (via sudo above), so the production env file can be
+# read here without weakening its owner-only permissions.  A missing variable
+# is valid and retains the compose default.
+if [ -z "$worker_port" ] && [ -r "$env_file" ]; then
+  worker_port="$(sed -n 's/^PROD_SHIMO_WORKER_HOST_PORT=//p' "$env_file" | tail -n 1)"
+fi
+worker_port="${worker_port:-26070}"
 
 if [ ! -f "$renderer" ]; then
   echo "missing Shimo Nginx renderer: $renderer" >&2
