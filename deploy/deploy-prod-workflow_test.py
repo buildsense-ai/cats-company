@@ -58,7 +58,11 @@ class DeployProdWorkflowTest(unittest.TestCase):
         self.assertIn("ensure-shimo-login-nginx.sh", workflow)
         self.assertIn("update-nginx-shimo-login.py", workflow)
         self.assertIn(
-            'sudo -n "$root/compose/ensure-shimo-login-nginx.sh" /etc/nginx/sites-available/catscompany-app',
+            'shimo_worker_port="$(sed -n \'s/^PROD_SHIMO_WORKER_HOST_PORT=//p\' "$root/env/prod.env" | tail -n 1)"',
+            workflow,
+        )
+        self.assertIn(
+            'sudo -n "$root/compose/ensure-shimo-login-nginx.sh" /etc/nginx/sites-available/catscompany-app "${shimo_worker_port:-26070}"',
             workflow,
         )
         for route in (
