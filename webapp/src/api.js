@@ -40,6 +40,8 @@ let wsArtifactPreviewSession = null;
 let topicLastSeq = {};
 let wsActiveTopic = '';
 let wsPushSubscriptionID = '';
+let wsAuthToken = '';
+let wsAuthQueryName = 'token';
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
@@ -567,6 +569,8 @@ export const api = {
   getAgents: () => request('GET', '/api/agents'),
   getKnowledgeWikiManifest: (agentUid, options = {}) =>
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/manifest`, undefined, options),
+  getKnowledgeWikiWebSocketTicket: (agentUid, options = {}) =>
+    request('GET', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/ws-ticket`, undefined, options),
   issueKnowledgeWikiHandoff: (agentUid) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/knowledge/handoff`, {}),
   getAgentQuota: (agentUid) => request('GET', `/api/agents/quota?uid=${encodeURIComponent(agentUid)}`),
@@ -859,8 +863,9 @@ function reconnectDelay(attempt) {
   return WS_RECONNECT_DELAYS[index];
 }
 
-export function connectWS(onMessage, { force = false } = {}) {
-  const sessionToken = getToken();
+export function connectWS(onMessage, { force = false, authToken = '', authQueryName = 'token' } = {}) {
+  if (authToken) { wsAuthToken = authToken; wsAuthQueryName = authQueryName; }
+  const sessionToken = wsAuthToken || getToken();
   if (!sessionToken) return false;
   if (isTokenExpired()) {
     onMessage({ _type: 'ws_auth_expired' });
@@ -899,7 +904,7 @@ export function connectWS(onMessage, { force = false } = {}) {
   }
   wsConnected = false;
   wsArtifactPreviewSession = null;
-  const url = `${WS_URL}?token=${sessionToken}`;
+  const url = `${WS_URL}?${encodeURIComponent(wsAuthQueryName)}=${encodeURIComponent(sessionToken)}`;
   const conn = new WebSocket(url);
   wsConn = conn;
   const isCurrent = () => wsConn === conn && wsGeneration === generation;
@@ -988,7 +993,7 @@ export function connectWS(onMessage, { force = false } = {}) {
       msgHandlers.forEach((handler) => handler(authExpiredMessage));
       return;
     }
-    if (getToken() && isBrowserOnline()) {
+    if ((wsAuthToken || getToken()) && isBrowserOnline()) {
       wsReconnectTimer = setTimeout(() => {
         if (wsGeneration === generation) {
           connectWS(onMessage);
@@ -1052,6 +1057,8 @@ export function disconnectWS() {
   wsConnected = false;
   wsArtifactPreviewSession = null;
   wsReconnectAttempt = 0;
+  wsAuthToken = '';
+  wsAuthQueryName = 'token';
 }
 
 export function sendWS(msg) {

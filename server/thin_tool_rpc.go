@@ -395,6 +395,9 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	if botUID <= 0 {
 		return fmt.Errorf("bot_uid is required")
 	}
+	if client.wikiAgentUID > 0 && botUID != client.wikiAgentUID {
+		return fmt.Errorf("wiki session is scoped to another bot")
+	}
 	botOwnerUID, err := h.db.GetBotOwner(botUID)
 	if err != nil || botOwnerUID != client.uid {
 		return fmt.Errorf("bot is not owned by the authenticated user")

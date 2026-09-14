@@ -102,6 +102,7 @@ type Client struct {
 	deviceBodyID         string
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
+	wikiAgentUID         int64
 	botRuntimeCredential *botRuntimeCredentialClaims
 	messagingAttention   messagingClientAttention
 	messagingAttentionMu sync.RWMutex
@@ -981,103 +982,126 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	bodyID := ""
 	installationID := ""
 	connectionID := ""
+	wikiAgentUID := int64(0)
+	tokenStr := ""
 
-	// Try JWT token first
-	tokenStr := r.URL.Query().Get("token")
-	connectorTokenStr := extractDeviceConnectorToken(r)
-	apiKeyStr := r.Header.Get("X-API-Key")
-	if apiKeyStr == "" {
-		apiKeyStr = r.URL.Query().Get("api_key")
-	}
-
-	if connectorTokenStr != "" {
-		claims, err := ParseDeviceConnectorToken(connectorTokenStr)
+	// Wiki uses a short-lived, agent-scoped token issued after the handoff.
+	wikiToken := r.URL.Query().Get("wiki_token")
+	if wikiToken != "" {
+		claims, err := ParseKnowledgeWikiWebSocketToken(wikiToken)
 		if err != nil {
-			http.Error(w, "invalid device connector token", http.StatusUnauthorized)
+			http.Error(w, "invalid wiki websocket token", http.StatusUnauthorized)
 			return
 		}
-		if !deviceConnectorHasScope(claims, "device:ws") {
-			http.Error(w, "device connector token cannot open websocket", http.StatusForbidden)
+		usr, err := hub.db.GetUser(claims.ViewerUID)
+		if err != nil || usr == nil || usr.State != 0 || usr.AccountType != types.AccountHuman {
+			http.Error(w, "invalid wiki websocket owner", http.StatusUnauthorized)
 			return
 		}
-		if hub.isDeviceConnectorRevoked(claims) {
-			http.Error(w, "device connector token has been revoked", http.StatusForbidden)
+		owner, err := hub.db.GetBotOwner(claims.AgentUID)
+		if err != nil || owner != claims.ViewerUID {
+			http.Error(w, "wiki agent access denied", http.StatusForbidden)
 			return
 		}
-		uid = claims.UID
-		displayName = firstNonEmpty(claims.DisplayName, claims.Username, claims.DeviceID)
-		usr, err := hub.db.GetUser(uid)
-		if err != nil || usr == nil {
-			http.Error(w, "invalid device connector token", http.StatusUnauthorized)
-			return
-		}
-		if usr.State != 0 {
-			http.Error(w, "user account is disabled", http.StatusForbidden)
-			return
-		}
-		if usr.AccountType != types.AccountHuman {
-			http.Error(w, "device connector requires a human owner", http.StatusForbidden)
-			return
-		}
-		acctType = types.AccountHuman
-		connectorClaims = claims
-		bodyID = claims.DeviceID
-		installationID = firstNonEmpty(claims.InstallationID, claims.DeviceID)
-	} else if tokenStr != "" {
-		claims, err := ParseToken(tokenStr)
-		if err != nil {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
-		}
-		uid = claims.UID
-		displayName = claims.Username
-		usr, err := hub.db.GetUser(uid)
-		if err != nil || usr == nil {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
-		}
-		if usr.State != 0 {
-			http.Error(w, "user account is disabled", http.StatusForbidden)
-			return
-		}
-		acctType = usr.AccountType
-		if usr.DisplayName != "" {
-			displayName = usr.DisplayName
-		}
-	} else if apiKeyStr != "" {
-		parsedUID, err := ParseAPIKey(apiKeyStr)
-		if err != nil {
-			http.Error(w, "invalid api key format", http.StatusUnauthorized)
-			return
-		}
-		botUID, err := hub.db.GetBotByAPIKey(apiKeyStr)
-		if err != nil || botUID != parsedUID {
-			http.Error(w, "invalid api key", http.StatusUnauthorized)
-			return
-		}
-		usr, err := hub.db.GetUser(parsedUID)
-		if err != nil || usr == nil {
-			http.Error(w, "invalid api key", http.StatusUnauthorized)
-			return
-		}
-		if usr.State != 0 {
-			http.Error(w, "user account is disabled", http.StatusForbidden)
-			return
-		}
-		uid = parsedUID
-		acctType = usr.AccountType
-		isBotAPIKey = true
-		if usr.DisplayName != "" {
-			displayName = usr.DisplayName
-		}
+		uid, displayName, wikiAgentUID = claims.ViewerUID, usr.DisplayName, claims.AgentUID
 	} else {
-		http.Error(w, "missing token or api_key", http.StatusUnauthorized)
-		return
-	}
+		// Try JWT token first
+		tokenStr = r.URL.Query().Get("token")
+		connectorTokenStr := extractDeviceConnectorToken(r)
+		apiKeyStr := r.Header.Get("X-API-Key")
+		if apiKeyStr == "" {
+			apiKeyStr = r.URL.Query().Get("api_key")
+		}
 
-	if tokenStr != "" && acctType == types.AccountBot {
-		http.Error(w, "bot websocket connections must use api key authentication", http.StatusForbidden)
-		return
+		if connectorTokenStr != "" {
+			claims, err := ParseDeviceConnectorToken(connectorTokenStr)
+			if err != nil {
+				http.Error(w, "invalid device connector token", http.StatusUnauthorized)
+				return
+			}
+			if !deviceConnectorHasScope(claims, "device:ws") {
+				http.Error(w, "device connector token cannot open websocket", http.StatusForbidden)
+				return
+			}
+			if hub.isDeviceConnectorRevoked(claims) {
+				http.Error(w, "device connector token has been revoked", http.StatusForbidden)
+				return
+			}
+			uid = claims.UID
+			displayName = firstNonEmpty(claims.DisplayName, claims.Username, claims.DeviceID)
+			usr, err := hub.db.GetUser(uid)
+			if err != nil || usr == nil {
+				http.Error(w, "invalid device connector token", http.StatusUnauthorized)
+				return
+			}
+			if usr.State != 0 {
+				http.Error(w, "user account is disabled", http.StatusForbidden)
+				return
+			}
+			if usr.AccountType != types.AccountHuman {
+				http.Error(w, "device connector requires a human owner", http.StatusForbidden)
+				return
+			}
+			acctType = types.AccountHuman
+			connectorClaims = claims
+			bodyID = claims.DeviceID
+			installationID = firstNonEmpty(claims.InstallationID, claims.DeviceID)
+		} else if tokenStr != "" {
+			claims, err := ParseToken(tokenStr)
+			if err != nil {
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+			uid = claims.UID
+			displayName = claims.Username
+			usr, err := hub.db.GetUser(uid)
+			if err != nil || usr == nil {
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+			if usr.State != 0 {
+				http.Error(w, "user account is disabled", http.StatusForbidden)
+				return
+			}
+			acctType = usr.AccountType
+			if usr.DisplayName != "" {
+				displayName = usr.DisplayName
+			}
+		} else if apiKeyStr != "" {
+			parsedUID, err := ParseAPIKey(apiKeyStr)
+			if err != nil {
+				http.Error(w, "invalid api key format", http.StatusUnauthorized)
+				return
+			}
+			botUID, err := hub.db.GetBotByAPIKey(apiKeyStr)
+			if err != nil || botUID != parsedUID {
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+				return
+			}
+			usr, err := hub.db.GetUser(parsedUID)
+			if err != nil || usr == nil {
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+				return
+			}
+			if usr.State != 0 {
+				http.Error(w, "user account is disabled", http.StatusForbidden)
+				return
+			}
+			uid = parsedUID
+			acctType = usr.AccountType
+			isBotAPIKey = true
+			if usr.DisplayName != "" {
+				displayName = usr.DisplayName
+			}
+		} else {
+			http.Error(w, "missing token or api_key", http.StatusUnauthorized)
+			return
+		}
+
+		if tokenStr != "" && acctType == types.AccountBot {
+			http.Error(w, "bot websocket connections must use api key authentication", http.StatusForbidden)
+			return
+		}
 	}
 
 	if isBotAPIKey {
@@ -1175,6 +1199,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		connectionID:         connectionID,
 		deviceConnector:      connectorClaims,
 		botRuntimeCredential: runtimeCredentialClaims,
+		wikiAgentUID:         wikiAgentUID,
 		send:                 make(chan []byte, 256),
 	}
 
@@ -1223,6 +1248,10 @@ func requestRemoteAddr(r *http.Request) string {
 
 // handleMessage dispatches incoming client messages.
 func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
+	if client != nil && client.wikiAgentUID > 0 && msg != nil && (msg.Pub != nil || msg.Sub != nil || msg.Get != nil || msg.Note != nil || msg.Set != nil || msg.Del != nil || msg.Friend != nil || msg.ArtifactResult != nil || msg.SkillMutationGrant != nil) {
+		h.SendToClient(client, &ServerMessage{Ctrl: &MsgServerCtrl{Code: http.StatusForbidden, Text: "wiki connections are read-only"}})
+		return
+	}
 	if client != nil && client.deviceConnector != nil && !deviceConnectorMessageAllowed(msg) {
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{
