@@ -43,6 +43,19 @@ function get(url) {
   });
 }
 
+function postJSON(url, body) {
+  return new Promise((resolve, reject) => {
+    const payload = Buffer.from(JSON.stringify(body));
+    const request = http.request(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': payload.length } }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+    });
+    request.on('error', reject);
+    request.end(payload);
+  });
+}
+
 function waitFor(predicate, timeoutMs = 1500) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
@@ -149,4 +162,18 @@ test('login stream allows one active connection per token and rejects unknown to
     await new Promise(resolve => first.once('close', resolve));
     await new Promise(resolve => worker.server.close(resolve));
   }
+});
+
+test('HTTP input fallback forwards click count and wheel deltas', async () => {
+  const worker = await startWorker();
+  try {
+    const click = await postJSON(`${worker.url}/shimo-login/${loginToken}/input`, { action: 'click', x: 40, y: 50, count: 2 });
+    const wheel = await postJSON(`${worker.url}/shimo-login/${loginToken}/input`, { action: 'wheel', delta_x: 12, delta_y: -240 });
+    assert.equal(click.status, 200);
+    assert.equal(wheel.status, 200);
+    assert.deepEqual(worker.inputs, [
+      { action: 'click', x: 40, y: 50, count: 2 },
+      { action: 'wheel', delta_x: 12, delta_y: -240 },
+    ]);
+  } finally { await new Promise(resolve => worker.server.close(resolve)); }
 });
