@@ -195,7 +195,7 @@ func (h *AgentHandler) knowledgeWikiDevice(ownerUID, agentUID int64, bodyID stri
 		if !connected {
 			h.hub.mu.RLock()
 			for client := range h.hub.clients[agentUID] {
-				if client != nil && client.deviceOwnerUID == ownerUID && client.deviceID == device.DeviceID && client.bodyID == device.BodyID {
+				if client != nil && client.deviceOwnerUID == ownerUID && client.deviceID == device.DeviceID {
 					connected = h.knowledgeWikiLeaseAllows(client)
 					break
 				}
