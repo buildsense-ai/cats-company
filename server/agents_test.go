@@ -71,7 +71,7 @@ func TestKnowledgeWikiDeviceBindsLiveRuntimeByAgentIdentity(t *testing.T) {
 	}
 
 	register(42, "second-runtime", "body-1")
-	if got, online := h.knowledgeWikiDevice(7, 42, "body-1"); online || got != "" {
+	if got, online := h.knowledgeWikiDevice(7, 42, "body-1"); online || got != "body-1" {
 		t.Fatalf("ambiguous live runtimes must fail closed: got device=%q online=%v", got, online)
 	}
 }
