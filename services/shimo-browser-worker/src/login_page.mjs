@@ -47,7 +47,7 @@ const notice=document.getElementById('notice');
 const noticeTitle=document.getElementById('noticeTitle');
 const noticeText=document.getElementById('noticeText');
 const inputError=document.getElementById('inputError');
-let socket=null,finished=false,fallbackTimer=null,wheelTimer=null,wheelX=0,wheelY=0,composing=false,clickTimer=null,inputErrorTimer=null;
+let socket=null,finished=false,fallbackTimer=null,wheelTimer=null,wheelX=0,wheelY=0,composing=false,pendingClick=null,inputErrorTimer=null;
 
 function setStatus(message,state='waiting'){
   statusText.textContent=message||'正在等待登录';
@@ -74,6 +74,7 @@ async function api(path,options){
 
 function sendAction(action){
   if(finished)return;
+  if(action.action!=='click') flushPendingClick();
   if(socket&&socket.readyState===WebSocket.OPEN){socket.send(JSON.stringify(action));return;}
   const {type:_type,...input}=action;
   api('/input',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)}).catch(error=>{
@@ -89,19 +90,32 @@ function sendText(value){
 
 function clampWheel(value){return Math.max(-5000,Math.min(5000,Number(value)||0));}
 
+function sendClick(point,count){
+  sendAction({type:'input',action:'click',x:point.x,y:point.y,count});
+}
+
+function flushPendingClick(){
+  if(!pendingClick)return;
+  clearTimeout(pendingClick.timer);const click=pendingClick;pendingClick=null;
+  sendClick(click.point,1);keyboard.focus({preventScroll:true});
+}
+
 function coordinates(event){
   const rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height};
 }
 
 canvas.addEventListener('click',event=>{
-  clearTimeout(clickTimer);clickTimer=setTimeout(()=>{
-    const point=coordinates(event);sendAction({type:'input',action:'click',x:point.x,y:point.y,count:1});
-    keyboard.focus({preventScroll:true});
-  },250);
+  const point=coordinates(event);
+  if(pendingClick){
+    const dx=point.x-pendingClick.point.x,dy=point.y-pendingClick.point.y;
+    if(Math.hypot(dx,dy)>8)flushPendingClick();
+    else clearTimeout(pendingClick.timer);
+  }
+  pendingClick={point,timer:setTimeout(flushPendingClick,250)};
 });
 canvas.addEventListener('dblclick',event=>{
-  clearTimeout(clickTimer);const point=coordinates(event);
-  sendAction({type:'input',action:'click',x:point.x,y:point.y,count:2});keyboard.focus({preventScroll:true});
+  if(pendingClick){clearTimeout(pendingClick.timer);pendingClick=null;}
+  sendClick(coordinates(event),2);keyboard.focus({preventScroll:true});
 });
 canvas.addEventListener('contextmenu',event=>event.preventDefault());
 canvas.addEventListener('wheel',event=>{

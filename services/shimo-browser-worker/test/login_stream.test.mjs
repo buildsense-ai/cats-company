@@ -78,6 +78,8 @@ test('login page exposes a directly interactive canvas without the old relay inp
     assert.match(result.body, /new WebSocket/);
     assert.match(result.body, /compositionend/);
     assert.match(result.body, /dblclick/);
+    assert.match(result.body, /flushPendingClick/);
+    assert.match(result.body, /Math\.hypot/);
     assert.match(result.body, /input_error/);
     assert.match(result.body, /clampWheel/);
     assert.match(result.body, /type:_type,...input/);
