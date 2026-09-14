@@ -171,9 +171,10 @@ export interface MsgServerData {
     role?: string;
     reply_to?: number;
 }
+export type MsgServerPresenceWhat = 'on' | 'off' | 'msg' | 'upd' | 'group_access_revoked' | 'group_disbanded' | (string & {});
 export interface MsgServerPres {
     topic: string;
-    what: 'on' | 'off' | 'msg' | 'upd';
+    what: MsgServerPresenceWhat;
     src?: string;
 }
 export interface MsgServerMeta {

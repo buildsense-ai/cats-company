@@ -53,6 +53,7 @@ export type {
   MsgServerCtrl,
   MsgServerData,
   MsgServerPres,
+  MsgServerPresenceWhat,
   MsgServerMeta,
   MsgServerInfo,
   MsgServerFriend,
