@@ -46,7 +46,12 @@ export function attachLoginStream(server, loginManager, { frameIntervalMs = FRAM
         const message = parseInputMessage(data);
         await loginManager.input(token, message);
       }).catch(error => {
-        sendJSON(websocket, { type: 'error', message: normalizeStreamError(error).message });
+        const normalized = normalizeStreamError(error);
+        if (normalized.code === 'INVALID_ARGUMENTS') {
+          sendJSON(websocket, { type: 'input_error', code: normalized.code, message: normalized.message });
+        } else {
+          sendJSON(websocket, { type: 'error', message: normalized.message });
+        }
       });
     });
 

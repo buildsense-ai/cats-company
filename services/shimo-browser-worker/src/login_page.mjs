@@ -22,6 +22,7 @@ export function loginHTML(token) {
     #notice strong{display:block;font-size:22px;margin-bottom:8px}
     #keyboard{position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0;pointer-events:none}
     .help{margin:10px 2px 0;color:var(--muted);font-size:13px}
+    #inputError{display:none;margin:10px 2px 0;color:#a33b3b;font-size:13px}
   </style>
 </head>
 <body>
@@ -33,6 +34,7 @@ export function loginHTML(token) {
   </section>
   <textarea id="keyboard" aria-label="远程登录键盘输入" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
   <p class="help">直接点击页面中的输入框并键入内容；支持中文输入法、粘贴、回车、退格和滚轮。登录信息只发送到本次隔离的石墨登录会话。</p>
+  <p id="inputError" role="status" aria-live="polite"></p>
 </main>
 <script>
 const base=${JSON.stringify(base)};
@@ -44,7 +46,8 @@ const dot=document.getElementById('dot');
 const notice=document.getElementById('notice');
 const noticeTitle=document.getElementById('noticeTitle');
 const noticeText=document.getElementById('noticeText');
-let socket=null,finished=false,fallbackTimer=null,wheelTimer=null,wheelX=0,wheelY=0,composing=false;
+const inputError=document.getElementById('inputError');
+let socket=null,finished=false,fallbackTimer=null,wheelTimer=null,wheelX=0,wheelY=0,composing=false,clickTimer=null,inputErrorTimer=null;
 
 function setStatus(message,state='waiting'){
   statusText.textContent=message||'正在等待登录';
@@ -55,33 +58,54 @@ function setStatus(message,state='waiting'){
   }
 }
 
+function showInputError(message){
+  inputError.textContent=message||'这次操作没有生效，请重试';inputError.style.display='block';
+  clearTimeout(inputErrorTimer);inputErrorTimer=setTimeout(()=>{inputError.style.display='none'},5000);
+}
+
 async function drawFrame(blob){
   const bitmap=await createImageBitmap(blob);ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();
 }
 
 async function api(path,options){
   const response=await fetch(base+path,options);const result=await response.json();
-  if(!response.ok)throw new Error(result.error?.message||'操作失败');return result.data;
+  if(!response.ok){const error=new Error(result.error?.message||'操作失败');error.code=result.error?.code;error.status=response.status;throw error;}return result.data;
 }
 
 function sendAction(action){
   if(finished)return;
   if(socket&&socket.readyState===WebSocket.OPEN){socket.send(JSON.stringify(action));return;}
   const {type:_type,...input}=action;
-  api('/input',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)}).catch(error=>setStatus(error.message,'failed'));
+  api('/input',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)}).catch(error=>{
+    if(error.code==='INVALID_ARGUMENTS' || error.status===400) showInputError(error.message);
+    else setStatus(error.message,'failed');
+  });
 }
+
+function sendText(value){
+  const chars=[...String(value||'')];
+  for(let offset=0;offset<chars.length;offset+=200) sendAction({type:'input',action:'text',value:chars.slice(offset,offset+200).join('')});
+}
+
+function clampWheel(value){return Math.max(-5000,Math.min(5000,Number(value)||0));}
 
 function coordinates(event){
   const rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height};
 }
 
 canvas.addEventListener('click',event=>{
-  const point=coordinates(event);sendAction({type:'input',action:'click',x:point.x,y:point.y,count:1});
-  keyboard.focus({preventScroll:true});
+  clearTimeout(clickTimer);clickTimer=setTimeout(()=>{
+    const point=coordinates(event);sendAction({type:'input',action:'click',x:point.x,y:point.y,count:1});
+    keyboard.focus({preventScroll:true});
+  },250);
+});
+canvas.addEventListener('dblclick',event=>{
+  clearTimeout(clickTimer);const point=coordinates(event);
+  sendAction({type:'input',action:'click',x:point.x,y:point.y,count:2});keyboard.focus({preventScroll:true});
 });
 canvas.addEventListener('contextmenu',event=>event.preventDefault());
 canvas.addEventListener('wheel',event=>{
-  event.preventDefault();wheelX+=event.deltaX;wheelY+=event.deltaY;
+  event.preventDefault();wheelX=clampWheel(wheelX+event.deltaX);wheelY=clampWheel(wheelY+event.deltaY);
   clearTimeout(wheelTimer);wheelTimer=setTimeout(()=>{sendAction({type:'input',action:'wheel',delta_x:wheelX,delta_y:wheelY});wheelX=0;wheelY=0},40);
 },{passive:false});
 canvas.addEventListener('focus',()=>keyboard.focus({preventScroll:true}));
@@ -92,13 +116,13 @@ keyboard.addEventListener('keydown',event=>{
 });
 keyboard.addEventListener('compositionstart',()=>{composing=true});
 keyboard.addEventListener('compositionend',event=>{
-  composing=false;const value=keyboard.value||event.data||'';if(value)sendAction({type:'input',action:'text',value});keyboard.value='';
+  composing=false;const value=keyboard.value||event.data||'';if(value)sendText(value);keyboard.value='';
 });
 keyboard.addEventListener('input',()=>{
-  if(!composing&&keyboard.value){sendAction({type:'input',action:'text',value:keyboard.value});keyboard.value='';}
+  if(!composing&&keyboard.value){sendText(keyboard.value);keyboard.value='';}
 });
 keyboard.addEventListener('paste',event=>{
-  event.preventDefault();const value=event.clipboardData?.getData('text')||'';if(value)sendAction({type:'input',action:'text',value});
+  event.preventDefault();const value=event.clipboardData?.getData('text')||'';if(value)sendText(value);
 });
 
 async function fallback(){
@@ -117,6 +141,7 @@ function connect(){
     if(typeof event.data==='string'){
       const message=JSON.parse(event.data);
       if(message.type==='state')setStatus(message.message,message.state);
+      if(message.type==='input_error')showInputError(message.message);
       if(message.type==='error')setStatus(message.message,'failed');
     }else drawFrame(event.data).catch(()=>{});
   };

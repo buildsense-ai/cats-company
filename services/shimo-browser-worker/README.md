@@ -6,7 +6,7 @@ This internal CatsCo service owns interactive Shimo login and read-only browser 
 
 1. CatsCo calls `POST /v1/sessions/login` with an opaque `connection_binding`.
 2. The Worker starts a temporary Chromium context and returns a random `/shimo-login/{token}/` URL.
-3. The user operates the isolated Shimo page directly in a live canvas. A same-origin WebSocket streams frames and forwards pointer, keyboard, paste, Chinese IME, and wheel input; the older HTTP screenshot endpoints remain as a connection fallback. QR login works by opening the WeChat option and scanning the displayed code.
+3. The user operates the isolated Shimo page directly in a live canvas. A same-origin WebSocket streams frames and forwards pointer (including double-click), keyboard, paste, Chinese IME, and wheel input; recoverable input validation errors are shown inline without ending the login attempt. The older HTTP screenshot endpoints remain as a connection fallback. QR login works by opening the WeChat option and scanning the displayed code.
 4. The Worker detects `https://shimo.im/lizard-api/users/me`, exports Playwright storage state, encrypts it with AES-256-GCM, and closes the login browser.
 5. Every read creates a fresh headless browser context from that user's encrypted state.
 

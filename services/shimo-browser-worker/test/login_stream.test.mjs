@@ -2,16 +2,18 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import { WebSocket } from 'ws';
+import { ShimoWorkerError } from '../src/reader.mjs';
 import { createShimoWorkerServer } from '../src/service.mjs';
 
 const internalToken = 'worker-token-that-is-longer-than-thirty-two-characters';
 const loginToken = 'c'.repeat(64);
 
-async function startWorker() {
+async function startWorker({ rejectFirstInput = false } = {}) {
   const inputs = [];
+  let rejectedInput = false;
   const loginManager = {
     status(token) {
-      assert.equal(token, loginToken);
+      if (token !== loginToken) throw new ShimoWorkerError('LOGIN_LINK_EXPIRED', '登录链接已失效。', 410);
       return { state: 'waiting', message: '请登录', expires_at: '2026-09-14T07:00:00.000Z' };
     },
     async screenshot(token) {
@@ -20,6 +22,7 @@ async function startWorker() {
     },
     async input(token, input) {
       assert.equal(token, loginToken);
+      if (rejectFirstInput && !rejectedInput) { rejectedInput = true; throw new ShimoWorkerError('INVALID_ARGUMENTS', '滚动距离无效。', 400); }
       inputs.push(input);
       return this.status(token);
     },
@@ -61,6 +64,9 @@ test('login page exposes a directly interactive canvas without the old relay inp
     assert.match(result.body, /<canvas id="screen"/);
     assert.match(result.body, /new WebSocket/);
     assert.match(result.body, /compositionend/);
+    assert.match(result.body, /dblclick/);
+    assert.match(result.body, /input_error/);
+    assert.match(result.body, /clampWheel/);
     assert.match(result.body, /type:_type,...input/);
     assert.doesNotMatch(result.body, /id="send"/);
     assert.doesNotMatch(result.body, /需要输入手机号或验证码时/);
@@ -101,6 +107,46 @@ test('login stream rejects a cross-origin browser connection', async () => {
     assert.match(error.message, /Unexpected server response: 403/);
   } finally {
     socket.close();
+    await new Promise(resolve => worker.server.close(resolve));
+  }
+});
+
+test('login stream reports recoverable input errors without closing the stream', async () => {
+  const worker = await startWorker({ rejectFirstInput: true });
+  const socket = new WebSocket(worker.url.replace('http:', 'ws:') + `/shimo-login/${loginToken}/stream`, { origin: worker.url });
+  const messages = [];
+  socket.on('message', (data, isBinary) => { if (!isBinary) messages.push(JSON.parse(data.toString())); });
+  try {
+    await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    await waitFor(() => messages.some(item => item?.type === 'state'));
+    socket.send(JSON.stringify({ type: 'input', action: 'wheel', delta_x: 0, delta_y: 6000 }));
+    await waitFor(() => messages.some(item => item?.type === 'input_error'));
+    assert.equal(socket.readyState, WebSocket.OPEN);
+    socket.send(JSON.stringify({ type: 'input', action: 'click', x: 20, y: 20, count: 1 }));
+    await waitFor(() => worker.inputs.length === 1);
+  } finally {
+    socket.close();
+    await new Promise(resolve => socket.once('close', resolve));
+    await new Promise(resolve => worker.server.close(resolve));
+  }
+});
+
+test('login stream allows one active connection per token and rejects unknown tokens', async () => {
+  const worker = await startWorker();
+  const first = new WebSocket(worker.url.replace('http:', 'ws:') + `/shimo-login/${loginToken}/stream`, { origin: worker.url });
+  try {
+    await new Promise((resolve, reject) => { first.once('open', resolve); first.once('error', reject); });
+    const second = new WebSocket(worker.url.replace('http:', 'ws:') + `/shimo-login/${loginToken}/stream`, { origin: worker.url });
+    const duplicateError = await new Promise(resolve => second.once('error', resolve));
+    assert.match(duplicateError.message, /Unexpected server response: 409/);
+    second.close();
+    const unknown = new WebSocket(worker.url.replace('http:', 'ws:') + `/shimo-login/${'d'.repeat(64)}/stream`, { origin: worker.url });
+    const unknownError = await new Promise(resolve => unknown.once('error', resolve));
+    assert.match(unknownError.message, /Unexpected server response: 410/);
+    unknown.close();
+  } finally {
+    first.close();
+    await new Promise(resolve => first.once('close', resolve));
     await new Promise(resolve => worker.server.close(resolve));
   }
 });
