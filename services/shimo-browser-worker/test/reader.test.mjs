@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  cleanDocumentText, collectSheetValues, fetchRangeValues, parseA1Range, planRowBands, ShimoWorkerError, validateShimoURL,
+  cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS, fetchRangeValues, parseA1Range,
+  planRowBands, readBudgetFor, ShimoWorkerError, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
 } from '../src/reader.mjs';
 
 test('Shimo URL validation pins HTTPS and the expected file kind', () => {
@@ -51,24 +52,39 @@ test('行块数量超过上限时标记为截断', () => {
   assert.equal(plan.bands.length, 40);
 });
 
-test('列数超过单块预算时直接拒绝，而不是发一堆注定 400 的请求', () => {
+test('只有超过上游 5000 格硬上限才拒绝，4001~5000 列仍按 1 行 1 块读', () => {
+  // 单行格数就超过硬上限的才注定 400：18278 列连 1 行都读不了
   assert.throws(() => planRowBands('A1:ZZZ1000'), error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE');
-  // 单行也超预算时同样拒绝：整行就是 18278 格，远超 5000 硬上限
   assert.throws(() => planRowBands('A1:ZZZ1'), error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE');
-  // 列数刚好等于预算时仍可按 1 行 1 块读
+  // 5001 列同样超过硬上限（拒绝条件用的是硬上限，不是 4000 的分块预算）
+  assert.throws(() => planRowBands('A1:GJI1'), error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE');
+
+  // 4001~5000 列：单行格数 4001 <= 5000，上游会正常返回，不能拒
+  const wide = planRowBands('A1:EWW1');
+  assert.equal(wide.columns, 4001);
+  assert.equal(wide.rows_per_band, 1);
+  assert.deepEqual(wide.bands.map(band => band.range), ['A1:EWW1']);
+  const wideTwoRows = planRowBands('A1:EWW2');
+  assert.deepEqual(wideTwoRows.bands.map(band => band.range), ['A1:EWW1', 'A2:EWW2']);
+  for (const band of wideTwoRows.bands) assert.ok(bandCells(band) <= UPSTREAM_MAX_CELLS_PER_REQUEST);
+
+  // 刚好等于分块预算的一档仍按 1 行 1 块读
   assert.equal(planRowBands('A1:EWV1').columns, 4000);
-  assert.throws(() => planRowBands('A1:EWW1'), error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE');
+  assert.equal(planRowBands('A1:EWV1').rows_per_band, 1);
 });
 
-test('提前停止与超时都会对外暴露，不会静默丢数据', async () => {
+test('空块不再提前停止，所有块都被读到，覆盖范围等于请求范围', async () => {
   const plan = planRowBands('A1:Z1000');
   let seen = 0;
+  // 只有第一块有数据、后面全是空块：空块不能当成「后面没有数据」的证据（上游首尾都裁空白）
   const early = await collectSheetValues(plan.bands, async () => (seen++ === 0 ? [['row']] : []));
-  assert.equal(early.stopped_early, true);
+  assert.equal(early.stopped_early, false);
   assert.equal(early.timed_out, false);
   assert.deepEqual(early.values, [['row']]);
+  assert.equal(early.requests, plan.bands.length);
+  assert.equal(early.covered_through_row, plan.bands.at(-1).end_row);
 
-  // 一个数据行都没读到时不提前结束（数据可能从后面的行开始）
+  // 一个数据行都没读到同样读满所有块（数据可能从后面的行开始）
   const empty = await collectSheetValues(plan.bands, async () => []);
   assert.equal(empty.stopped_early, false);
   assert.equal(empty.requests, plan.bands.length);
@@ -117,7 +133,8 @@ test('剩余时间预算会传给每一块请求，单块超时也会标记截�
   }, { budgetMs: 30_000, now: () => 0 });
   assert.deepEqual(interrupted.values, [['row-1']]);
   assert.equal(interrupted.timed_out, true);
-  assert.equal(interrupted.requests, 1);
+  // 超时的那一块请求已经发出去了，也要计数（requests = 已发出的上游请求数）
+  assert.equal(interrupted.requests, 2);
   assert.equal(interrupted.covered_through_row, plan.bands[0].end_row);
 
   // 非超时错误（例如权限、范围错误）必须原样抛出，不能降级成「截断」
@@ -176,7 +193,7 @@ test('非法或反向的范围会被拒绝', () => {
   }
 });
 
-test('分块读取按顺序拼接，并在连续空块后停止', async () => {
+test('分块读取按顺序拼接，数据全收且覆盖到最后一块', async () => {
   const plan = planRowBands('A1:Z1000');
   const seen = [];
   const bandsWithData = 3;
@@ -185,8 +202,9 @@ test('分块读取按顺序拼接，并在连续空块后停止', async () => {
     return seen.length <= bandsWithData ? [[seen.length, 'x']] : [];
   });
   assert.deepEqual(collected.values, [[1, 'x'], [2, 'x'], [3, 'x']]);
-  assert.equal(bandsWithData + 2, seen.length);
+  assert.equal(seen.length, plan.bands.length);
   assert.equal(collected.requests, seen.length);
+  assert.equal(collected.covered_through_row, plan.bands.at(-1).end_row);
 });
 
 test('数据从中间行开始时不会被误判为空表', async () => {
@@ -197,5 +215,30 @@ test('数据从中间行开始时不会被误判为空表', async () => {
     return found.length === 2 ? [['客户A']] : [];
   });
   assert.deepEqual(collected.values, [['客户A']]);
-  assert.equal(collected.requests, 4);
+  assert.equal(collected.requests, plan.bands.length);
+  assert.equal(collected.covered_through_row, plan.bands.at(-1).end_row);
+});
+
+test('中段整段空白、后面仍有数据时全部保留', async () => {
+  const bands = Array.from({ length: 6 }, (_, index) => ({ start_row: index * 10 + 1, end_row: (index + 1) * 10 }));
+  const collected = await collectSheetValues(bands, async band => (
+    band.start_row === 11 || band.start_row === 21 ? [] : [[`data@${band.start_row}`]]
+  ));
+  assert.deepEqual(collected.values, [['data@1'], ['data@31'], ['data@41'], ['data@51']]);
+  assert.equal(collected.requests, 6);
+  assert.equal(collected.stopped_early, false);
+  assert.equal(collected.timed_out, false);
+  assert.equal(collected.covered_through_row, 60);
+});
+
+test('整次调用预算扣掉前置耗时，并受单块读取预算封顶', () => {
+  const start = 1_000;
+  // 前置步骤（页面加载 / 取正文）很快时，读取阶段拿满单块预算
+  assert.equal(readBudgetFor(start, { totalBudgetMs: 65_000, readBudgetMs: 30_000, now: () => start + 5_000 }), 30_000);
+  // 前置步骤吃掉 50s 后，读取阶段只能拿剩下的 15s
+  assert.equal(readBudgetFor(start, { totalBudgetMs: 65_000, readBudgetMs: 30_000, now: () => start + 50_000 }), 15_000);
+  // 前置耗时超过总预算时至少给 1ms，避免 0 或负数让请求立即被打断
+  assert.equal(readBudgetFor(start, { totalBudgetMs: 65_000, readBudgetMs: 30_000, now: () => start + 70_000 }), 1);
+  // 总预算必须留在 server 侧 75s 超时以内
+  assert.ok(DEFAULT_TOTAL_READ_BUDGET_MS < 75_000, `total budget ${DEFAULT_TOTAL_READ_BUDGET_MS}ms 应该小于 75s`);
 });

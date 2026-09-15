@@ -39,13 +39,18 @@ Shimo caps a single values request at 5000 cells and counts the *requested* rang
 than the populated rows, so the Worker splits wider ranges into row bands of at most 4000
 cells, reads them sequentially, and concatenates the rows. `/v1/shimo/sheets/read`
 returns `values` plus `requested_range`, `requests`, `covered_through_row`,
-`stopped_early` and `truncated`; a single band wider than the budget is rejected with
-`RANGE_TOO_LARGE`. Every band request is bounded by the remaining part of a 30s read
-budget, so a hanging Shimo call cannot hold a Worker slot until the server's own 75s
-timeout; a band that times out after rows were read returns them with `truncated` set.
-Because Shimo trims trailing empty rows and columns, all-blank rows at a band boundary
-may be dropped: consumers must treat `values` as an ordered list of rows, not as row
-indices.
+`stopped_early` and `truncated`. Every planned band is read, because Shimo trims leading
+as well as trailing empty rows and an empty band therefore does not mean the data ended;
+`stopped_early` is always `false` and kept only so existing callers keep working, and
+`requests` counts every upstream request that was issued, including a band that timed
+out. Only a range whose *single row* still exceeds the 5000-cell cap (`A1:ZZZ1`) is
+rejected with `RANGE_TOO_LARGE`; 4001~5000 column ranges are read one row per request.
+The whole call is bounded by a 65s budget that starts before the page loads, and every
+band request is bounded by the remaining part of that budget (at most 30s), so a hanging
+Shimo call cannot hold a Worker slot until the server's own 75s timeout; a band that
+times out after rows were read returns them with `truncated` set. Because Shimo trims
+empty rows and columns, all-blank rows at a band boundary may be dropped: consumers must
+treat `values` as an ordered list of rows, not as row indices.
 
 The public login route is `/connect/shimo/{one-time-token}`. The server stores only its SHA-256 digest. In mock mode, `POST` to the same route consumes the link and marks only its bound actor as connected.
 

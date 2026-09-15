@@ -28,21 +28,28 @@ Response fields on `/v1/sheets/read`:
 |---|---|
 | `values` | Rows concatenated across bands, in sheet order |
 | `requested_range` | The A1 range the caller asked for |
-| `requests` | How many upstream requests were issued |
-| `covered_through_row` | Last row the Worker actually asked Shimo for |
-| `stopped_early` | Two consecutive empty bands ended the read (data ended) |
+| `requests` | How many upstream requests were issued, including a band that timed out |
+| `covered_through_row` | End row of the last band the Worker asked Shimo for |
+| `stopped_early` | Always `false`; kept so existing callers keep working |
 | `truncated` | The requested range was **not** fully covered (band cap or time budget) |
 
-Shimo trims trailing empty rows and columns from every response, so all-blank rows
-at a band boundary can be dropped; callers must not treat `values` as row-indexed.
-Requesting more columns than the cell budget in a single band (`A1:ZZZ1`) is rejected
-with `RANGE_TOO_LARGE` instead of firing requests that are guaranteed to fail.
+Shimo trims leading and trailing empty rows and columns from every response, so an
+empty band is **not** evidence that the sheet has no data after it. The Worker reads
+every planned band instead of stopping at empty bands; all-blank rows at a band
+boundary can still be dropped, so callers must not treat `values` as row-indexed.
 
-Reads are bounded in time as well as in band count: each band request receives the
-remaining part of a 30s budget as its Playwright request timeout, so a hanging request
-is aborted instead of holding a Worker concurrency slot open. A band that times out
-after rows were already read returns those rows with `truncated: true`; a timeout
-before the first row is reported as an error, never as an empty sheet.
+A single band never exceeds the 5000-cell hard cap: ranges of 4001~5000 columns are read
+one row per upstream request, and only a range whose *single row* still exceeds 5000
+cells (`A1:ZZZ1`) is rejected with `RANGE_TOO_LARGE` instead of firing requests that are
+guaranteed to fail.
+
+Reads are bounded in time as well as in band count: the whole call gets a 65s budget
+that starts before the page loads, and each band request receives the remaining part of
+that budget (capped at 30s) as its Playwright request timeout, so a hanging request is
+aborted instead of holding a Worker concurrency slot past the server's own 75s timeout.
+A band that times out after rows were already read returns those rows with
+`truncated: true`; a timeout before the first row is reported as an error, never as an
+empty sheet.
 
 ## Configuration
 

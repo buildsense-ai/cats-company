@@ -33,12 +33,15 @@ const RANGE_PATTERN = /^([A-Z]{1,3})([1-9][0-9]{0,6}):([A-Z]{1,3})([1-9][0-9]{0,
 export const UPSTREAM_MAX_CELLS_PER_REQUEST = 5000;
 // 预算由硬上限推导，避免两个常量各自硬编码后漂移：5000 * 0.8 = 4000。
 export const CHUNK_CELL_BUDGET = Math.floor(UPSTREAM_MAX_CELLS_PER_REQUEST * 0.8);
-const EMPTY_BAND_TOLERANCE = 2;
 // 40 块 x 每块 <=4000 格；按实测（同一上下文内每块 100~350ms）总耗时约 5~15s，
 // 远低于 server 侧 75s 的整次调用超时，同时避免 A1:Z1000000 这类超长范围把并发槽占满。
 export const MAX_BANDS = 40;
-// 兜底时间预算：即使块数没到上限，也要保证整次读取在 server 超时前返回。
+// 单块读取阶段的兜底时间预算：即使块数没到上限，也要保证读取阶段不会把整次调用占满。
 export const DEFAULT_READ_BUDGET_MS = 30_000;
+// 整次调用预算：server 侧 HTTP 客户端 75s 超时（server/shimo_worker_backend.go），
+// 这里按 65s 收口，把页面加载（最多 45s）、等渲染（2.5s）、取正文（最多 15s）都算进去，
+// 剩下的留给响应序列化和网络往返，避免「最坏情况 92.5s」越过 server 超时。
+export const DEFAULT_TOTAL_READ_BUDGET_MS = 65_000;
 
 function columnIndex(label) {
   let index = 0;
@@ -70,12 +73,19 @@ export function parseA1Range(cellRange) {
   return parsed;
 }
 
-export function planRowBands(cellRange, { cellBudget = CHUNK_CELL_BUDGET, maxBands = MAX_BANDS } = {}) {
+export function planRowBands(cellRange, {
+  cellBudget = CHUNK_CELL_BUDGET,
+  maxBands = MAX_BANDS,
+  maxCellsPerRequest = UPSTREAM_MAX_CELLS_PER_REQUEST,
+} = {}) {
   const { startColumn, startRow, endColumn, endRow } = parseA1Range(cellRange);
   const columns = endColumn - startColumn + 1;
-  if (columns > cellBudget) {
-    throw new ShimoWorkerError('RANGE_TOO_LARGE', `该范围包含 ${columns} 列，单次最多只能读取 ${cellBudget} 个单元格，请按列拆分读取。`, 400);
+  // 拒绝条件用上游硬上限（5000），不是分块预算（4000）：4001~5000 列的单行请求只有几千格，
+  // 上游会正常返回，只有「单行格数也超过硬上限」时才是注定 400 的请求。
+  if (columns > maxCellsPerRequest) {
+    throw new ShimoWorkerError('RANGE_TOO_LARGE', `该范围包含 ${columns} 列，单次最多只能读取 ${maxCellsPerRequest} 个单元格，请按列拆分读取。`, 400);
   }
+  // 列数超过分块预算时按「一行一块」读，每块格数 = 列数（仍然 <= 硬上限）。
   const rowsPerBand = Math.max(1, Math.floor(cellBudget / columns));
   const bands = [];
   let row = startRow;
@@ -93,27 +103,28 @@ export function planRowBands(cellRange, { cellBudget = CHUNK_CELL_BUDGET, maxBan
   return { bands, columns, rows: endRow - startRow + 1, rows_per_band: rowsPerBand, truncated };
 }
 
-// 逐块读取并拼成一个二维数组。上游会裁掉每块尾部的空白行，因此连续空块视为数据结束；
-// 但只有已经读到过数据时才允许提前结束，避免「数据从中间行开始」被误判成空表。
+// 逐块读取并拼成一个二维数组。上游会裁掉每块首尾的空白行，所以「空块」不能当成
+// 「后面没有数据」的证据：表格中间可能存在整段空白、之后又有数据，一旦按连续空块提前
+// 停止，那段数据就被静默丢掉了。因此这里读完计划里的所有块，覆盖范围就等于请求范围；
+// 只有块数上限（plan.truncated）或时间预算才会让读取提前结束，并显式标记为截断。
 function isTimeoutError(error) {
   return error?.name === 'TimeoutError' || /timed out/i.test(String(error?.message || ''));
 }
 
 export async function collectSheetValues(bands, fetchBand, {
-  emptyBandTolerance = EMPTY_BAND_TOLERANCE,
   budgetMs = DEFAULT_READ_BUDGET_MS,
   now = () => Date.now(),
 } = {}) {
   const startedAt = now();
   const values = [];
   let requests = 0;
-  let emptyStreak = 0;
-  let stoppedEarly = false;
   let timedOut = false;
   let coveredThroughRow = bands.length ? bands[0].start_row - 1 : 0;
   for (const band of bands) {
     const remainingMs = budgetMs - (now() - startedAt);
     if (requests > 0 && remainingMs <= 0) { timedOut = true; break; }
+    // requests 记的是「已经发出去的上游请求数」：这一块即便超时/报错也已经发过了。
+    requests += 1;
     let bandValues;
     try {
       // 剩余预算同时交给这一块请求本身：预算耗尽时中断请求，而不是无限等下去。
@@ -125,17 +136,23 @@ export async function collectSheetValues(bands, fetchBand, {
       timedOut = true;
       break;
     }
-    requests += 1;
     coveredThroughRow = band.end_row;
-    if (!bandValues.length) {
-      emptyStreak += 1;
-      if (values.length && emptyStreak >= emptyBandTolerance) { stoppedEarly = true; break; }
-      continue;
-    }
-    emptyStreak = 0;
     for (const row of bandValues) values.push(row);
   }
-  return { values, requests, covered_through_row: coveredThroughRow, stopped_early: stoppedEarly, timed_out: timedOut };
+  // stopped_early 继续对外返回（连接器、skill 快照和文档都在用这个字段），
+  // 但读取不再提前停止，所以它现在是常量 false。
+  return { values, requests, covered_through_row: coveredThroughRow, stopped_early: false, timed_out: timedOut };
+}
+
+// 整次调用的剩余预算：页面加载等前置步骤吃掉的时间要从读取阶段扣掉，
+// 这样「前置耗时 + 读取耗时」始终受总预算约束。
+export function readBudgetFor(startedAt, {
+  totalBudgetMs = DEFAULT_TOTAL_READ_BUDGET_MS,
+  readBudgetMs = DEFAULT_READ_BUDGET_MS,
+  now = () => Date.now(),
+} = {}) {
+  const remainingTotalMs = totalBudgetMs - (now() - startedAt);
+  return Math.max(1, Math.min(readBudgetMs, remainingTotalMs));
 }
 
 export async function fetchRangeValues(context, fileId, sheetName, cellRange, { timeoutMs } = {}) {
@@ -203,9 +220,16 @@ function assertPageAccess(title, bodyText) {
 }
 
 export class PlaywrightShimoEngine {
-  constructor({ executablePath = browserExecutable(), timeoutMs = 45_000 } = {}) {
+  constructor({
+    executablePath = browserExecutable(),
+    timeoutMs = 45_000,
+    totalBudgetMs = DEFAULT_TOTAL_READ_BUDGET_MS,
+    readBudgetMs = DEFAULT_READ_BUDGET_MS,
+  } = {}) {
     this.executablePath = executablePath;
     this.timeoutMs = timeoutMs;
+    this.totalBudgetMs = totalBudgetMs;
+    this.readBudgetMs = readBudgetMs;
   }
 
   async withContext(storageState, callback) {
@@ -240,6 +264,7 @@ export class PlaywrightShimoEngine {
   }
 
   async readSheet(storageState, inputURL, sheetName, cellRange) {
+    const startedAt = Date.now();
     const { url, fileId } = validateShimoURL(inputURL, 'sheet');
     const plan = planRowBands(cellRange);
     return this.withContext(storageState, async context => {
@@ -251,6 +276,7 @@ export class PlaywrightShimoEngine {
       const collected = await collectSheetValues(
         plan.bands,
         (band, { timeoutMs } = {}) => fetchRangeValues(context, fileId, sheetName, band.range, { timeoutMs }),
+        { budgetMs: readBudgetFor(startedAt, { totalBudgetMs: this.totalBudgetMs, readBudgetMs: this.readBudgetMs }) },
       );
       return {
         extracted_at: new Date().toISOString(),
