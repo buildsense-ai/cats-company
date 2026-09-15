@@ -278,6 +278,10 @@ type MsgServerPres struct {
 	Topic string `json:"topic"`
 	What  string `json:"what"` // "on", "off", "msg", "upd"
 	Src   string `json:"src,omitempty"`
+	// UserID is the event-scoped user when an event concerns a specific
+	// member, e.g. the kicked member in "member_kicked". Receivers can match
+	// the value against their own uid to stop work bound to the group.
+	UserID int64 `json:"user_id,omitempty"`
 }
 
 type MsgServerMeta struct {

@@ -619,11 +619,11 @@ func (h *GroupHandler) HandleKickMember(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.notifyGroupEvent(req.GroupID, "member_kicked", map[string]interface{}{
-		"group_id": req.GroupID,
-		"user_id":  req.UserID,
-		"by":       uid,
-	})
+	// The kicked user is no longer returned by GetGroupMembers, so notify the
+	// remaining members and the kicked user explicitly. Clients rely on this
+	// event (matched via pres.user_id) to stop work still running for the
+	// group; otherwise an evicted bot can keep retrying sends it cannot make.
+	h.notifyGroupEventIncludingUser(req.GroupID, req.UserID, "member_kicked")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "kicked"})
 }
@@ -727,15 +727,46 @@ func (h *GroupHandler) notifyGroupEvent(groupID int64, event string, data map[st
 	h.notifyGroupUserIDs(userIDs, groupID, event)
 }
 
+// notifyGroupEventIncludingUser sends a real-time notification to all online
+// group members plus an explicit user, typically one who was just removed from
+// the group and therefore no longer appears in GetGroupMembers. The event is
+// annotated with the explicit user id so clients can match it against
+// themselves and stop tasks still running for the group.
+func (h *GroupHandler) notifyGroupEventIncludingUser(groupID int64, userID int64, event string) {
+	members, err := h.db.GetGroupMembers(groupID)
+	if err != nil {
+		members = nil
+	}
+	recipients := make([]int64, 0, len(members)+1)
+	explicitAlreadyMember := false
+	for _, member := range members {
+		if member.UserID == userID {
+			explicitAlreadyMember = true
+		}
+		recipients = append(recipients, member.UserID)
+	}
+	if !explicitAlreadyMember {
+		recipients = append(recipients, userID)
+	}
+	h.notifyGroupUserIDsWithTarget(recipients, groupID, event, userID)
+}
+
 func (h *GroupHandler) notifyGroupUserIDs(userIDs []int64, groupID int64, event string) {
+	h.notifyGroupUserIDsWithTarget(userIDs, groupID, event, 0)
+}
+
+// notifyGroupUserIDsWithTarget delivers the group event to the given users and
+// attaches targetUserID (when non-zero) to MsgServerPres.UserID.
+func (h *GroupHandler) notifyGroupUserIDsWithTarget(userIDs []int64, groupID int64, event string, targetUserID int64) {
 	if h.hub == nil {
 		return
 	}
 	msg := &ServerMessage{
 		Pres: &MsgServerPres{
-			Topic: fmt.Sprintf("grp_%d", groupID),
-			What:  event,
-			Src:   fmt.Sprintf("grp_%d", groupID),
+			Topic:  fmt.Sprintf("grp_%d", groupID),
+			What:   event,
+			Src:    fmt.Sprintf("grp_%d", groupID),
+			UserID: targetUserID,
 		},
 	}
 	for _, userID := range userIDs {
