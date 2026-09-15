@@ -1430,14 +1430,14 @@ body {
 
 .cloud-artifacts-context-note {
   margin-bottom: 10px;
-  padding: 10px 12px;
-  display: flex;
+  padding: 0 2px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  border: 1px solid var(--v3-border);
-  border-radius: 8px;
+  border: 0;
   color: var(--v3-text-muted);
-  background: var(--v3-bg-message-hover);
+  background: transparent;
 }
 
 .cloud-artifacts-context-note > svg {
@@ -1496,7 +1496,7 @@ body {
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.cloud-artifact-filter-trigger:hover,
+.cloud-artifact-filter-trigger:hover:not([aria-disabled="true"]),
 .cloud-artifact-filter-trigger[aria-expanded="true"] {
   color: var(--cc-text);
   background: var(--cc-selected);
@@ -1509,17 +1509,10 @@ body {
 }
 
 .cloud-artifact-filter-trigger-count {
-  min-width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 5px;
-  border: 1px solid var(--cc-border-strong);
-  border-radius: 999px;
+  padding: 0;
   color: var(--cc-text);
-  background: color-mix(in srgb, var(--cc-text) 7%, transparent);
-  font-size: 10px;
+  background: transparent;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -1600,11 +1593,11 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   padding: 0;
-  color: var(--cc-text);
-  font-size: 12px;
-  font-weight: var(--cc-font-weight-semibold);
+  color: var(--cc-text-secondary);
+  font-size: 11px;
+  font-weight: var(--cc-font-weight-medium);
   line-height: 1.4;
 }
 
@@ -1616,6 +1609,7 @@ body {
 }
 
 .cloud-artifact-filter-scope-options {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 2px;
@@ -1623,6 +1617,22 @@ body {
   border: 0;
   border-radius: var(--cc-radius-md);
   background: var(--cc-control-surface);
+}
+
+.cloud-artifact-filter-scope-indicator {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc(50% - 3px);
+  border-radius: calc(var(--cc-radius-md) - 2px);
+  background: var(--cc-selected);
+  transition: transform 160ms ease;
+  pointer-events: none;
+}
+
+.cloud-artifact-filter-scope-options[data-scope="all"] .cloud-artifact-filter-scope-indicator {
+  transform: translateX(calc(100% + 2px));
 }
 
 .cloud-artifact-filter-scope-options label {
@@ -1652,7 +1662,7 @@ body {
 .cloud-artifact-filter-scope-options label.is-selected {
   border-color: transparent;
   color: var(--cc-text);
-  background: var(--cc-selected);
+  background: transparent;
   font-weight: var(--cc-font-weight-semibold);
   box-shadow: none;
 }
@@ -1678,9 +1688,13 @@ body {
 }
 
 .cloud-artifact-filter-tags-section {
+  padding: 12px 16px 14px;
+  border-top: 0;
+}
+
+.cloud-artifact-filter-tags-section > legend {
   padding-top: 9px;
-  padding-bottom: 8px;
-  border-top: 1px solid var(--cc-border);
+  margin-bottom: 10px;
 }
 
 .cloud-artifact-filter-tag-list {
@@ -1705,8 +1719,8 @@ body {
 }
 
 .cloud-artifact-filter-tag-item.is-selected {
-  background: var(--cc-selected);
-  box-shadow: inset 2px 0 0 var(--cc-text-secondary);
+  background: color-mix(in srgb, var(--cc-text) 10%, transparent);
+  box-shadow: none;
 }
 
 .cloud-artifact-filter-tag-item.is-renaming {
@@ -1740,15 +1754,14 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--cc-border-strong);
-  border-radius: 5px;
-  color: var(--cc-history-panel-bg);
+  border: 0;
+  border-radius: 0;
+  color: var(--cc-text);
   background: transparent;
 }
 
 .cloud-artifact-filter-tag-choice input:checked + .cloud-artifact-filter-check {
-  border-color: var(--cc-text);
-  background: var(--cc-text);
+  background: transparent;
 }
 
 .cloud-artifact-filter-tag-name {
@@ -1772,11 +1785,9 @@ body {
   display: flex;
   align-items: center;
   padding-right: 4px;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transform: translateX(2px);
-  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .cloud-artifact-filter-tag-item:hover .cloud-artifact-filter-tag-actions,
@@ -1815,11 +1826,11 @@ body {
 }
 
 .cloud-artifact-filter-empty {
-  min-height: 52px;
+  min-height: 28px;
   display: flex;
   align-items: center;
   margin: 0;
-  padding: 0 8px;
+  padding: 2px 0;
   color: var(--cc-muted);
   font-size: 12px;
 }
@@ -1828,9 +1839,24 @@ body {
   min-height: 40px;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   padding: 4px 8px;
   border-top: 1px solid var(--cc-border);
+}
+
+.cloud-artifact-filter-trigger[aria-disabled="true"] { opacity: .45; cursor: default; }
+.cloud-artifact-filter-manage-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px 0; font-size: 12px; }
+.cloud-artifact-filter-manage-heading button { min-height: 36px; padding: 0 6px; border: 0; border-radius: var(--cc-radius-md); background: transparent; color: var(--cc-text-secondary); font: inherit; cursor: pointer; }
+.cloud-artifact-filter-manage-heading button:hover { background: var(--cc-hover); color: var(--cc-text); }
+.cloud-artifact-filter-search { width: 100%; min-height: 36px; margin-bottom: 6px; padding: 6px 9px; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-md); background: var(--cc-input-surface); color: var(--cc-text); font: inherit; font-size: 12px; }
+.cloud-artifact-filter-hint { margin: 0 0 6px; font-size: 11px; color: var(--cc-muted); }
+.cloud-artifact-filter-popover.is-managing .cloud-artifact-filter-tag-item { padding-left: 8px; }
+.cloud-artifact-filter-tag-action[aria-label^="删除标签"]:hover:not(:disabled) { color: var(--cc-danger-text); }
+@media (max-width: 640px) {
+  .cloud-artifact-filter-manage-heading button, .cloud-artifact-filter-search { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cloud-artifact-filter-scope-indicator { transition: none; }
 }
 
 .cloud-artifact-filter-popover-footer button {
@@ -2086,11 +2112,12 @@ body {
 }
 
 .cloud-artifacts-active-filters {
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin: 0 0 10px;
+  margin: 0;
   padding: 0 2px;
 }
 
@@ -2183,13 +2210,19 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 24px;
-  padding: 0 4px 0 10px;
-  border-radius: 999px;
-  color: var(--v3-text-main);
-  background: color-mix(in srgb, var(--v3-text-main) 8%, transparent);
-  border: 1px solid var(--v3-border);
+  min-height: 22px;
+  padding: 0;
+  border-radius: 3px;
+  color: var(--v3-text-muted);
+  background: transparent;
+  border: 0;
   font-size: 12px;
+}
+
+.cloud-artifact-tag::before {
+  content: "#";
+  color: var(--v3-text-muted);
+  opacity: 0.72;
 }
 
 .cloud-artifact-tag button {
@@ -2198,7 +2231,7 @@ body {
   justify-content: center;
   width: 28px;
   height: 28px;
-  margin: -5px -5px -5px 0;
+  margin: -3px -5px -3px -2px;
   padding: 0;
   border: 0;
   border-radius: 999px;
@@ -8336,6 +8369,22 @@ button.catsco-download-action:disabled {
   font-family: var(--cc-font-mono);
 }
 
+.v3-wpi-tool-header .v3-wpi-tool-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.v3-wpi-tool-header .oc-wpi-tool-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - 18px), transparent 100%);
+}
+
 .v3-wpi-subagent {
   display: flex;
   flex-direction: column;
@@ -8508,6 +8557,9 @@ button.catsco-download-action:disabled {
   margin: 0;
   padding: 10px 14px;
   overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
   overscroll-behavior-x: contain;
   overscroll-behavior-y: auto;
   font-size: 12px;
@@ -8516,6 +8568,12 @@ button.catsco-download-action:disabled {
   font-family: var(--cc-font-mono);
   max-height: 250px;
   overflow-y: auto;
+}
+
+.v3-wpi-code-block pre code {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .v3-wpi-code-block.result {

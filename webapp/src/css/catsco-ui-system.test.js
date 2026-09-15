@@ -2176,7 +2176,7 @@ describe('CatsCo shell styling', () => {
     const filterTriggerRule = ruleIn(openchatCss, '.cloud-artifact-filter-trigger');
     const filterActiveRule = ruleIn(
       openchatCss,
-      '.cloud-artifact-filter-trigger:hover,\n.cloud-artifact-filter-trigger[aria-expanded="true"]',
+      '.cloud-artifact-filter-trigger:hover:not([aria-disabled="true"]),\n.cloud-artifact-filter-trigger[aria-expanded="true"]',
     );
     const filterFocusRule = ruleIn(openchatCss, '.cloud-artifact-filter-trigger:focus-visible');
     const filterPopoverRule = ruleIn(openchatCss, '.cloud-artifact-filter-popover');
@@ -2201,11 +2201,11 @@ describe('CatsCo shell styling', () => {
     expect(filterPopoverRule).toContain('border-radius: var(--cc-radius-md);');
     expect(filterScopeRule).toContain('padding: 2px;');
     expect(filterScopeRule).toContain('border: 0;');
-    expect(filterScopeSelectedRule).toContain('background: var(--cc-selected);');
+    expect(filterScopeSelectedRule).toContain('background: transparent;');
     expect(filterScopeSelectedRule).not.toContain('var(--v3-accent');
-    expect(filterTagSelectedRule).toContain('box-shadow: inset 2px 0 0 var(--cc-text-secondary);');
-    expect(filterTagActionsRule).toContain('opacity: 0;');
-    expect(filterTagActionsRule).toContain('visibility: hidden;');
+    expect(filterTagSelectedRule).toContain('box-shadow: none;');
+    expect(filterTagActionsRule).toContain('opacity: 1;');
+    expect(filterTagActionsRule).toContain('visibility: visible;');
     expect(filterFooterRule).toContain('min-height: 40px;');
   });
 

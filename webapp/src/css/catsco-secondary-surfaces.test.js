@@ -100,10 +100,11 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('.v3-mobile-model-quota.danger { color: var(--cc-danger-text); }');
     expect(css).not.toContain('#f8d477');
     expect(css).not.toContain('#f2a0a0');
-    expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*display:\s*flex;/s);
+    expect(css).toMatch(/\.v3-model-select\s*\{[^}]*display:\s*block;/s);
+    expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.v3-message-footer \.v3-action-btn\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;[^}]*touch-action:\s*manipulation;/s);
     expect(css).toMatch(/\.v3-message-footer \.v3-message-action-menu button\s*\{[^}]*min-height:\s*44px;[^}]*height:\s*44px;/s);
-    expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 36px);');
+    expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 34px);');
     expect(css).toMatch(/\.v3-shell-title,\s*\.v3-shell-title-input\s*\{/);
     expect(css).toContain('top: max(12px, env(safe-area-inset-top));');
     expect(css).toContain('width: min(48vw, 220px);');

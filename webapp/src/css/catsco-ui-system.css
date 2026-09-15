@@ -5678,6 +5678,30 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 }
 
+@media (max-width: 380px) {
+  .v3-composer-row {
+    gap: 2px;
+    padding-inline: 4px;
+  }
+
+  .v3-composer-plus,
+  .v3-voice-button,
+  .v3-send {
+    width: 38px;
+    height: 38px;
+  }
+
+  .v3-composer-input {
+    min-width: 0;
+    padding-inline: 3px;
+  }
+
+  .v3-agent-picker-button {
+    max-width: 96px;
+    padding-inline: 4px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .cc-app-tooltip { animation: none; }
   .v3-friend-action-menu button,
