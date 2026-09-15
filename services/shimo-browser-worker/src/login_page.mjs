@@ -1,3 +1,5 @@
+import { LOGIN_VIEWPORT } from './login_viewport.mjs';
+
 export function loginHTML(token) {
   const base = `/shimo-login/${token}`;
   return `<!doctype html>
@@ -29,7 +31,7 @@ export function loginHTML(token) {
 <main>
   <header><h1>连接石墨</h1><div id="status"><span id="dot"></span><span id="statusText">正在连接安全登录窗口…</span></div></header>
   <section id="surface" aria-label="石墨登录页面">
-    <canvas id="screen" width="1280" height="900" tabindex="0"></canvas>
+    <canvas id="screen" width="${LOGIN_VIEWPORT.width}" height="${LOGIN_VIEWPORT.height}" tabindex="0"></canvas>
     <div id="notice"><div><strong id="noticeTitle"></strong><span id="noticeText"></span></div></div>
   </section>
   <textarea id="keyboard" aria-label="远程登录键盘输入" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
@@ -38,6 +40,7 @@ export function loginHTML(token) {
 </main>
 <script>
 const base=${JSON.stringify(base)};
+const viewport=${JSON.stringify(LOGIN_VIEWPORT)};
 const canvas=document.getElementById('screen');
 const ctx=canvas.getContext('2d');
 const keyboard=document.getElementById('keyboard');
@@ -64,7 +67,12 @@ function showInputError(message){
 }
 
 async function drawFrame(blob){
-  const bitmap=await createImageBitmap(blob);ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();
+  const bitmap=await createImageBitmap(blob);
+  // The remote page is captured above the logical viewport (see login_viewport.mjs).
+  // Match the backing store to the frame so the extra detail survives: drawing a
+  // 2x bitmap into a 1280px canvas would discard it.  CSS scales it down.
+  if(canvas.width!==bitmap.width||canvas.height!==bitmap.height){canvas.width=bitmap.width;canvas.height=bitmap.height;}
+  ctx.drawImage(bitmap,0,0,bitmap.width,bitmap.height);bitmap.close();
 }
 
 async function api(path,options){
@@ -101,7 +109,9 @@ function flushPendingClick(){
 }
 
 function coordinates(event){
-  const rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height};
+  // Pointer positions are reported in logical viewport pixels, not bitmap pixels:
+  // the worker validates and clicks against the logical viewport it renders.
+  const rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*viewport.width/rect.width,y:(event.clientY-rect.top)*viewport.height/rect.height};
 }
 
 canvas.addEventListener('click',event=>{

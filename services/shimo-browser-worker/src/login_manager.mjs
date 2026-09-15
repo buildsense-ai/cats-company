@@ -2,8 +2,20 @@ import crypto from 'node:crypto';
 import { chromium } from 'playwright-core';
 import { browserExecutable, ShimoWorkerError } from './reader.mjs';
 import { assertBinding } from './session_store.mjs';
+import { LOGIN_DEVICE_SCALE_FACTOR, LOGIN_VIEWPORT } from './login_viewport.mjs';
 
 const DEFAULT_TTL_MS = 10 * 60_000;
+
+// The capture runs above one device pixel per CSS pixel so the streamed page
+// stays crisp in a wide browser window, while pointer input keeps using the
+// logical viewport the login surface maps clicks back to.
+export function loginContextOptions() {
+  return {
+    viewport: { width: LOGIN_VIEWPORT.width, height: LOGIN_VIEWPORT.height },
+    deviceScaleFactor: LOGIN_DEVICE_SCALE_FACTOR,
+    locale: 'zh-CN',
+  };
+}
 
 export class ShimoLoginManager {
   constructor({ store, publicBaseURL, callbackAuthToken = '', completionNotifier = notifyLoginCompletion, executablePath = browserExecutable(), ttlMs = DEFAULT_TTL_MS, now = () => Date.now() }) {
@@ -31,7 +43,7 @@ export class ShimoLoginManager {
     }
     const token = crypto.randomBytes(32).toString('hex');
     const browser = await chromium.launch({ executablePath: this.executablePath, headless: true });
-    const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN' });
+    const context = await browser.newContext(loginContextOptions());
     const page = await context.newPage();
     const attempt = {
       token, binding, browser, context, page, state: 'opening',
@@ -99,7 +111,7 @@ export class ShimoLoginManager {
       const x = Number(input.x);
       const y = Number(input.y);
       const count = Number(input.count || 1);
-      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 1280 || y > 900) {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > LOGIN_VIEWPORT.width || y > LOGIN_VIEWPORT.height) {
         throw new ShimoWorkerError('INVALID_ARGUMENTS', '点击位置无效。', 400);
       }
       if (![1, 2].includes(count)) throw new ShimoWorkerError('INVALID_ARGUMENTS', '点击次数无效。', 400);
