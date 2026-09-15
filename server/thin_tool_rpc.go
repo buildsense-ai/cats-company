@@ -388,9 +388,6 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	if h == nil || h.db == nil || h.userDevices == nil || client == nil || client.accountType != types.AccountHuman {
 		return fmt.Errorf("SkillHub device operations require an authenticated human WebApp connection")
 	}
-	if client.uid <= 0 || ownerUID != client.uid {
-		return fmt.Errorf("target device owner does not match the authenticated user")
-	}
 	botUID := parseThinToolRPCBotUID(msg.Payload)
 	if botUID <= 0 {
 		return fmt.Errorf("bot_uid is required")
@@ -399,10 +396,23 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		return fmt.Errorf("wiki session is scoped to another bot")
 	}
 	botOwnerUID, err := h.db.GetBotOwner(botUID)
-	if err != nil || botOwnerUID != client.uid {
+	if err != nil || botOwnerUID <= 0 || ownerUID != botOwnerUID {
+		return fmt.Errorf("target device owner does not match the bot owner")
+	}
+	if client.uid <= 0 {
+		return fmt.Errorf("authenticated user is missing")
+	}
+	if client.wikiAgentUID > 0 {
+		if client.wikiAgentUID != botUID {
+			return fmt.Errorf("wiki session is scoped to another bot")
+		}
+		if _, _, _, accessErr := accessibleAgentUser(h.db, client.uid, botUID); accessErr != nil {
+			return fmt.Errorf("wiki agent is not accessible to the authenticated user")
+		}
+	} else if botOwnerUID != client.uid {
 		return fmt.Errorf("bot is not owned by the authenticated user")
 	}
-	device, ok := h.userDevices.activeDevice(client.uid, deviceID)
+	device, ok := h.userDevices.activeDevice(botOwnerUID, deviceID)
 	if !ok {
 		return fmt.Errorf("target device is not active for the authenticated user")
 	}
@@ -427,7 +437,7 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	}
 	for _, capability := range device.Capabilities {
 		if capability == operation {
-			msg.TargetOwnerUserID = formatUID(client.uid)
+			msg.TargetOwnerUserID = formatUID(botOwnerUID)
 			return nil
 		}
 	}
