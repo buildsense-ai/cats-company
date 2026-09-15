@@ -8,7 +8,13 @@
 .cc-knowledge-wiki-summary strong { font-size: 30px; }
 .cc-knowledge-wiki-summary span { color: var(--v3-text-muted, #a0a0a0); }
 .cc-knowledge-wiki-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.cc-knowledge-wiki-card { display: flex; justify-content: space-between; gap: 16px; min-height: 120px; padding: 18px; border: 1px solid var(--v3-border, #343434); border-radius: 14px; background: var(--v3-surface-elevated, #202020); }
+.cc-knowledge-wiki-card { display: flex; width: 100%; box-sizing: border-box; text-align: left; justify-content: space-between; gap: 16px; min-height: 120px; padding: 18px; border: 1px solid var(--v3-border, #343434); border-radius: 14px; background: var(--v3-surface-elevated, #202020); color: inherit; cursor: pointer; }
+.cc-knowledge-wiki-card:hover { border-color: var(--v3-accent, #38c9a4); }
+.cc-knowledge-wiki-more { display: block; margin: 22px auto 0; }
+.cc-knowledge-wiki-dialog { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.72); }
+.cc-knowledge-wiki-dialog-inner { position: relative; width: min(920px, 100%); max-height: 85vh; overflow: auto; padding: 28px; border: 1px solid var(--v3-border, #343434); border-radius: 16px; background: var(--v3-surface-elevated, #202020); }
+.cc-knowledge-wiki-dialog pre { white-space: pre-wrap; line-height: 1.65; font: inherit; }
+.cc-knowledge-wiki-close { position: absolute; top: 12px; right: 12px; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .cc-knowledge-wiki-card h2 { margin: 0 0 8px; font-size: 16px; }
 .cc-knowledge-wiki-card p { margin: 0; color: var(--v3-text-muted, #a0a0a0); font-size: 13px; line-height: 1.5; }
 .cc-knowledge-wiki-card > span { flex: none; color: var(--v3-accent, #38c9a4); font-size: 12px; }
