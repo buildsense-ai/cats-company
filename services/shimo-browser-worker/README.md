@@ -12,6 +12,51 @@ This internal CatsCo service owns interactive Shimo login and read-only browser 
 
 The login URL is a bearer secret. It expires after ten minutes, is excluded from referrers and caches, and must never be logged by reverse proxies.
 
+## Sheet reads are chunked server-side
+
+Shimo's sheet values endpoint rejects any request covering more than 5000 cells
+(`400 {"error":"限制最多获取 5000 个单元格的数据"}`), and it counts the requested
+range rather than the populated rows — so `A1:Z1000` (26000 cells) can never be read
+in one call. `POST /v1/sheets/read` therefore splits the requested range into row
+bands of at most 4000 cells (80% of the hard cap), reads them sequentially inside one
+browser context, and concatenates the rows. A range narrower than the budget still
+issues exactly one upstream request.
+
+Response fields on `/v1/sheets/read`:
+
+| Field | Meaning |
+|---|---|
+| `values` | Rows concatenated across bands, in sheet order |
+| `requested_range` | The A1 range the caller asked for |
+| `requests` | How many upstream requests were issued, including a band that timed out |
+| `covered_through_row` | End row of the last band the Worker asked Shimo for |
+| `stopped_early` | Always `false`; kept so existing callers keep working |
+| `truncated` | The requested range was **not** fully covered (band cap or time budget) |
+
+Shimo trims leading and trailing empty rows and columns from every response, so an
+empty band is **not** evidence that the sheet has no data after it. The Worker reads
+every planned band instead of stopping at empty bands; all-blank rows at a band
+boundary can still be dropped, so callers must not treat `values` as row-indexed.
+
+A single band never exceeds the 5000-cell hard cap: ranges of 4001~5000 columns are read
+one row per upstream request, and only a range whose *single row* still exceeds 5000
+cells (`A1:ZZZ1`) is rejected with `RANGE_TOO_LARGE` instead of firing requests that are
+guaranteed to fail.
+
+Reads are bounded in time as well as in band count: the whole call gets a 65s budget
+that starts when the Worker receives the request — including any wait in the concurrency
+queue (2 concurrent reads, 8 queued by default). The page-load steps (page `goto` 45s,
+render wait 2.5s, body text 15s) are each capped by the remaining budget, and every band
+request receives the remaining part of that budget (capped at 30s) as its Playwright
+request timeout, so a hanging request is aborted instead of holding a Worker concurrency
+slot past the server's own 75s timeout. Queue wait shortens a queued call's own read
+window instead of extending it past the server timeout. With less than 3s of the budget
+left before the page even loads, the Worker answers `READ_BUDGET_EXHAUSTED` (503,
+retryable) instead of starting a browser.
+A band that times out after rows were already read returns those rows with
+`truncated: true`; a timeout before the first row is reported as an error, never as an
+empty sheet.
+
 ## Configuration
 
 ```text

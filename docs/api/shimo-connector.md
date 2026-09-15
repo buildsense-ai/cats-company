@@ -32,8 +32,31 @@ All `/v1/shimo/*` requests require `Authorization: Bearer <short-lived-actor-cap
 | `POST` | `/v1/shimo/connection-link` | Create a five-minute, one-time login link |
 | `DELETE` | `/v1/shimo/connection` | Delete the current actor's connection |
 | `POST` | `/v1/shimo/sheets/list` | List sheets in one Shimo spreadsheet |
-| `POST` | `/v1/shimo/sheets/read` | Read one sheet and cell range |
+| `POST` | `/v1/shimo/sheets/read` | Read one sheet and cell range (chunked server-side, see below) |
 | `POST` | `/v1/shimo/documents/read` | Read document text |
+
+Shimo caps a single values request at 5000 cells and counts the *requested* range rather
+than the populated rows, so the Worker splits wider ranges into row bands of at most 4000
+cells, reads them sequentially, and concatenates the rows. `/v1/shimo/sheets/read`
+returns `values` plus `requested_range`, `requests`, `covered_through_row`,
+`stopped_early` and `truncated`. Every planned band is read, because Shimo trims leading
+as well as trailing empty rows and an empty band therefore does not mean the data ended;
+`stopped_early` is always `false` and kept only so existing callers keep working, and
+`requests` counts every upstream request that was issued, including a band that timed
+out. Only a range whose *single row* still exceeds the 5000-cell cap (`A1:ZZZ1`) is
+rejected with `RANGE_TOO_LARGE`; 4001~5000 column ranges are read one row per request.
+The whole call is bounded by a 65s budget that starts when the Worker receives the
+request — including any wait in the concurrency queue (2 concurrent reads, 8 queued by
+default). The page-load steps (`goto` 45s, render wait 2.5s, body text 15s) are capped by
+the remaining budget, and every band request is bounded by the remaining part of that
+budget (at most 30s), so a hanging Shimo call cannot hold a Worker slot until the
+server's own 75s timeout; a band that times out after rows were read returns them with
+`truncated` set. Queue wait shortens a queued call's read window instead of extending it
+past the server timeout. With less than 3s of the budget left before the page loads, the
+read is rejected with `READ_BUDGET_EXHAUSTED` (HTTP 503, retryable) instead of starting
+a browser. Because Shimo trims
+empty rows and columns, all-blank rows at a band boundary may be dropped: consumers must
+treat `values` as an ordered list of rows, not as row indices.
 
 The public login route is `/connect/shimo/{one-time-token}`. The server stores only its SHA-256 digest. In mock mode, `POST` to the same route consumes the link and marks only its bound actor as connected.
 

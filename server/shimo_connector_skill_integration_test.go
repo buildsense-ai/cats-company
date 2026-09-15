@@ -1,12 +1,15 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,7 +85,179 @@ func TestShimoSkillClientContract(t *testing.T) {
 	if read["ok"] != true || read["rows"] != float64(2) {
 		t.Fatalf("unexpected read result: %#v", read)
 	}
-	if _, err := os.Stat(outputPath); err != nil {
+	snapshotBytes, err := os.ReadFile(outputPath)
+	if err != nil {
 		t.Fatalf("snapshot was not written: %v", err)
 	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(snapshotBytes, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	// 老字段在 1.0.3 和 1.0.4 上都成立：快照写出来了，行数、列数、内容哈希都在。
+	if snapshot["rows"] != float64(2) || snapshot["columns"] != float64(2) {
+		t.Fatalf("snapshot lost rows/columns: %#v", snapshot)
+	}
+	if digest, _ := snapshot["content_sha256"].(string); digest == "" {
+		t.Fatalf("snapshot lost content_sha256: %#v", snapshot)
+	}
+	// 覆盖范围元数据（requested_range / requests / covered_through_row / stopped_early /
+	// truncated）是 shimo-reader 1.0.4 才写进摘要和快照的。
+	//
+	// 版本门控以 SKILL.md 里声明的 skillhub_version 为准，而不是「字段在不在」：
+	// 1.0.4 声明了却丢字段同样必须失败，否则自身回归会被静默跳过。
+	// 拿不到版本声明时（本地开发副本），退回按字段存在性放行。
+	clientVersion := shimoReaderSkillVersion(clientPath)
+	switch {
+	case clientVersion == "":
+		if read["requested_range"] == nil || read["truncated"] == nil || read["stopped_early"] == nil {
+			t.Logf("SKILL.md 没有 skillhub_version 声明，且摘要缺少覆盖范围字段，按 <1.0.4 处理并跳过新增元数据断言。client 输出：%#v", read)
+			return
+		}
+		t.Logf("SKILL.md 没有 skillhub_version 声明；按覆盖范围字段存在性放行新增断言。")
+	case !shimoVersionAtLeast(clientVersion, "1.0.4"):
+		t.Logf("shimo-reader 声明版本 %s (<1.0.4)，跳过覆盖范围元数据断言；发布 1.0.4 后自动生效。", clientVersion)
+		return
+	default:
+		t.Logf("shimo-reader 声明版本 %s (>=1.0.4)，覆盖范围元数据断言必须全部通过。", clientVersion)
+	}
+	// 覆盖范围字段必须一路穿过 connector 到达 skill，并落进快照。
+	if read["truncated"] != false || read["requested_range"] != "A1:C20" || read["requests"] != float64(1) {
+		t.Fatalf("skill client dropped sheet coverage metadata: %#v", read)
+	}
+	if read["stopped_early"] != false {
+		t.Fatalf("skill client dropped stopped_early: %#v", read)
+	}
+	if snapshot["truncated"] != false || snapshot["requested_range"] != "A1:C20" || snapshot["requests"] != float64(1) {
+		t.Fatalf("snapshot lost sheet coverage metadata: %#v", snapshot)
+	}
+	if snapshot["stopped_early"] != false {
+		t.Fatalf("snapshot lost stopped_early: %#v", snapshot)
+	}
+
+	// 截断的读取必须在 client 输出里显式标记，不能被当成完整快照。
+	truncatedHandler := NewShimoConnectorHandler(ShimoConnectorOptions{
+		ActorSecret: shimoTestSecret,
+		PublicURL:   "http://127.0.0.1",
+		Backend:     shimoContractLifecycleBackend{shimoContractBackend{truncated: true}},
+	})
+	truncatedMux := http.NewServeMux()
+	truncatedMux.HandleFunc("/v1/shimo/connection", truncatedHandler.HandleConnection)
+	truncatedMux.HandleFunc("/v1/shimo/connection-link", truncatedHandler.HandleConnectionLink)
+	truncatedMux.HandleFunc("/v1/shimo/sheets/read", truncatedHandler.HandleReadSheet)
+	truncatedMux.HandleFunc("/connect/shimo/", truncatedHandler.HandleLoginAttempt)
+	truncatedServer := httptest.NewServer(truncatedMux)
+	defer truncatedServer.Close()
+	truncatedHandler.publicURL = truncatedServer.URL
+
+	truncatedToken, err := GenerateShimoActorToken(shimoTestSecret, "agent-42", "user-a", "task-contract-truncated", "catsco/shimo-reader", 2*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTruncated := func(arguments ...string) map[string]any {
+		t.Helper()
+		command := exec.Command(node, append([]string{clientPath}, arguments...)...)
+		command.Env = append(os.Environ(), "CATSCO_SHIMO_CONNECTOR_URL="+truncatedServer.URL, "CATSCO_ACTOR_TOKEN="+truncatedToken, "CATSCO_SKILL_ID=catsco/shimo-reader")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("skill client %v failed: %v\n%s", arguments, err, output)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(output, &decoded); err != nil {
+			t.Fatalf("decode client output %q: %v", output, err)
+		}
+		return decoded
+	}
+	truncatedOutput := filepath.Join(t.TempDir(), "truncated-snapshot.json")
+	truncatedRead := runTruncated("read-sheet", "--url", "https://shimo.im/sheets/contract-test/", "--sheet", "项目表", "--range", "A1:Z1000", "--output", truncatedOutput)
+	if truncatedRead["ok"] != true || truncatedRead["truncated"] != true {
+		t.Fatalf("truncated read was not flagged: %#v", truncatedRead)
+	}
+	if warning, _ := truncatedRead["warning"].(string); !strings.Contains(warning, "缩小范围") {
+		t.Fatalf("truncated read is missing an actionable warning: %#v", truncatedRead)
+	}
+	truncatedSnapshotBytes, err := os.ReadFile(truncatedOutput)
+	if err != nil {
+		t.Fatalf("truncated snapshot was not written: %v", err)
+	}
+	var truncatedSnapshot map[string]any
+	if err := json.Unmarshal(truncatedSnapshotBytes, &truncatedSnapshot); err != nil {
+		t.Fatalf("decode truncated snapshot: %v", err)
+	}
+	if truncatedSnapshot["truncated"] != true || truncatedSnapshot["covered_through_row"] != float64(153) {
+		t.Fatalf("truncated snapshot lost coverage metadata: %#v", truncatedSnapshot)
+	}
+}
+
+// shimoContractBackend 在 mock 后端之上补齐 worker 现在会返回的覆盖范围字段，
+// 用来端到端验证「worker 信号 → connector → skill 快照」这一整条链路。
+type shimoContractBackend struct {
+	mockShimoConnectorBackend
+	truncated bool
+}
+
+func (b shimoContractBackend) ReadSheet(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string) (map[string]any, error) {
+	data, err := b.mockShimoConnectorBackend.ReadSheet(ctx, actor, sourceURL, sheetName, cellRange)
+	if err != nil {
+		return nil, err
+	}
+	if b.truncated {
+		data["covered_through_row"] = 153
+		data["truncated"] = true
+	}
+	return data, nil
+}
+
+// shimoContractLifecycleBackend 让截断用例跳过 mock 登录按钮：
+// 生命周期后端只要能报告 connected，连接器就允许读取。
+type shimoContractLifecycleBackend struct {
+	shimoContractBackend
+}
+
+func (b shimoContractLifecycleBackend) ConnectionStatus(context.Context, shimoActor) (shimoConnectionStatus, error) {
+	return shimoConnectionStatus{State: "connected"}, nil
+}
+
+func (b shimoContractLifecycleBackend) Disconnect(context.Context, shimoActor) error { return nil }
+
+func (b shimoContractLifecycleBackend) StartLogin(context.Context, shimoActor, string) (string, error) {
+	return "https://app.catsco.test/shimo-login/contract/", nil
+}
+
+// shimoReaderSkillVersion 读取已安装 skill 的 SKILL.md 里声明的 skillhub_version。
+// 返回空字符串表示找不到清单或没有该字段（本地开发副本常见）。
+func shimoReaderSkillVersion(clientPath string) string {
+	manifest := filepath.Join(filepath.Dir(clientPath), "..", "SKILL.md")
+	content, err := os.ReadFile(manifest)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		value, found := strings.CutPrefix(strings.TrimSpace(line), "skillhub_version:")
+		if !found {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), "\"'")
+	}
+	return ""
+}
+
+// shimoVersionAtLeast 比较 X.Y.Z 形式的版本号（缺失的段按 0 处理）。
+func shimoVersionAtLeast(version, minimum string) bool {
+	parse := func(value string) [3]int {
+		var parsed [3]int
+		for index, part := range strings.Split(value, ".") {
+			if index >= len(parsed) {
+				break
+			}
+			parsed[index], _ = strconv.Atoi(strings.TrimSpace(part))
+		}
+		return parsed
+	}
+	actual, required := parse(version), parse(minimum)
+	for index := range actual {
+		if actual[index] != required[index] {
+			return actual[index] > required[index]
+		}
+	}
+	return true
 }
