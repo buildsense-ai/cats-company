@@ -999,7 +999,11 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		owner, err := hub.db.GetBotOwner(claims.AgentUID)
-		if err != nil || owner != claims.ViewerUID {
+		if err != nil || owner <= 0 {
+			http.Error(w, "wiki agent access denied", http.StatusForbidden)
+			return
+		}
+		if _, _, _, accessErr := accessibleAgentUser(hub.db, claims.ViewerUID, claims.AgentUID); accessErr != nil {
 			http.Error(w, "wiki agent access denied", http.StatusForbidden)
 			return
 		}
