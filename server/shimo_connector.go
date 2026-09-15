@@ -783,6 +783,19 @@ func newRequestID() string {
 	return value
 }
 
+// shimoRangeEndRow 取「A1:Z1000」这类范围的结束行号，无法解析时返回 0。
+// 仅用于让本地 mock 后端模拟 worker 回传的 covered_through_row。
+func shimoRangeEndRow(cellRange string) int {
+	parts := strings.SplitN(cellRange, ":", 2)
+	tail := strings.ToUpper(strings.TrimSpace(parts[len(parts)-1]))
+	tail = strings.TrimLeft(tail, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	row, err := strconv.Atoi(tail)
+	if err != nil {
+		return 0
+	}
+	return row
+}
+
 type mockShimoConnectorBackend struct{}
 
 func (mockShimoConnectorBackend) ListSheets(_ context.Context, _ shimoActor, _ string) (map[string]any, error) {
@@ -792,10 +805,17 @@ func (mockShimoConnectorBackend) ListSheets(_ context.Context, _ shimoActor, _ s
 	}, nil
 }
 
-func (mockShimoConnectorBackend) ReadSheet(_ context.Context, _ shimoActor, _ string, _, _ string) (map[string]any, error) {
+func (mockShimoConnectorBackend) ReadSheet(_ context.Context, _ shimoActor, _ string, _, cellRange string) (map[string]any, error) {
 	return map[string]any{
 		"extracted_at": time.Now().UTC().Format(time.RFC3339),
 		"values":       [][]any{{"客户", "金额"}, {"张三", 8500}},
+		// 真实 worker 一定回传覆盖范围字段；mock 不补这些字段，会让
+		// 「分块截断信号 → connector → skill 快照」这条链路在本地测试里失明。
+		"requested_range":     cellRange,
+		"requests":            1,
+		"covered_through_row": shimoRangeEndRow(cellRange),
+		"stopped_early":       false,
+		"truncated":           false,
 	}, nil
 }
 
