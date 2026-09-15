@@ -405,6 +405,19 @@ describe('CatsCo shell styling', () => {
     });
   });
 
+  it('keeps no-op wrapping declarations out of the tool pre container', () => {
+    const preRule = ruleIn(openchatCss, '.v3-wpi-code-block pre');
+    const codeRule = ruleIn(openchatCss, '.v3-wpi-code-block pre code');
+
+    expect(preRule).toContain('overflow-x: auto;');
+    expect(preRule).not.toContain('white-space:');
+    expect(preRule).not.toContain('overflow-wrap:');
+    expect(preRule).not.toContain('word-break:');
+    expect(codeRule).toContain('white-space: pre;');
+    expect(codeRule).toContain('overflow-wrap: normal;');
+    expect(codeRule).toContain('word-break: normal;');
+  });
+
   it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
     const closeButtonRule = ruleFor('.oc-rich-media-preview-close');
 

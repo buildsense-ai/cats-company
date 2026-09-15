@@ -140,6 +140,17 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('.v3-tool-with-tooltip::after {');
   });
 
+  it('applies the narrow composer overrides after the broader mobile controls', () => {
+    const broadMobileIndex = css.lastIndexOf('@media (max-width: 768px)');
+    const narrowMobileIndex = css.lastIndexOf('@media (max-width: 380px)');
+    const narrowMobileCss = css.slice(narrowMobileIndex);
+
+    expect(narrowMobileIndex).toBeGreaterThan(broadMobileIndex);
+    expect(narrowMobileCss).toMatch(/\.v3-composer-row\s*\{[^}]*gap:\s*2px;[^}]*padding-inline:\s*4px;/s);
+    expect(narrowMobileCss).toMatch(/\.v3-composer-plus,\s*\.v3-voice-button,\s*\.v3-send,\s*\.v3-composer-row\.is-empty:not\(\.has-stop\) \.v3-voice-button\s*\{[^}]*width:\s*38px;[^}]*height:\s*38px;/s);
+    expect(narrowMobileCss).toMatch(/\.v3-composer-input\s*\{[^}]*min-width:\s*0;[^}]*padding-inline:\s*3px;/s);
+  });
+
   it('uses an iPhone-scale mobile hierarchy for secondary surfaces and SkillHub', () => {
     expect(css).toMatch(/\.cc-settings-secondary-surface,\s*\.cc-new-task-dialog\s*\{[^}]*--cc-mobile-text-body:\s*16px;[^}]*--cc-mobile-text-secondary:\s*14px;[^}]*--cc-mobile-control-height:\s*48px;[^}]*--cc-mobile-row-height:\s*60px;/s);
     expect(css).toMatch(/\.oc-theme-option\s*\{[^}]*min-height:\s*78px;[^}]*border-radius:\s*0;/s);

@@ -8557,9 +8557,6 @@ button.catsco-download-action:disabled {
   margin: 0;
   padding: 10px 14px;
   overflow-x: auto;
-  white-space: pre;
-  overflow-wrap: normal;
-  word-break: normal;
   overscroll-behavior-x: contain;
   overscroll-behavior-y: auto;
   font-size: 12px;
