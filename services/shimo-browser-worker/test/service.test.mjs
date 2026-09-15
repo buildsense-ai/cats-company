@@ -117,6 +117,54 @@ test('worker rejects read requests beyond the concurrency bound', async () => {
   } finally { await worker.close(); }
 });
 
+test('read budget starts when the request arrives, charging queue wait to the same call', async () => {
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  let firstEntered;
+  const firstEnteredPromise = new Promise(resolve => { firstEntered = resolve; });
+  const observed = [];
+  const reader = {
+    async listSheets() { return { sheets: [] }; },
+    async readDocument() { return { text: '', truncated: false }; },
+    async readSheet(state, url, sheet, range, options = {}) {
+      observed.push({ callTime: Date.now(), budgetStartedAt: options.budgetStartedAt });
+      if (observed.length === 1) {
+        firstEntered();
+        await firstGate;
+      }
+      return { values: [['金额'], [8500]] };
+    },
+  };
+  const worker = await startWorker({ reader, limits: { maxConcurrency: 1, maxQueue: 2 } });
+  try {
+    worker.store.save(bindingA, { storageState: { cookies: [] }, accountHint: 'A', verifiedAt: 'now' });
+    const payload = { connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:C20' };
+    const first = request(worker, '/v1/sheets/read', payload);
+    await firstEnteredPromise;
+    const secondQueuedAt = Date.now();
+    const queueDelayMs = 200;
+    const second = request(worker, '/v1/sheets/read', payload);
+    await new Promise(resolve => setTimeout(resolve, queueDelayMs));
+    releaseFirst();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.equal(firstResult.status, 200);
+    assert.equal(secondResult.status, 200);
+    assert.equal(observed.length, 2);
+    const secondCall = observed[1];
+    // 第二个请求在槽位被占满时排队：预算起点必须是请求到达时刻，而不是拿到槽位的时刻。
+    assert.ok(
+      secondCall.budgetStartedAt >= secondQueuedAt,
+      `budgetStartedAt ${secondCall.budgetStartedAt} must not predate the request (${secondQueuedAt})`,
+    );
+    assert.ok(
+      secondCall.callTime - secondCall.budgetStartedAt >= queueDelayMs - 50,
+      `queue wait was not charged to the read budget: callTime-budgetStartedAt=${secondCall.callTime - secondCall.budgetStartedAt}`,
+    );
+    // 没有排队的调用，预算起点应当贴着请求处理时刻。
+    assert.ok(observed[0].callTime - observed[0].budgetStartedAt < 50);
+  } finally { await worker.close(); }
+});
+
 test('internal endpoints require service authentication', async () => {
   const worker = await startWorker();
   try {

@@ -44,9 +44,12 @@ cells (`A1:ZZZ1`) is rejected with `RANGE_TOO_LARGE` instead of firing requests 
 guaranteed to fail.
 
 Reads are bounded in time as well as in band count: the whole call gets a 65s budget
-that starts before the page loads, and each band request receives the remaining part of
-that budget (capped at 30s) as its Playwright request timeout, so a hanging request is
-aborted instead of holding a Worker concurrency slot past the server's own 75s timeout.
+that starts when the Worker receives the request — including any wait in the concurrency
+queue (2 concurrent reads, 8 queued by default) — and each band request receives the
+remaining part of that budget (capped at 30s) as its Playwright request timeout, so a
+hanging request is aborted instead of holding a Worker concurrency slot past the
+server's own 75s timeout. Queue wait shortens a queued call's own read window instead
+of extending it past the server timeout.
 A band that times out after rows were already read returns those rows with
 `truncated: true`; a timeout before the first row is reported as an error, never as an
 empty sheet.

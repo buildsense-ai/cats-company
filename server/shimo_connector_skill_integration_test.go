@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,12 +101,24 @@ func TestShimoSkillClientContract(t *testing.T) {
 		t.Fatalf("snapshot lost content_sha256: %#v", snapshot)
 	}
 	// 覆盖范围元数据（requested_range / requests / covered_through_row / stopped_early /
-	// truncated）是 shimo-reader 1.0.4 才写进摘要和快照的。交付检查跑的时候 SkillHub 上可能
-	// 仍装着 1.0.3：这时按版本跳过新增断言，只保留上面的老字段断言；1.0.4 发布后这些断言会
-	// 自动开始生效，不需要再改这个文件。
-	if read["requested_range"] == nil || read["truncated"] == nil || read["stopped_early"] == nil {
-		t.Logf("shimo-reader client 仍是 <1.0.4（摘要里没有覆盖范围字段），跳过新增元数据断言；发布 1.0.4 后自动生效。client 输出：%#v", read)
+	// truncated）是 shimo-reader 1.0.4 才写进摘要和快照的。
+	//
+	// 版本门控以 SKILL.md 里声明的 skillhub_version 为准，而不是「字段在不在」：
+	// 1.0.4 声明了却丢字段同样必须失败，否则自身回归会被静默跳过。
+	// 拿不到版本声明时（本地开发副本），退回按字段存在性放行。
+	clientVersion := shimoReaderSkillVersion(clientPath)
+	switch {
+	case clientVersion == "":
+		if read["requested_range"] == nil || read["truncated"] == nil || read["stopped_early"] == nil {
+			t.Logf("SKILL.md 没有 skillhub_version 声明，且摘要缺少覆盖范围字段，按 <1.0.4 处理并跳过新增元数据断言。client 输出：%#v", read)
+			return
+		}
+		t.Logf("SKILL.md 没有 skillhub_version 声明；按覆盖范围字段存在性放行新增断言。")
+	case !shimoVersionAtLeast(clientVersion, "1.0.4"):
+		t.Logf("shimo-reader 声明版本 %s (<1.0.4)，跳过覆盖范围元数据断言；发布 1.0.4 后自动生效。", clientVersion)
 		return
+	default:
+		t.Logf("shimo-reader 声明版本 %s (>=1.0.4)，覆盖范围元数据断言必须全部通过。", clientVersion)
 	}
 	// 覆盖范围字段必须一路穿过 connector 到达 skill，并落进快照。
 	if read["truncated"] != false || read["requested_range"] != "A1:C20" || read["requests"] != float64(1) {
@@ -208,4 +221,43 @@ func (b shimoContractLifecycleBackend) Disconnect(context.Context, shimoActor) e
 
 func (b shimoContractLifecycleBackend) StartLogin(context.Context, shimoActor, string) (string, error) {
 	return "https://app.catsco.test/shimo-login/contract/", nil
+}
+
+// shimoReaderSkillVersion 读取已安装 skill 的 SKILL.md 里声明的 skillhub_version。
+// 返回空字符串表示找不到清单或没有该字段（本地开发副本常见）。
+func shimoReaderSkillVersion(clientPath string) string {
+	manifest := filepath.Join(filepath.Dir(clientPath), "..", "SKILL.md")
+	content, err := os.ReadFile(manifest)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		value, found := strings.CutPrefix(strings.TrimSpace(line), "skillhub_version:")
+		if !found {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), "\"'")
+	}
+	return ""
+}
+
+// shimoVersionAtLeast 比较 X.Y.Z 形式的版本号（缺失的段按 0 处理）。
+func shimoVersionAtLeast(version, minimum string) bool {
+	parse := func(value string) [3]int {
+		var parsed [3]int
+		for index, part := range strings.Split(value, ".") {
+			if index >= len(parsed) {
+				break
+			}
+			parsed[index], _ = strconv.Atoi(strings.TrimSpace(part))
+		}
+		return parsed
+	}
+	actual, required := parse(version), parse(minimum)
+	for index := range actual {
+		if actual[index] != required[index] {
+			return actual[index] > required[index]
+		}
+	}
+	return true
 }

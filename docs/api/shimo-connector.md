@@ -45,10 +45,13 @@ as well as trailing empty rows and an empty band therefore does not mean the dat
 `requests` counts every upstream request that was issued, including a band that timed
 out. Only a range whose *single row* still exceeds the 5000-cell cap (`A1:ZZZ1`) is
 rejected with `RANGE_TOO_LARGE`; 4001~5000 column ranges are read one row per request.
-The whole call is bounded by a 65s budget that starts before the page loads, and every
-band request is bounded by the remaining part of that budget (at most 30s), so a hanging
-Shimo call cannot hold a Worker slot until the server's own 75s timeout; a band that
-times out after rows were read returns them with `truncated` set. Because Shimo trims
+The whole call is bounded by a 65s budget that starts when the Worker receives the
+request — including any wait in the concurrency queue (2 concurrent reads, 8 queued by
+default) — and every band request is bounded by the remaining part of that budget (at
+most 30s), so a hanging Shimo call cannot hold a Worker slot until the server's own 75s
+timeout; a band that times out after rows were read returns them with `truncated` set.
+Queue wait shortens a queued call's read window instead of extending it past the server
+timeout. Because Shimo trims
 empty rows and columns, all-blank rows at a band boundary may be dropped: consumers must
 treat `values` as an ordered list of rows, not as row indices.
 

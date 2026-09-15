@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS, fetchRangeValues, parseA1Range,
-  planRowBands, readBudgetFor, ShimoWorkerError, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
+  planRowBands, readBudgetFor, readStartedAt, ShimoWorkerError, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
 } from '../src/reader.mjs';
 
 test('Shimo URL validation pins HTTPS and the expected file kind', () => {
@@ -241,4 +241,16 @@ test('整次调用预算扣掉前置耗时，并受单块读取预算封顶', ()
   assert.equal(readBudgetFor(start, { totalBudgetMs: 65_000, readBudgetMs: 30_000, now: () => start + 70_000 }), 1);
   // 总预算必须留在 server 侧 75s 超时以内
   assert.ok(DEFAULT_TOTAL_READ_BUDGET_MS < 75_000, `total budget ${DEFAULT_TOTAL_READ_BUDGET_MS}ms 应该小于 75s`);
+});
+
+test('readStartedAt 优先采用调用方传入的请求到达时刻，缺省时才读时钟', () => {
+  let clockCalls = 0;
+  const clock = () => { clockCalls += 1; return 5_000; };
+  // Worker 入口传入请求到达时刻：排队等待也要计入这次读取的预算。
+  assert.equal(readStartedAt(1_700_000_000_000, clock), 1_700_000_000_000);
+  assert.equal(clockCalls, 0);
+  // 直接调用 reader（没有入口时间）时才回退到当前时刻。
+  assert.equal(readStartedAt(undefined, clock), 5_000);
+  assert.equal(readStartedAt(Number.NaN, clock), 5_000);
+  assert.equal(clockCalls, 2);
 });

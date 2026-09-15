@@ -39,8 +39,9 @@ export const MAX_BANDS = 40;
 // 单块读取阶段的兜底时间预算：即使块数没到上限，也要保证读取阶段不会把整次调用占满。
 export const DEFAULT_READ_BUDGET_MS = 30_000;
 // 整次调用预算：server 侧 HTTP 客户端 75s 超时（server/shimo_worker_backend.go），
-// 这里按 65s 收口，把页面加载（最多 45s）、等渲染（2.5s）、取正文（最多 15s）都算进去，
-// 剩下的留给响应序列化和网络往返，避免「最坏情况 92.5s」越过 server 超时。
+// 这里按 65s 收口。计时从 Worker 收到请求开始（含并发限流器里的排队等待），把页面加载
+// （最多 45s）、等渲染（2.5s）、取正文（最多 15s）都算进去，剩下的留给响应序列化和网络
+// 往返，避免「排队 + 读取」越过 server 超时。
 export const DEFAULT_TOTAL_READ_BUDGET_MS = 65_000;
 
 function columnIndex(label) {
@@ -144,8 +145,14 @@ export async function collectSheetValues(bands, fetchBand, {
   return { values, requests, covered_through_row: coveredThroughRow, stopped_early: false, timed_out: timedOut };
 }
 
-// 整次调用的剩余预算：页面加载等前置步骤吃掉的时间要从读取阶段扣掉，
-// 这样「前置耗时 + 读取耗时」始终受总预算约束。
+// 整次调用的起点：Worker 入口传入请求到达时刻，让排队等待也计入同一次读取预算；
+// 没有传入时回退到当前时刻（直接调用 reader 的场景）。
+export function readStartedAt(budgetStartedAt, now = Date.now()) {
+  return Number.isFinite(budgetStartedAt) ? budgetStartedAt : now();
+}
+
+// 整次调用的剩余预算：排队等待、页面加载等前置步骤吃掉的时间都要从读取阶段扣掉，
+// 这样「排队耗时 + 前置耗时 + 读取耗时」始终受总预算约束。
 export function readBudgetFor(startedAt, {
   totalBudgetMs = DEFAULT_TOTAL_READ_BUDGET_MS,
   readBudgetMs = DEFAULT_READ_BUDGET_MS,
@@ -225,11 +232,13 @@ export class PlaywrightShimoEngine {
     timeoutMs = 45_000,
     totalBudgetMs = DEFAULT_TOTAL_READ_BUDGET_MS,
     readBudgetMs = DEFAULT_READ_BUDGET_MS,
+    now = () => Date.now(),
   } = {}) {
     this.executablePath = executablePath;
     this.timeoutMs = timeoutMs;
     this.totalBudgetMs = totalBudgetMs;
     this.readBudgetMs = readBudgetMs;
+    this.now = now;
   }
 
   async withContext(storageState, callback) {
@@ -263,8 +272,10 @@ export class PlaywrightShimoEngine {
     });
   }
 
-  async readSheet(storageState, inputURL, sheetName, cellRange) {
-    const startedAt = Date.now();
+  async readSheet(storageState, inputURL, sheetName, cellRange, { budgetStartedAt } = {}) {
+    // 预算从 Worker 收到这次请求的时刻开始算（含限流器排队），而不是拿到并发槽位才开始，
+    // 否则「排队 + 读取」会整体越过 server 侧 75s 超时。
+    const startedAt = readStartedAt(budgetStartedAt, this.now);
     const { url, fileId } = validateShimoURL(inputURL, 'sheet');
     const plan = planRowBands(cellRange);
     return this.withContext(storageState, async context => {

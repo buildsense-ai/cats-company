@@ -101,7 +101,12 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
         if (!sheetName || [...sheetName].length > 200 || !RANGE_PATTERN.test(cellRange)) {
           throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称或范围无效。', 400);
         }
-        const data = await limiter.run(() => reader.readSheet(record.storageState, String(body.url || ''), sheetName, cellRange));
+        // 计时从收到请求开始：排队等待也算进读取预算，否则并发排队会让整次调用越过
+        // server 侧 75s 超时（server/shimo_worker_backend.go 的 http.Client 超时）。
+        const budgetStartedAt = Date.now();
+        const data = await limiter.run(() => reader.readSheet(
+          record.storageState, String(body.url || ''), sheetName, cellRange, { budgetStartedAt },
+        ));
         return sendJSON(response, 200, { ok: true, data });
       }
       if (url.pathname === '/v1/documents/read') {
