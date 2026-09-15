@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { ShimoWorkerError } from './reader.mjs';
 
 const STREAM_PATH = /^\/shimo-login\/([0-9a-f]{64})\/stream$/;
-const FRAME_INTERVAL_MS = 650;
+const FRAME_INTERVAL_MS = 500;
 
 export function attachLoginStream(server, loginManager, { frameIntervalMs = FRAME_INTERVAL_MS } = {}) {
   const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -31,6 +31,8 @@ export function attachLoginStream(server, loginManager, { frameIntervalMs = FRAM
     let stopped = false;
     let inputChain = Promise.resolve();
     let timer;
+    let pumping = false;
+    let frameKicked = false;
 
     const stop = () => {
       stopped = true;
@@ -40,11 +42,25 @@ export function attachLoginStream(server, loginManager, { frameIntervalMs = FRAM
     websocket.once('close', stop);
     websocket.once('error', stop);
 
+    const scheduleFrame = delayMs => {
+      clearTimeout(timer);
+      timer = setTimeout(pump, delayMs);
+    };
+
+    // Typing must not wait for the next scheduled frame: every input event asks
+    // for a fresh capture right away, so a keystroke shows up after about one
+    // capture instead of up to a whole frame interval later.
+    const requestFrame = () => {
+      frameKicked = true;
+      if (!pumping) scheduleFrame(0);
+    };
+
     websocket.on('message', data => {
       if (stopped) return;
       inputChain = inputChain.then(async () => {
         const message = parseInputMessage(data);
         await loginManager.input(token, message);
+        requestFrame();
       }).catch(error => {
         const normalized = normalizeStreamError(error);
         if (normalized.code === 'INVALID_ARGUMENTS') {
@@ -57,19 +73,28 @@ export function attachLoginStream(server, loginManager, { frameIntervalMs = FRAM
 
     const pump = async () => {
       if (stopped || websocket.readyState !== WebSocket.OPEN) return;
+      if (pumping) { frameKicked = true; return; }
+      pumping = true;
+      frameKicked = false;
       try {
         const state = loginManager.status(token);
         sendJSON(websocket, { type: 'state', ...state });
         if (state.state === 'waiting' || state.state === 'opening') {
           const png = await loginManager.screenshot(token);
           if (!stopped && websocket.readyState === WebSocket.OPEN) websocket.send(png, { binary: true });
-          timer = setTimeout(pump, frameIntervalMs);
+          scheduleFrame(frameIntervalMs);
         } else {
           websocket.close(1000, 'Login finished');
         }
       } catch (error) {
         sendJSON(websocket, { type: 'error', message: normalizeStreamError(error).message });
         websocket.close(1011, 'Login stream ended');
+      } finally {
+        pumping = false;
+        if (frameKicked && !stopped) {
+          frameKicked = false;
+          scheduleFrame(0);
+        }
       }
     };
     void pump();

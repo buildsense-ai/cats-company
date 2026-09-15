@@ -133,7 +133,10 @@ export class ShimoLoginManager {
   async screenshot(token) {
     const attempt = this.requireAttempt(token);
     if (!attempt.page || attempt.page.isClosed()) throw new ShimoWorkerError('LOGIN_FINISHED', attempt.message, 409);
-    return attempt.page.screenshot({ type: 'png' });
+    // Playwright hides the text caret in screenshots by default, so a visitor
+    // typing into the streamed page sees no caret at all and cannot tell where
+    // the text is going.  Keep the real caret so the frames show it blinking.
+    return attempt.page.screenshot({ type: 'png', caret: 'initial' });
   }
 
   async input(token, input) {

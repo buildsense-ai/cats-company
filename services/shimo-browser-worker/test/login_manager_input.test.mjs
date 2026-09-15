@@ -44,3 +44,19 @@ test('login manager rejects unsafe interaction values', async () => {
   await assert.rejects(() => manager.input(token, { action: 'wheel', delta_x: 0, delta_y: 9000 }), error => error.code === 'INVALID_ARGUMENTS');
   await assert.rejects(() => manager.input(token, { action: 'key', value: 'F12' }), error => error.code === 'INVALID_ARGUMENTS');
 });
+
+test('login manager keeps the real text caret in the streamed frames', async () => {
+  const calls = [];
+  const page = {
+    isClosed() { return false; },
+    async screenshot(options) { calls.push(options); return Buffer.from('png'); },
+  };
+  const manager = new ShimoLoginManager({ store: {}, publicBaseURL: 'https://app.catsco.test/shimo-login' });
+  manager.attempts.set(token, {
+    token, binding: 'a'.repeat(32), page, state: 'waiting', message: '请登录', expiresAt: Date.now() + 60_000,
+  });
+  await manager.screenshot(token);
+  // Playwright hides the caret unless asked otherwise; without this the visitor
+  // cannot see where the text they type is going.
+  assert.deepEqual(calls, [{ type: 'png', caret: 'initial' }]);
+});
