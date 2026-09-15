@@ -45,7 +45,7 @@ export function createConcurrencyLimiter({ maxConcurrency = DEFAULT_MAX_CONCURRE
   };
 }
 
-export function createShimoWorkerServer({ internalToken, store, reader, loginManager, limits }) {
+export function createShimoWorkerServer({ internalToken, store, reader, loginManager, limits, loginFrameIntervalMs }) {
   if (String(internalToken || '').length < 32) throw new Error('SHIMO_WORKER_TOKEN must contain at least 32 characters');
   const limiter = createConcurrencyLimiter(limits);
   const server = http.createServer(async (request, response) => {
@@ -117,7 +117,7 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
       sendError(response, normalizeError(error));
     }
   });
-  attachLoginStream(server, loginManager);
+  attachLoginStream(server, loginManager, Number.isFinite(loginFrameIntervalMs) ? { frameIntervalMs: loginFrameIntervalMs } : {});
   return server;
 }
 

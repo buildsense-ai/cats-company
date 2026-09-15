@@ -8,7 +8,7 @@ import { createShimoWorkerServer } from '../src/service.mjs';
 const internalToken = 'worker-token-that-is-longer-than-thirty-two-characters';
 const loginToken = 'c'.repeat(64);
 
-async function startWorker({ rejectFirstInput = false } = {}) {
+async function startWorker({ rejectFirstInput = false, frameIntervalMs } = {}) {
   const inputs = [];
   let rejectedInput = false;
   const loginManager = {
@@ -28,7 +28,7 @@ async function startWorker({ rejectFirstInput = false } = {}) {
     },
   };
   const store = { load() { return null; }, delete() {}, save() {} };
-  const server = createShimoWorkerServer({ internalToken, store, reader: {}, loginManager });
+  const server = createShimoWorkerServer({ internalToken, store, reader: {}, loginManager, loginFrameIntervalMs: frameIntervalMs });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { inputs, server, url: `http://127.0.0.1:${server.address().port}` };
 }
@@ -178,4 +178,23 @@ test('HTTP input fallback forwards click count and wheel deltas', async () => {
       { action: 'wheel', delta_x: 12, delta_y: -240 },
     ]);
   } finally { await new Promise(resolve => worker.server.close(resolve)); }
+});
+
+test('login stream pushes a fresh frame right after input instead of waiting for the next tick', async () => {
+  const worker = await startWorker({ frameIntervalMs: 5000 });
+  const socket = new WebSocket(worker.url.replace('http:', 'ws:') + `/shimo-login/${loginToken}/stream`, { origin: worker.url });
+  const frames = [];
+  socket.on('message', (data, isBinary) => { if (isBinary) frames.push(Date.now()); });
+  try {
+    await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+    await waitFor(() => frames.length === 1);
+    const sentAt = Date.now();
+    socket.send(JSON.stringify({ type: 'input', action: 'text', value: '1511' }));
+    await waitFor(() => frames.length === 2, 2000);
+    assert.ok(frames[1] - sentAt < 1000, `补充帧延迟过高：${frames[1] - sentAt}ms`);
+  } finally {
+    socket.close();
+    await new Promise(resolve => socket.once('close', resolve));
+    await new Promise(resolve => worker.server.close(resolve));
+  }
 });
