@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
-  fetchRangeValues, looksLikeAccessDeniedPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
+  fetchRangeValues, looksLikeAccessDeniedPage, looksLikeLoginPromptPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
   PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, UNREADABLE_DOCUMENT_MESSAGE,
   upstreamExcerpt, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
 } from '../src/reader.mjs';
@@ -234,6 +234,13 @@ test('页面文案判定只认错误外壳自己的文案，正常表格里的�
   assert.equal(looksLikeAccessDeniedPage('报错记录', '2026-09-01 config file does not exist'), false);
   assert.equal(looksLikeAccessDeniedPage('项目表', '文档不存在 已被删除 链接已失效'), false);
   assert.equal(looksLikeAccessDeniedPage('', ''), false);
+  // 2026-09-15 生产实测：登录会话失效时标题是「No permission」、正文是英文登录提示。
+  // 只认中文提示，这一页就会被 /no permission/ 误判成「账号看不到这份文档」。
+  assert.equal(looksLikeLoginPromptPage("You haven't logged in yet\nPlease sign in before trying to access\nSign in"), true);
+  assert.equal(looksLikeLoginPromptPage('您还没有登录 请登录后尝试访问'), true);
+  assert.equal(looksLikeLoginPromptPage('No permission\nRequest access'), false);
+  assert.equal(looksLikeLoginPromptPage('日期 业务员 客户 建库类型'), false);
+  assert.equal(looksLikeLoginPromptPage(''), false);
   const upstream = 'GetFileByProviderID fail: GET_REMOTE_FILE_INVALID_ARGUMENT';
   assert.equal(looksLikeUnreadableDocument(500, upstream), true);
   assert.equal(looksLikeUnreadableDocument(400, upstream), false);
@@ -284,6 +291,29 @@ test('页面上有表格标签时，正文里的普通文案不会让读取变�
     { get: async () => ({ status: () => 200, ok: () => true, text: async () => values, json: async () => JSON.parse(values) }) },
   ).readSheet({}, url, '工作表1', 'A1:C10');
   assert.deepEqual(read.values, [['config file does not exist']]);
+});
+
+test('登录会话失效的页面报 LOGIN_REQUIRED，不会被当成「账号看不到这份文档」', async () => {
+  const url = 'https://shimo.im/sheets/Abc123/';
+  // 真实形态：会话过期后打开表格，石墨给的是标题「No permission」+ 英文登录提示。
+  const expired = fakeSheetPage({
+    title: 'No permission',
+    bodyText: "You haven't logged in yet\nPlease sign in before trying to access\nSign in",
+  });
+  await assert.rejects(
+    () => engineFor(expired).listSheets({}, url),
+    error => error instanceof ShimoWorkerError && error.code === 'LOGIN_REQUIRED' && error.status === 409,
+  );
+  await assert.rejects(
+    () => engineFor(expired).readSheet({}, url, '工作表1', 'A1:C10'),
+    error => error instanceof ShimoWorkerError && error.code === 'LOGIN_REQUIRED' && error.status === 409,
+  );
+  // 同样的标题、但正文没有登录提示：仍然是「账号看不到这份文档」，不能被新规则吞掉。
+  const forbidden = fakeSheetPage({ title: 'No permission', bodyText: 'No permission\nRequest access' });
+  await assert.rejects(
+    () => engineFor(forbidden).listSheets({}, url),
+    error => error instanceof ShimoWorkerError && error.code === 'DOCUMENT_NOT_ACCESSIBLE' && error.status === 403,
+  );
 });
 
 test('没有表格标签时才用页面文案判定：错误外壳报看不到文档，普通页面报 PAGE_UNEXPECTED', async () => {
