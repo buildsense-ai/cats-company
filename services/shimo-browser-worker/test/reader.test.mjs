@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
-  fetchRangeValues, parseA1Range, planRowBands, PlaywrightShimoEngine, readBudgetFor, readStartedAt,
-  ShimoWorkerError, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
+  fetchRangeValues, looksLikeAccessDeniedPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
+  PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, UNREADABLE_DOCUMENT_MESSAGE,
+  upstreamExcerpt, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
 } from '../src/reader.mjs';
 
 test('Shimo URL validation pins HTTPS and the expected file kind', () => {
@@ -186,6 +187,86 @@ test('石墨接口的错误码会映射成明确的 worker 错误', async () => 
   await expectCode(400, '{"error":"限制最多获取 5000 个单元格的数据"}', 'RANGE_TOO_LARGE');
   await expectCode(400, '{"error":"请求参数错误"}', 'SHIMO_API_ERROR');
   await expectCode(200, '{"values":"not-a-matrix"}', 'UPSTREAM_CHANGED');
+});
+
+const contextReturning = (status, body) => ({
+  request: {
+    get: async () => ({
+      status: () => status,
+      ok: () => status >= 200 && status < 300,
+      text: async () => body,
+      json: async () => JSON.parse(body),
+    }),
+  },
+});
+
+test('账号看不到的文档要报成 DOCUMENT_NOT_ACCESSIBLE，而不是笼统的接口错误', async () => {
+  // 2026-09-15 生产实测：同事的石墨账号没有该表格权限时，石墨 SDK 返回的就是这条通用上游错误。
+  // 旧实现把它当成「接口 HTTP 500」上报，于是 David 只能去猜「文档类型不支持 / 工作表名写错」。
+  const upstream = '{"code":3,"statusText":"GetFileByProviderID fail, err: rpc error: code = InvalidArgument'
+    + ' desc = get remote file by provider id failed, reason: sdk.provider.v1.GET_REMOTE_FILE_INVALID_ARGUMENT"}';
+  await assert.rejects(
+    () => fetchRangeValues(contextReturning(500, upstream), 'FileId', '工作表1', 'A1:Z10'),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'DOCUMENT_NOT_ACCESSIBLE'
+      && error.status === 403
+      && error.message === UNREADABLE_DOCUMENT_MESSAGE,
+  );
+  // 石墨不区分「没有权限」和「文档不存在」，所以文案必须同时说清两种可能，并要求换账号而不是重试。
+  assert.match(UNREADABLE_DOCUMENT_MESSAGE, /没有查看权限/);
+  assert.match(UNREADABLE_DOCUMENT_MESSAGE, /已被删除|链接已失效/);
+  assert.match(UNREADABLE_DOCUMENT_MESSAGE, /重试无效/);
+  // 其他上游失败仍按可重试的接口错误上报，但带上上游摘录，方便定位。
+  await assert.rejects(
+    () => fetchRangeValues(contextReturning(502, '<html>bad gateway</html>'), 'FileId', '工作表1', 'A1:Z10'),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'SHIMO_API_ERROR'
+      && error.message.includes('bad gateway'),
+  );
+});
+
+test('英文 404 外壳页按「这个账号看不到这份文档」分类，而不是页面结构变化', () => {
+  assert.equal(looksLikeAccessDeniedPage('404 not found', '404\nThe page you visited does not exist\nBack to Desktop'), true);
+  assert.equal(looksLikeAccessDeniedPage('无权限', '申请访问权限'), true);
+  assert.equal(looksLikeAccessDeniedPage('项目表', '日期 业务员 客户 建库类型'), false);
+  // 标题里恰好带「404」的正常表格不能被误判成无权限页。
+  assert.equal(looksLikeAccessDeniedPage('404 错误页复现记录', '日期 客户 送样数量'), false);
+  assert.equal(looksLikeAccessDeniedPage('', ''), false);
+  const upstream = 'GetFileByProviderID fail: GET_REMOTE_FILE_INVALID_ARGUMENT';
+  assert.equal(looksLikeUnreadableDocument(500, upstream), true);
+  assert.equal(looksLikeUnreadableDocument(400, upstream), false);
+  assert.equal(looksLikeUnreadableDocument(500, ''), false);
+  assert.equal(upstreamExcerpt('x'.repeat(400)).length, 161);
+});
+
+test('页面里没有表格标签时，按「看不到这份文档」和「不是表格」分开报错', async () => {
+  const engineFor = (title, bodyText) => {
+    const page = {
+      async goto() {},
+      async waitForTimeout() {},
+      async title() { return title; },
+      locator(selector) {
+        if (selector === 'body') return { async innerText() { return bodyText; } };
+        return { first() { return { async waitFor() { throw new Error('no sheet tab'); } }; } };
+      },
+    };
+    const engine = new PlaywrightShimoEngine({ executablePath: 'test-browser' });
+    engine.withContext = async (state, callback) => callback({ newPage: async () => page });
+    return engine;
+  };
+
+  // 同事这次的真实形态：连接成功、但账号看不到这份文档，石墨给的是英文 404 外壳。
+  await assert.rejects(
+    () => engineFor('404 not found', '404 The page you visited does not exist Back to Desktop')
+      .listSheets({}, 'https://shimo.im/sheets/Abc123/'),
+    error => error instanceof ShimoWorkerError && error.code === 'DOCUMENT_NOT_ACCESSIBLE' && error.status === 403,
+  );
+  // 页面真的变了（既不是无权限、也没有表格标签）：报出可诊断的页面标题，而不是万能 WORKER_ERROR。
+  const unexpected = await engineFor('石墨文档', '正在加载')
+    .listSheets({}, 'https://shimo.im/sheets/Abc123/')
+    .then(() => null, error => error);
+  assert.equal(unexpected?.code, 'PAGE_UNEXPECTED');
+  assert.match(unexpected.message, /石墨文档/);
 });
 
 test('非法或反向的范围会被拒绝', () => {

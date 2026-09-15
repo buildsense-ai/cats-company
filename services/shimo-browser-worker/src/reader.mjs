@@ -178,6 +178,48 @@ export function readBudgetFor(startedAt, {
   return Math.max(1, Math.min(readBudgetMs, remainingTotalMs));
 }
 
+// 石墨对「这个账号看不到的文件」和「文件不存在」返回同一类上游错误：
+// HTTP 500 + {"code":3,"statusText":"GetFileByProviderID fail ... GET_REMOTE_FILE_INVALID_ARGUMENT ..."}。
+// 2026-09-15 在生产实测：不存在的 fileId 与「已登录但对该表格没有权限」走的是同一条上游路径。
+// 所以这两件事统一归成 DOCUMENT_NOT_ACCESSIBLE，并在文案里同时说清两种可能，
+// 避免调用方把它猜成「文档类型不支持」或「工作表名写错了」。
+const UNREADABLE_UPSTREAM_PATTERNS = [
+  'getfilebyproviderid',
+  'get_remote_file_invalid_argument',
+  'get remote file by provider id',
+];
+
+export const UNREADABLE_DOCUMENT_MESSAGE = '当前登录的石墨账号看不到这份文档：可能是这个账号没有查看权限，也可能是文档已被删除或链接已失效。重试无效，请改用有权访问的石墨账号重新连接，或者让文档所有者把这个账号加为可查看的协作者。';
+
+export function looksLikeUnreadableDocument(status, body) {
+  if (!(status >= 500)) return false;
+  const text = String(body || '').toLowerCase();
+  return text !== '' && UNREADABLE_UPSTREAM_PATTERNS.some(pattern => text.includes(pattern));
+}
+
+export function upstreamExcerpt(body, limit = 160) {
+  const text = String(body || '').replace(/\s+/g, ' ').trim();
+  return text.length > limit ? text.slice(0, limit) + '…' : text;
+}
+
+// 石墨前端的文案跟随浏览器语言，生产容器里是英文（"404 not found" /
+// "The page you visited does not exist"），而旧实现只认中文字样，于是「账号看不到这份文档」
+// 落进了「页面结构变了」的兜底分支，被报成笼统的 WORKER_ERROR。
+// 生产里的标题是「404 not found」。这里只认这个完整形态，标题里恰好含「404」的正常表格
+// 由后面的正文特征去区分（石墨的出错页正文是「The page you visited does not exist」）。
+const ACCESS_PAGE_TITLE_PATTERNS = [/无权限/, /^404\s+not\s+found\b/i, /no\s*permission/i, /access\s*denied/i];
+const ACCESS_PAGE_BODY_PATTERNS = [
+  '申请访问权限', '无权限', '没有访问权限', '无访问权限', '文档不存在', '已被删除', '链接已失效',
+  'request access', 'no permission', "don't have permission", 'do not have permission',
+  'does not exist', 'has been deleted', 'back to desktop',
+];
+
+export function looksLikeAccessDeniedPage(title, bodyText) {
+  if (ACCESS_PAGE_TITLE_PATTERNS.some(pattern => pattern.test(String(title || '')))) return true;
+  const body = String(bodyText || '').toLowerCase();
+  return ACCESS_PAGE_BODY_PATTERNS.some(pattern => body.includes(pattern.toLowerCase()));
+}
+
 export async function fetchRangeValues(context, fileId, sheetName, cellRange, { timeoutMs } = {}) {
   const apiRange = sheetName + '!' + cellRange;
   const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values?range=' + encodeURIComponent(apiRange);
@@ -190,7 +232,11 @@ export async function fetchRangeValues(context, fileId, sheetName, cellRange, { 
     if (response.status() === 400 && body.includes('限制最多获取')) {
       throw new ShimoWorkerError('RANGE_TOO_LARGE', '石墨表格单次最多读取 5000 个单元格，请缩小范围或分块读取。', 400);
     }
-    throw new ShimoWorkerError('SHIMO_API_ERROR', '石墨表格接口返回 HTTP ' + response.status() + '。', 502);
+    if (looksLikeUnreadableDocument(response.status(), body)) {
+      throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
+    }
+    const excerpt = upstreamExcerpt(body);
+    throw new ShimoWorkerError('SHIMO_API_ERROR', '石墨表格接口返回 HTTP ' + response.status() + '。' + (excerpt ? '上游返回：' + excerpt : ''), 502);
   }
   const payload = await response.json();
   if (!Array.isArray(payload.values) || payload.values.some(row => !Array.isArray(row))) {
@@ -237,8 +283,8 @@ function assertPageAccess(title, bodyText) {
   if (bodyText.includes('您还没有登录') || bodyText.includes('请登录后尝试访问')) {
     throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
   }
-  if (title === '无权限' || bodyText.includes('申请访问权限')) {
-    throw new ShimoWorkerError('PERMISSION_DENIED', '当前石墨账号没有该文件的访问权限。', 403);
+  if (looksLikeAccessDeniedPage(title, bodyText)) {
+    throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
   }
 }
 
@@ -274,8 +320,17 @@ export class PlaywrightShimoEngine {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeoutMs });
       await page.waitForTimeout(2500);
       const bodyText = await page.locator('body').innerText({ timeout: 15_000 });
-      assertPageAccess(await page.title(), bodyText);
-      await page.locator('.sm-sheet-tab-item').first().waitFor({ state: 'attached', timeout: 15_000 });
+      const title = await page.title();
+      assertPageAccess(title, bodyText);
+      // 没有表格标签时不能再笼统地报 WORKER_ERROR：上面 assertPageAccess 已经排除了
+      // 「这个账号看不到这份文档」（石墨对「无权限」和「不存在」都给 404 外壳），
+      // 所以这里只剩「链接根本不是表格」和「页面结构变了」两种可能。
+      const tabAttached = await page.locator('.sm-sheet-tab-item').first()
+        .waitFor({ state: 'attached', timeout: 15_000 }).then(() => true, () => false);
+      if (!tabAttached) {
+        const shownTitle = String(title || '').slice(0, 80) || '空标题';
+        throw new ShimoWorkerError('PAGE_UNEXPECTED', '石墨页面里没有找到表格标签（页面标题：' + shownTitle + '），可能链接指向的不是表格，或页面结构已经变化。', 502);
+      }
       const raw = await page.locator('.sm-sheet-tab-item').evaluateAll(nodes => nodes.map((node, index) => ({
         name: node.querySelector('.sm-sheet-tab-name')?.getAttribute('title')
           || node.querySelector('.sm-sheet-tab-name')?.textContent?.trim()
