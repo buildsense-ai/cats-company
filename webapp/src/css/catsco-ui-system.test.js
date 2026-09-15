@@ -405,6 +405,19 @@ describe('CatsCo shell styling', () => {
     });
   });
 
+  it('keeps no-op wrapping declarations out of the tool pre container', () => {
+    const preRule = ruleIn(openchatCss, '.v3-wpi-code-block pre');
+    const codeRule = ruleIn(openchatCss, '.v3-wpi-code-block pre code');
+
+    expect(preRule).toContain('overflow-x: auto;');
+    expect(preRule).not.toContain('white-space:');
+    expect(preRule).not.toContain('overflow-wrap:');
+    expect(preRule).not.toContain('word-break:');
+    expect(codeRule).toContain('white-space: pre;');
+    expect(codeRule).toContain('overflow-wrap: normal;');
+    expect(codeRule).toContain('word-break: normal;');
+  });
+
   it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
     const closeButtonRule = ruleFor('.oc-rich-media-preview-close');
 
@@ -2176,7 +2189,7 @@ describe('CatsCo shell styling', () => {
     const filterTriggerRule = ruleIn(openchatCss, '.cloud-artifact-filter-trigger');
     const filterActiveRule = ruleIn(
       openchatCss,
-      '.cloud-artifact-filter-trigger:hover,\n.cloud-artifact-filter-trigger[aria-expanded="true"]',
+      '.cloud-artifact-filter-trigger:hover:not([aria-disabled="true"]),\n.cloud-artifact-filter-trigger[aria-expanded="true"]',
     );
     const filterFocusRule = ruleIn(openchatCss, '.cloud-artifact-filter-trigger:focus-visible');
     const filterPopoverRule = ruleIn(openchatCss, '.cloud-artifact-filter-popover');
@@ -2201,11 +2214,11 @@ describe('CatsCo shell styling', () => {
     expect(filterPopoverRule).toContain('border-radius: var(--cc-radius-md);');
     expect(filterScopeRule).toContain('padding: 2px;');
     expect(filterScopeRule).toContain('border: 0;');
-    expect(filterScopeSelectedRule).toContain('background: var(--cc-selected);');
+    expect(filterScopeSelectedRule).toContain('background: transparent;');
     expect(filterScopeSelectedRule).not.toContain('var(--v3-accent');
-    expect(filterTagSelectedRule).toContain('box-shadow: inset 2px 0 0 var(--cc-text-secondary);');
-    expect(filterTagActionsRule).toContain('opacity: 0;');
-    expect(filterTagActionsRule).toContain('visibility: hidden;');
+    expect(filterTagSelectedRule).toContain('box-shadow: none;');
+    expect(filterTagActionsRule).toContain('opacity: 1;');
+    expect(filterTagActionsRule).toContain('visibility: visible;');
     expect(filterFooterRule).toContain('min-height: 40px;');
   });
 

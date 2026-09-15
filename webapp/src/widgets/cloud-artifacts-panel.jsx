@@ -16,7 +16,6 @@ import {
   RotateCcw,
   Tag,
   Upload,
-  UsersRound,
   Trash2,
   X,
 } from 'lucide-react';
@@ -30,7 +29,7 @@ const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const FILTER_POPOVER_GAP = 8;
 const FILTER_POPOVER_GUTTER = 8;
 const FILTER_POPOVER_MAX_HEIGHT = 480;
-const FILTER_POPOVER_WIDTH = 304;
+const FILTER_POPOVER_WIDTH = 280;
 
 function notifyArtifactsChanged(agentUid) {
   window.dispatchEvent(new CustomEvent(CLOUD_ARTIFACTS_CHANGED_EVENT, {
@@ -536,16 +535,6 @@ export default function CloudArtifactsPanel({
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
   const isOwner = viewerRelation === 'owner';
   const canManageTags = viewerRelation === 'owner' || viewerRelation === 'friend';
-  const artifactRoleLabel = isOwner ? '所有者' : viewerRelation ? '好友' : '';
-  const artifactAccessText = !viewerRelation
-    ? '正在读取成果权限…'
-    : isOwner
-      ? canPublish
-        ? '成员可查看和上传 · 你可管理全部成果'
-        : '成员可查看 · 你可管理全部成果'
-      : canPublish
-        ? '你可以查看和上传成果，并可管理成果标签'
-        : '你可以查看成果，并可管理成果标签';
   const hasAgent = Number(agentUid || 0) > 0;
 
   const renderArtifact = (artifact) => (
@@ -736,15 +725,8 @@ export default function CloudArtifactsPanel({
         <div className="cloud-artifacts-body">
           {artifactTabSelected && tab !== 'deleted' && (
             <div className="cloud-artifacts-context-note">
-              <UsersRound size={17} aria-hidden="true" />
               <div className="cloud-artifacts-context-copy">
-                <div className="cloud-artifacts-context-title">
-                  <strong>共享成果</strong>
-                  {artifactRoleLabel && (
-                    <span className="cloud-artifacts-role-badge">{artifactRoleLabel}</span>
-                  )}
-                </div>
-                <span>{artifactAccessText}</span>
+                <strong>共享成果</strong>
               </div>
               <ArtifactFilters
                 value={effectiveArtifactScope}
@@ -770,29 +752,29 @@ export default function CloudArtifactsPanel({
                 onDeleteTag={setConfirmTag}
                 pendingTag={pendingGlobalTag}
               />
-            </div>
-          )}
-          {artifactTabSelected && tab === 'active' && selectedTags.length > 0 && (
-            <div className="cloud-artifacts-active-filters" role="group" aria-label="已选标签">
-              {selectedTags.map((tag) => (
-                <button
-                  type="button"
-                  className="cloud-artifact-active-filter-chip"
-                  key={tag}
-                  aria-label={'移除筛选标签 ' + tag}
-                  onClick={() => toggleTagFilter(tag)}
-                >
-                  <span>{tag}</span>
-                  <X size={12} aria-hidden="true" />
-                </button>
-              ))}
-              <button
-                type="button"
-                className="cloud-artifact-active-filter-clear"
-                onClick={() => setSelectedTags([])}
-              >
-                清除标签
-              </button>
+              {tab === 'active' && selectedTags.length > 0 && (
+                <div className="cloud-artifacts-active-filters" role="group" aria-label="已选标签">
+                  {selectedTags.map((tag) => (
+                    <button
+                      type="button"
+                      className="cloud-artifact-active-filter-chip"
+                      key={tag}
+                      aria-label={'移除筛选标签 ' + tag}
+                      onClick={() => toggleTagFilter(tag)}
+                    >
+                      <span>{tag}</span>
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="cloud-artifact-active-filter-clear"
+                    onClick={() => setSelectedTags([])}
+                  >
+                    清除标签
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {loading && visibleCount === 0 && (
@@ -809,7 +791,12 @@ export default function CloudArtifactsPanel({
             </div>
           )}
           {!loading && !error && visibleCount === 0 && (
-            <div className="cloud-artifacts-status">{emptyText}</div>
+            <div className="cloud-artifacts-status">
+              <span>{emptyText}</span>
+              {tab === 'active' && (selectedTags.length > 0 || effectiveArtifactScope === 'current') && (
+                <button type="button" onClick={() => { setSelectedTags([]); setArtifactScope('all'); }}>清除筛选</button>
+              )}
+            </div>
           )}
           {tab === 'files' && files.length > 0 && (
             <>
@@ -932,18 +919,28 @@ function ArtifactFilters({
   pendingTag,
 }) {
   const [open, setOpen] = useState(false);
+  const [managing, setManaging] = useState(false);
+  const [query, setQuery] = useState('');
   const [floatingStyle, setFloatingStyle] = useState(null);
   const [placement, setPlacement] = useState('bottom');
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
   const panelRef = useRef(null);
   const panelID = React.useId();
+  const cancelRenameRef = useRef(onCancelRename);
+  cancelRenameRef.current = onCancelRename;
   const activeFilterCount = selectedTags.length + (value === 'current' ? 1 : 0);
   const scopeLabel = value === 'current' ? '当前任务' : '全部成果';
   const hasFilters = activeFilterCount > 0;
+  const unavailable = !canSelectCurrent && tags.length === 0 && !hasFilters;
+  const showSearch = tags.length > 8 || query.length > 0;
+  const filteredTags = tags.filter(({ tag }) => tag.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
 
   const close = useCallback(({ restoreFocus = false } = {}) => {
     setOpen(false);
+    setManaging(false);
+    setQuery('');
+    cancelRenameRef.current();
     setFloatingStyle(null);
     if (restoreFocus) triggerRef.current?.focus();
   }, []);
@@ -959,7 +956,7 @@ function ArtifactFilters({
     const width = Math.min(FILTER_POPOVER_WIDTH, viewportWidth - (FILTER_POPOVER_GUTTER * 2));
     const availableBelow = viewportHeight - triggerRect.bottom - FILTER_POPOVER_GUTTER - FILTER_POPOVER_GAP;
     const availableAbove = triggerRect.top - FILTER_POPOVER_GUTTER - FILTER_POPOVER_GAP;
-    const measuredHeight = panel.scrollHeight || 360;
+    const measuredHeight = panel.scrollHeight + (panel.offsetHeight - panel.clientHeight);
     const opensAbove = availableBelow < Math.min(measuredHeight, 260) && availableAbove > availableBelow;
     const availableHeight = Math.max(96, Math.floor(opensAbove ? availableAbove : availableBelow));
     const maxHeight = Math.min(
@@ -988,18 +985,29 @@ function ArtifactFilters({
       visibility: 'visible',
       width,
     });
-  }, [open, renamingTag, tags.length]);
+  }, [open]);
 
   useLayoutEffect(() => {
     if (!open) return undefined;
     updatePosition();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(updatePosition) : null;
+    if (panelRef.current) observer?.observe(panelRef.current);
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
     return () => {
+      observer?.disconnect();
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
   }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (open && unavailable) close({ restoreFocus: true });
+  }, [open, unavailable, close]);
+
+  useEffect(() => {
+    if (managing && !canManageTags) { setManaging(false); cancelRenameRef.current(); }
+  }, [managing, canManageTags]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -1012,7 +1020,8 @@ function ArtifactFilters({
       if (event.key !== 'Escape') return;
       event.preventDefault();
       event.stopPropagation();
-      if (renamingTag) onCancelRename();
+      if (renamingTag) cancelRenameRef.current();
+      else if (managing) setManaging(false);
       else close({ restoreFocus: true });
     };
     document.addEventListener('pointerdown', closeOnOutside);
@@ -1027,15 +1036,15 @@ function ArtifactFilters({
       document.removeEventListener('focusin', closeOnOutside);
       document.removeEventListener('keydown', handleEscape, true);
     };
-  }, [close, onCancelRename, open, renamingTag]);
+  }, [close, open, renamingTag, managing]);
 
   const popover = open && typeof document !== 'undefined' && createPortal(
     <section
       ref={panelRef}
       id={panelID}
-      className="cloud-artifact-filter-popover"
+      className={`cloud-artifact-filter-popover${managing ? ' is-managing' : ''}`}
       role="dialog"
-      aria-label="筛选成果"
+      aria-label={managing ? '管理标签' : '筛选成果'}
       data-cc-focus-group="true"
       data-placement={placement}
       tabIndex={-1}
@@ -1045,11 +1054,23 @@ function ArtifactFilters({
         position: 'fixed',
         top: 0,
         visibility: 'hidden',
-        width: 0,
+        width: `min(${FILTER_POPOVER_WIDTH}px, calc(100vw - ${FILTER_POPOVER_GUTTER * 2}px))`,
       }}
     >
-      <fieldset className="cloud-artifact-filter-section cloud-artifact-filter-scope-section" aria-label="成果范围">
-        <div className="cloud-artifact-filter-scope-options">
+      {managing && <div className="cloud-artifact-filter-manage-heading">
+        <strong>管理标签</strong>
+        <button
+          type="button"
+          aria-label="关闭标签管理"
+          title="关闭"
+          onClick={() => close({ restoreFocus: true })}
+        >
+          <X size={16} aria-hidden="true" />
+        </button>
+      </div>}
+      {!managing && canSelectCurrent && <fieldset className="cloud-artifact-filter-section cloud-artifact-filter-scope-section" aria-label="成果范围">
+        <div className="cloud-artifact-filter-scope-options" data-scope={value}>
+          <span className="cloud-artifact-filter-scope-indicator" aria-hidden="true" />
           <label className={value === 'current' ? 'is-selected' : ''}>
             <input
               type="radio"
@@ -1072,25 +1093,31 @@ function ArtifactFilters({
             <span>全部成果</span>
           </label>
         </div>
-      </fieldset>
+      </fieldset>}
 
-      <fieldset className="cloud-artifact-filter-section cloud-artifact-filter-tags-section">
-        <legend>
-          <span>标签</span>
+      <fieldset
+        className="cloud-artifact-filter-section cloud-artifact-filter-tags-section"
+        aria-label={managing ? '管理标签' : '标签筛选'}
+      >
+        {!managing && <legend>
+          <span>标签筛选</span>
           {selectedTags.length > 0 && <span>{selectedTags.length} 个已选</span>}
-        </legend>
+        </legend>}
+        {showSearch && <input type="search" className="cloud-artifact-filter-search" aria-label="搜索标签"
+          placeholder="搜索标签" value={query} onChange={(event) => setQuery(event.target.value)} />}
+        {!managing && selectedTags.length > 1 && <p className="cloud-artifact-filter-hint">匹配任一所选标签</p>}
         {tags.length > 0 ? (
           <div className="cloud-artifact-filter-tag-list">
-            {tags.map(({ tag, count }) => (
+            {filteredTags.map(({ tag, count }) => (
               <div
                 className={[
                   'cloud-artifact-filter-tag-item',
-                  selectedTags.includes(tag) ? 'is-selected' : '',
+                  !managing && selectedTags.includes(tag) ? 'is-selected' : '',
                   renamingTag === tag ? 'is-renaming' : '',
                 ].filter(Boolean).join(' ')}
                 key={tag}
               >
-                {renamingTag === tag ? (
+                {managing && renamingTag === tag ? (
                   <>
                     <input
                       className="cloud-artifact-filter-rename-input"
@@ -1101,7 +1128,7 @@ function ArtifactFilters({
                       disabled={pendingTag === tag}
                       onChange={(event) => onRenamingDraftChange(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+                        if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                           event.preventDefault();
                           onSubmitRename();
                         }
@@ -1129,7 +1156,7 @@ function ArtifactFilters({
                   </>
                 ) : (
                   <>
-                    <label className="cloud-artifact-filter-tag-choice">
+                    {managing ? <span className="cloud-artifact-filter-tag-name" title={tag}>{tag}</span> : <label className="cloud-artifact-filter-tag-choice">
                       <input
                         type="checkbox"
                         checked={selectedTags.includes(tag)}
@@ -1138,10 +1165,10 @@ function ArtifactFilters({
                       <span className="cloud-artifact-filter-check" aria-hidden="true">
                         {selectedTags.includes(tag) && <Check size={12} />}
                       </span>
-                      <span className="cloud-artifact-filter-tag-name">{tag}</span>
+                      <span className="cloud-artifact-filter-tag-name" title={tag}>{tag}</span>
                       <span className="cloud-artifact-filter-tag-count">{count}</span>
-                    </label>
-                    {canManageTags && (
+                    </label>}
+                    {managing && canManageTags && (
                       <div className="cloud-artifact-filter-tag-actions">
                         <button
                           type="button"
@@ -1172,15 +1199,17 @@ function ArtifactFilters({
                 )}
               </div>
             ))}
+            {filteredTags.length === 0 && <p className="cloud-artifact-filter-empty">没有匹配的标签</p>}
           </div>
         ) : (
-          <p className="cloud-artifact-filter-empty">暂无可用标签</p>
+          <p className="cloud-artifact-filter-empty">暂无标签</p>
         )}
       </fieldset>
 
-      {hasFilters && (
+      {!managing && (hasFilters || (canManageTags && tags.length > 0)) && (
         <footer className="cloud-artifact-filter-popover-footer">
-          <button type="button" onClick={onReset}>重置筛选</button>
+          {canManageTags && tags.length > 0 && <button type="button" onClick={() => setManaging(true)}>管理标签</button>}
+          {hasFilters && <button type="button" onClick={onReset}>清除筛选</button>}
         </footer>
       )}
     </section>,
@@ -1195,12 +1224,15 @@ function ArtifactFilters({
         className="cloud-artifact-filter-trigger"
         aria-label={`筛选成果，范围：${scopeLabel}${selectedTags.length > 0 ? `，已选 ${selectedTags.length} 个标签` : ''}`}
         aria-haspopup="dialog"
+        aria-disabled={unavailable}
+        title={unavailable ? '暂无可用筛选条件' : undefined}
         aria-expanded={open}
         aria-controls={open ? panelID : undefined}
-        onClick={() => open ? close() : setOpen(true)}
+        onClick={() => { if (!unavailable) { if (open) close(); else setOpen(true); } }}
       >
         <ListFilter size={16} aria-hidden="true" />
         <span>筛选</span>
+        {activeFilterCount > 0 && <span aria-hidden="true">·</span>}
         {activeFilterCount > 0 && <span className="cloud-artifact-filter-trigger-count">{activeFilterCount}</span>}
       </button>
       {popover}
