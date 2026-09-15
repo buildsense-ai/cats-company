@@ -17,6 +17,9 @@ export function loginHTML(token) {
     h1{font-size:22px;margin:0}
     #status{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:14px}
     #dot{width:9px;height:9px;border-radius:50%;background:#d99b26;box-shadow:0 0 0 3px #f7e8c9}
+    #home{border:1px solid var(--line);background:#fff;color:var(--ink);font:inherit;font-size:13px;padding:6px 12px;border-radius:999px;cursor:pointer}
+    #home:hover{background:#eef4ef}
+    #home:disabled{color:var(--muted);cursor:default}
     #surface{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 6px 24px #173b2112}
     canvas{display:block;width:100%;height:auto;outline:none;cursor:default;touch-action:none}
     canvas:focus-visible{box-shadow:inset 0 0 0 3px #4c9b60}
@@ -29,13 +32,13 @@ export function loginHTML(token) {
 </head>
 <body>
 <main>
-  <header><h1>连接石墨</h1><div id="status"><span id="dot"></span><span id="statusText">正在连接安全登录窗口…</span></div></header>
+  <header><h1>连接石墨</h1><div id="status"><span id="dot"></span><span id="statusText">正在连接安全登录窗口…</span><button id="home" type="button">回到登录页</button></div></header>
   <section id="surface" aria-label="石墨登录页面">
     <canvas id="screen" width="${LOGIN_VIEWPORT.width}" height="${LOGIN_VIEWPORT.height}" tabindex="0"></canvas>
     <div id="notice"><div><strong id="noticeTitle"></strong><span id="noticeText"></span></div></div>
   </section>
   <textarea id="keyboard" aria-label="远程登录键盘输入" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
-  <p class="help">直接点击页面中的输入框并键入内容；支持中文输入法、粘贴、回车、退格和滚轮。登录信息只发送到本次隔离的石墨登录会话。</p>
+  <p class="help">直接点击页面中的输入框并键入内容；支持中文输入法、粘贴、回车、退格和滚轮。登录信息只发送到本次隔离的石墨登录会话。如果画面停在了服务条款、隐私政策这类页面，点右上角「回到登录页」即可回到登录表单。</p>
   <p id="inputError" role="status" aria-live="polite"></p>
 </main>
 <script>
@@ -50,6 +53,7 @@ const notice=document.getElementById('notice');
 const noticeTitle=document.getElementById('noticeTitle');
 const noticeText=document.getElementById('noticeText');
 const inputError=document.getElementById('inputError');
+const home=document.getElementById('home');
 let socket=null,finished=false,fallbackTimer=null,wheelTimer=null,wheelX=0,wheelY=0,composing=false,pendingClick=null,inputErrorTimer=null;
 
 function setStatus(message,state='waiting'){
@@ -147,6 +151,14 @@ keyboard.addEventListener('input',()=>{
 });
 keyboard.addEventListener('paste',event=>{
   event.preventDefault();const value=event.clipboardData?.getData('text')||'';if(value)sendText(value);
+});
+
+home.addEventListener('click',async()=>{
+  if(finished)return;
+  home.disabled=true;
+  try{const state=await api('/reset',{method:'POST'});setStatus(state.message,state.state);keyboard.focus({preventScroll:true});}
+  catch(error){setStatus(error.message,error.status===410?'expired':'failed');}
+  finally{setTimeout(()=>{home.disabled=false},1000);}
 });
 
 async function fallback(){
