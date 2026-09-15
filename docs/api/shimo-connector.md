@@ -32,8 +32,17 @@ All `/v1/shimo/*` requests require `Authorization: Bearer <short-lived-actor-cap
 | `POST` | `/v1/shimo/connection-link` | Create a five-minute, one-time login link |
 | `DELETE` | `/v1/shimo/connection` | Delete the current actor's connection |
 | `POST` | `/v1/shimo/sheets/list` | List sheets in one Shimo spreadsheet |
-| `POST` | `/v1/shimo/sheets/read` | Read one sheet and cell range |
+| `POST` | `/v1/shimo/sheets/read` | Read one sheet and cell range (chunked server-side, see below) |
 | `POST` | `/v1/shimo/documents/read` | Read document text |
+
+Shimo caps a single values request at 5000 cells and counts the *requested* range rather
+than the populated rows, so the Worker splits wider ranges into row bands of at most 4000
+cells, reads them sequentially, and concatenates the rows. `/v1/shimo/sheets/read`
+returns `values` plus `requested_range`, `requests`, `covered_through_row`,
+`stopped_early` and `truncated`; a single band wider than the budget is rejected with
+`RANGE_TOO_LARGE`. Because Shimo trims trailing empty rows and columns, all-blank rows at
+a band boundary may be dropped: consumers must treat `values` as an ordered list of rows,
+not as row indices.
 
 The public login route is `/connect/shimo/{one-time-token}`. The server stores only its SHA-256 digest. In mock mode, `POST` to the same route consumes the link and marks only its bound actor as connected.
 

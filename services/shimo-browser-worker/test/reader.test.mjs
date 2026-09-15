@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  cleanDocumentText, collectSheetValues, parseA1Range, planRowBands, ShimoWorkerError, validateShimoURL,
+  cleanDocumentText, collectSheetValues, fetchRangeValues, parseA1Range, planRowBands, ShimoWorkerError, validateShimoURL,
 } from '../src/reader.mjs';
 
 test('Shimo URL validation pins HTTPS and the expected file kind', () => {
@@ -48,7 +48,68 @@ test('列数不同时行块随之变化，且小范围仍只发一次请求', ()
 test('行块数量超过上限时标记为截断', () => {
   const plan = planRowBands('A1:Z100000');
   assert.equal(plan.truncated, true);
-  assert.equal(plan.bands.length, 80);
+  assert.equal(plan.bands.length, 40);
+});
+
+test('列数超过单块预算时直接拒绝，而不是发一堆注定 400 的请求', () => {
+  assert.throws(() => planRowBands('A1:ZZZ1000'), error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE');
+  // 单行也超预算时同样拒绝：整行就是 18278 格，远超 5000 硬上限
+  assert.throws(() => planRowBands('A1:ZZZ1'), error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE');
+  // 列数刚好等于预算时仍可按 1 行 1 块读
+  assert.equal(planRowBands('A1:EWV1').columns, 4000);
+  assert.throws(() => planRowBands('A1:EWW1'), error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE');
+});
+
+test('提前停止与超时都会对外暴露，不会静默丢数据', async () => {
+  const plan = planRowBands('A1:Z1000');
+  let seen = 0;
+  const early = await collectSheetValues(plan.bands, async () => (seen++ === 0 ? [['row']] : []));
+  assert.equal(early.stopped_early, true);
+  assert.equal(early.timed_out, false);
+  assert.deepEqual(early.values, [['row']]);
+
+  // 一个数据行都没读到时不提前结束（数据可能从后面的行开始）
+  const empty = await collectSheetValues(plan.bands, async () => []);
+  assert.equal(empty.stopped_early, false);
+  assert.equal(empty.requests, plan.bands.length);
+  assert.deepEqual(empty.values, []);
+
+  let clock = 0;
+  const timed = await collectSheetValues(plan.bands, async () => { clock += 20_000; return [['row']]; }, {
+    budgetMs: 30_000, now: () => clock,
+  });
+  assert.equal(timed.timed_out, true);
+  assert.equal(timed.requests, 2);
+  assert.equal(timed.covered_through_row, plan.bands[1].end_row);
+
+  const complete = await collectSheetValues(plan.bands.slice(0, 1), async () => [['row']]);
+  assert.equal(complete.stopped_early, false);
+  assert.equal(complete.timed_out, false);
+  assert.equal(complete.covered_through_row, plan.bands[0].end_row);
+});
+
+test('石墨接口的错误码会映射成明确的 worker 错误', async () => {
+  const contextFor = (status, body) => ({
+    request: {
+      get: async () => ({
+        status: () => status,
+        ok: () => status >= 200 && status < 300,
+        text: async () => body,
+        json: async () => JSON.parse(body),
+      }),
+    },
+  });
+  const call = context => fetchRangeValues(context, 'FileId', '工作表1', 'A1:Z10');
+
+  assert.deepEqual(await call(contextFor(200, '{"values":[["a"],["b"]]}')), [['a'], ['b']]);
+  const expectCode = async (status, body, code) => {
+    await assert.rejects(() => call(contextFor(status, body)), error => error instanceof ShimoWorkerError && error.code === code);
+  };
+  await expectCode(401, '{}', 'LOGIN_REQUIRED');
+  await expectCode(403, '{}', 'PERMISSION_DENIED');
+  await expectCode(400, '{"error":"限制最多获取 5000 个单元格的数据"}', 'RANGE_TOO_LARGE');
+  await expectCode(400, '{"error":"请求参数错误"}', 'SHIMO_API_ERROR');
+  await expectCode(200, '{"values":"not-a-matrix"}', 'UPSTREAM_CHANGED');
 });
 
 test('非法或反向的范围会被拒绝', () => {

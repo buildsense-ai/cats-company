@@ -31,9 +31,14 @@ const RANGE_PATTERN = /^([A-Z]{1,3})([1-9][0-9]{0,6}):([A-Z]{1,3})([1-9][0-9]{0,
 // 石墨表格接口单次最多返回 5000 个单元格（实测越界返回 HTTP 400：限制最多获取 5000 个单元格的数据）。
 // 这里按「请求范围」预扣预算（含空白行也算），留出安全余量后自动分块。
 export const UPSTREAM_MAX_CELLS_PER_REQUEST = 5000;
-const CHUNK_CELL_BUDGET = 4000;
+// 预算由硬上限推导，避免两个常量各自硬编码后漂移：5000 * 0.8 = 4000。
+export const CHUNK_CELL_BUDGET = Math.floor(UPSTREAM_MAX_CELLS_PER_REQUEST * 0.8);
 const EMPTY_BAND_TOLERANCE = 2;
-const MAX_BANDS = 80;
+// 40 块 x 每块 <=4000 格；按实测（同一上下文内每块 100~350ms）总耗时约 5~15s，
+// 远低于 server 侧 75s 的整次调用超时，同时避免 A1:Z1000000 这类超长范围把并发槽占满。
+export const MAX_BANDS = 40;
+// 兜底时间预算：即使块数没到上限，也要保证整次读取在 server 超时前返回。
+export const DEFAULT_READ_BUDGET_MS = 30_000;
 
 function columnIndex(label) {
   let index = 0;
@@ -68,6 +73,9 @@ export function parseA1Range(cellRange) {
 export function planRowBands(cellRange, { cellBudget = CHUNK_CELL_BUDGET, maxBands = MAX_BANDS } = {}) {
   const { startColumn, startRow, endColumn, endRow } = parseA1Range(cellRange);
   const columns = endColumn - startColumn + 1;
+  if (columns > cellBudget) {
+    throw new ShimoWorkerError('RANGE_TOO_LARGE', `该范围包含 ${columns} 列，单次最多只能读取 ${cellBudget} 个单元格，请按列拆分读取。`, 400);
+  }
   const rowsPerBand = Math.max(1, Math.floor(cellBudget / columns));
   const bands = [];
   let row = startRow;
@@ -87,25 +95,35 @@ export function planRowBands(cellRange, { cellBudget = CHUNK_CELL_BUDGET, maxBan
 
 // 逐块读取并拼成一个二维数组。上游会裁掉每块尾部的空白行，因此连续空块视为数据结束；
 // 但只有已经读到过数据时才允许提前结束，避免「数据从中间行开始」被误判成空表。
-export async function collectSheetValues(bands, fetchBand, { emptyBandTolerance = EMPTY_BAND_TOLERANCE } = {}) {
+export async function collectSheetValues(bands, fetchBand, {
+  emptyBandTolerance = EMPTY_BAND_TOLERANCE,
+  budgetMs = DEFAULT_READ_BUDGET_MS,
+  now = () => Date.now(),
+} = {}) {
+  const startedAt = now();
   const values = [];
   let requests = 0;
   let emptyStreak = 0;
+  let stoppedEarly = false;
+  let timedOut = false;
+  let coveredThroughRow = bands.length ? bands[0].start_row - 1 : 0;
   for (const band of bands) {
+    if (requests > 0 && now() - startedAt > budgetMs) { timedOut = true; break; }
     const bandValues = await fetchBand(band);
     requests += 1;
+    coveredThroughRow = band.end_row;
     if (!bandValues.length) {
       emptyStreak += 1;
-      if (values.length && emptyStreak >= emptyBandTolerance) break;
+      if (values.length && emptyStreak >= emptyBandTolerance) { stoppedEarly = true; break; }
       continue;
     }
     emptyStreak = 0;
     for (const row of bandValues) values.push(row);
   }
-  return { values, requests };
+  return { values, requests, covered_through_row: coveredThroughRow, stopped_early: stoppedEarly, timed_out: timedOut };
 }
 
-async function fetchRangeValues(context, fileId, sheetName, cellRange) {
+export async function fetchRangeValues(context, fileId, sheetName, cellRange) {
   const apiRange = sheetName + '!' + cellRange;
   const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values?range=' + encodeURIComponent(apiRange);
   const response = await context.request.get(endpoint);
@@ -221,8 +239,11 @@ export class PlaywrightShimoEngine {
       return {
         extracted_at: new Date().toISOString(),
         values: collected.values,
-        row_bands: collected.requests,
-        truncated: plan.truncated,
+        requested_range: cellRange,
+        requests: collected.requests,
+        covered_through_row: collected.covered_through_row,
+        stopped_early: collected.stopped_early,
+        truncated: plan.truncated || collected.timed_out,
       };
     });
   }

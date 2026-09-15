@@ -12,6 +12,32 @@ This internal CatsCo service owns interactive Shimo login and read-only browser 
 
 The login URL is a bearer secret. It expires after ten minutes, is excluded from referrers and caches, and must never be logged by reverse proxies.
 
+## Sheet reads are chunked server-side
+
+Shimo's sheet values endpoint rejects any request covering more than 5000 cells
+(`400 {"error":"限制最多获取 5000 个单元格的数据"}`), and it counts the requested
+range rather than the populated rows — so `A1:Z1000` (26000 cells) can never be read
+in one call. `GET /v1/sheets/read` therefore splits the requested range into row
+bands of at most 4000 cells (80% of the hard cap), reads them sequentially inside one
+browser context, and concatenates the rows. A range narrower than the budget still
+issues exactly one upstream request.
+
+Response fields on `/v1/sheets/read`:
+
+| Field | Meaning |
+|---|---|
+| `values` | Rows concatenated across bands, in sheet order |
+| `requested_range` | The A1 range the caller asked for |
+| `requests` | How many upstream requests were issued |
+| `covered_through_row` | Last row the Worker actually asked Shimo for |
+| `stopped_early` | Two consecutive empty bands ended the read (data ended) |
+| `truncated` | The requested range was **not** fully covered (band cap or time budget) |
+
+Shimo trims trailing empty rows and columns from every response, so all-blank rows
+at a band boundary can be dropped; callers must not treat `values` as row-indexed.
+Requesting more columns than the cell budget in a single band (`A1:ZZZ1`) is rejected
+with `RANGE_TOO_LARGE` instead of firing requests that are guaranteed to fail.
+
 ## Configuration
 
 ```text
