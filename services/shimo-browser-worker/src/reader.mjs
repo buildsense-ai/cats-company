@@ -27,6 +27,104 @@ export function validateShimoURL(input, expected) {
   return { url: url.toString(), fileId: sheetMatch?.[1] || documentMatch?.[1] || '' };
 }
 
+const RANGE_PATTERN = /^([A-Z]{1,3})([1-9][0-9]{0,6}):([A-Z]{1,3})([1-9][0-9]{0,6})$/;
+// 石墨表格接口单次最多返回 5000 个单元格（实测越界返回 HTTP 400：限制最多获取 5000 个单元格的数据）。
+// 这里按「请求范围」预扣预算（含空白行也算），留出安全余量后自动分块。
+export const UPSTREAM_MAX_CELLS_PER_REQUEST = 5000;
+const CHUNK_CELL_BUDGET = 4000;
+const EMPTY_BAND_TOLERANCE = 2;
+const MAX_BANDS = 80;
+
+function columnIndex(label) {
+  let index = 0;
+  for (const character of String(label)) index = index * 26 + (character.charCodeAt(0) - 64);
+  return index;
+}
+
+export function columnLabel(index) {
+  let value = Number(index);
+  let label = '';
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+  return label;
+}
+
+export function parseA1Range(cellRange) {
+  const match = RANGE_PATTERN.exec(String(cellRange || '').trim().toUpperCase());
+  if (!match) throw new ShimoWorkerError('INVALID_RANGE', '单元格范围应类似 A1:Z1000。', 400);
+  const parsed = {
+    startColumn: columnIndex(match[1]), startRow: Number(match[2]),
+    endColumn: columnIndex(match[3]), endRow: Number(match[4]),
+  };
+  if (parsed.startColumn > parsed.endColumn || parsed.startRow > parsed.endRow) {
+    throw new ShimoWorkerError('INVALID_RANGE', '单元格范围的起点应位于终点之前。', 400);
+  }
+  return parsed;
+}
+
+export function planRowBands(cellRange, { cellBudget = CHUNK_CELL_BUDGET, maxBands = MAX_BANDS } = {}) {
+  const { startColumn, startRow, endColumn, endRow } = parseA1Range(cellRange);
+  const columns = endColumn - startColumn + 1;
+  const rowsPerBand = Math.max(1, Math.floor(cellBudget / columns));
+  const bands = [];
+  let row = startRow;
+  let truncated = false;
+  while (row <= endRow) {
+    if (bands.length >= maxBands) { truncated = true; break; }
+    const lastRow = Math.min(row + rowsPerBand - 1, endRow);
+    bands.push({
+      range: columnLabel(startColumn) + row + ':' + columnLabel(endColumn) + lastRow,
+      start_row: row,
+      end_row: lastRow,
+    });
+    row = lastRow + 1;
+  }
+  return { bands, columns, rows: endRow - startRow + 1, rows_per_band: rowsPerBand, truncated };
+}
+
+// 逐块读取并拼成一个二维数组。上游会裁掉每块尾部的空白行，因此连续空块视为数据结束；
+// 但只有已经读到过数据时才允许提前结束，避免「数据从中间行开始」被误判成空表。
+export async function collectSheetValues(bands, fetchBand, { emptyBandTolerance = EMPTY_BAND_TOLERANCE } = {}) {
+  const values = [];
+  let requests = 0;
+  let emptyStreak = 0;
+  for (const band of bands) {
+    const bandValues = await fetchBand(band);
+    requests += 1;
+    if (!bandValues.length) {
+      emptyStreak += 1;
+      if (values.length && emptyStreak >= emptyBandTolerance) break;
+      continue;
+    }
+    emptyStreak = 0;
+    for (const row of bandValues) values.push(row);
+  }
+  return { values, requests };
+}
+
+async function fetchRangeValues(context, fileId, sheetName, cellRange) {
+  const apiRange = sheetName + '!' + cellRange;
+  const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values?range=' + encodeURIComponent(apiRange);
+  const response = await context.request.get(endpoint);
+  if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
+  if (response.status() === 403) throw new ShimoWorkerError('PERMISSION_DENIED', '当前石墨账号没有读取权限。', 403);
+  if (!response.ok()) {
+    const body = await response.text().catch(() => '');
+    if (response.status() === 400 && body.includes('限制最多获取')) {
+      throw new ShimoWorkerError('RANGE_TOO_LARGE', '石墨表格单次最多读取 5000 个单元格，请缩小范围或分块读取。', 400);
+    }
+    throw new ShimoWorkerError('SHIMO_API_ERROR', '石墨表格接口返回 HTTP ' + response.status() + '。', 502);
+  }
+  const payload = await response.json();
+  if (!Array.isArray(payload.values) || payload.values.some(row => !Array.isArray(row))) {
+    throw new ShimoWorkerError('UPSTREAM_CHANGED', '石墨表格接口没有返回二维数组。', 502);
+  }
+  return payload.values;
+}
+
 export function browserExecutable() {
   const configured = String(process.env.CHROMIUM_EXECUTABLE_PATH || '').trim();
   const candidates = [configured, '/usr/bin/chromium', '/usr/bin/google-chrome',
@@ -109,23 +207,23 @@ export class PlaywrightShimoEngine {
 
   async readSheet(storageState, inputURL, sheetName, cellRange) {
     const { url, fileId } = validateShimoURL(inputURL, 'sheet');
+    const plan = planRowBands(cellRange);
     return this.withContext(storageState, async context => {
       const page = await context.newPage();
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeoutMs });
       await page.waitForTimeout(2500);
       const bodyText = await page.locator('body').innerText({ timeout: 15_000 });
       assertPageAccess(await page.title(), bodyText);
-      const apiRange = `${sheetName}!${cellRange}`;
-      const endpoint = `https://shimo.im/sdk/v2/api/files/${fileId}/sheets/values?range=${encodeURIComponent(apiRange)}`;
-      const response = await context.request.get(endpoint);
-      if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
-      if (response.status() === 403) throw new ShimoWorkerError('PERMISSION_DENIED', '当前石墨账号没有读取权限。', 403);
-      if (!response.ok()) throw new ShimoWorkerError('SHIMO_API_ERROR', `石墨表格接口返回 HTTP ${response.status()}。`, 502);
-      const payload = await response.json();
-      if (!Array.isArray(payload.values) || payload.values.some(row => !Array.isArray(row))) {
-        throw new ShimoWorkerError('UPSTREAM_CHANGED', '石墨表格接口没有返回二维数组。', 502);
-      }
-      return { extracted_at: new Date().toISOString(), values: payload.values };
+      const collected = await collectSheetValues(
+        plan.bands,
+        band => fetchRangeValues(context, fileId, sheetName, band.range),
+      );
+      return {
+        extracted_at: new Date().toISOString(),
+        values: collected.values,
+        row_bands: collected.requests,
+        truncated: plan.truncated,
+      };
     });
   }
 
