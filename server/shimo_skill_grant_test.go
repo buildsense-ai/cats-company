@@ -260,3 +260,76 @@ func TestShimoSkillGrantFailsClosedForUnsafeConfiguration(t *testing.T) {
 		t.Fatalf("untrusted connector metadata survived server canonicalization: %#v", message.Data.Metadata)
 	}
 }
+
+// shimoGroupResumeStore adds group membership to the shared identity store so
+// the resume path can be exercised without a database.
+type shimoGroupResumeStore struct {
+	*agentIdentityE2EStore
+	members map[int64]map[int64]bool
+}
+
+func (s *shimoGroupResumeStore) IsGroupMember(groupID, userID int64) (bool, error) {
+	return s.members[groupID][userID], nil
+}
+
+func (s *shimoGroupResumeStore) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
+	members := make([]*types.GroupMember, 0, len(s.members[groupID]))
+	for userID, isMember := range s.members[groupID] {
+		if isMember {
+			members = append(members, &types.GroupMember{UserID: userID})
+		}
+	}
+	return members, nil
+}
+
+func (s *shimoGroupResumeStore) IsChannelManagedGroup(int64) (bool, error) {
+	return false, nil
+}
+
+func TestShimoLoginResumeIntoGroupRequiresBothMembers(t *testing.T) {
+	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
+	t.Setenv("CATSCO_SHIMO_SKILL_ID", "catsco/shimo-reader")
+	t.Setenv("CATSCO_SHIMO_CONNECTOR_URL", "https://app.catsco.test")
+	data := &shimoGroupResumeStore{
+		agentIdentityE2EStore: &agentIdentityE2EStore{users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			8:  {ID: 8, AccountType: types.AccountHuman},
+			43: {ID: 43, AccountType: types.AccountBot},
+		}},
+		members: map[int64]map[int64]bool{
+			80: {7: true, 43: true},
+			81: {7: true},
+		},
+	}
+	hub := NewHub(data, nil)
+	client := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.clients[43] = map[*Client]struct{}{client: {}}
+
+	if !hub.DeliverShimoLoginResume(ShimoLoginResume{AgentUID: 43, ActorUID: 7, TopicID: "grp_80", MessageID: 91}) {
+		t.Fatal("expected a group resume for a person who is in the group")
+	}
+	var message ServerMessage
+	if err := json.Unmarshal(<-client.send, &message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Data == nil || message.Data.SeqID != 0 || message.Data.Topic != "grp_80" || message.Data.From != "usr7" {
+		t.Fatalf("unexpected group resume envelope: %#v", message.Data)
+	}
+	if message.Data.Metadata["catsco_transient"] != true || message.Data.Metadata["catsco_skill_login_resume"] != true {
+		t.Fatalf("missing trusted resume metadata: %#v", message.Data.Metadata)
+	}
+	connectors := metadataMapFromServerMessage(t, &message, "catsco_skill_connectors")
+	if connectors["schema"] != "catsco.skill_connectors.v1" {
+		t.Fatalf("group resume did not carry a fresh connector grant: %#v", connectors)
+	}
+
+	if hub.DeliverShimoLoginResume(ShimoLoginResume{AgentUID: 43, ActorUID: 8, TopicID: "grp_80", MessageID: 91}) {
+		t.Fatal("resumed for a person who is not in the group")
+	}
+	if hub.DeliverShimoLoginResume(ShimoLoginResume{AgentUID: 43, ActorUID: 7, TopicID: "grp_81", MessageID: 91}) {
+		t.Fatal("resumed in a group the virtual employee is not in")
+	}
+	if hub.DeliverShimoLoginResume(ShimoLoginResume{AgentUID: 43, ActorUID: 8, TopicID: "p2p_7_43", MessageID: 91}) {
+		t.Fatal("resumed a one-to-one topic on behalf of somebody else")
+	}
+}

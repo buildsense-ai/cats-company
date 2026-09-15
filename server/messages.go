@@ -537,7 +537,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 // to the original virtual employee. It is not saved and therefore never
 // appears as a synthetic user message in conversation history.
 func (h *Hub) DeliverShimoLoginResume(resume ShimoLoginResume) bool {
-	if h == nil || resume.AgentUID <= 0 || resume.ActorUID <= 0 || resume.MessageID <= 0 || extractPeerUID(resume.TopicID, resume.ActorUID) != resume.AgentUID || !h.isBotUser(resume.AgentUID) {
+	if h == nil || resume.AgentUID <= 0 || resume.ActorUID <= 0 || resume.MessageID <= 0 || !h.shimoResumeAllowed(resume) || !h.isBotUser(resume.AgentUID) {
 		return false
 	}
 	clients := h.getClients(resume.AgentUID)
@@ -570,6 +570,30 @@ func (h *Hub) DeliverShimoLoginResume(resume ShimoLoginResume) bool {
 	message.Data.SeqID = 0
 	h.SendToUser(resume.AgentUID, message)
 	return true
+}
+
+// shimoResumeAllowed authorizes a trusted Shimo login resume for the topic it
+// names. A one-to-one topic has to be the conversation between exactly that
+// person and that virtual employee. A group topic has to still contain both of
+// them, so somebody who was removed from the group, or a virtual employee that
+// is no longer in it, cannot have work resumed there.
+func (h *Hub) shimoResumeAllowed(resume ShimoLoginResume) bool {
+	if isGroupTopic(resume.TopicID) {
+		groupID := extractGroupID(resume.TopicID)
+		if groupID <= 0 || h.db == nil {
+			return false
+		}
+		actorIsMember, err := h.db.IsGroupMember(groupID, resume.ActorUID)
+		if err != nil || !actorIsMember {
+			return false
+		}
+		agentIsMember, err := h.db.IsGroupMember(groupID, resume.AgentUID)
+		if err != nil || !agentIsMember {
+			return false
+		}
+		return true
+	}
+	return extractPeerUID(resume.TopicID, resume.ActorUID) == resume.AgentUID
 }
 
 func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.Message, identityUsers ...map[int64]*types.User) *MsgServerData {

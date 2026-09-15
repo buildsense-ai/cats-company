@@ -662,7 +662,7 @@ func (h *ShimoConnectorHandler) newLoginResumeLocked(attempt *shimoLoginAttempt,
 	}
 	agentUID := parseFormattedUID(attempt.key.agentUID)
 	actorUID := parseFormattedUID(attempt.key.actorUID)
-	if agentUID <= 0 || actorUID <= 0 || extractPeerUID(topicID, actorUID) != agentUID {
+	if agentUID <= 0 || actorUID <= 0 || !shimoResumeTopicMatches(topicID, agentUID, actorUID) {
 		return "", nil
 	}
 	rawToken, err := shimoRandomHex(32)
@@ -694,10 +694,36 @@ func parseShimoTaskRef(taskRef string) (string, int64, bool) {
 	}
 	topicID := value[:separator]
 	messageID, err := strconv.ParseInt(value[separator+1:], 10, 64)
-	if err != nil || messageID <= 0 || !strings.HasPrefix(topicID, "p2p_") {
+	if err != nil || messageID <= 0 || !shimoResumeTopicSupported(topicID) {
 		return "", 0, false
 	}
 	return topicID, messageID, true
+}
+
+// shimoResumeTopicSupported reports whether a trusted task reference points at a
+// conversation that a Shimo login resume may ever continue: a one-to-one topic
+// or a group topic. Group topics still have to pass the membership check in
+// Hub.DeliverShimoLoginResume, which is the only layer that can see the group
+// store, so this is a shape check and nothing more.
+func shimoResumeTopicSupported(topicID string) bool {
+	if strings.HasPrefix(topicID, "p2p_") {
+		return true
+	}
+	if !isGroupTopic(topicID) {
+		return false
+	}
+	return extractGroupID(topicID) > 0
+}
+
+// shimoResumeTopicMatches keeps the connector's own guarantee for one-to-one
+// topics, where the topic name itself proves who is talking to whom. A group
+// topic carries no such proof, so the connector only accepts its shape and
+// leaves the authorization to Hub.DeliverShimoLoginResume.
+func shimoResumeTopicMatches(topicID string, agentUID, actorUID int64) bool {
+	if isGroupTopic(topicID) {
+		return extractGroupID(topicID) > 0
+	}
+	return extractPeerUID(topicID, actorUID) == agentUID
 }
 
 func secureBearerMatch(header, expected string) bool {
