@@ -32,6 +32,14 @@ export class EncryptedSessionStore {
     return path.join(this.directory, fileName(binding));
   }
 
+  // The bind mount can exist and still belong to another uid, and that failure
+  // is invisible until a visitor finishes a login: prove writability up front.
+  verifyWritable() {
+    const probe = path.join(this.directory, `.write-probe-${process.pid}`);
+    fs.writeFileSync(probe, 'ok', { mode: 0o600, flag: 'wx' });
+    fs.unlinkSync(probe);
+  }
+
   save(binding, record) {
     assertBinding(binding);
     const plaintext = Buffer.from(JSON.stringify({

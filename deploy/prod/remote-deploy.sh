@@ -59,6 +59,22 @@ mkdir -p \
   "${PROD_WEBSITE_PUBLIC_ROOT:-$root/website-public}" \
   "$root/logs"
 
+# The Shimo worker image runs as its unprivileged `node` user and writes
+# encrypted login snapshots into this bind mount.  `mkdir` above creates the
+# directory as the deploying user, so the container could read it but never
+# write it, and every finished Shimo login failed to persist.  Hand it to the
+# image user explicitly instead.
+shimo_state_dir="$root/data/shimo-sessions"
+shimo_state_uid=1000
+shimo_state_gid=1000
+if [ "$(id -u)" -eq 0 ]; then
+  chown -R "$shimo_state_uid:$shimo_state_gid" "$shimo_state_dir" && chmod 700 "$shimo_state_dir"
+elif sudo -n true 2>/dev/null; then
+  sudo -n chown -R "$shimo_state_uid:$shimo_state_gid" "$shimo_state_dir" && sudo -n chmod 700 "$shimo_state_dir"
+else
+  echo "warning: cannot hand $shimo_state_dir to uid $shimo_state_uid; finished Shimo logins will not be saved" >&2
+fi
+
 if [ ! -f "$compose_file" ]; then
   echo "missing compose file: $compose_file" >&2
   exit 1

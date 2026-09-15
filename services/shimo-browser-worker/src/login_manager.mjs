@@ -6,6 +6,7 @@ import { LOGIN_DEVICE_SCALE_FACTOR, LOGIN_VIEWPORT } from './login_viewport.mjs'
 import { SHIMO_LOGIN_URL, shouldAdoptPopup } from './login_pages.mjs';
 
 const DEFAULT_TTL_MS = 10 * 60_000;
+const DEFAULT_PROBE_INTERVAL_MS = 1500;
 
 // The capture runs above one device pixel per CSS pixel so the streamed page
 // stays crisp in a wide browser window, while pointer input keeps using the
@@ -19,12 +20,14 @@ export function loginContextOptions() {
 }
 
 export class ShimoLoginManager {
-  constructor({ store, publicBaseURL, callbackAuthToken = '', completionNotifier = notifyLoginCompletion, executablePath = browserExecutable(), ttlMs = DEFAULT_TTL_MS, now = () => Date.now() }) {
+  constructor({ store, publicBaseURL, callbackAuthToken = '', completionNotifier = notifyLoginCompletion, executablePath = browserExecutable(), ttlMs = DEFAULT_TTL_MS, now = () => Date.now(), probeIntervalMs = DEFAULT_PROBE_INTERVAL_MS, logger = console }) {
     this.store = store;
     this.publicBaseURL = String(publicBaseURL || '').replace(/\/$/, '');
     this.executablePath = executablePath;
     this.ttlMs = Math.min(Math.max(ttlMs, 60_000), 15 * 60_000);
     this.now = now;
+    this.probeIntervalMs = Math.min(Math.max(Number(probeIntervalMs) || DEFAULT_PROBE_INTERVAL_MS, 200), 10_000);
+    this.logger = logger;
 	this.callbackAuthToken = String(callbackAuthToken || '');
 	this.completionNotifier = completionNotifier;
     this.attempts = new Map();
@@ -86,7 +89,12 @@ export class ShimoLoginManager {
 
   status(token) {
     const attempt = this.requireAttempt(token);
-    return { state: attempt.state, message: attempt.message, expires_at: new Date(attempt.expiresAt).toISOString() };
+    return {
+      state: attempt.state,
+      message: statusMessage(attempt),
+      expires_at: new Date(attempt.expiresAt).toISOString(),
+      persist_error: attempt.persistError || '',
+    };
   }
 
   statusForBinding(binding) {
@@ -163,27 +171,79 @@ export class ShimoLoginManager {
     return this.status(token);
   }
 
-  async monitor(attempt) {
-    while (attempt.state === 'waiting' && attempt.expiresAt > this.now()) {
-      try {
-        const response = await attempt.context.request.get('https://shimo.im/lizard-api/users/me', { timeout: 10_000 });
-        if (response.ok()) {
-          const profile = await response.json().catch(() => ({}));
-          const storageState = await attempt.context.storageState();
-          const accountHint = String(profile?.name || profile?.nickname || profile?.email || '已连接石墨账号').slice(0, 160);
-          this.store.save(attempt.binding, { storageState, accountHint, verifiedAt: new Date(this.now()).toISOString() });
-          await this.closeAttempt(attempt, 'connected', '石墨连接成功，可以返回 CatsCo 聊天');
-		  if (attempt.completion && this.callbackAuthToken) {
-			void this.completionNotifier({ ...attempt.completion, authorizationToken: this.callbackAuthToken }).catch(() => {});
-		  }
-          return;
-        }
-      } catch {
-        // A transient Shimo request failure does not end the user's login window.
+  // Shimo keeps the account session in first-party cookies that only the login
+  // page itself uses, so the probe runs inside the page: the same fetch the
+  // product makes, with the same credentials.  The browser-context request is
+  // kept as a fallback for the window where Chromium has already left the page.
+  async probeAccount(attempt) {
+    const failures = [];
+    let pages = [];
+    try { pages = attempt.context?.pages?.() || []; } catch { pages = []; }
+    for (const page of pages) {
+      if (!page || page.isClosed?.()) continue;
+      const result = await evaluateAccountProbe(page);
+      if (result.ok) return { ok: true, hint: result.hint, status: result.status, source: 'page' };
+      failures.push(`page(${currentURL(page)})=${result.status || 'error'}`);
+    }
+    try {
+      const response = await attempt.context.request.get('https://shimo.im/lizard-api/users/me', { timeout: 10_000 });
+      if (response.ok()) {
+        const profile = await response.json().catch(() => ({}));
+        return { ok: true, hint: accountHint(profile), status: response.status(), source: 'context' };
       }
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      failures.push(`context=${response.status()}`);
+    } catch (error) {
+      failures.push(`context=${describeError(error)}`);
+    }
+    return { ok: false, hint: '', failures };
+  }
+
+  async monitor(attempt) {
+    const log = this.logger || console;
+    let reportedFailure = false;
+    while (attempt.state === 'waiting' && attempt.expiresAt > this.now()) {
+      let account;
+      try {
+        account = await this.probeAccount(attempt);
+      } catch (error) {
+        account = { ok: false, failures: [describeError(error)] };
+      }
+      if (account.ok) {
+        try {
+          const storageState = await attempt.context.storageState();
+          this.store.save(attempt.binding, { storageState, accountHint: account.hint, verifiedAt: new Date(this.now()).toISOString() });
+          attempt.persistError = '';
+          log.info?.(`[shimo-login] 已检测到登录并保存会话 binding=${attempt.binding} source=${account.source} account=${account.hint}`);
+          await this.closeAttempt(attempt, 'connected', '石墨连接成功，可以返回 CatsCo 聊天');
+          await this.notifyCompletion(attempt, log);
+          return;
+        } catch (error) {
+          // Losing the login because the state directory is not writable used
+          // to look identical to "the visitor has not logged in yet", which
+          // cost hours of debugging: keep retrying, but never stay silent.
+          attempt.persistError = describeError(error);
+          log.error?.(`[shimo-login] 已登录但无法保存会话 binding=${attempt.binding}: ${attempt.persistError}`);
+        }
+      } else if (!reportedFailure) {
+        reportedFailure = true;
+        log.info?.(`[shimo-login] 等待登录 binding=${attempt.binding} probe=${account.failures?.join(',') || 'unknown'}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, this.probeIntervalMs));
     }
     if (attempt.state === 'waiting') await this.closeAttempt(attempt, 'expired', '登录已超时，请回到聊天重试');
+  }
+
+  async notifyCompletion(attempt, log) {
+    if (!attempt.completion || !this.callbackAuthToken) {
+      log.info?.(`[shimo-login] 本次登录没有完成回调，跳过通知 binding=${attempt.binding}`);
+      return;
+    }
+    try {
+      await this.completionNotifier({ ...attempt.completion, authorizationToken: this.callbackAuthToken });
+      log.info?.(`[shimo-login] 已通知调用方登录完成 binding=${attempt.binding}`);
+    } catch (error) {
+      log.error?.(`[shimo-login] 通知调用方失败 binding=${attempt.binding}: ${describeError(error)}`);
+    }
   }
 
   async closeAttempt(attempt, state, message) {
@@ -204,6 +264,44 @@ export class ShimoLoginManager {
     await Promise.all([...this.attempts.values()].map(attempt => this.closeAttempt(attempt, 'closed', '服务已停止')));
     this.attempts.clear();
   }
+}
+
+function statusMessage(attempt) {
+  if (attempt.state === 'waiting' && attempt.persistError) {
+    return '已登录，但服务端暂时无法保存登录态，正在重试…';
+  }
+  return attempt.message;
+}
+
+function accountHint(profile) {
+  return String(profile?.name || profile?.nickname || profile?.email || '已连接石墨账号').slice(0, 160);
+}
+
+export async function evaluateAccountProbe(page) {
+  try {
+    const result = await page.evaluate(async () => {
+      try {
+        const response = await fetch('https://shimo.im/lizard-api/users/me', {
+          credentials: 'include',
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(4000),
+        });
+        if (!response.ok) return { ok: false, status: response.status, hint: '' };
+        const body = await response.json().catch(() => ({}));
+        return { ok: true, status: response.status, hint: String(body?.name || body?.nickname || body?.email || '') };
+      } catch (error) {
+        return { ok: false, status: 0, hint: '', error: String((error && error.message) || error) };
+      }
+    });
+    if (!result || typeof result !== 'object') return { ok: false, status: 0, hint: '' };
+    return { ok: Boolean(result.ok), status: Number(result.status) || 0, hint: String(result.hint || '').slice(0, 160) };
+  } catch (error) {
+    return { ok: false, status: 0, hint: '', error: String((error && error.message) || error) };
+  }
+}
+
+function describeError(error) {
+  return String((error && error.message) || error || 'unknown error').slice(0, 300);
 }
 
 function currentURL(page) {

@@ -31,6 +31,17 @@ class DeployTestWorkflowTest(unittest.TestCase):
         )
         self.assertLess(script.index('wait_for_health "api" "$health_api"'), script.index("--force-recreate --no-deps web"))
 
+    def test_deploy_hands_the_shimo_session_mount_to_the_worker_user(self):
+        # The Shimo worker image runs as uid/gid 1000.  When the deploy only
+        # ran `mkdir`, the container could read the session mount but never
+        # write it, so every finished Shimo login failed to persist with a
+        # silently swallowed EACCES.
+        script = (ROOT / "deploy/test/remote-deploy.sh").read_text(encoding="utf-8")
+        self.assertIn('shimo_state_dir="$root/data/shimo-sessions"', script)
+        self.assertIn("chown -R \"$shimo_state_uid:$shimo_state_gid\" \"$shimo_state_dir\"", script)
+        self.assertIn("chmod 700 \"$shimo_state_dir\"", script)
+        self.assertIn("shimo_state_uid=1000", script)
+
 
 if __name__ == "__main__":
     unittest.main()
