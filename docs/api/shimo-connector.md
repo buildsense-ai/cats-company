@@ -60,13 +60,18 @@ treat `values` as an ordered list of rows, not as row indices.
 
 Shimo answers "this account cannot see the file" and "the file does not exist" with the
 same upstream error (`GetFileByProviderID` / `GET_REMOTE_FILE_INVALID_ARGUMENT`, HTTP 500),
-and its error page follows the browser language, so the Worker classifies both the 500 and
-the "404 not found" shell as `DOCUMENT_NOT_ACCESSIBLE` (HTTP 403). The message names both
-possibilities and asks the user to connect the account that can actually open the document,
-because retrying with the same account cannot succeed. A page that loads without sheet tabs
-and without any permission or not-found marker is reported as `PAGE_UNEXPECTED` (HTTP 502)
-together with the page title, instead of the generic `WORKER_ERROR`. Both codes are
-terminal, so callers must not retry them.
+and its error page follows the browser language, so the Worker classifies the 500, a `403`
+from the values API, and the `404 not found` shell as `DOCUMENT_NOT_ACCESSIBLE` (HTTP 403).
+The message names both possibilities and asks the user to connect the account that can
+actually open the document, because retrying with the same account cannot succeed.
+
+The page-level verdict requires that the page render *no* sheet tabs at all: the whole-page
+`innerText` also carries cell content, so ordinary text such as "config file does not
+exist" or "文档不存在" must never be read as "this account cannot see the document".
+Matching is therefore limited to the error shell's own copy, and the decision is taken
+after the tab probe. A page that loads without sheet tabs and without that copy is reported
+as `PAGE_UNEXPECTED` (HTTP 502) together with the page title, instead of the generic
+`WORKER_ERROR`. Both codes are terminal, so callers must not retry them.
 
 The public login route is `/connect/shimo/{one-time-token}`. The server stores only its SHA-256 digest. In mock mode, `POST` to the same route consumes the link and marks only its bound actor as connected.
 

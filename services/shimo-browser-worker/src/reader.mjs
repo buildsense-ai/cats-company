@@ -208,10 +208,11 @@ export function upstreamExcerpt(body, limit = 160) {
 // 生产里的标题是「404 not found」。这里只认这个完整形态，标题里恰好含「404」的正常表格
 // 由后面的正文特征去区分（石墨的出错页正文是「The page you visited does not exist」）。
 const ACCESS_PAGE_TITLE_PATTERNS = [/无权限/, /^404\s+not\s+found\b/i, /no\s*permission/i, /access\s*denied/i];
+// 正文里只认错误外壳自己的固定文案。整页 innerText 同时包含单元格内容，
+// 「does not exist」「文档不存在」「已被删除」这类短语在正常表格里也会出现，
+// 单独命中它们不能说明账号看不到文档（调用方还要先确认页面上没有表格标签）。
 const ACCESS_PAGE_BODY_PATTERNS = [
-  '申请访问权限', '无权限', '没有访问权限', '无访问权限', '文档不存在', '已被删除', '链接已失效',
-  'request access', 'no permission', "don't have permission", 'do not have permission',
-  'does not exist', 'has been deleted', 'back to desktop',
+  '申请访问权限', '无访问权限', 'the page you visited does not exist', 'back to desktop', 'request access',
 ];
 
 export function looksLikeAccessDeniedPage(title, bodyText) {
@@ -226,7 +227,7 @@ export async function fetchRangeValues(context, fileId, sheetName, cellRange, { 
   const requestOptions = Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeout: timeoutMs } : undefined;
   const response = await context.request.get(endpoint, requestOptions);
   if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
-  if (response.status() === 403) throw new ShimoWorkerError('PERMISSION_DENIED', '当前石墨账号没有读取权限。', 403);
+  if (response.status() === 403) throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
   if (!response.ok()) {
     const body = await response.text().catch(() => '');
     if (response.status() === 400 && body.includes('限制最多获取')) {
@@ -279,7 +280,15 @@ export function cleanDocumentText(bodyText) {
   return content.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function assertPageAccess(title, bodyText) {
+// 表格标签是「这确实是一张能打开的表格」的硬证据：只要页面上有标签，
+// 正文里出现的任何句子都只是单元格内容，不能拿来判定「账号看不到这份文档」。
+async function pageHasSheetTabs(page, timeoutMs = 15_000) {
+  return page.locator('.sm-sheet-tab-item').first()
+    .waitFor({ state: 'attached', timeout: timeoutMs }).then(() => true, () => false);
+}
+
+function assertPageAccess(title, bodyText, { hasSheetTabs = false } = {}) {
+  if (hasSheetTabs) return;
   if (bodyText.includes('您还没有登录') || bodyText.includes('请登录后尝试访问')) {
     throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
   }
@@ -321,13 +330,13 @@ export class PlaywrightShimoEngine {
       await page.waitForTimeout(2500);
       const bodyText = await page.locator('body').innerText({ timeout: 15_000 });
       const title = await page.title();
-      assertPageAccess(title, bodyText);
-      // 没有表格标签时不能再笼统地报 WORKER_ERROR：上面 assertPageAccess 已经排除了
-      // 「这个账号看不到这份文档」（石墨对「无权限」和「不存在」都给 404 外壳），
-      // 所以这里只剩「链接根本不是表格」和「页面结构变了」两种可能。
-      const tabAttached = await page.locator('.sm-sheet-tab-item').first()
-        .waitFor({ state: 'attached', timeout: 15_000 }).then(() => true, () => false);
+      // 先看有没有表格标签，再决定要不要用页面文案判定「看不到这份文档」：
+      // 顺序反过来的话，一张正文里恰好写着「does not exist」的正常表格会被误判。
+      const tabAttached = await pageHasSheetTabs(page);
       if (!tabAttached) {
+        // 页面没有任何表格标签：要么是「这个账号看不到这份文档」的错误外壳
+        // （石墨对「无权限」和「不存在」给同一个 404 外壳），要么链接根本不是表格。
+        assertPageAccess(title, bodyText);
         const shownTitle = String(title || '').slice(0, 80) || '空标题';
         throw new ShimoWorkerError('PAGE_UNEXPECTED', '石墨页面里没有找到表格标签（页面标题：' + shownTitle + '），可能链接指向的不是表格，或页面结构已经变化。', 502);
       }
@@ -365,7 +374,11 @@ export class PlaywrightShimoEngine {
       } catch (error) {
         throw budgetExhaustedOr(error, budgetLeft);
       }
-      assertPageAccess(await page.title(), bodyText);
+      // 页面文案只在「连表格标签都没有」时才作为证据：有标签时，正文里出现
+      // 「config file does not exist」这类单元格内容不构成「看不到文档」。
+      assertPageAccess(await page.title(), bodyText, {
+        hasSheetTabs: await pageHasSheetTabs(page, budgetBoundedTimeout(5_000, budgetLeft())),
+      });
       const collected = await collectSheetValues(
         plan.bands,
         (band, { timeoutMs } = {}) => fetchRangeValues(context, fileId, sheetName, band.range, { timeoutMs }),
