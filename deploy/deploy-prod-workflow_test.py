@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 import unittest
 
@@ -68,6 +69,28 @@ class DeployProdWorkflowTest(unittest.TestCase):
             "/etc/nginx/sites-available/catscompany-api-cn:api.catsco.cn",
         ):
             self.assertIn(route, workflow)
+
+    def test_prod_deploy_script_survives_stdin_reading_children(self):
+        # The deploy body reaches the host through `ssh ... bash -s`, so any
+        # child that inherits and reads stdin swallows the rest of the script.
+        # `docker compose exec` does exactly that: before this guard, every
+        # command after it - including the host Nginx reconciliation that adds
+        # the Shimo login WebSocket route - silently stopped running.
+        workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("""bash -s" <<'EOF'""", workflow)
+        script = (ROOT / "deploy/prod/remote-deploy.sh").read_text(encoding="utf-8")
+        exec_lines = [
+            line
+            for line in script.splitlines()
+            if not line.lstrip().startswith("#")
+            and "compose" in line
+            and re.search(r"\bexec\b", line)
+        ]
+        self.assertTrue(exec_lines, "expected the deploy to exec in a container")
+        for line in exec_lines:
+            self.assertRegex(line, r"<\s*/dev/null\s*$")
 
     def test_prod_deploy_refreshes_web_after_api_recreation(self):
         script = (ROOT / "deploy/prod/remote-deploy.sh").read_text(encoding="utf-8")
