@@ -45,11 +45,14 @@ guaranteed to fail.
 
 Reads are bounded in time as well as in band count: the whole call gets a 65s budget
 that starts when the Worker receives the request — including any wait in the concurrency
-queue (2 concurrent reads, 8 queued by default) — and each band request receives the
-remaining part of that budget (capped at 30s) as its Playwright request timeout, so a
-hanging request is aborted instead of holding a Worker concurrency slot past the
-server's own 75s timeout. Queue wait shortens a queued call's own read window instead
-of extending it past the server timeout.
+queue (2 concurrent reads, 8 queued by default). The page-load steps (page `goto` 45s,
+render wait 2.5s, body text 15s) are each capped by the remaining budget, and every band
+request receives the remaining part of that budget (capped at 30s) as its Playwright
+request timeout, so a hanging request is aborted instead of holding a Worker concurrency
+slot past the server's own 75s timeout. Queue wait shortens a queued call's own read
+window instead of extending it past the server timeout. With less than 3s of the budget
+left before the page even loads, the Worker answers `READ_BUDGET_EXHAUSTED` (503,
+retryable) instead of starting a browser.
 A band that times out after rows were already read returns those rows with
 `truncated: true`; a timeout before the first row is reported as an error, never as an
 empty sheet.

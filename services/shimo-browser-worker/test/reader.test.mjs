@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS, fetchRangeValues, parseA1Range,
-  planRowBands, readBudgetFor, readStartedAt, ShimoWorkerError, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
+  budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
+  fetchRangeValues, parseA1Range, planRowBands, PlaywrightShimoEngine, readBudgetFor, readStartedAt,
+  ShimoWorkerError, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
 } from '../src/reader.mjs';
 
 test('Shimo URL validation pins HTTPS and the expected file kind', () => {
@@ -253,4 +254,76 @@ test('readStartedAt 优先采用调用方传入的请求到达时刻，缺省时
   assert.equal(readStartedAt(undefined, clock), 5_000);
   assert.equal(readStartedAt(Number.NaN, clock), 5_000);
   assert.equal(clockCalls, 2);
+});
+
+test('budgetBoundedTimeout 用剩余预算封顶固定超时', () => {
+  assert.equal(budgetBoundedTimeout(45_000, 60_000), 45_000);
+  assert.equal(budgetBoundedTimeout(45_000, 5_000), 5_000);
+  assert.equal(budgetBoundedTimeout(45_000, 0), 1);
+  assert.equal(budgetBoundedTimeout(45_000, -10), 1);
+});
+
+test('页面加载步骤按剩余总预算收口，预算不足时提前按「忙」拒绝', async () => {
+  const recorded = [];
+  const fakePage = {
+    async goto(_, { timeout }) { recorded.push(['goto', timeout]); },
+    async waitForTimeout(ms) { recorded.push(['wait', ms]); },
+    locator() {
+      return { async innerText({ timeout }) { recorded.push(['innerText', timeout]); throw new Error('stop-after-page-load'); } };
+    },
+  };
+  const clock = 1_000_000;
+  const engine = new PlaywrightShimoEngine({ executablePath: 'test-browser', now: () => clock });
+
+  engine.withContext = async (state, callback) => callback({ newPage: async () => fakePage });
+
+  // 排队 + 页面加载已吃掉 61s：三个固定超时都必须退到剩余预算以内，而不是各按 45s/2.5s/15s 跑。
+  await assert.rejects(
+    () => engine.readSheet({}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:C20', { budgetStartedAt: clock - 61_000 }),
+    /stop-after-page-load/,
+  );
+  const gotoTimeout = recorded.find(entry => entry[0] === 'goto')[1];
+  const renderWait = recorded.find(entry => entry[0] === 'wait')[1];
+  const innerTextTimeout = recorded.find(entry => entry[0] === 'innerText')[1];
+  assert.ok(gotoTimeout <= 4_000 && gotoTimeout > 0, `goto timeout ${gotoTimeout} 应被剩余预算封顶`);
+  assert.ok(renderWait <= 4_000 && renderWait >= 0, `render wait ${renderWait} 应被剩余预算封顶`);
+  assert.ok(innerTextTimeout <= 4_000 && innerTextTimeout > 0, `innerText timeout ${innerTextTimeout} 应被剩余预算封顶`);
+
+  // 预算已经用光：不再启动浏览器，直接给出可重试的错误。
+  const before = recorded.length;
+  await assert.rejects(
+    () => engine.readSheet({}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:C20', { budgetStartedAt: clock - 70_000 }),
+    error => error instanceof ShimoWorkerError && error.code === 'READ_BUDGET_EXHAUSTED' && error.status === 503,
+  );
+  assert.equal(recorded.length, before);
+});
+
+test('页面加载超时只有在预算耗尽时才归类为可重试错误', async () => {
+  let clock = 1_000_000;
+  const startedAt = clock - 61_000;
+  const engine = new PlaywrightShimoEngine({ executablePath: 'test-browser', now: () => clock });
+  engine.withContext = async (state, callback) => callback({ newPage: async () => ({
+    async goto() { clock += 5_000; throw new Error('page load timed out'); },
+    async waitForTimeout() {},
+    locator() { return { async innerText() { throw new Error('unreachable'); } }; },
+  }) });
+  // 页面加载把最后的预算也用光：归类成可重试的 503，而不是 502 WORKER_ERROR。
+  await assert.rejects(
+    () => engine.readSheet({}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:C20', { budgetStartedAt: startedAt }),
+    error => error instanceof ShimoWorkerError && error.code === 'READ_BUDGET_EXHAUSTED' && error.status === 503,
+  );
+
+  // 预算还够时页面加载失败：保持原样，说明是上游页面问题而不是「忙」。
+  clock = 1_000_000;
+  const withTimeLeft = new PlaywrightShimoEngine({ executablePath: 'test-browser', now: () => clock });
+  withTimeLeft.withContext = async (state, callback) => callback({ newPage: async () => ({
+    async goto() { throw new Error('page load timed out'); },
+    async waitForTimeout() {},
+    locator() { return { async innerText() { return ''; } }; },
+  }) });
+  await assert.rejects(
+    () => withTimeLeft.readSheet({}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:C20', { budgetStartedAt: clock - 10_000 }),
+    /page load timed out/,
+  );
+  assert.equal(budgetExhaustedOr(new Error('x'), () => 5_000).message, 'x');
 });

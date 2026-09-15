@@ -39,10 +39,12 @@ export const MAX_BANDS = 40;
 // 单块读取阶段的兜底时间预算：即使块数没到上限，也要保证读取阶段不会把整次调用占满。
 export const DEFAULT_READ_BUDGET_MS = 30_000;
 // 整次调用预算：server 侧 HTTP 客户端 75s 超时（server/shimo_worker_backend.go），
-// 这里按 65s 收口。计时从 Worker 收到请求开始（含并发限流器里的排队等待），把页面加载
-// （最多 45s）、等渲染（2.5s）、取正文（最多 15s）都算进去，剩下的留给响应序列化和网络
-// 往返，避免「排队 + 读取」越过 server 超时。
+// 这里按 65s 收口。计时从 Worker 收到请求开始（含并发限流器里的排队等待），页面加载
+// （goto 最多 45s、等渲染 2.5s、取正文最多 15s）按剩余预算收口，剩下的留给响应序列化
+// 和网络往返，保证「排队 + 前置 + 读取」不越过 server 超时。
 export const DEFAULT_TOTAL_READ_BUDGET_MS = 65_000;
+// 页面加载阶段的最小可用预算：剩余不足这个数时不再启动浏览器，直接按「忙、可重试」上报。
+export const MIN_PAGE_BUDGET_MS = 3_000;
 
 function columnIndex(label) {
   let index = 0;
@@ -149,6 +151,20 @@ export async function collectSheetValues(bands, fetchBand, {
 // 没有传入时回退到当前时刻（直接调用 reader 的场景）。
 export function readStartedAt(budgetStartedAt, now = Date.now()) {
   return Number.isFinite(budgetStartedAt) ? budgetStartedAt : now();
+}
+
+// 固定超时也要服从总预算：剩余时间不足时改用剩余值，保证「排队 + 页面加载 + 读取」不越过上界。
+export function budgetBoundedTimeout(defaultTimeoutMs, remainingMs) {
+  return Math.max(1, Math.min(defaultTimeoutMs, Math.floor(remainingMs)));
+}
+
+// 页面加载阶段超时：若超时发生时预算已经耗尽，说明是「等太久、可以重试」，
+// 归类成 READ_BUDGET_EXHAUSTED（503），而不是让 Playwright 的 TimeoutError 变成 502。
+export function budgetExhaustedOr(error, budgetLeft) {
+  if (error instanceof ShimoWorkerError) return error;
+  return budgetLeft() <= 0
+    ? new ShimoWorkerError('READ_BUDGET_EXHAUSTED', '这次读取等待时间过长，预算已用尽，请稍后重试。', 503)
+    : error;
 }
 
 // 整次调用的剩余预算：排队等待、页面加载等前置步骤吃掉的时间都要从读取阶段扣掉，
@@ -278,11 +294,22 @@ export class PlaywrightShimoEngine {
     const startedAt = readStartedAt(budgetStartedAt, this.now);
     const { url, fileId } = validateShimoURL(inputURL, 'sheet');
     const plan = planRowBands(cellRange);
+    // 页面加载的固定超时（45s + 2.5s + 15s）也吃同一条总预算：剩余不足时不再启动浏览器，
+    // 直接按「忙、可重试」上报，避免 server 已经超时、worker 才开始读。
+    const budgetLeft = () => this.totalBudgetMs - Math.max(0, this.now() - startedAt);
+    if (budgetLeft() < MIN_PAGE_BUDGET_MS) {
+      throw new ShimoWorkerError('READ_BUDGET_EXHAUSTED', '这次读取等待时间过长，预算已用尽，请稍后重试。', 503);
+    }
     return this.withContext(storageState, async context => {
       const page = await context.newPage();
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeoutMs });
-      await page.waitForTimeout(2500);
-      const bodyText = await page.locator('body').innerText({ timeout: 15_000 });
+      let bodyText;
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: budgetBoundedTimeout(this.timeoutMs, budgetLeft()) });
+        await page.waitForTimeout(Math.min(2500, Math.max(0, Math.floor(budgetLeft()))));
+        bodyText = await page.locator('body').innerText({ timeout: budgetBoundedTimeout(15_000, budgetLeft()) });
+      } catch (error) {
+        throw budgetExhaustedOr(error, budgetLeft);
+      }
       assertPageAccess(await page.title(), bodyText);
       const collected = await collectSheetValues(
         plan.bands,
