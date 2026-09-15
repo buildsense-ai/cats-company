@@ -86,13 +86,13 @@ export default function KnowledgeWikiView({ location = window.location } = {}) {
         <section className="cc-knowledge-wiki-content" aria-label="知识库概览">
           <div className="cc-knowledge-wiki-summary"><strong>{Number(data.total || 0)}</strong><span>篇知识</span><span>{data.review_pending || 0} 篇待复查</span></div>
           <div className="cc-knowledge-wiki-list">
-            {(data.items || []).map((item) => <button type="button" key={`${item.id}:${item.revision}`} className="cc-knowledge-wiki-card" onClick={() => openDocument(item)}><div><h2>{item.title}</h2><p>{item.summary || '暂无摘要'}</p></div><span>{item.category || '未分类'}</span></button>)}
+            {(data.items || []).map((item) => <button type="button" key={`${item.id}:${item.revision}`} className="cc-knowledge-wiki-card" onClick={() => openDocument(item)}><div><h2>{item.title}</h2><p>{item.summary || '暂无摘要'}</p><small>{item.review_status === 'reviewed' ? '已复查' : '待复查'} · {item.updatedAt ? new Date(item.updatedAt).toLocaleDateString() : '时间未知'}</small></div><span>{item.category || '未分类'}</span></button>)}
             {!data.items?.length && <p className="cc-knowledge-wiki-empty">当前没有可显示的知识，或知识索引尚未完成。</p>}
           </div>
           {data.next_offset && <button type="button" className="oc-btn oc-btn-default cc-knowledge-wiki-more" onClick={loadMore} disabled={loadingMore}>{loadingMore ? '正在加载…' : '加载更多'}</button>}
         </section>
       )}
-      {selected && <div className="cc-knowledge-wiki-dialog" role="dialog" aria-modal="true"><div className="cc-knowledge-wiki-dialog-inner"><button type="button" className="cc-knowledge-wiki-close" onClick={() => setSelected(null)} aria-label="关闭"><X size={18} /></button><h2>{selected.item.title}</h2>{selected.status === 'loading' && <p>正在读取正文…</p>}{selected.status === 'error' && <p className="error">{selected.error}</p>}{selected.status === 'ready' && <pre>{selected.data.body || selected.data.content || '暂无正文'}</pre>}</div></div>}
+      {selected && <div className="cc-knowledge-wiki-dialog" role="dialog" aria-modal="true"><div className="cc-knowledge-wiki-dialog-inner"><button type="button" className="cc-knowledge-wiki-close" onClick={() => setSelected(null)} aria-label="关闭"><X size={18} /></button><h2>{selected.item.title}</h2>{selected.status === 'loading' && <p>正在读取正文…</p>}{selected.status === 'error' && <p className="error">{selected.error}</p>}{selected.status === 'ready' && <><p className="cc-knowledge-wiki-review">{selected.data.review_status === 'reviewed' ? '已复查' : '待复查'} · revision {selected.data.revision}</p><pre>{selected.data.body || selected.data.content || '暂无正文'}</pre><h3>来源</h3><ul className="cc-knowledge-wiki-sources">{(selected.data.sources || []).map((source, index) => <li key={`${index}:${source}`}>{source}</li>)}</ul></>}</div></div>}
     </main>
   );
 }
