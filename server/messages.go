@@ -568,6 +568,13 @@ func (h *Hub) DeliverShimoLoginResume(resume ShimoLoginResume) bool {
 		return false
 	}
 	message.Data.SeqID = 0
+	// Group chats only let a virtual employee act on a structured @mention, and a
+	// resume prompt is exactly "this employee was addressed". Without the mention
+	// the client drops the delivery as an unrelated group message. One-to-one
+	// chats have no such gate, so they keep the plain envelope.
+	if isGroupTopic(resume.TopicID) {
+		message.Data.Mentions = []string{formatUID(resume.AgentUID)}
+	}
 	h.SendToUser(resume.AgentUID, message)
 	return true
 }

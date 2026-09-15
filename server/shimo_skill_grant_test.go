@@ -140,6 +140,9 @@ func TestShimoLoginResumeIsTransientAndCarriesFreshSkillGrant(t *testing.T) {
 	if message.Data.Metadata["catsco_event"] != "provider_connection_ready" || message.Data.Metadata["provider"] != "shimo" {
 		t.Fatalf("unexpected resume event metadata: %#v", message.Data.Metadata)
 	}
+	if len(message.Data.Mentions) != 0 {
+		t.Fatalf("one-to-one resume must stay mention-free: %#v", message.Data.Mentions)
+	}
 	connectors := metadataMapFromServerMessage(t, &message, "catsco_skill_connectors")
 	if connectors["schema"] != "catsco.skill_connectors.v1" {
 		t.Fatalf("resume did not carry a fresh connector grant: %#v", connectors)
@@ -317,6 +320,9 @@ func TestShimoLoginResumeIntoGroupRequiresBothMembers(t *testing.T) {
 	}
 	if message.Data.Metadata["catsco_transient"] != true || message.Data.Metadata["catsco_skill_login_resume"] != true {
 		t.Fatalf("missing trusted resume metadata: %#v", message.Data.Metadata)
+	}
+	if len(message.Data.Mentions) != 1 || message.Data.Mentions[0] != "usr43" {
+		t.Fatalf("group resume must address the virtual employee through a structured mention: %#v", message.Data.Mentions)
 	}
 	connectors := metadataMapFromServerMessage(t, &message, "catsco_skill_connectors")
 	if connectors["schema"] != "catsco.skill_connectors.v1" {
