@@ -267,3 +267,55 @@ func stringValueForTest(value any) string {
 	text, _ := value.(string)
 	return text
 }
+
+func TestParseShimoTaskRefAcceptsGroupAndOneToOneTopics(t *testing.T) {
+	cases := []struct {
+		taskRef string
+		ok      bool
+	}{
+		{"catsco:p2p_7_43:91", true},
+		{"catsco:grp_80:91", true},
+		{"catsco:grp_0:91", false},
+		{"catsco:grp_abc:91", false},
+		{"catsco:friends_7_43:91", false},
+		{"catsco:grp_80:0", false},
+		{"catsco:grp_80:", false},
+	}
+	for _, item := range cases {
+		topicID, messageID, ok := parseShimoTaskRef(item.taskRef)
+		if ok != item.ok {
+			t.Fatalf("parseShimoTaskRef(%q) ok=%v want %v", item.taskRef, ok, item.ok)
+		}
+		if !ok {
+			continue
+		}
+		if messageID != 91 || (topicID != "p2p_7_43" && topicID != "grp_80") {
+			t.Fatalf("parseShimoTaskRef(%q) topic=%q message=%d", item.taskRef, topicID, messageID)
+		}
+	}
+}
+
+func TestLoginResumeIsCreatedForGroupTopicsAndRefusesForeignOneToOneTopics(t *testing.T) {
+	now := time.Now().UTC()
+	handler := NewShimoConnectorHandler(ShimoConnectorOptions{
+		ActorSecret: shimoTestSecret,
+		WorkerToken: strings.Repeat("w", 40),
+		Now:         func() time.Time { return now },
+	})
+	handler.SetLoginResumePublisher(func(ShimoLoginResume) bool { return true })
+	key := shimoConnectionKey{agentUID: "usr43", actorUID: "usr7"}
+
+	groupAttempt := &shimoLoginAttempt{id: "group", key: key, taskRef: "catsco:grp_80:91", expiresAt: now.Add(time.Minute)}
+	token, resume := handler.newLoginResumeLocked(groupAttempt, now)
+	if token == "" || resume == nil || resume.topicID != "grp_80" || resume.messageID != 91 {
+		t.Fatalf("group resume not created: token=%q resume=%#v", token, resume)
+	}
+	if len(handler.resumes) != 1 {
+		t.Fatalf("group resume not stored: %d entries", len(handler.resumes))
+	}
+
+	foreignAttempt := &shimoLoginAttempt{id: "foreign", key: key, taskRef: "catsco:p2p_7_99:92", expiresAt: now.Add(time.Minute)}
+	if token, resume := handler.newLoginResumeLocked(foreignAttempt, now); token != "" || resume != nil {
+		t.Fatalf("foreign one-to-one resume created: token=%q resume=%#v", token, resume)
+	}
+}
