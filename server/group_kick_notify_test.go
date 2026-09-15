@@ -45,8 +45,8 @@ func TestHandleKickMemberNotifiesKickedMember(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	assertMemberKicked(t, "kicked member", kickedClient, 42)
-	assertMemberKicked(t, "remaining member", adminClient, 42)
+	assertMemberKicked(t, "kicked member", kickedClient, groupID, 42)
+	assertMemberKicked(t, "remaining member", adminClient, groupID, 42)
 
 	members, err := db.GetGroupMembers(groupID)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestHandleKickMemberNotifiesKickedMember(t *testing.T) {
 	}
 }
 
-func assertMemberKicked(t *testing.T, label string, client *Client, wantKickedUID int64) {
+func assertMemberKicked(t *testing.T, label string, client *Client, groupID int64, wantKickedUID int64) {
 	t.Helper()
 	select {
 	case data := <-client.send:
@@ -68,10 +68,48 @@ func assertMemberKicked(t *testing.T, label string, client *Client, wantKickedUI
 		if msg.Pres == nil || msg.Pres.What != "member_kicked" {
 			t.Fatalf("%s: pres=%+v, want what=member_kicked", label, msg.Pres)
 		}
+		if wantTopic := fmt.Sprintf("grp_%d", groupID); msg.Pres.Topic != wantTopic {
+			t.Fatalf("%s: pres.topic=%q want=%q", label, msg.Pres.Topic, wantTopic)
+		}
 		if msg.Pres.UserID != wantKickedUID {
 			t.Fatalf("%s: pres.user_id=%d want=%d", label, msg.Pres.UserID, wantKickedUID)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("%s: did not receive member_kicked event", label)
+	}
+}
+
+// TestNotifyGroupEventIncludingUserDeduplicatesRecipients covers the defensive
+// branch where the explicit user is still present in GetGroupMembers: the
+// notification must be delivered exactly once, not twice.
+func TestNotifyGroupEventIncludingUserDeduplicatesRecipients(t *testing.T) {
+	db := newChannelAgentTestStore()
+	groupID, err := db.CreateGroup("kick-dedupe", 7)
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := db.AddGroupMember(groupID, 42, "member"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	memberClient := &Client{uid: 42, send: make(chan []byte, 8)}
+	hub := &Hub{
+		clients: map[int64]map[*Client]struct{}{
+			42: {memberClient: {}},
+		},
+	}
+	handler := NewGroupHandler(db, hub)
+
+	handler.notifyGroupEventIncludingUser(groupID, 42, "member_kicked")
+
+	select {
+	case <-memberClient.send:
+	default:
+		t.Fatal("member 42 did not receive the event")
+	}
+	select {
+	case <-memberClient.send:
+		t.Fatal("member 42 received the event twice")
+	default:
 	}
 }
