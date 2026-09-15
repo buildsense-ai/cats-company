@@ -88,6 +88,48 @@ test('提前停止与超时都会对外暴露，不会静默丢数据', async ()
   assert.equal(complete.covered_through_row, plan.bands[0].end_row);
 });
 
+test('剩余时间预算会传给每一块请求，单块超时也会标记截断', async () => {
+  const plan = planRowBands('A1:Z1000');
+  const timeoutError = timeoutMs => Object.assign(
+    new Error(`apiRequestContext.get: Request timed out after ${timeoutMs}ms`),
+    { name: 'TimeoutError' },
+  );
+
+  // 正常情况：第一块拿到的是剩余预算（而不是无上限等待）
+  const seenTimeouts = [];
+  const complete = await collectSheetValues(plan.bands.slice(0, 1), async (band, options) => {
+    seenTimeouts.push(options.timeoutMs);
+    return [['row']];
+  }, { budgetMs: 30_000, now: () => 0 });
+  assert.deepEqual(seenTimeouts, [30_000]);
+  assert.equal(complete.timed_out, false);
+
+  // 唯一一块本身就超预算：不能当成成功返回
+  await assert.rejects(
+    () => collectSheetValues(plan.bands.slice(0, 1), async (band, options) => { throw timeoutError(options.timeoutMs); }, { budgetMs: 30_000, now: () => 0 }),
+    error => error.name === 'TimeoutError',
+  );
+
+  // 已经读到数据之后某一块超时：返回已读到的部分，并标记截断
+  const interrupted = await collectSheetValues(plan.bands.slice(0, 3), async (band, options) => {
+    if (band.start_row > 1) throw timeoutError(options.timeoutMs);
+    return [['row-1']];
+  }, { budgetMs: 30_000, now: () => 0 });
+  assert.deepEqual(interrupted.values, [['row-1']]);
+  assert.equal(interrupted.timed_out, true);
+  assert.equal(interrupted.requests, 1);
+  assert.equal(interrupted.covered_through_row, plan.bands[0].end_row);
+
+  // 非超时错误（例如权限、范围错误）必须原样抛出，不能降级成「截断」
+  await assert.rejects(
+    () => collectSheetValues(plan.bands.slice(0, 2), async (band) => {
+      if (band.start_row > 1) throw new ShimoWorkerError('PERMISSION_DENIED', 'no', 403);
+      return [['row-1']];
+    }, { budgetMs: 30_000, now: () => 0 }),
+    error => error instanceof ShimoWorkerError && error.code === 'PERMISSION_DENIED',
+  );
+});
+
 test('中间出现空块时，后面的行仍按顺序拼接', async () => {
   const bands = [
     { start_row: 1, end_row: 10 },

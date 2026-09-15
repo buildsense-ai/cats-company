@@ -40,9 +40,12 @@ than the populated rows, so the Worker splits wider ranges into row bands of at 
 cells, reads them sequentially, and concatenates the rows. `/v1/shimo/sheets/read`
 returns `values` plus `requested_range`, `requests`, `covered_through_row`,
 `stopped_early` and `truncated`; a single band wider than the budget is rejected with
-`RANGE_TOO_LARGE`. Because Shimo trims trailing empty rows and columns, all-blank rows at
-a band boundary may be dropped: consumers must treat `values` as an ordered list of rows,
-not as row indices.
+`RANGE_TOO_LARGE`. Every band request is bounded by the remaining part of a 30s read
+budget, so a hanging Shimo call cannot hold a Worker slot until the server's own 75s
+timeout; a band that times out after rows were read returns them with `truncated` set.
+Because Shimo trims trailing empty rows and columns, all-blank rows at a band boundary
+may be dropped: consumers must treat `values` as an ordered list of rows, not as row
+indices.
 
 The public login route is `/connect/shimo/{one-time-token}`. The server stores only its SHA-256 digest. In mock mode, `POST` to the same route consumes the link and marks only its bound actor as connected.
 

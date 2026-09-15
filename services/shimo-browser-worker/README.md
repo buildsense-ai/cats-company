@@ -17,7 +17,7 @@ The login URL is a bearer secret. It expires after ten minutes, is excluded from
 Shimo's sheet values endpoint rejects any request covering more than 5000 cells
 (`400 {"error":"限制最多获取 5000 个单元格的数据"}`), and it counts the requested
 range rather than the populated rows — so `A1:Z1000` (26000 cells) can never be read
-in one call. `GET /v1/sheets/read` therefore splits the requested range into row
+in one call. `POST /v1/sheets/read` therefore splits the requested range into row
 bands of at most 4000 cells (80% of the hard cap), reads them sequentially inside one
 browser context, and concatenates the rows. A range narrower than the budget still
 issues exactly one upstream request.
@@ -37,6 +37,12 @@ Shimo trims trailing empty rows and columns from every response, so all-blank ro
 at a band boundary can be dropped; callers must not treat `values` as row-indexed.
 Requesting more columns than the cell budget in a single band (`A1:ZZZ1`) is rejected
 with `RANGE_TOO_LARGE` instead of firing requests that are guaranteed to fail.
+
+Reads are bounded in time as well as in band count: each band request receives the
+remaining part of a 30s budget as its Playwright request timeout, so a hanging request
+is aborted instead of holding a Worker concurrency slot open. A band that times out
+after rows were already read returns those rows with `truncated: true`; a timeout
+before the first row is reported as an error, never as an empty sheet.
 
 ## Configuration
 

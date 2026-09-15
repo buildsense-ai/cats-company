@@ -95,6 +95,10 @@ export function planRowBands(cellRange, { cellBudget = CHUNK_CELL_BUDGET, maxBan
 
 // 逐块读取并拼成一个二维数组。上游会裁掉每块尾部的空白行，因此连续空块视为数据结束；
 // 但只有已经读到过数据时才允许提前结束，避免「数据从中间行开始」被误判成空表。
+function isTimeoutError(error) {
+  return error?.name === 'TimeoutError' || /timed out/i.test(String(error?.message || ''));
+}
+
 export async function collectSheetValues(bands, fetchBand, {
   emptyBandTolerance = EMPTY_BAND_TOLERANCE,
   budgetMs = DEFAULT_READ_BUDGET_MS,
@@ -108,8 +112,19 @@ export async function collectSheetValues(bands, fetchBand, {
   let timedOut = false;
   let coveredThroughRow = bands.length ? bands[0].start_row - 1 : 0;
   for (const band of bands) {
-    if (requests > 0 && now() - startedAt > budgetMs) { timedOut = true; break; }
-    const bandValues = await fetchBand(band);
+    const remainingMs = budgetMs - (now() - startedAt);
+    if (requests > 0 && remainingMs <= 0) { timedOut = true; break; }
+    let bandValues;
+    try {
+      // 剩余预算同时交给这一块请求本身：预算耗尽时中断请求，而不是无限等下去。
+      bandValues = await fetchBand(band, { timeoutMs: Math.max(1, remainingMs) });
+    } catch (error) {
+      // 单块超时且此前已经读到数据：返回已读到的部分并标记截断；
+      // 一行都没读到就按失败抛出，避免把「超时」当成「空表」。
+      if (!isTimeoutError(error) || !values.length) throw error;
+      timedOut = true;
+      break;
+    }
     requests += 1;
     coveredThroughRow = band.end_row;
     if (!bandValues.length) {
@@ -123,10 +138,11 @@ export async function collectSheetValues(bands, fetchBand, {
   return { values, requests, covered_through_row: coveredThroughRow, stopped_early: stoppedEarly, timed_out: timedOut };
 }
 
-export async function fetchRangeValues(context, fileId, sheetName, cellRange) {
+export async function fetchRangeValues(context, fileId, sheetName, cellRange, { timeoutMs } = {}) {
   const apiRange = sheetName + '!' + cellRange;
   const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values?range=' + encodeURIComponent(apiRange);
-  const response = await context.request.get(endpoint);
+  const requestOptions = Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeout: timeoutMs } : undefined;
+  const response = await context.request.get(endpoint, requestOptions);
   if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
   if (response.status() === 403) throw new ShimoWorkerError('PERMISSION_DENIED', '当前石墨账号没有读取权限。', 403);
   if (!response.ok()) {
@@ -234,7 +250,7 @@ export class PlaywrightShimoEngine {
       assertPageAccess(await page.title(), bodyText);
       const collected = await collectSheetValues(
         plan.bands,
-        band => fetchRangeValues(context, fileId, sheetName, band.range),
+        (band, { timeoutMs } = {}) => fetchRangeValues(context, fileId, sheetName, band.range, { timeoutMs }),
       );
       return {
         extracted_at: new Date().toISOString(),
