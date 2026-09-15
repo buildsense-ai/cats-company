@@ -88,6 +88,22 @@ test('提前停止与超时都会对外暴露，不会静默丢数据', async ()
   assert.equal(complete.covered_through_row, plan.bands[0].end_row);
 });
 
+test('中间出现空块时，后面的行仍按顺序拼接', async () => {
+  const bands = [
+    { start_row: 1, end_row: 10 },
+    { start_row: 11, end_row: 20 },
+    { start_row: 21, end_row: 30 },
+  ];
+  const collected = await collectSheetValues(bands, async band => {
+    if (band.start_row === 11) return [];
+    return [[`row-${band.start_row}`], [`row-${band.end_row}`]];
+  });
+  assert.deepEqual(collected.values, [['row-1'], ['row-10'], ['row-21'], ['row-30']]);
+  assert.equal(collected.requests, 3);
+  assert.equal(collected.stopped_early, false);
+  assert.equal(collected.covered_through_row, 30);
+});
+
 test('石墨接口的错误码会映射成明确的 worker 错误', async () => {
   const contextFor = (status, body) => ({
     request: {
