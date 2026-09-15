@@ -3,6 +3,7 @@ import { chromium } from 'playwright-core';
 import { browserExecutable, ShimoWorkerError } from './reader.mjs';
 import { assertBinding } from './session_store.mjs';
 import { LOGIN_DEVICE_SCALE_FACTOR, LOGIN_VIEWPORT } from './login_viewport.mjs';
+import { SHIMO_LOGIN_URL, shouldAdoptPopup } from './login_pages.mjs';
 
 const DEFAULT_TTL_MS = 10 * 60_000;
 
@@ -53,10 +54,11 @@ export class ShimoLoginManager {
     this.attempts.set(token, attempt);
     this.attemptByBinding.set(binding, token);
     try {
-      context.on('page', nextPage => {
-        attempt.page = nextPage;
-        void nextPage.waitForLoadState('domcontentloaded').catch(() => {});
-      });
+      // Shimo opens 服务条款 / 隐私政策 / 用户行为规范 in new tabs.  Streaming
+      // those tabs would replace the login form with a document page the visitor
+      // cannot leave, so only login-flow popups take over the surface.
+      attempt.primary = page;
+      context.on('page', nextPage => { void this.adoptPopup(attempt, nextPage); });
       await page.goto('https://shimo.im/login', { waitUntil: 'domcontentloaded', timeout: 45_000 });
       await page.waitForFunction(() => document.body?.innerText?.trim().length > 20, null, { timeout: 15_000 });
       await page.waitForTimeout(300);
@@ -94,6 +96,30 @@ export class ShimoLoginManager {
     const attempt = this.attempts.get(token);
     if (!attempt || attempt.expiresAt <= this.now()) return null;
     return { state: attempt.state, expires_at: new Date(attempt.expiresAt).toISOString() };
+  }
+
+  // Puts the surface back on the Shimo login page.  The visitor needs this after
+  // any navigation that is not the login form itself, including the legal tabs
+  // Shimo opens from its consent line.
+  async reset(token) {
+    const attempt = this.requireAttempt(token);
+    if (attempt.state !== 'waiting' || !attempt.page || attempt.page.isClosed()) {
+      throw new ShimoWorkerError('LOGIN_FINISHED', attempt.message, 409);
+    }
+    const primary = attempt.primary && !attempt.primary.isClosed() ? attempt.primary : null;
+    if (primary) attempt.page = primary;
+    if (!currentURL(attempt.page).startsWith(SHIMO_LOGIN_URL)) {
+      await attempt.page.goto(SHIMO_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    }
+    attempt.message = '请在下方石墨页面完成登录';
+    return this.status(token);
+  }
+
+  async adoptPopup(attempt, nextPage) {
+    await nextPage.waitForLoadState('domcontentloaded').catch(() => {});
+    if (attempt.state !== 'waiting' || attempt.page === nextPage || nextPage.isClosed()) return;
+    if (!shouldAdoptPopup(currentURL(nextPage))) return;
+    attempt.page = nextPage;
   }
 
   async screenshot(token) {
@@ -177,6 +203,14 @@ export class ShimoLoginManager {
   async shutdown() {
     await Promise.all([...this.attempts.values()].map(attempt => this.closeAttempt(attempt, 'closed', '服务已停止')));
     this.attempts.clear();
+  }
+}
+
+function currentURL(page) {
+  try {
+    return String(page.url() || '');
+  } catch {
+    return '';
   }
 }
 

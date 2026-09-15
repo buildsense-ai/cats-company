@@ -122,7 +122,7 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
 }
 
 async function handlePublicLogin(request, response, url, manager) {
-  const match = url.pathname.match(/^\/shimo-login\/([0-9a-f]{64})\/(status|screenshot|input)?$/);
+  const match = url.pathname.match(/^\/shimo-login\/([0-9a-f]{64})\/(status|screenshot|input|reset)?$/);
   setPublicHeaders(response);
   if (!match) {
     if (request.method === 'GET') return sendLoginNotice(response, 404, '登录链接无效', '这个地址不完整，请回到聊天重新打开一次性登录链接。');
@@ -144,6 +144,12 @@ async function handlePublicLogin(request, response, url, manager) {
     const png = await manager.screenshot(token);
     response.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length });
     return response.end(png);
+  }
+  // Shimo opens its legal documents in new tabs from the consent line under the
+  // login button.  If the visitor ends up on such a page, this puts the login
+  // form back on the surface instead of leaving a document nobody can leave.
+  if (request.method === 'POST' && action === 'reset') {
+    return sendJSON(response, 200, { ok: true, data: await manager.reset(token) });
   }
   if (request.method === 'POST' && action === 'input') {
     const body = await readJSON(request, 4096);
