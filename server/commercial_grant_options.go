@@ -13,6 +13,9 @@ import (
 type commercialGrantModelOption struct {
 	ID        string     `json:"id"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// RequiresExpiry marks image add-ons outside the current package: the
+	// console must ask for an explicit expiry for these.
+	RequiresExpiry bool `json:"requires_expiry,omitempty"`
 }
 
 type commercialGrantOptions struct {
@@ -54,9 +57,10 @@ func commercialGrantModels(summary *types.CommercialSummary, relayUser *commerci
 				// the Free baseline). Keep them selectable so the operator can
 				// grant them explicitly; the grant itself then requires an
 				// explicit expiry.
-				if !commercialImageLaneModel(model) || !commercialRelayHasActivePackage(summary) {
+				if !commercialImageLaneModel(model) || !commercialSummaryHasActiveEntitlement(summary, now) {
 					continue
 				}
+				option.RequiresExpiry = true
 			} else {
 				option.ID, option.ExpiresAt = canonical, &expiry
 			}
@@ -66,6 +70,30 @@ func commercialGrantModels(summary *types.CommercialSummary, relayUser *commerci
 	}
 	sort.Slice(options, func(i, j int) bool { return options[i].ID < options[j].ID })
 	return options
+}
+
+// commercialImageGrantCatalogModel canonicalizes an image lane grant against
+// the live relay catalog. The console already lists catalog choices; this
+// guards direct API calls and stale selections from granting a model the
+// execution layer does not serve.
+func (h *AccountAdminHandler) commercialImageGrantCatalogModel(ctx context.Context, uid int64, model string) (string, error) {
+	if h.relayAdmin == nil {
+		return "", fmt.Errorf("模型目录暂不可用，请稍后重试。")
+	}
+	relayUser, err := fetchRelayLimitsForUID(ctx, h.relayAdmin, uid)
+	if err != nil || relayUser == nil || !relayUser.Configured {
+		return "", fmt.Errorf("无法读取该用户的可用模型目录，请稍后重试。")
+	}
+	for _, limit := range relayUser.Limits.AvailableModelLimits {
+		name := strings.TrimSpace(limit.Model)
+		if name == "" || name == "*" || strings.TrimSpace(limit.Provider) == "" || len(limit.AllowedModels) == 0 {
+			continue
+		}
+		if strings.EqualFold(name, model) {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("模型不在当前可用目录中，请刷新后重试。")
 }
 
 func (h *AccountAdminHandler) commercialGrantOptions(ctx context.Context, uid int64, summary *types.CommercialSummary) commercialGrantOptions {

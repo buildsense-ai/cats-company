@@ -845,6 +845,15 @@ func TestCommercialRelayValidationRejectsMissingModelMapping(t *testing.T) {
 	if err := validateCommercialRelayModels(map[string]float64{"MiniMax-M3": 10}, relayUser); err == nil {
 		t.Fatal("missing relay model mapping was accepted")
 	}
+	imageRelay := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+		Provider: "pptoken-image-search", Model: "gpt-image-2.5", AllowedModels: []string{"gpt-image-2.5"},
+	}}}}
+	if err := validateCommercialRelayModels(map[string]float64{"gpt-image-2.5": 100}, imageRelay); err != nil {
+		t.Fatalf("catalogued image model was rejected: %v", err)
+	}
+	if err := validateCommercialRelayModels(map[string]float64{"gpt-image-2.5": 100, "gpt-image-2": 100}, imageRelay); err == nil || !strings.Contains(err.Error(), "gpt-image-2") {
+		t.Fatalf("uncatalogued image model was accepted: %v", err)
+	}
 }
 
 func TestCommercialRelayRequiredPaymentModelRejectsMappingDrift(t *testing.T) {

@@ -1,9 +1,14 @@
 -- Public Pro/Max add the image lane models to the five public chat models.
 -- The add-on raises the advertised pool by 500 (Personal) and 1500 (Pro).
 -- Internal/custom plans and fulfilled order snapshots remain unchanged.
+-- Take a transaction-scoped advisory lock so two concurrent startup runs
+-- cannot both pass the shape guard below and double the add-on.
+SELECT pg_advisory_xact_lock(hashtextextended('catsco_commercial_image_models_v1', 0));
+
 UPDATE commercial_plans SET model_budgets = CASE slug
     WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-v4-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}'::jsonb
     WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":6300,"MiniMax-M3":6300,"deepseek-v4-flash":6300,"glm-5.3-flash":6300,"gpt-5.6-terra":6300,"gpt-image-2":300,"gpt-image-2.5":300,"gpt-image-2.5-flare":300,"gpt-image-2.5-sunburst":300,"chatgpt-image-latest":300}'::jsonb
+    ELSE model_budgets
 END WHERE slug IN ('catsco-personal', 'catsco-pro');
 
 UPDATE commercial_orders o SET plan_model_budgets = p.model_budgets
@@ -38,6 +43,8 @@ BEGIN
            AND COUNT(*) FILTER (WHERE g.model IN (
                'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash', 'glm-5.3-flash', 'gpt-5.6-terra')) = 5
     LOOP
+        -- The plan slug filter above limits this to the two public plans:
+        -- Personal gets 100 per image model, Pro 300.
         image_amount := CASE WHEN package.slug = 'catsco-personal' THEN 100 ELSE 300 END;
         FOREACH image_model IN ARRAY ARRAY[
             'gpt-image-2', 'gpt-image-2.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'chatgpt-image-latest'

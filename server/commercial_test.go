@@ -33,12 +33,48 @@ func TestValidateCommercialOfficialPaidPlanModelsRequiresAllPublicModels(t *test
 		}
 		delete(complete, model)
 	}
+	// A wrong amount breaks the advertised total.
+	complete["gpt-image-2"] = 101
+	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err == nil {
+		t.Fatal("paid plan with a mismatched total was accepted")
+	}
+	complete["gpt-image-2"] = 100
+	// Replacing an image model with an unknown one must fail the model set.
+	delete(complete, "gpt-image-2")
+	complete["gpt-image-9"] = 100
+	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err == nil || !strings.Contains(err.Error(), "gpt-image-2") {
+		t.Fatalf("paid plan with a missing image model was accepted: %v", err)
+	}
+	delete(complete, "gpt-image-9")
+	complete["gpt-image-2"] = 100
 	delete(complete, "gpt-5.6-terra")
 	if err := validateCommercialOfficialPaidPlanModels("catsco-pro", complete); err == nil {
 		t.Fatal("incomplete paid plan was accepted")
 	}
 	if err := validateCommercialOfficialPaidPlanModels("catsco-free", map[string]float64{}); err != nil {
 		t.Fatalf("non-official plan should not be constrained: %v", err)
+	}
+}
+
+func TestCommercialOfficialPaidModelsKeepImageLaneOutOfUserCatalog(t *testing.T) {
+	imageModels := 0
+	for _, model := range commercialOfficialPaidModels {
+		if commercialImageLaneModel(model) {
+			imageModels++
+		}
+	}
+	if imageModels != 5 {
+		t.Fatalf("official paid plans must pin the five image lane models: %d", imageModels)
+	}
+	for _, model := range commercialOfficialPaidModels {
+		if !commercialImageLaneModel(model) {
+			continue
+		}
+		for _, item := range botModelCatalog {
+			if strings.EqualFold(item.ID, model) || strings.EqualFold(strings.TrimSpace(item.RuntimeModel), model) {
+				t.Fatalf("image model %s must stay out of the user-switchable catalog", model)
+			}
+		}
 	}
 }
 

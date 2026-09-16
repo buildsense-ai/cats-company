@@ -1101,14 +1101,25 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load current package"})
 		return
 	}
+	legacy := commercialLegacyGrantEligible(summary, time.Now().UTC())
 	model, expiresAt, err := resolveCommercialBonusGrant(summary, req.Model, req.ExpiresAt, time.Now().UTC())
-	if commercialLegacyGrantEligible(summary, time.Now().UTC()) {
+	if legacy {
 		options := h.commercialGrantOptions(r.Context(), req.UID, summary)
 		model, expiresAt, err = resolveCommercialLegacyGrant(options, req.Model, req.ExpiresAt, time.Now().UTC())
 	}
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	if !legacy && commercialImageLaneModel(model) {
+		// The console only offers live catalog choices, but the API must not
+		// accept a stale or hand-written image model name either.
+		canonical, catalogErr := h.commercialImageGrantCatalogModel(r.Context(), req.UID, model)
+		if catalogErr != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": catalogErr.Error()})
+			return
+		}
+		model = canonical
 	}
 	grant, err := store.GrantCommercialQuota(&types.CommercialQuotaGrant{
 		UID:           req.UID,
@@ -1147,8 +1158,10 @@ func resolveCommercialBonusGrant(summary *types.CommercialSummary, requestedMode
 	}
 	if len(activeEntitlementsByPlan) == 0 {
 		// Image add-ons may extend a package that carries no expiry (the Free
-		// baseline); the operator supplies the add-on expiry explicitly.
-		if commercialImageLaneModel(model) && commercialRelayHasActivePackage(summary) {
+		// baseline); the operator supplies the add-on expiry explicitly. Only
+		// entitlements that are active right now qualify: expired package rows
+		// keep their state, so the date fields are checked instead.
+		if commercialImageLaneModel(model) && commercialSummaryHasActiveEntitlement(summary, now) {
 			expiresAt, err := commercialImageGrantExpiry(requestedExpiry, now)
 			if err != nil {
 				return "", time.Time{}, err
@@ -1206,6 +1219,25 @@ func resolveCommercialBonusGrant(summary *types.CommercialSummary, requestedMode
 		return "", time.Time{}, fmt.Errorf("bonus expiry cannot exceed the current package expiry")
 	}
 	return canonicalModel, expiresAt, nil
+}
+
+// commercialSummaryHasActiveEntitlement reports whether any entitlement is
+// active at the given moment. Entitlements are not flipped to "expired" by a
+// background job, so the date fields must be checked instead of the state
+// alone.
+func commercialSummaryHasActiveEntitlement(summary *types.CommercialSummary, now time.Time) bool {
+	if summary == nil {
+		return false
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil || entitlement.State != "active" || entitlement.StartsAt.After(now) {
+			continue
+		}
+		if entitlement.ExpiresAt == nil || entitlement.ExpiresAt.After(now) {
+			return true
+		}
+	}
+	return false
 }
 
 // commercialImageLaneModel reports whether a model is carried by the image

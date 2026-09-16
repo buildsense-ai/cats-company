@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 const (
@@ -134,6 +136,115 @@ func TestPostgresCommercialImageModelsAddOnPreservesRenewalAndCustomQuota(t *tes
 		assertImageMigrationPackage(t, db, ref, 10, 5, 11000, 500, now.Add(time.Duration(index)*30*24*time.Hour))
 	}
 	assertImageMigrationPackage(t, db, "pro-order", 10, 5, 33000, 1500, now)
+}
+
+func TestPostgresCommercialImageModelsRespectsScopeAndMetadata(t *testing.T) {
+	db := commercialPolicyTestDB(t)
+	personalPlanID := seedGLM53MigrationPlan(t, db, "catsco-personal", "Personal", personalPublicModelBudgets)
+	proPlanID := seedGLM53MigrationPlan(t, db, "catsco-pro", "Pro", proPublicModelBudgets)
+	internalPlanID := seedGLM53MigrationPlan(t, db, "internal-exact", "Internal", personalPublicModelBudgets)
+	internalUID := createGLM53MigrationUser(t, db, "image-scope-internal")
+	manualUID := createGLM53MigrationUser(t, db, "image-scope-manual")
+	expiredUID := createGLM53MigrationUser(t, db, "image-scope-expired")
+	inviteUID := createGLM53MigrationUser(t, db, "image-scope-invite")
+	operatorUID := createGLM53MigrationUser(t, db, "image-scope-operator")
+	actorUID := createGLM53MigrationUser(t, db, "image-scope-actor")
+	now := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	chatModels := []string{"MiniMax-M2.7", "MiniMax-M3", "deepseek-v4-flash", "glm-5.3-flash", "gpt-5.6-terra"}
+
+	// A non-public plan with the exact five-model shape must stay untouched.
+	seedImageMigrationPackage(t, db, internalUID, internalPlanID, "internal-exact-order", 2100, now)
+	// Manual-only rows are not package grants.
+	for _, model := range chatModels {
+		if _, err := db.db.Exec(`
+			INSERT INTO commercial_quota_grants(
+				uid, plan_id, grant_type, model, amount_cny, reset_duration,
+				effective_at, expires_at, source_ref, note
+			) VALUES ($1, $2, 'manual', $3, 2100, '1M', $4, $5, 'manual-only', 'manual fixture')`,
+			manualUID, personalPlanID, model, now, now.Add(30*24*time.Hour)); err != nil {
+			t.Fatalf("seed manual-only grants: %v", err)
+		}
+	}
+	// An expired package is out of scope.
+	seedImageMigrationPackage(t, db, expiredUID, personalPlanID, "expired-order", 2100, now.Add(-60*24*time.Hour))
+	// Invite and operator_plan packages carry metadata that must survive.
+	inviteID, err := db.CreateCommercialInviteCode(&types.CommercialInviteCode{Code: "IMG-INVITE", PlanID: personalPlanID, MaxRedemptions: 1, CreateOnly: true})
+	if err != nil {
+		t.Fatalf("seed invite code: %v", err)
+	}
+	for _, model := range chatModels {
+		if _, err := db.db.Exec(`
+			INSERT INTO commercial_quota_grants(
+				uid, plan_id, invite_code_id, grant_type, model, amount_cny, reset_duration,
+				effective_at, expires_at, source_ref, note
+			) VALUES ($1, $2, $3, 'invite', $4, 2100, '1M', $5, $6, 'invite-ref', 'invite fixture')`,
+			inviteUID, personalPlanID, inviteID, model, now, now.Add(30*24*time.Hour)); err != nil {
+			t.Fatalf("seed invite grants: %v", err)
+		}
+	}
+	for _, model := range chatModels {
+		if _, err := db.db.Exec(`
+			INSERT INTO commercial_quota_grants(
+				uid, plan_id, grant_type, model, amount_cny, reset_duration,
+				effective_at, expires_at, source_ref, note, operator_uid
+			) VALUES ($1, $2, 'operator_plan', $3, 6300, '1M', $4, $5, 'operator-ref', 'operator fixture', $6)`,
+			operatorUID, proPlanID, model, now, now.Add(30*24*time.Hour), actorUID); err != nil {
+			t.Fatalf("seed operator grants: %v", err)
+		}
+	}
+	// Down must ignore look-alike grants that do not belong to the add-on.
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, plan_id, grant_type, model, amount_cny, reset_duration, effective_at, source_ref, note)
+		VALUES ($1, $2, 'bonus', 'gpt-image-2', 5, '1M', $3, 'bonus-lookalike', 'Public plan image model access')`,
+		manualUID, personalPlanID, now); err != nil {
+		t.Fatalf("seed bonus look-alike grant: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, plan_id, grant_type, model, amount_cny, reset_duration, effective_at, source_ref, note)
+		VALUES ($1, $2, 'operator_plan', 'gpt-5.6-terra', 5, '1M', $3, 'operator-lookalike', 'Public plan image model access')`,
+		manualUID, personalPlanID, now); err != nil {
+		t.Fatalf("seed operator look-alike grant: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := db.db.Exec(migrateCommercialImageModels); err != nil {
+			t.Fatalf("run image migration: %v", err)
+		}
+	}
+
+	// Scope filters: out-of-scope packages keep their shape and write no ledger rows.
+	for name, uid := range map[string]int64{"internal": internalUID, "manual": manualUID, "expired": expiredUID} {
+		assertGLM53Ledger(t, db, uid, "image_models_v1", 0, 0)
+		var count int
+		if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE uid = $1 AND revoked_at IS NULL AND grant_type IN ('order','manual')`, uid).Scan(&count); err != nil || count != 5 {
+			t.Fatalf("%s package changed: %v %d", name, err, count)
+		}
+	}
+	// Invite and operator_plan packages gain the add-on with their metadata copied.
+	assertImageMigrationPackage(t, db, "invite-ref", 10, 5, 11000, 500, now)
+	var inviteCopied int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE source_ref='invite-ref' AND revoked_at IS NULL AND model LIKE 'gpt-image-%' AND invite_code_id = $1`, inviteID).Scan(&inviteCopied); err != nil || inviteCopied != 5 {
+		t.Fatalf("invite metadata was not copied: %v %d", err, inviteCopied)
+	}
+	assertImageMigrationPackage(t, db, "operator-ref", 10, 5, 33000, 1500, now)
+	var operatorCopied int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE source_ref='operator-ref' AND revoked_at IS NULL AND model LIKE 'gpt-image-%' AND operator_uid = $1`, actorUID).Scan(&operatorCopied); err != nil || operatorCopied != 5 {
+		t.Fatalf("operator metadata was not copied: %v %d", err, operatorCopied)
+	}
+	assertGLM53Ledger(t, db, inviteUID, "image_models_v1", 5, 500)
+	assertGLM53Ledger(t, db, operatorUID, "image_models_v1", 5, 1500)
+
+	// Down revokes only the add-on rows: the look-alikes and manual quota stay.
+	execGLM53MigrationFile(t, db, "000021_commercial_image_models.down.sql")
+	execGLM53MigrationFile(t, db, "000021_commercial_image_models.down.sql")
+	assertImageMigrationPackage(t, db, "invite-ref", 5, 0, 10500, 0, now)
+	assertImageMigrationPackage(t, db, "operator-ref", 5, 0, 31500, 0, now)
+	var lookalikes int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE uid = $1 AND revoked_at IS NULL AND source_ref IN ('bonus-lookalike','operator-lookalike','manual-only')`, manualUID).Scan(&lookalikes); err != nil || lookalikes != 7 {
+		t.Fatalf("down revoked look-alike or manual grants: %v %d", err, lookalikes)
+	}
+	assertGLM53Ledger(t, db, inviteUID, "image_models_v1_rollback", 5, -500)
+	assertGLM53Ledger(t, db, operatorUID, "image_models_v1_rollback", 5, -1500)
 }
 
 func TestImageModelsStartupMigrationMatchesFile(t *testing.T) {
