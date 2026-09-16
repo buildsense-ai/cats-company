@@ -549,7 +549,7 @@ describe('CatsCo shell styling', () => {
       .toContain('outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));');
   });
 
-  it('keeps the Liquid blur while removing the image-preview glass tint', () => {
+  it('keeps the Liquid blur while obscuring the underlying image-preview dialog', () => {
     const previewBackdropRule = ruleIn(
       css,
       'html[data-theme="liquid"] .oc-modal-overlay.oc-rich-image-preview,\nhtml[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay.oc-rich-image-preview',
@@ -563,7 +563,7 @@ describe('CatsCo shell styling', () => {
       'html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay),\nhtml[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card::backdrop',
     );
 
-    expect(previewBackdropRule).toContain('background: transparent;');
+    expect(previewBackdropRule).toContain('background: rgba(0, 0, 0, 0.72);');
     expect(previewBackdropRule).not.toContain('backdrop-filter:');
     expect(standardLiquidOverlayRule).toContain('backdrop-filter: blur(8px) saturate(108%);');
     expect(greenLiquidOverlayRule).toContain('backdrop-filter: blur(8px) saturate(108%);');

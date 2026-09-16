@@ -12230,10 +12230,10 @@ html[data-theme="liquid"] :is(
   transform: translate(-50%, -50%);
 }
 
-/* Image previews retain Liquid's blurred backdrop without its tinted glass panel. */
+/* Image previews keep the blurred backdrop while obscuring underlying dialog surfaces. */
 html[data-theme="liquid"] .oc-modal-overlay.oc-rich-image-preview,
 html[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay.oc-rich-image-preview {
-  background: transparent;
+  background: rgba(0, 0, 0, 0.72);
 }
 
 .oc-rich-video-preview {
