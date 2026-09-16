@@ -549,15 +549,24 @@ describe('CatsCo shell styling', () => {
       .toContain('outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));');
   });
 
-  it('uses an opaque, non-glass backdrop for image previews across Liquid variants', () => {
+  it('keeps the Liquid blur while removing the image-preview glass tint', () => {
     const previewBackdropRule = ruleIn(
       css,
-      'html .oc-modal-overlay.oc-rich-image-preview,\nhtml[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay.oc-rich-image-preview',
+      'html[data-theme="liquid"] .oc-modal-overlay.oc-rich-image-preview,\nhtml[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay.oc-rich-image-preview',
+    );
+    const standardLiquidOverlayRule = ruleIn(
+      css,
+      'html[data-theme="liquid"] :is(.name-dialog-overlay, .oc-modal-overlay),\nhtml[data-theme="liquid"] .cc-workspace-onboarding-card::backdrop',
+    );
+    const greenLiquidOverlayRule = ruleIn(
+      liquidGreenCss,
+      'html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay),\nhtml[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card::backdrop',
     );
 
-    expect(previewBackdropRule).toContain('background: #000;');
-    expect(previewBackdropRule).toContain('-webkit-backdrop-filter: none;');
-    expect(previewBackdropRule).toContain('backdrop-filter: none;');
+    expect(previewBackdropRule).toContain('background: transparent;');
+    expect(previewBackdropRule).not.toContain('backdrop-filter:');
+    expect(standardLiquidOverlayRule).toContain('backdrop-filter: blur(8px) saturate(108%);');
+    expect(greenLiquidOverlayRule).toContain('backdrop-filter: blur(8px) saturate(108%);');
   });
 
   it('provides a touch-sized, keyboard-visible download action in media previews', () => {

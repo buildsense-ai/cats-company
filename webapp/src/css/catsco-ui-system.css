@@ -12230,12 +12230,10 @@ html[data-theme="liquid"] :is(
   transform: translate(-50%, -50%);
 }
 
-/* Image previews are immersive viewers, not translucent app dialogs. */
-html .oc-modal-overlay.oc-rich-image-preview,
+/* Image previews retain Liquid's blurred backdrop without its tinted glass panel. */
+html[data-theme="liquid"] .oc-modal-overlay.oc-rich-image-preview,
 html[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay.oc-rich-image-preview {
-  background: #000;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  background: transparent;
 }
 
 .oc-rich-video-preview {
