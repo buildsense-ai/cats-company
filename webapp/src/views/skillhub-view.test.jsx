@@ -34,7 +34,12 @@ import SkillHubView, {
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
-import { formatSkillHubPublisher } from '../utils/skillhub-entry';
+import {
+  compareSkillHubVersions,
+  formatSkillHubPublisher,
+  formatSkillHubVersion,
+  resolveSkillHubUpdateStatus,
+} from '../utils/skillhub-entry';
 
 vi.mock('../api', () => ({
   api: {
@@ -3695,5 +3700,144 @@ describe('SkillHubView', () => {
     expect(api.searchSkillHubSkills).toHaveBeenCalledWith('first', { searchMode: 'name' });
     expect(api.searchSkillHubSkills).toHaveBeenCalledWith('second', { searchMode: 'name' });
     expect(form.querySelector('input').placeholder).toBe('搜索能力名称…');
+  });
+
+  it('ranks SkillHub versions and only offers a real upgrade', () => {
+    const installed = (version, contentHash) => ({
+      source: 'skillhub', skillId: 'tools/summarize', version, contentHash,
+    });
+    const catalogue = (latestVersion, contentHash) => ({ latestVersion, contentHash });
+
+    expect(formatSkillHubVersion('1.0.6')).toBe('v1.0.6');
+    expect(formatSkillHubVersion('v1.0.6')).toBe('v1.0.6');
+    expect(formatSkillHubVersion('V1.0.6')).toBe('V1.0.6');
+    expect(formatSkillHubVersion('')).toBe('');
+    expect(compareSkillHubVersions('1.10.0', '1.9.0')).toBe(1);
+    expect(compareSkillHubVersions('v1.0.0', '1.0')).toBe(0);
+    expect(compareSkillHubVersions('1.0.0-beta', '1.0.0')).toBe(0);
+    expect(compareSkillHubVersions('latest', '1.0.0')).toBe(null);
+
+    expect(resolveSkillHubUpdateStatus(null, catalogue('1.0.0', 'b'.repeat(64)))).toBe('add');
+    expect(resolveSkillHubUpdateStatus(
+      installed('1.0.5', 'a'.repeat(64)), catalogue('1.0.6', 'b'.repeat(64)),
+    )).toBe('update');
+    expect(resolveSkillHubUpdateStatus(
+      installed('1.0.5', 'a'.repeat(64)), catalogue('1.0.5', 'a'.repeat(64)),
+    )).toBe('current');
+    // Republishing an existing version replaces the payload, so it is an update.
+    expect(resolveSkillHubUpdateStatus(
+      installed('1.0.5', 'a'.repeat(64)), catalogue('1.0.5', 'b'.repeat(64)),
+    )).toBe('update');
+    // An installed copy that is ahead of the catalogue is never downgraded.
+    expect(resolveSkillHubUpdateStatus(
+      installed('2.0.0', 'a'.repeat(64)), catalogue('1.0.0', 'b'.repeat(64)),
+    )).toBe('current');
+    // No published version, or no catalogue metadata, keeps the card as-is.
+    expect(resolveSkillHubUpdateStatus(
+      installed('1.0.5', 'a'.repeat(64)), catalogue('', 'b'.repeat(64)),
+    )).toBe('unknown');
+    expect(resolveSkillHubUpdateStatus(installed('1.0.5', 'a'.repeat(64)), null)).toBe('unknown');
+    expect(resolveSkillHubUpdateStatus(
+      { source: 'local', skillId: 'tools/summarize', version: '1.0.5', contentHash: 'a'.repeat(64) },
+      catalogue('1.0.6', 'b'.repeat(64)),
+    )).toBe('current');
+  });
+
+  it('offers an update for an installed capability whose catalogue entry is newer', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{ source: 'skillhub', skillId: 'tools/summarize', version: '1.0.0', contentHash: 'a'.repeat(64) }],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{
+        id: 'tools/summarize',
+        name: 'Summarize',
+        description: 'Summarize text',
+        author: { displayName: 'arrowhaken1', catsCoUid: '85' },
+        latestVersion: '2.0.0',
+        publishedAt: '2026-08-20T02:03:04Z',
+        contentHash: 'b'.repeat(64),
+      }],
+    });
+    api.updateBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 4,
+      skills: [{ source: 'skillhub', skillId: 'tools/summarize', version: '2.0.0', contentHash: 'b'.repeat(64) }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+
+    const card = [...container.querySelectorAll('.cc-skillhub-card')]
+      .find((candidate) => candidate.textContent.includes('Summarize'));
+    const button = card.querySelector('.cc-skillhub-card-footer button');
+    expect(button.textContent).toContain('更新');
+    expect(button.textContent).not.toContain('已添加');
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe('更新到 v2.0.0');
+
+    await act(async () => {
+      Simulate.click(button);
+      await Promise.resolve();
+    });
+
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, [{
+      source: 'skillhub',
+      skillId: 'tools/summarize',
+      version: '2.0.0',
+      contentHash: 'b'.repeat(64),
+    }]);
+    expect(container.textContent).toContain('已把 Agent“Owner Bot”的 Summarize 更新到 v2.0.0。');
+    expect(container.textContent).not.toContain('已为 Agent“Owner Bot”添加 Summarize');
+  });
+
+  it('keeps the installed button and flags only newer catalogue entries', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [
+        { source: 'skillhub', skillId: 'tools/review', version: '1.0.0', contentHash: 'a'.repeat(64) },
+        { source: 'skillhub', skillId: 'tools/summarize', version: '1.0.0', contentHash: 'b'.repeat(64) },
+      ],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{
+        id: 'tools/review',
+        name: 'Review',
+        description: 'Review text',
+        latestVersion: '1.0.0',
+        contentHash: 'a'.repeat(64),
+      }, {
+        id: 'tools/summarize',
+        name: 'Summarize',
+        description: 'Summarize text',
+        latestVersion: '2.0.0',
+        contentHash: 'c'.repeat(64),
+      }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+
+    const cardFor = (name) => [...container.querySelectorAll('.cc-skillhub-card')]
+      .find((candidate) => candidate.textContent.includes(name));
+    const currentButton = cardFor('Review').querySelector('.cc-skillhub-card-footer button');
+    expect(currentButton.textContent).toContain('已添加');
+    expect(currentButton.disabled).toBe(true);
+
+    await openAdded();
+    const items = [...container.querySelectorAll('.cc-skillhub-added-item')];
+    const itemFor = (name) => items.find((candidate) => candidate.textContent.includes(name));
+    expect(itemFor('Summarize').querySelector('.cc-skillhub-availability.is-update').textContent).toContain('可更新');
+    expect(itemFor('Review').querySelector('.cc-skillhub-availability.is-update')).toBeNull();
   });
 });

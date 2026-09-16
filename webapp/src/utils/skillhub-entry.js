@@ -136,3 +136,59 @@ export function resolveSkillHubEntry(skill, detail) {
     || (versions.length === 1 ? versions[0] : null);
   return versionEntry ? { ...base, ...versionEntry, skillId: base.skillId || skill.skillId } : base;
 }
+
+const SKILL_HUB_CONTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
+export function formatSkillHubVersion(version) {
+  const value = String(version || '').trim();
+  if (!value) return '';
+  return /^v/i.test(value) ? value : `v${value}`;
+}
+
+export function normalizeSkillHubContentHash(value) {
+  const hash = String(value || '').trim().toLowerCase();
+  return SKILL_HUB_CONTENT_HASH_PATTERN.test(hash) ? hash : '';
+}
+
+// Versions are publisher-chosen labels, so rank only the leading numeric run
+// (`2`, `1.0.6`, `2026.09.16`, `1.0.0-beta` -> 1.0.0). A label without numbers
+// stays unranked instead of being guessed at.
+export function compareSkillHubVersions(left, right) {
+  const parse = (value) => {
+    const text = String(value || '').trim().replace(/^v(?=\d)/i, '');
+    const match = text.match(/^(\d+(?:\.\d+)*)/);
+    return match ? match[1].split('.').map((segment) => Number(segment)) : null;
+  };
+  const leftSegments = parse(left);
+  const rightSegments = parse(right);
+  if (!leftSegments || !rightSegments) return null;
+  const length = Math.max(leftSegments.length, rightSegments.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = leftSegments[index] || 0;
+    const rightValue = rightSegments[index] || 0;
+    if (leftValue !== rightValue) return leftValue > rightValue ? 1 : -1;
+  }
+  return 0;
+}
+
+// Decide what the capability library should offer for one already installed
+// SkillHub reference: `add` (not installed), `current` (nothing newer to
+// install), `update` (the catalogue copy is newer) or `unknown` (no catalogue
+// metadata yet). Only public SkillHub references with a published version are
+// ranked, so an update can never be offered as a way to rewrite a Bot-private
+// or runtime-local skill, and an installed copy is never downgraded.
+export function resolveSkillHubUpdateStatus(installedReference, catalogueSkill) {
+  if (!installedReference?.skillId) return 'add';
+  if (!catalogueSkill) return 'unknown';
+  if (!String(catalogueSkill.latestVersion || '').trim()) return 'unknown';
+  if (
+    String(installedReference.source || 'skillhub').trim().toLowerCase() !== 'skillhub'
+  ) return 'current';
+  const ranking = compareSkillHubVersions(catalogueSkill.latestVersion, installedReference.version);
+  if (ranking === 1) return 'update';
+  if (ranking === -1) return 'current';
+  const installedHash = normalizeSkillHubContentHash(installedReference.contentHash);
+  const catalogueHash = normalizeSkillHubContentHash(catalogueSkill.contentHash);
+  if (!installedHash || !catalogueHash) return 'current';
+  return installedHash === catalogueHash ? 'current' : 'update';
+}
