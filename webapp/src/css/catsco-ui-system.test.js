@@ -549,6 +549,17 @@ describe('CatsCo shell styling', () => {
       .toContain('outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));');
   });
 
+  it('uses an opaque, non-glass backdrop for image previews across Liquid variants', () => {
+    const previewBackdropRule = ruleIn(
+      css,
+      'html .oc-modal-overlay.oc-rich-image-preview,\nhtml[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay.oc-rich-image-preview',
+    );
+
+    expect(previewBackdropRule).toContain('background: #000;');
+    expect(previewBackdropRule).toContain('-webkit-backdrop-filter: none;');
+    expect(previewBackdropRule).toContain('backdrop-filter: none;');
+  });
+
   it('provides a touch-sized, keyboard-visible download action in media previews', () => {
     const downloadRule = ruleFor('.oc-rich-media-preview-download');
 

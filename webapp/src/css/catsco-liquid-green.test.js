@@ -88,4 +88,5 @@ describe('restored green liquid theme', () => {
     );
     expect(css).not.toMatch(/\.v3-wpi-plan\s*\{[^}]*background: #000;/);
   });
+
 });

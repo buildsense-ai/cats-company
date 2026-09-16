@@ -12230,6 +12230,14 @@ html[data-theme="liquid"] :is(
   transform: translate(-50%, -50%);
 }
 
+/* Image previews are immersive viewers, not translucent app dialogs. */
+html .oc-modal-overlay.oc-rich-image-preview,
+html[data-theme="liquid"][data-liquid-variant] .oc-modal-overlay.oc-rich-image-preview {
+  background: #000;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .oc-rich-video-preview {
   padding: 24px;
 }
