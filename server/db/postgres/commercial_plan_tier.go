@@ -15,26 +15,34 @@ const (
 	commercialLegacyPlanSlug   = "catsco-legacy-custom"
 )
 
+// commercialOfficialPaidModels pins the public paid-plan model set: the five
+// public chat models plus the image lane add-on models, which share the same
+// pool. Keep this in step with the startup migration that maintains the plans.
 var commercialOfficialPaidModels = []string{
 	"MiniMax-M2.7",
 	"MiniMax-M3",
 	"deepseek-v4-flash",
 	"glm-5.3-flash",
 	"gpt-5.6-terra",
+	"gpt-image-2",
+	"gpt-image-2.5",
+	"gpt-image-2.5-flare",
+	"gpt-image-2.5-sunburst",
+	"chatgpt-image-latest",
 }
 
 func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
 	expectedTotal := 0.0
 	switch strings.TrimSpace(slug) {
 	case commercialPersonalPlanSlug:
-		expectedTotal = 10500
+		expectedTotal = 11000
 	case commercialProPlanSlug:
-		expectedTotal = 31500
+		expectedTotal = 33000
 	default:
 		return nil
 	}
 	if len(budgets) != len(commercialOfficialPaidModels) {
-		return fmt.Errorf("official paid plan must contain only the five public models")
+		return fmt.Errorf("official paid plan must contain only the official public models")
 	}
 	total := 0.0
 	for _, model := range commercialOfficialPaidModels {

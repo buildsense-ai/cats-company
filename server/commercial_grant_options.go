@@ -50,9 +50,16 @@ func commercialGrantModels(summary *types.CommercialSummary, relayUser *commerci
 		if !legacy {
 			canonical, expiry, err := resolveCommercialBonusGrant(summary, model, "", now)
 			if err != nil {
-				continue
+				// Image add-ons may sit outside the current package (for example
+				// the Free baseline). Keep them selectable so the operator can
+				// grant them explicitly; the grant itself then requires an
+				// explicit expiry.
+				if !commercialImageLaneModel(model) || !commercialRelayHasActivePackage(summary) {
+					continue
+				}
+			} else {
+				option.ID, option.ExpiresAt = canonical, &expiry
 			}
-			option.ID, option.ExpiresAt = canonical, &expiry
 		}
 		seen[key] = true
 		options = append(options, option)
