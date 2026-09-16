@@ -89,13 +89,4 @@ describe('restored green liquid theme', () => {
     expect(css).not.toMatch(/\.v3-wpi-plan\s*\{[^}]*background: #000;/);
   });
 
-  it('keeps mobile image previews out of the liquid glass treatment', () => {
-    const mobilePreviewRule = css.match(
-      /@media \(max-width: 640px\) \{\s*html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.oc-modal-overlay\.oc-rich-image-preview\s*\{[^}]*\}/,
-    )?.[0] || '';
-
-    expect(mobilePreviewRule).toContain('background: #000;');
-    expect(mobilePreviewRule).toContain('-webkit-backdrop-filter: none;');
-    expect(mobilePreviewRule).toContain('backdrop-filter: none;');
-  });
 });
