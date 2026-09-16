@@ -724,6 +724,14 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(
   flex: 0 0 auto;
 }
 
+@media (max-width: 640px) {
+  .oc-auth-logo {
+    width: 100%;
+    justify-content: center;
+    margin-inline: auto;
+  }
+}
+
 .cc-workspace-loading {
   display: flex;
   align-items: center;

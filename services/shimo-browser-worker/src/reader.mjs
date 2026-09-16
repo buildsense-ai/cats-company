@@ -215,6 +215,21 @@ const ACCESS_PAGE_BODY_PATTERNS = [
   '申请访问权限', '无访问权限', 'the page you visited does not exist', 'back to desktop', 'request access',
 ];
 
+// 2026-09-15 生产实测：登录会话失效（浏览器里已经没有登录 cookie）时，石墨给的是标题
+// 「No permission」+ 正文「You haven't logged in yet / Please sign in before trying to access」，
+// 浏览器语言是英文，旧实现只认中文的「您还没有登录」，于是这一页被 /no permission/ 归类成
+// 「这个账号看不到这份文档」，把「重新登录就能好」误报成「你没有被授权」。
+// 登录提示必须比权限外壳先判断：两者的标题都可能写着「No permission」，只有正文能区分。
+const LOGIN_PAGE_BODY_PATTERNS = [
+  '您还没有登录', '请登录后尝试访问',
+  "you haven't logged in yet", 'please sign in before trying to access',
+];
+
+export function looksLikeLoginPromptPage(bodyText) {
+  const text = String(bodyText || '').toLowerCase();
+  return LOGIN_PAGE_BODY_PATTERNS.some(pattern => text.includes(pattern.toLowerCase()));
+}
+
 export function looksLikeAccessDeniedPage(title, bodyText) {
   if (ACCESS_PAGE_TITLE_PATTERNS.some(pattern => pattern.test(String(title || '')))) return true;
   const body = String(bodyText || '').toLowerCase();
@@ -289,7 +304,7 @@ async function pageHasSheetTabs(page, timeoutMs = 15_000) {
 
 function assertPageAccess(title, bodyText, { hasSheetTabs = false } = {}) {
   if (hasSheetTabs) return;
-  if (bodyText.includes('您还没有登录') || bodyText.includes('请登录后尝试访问')) {
+  if (looksLikeLoginPromptPage(bodyText)) {
     throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
   }
   if (looksLikeAccessDeniedPage(title, bodyText)) {

@@ -100,10 +100,11 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('.v3-mobile-model-quota.danger { color: var(--cc-danger-text); }');
     expect(css).not.toContain('#f8d477');
     expect(css).not.toContain('#f2a0a0');
-    expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*display:\s*flex;/s);
+    expect(css).toMatch(/\.v3-model-select\s*\{[^}]*display:\s*block;/s);
+    expect(css).toMatch(/\.v3-mobile-model-info\s*\{[^}]*display:\s*none;/s);
     expect(css).toMatch(/\.v3-message-footer \.v3-action-btn\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;[^}]*touch-action:\s*manipulation;/s);
     expect(css).toMatch(/\.v3-message-footer \.v3-message-action-menu button\s*\{[^}]*min-height:\s*44px;[^}]*height:\s*44px;/s);
-    expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 36px);');
+    expect(css).toContain('top: calc(max(8px, env(safe-area-inset-top)) + 34px);');
     expect(css).toMatch(/\.v3-shell-title,\s*\.v3-shell-title-input\s*\{/);
     expect(css).toContain('top: max(12px, env(safe-area-inset-top));');
     expect(css).toContain('width: min(48vw, 220px);');
@@ -137,6 +138,17 @@ describe('secondary surface design contract', () => {
     expect(css).toContain('background: var(--cc-panel, var(--v3-bg-app));');
     expect(css).toContain('@media (hover: none) and (pointer: coarse)');
     expect(css).toContain('.v3-tool-with-tooltip::after {');
+  });
+
+  it('applies the narrow composer overrides after the broader mobile controls', () => {
+    const broadMobileIndex = css.lastIndexOf('@media (max-width: 768px)');
+    const narrowMobileIndex = css.lastIndexOf('@media (max-width: 380px)');
+    const narrowMobileCss = css.slice(narrowMobileIndex);
+
+    expect(narrowMobileIndex).toBeGreaterThan(broadMobileIndex);
+    expect(narrowMobileCss).toMatch(/\.v3-composer-row\s*\{[^}]*gap:\s*2px;[^}]*padding-inline:\s*4px;/s);
+    expect(narrowMobileCss).toMatch(/\.v3-composer-plus,\s*\.v3-voice-button,\s*\.v3-send,\s*\.v3-composer-row\.is-empty:not\(\.has-stop\) \.v3-voice-button\s*\{[^}]*width:\s*38px;[^}]*height:\s*38px;/s);
+    expect(narrowMobileCss).toMatch(/\.v3-composer-input\s*\{[^}]*min-width:\s*0;[^}]*padding-inline:\s*3px;/s);
   });
 
   it('uses an iPhone-scale mobile hierarchy for secondary surfaces and SkillHub', () => {
