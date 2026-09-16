@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -95,5 +97,38 @@ func TestPostgresCommercialInviteRedeemerUIDs(t *testing.T) {
 	}
 	if len(untouched.RedeemerUIDs) != 0 {
 		t.Fatalf("untouched redeemer uids = %v, want empty", untouched.RedeemerUIDs)
+	}
+
+	// The operator UI renders the invite list from records kind=invites, so the
+	// aggregation must also flow through that projection.
+	page, err := db.ListCommercialRecords(context.Background(), types.CommercialRecordsQuery{Kind: "invites", Limit: 10})
+	if err != nil {
+		t.Fatalf("list invite records: %v", err)
+	}
+	type inviteRecord struct {
+		Code         string  `json:"code"`
+		RedeemerUIDs []int64 `json:"redeemer_uids"`
+	}
+	var records []inviteRecord
+	if err := json.Unmarshal(page.Records, &records); err != nil {
+		t.Fatalf("decode invite records: %v", err)
+	}
+	recordByCode := map[string]inviteRecord{}
+	for _, record := range records {
+		recordByCode[record.Code] = record
+	}
+	sharedRecord, ok := recordByCode["CATS-REDEEM-MANY"]
+	if !ok {
+		t.Fatalf("shared invite code missing from records: %s", string(page.Records))
+	}
+	if len(sharedRecord.RedeemerUIDs) != 2 || sharedRecord.RedeemerUIDs[0] != firstUID || sharedRecord.RedeemerUIDs[1] != secondUID {
+		t.Fatalf("shared record redeemer uids = %v, want [%d %d]", sharedRecord.RedeemerUIDs, firstUID, secondUID)
+	}
+	noneRecord, ok := recordByCode["CATS-REDEEM-NONE"]
+	if !ok {
+		t.Fatalf("untouched invite code missing from records: %s", string(page.Records))
+	}
+	if len(noneRecord.RedeemerUIDs) != 0 {
+		t.Fatalf("untouched record redeemer uids = %v, want empty", noneRecord.RedeemerUIDs)
 	}
 }

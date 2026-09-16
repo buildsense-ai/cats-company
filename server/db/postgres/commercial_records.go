@@ -19,7 +19,11 @@ func (a *Adapter) ListCommercialRecords(ctx context.Context, q types.CommercialR
 		from, search, state, uid = "commercial_orders", "order_no || ' ' || plan_name || ' ' || COALESCE(provider_trade_no,'')", "status", "uid"
 	case "invites":
 		projection = `i.id, i.code, i.plan_id, p.slug AS plan_slug, p.name AS plan_name, i.max_redemptions, i.redeemed_count,
-			i.expires_at, i.state, i.note, i.created_at, i.updated_at, i.cloud_worker_credits, i.cloud_worker_profile, i.cloud_worker_billing_mode`
+			i.expires_at, i.state, i.note, i.created_at, i.updated_at, i.cloud_worker_credits, i.cloud_worker_profile, i.cloud_worker_billing_mode,
+			COALESCE((SELECT jsonb_agg(redeemer ORDER BY redeemer)
+			          FROM (SELECT DISTINCT e.uid AS redeemer
+			                FROM commercial_entitlements e
+			                WHERE e.source = 'invite' AND lower(e.source_ref) = lower(i.code)) redeemers), '[]'::jsonb) AS redeemer_uids`
 		from, search, state, uid = "commercial_invite_codes i JOIN commercial_plans p ON p.id = i.plan_id", "i.code || ' ' || p.name", "i.state::text", "NULL::bigint"
 	case "payment-events":
 		projection = `e.id, e.channel, e.event_id, e.order_no, e.provider_trade_no, e.event_type,
