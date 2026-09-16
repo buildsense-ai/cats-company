@@ -52,6 +52,21 @@ larger than 32 MB are rejected with `FILE_TOO_LARGE` (HTTP 413) instead of being
 cut, and a download that returns an HTML shell is classified as `LOGIN_REQUIRED` or
 `DOCUMENT_NOT_ACCESSIBLE` rather than as an unsupported file type.
 
+An uploaded read materializes the requested window in memory, so the window itself is
+bounded: after trimming trailing empty rows and columns, a window of more than 160000 cells
+(`MAX_BANDS x CHUNK_CELL_BUDGET`, the same order as the native per-read cap) is rejected with
+`RANGE_TOO_LARGE` (HTTP 400). The bound is computed from the sparse cells the file actually
+holds, so a wide range over a small sheet still reads: `A1:ZZZ20000` over a two-cell sheet
+returns those cells instead of allocating the 366 million the range describes.
+
+Two guards keep a malformed or hostile workbook from stalling the single-process Worker:
+worksheet row/cell tags that do not pair up are rejected with `XLSX_PARSE_FAILED` (HTTP 400)
+before the paired-tag scan can degrade to near-quadratic time, and a sheet holding more than
+1,000,000 non-empty cells is rejected with `SHEET_TOO_LARGE` (HTTP 413). A download cut off
+by the Worker's own budget is reported as `READ_BUDGET_EXHAUSTED` (HTTP 503, retryable)
+rather than `SHIMO_API_ERROR`, and an empty shared-string cell (`<c t="s"><v></v></c>`) reads
+as an empty value instead of silently repeating the first shared string.
+
 Shimo caps a single values request at 5000 cells and counts the *requested* range rather
 than the populated rows, so the Worker splits wider ranges into row bands of at most 4000
 cells, reads them sequentially, and concatenates the rows. `/v1/shimo/sheets/read`

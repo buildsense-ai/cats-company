@@ -119,6 +119,48 @@ function readZipEntryText(buffer, entry, { maxBytes = 64 * 1024 * 1024 } = {}) {
   return bytes.toString('utf8');
 }
 
+// 非空单元格数量的上限：稀疏 Map 的规模完全由文件决定，一个 64MB 的 sheet XML 可以塞进几百万个
+// 小单元格 —— 解析不会失败，但内存会被吃光。给一个宽松上界，超出时按 SHEET_TOO_LARGE 明确拒绝。
+export const MAX_CELLS_PER_SHEET = 1_000_000;
+
+// sheet XML / sharedStrings.xml 都来自用户上传的文件，可能畸形。下面这些「成对标签」正则
+// (如 /<row\b[^>]*?...<\/row>/) 一旦遇到缺失结束标签的输入就会退化成近似平方：实测重复
+// <row 载荷 180KB 解析 67ms、360KB 266ms、720KB 1080ms（每次翻倍约 4 倍），而解析是同步的、
+// 单份 XML 上限是 64MB —— 时间上不封顶，一个畸形文件就能占满事件循环。这里先用一次 O(n)
+// 的计数预检把明显不成对的结构挡在门外，再进入解析。
+const PAIRED_TAG_CHECKS = [
+  { name: '行', open: /<row[\s/>]/g, close: /<\/row>/g, selfClosing: /<row\b[^>]*\/>/g },
+  { name: '单元格', open: /<c[\s/>]/g, close: /<\/c>/g, selfClosing: /<c\b[^>]*\/>/g },
+];
+const SHARED_STRING_TAG_CHECKS = [
+  { name: '共享字符串', open: /<si[\s/>]/g, close: /<\/si>/g, selfClosing: /<si\b[^>]*\/>/g },
+];
+
+function countTagMatches(text, pattern) {
+  pattern.lastIndex = 0;
+  let count = 0;
+  while (pattern.exec(text) !== null) count += 1;
+  return count;
+}
+
+function firstUnpairedTagName(text, checks) {
+  for (const check of checks) {
+    const opens = countTagMatches(text, check.open);
+    if (opens !== countTagMatches(text, check.close) + countTagMatches(text, check.selfClosing)) return check.name;
+  }
+  return '';
+}
+
+// 注释里允许出现 <row 这样的字样，会被计数误伤。只有预检不通过时才多花一次剥离注释的复检，
+// 复检通过就直接用剥离后的文本继续解析（注释对解析本身没有意义）。
+function xmlWithoutUnpairedTags(text, checks, what) {
+  const unpaired = firstUnpairedTagName(text, checks);
+  if (!unpaired) return text;
+  const withoutComments = text.replace(/<!--[\s\S]*?-->/g, '');
+  if (!firstUnpairedTagName(withoutComments, checks)) return withoutComments;
+  throw new XlsxError('XLSX_PARSE_FAILED', `这个文件里${what}的 XML 结构损坏（${unpaired}标签不成对），无法安全解析。请重新导出后再试。`);
+}
+
 function normalizeRelationshipTarget(target) {
   const cleaned = String(target || '').trim().replace(/^\/+/, '').replace(/^\.\//, '');
   if (!cleaned) return '';
@@ -173,7 +215,7 @@ export function openXlsxWorkbook(buffer) {
 function readSharedStrings(buffer, entries) {
   const entry = entries.get('xl/sharedStrings.xml');
   if (!entry) return [];
-  const xml = readZipEntryText(buffer, entry);
+  const xml = xmlWithoutUnpairedTags(readZipEntryText(buffer, entry), SHARED_STRING_TAG_CHECKS, '共享字符串表');
   const values = [];
   const itemPattern = /<si\b([^>]*)\/>|<si\b[^>]*>([\s\S]*?)<\/si>/g;
   let match;
@@ -217,6 +259,9 @@ function cellValue(cellAttributes, content, sharedStrings) {
   if (!valueMatch) return '';
   const raw = decodeXmlText(valueMatch[1]);
   if (type === 's') {
+    // 空 <v></v>、只有空白的 <v> </v> 都满足 Number('') === 0，不先挡掉就会静默拿到
+    // sharedStrings[0]（别人的文字）。静默错值比报错难查得多。
+    if (raw.trim() === '') return '';
     const index = Number(raw);
     return Number.isInteger(index) && index >= 0 && index < sharedStrings.length ? sharedStrings[index] : '';
   }
@@ -230,8 +275,12 @@ function cellValue(cellAttributes, content, sharedStrings) {
 
 // 行、单元格都按「先按 r 属性定位，缺省时按上一个位置顺延」处理：某些写入器
 // （尤其 WPS）会省略 r，只靠顺序表达位置。
-export function parseXlsxSheetGrid(buffer, workbook, sheetEntry, { maxBytes } = {}) {
-  const xml = readZipEntryText(buffer, sheetEntry, maxBytes ? { maxBytes } : undefined);
+export function parseXlsxSheetGrid(buffer, workbook, sheetEntry, { maxBytes, maxCells = MAX_CELLS_PER_SHEET } = {}) {
+  const xml = xmlWithoutUnpairedTags(
+    readZipEntryText(buffer, sheetEntry, maxBytes ? { maxBytes } : undefined),
+    PAIRED_TAG_CHECKS,
+    '工作表',
+  );
   const sharedStrings = readSharedStrings(buffer, workbook.entries);
   const cells = new Map();
   let maxRow = 0;
@@ -259,6 +308,9 @@ export function parseXlsxSheetGrid(buffer, workbook, sheetEntry, { maxBytes } = 
       if (!column || !row) continue;
       const value = cellValue(attributes, content, sharedStrings);
       if (value === '' || value === undefined) continue;
+      if (cells.size >= maxCells) {
+        throw new XlsxError('SHEET_TOO_LARGE', `这张工作表包含超过 ${maxCells} 个非空单元格，一次解析会超出内存上限。请把文件拆分成多份，或先删除用不到的列。`);
+      }
       cells.set(`${row}:${column}`, value);
       if (row > maxRow) maxRow = row;
       if (column > maxColumn) maxColumn = column;

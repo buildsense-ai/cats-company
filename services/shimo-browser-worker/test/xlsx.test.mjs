@@ -213,6 +213,65 @@ test('省略 r 属性的行与单元格按顺序顺延（WPS 写法）', () => {
   assert.equal(grid.cells.get('2:2'), 2);
 });
 
+test('空 <v> 的共享字符串单元格不会静默拿到第一条共享字符串', () => {
+  const sharedStrings = '<?xml version="1.0"?>\n<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1"><si><t>第一条共享字符串</t></si></sst>';
+  const body = [
+    '<row r="1">',
+    '  <c r="A1" t="s"><v></v></c>',
+    '  <c r="B1" t="s"><v> </v></c>',
+    '  <c r="C1" t="s"/>',
+    '  <c r="D1" t="s"><v>0</v></c>',
+    '</row>',
+  ].join('\n');
+  const bytes = buildWorkbook({ sheets: [{ name: 'S1', body }], sharedStrings });
+  const workbook = openXlsxWorkbook(bytes);
+  const grid = parseXlsxSheetGrid(bytes, workbook, workbook.entries.get('xl/worksheets/sheet1.xml'));
+  // Number('') === 0 / Number(' ') === 0：不显式挡掉就会命中 sharedStrings[0]，把别人的文字写进空单元格。
+  assert.equal(grid.cells.get('1:1'), undefined);
+  assert.equal(grid.cells.get('1:2'), undefined);
+  assert.equal(grid.cells.get('1:3'), undefined);
+  assert.equal(grid.cells.get('1:4'), '第一条共享字符串');
+});
+
+test('自闭合的行/单元格与注释里的 <row 字样都不会被误判成结构损坏', () => {
+  const body = [
+    '<!-- <row r="9"> -->',
+    '<row r="1" spans="1:1"/>',
+    '<row r="2"><c r="A2" s="2"/><c r="B2"><v>7</v></c></row>',
+  ].join('\n');
+  const bytes = buildWorkbook({ sheets: [{ name: 'S1', body }] });
+  const workbook = openXlsxWorkbook(bytes);
+  const grid = parseXlsxSheetGrid(bytes, workbook, workbook.entries.get('xl/worksheets/sheet1.xml'));
+  assert.deepEqual([...grid.cells.entries()], [['2:2', 7]]);
+});
+
+test('行/单元格标签不成对的畸形工作表在预检就被拒绝，不会让同步解析进入近似平方', () => {
+  // 缺 </row> 时原来的成对正则会退化：实测 720KB 就要 1080ms（每次翻倍约 4 倍），
+  // 而 sheet XML 的上限是 64MB。这里用 3MB 载荷验证它会在预检阶段快速报错（修复前实测 24s）。
+  const unit = '<row r="1"><c r="A1" t="s"><v>0</v></c>';
+  const body = unit.repeat(Math.round(3 * 1024 * 1024 / unit.length));
+  const bytes = buildWorkbook({ sheets: [{ name: 'S1', body }] });
+  const workbook = openXlsxWorkbook(bytes);
+  const startedAt = Date.now();
+  assert.throws(
+    () => parseXlsxSheetGrid(bytes, workbook, workbook.entries.get('xl/worksheets/sheet1.xml')),
+    error => error instanceof XlsxError && error.code === 'XLSX_PARSE_FAILED',
+  );
+  assert.ok(Date.now() - startedAt < 5000, '畸形 XML 应该在预检阶段就被拒绝，而不是花十几秒去做近似平方的正则匹配');
+});
+
+test('非空单元格数量超上限时按 SHEET_TOO_LARGE 拒绝，避免稀疏 Map 把内存吃光', () => {
+  const body = '<row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>2</v></c><c r="C1"><v>3</v></c></row>';
+  const bytes = buildWorkbook({ sheets: [{ name: 'S1', body }] });
+  const workbook = openXlsxWorkbook(bytes);
+  const entry = workbook.entries.get('xl/worksheets/sheet1.xml');
+  assert.throws(
+    () => parseXlsxSheetGrid(bytes, workbook, entry, { maxCells: 2 }),
+    error => error instanceof XlsxError && error.code === 'SHEET_TOO_LARGE',
+  );
+  assert.equal(parseXlsxSheetGrid(bytes, workbook, entry, { maxCells: 3 }).cells.size, 3);
+});
+
 test('合并区域按绝对坐标解析', () => {
   const body = [
     '<row r="1"><c r="A1" t="inlineStr"><is><t>甲</t></is></c></row>',

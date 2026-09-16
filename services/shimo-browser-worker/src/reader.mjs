@@ -54,9 +54,11 @@ export const MIN_PAGE_BUDGET_MS = 3_000;
 // 上传件走的是「整份下载再解析」，没有分块可退，所以体积必须在上游收口：
 // 超过这个大小的文件直接拒绝，避免一次读取把 Worker 容器的内存吃满。
 export const MAX_UPLOADED_FILE_BYTES = 32 * 1024 * 1024;
-// 下载回来的字节要经过 page.evaluate 传回 Node（base64），单次传输上限按下载上限的
-// 4/3 加余量估算，超出时在页面内就先拦掉，不把大字符串搬进 Node。
-const MAX_UPLOADED_FILE_BASE64 = Math.ceil(MAX_UPLOADED_FILE_BYTES / 3) * 4 + 1024;
+// 上传件不像原生表格那样按块去上游取数，窗口规模只能在这里自己收口。原生路径单次读取的
+// 上限就是 MAX_BANDS x CHUNK_CELL_BUDGET（40 x 4000 = 16 万格），这里沿用同一个量级：
+// 裁掉尾部空行空列之后仍然超过上限的窗口直接 RANGE_TOO_LARGE。否则 A1:ZZZ20000 这类范围
+// （3.66 亿格）会先申请数 GB 内存再裁掉，实测单次 23s，足够把单进程 Worker 打 OOM。
+export const MAX_UPLOADED_WINDOW_CELLS = MAX_BANDS * CHUNK_CELL_BUDGET;
 
 function columnIndex(label) {
   let index = 0;
@@ -328,7 +330,7 @@ function assertPageAccess(title, bodyText, { hasSheetTabs = false } = {}) {
 // 这段 fetch 必须放在页面上下文里执行：它依赖当前用户会话的 cookie，也依赖 shimo.im
 // 这个来源；在 Node 侧手工拼请求头等于把浏览器的鉴权细节复制一份，改了就容易静默失效。
 export async function downloadUploadedFileBytes(page, fileId, { maxBytes = MAX_UPLOADED_FILE_BYTES, timeoutMs = 45_000 } = {}) {
-  const result = await page.evaluate(async ({ id, limit, maxBase64, ms }) => {
+  const result = await page.evaluate(async ({ id, limit, ms }) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     try {
@@ -350,19 +352,17 @@ export async function downloadUploadedFileBytes(page, fileId, { maxBytes = MAX_U
         binary += String.fromCharCode.apply(null, buffer.subarray(offset, offset + step));
       }
       const base64 = btoa(binary);
-      if (base64.length > maxBase64) {
-        return { ok: false, status: 200, tooLarge: true, size: buffer.length, contentType };
-      }
       return { ok: true, base64, size: buffer.length, contentType, head };
     } catch (error) {
-      return { ok: false, status: 0, error: String((error && error.message) || error) };
+      // 只有上面那个 AbortController 会 abort，所以 signal.aborted 为真就等于「被我们自己的
+      // 超时掐断」。这个区别要留给 Node 侧，才能映射成可重试的 503 而不是「上游挂了」。
+      return { ok: false, status: 0, timedOut: controller.signal.aborted, error: String((error && error.message) || error) };
     } finally {
       clearTimeout(timer);
     }
   }, {
     id: fileId,
     limit: maxBytes,
-    maxBase64: MAX_UPLOADED_FILE_BASE64,
     ms: Math.max(1, Math.floor(timeoutMs)),
   });
 
@@ -375,6 +375,9 @@ export async function downloadUploadedFileBytes(page, fileId, { maxBytes = MAX_U
   }
   if (result?.status === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
   if (result?.status === 403 || result?.status === 404) throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
+  // 被自己的超时掐断，和原生路径页面加载超时同一语义：等太久、可以重试（503），而不是
+  // 「上游挂了」（502）。剩余预算很小时 timeoutMs 会被压到 1ms，这种情况尤其常见。
+  if (result?.timedOut) throw new ShimoWorkerError('READ_BUDGET_EXHAUSTED', '这次读取等待时间过长，预算已用尽，请稍后重试。', 503);
   if (!result?.status) {
     throw new ShimoWorkerError('SHIMO_API_ERROR', '下载石墨文件失败：' + String(result?.error || '未知错误'), 502);
   }
@@ -423,26 +426,42 @@ function parseUploadedSheetGrid(bytes, workbook, sheetEntry) {
 
 // 把解析出来的整表稀疏单元格裁剪到请求范围。与原生表格路径保持同一套约定：
 // 尾部整行/整列的空值不返回，`values` 是「按行顺序排列的列表」而不是行号索引。
-export function sliceXlsxGrid(grid, cellRange) {
+//
+// 先扫一遍稀疏单元格求出「窗口内最后一个有数据的行列」，再按这个尺度构造矩阵。不能反过来
+// 按请求窗口直接建二维数组：那样内存只取决于用户写的 range（A1:ZZZ20000 = 3.66 亿格，实测
+// 单次 23s 且期间申请数 GB），跟表里实际有几个格子无关，一个请求就能把 Worker 打 OOM。
+// 稀疏表的规模由文件本身决定（解析时已经受文件大小和非空单元格上限约束），与窗口无关。
+export function sliceXlsxGrid(grid, cellRange, { maxCells = MAX_UPLOADED_WINDOW_CELLS } = {}) {
   const { startColumn, startRow, endColumn, endRow } = parseA1Range(cellRange);
-  const rows = [];
   let lastDataRow = 0;
   let lastDataColumn = 0;
-  for (let row = startRow; row <= endRow; row += 1) {
-    const line = [];
-    for (let column = startColumn; column <= endColumn; column += 1) {
-      const value = grid.cells.get(row + ':' + column);
-      line.push(value === undefined ? '' : value);
-      if (value !== undefined && value !== '') {
-        lastDataRow = row;
-        lastDataColumn = column;
-      }
-    }
-    rows.push(line);
+  for (const [key, value] of grid.cells) {
+    if (value === undefined || value === '') continue;
+    const separator = key.indexOf(':');
+    const row = Number(key.slice(0, separator));
+    const column = Number(key.slice(separator + 1));
+    if (!(row >= startRow && row <= endRow && column >= startColumn && column <= endColumn)) continue;
+    if (row > lastDataRow) lastDataRow = row;
+    if (column > lastDataColumn) lastDataColumn = column;
   }
   const retainedRows = lastDataRow ? lastDataRow - startRow + 1 : 0;
   const retainedColumns = lastDataColumn ? lastDataColumn - startColumn + 1 : 0;
-  const values = rows.slice(0, retainedRows).map(line => line.slice(0, retainedColumns));
+  if (retainedRows * retainedColumns > maxCells) {
+    throw new ShimoWorkerError(
+      'RANGE_TOO_LARGE',
+      `该范围需要返回 ${retainedRows} 行 x ${retainedColumns} 列，共 ${retainedRows * retainedColumns} 个单元格，超过单次读取上限（${maxCells} 个单元格），请缩小范围后分次读取。`,
+      400,
+    );
+  }
+  const values = [];
+  for (let row = startRow; row <= lastDataRow; row += 1) {
+    const line = [];
+    for (let column = startColumn; column <= lastDataColumn; column += 1) {
+      const value = grid.cells.get(row + ':' + column);
+      line.push(value === undefined ? '' : value);
+    }
+    values.push(line);
+  }
   // 合并区域只回传与本次请求窗口相交的那些，并保留原表的绝对坐标，
   // 这样下游既能看到「这些空值其实属于上面那个合并单元格」，又不用再打开原文件。
   const mergedRanges = grid.merged
