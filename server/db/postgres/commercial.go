@@ -194,6 +194,7 @@ func scanCommercialInvite(scanner interface {
 }) (*types.CommercialInviteCode, error) {
 	var invite types.CommercialInviteCode
 	var expiresAt sql.NullTime
+	var redeemerUIDsRaw []byte
 	if err := scanner.Scan(
 		&invite.ID,
 		&invite.Code,
@@ -211,10 +212,16 @@ func scanCommercialInvite(scanner interface {
 		&invite.CreatedByUID,
 		&invite.CreatedAt,
 		&invite.UpdatedAt,
+		&redeemerUIDsRaw,
 	); err != nil {
 		return nil, err
 	}
 	invite.ExpiresAt = nullableTime(expiresAt)
+	if len(redeemerUIDsRaw) > 0 {
+		if err := json.Unmarshal(redeemerUIDsRaw, &invite.RedeemerUIDs); err != nil {
+			return nil, fmt.Errorf("decode commercial invite redeemers: %w", err)
+		}
+	}
 	return &invite, nil
 }
 
@@ -224,7 +231,11 @@ func (a *Adapter) ListCommercialInviteCodes(limit int) ([]*types.CommercialInvit
 	}
 	rows, err := a.db.Query(`
 		SELECT c.id, c.code, c.plan_id, p.slug, p.name, c.max_redemptions, c.redeemed_count, c.cloud_worker_credits, c.cloud_worker_profile, c.cloud_worker_billing_mode, c.state,
-		       c.expires_at, c.note, COALESCE(c.created_by_uid, 0), c.created_at, c.updated_at
+		       c.expires_at, c.note, COALESCE(c.created_by_uid, 0), c.created_at, c.updated_at,
+		       COALESCE((SELECT jsonb_agg(redeemer ORDER BY redeemer)
+		                 FROM (SELECT DISTINCT e.uid AS redeemer
+		                       FROM commercial_entitlements e
+		                       WHERE e.source = 'invite' AND lower(e.source_ref) = lower(c.code)) redeemers), '[]'::jsonb)
 		FROM commercial_invite_codes c
 		JOIN commercial_plans p ON p.id = c.plan_id
 		ORDER BY c.id DESC

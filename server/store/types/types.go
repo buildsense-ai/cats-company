@@ -176,6 +176,7 @@ type CommercialInviteCode struct {
 	PlanName               string     `json:"plan_name,omitempty"`
 	MaxRedemptions         int        `json:"max_redemptions"`
 	RedeemedCount          int        `json:"redeemed_count"`
+	RedeemerUIDs           []int64    `json:"redeemer_uids"`
 	CloudWorkerCredits     int        `json:"cloud_worker_credits"`
 	CloudWorkerProfile     string     `json:"cloud_worker_profile"`
 	State                  int        `json:"state"`
