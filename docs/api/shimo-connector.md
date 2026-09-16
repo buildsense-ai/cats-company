@@ -35,6 +35,23 @@ All `/v1/shimo/*` requests require `Authorization: Bearer <short-lived-actor-cap
 | `POST` | `/v1/shimo/sheets/read` | Read one sheet and cell range (chunked server-side, see below) |
 | `POST` | `/v1/shimo/documents/read` | Read document text |
 
+A Shimo "spreadsheet" link has two shapes and the connector accepts both on the same
+endpoints. `/sheets/{id}` is a native Shimo spreadsheet with a cell-values API; the Worker
+reads it in row bands as described below. `/file/{id}` is an `.xlsx`/`.xlsm` workbook the
+user uploaded to Shimo: it has no cell API, so the Worker opens the link page with the
+user's stored session and downloads the whole file through that page
+(`/lizard-api/files/{id}/download`), then parses it inside the Worker. Both paths return the
+same shape: `values` as an ordered list of rows plus `requested_range`, `requests`,
+`covered_through_row`, `stopped_early` and `truncated`, and both carry `source_kind`
+(`native_sheet` or `uploaded_excel`) so callers can tell them apart. Uploaded workbooks also
+return `merged_ranges` (absolute coordinates of merged cells intersecting the requested
+window) and `sheet_max_row` / `sheet_max_column` for the sheet as stored. Because the file
+is downloaded and parsed whole, an uploaded read never truncates: `truncated` is always
+`false` and `covered_through_row` equals the end row of the requested range. Workbooks
+larger than 32 MB are rejected with `FILE_TOO_LARGE` (HTTP 413) instead of being silently
+cut, and a download that returns an HTML shell is classified as `LOGIN_REQUIRED` or
+`DOCUMENT_NOT_ACCESSIBLE` rather than as an unsupported file type.
+
 Shimo caps a single values request at 5000 cells and counts the *requested* range rather
 than the populated rows, so the Worker splits wider ranges into row bands of at most 4000
 cells, reads them sequentially, and concatenates the rows. `/v1/shimo/sheets/read`
