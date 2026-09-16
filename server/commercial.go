@@ -783,12 +783,20 @@ func defaultRelayResetDuration(value string) string {
 var commercialSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$`)
 var commercialCodePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{3,63}$`)
 
+// commercialOfficialPaidModels pins the public paid-plan model set: the five
+// public chat models plus the image lane add-on models, which share the same
+// pool. Keep this in step with the startup migration that maintains the plans.
 var commercialOfficialPaidModels = []string{
 	"MiniMax-M2.7",
 	"MiniMax-M3",
 	"deepseek-v4-flash",
 	"glm-5.3-flash",
 	"gpt-5.6-terra",
+	"gpt-image-2",
+	"gpt-image-2.5",
+	"gpt-image-2.5-flare",
+	"gpt-image-2.5-sunburst",
+	"chatgpt-image-latest",
 }
 
 func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
@@ -796,14 +804,14 @@ func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]fl
 	expectedTotal := 0.0
 	switch slug {
 	case "catsco-personal":
-		expectedTotal = 10500
+		expectedTotal = 11000
 	case "catsco-pro":
-		expectedTotal = 31500
+		expectedTotal = 33000
 	default:
 		return nil
 	}
 	if len(budgets) != len(commercialOfficialPaidModels) {
-		return fmt.Errorf("official paid plan must contain only the five public models")
+		return fmt.Errorf("official paid plan must contain only the official public models")
 	}
 	total := 0.0
 	for _, model := range commercialOfficialPaidModels {
@@ -1093,14 +1101,25 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load current package"})
 		return
 	}
+	legacy := commercialLegacyGrantEligible(summary, time.Now().UTC())
 	model, expiresAt, err := resolveCommercialBonusGrant(summary, req.Model, req.ExpiresAt, time.Now().UTC())
-	if commercialLegacyGrantEligible(summary, time.Now().UTC()) {
+	if legacy {
 		options := h.commercialGrantOptions(r.Context(), req.UID, summary)
 		model, expiresAt, err = resolveCommercialLegacyGrant(options, req.Model, req.ExpiresAt, time.Now().UTC())
 	}
 	if err != nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	if !legacy && commercialImageLaneModel(model) {
+		// The console only offers live catalog choices, but the API must not
+		// accept a stale or hand-written image model name either.
+		canonical, catalogErr := h.commercialImageGrantCatalogModel(r.Context(), req.UID, model)
+		if catalogErr != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": catalogErr.Error()})
+			return
+		}
+		model = canonical
 	}
 	grant, err := store.GrantCommercialQuota(&types.CommercialQuotaGrant{
 		UID:           req.UID,
@@ -1138,6 +1157,17 @@ func resolveCommercialBonusGrant(summary *types.CommercialSummary, requestedMode
 		activeEntitlementsByPlan[entitlement.PlanID] = append(activeEntitlementsByPlan[entitlement.PlanID], entitlement)
 	}
 	if len(activeEntitlementsByPlan) == 0 {
+		// Image add-ons may extend a package that carries no expiry (the Free
+		// baseline); the operator supplies the add-on expiry explicitly. Only
+		// entitlements that are active right now qualify: expired package rows
+		// keep their state, so the date fields are checked instead.
+		if commercialImageLaneModel(model) && commercialSummaryHasActiveEntitlement(summary, now) {
+			expiresAt, err := commercialImageGrantExpiry(requestedExpiry, now)
+			if err != nil {
+				return "", time.Time{}, err
+			}
+			return model, expiresAt, nil
+		}
 		return "", time.Time{}, fmt.Errorf("an active package with an expiry is required before granting a bonus")
 	}
 
@@ -1163,6 +1193,14 @@ func resolveCommercialBonusGrant(summary *types.CommercialSummary, requestedMode
 		}
 	}
 	if canonicalModel == "" || packageExpiry.IsZero() {
+		// Image add-ons can also be granted outside the package's model set.
+		if commercialImageLaneModel(model) {
+			expiresAt, err := commercialImageGrantExpiry(requestedExpiry, now)
+			if err != nil {
+				return "", time.Time{}, err
+			}
+			return model, expiresAt, nil
+		}
 		return "", time.Time{}, fmt.Errorf("model is not included in the user's active package")
 	}
 
@@ -1181,6 +1219,50 @@ func resolveCommercialBonusGrant(summary *types.CommercialSummary, requestedMode
 		return "", time.Time{}, fmt.Errorf("bonus expiry cannot exceed the current package expiry")
 	}
 	return canonicalModel, expiresAt, nil
+}
+
+// commercialSummaryHasActiveEntitlement reports whether any entitlement is
+// active at the given moment. Entitlements are not flipped to "expired" by a
+// background job, so the date fields must be checked instead of the state
+// alone.
+func commercialSummaryHasActiveEntitlement(summary *types.CommercialSummary, now time.Time) bool {
+	if summary == nil {
+		return false
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil || entitlement.State != "active" || entitlement.StartsAt.After(now) {
+			continue
+		}
+		if entitlement.ExpiresAt == nil || entitlement.ExpiresAt.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
+// commercialImageLaneModel reports whether a model is carried by the image
+// lane. The relay classifies image models by name (the same test backs its
+// routes_for_models split), so new image models keep working without a list.
+func commercialImageLaneModel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "image")
+}
+
+// commercialImageGrantExpiry validates the operator-supplied expiry for an
+// image add-on that is not anchored to a package expiry.
+func commercialImageGrantExpiry(raw string, now time.Time) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, fmt.Errorf("image model grants require an explicit expires_at")
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("expires_at must be RFC3339")
+	}
+	expiresAt := parsed.UTC()
+	if !expiresAt.After(now) {
+		return time.Time{}, fmt.Errorf("expires_at must be in the future")
+	}
+	return expiresAt, nil
 }
 
 func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter, r *http.Request) {
