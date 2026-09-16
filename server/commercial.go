@@ -987,6 +987,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			CreateOnly             bool   `json:"create_only"`
 			PlanID                 int64  `json:"plan_id"`
 			MaxRedemptions         int    `json:"max_redemptions"`
+			Count                  int    `json:"count"`
 			CloudWorkerCredits     int    `json:"cloud_worker_credits"`
 			CloudWorkerProfile     string `json:"cloud_worker_profile"`
 			CloudWorkerBillingMode string `json:"cloud_worker_billing_mode"`
@@ -998,17 +999,22 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid invite request"})
 			return
 		}
-		code := strings.ToUpper(strings.TrimSpace(req.Code))
-		if code == "" {
-			var random [12]byte
-			if _, err := rand.Read(random[:]); err != nil {
-				writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate invite code"})
-				return
-			}
-			code = "CC-" + strings.ToUpper(hex.EncodeToString(random[:]))
-			req.CreateOnly = true
+		count := req.Count
+		if count == 0 {
+			count = 1
 		}
-		if !commercialCodePattern.MatchString(code) {
+		if count < 0 || count > 50 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "count must be between 1 and 50"})
+			return
+		}
+		code := strings.ToUpper(strings.TrimSpace(req.Code))
+		if count > 1 && code != "" {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "batch generation does not accept a custom code"})
+			return
+		}
+		if code == "" {
+			req.CreateOnly = true
+		} else if !commercialCodePattern.MatchString(code) {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid invite code"})
 			return
 		}
@@ -1044,9 +1050,8 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cloud worker profile"})
 			return
 		}
-		id, err := store.CreateCommercialInviteCode(&types.CommercialInviteCode{
+		createRequest := &types.CommercialInviteCode{
 			CreateOnly:             req.CreateOnly,
-			Code:                   code,
 			PlanID:                 req.PlanID,
 			MaxRedemptions:         req.MaxRedemptions,
 			CloudWorkerCredits:     req.CloudWorkerCredits,
@@ -1055,16 +1060,41 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			State:                  req.State,
 			ExpiresAt:              expiresAt,
 			Note:                   req.Note,
-		})
-		if err != nil {
-			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save invite code"})
-			return
+		}
+		codes := make([]string, 0, count)
+		var id int64
+		for index := 0; index < count; index++ {
+			generated := code
+			if generated == "" {
+				var err error
+				generated, err = generateCommercialInviteCode()
+				if err != nil {
+					writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate invite code"})
+					return
+				}
+			}
+			createRequest.Code = generated
+			createdID, err := store.CreateCommercialInviteCode(createRequest)
+			if err != nil {
+				writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save invite code"})
+				return
+			}
+			id = createdID
+			codes = append(codes, generated)
 		}
 		invites, _ := store.ListCommercialInviteCodes(80)
-		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "id": id, "code": code, "invites": invites})
+		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "id": id, "code": codes[len(codes)-1], "codes": codes, "invites": invites})
 	default:
 		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func generateCommercialInviteCode() (string, error) {
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return "CC-" + strings.ToUpper(hex.EncodeToString(random[:])), nil
 }
 
 func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *http.Request) {
