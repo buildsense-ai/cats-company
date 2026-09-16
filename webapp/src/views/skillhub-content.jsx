@@ -7,7 +7,16 @@ import {
 } from 'lucide-react';
 import CustomSelect from '../widgets/custom-select';
 import useDialogBehavior from '../utils/use-dialog-behavior';
-import { formatSkillHubPublisher } from '../utils/skillhub-entry';
+import { formatSkillHubPublisher, formatSkillHubVersion, resolveSkillHubUpdateStatus } from '../utils/skillhub-entry';
+
+// A capability that is already installed can only be replaced through the public
+// SkillHub entry for the same Skill. Bot-private references, runtime-local
+// Skills and the read-only friend view keep their current presentation so this
+// control never rewrites a capability that was not installed from the catalogue.
+function isCatalogueUpdateAvailable(installedReference, details) {
+  if (details?.isLocalSkill) return false;
+  return resolveSkillHubUpdateStatus(installedReference, details) === 'update';
+}
 
 export default function SkillHubContent(props) {
   const {
@@ -40,7 +49,7 @@ export default function SkillHubContent(props) {
             {(loadingDefinition || saving) && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
-                {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : '正在添加能力…'}
+                {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : skillAction?.update ? '正在更新能力…' : '正在添加能力…'}
               </div>
             )}
             {visibleSection === 'added' ? <AddedSkills {...props} /> : <Catalogue {...props} />}
@@ -198,6 +207,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
   const removing = skillAction?.type === 'remove' && skillAction.skillId === skill.skillId;
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
+  const updatable = !isReadOnly && !skill.localOnly && isCatalogueUpdateAvailable(skill, details);
   const authorLabel = privateReference
     ? `最近变更：${skill.lastChangedBy || '修改者未记录'}`
     : formatSkillHubPublisher(details || skill);
@@ -291,6 +301,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
       <div className='cc-skillhub-added-copy'>
         <div className='cc-skillhub-added-title'>
           <h3>{label}</h3><span className={`cc-skillhub-availability${skill.localOnly ? ' is-local-only' : ''}`}><Check size={12} aria-hidden='true' /> {skill.localOnly ? '仅本地' : '已启用'}</span>
+          {updatable && <span className='cc-skillhub-availability is-update' title='能力库中有新版本，可在能力库中更新'><RefreshCw size={12} aria-hidden='true' /> 可更新</span>}
         </div>
         <p>{description}</p>
         <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前运行工作区' : <>{versionLabel} · {authorLabel}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
@@ -585,13 +596,21 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
     detailsTriggerRef.current?.focus({ preventScroll: true });
   };
   const label = skill.displayName || skill.skillId;
-  const installed = installedByID.has(skill.skillId);
+  const installedReference = installedByID.get(skill.skillId) || null;
+  const installed = Boolean(installedReference);
+  const updatable = isCatalogueUpdateAvailable(installedReference, skill);
   const adding = skillAction?.type === 'add' && skillAction.skillId === skill.skillId;
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
   const unavailable = skill.isLocalSkill && !skill.canBind
     && (!skill.localSkill?.canShare || skill.localSkill?.source === 'system');
+  const ActionIcon = updatable ? RefreshCw : installed ? Check : Package;
+  const actionLabel = updatable
+    ? (adding ? '更新中…' : '更新')
+    : installed
+      ? '已添加'
+      : (adding || sharing ? '添加中…' : '添加');
   const versionAndPublisher = [
-    formatCatalogueVersion(skill.latestVersion) || '版本待确认',
+    formatSkillHubVersion(skill.latestVersion) || '版本待确认',
     formatSkillHubPublisher(skill),
   ].join(' · ');
   const publishedTime = formatCataloguePublishedTime(skill.publishedAt);
@@ -619,9 +638,17 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
             <time dateTime={skill.publishedAt || undefined}>{publishedTime}</time>
           </>}
         </div>
-        {!isReadOnly && <button type='button' className={installed ? 'added' : 'primary'} disabled={!definitionReady || installed || unavailable || saving || Boolean(sharingSkill)} title={unavailable ? '此能力暂时不能同步' : undefined} onClick={() => onInstallSkill(skill)}>
-          {installed ? <Check size={14} aria-hidden='true' /> : <Package size={14} aria-hidden='true' />}
-          {installed ? '已添加' : adding || sharing ? '添加中…' : '添加'}
+        {!isReadOnly && <button
+          type='button'
+          className={installed && !updatable ? 'added' : 'primary'}
+          disabled={!definitionReady || (installed && !updatable) || unavailable || saving || Boolean(sharingSkill)}
+          title={unavailable
+            ? '此能力暂时不能同步'
+            : updatable ? `更新到 ${formatSkillHubVersion(skill.latestVersion)}` : undefined}
+          onClick={() => onInstallSkill(skill)}
+        >
+          <ActionIcon size={14} aria-hidden='true' />
+          {actionLabel}
         </button>}
       </div>
       {detailsOpen && createPortal(
@@ -641,12 +668,6 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
       )}
     </article>
   );
-}
-
-function formatCatalogueVersion(version) {
-  const value = String(version || '').trim();
-  if (!value) return '';
-  return value.startsWith('v') ? value : `v${value}`;
 }
 
 function formatCataloguePublishedTime(value) {

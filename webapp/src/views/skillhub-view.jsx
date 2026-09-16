@@ -2,9 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, requestSkillHubDeviceTool } from '../api';
 import { useFeedback } from '../components/feedback-system';
 import {
+  formatSkillHubVersion,
+  isPrivateSkillHubReference,
   normalizeLocalSkillHubSkills,
   normalizeSkillHubSkills,
   resolveSkillHubEntry,
+  resolveSkillHubUpdateStatus,
 } from '../utils/skillhub-entry';
 import { getStorage } from '../utils/storage-access';
 import SkillHubContent from './skillhub-content';
@@ -660,11 +663,6 @@ function skillHubWorkspacePaginationError(message) {
   const error = new Error(message);
   error.code = 'skillhub_workspace_pagination_invalid';
   return error;
-}
-
-export function isPrivateSkillHubReference(skillId) {
-  const value = String(skillId || '');
-  return value.startsWith('priv_') || value.startsWith('private/');
 }
 
 export function isLocalSkillShared(skill, installedReference) {
@@ -1594,8 +1592,15 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     ) return;
     const initiatingRevision = definition.revision;
     const initiatingSkills = definition.skills;
+    // The same write either adds a new capability or replaces the installed
+    // reference with a newer published version. Decide from the definition the
+    // save is based on, so the wording cannot drift when a refresh lands first.
+    const replacing = (initiatingSkills || []).some((candidate) => (
+      candidate?.skillId === skill.skillId
+      && resolveSkillHubUpdateStatus(candidate, skill) === 'update'
+    ));
     const agentName = botLabel(selectedAgent);
-    setSkillAction({ type: 'add', skillId: skill.skillId });
+    setSkillAction({ type: 'add', skillId: skill.skillId, update: replacing });
     setActionNotice('');
     let resolved = skill;
     try {
@@ -1626,13 +1631,16 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         revision: initiatingRevision,
       });
       if (saved?.ok && initiatingBotUID === selectedBotUIDRef.current) {
-        setActionNotice(`已为 Agent“${agentName}”添加 ${resolved.displayName || resolved.skillId}。`);
+        const installedName = resolved.displayName || resolved.skillId;
+        setActionNotice(replacing
+          ? `已把 Agent“${agentName}”的 ${installedName} 更新到 ${formatSkillHubVersion(resolved.latestVersion)}。`
+          : `已为 Agent“${agentName}”添加 ${installedName}。`);
       }
     } catch (error) {
       if (
         initiatingBotUID === selectedBotUIDRef.current
         && definitionBotUID === initiatingBotUID
-      ) setDefinitionError(error?.message || '添加失败，未更改 Agent 当前配置。');
+      ) setDefinitionError(error?.message || '保存失败，未更改 Agent 当前配置。');
     } finally {
       if (initiatingBotUID === selectedBotUIDRef.current) setSkillAction(null);
     }

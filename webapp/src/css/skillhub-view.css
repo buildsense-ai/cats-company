@@ -811,6 +811,7 @@
 .cc-skillhub-added-title h3 { overflow: hidden; margin: 0; color: var(--cc-text); font-size: 14px; font-weight: var(--cc-font-weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
 .cc-skillhub-added-availability, .cc-skillhub-availability { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--cc-success-text); font-size: 11px; font-weight: var(--cc-font-weight-medium); }
 .cc-skillhub-availability.is-local-only { color: var(--cc-warning-text); }
+.cc-skillhub-availability.is-update { border-radius: 999px; padding: 1px 7px; background: var(--cc-accent-soft); color: var(--cc-accent-text); }
 .cc-skillhub-added-copy p { margin: 4px 0 6px; overflow: hidden; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .cc-skillhub-version-note { display: inline-flex; align-items: center; gap: 4px; color: var(--cc-muted); font-size: 11px; }
 .cc-skillhub-added-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
