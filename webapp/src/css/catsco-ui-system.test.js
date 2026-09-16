@@ -549,6 +549,16 @@ describe('CatsCo shell styling', () => {
       .toContain('outline: 2px solid var(--cc-focus-ring, var(--v3-text-muted));');
   });
 
+  it('uses a solid, non-glass backdrop for mobile image previews', () => {
+    const mobilePreviewRule = css.match(
+      /@media \(max-width: 640px\) \{\s*html \.oc-modal-overlay\.oc-rich-image-preview\s*\{[^}]*\}/,
+    )?.[0] || '';
+
+    expect(mobilePreviewRule).toContain('background: #000;');
+    expect(mobilePreviewRule).toContain('-webkit-backdrop-filter: none;');
+    expect(mobilePreviewRule).toContain('backdrop-filter: none;');
+  });
+
   it('provides a touch-sized, keyboard-visible download action in media previews', () => {
     const downloadRule = ruleFor('.oc-rich-media-preview-download');
 

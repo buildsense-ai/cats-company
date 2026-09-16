@@ -12230,6 +12230,15 @@ html[data-theme="liquid"] :is(
   transform: translate(-50%, -50%);
 }
 
+/* Image previews on phones are an immersive viewer, not a translucent app dialog. */
+@media (max-width: 640px) {
+  html .oc-modal-overlay.oc-rich-image-preview {
+    background: #000;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 .oc-rich-video-preview {
   padding: 24px;
 }

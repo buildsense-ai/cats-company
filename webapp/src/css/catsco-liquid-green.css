@@ -321,6 +321,14 @@ html[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-
   backdrop-filter: blur(8px) saturate(108%);
 }
 
+@media (max-width: 640px) {
+  html[data-theme="liquid"][data-liquid-variant="green"] .oc-modal-overlay.oc-rich-image-preview {
+    background: #000;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog, .oc-modal, .settings-panel, .collaboration-manager),
 html[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card {
   border-color: var(--cc-liquid-edge);
