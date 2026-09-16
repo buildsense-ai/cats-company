@@ -9844,6 +9844,10 @@ button.catsco-download-action:disabled {
     align-items: stretch !important;
   }
 
+  .oc-modal-overlay.oc-rich-image-preview {
+    align-items: center !important;
+  }
+
   .oc-modal,
   .oc-modal.relay-access-modal,
   .oc-modal.oc-profile-editor-modal,
