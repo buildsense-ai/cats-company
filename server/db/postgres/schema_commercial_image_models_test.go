@@ -205,6 +205,14 @@ func TestPostgresCommercialImageModelsRespectsScopeAndMetadata(t *testing.T) {
 		manualUID, personalPlanID, now); err != nil {
 		t.Fatalf("seed operator look-alike grant: %v", err)
 	}
+	// An operator grant with every visible attribute of the add-on (same note,
+	// same grant type, same image model) but no ledger marker must survive.
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, plan_id, grant_type, model, amount_cny, reset_duration, effective_at, source_ref, note, operator_uid)
+		VALUES ($1, $2, 'operator_plan', 'gpt-image-2.5', 7, '1M', $3, 'operator-image-lookalike', 'Public plan image model access', $4)`,
+		manualUID, personalPlanID, now, actorUID); err != nil {
+		t.Fatalf("seed operator image look-alike grant: %v", err)
+	}
 
 	for i := 0; i < 2; i++ {
 		if _, err := db.db.Exec(migrateCommercialImageModels); err != nil {
@@ -240,7 +248,7 @@ func TestPostgresCommercialImageModelsRespectsScopeAndMetadata(t *testing.T) {
 	assertImageMigrationPackage(t, db, "invite-ref", 5, 0, 10500, 0, now)
 	assertImageMigrationPackage(t, db, "operator-ref", 5, 0, 31500, 0, now)
 	var lookalikes int
-	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE uid = $1 AND revoked_at IS NULL AND source_ref IN ('bonus-lookalike','operator-lookalike','manual-only')`, manualUID).Scan(&lookalikes); err != nil || lookalikes != 7 {
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE uid = $1 AND revoked_at IS NULL AND source_ref IN ('bonus-lookalike','operator-lookalike','operator-image-lookalike','manual-only')`, manualUID).Scan(&lookalikes); err != nil || lookalikes != 8 {
 		t.Fatalf("down revoked look-alike or manual grants: %v %d", err, lookalikes)
 	}
 	assertGLM53Ledger(t, db, inviteUID, "image_models_v1_rollback", 5, -500)

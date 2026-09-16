@@ -1,7 +1,10 @@
 -- Remove the image add-on and restore the five-model public plans without
 -- resetting usage. Internal/custom plans, operator add-ons and fulfilled
 -- history stay as they are. Only the add-on grants created by 000021 are
--- revoked: exact note, package grant types and the five image models.
+-- revoked, and they are identified exclusively by the marker the up migration
+-- recorded for each of them in the ledger: source_type='image_models_v1' with
+-- source_id = the new grant id. Grants that merely share the note or shape
+-- are never touched.
 -- Roll this file out BEFORE 000020.commercial_public_models.down.sql.
 UPDATE commercial_plans SET model_budgets = CASE slug
     WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-v4-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100}'::jsonb
@@ -19,13 +22,15 @@ DECLARE
 BEGIN
     FOR grant_row IN
         SELECT g.id, g.uid, g.model, g.amount_cny
-        FROM commercial_quota_grants g JOIN commercial_plans p ON p.id = g.plan_id
-        WHERE p.slug IN ('catsco-personal', 'catsco-pro')
-          AND g.grant_type IN ('order', 'invite', 'operator_plan')
-          AND g.revoked_at IS NULL
-          AND g.note = 'Public plan image model access'
-          AND g.model IN (
-              'gpt-image-2', 'gpt-image-2.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'chatgpt-image-latest')
+        FROM commercial_quota_grants g
+        WHERE g.revoked_at IS NULL
+          AND EXISTS (
+              SELECT 1
+              FROM commercial_quota_ledger marker
+              WHERE marker.source_type = 'image_models_v1'
+                AND marker.entry_type = 'grant'
+                AND marker.source_id = g.id
+          )
     LOOP
         INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
         VALUES (grant_row.uid, grant_row.model, -grant_row.amount_cny, 'revoke',
