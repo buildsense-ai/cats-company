@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { chromium } from 'playwright-core';
+import { XlsxError, openXlsxWorkbook, parseXlsxSheetGrid } from './xlsx.mjs';
 
 export class ShimoWorkerError extends Error {
   constructor(code, message, status = 502, details = {}) {
@@ -20,11 +21,16 @@ export function validateShimoURL(input, expected) {
     throw new ShimoWorkerError('INVALID_URL', '只允许读取 shimo.im 的 HTTPS 链接。', 400);
   }
   const sheetMatch = url.pathname.match(/^\/(?:sheets?|tables?)\/([A-Za-z0-9]+)/);
+  // 石墨里「表格链接」有两种：原生表格是 /sheets/{id}（有单元格接口），用户把本地的
+  // .xlsx/.xlsm 上传上去得到的是 /file/{id}（没有单元格接口，只能整份下载后解析）。
+  // 两者在石墨网页里长得几乎一样，只有把类型一起带出去，后续才能分流到正确的读取路径。
+  const uploadedFileMatch = url.pathname.match(/^\/file\/([A-Za-z0-9]+)/);
   const documentMatch = url.pathname.match(/^\/(?:docs?|docx)\/([A-Za-z0-9]+)/);
-  if (expected === 'sheet' && !sheetMatch) throw new ShimoWorkerError('NOT_A_SHEET', '该链接不是石墨表格。', 400);
+  if (expected === 'sheet' && !sheetMatch && !uploadedFileMatch) throw new ShimoWorkerError('NOT_A_SHEET', '该链接不是石墨表格。', 400);
   if (expected === 'document' && !documentMatch) throw new ShimoWorkerError('NOT_A_DOCUMENT', '该链接不是石墨文档。', 400);
   url.hash = '';
-  return { url: url.toString(), fileId: sheetMatch?.[1] || documentMatch?.[1] || '' };
+  const kind = sheetMatch ? 'sheet' : uploadedFileMatch ? 'uploaded_file' : documentMatch ? 'document' : '';
+  return { url: url.toString(), fileId: sheetMatch?.[1] || uploadedFileMatch?.[1] || documentMatch?.[1] || '', kind };
 }
 
 const RANGE_PATTERN = /^([A-Z]{1,3})([1-9][0-9]{0,6}):([A-Z]{1,3})([1-9][0-9]{0,6})$/;
@@ -45,6 +51,14 @@ export const DEFAULT_READ_BUDGET_MS = 30_000;
 export const DEFAULT_TOTAL_READ_BUDGET_MS = 65_000;
 // 页面加载阶段的最小可用预算：剩余不足这个数时不再启动浏览器，直接按「忙、可重试」上报。
 export const MIN_PAGE_BUDGET_MS = 3_000;
+// 上传件走的是「整份下载再解析」，没有分块可退，所以体积必须在上游收口：
+// 超过这个大小的文件直接拒绝，避免一次读取把 Worker 容器的内存吃满。
+export const MAX_UPLOADED_FILE_BYTES = 32 * 1024 * 1024;
+// 上传件不像原生表格那样按块去上游取数，窗口规模只能在这里自己收口。原生路径单次读取的
+// 上限就是 MAX_BANDS x CHUNK_CELL_BUDGET（40 x 4000 = 16 万格），这里沿用同一个量级：
+// 裁掉尾部空行空列之后仍然超过上限的窗口直接 RANGE_TOO_LARGE。否则 A1:ZZZ20000 这类范围
+// （3.66 亿格）会先申请数 GB 内存再裁掉，实测单次 23s，足够把单进程 Worker 打 OOM。
+export const MAX_UPLOADED_WINDOW_CELLS = MAX_BANDS * CHUNK_CELL_BUDGET;
 
 function columnIndex(label) {
   let index = 0;
@@ -312,6 +326,150 @@ function assertPageAccess(title, bodyText, { hasSheetTabs = false } = {}) {
   }
 }
 
+// 上传到石墨的 Excel 文件不能按单元格读，只能整份下载后在 Worker 内解析。
+// 这段 fetch 必须放在页面上下文里执行：它依赖当前用户会话的 cookie，也依赖 shimo.im
+// 这个来源；在 Node 侧手工拼请求头等于把浏览器的鉴权细节复制一份，改了就容易静默失效。
+export async function downloadUploadedFileBytes(page, fileId, { maxBytes = MAX_UPLOADED_FILE_BYTES, timeoutMs = 45_000 } = {}) {
+  const result = await page.evaluate(async ({ id, limit, ms }) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      const response = await fetch('/lizard-api/files/' + encodeURIComponent(id) + '/download', {
+        credentials: 'include',
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) return { ok: false, status: response.status, contentType };
+      const buffer = new Uint8Array(await response.arrayBuffer());
+      if (buffer.length > limit) {
+        return { ok: false, status: 200, tooLarge: true, size: buffer.length, contentType };
+      }
+      const head = new TextDecoder('utf-8', { fatal: false }).decode(buffer.subarray(0, 512));
+      let binary = '';
+      const step = 0x8000;
+      for (let offset = 0; offset < buffer.length; offset += step) {
+        binary += String.fromCharCode.apply(null, buffer.subarray(offset, offset + step));
+      }
+      const base64 = btoa(binary);
+      return { ok: true, base64, size: buffer.length, contentType, head };
+    } catch (error) {
+      // 只有上面那个 AbortController 会 abort，所以 signal.aborted 为真就等于「被我们自己的
+      // 超时掐断」。这个区别要留给 Node 侧，才能映射成可重试的 503 而不是「上游挂了」。
+      return { ok: false, status: 0, timedOut: controller.signal.aborted, error: String((error && error.message) || error) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }, {
+    id: fileId,
+    limit: maxBytes,
+    ms: Math.max(1, Math.floor(timeoutMs)),
+  });
+
+  if (result?.ok) {
+    return { bytes: Buffer.from(String(result.base64 || ''), 'base64'), head: String(result.head || ''), contentType: String(result.contentType || '') };
+  }
+  if (result?.tooLarge) {
+    const size = Math.round(Number(result.size || 0) / 1024 / 1024 * 10) / 10;
+    throw new ShimoWorkerError('FILE_TOO_LARGE', `这个上传文件有 ${size} MB，超过单次读取上限（${Math.round(maxBytes / 1024 / 1024)} MB）。请拆分成更小的表格，或者只把需要的列整理成一份新表。`, 413);
+  }
+  if (result?.status === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
+  if (result?.status === 403 || result?.status === 404) throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
+  // 被自己的超时掐断，和原生路径页面加载超时同一语义：等太久、可以重试（503），而不是
+  // 「上游挂了」（502）。剩余预算很小时 timeoutMs 会被压到 1ms，这种情况尤其常见。
+  if (result?.timedOut) throw new ShimoWorkerError('READ_BUDGET_EXHAUSTED', '这次读取等待时间过长，预算已用尽，请稍后重试。', 503);
+  if (!result?.status) {
+    throw new ShimoWorkerError('SHIMO_API_ERROR', '下载石墨文件失败：' + String(result?.error || '未知错误'), 502);
+  }
+  throw new ShimoWorkerError('SHIMO_API_ERROR', '下载石墨文件失败，HTTP ' + result.status + '。', 502);
+}
+
+// 下载接口在会话失效或没有权限时也会返回 200 + 一个 HTML 外壳页。这类响应绝不能当成
+// 「文件格式不支持」，否则会把「换个有权限的账号」这个正确动作误导成「这个文件读不了」。
+export function htmlShellVerdict(head, contentType) {
+  const text = String(head || '');
+  const looksHtml = String(contentType || '').includes('text/html') || /^\s*<(?:!doctype|html)/i.test(text);
+  if (!looksHtml) return null;
+  const lowered = text.toLowerCase();
+  if (lowered.includes('login') || text.includes('登录')) return 'login';
+  if (text.includes('无权限') || text.includes('申请访问权限') || lowered.includes('does not exist') || lowered.includes('request access')) return 'denied';
+  return 'denied';
+}
+
+function translateUploadedFileError(error) {
+  if (error instanceof ShimoWorkerError) return error;
+  if (error instanceof XlsxError) {
+    if (error.code === 'NOT_A_ZIP' || error.code === 'NOT_AN_XLSX') {
+      return new ShimoWorkerError('UNSUPPORTED_FILE_TYPE', '这个链接指向的是上传到石墨的文件，但内容不是 Excel 工作簿（可能是 Word、PPT、图片或压缩包）。当前只支持 .xlsx / .xlsm。', 400);
+    }
+    if (error.code === 'SHEET_TOO_LARGE') return new ShimoWorkerError('SHEET_TOO_LARGE', error.message, 413);
+    return new ShimoWorkerError(error.code || 'XLSX_PARSE_FAILED', error.message, 400);
+  }
+  return error;
+}
+
+export function loadUploadedWorkbook(bytes) {
+  try {
+    return openXlsxWorkbook(bytes);
+  } catch (error) {
+    throw translateUploadedFileError(error);
+  }
+}
+
+function parseUploadedSheetGrid(bytes, workbook, sheetEntry) {
+  try {
+    return parseXlsxSheetGrid(bytes, workbook, workbook.entries.get(sheetEntry.path));
+  } catch (error) {
+    throw translateUploadedFileError(error);
+  }
+}
+
+// 把解析出来的整表稀疏单元格裁剪到请求范围。与原生表格路径保持同一套约定：
+// 尾部整行/整列的空值不返回，`values` 是「按行顺序排列的列表」而不是行号索引。
+//
+// 先扫一遍稀疏单元格求出「窗口内最后一个有数据的行列」，再按这个尺度构造矩阵。不能反过来
+// 按请求窗口直接建二维数组：那样内存只取决于用户写的 range（A1:ZZZ20000 = 3.66 亿格，实测
+// 单次 23s 且期间申请数 GB），跟表里实际有几个格子无关，一个请求就能把 Worker 打 OOM。
+// 稀疏表的规模由文件本身决定（解析时已经受文件大小和非空单元格上限约束），与窗口无关。
+export function sliceXlsxGrid(grid, cellRange, { maxCells = MAX_UPLOADED_WINDOW_CELLS } = {}) {
+  const { startColumn, startRow, endColumn, endRow } = parseA1Range(cellRange);
+  let lastDataRow = 0;
+  let lastDataColumn = 0;
+  for (const [key, value] of grid.cells) {
+    if (value === undefined || value === '') continue;
+    const separator = key.indexOf(':');
+    const row = Number(key.slice(0, separator));
+    const column = Number(key.slice(separator + 1));
+    if (!(row >= startRow && row <= endRow && column >= startColumn && column <= endColumn)) continue;
+    if (row > lastDataRow) lastDataRow = row;
+    if (column > lastDataColumn) lastDataColumn = column;
+  }
+  const retainedRows = lastDataRow ? lastDataRow - startRow + 1 : 0;
+  const retainedColumns = lastDataColumn ? lastDataColumn - startColumn + 1 : 0;
+  if (retainedRows * retainedColumns > maxCells) {
+    throw new ShimoWorkerError(
+      'RANGE_TOO_LARGE',
+      `该范围需要返回 ${retainedRows} 行 x ${retainedColumns} 列，共 ${retainedRows * retainedColumns} 个单元格，超过单次读取上限（${maxCells} 个单元格），请缩小范围后分次读取。`,
+      400,
+    );
+  }
+  const values = [];
+  for (let row = startRow; row <= lastDataRow; row += 1) {
+    const line = [];
+    for (let column = startColumn; column <= lastDataColumn; column += 1) {
+      const value = grid.cells.get(row + ':' + column);
+      line.push(value === undefined ? '' : value);
+    }
+    values.push(line);
+  }
+  // 合并区域只回传与本次请求窗口相交的那些，并保留原表的绝对坐标，
+  // 这样下游既能看到「这些空值其实属于上面那个合并单元格」，又不用再打开原文件。
+  const mergedRanges = grid.merged
+    .filter(item => item.endRow >= startRow && item.startRow <= endRow && item.endColumn >= startColumn && item.startColumn <= endColumn)
+    .map(item => columnLabel(item.startColumn) + item.startRow + ':' + columnLabel(item.endColumn) + item.endRow);
+  return { values, merged_ranges: mergedRanges };
+}
+
 export class PlaywrightShimoEngine {
   constructor({
     executablePath = browserExecutable(),
@@ -338,7 +496,8 @@ export class PlaywrightShimoEngine {
   }
 
   async listSheets(storageState, inputURL) {
-    const { url } = validateShimoURL(inputURL, 'sheet');
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind === 'uploaded_file') return this.listUploadedFileSheets(storageState, url, fileId);
     return this.withContext(storageState, async context => {
       const page = await context.newPage();
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeoutMs });
@@ -363,7 +522,11 @@ export class PlaywrightShimoEngine {
         active: node.classList.contains('active-tab'),
       })));
       const seen = new Set();
-      return { extracted_at: new Date().toISOString(), sheets: raw.filter(item => item.name && !seen.has(item.name) && seen.add(item.name)) };
+      return {
+        extracted_at: new Date().toISOString(),
+        sheets: raw.filter(item => item.name && !seen.has(item.name) && seen.add(item.name)),
+        source_kind: 'native_sheet',
+      };
     });
   }
 
@@ -371,7 +534,10 @@ export class PlaywrightShimoEngine {
     // 预算从 Worker 收到这次请求的时刻开始算（含限流器排队），而不是拿到并发槽位才开始，
     // 否则「排队 + 读取」会整体越过 server 侧 75s 超时。
     const startedAt = readStartedAt(budgetStartedAt, this.now);
-    const { url, fileId } = validateShimoURL(inputURL, 'sheet');
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind === 'uploaded_file') {
+      return this.readUploadedFileSheet(storageState, url, fileId, sheetName, cellRange, { startedAt });
+    }
     const plan = planRowBands(cellRange);
     // 页面加载的固定超时（45s + 2.5s + 15s）也吃同一条总预算：剩余不足时不再启动浏览器，
     // 直接按「忙、可重试」上报，避免 server 已经超时、worker 才开始读。
@@ -407,6 +573,89 @@ export class PlaywrightShimoEngine {
         covered_through_row: collected.covered_through_row,
         stopped_early: collected.stopped_early,
         truncated: plan.truncated || collected.timed_out,
+        // 同一条读取链路要兼容两种石墨「表格」：/sheets/ 是石墨原生表格（按单元格接口
+        // 分块读），/file/ 是用户上传的 Excel（整份下载后本地解析）。source_kind 让
+        // 下游无需猜测数据来自哪条路径。
+        source_kind: 'native_sheet',
+      };
+    });
+  }
+
+  // 上传件（/file/{id}）在石墨侧只有「下载原文件」这一条路，所以这里先整份取下来，
+  // 再按工作表名和范围裁剪。整段流程仍吃同一条总预算，避免「排队 + 下载 + 解析」
+  // 越过 server 侧的 75s 超时；下载和解析都不分块，超出上限的文件直接报错而不是截断。
+  async openUploadedFilePage(page, url, startedAt) {
+    const budgetLeft = () => this.totalBudgetMs - Math.max(0, this.now() - startedAt);
+    if (budgetLeft() < MIN_PAGE_BUDGET_MS) {
+      throw new ShimoWorkerError('READ_BUDGET_EXHAUSTED', '这次读取等待时间过长，预算已用尽，请稍后重试。', 503);
+    }
+    let bodyText;
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: budgetBoundedTimeout(this.timeoutMs, budgetLeft()) });
+      await page.waitForTimeout(Math.min(2500, Math.max(0, Math.floor(budgetLeft()))));
+      bodyText = await page.locator('body').innerText({ timeout: budgetBoundedTimeout(15_000, budgetLeft()) });
+    } catch (error) {
+      throw budgetExhaustedOr(error, budgetLeft);
+    }
+    // 上传件的页面没有表格标签，所以这里只用「错误外壳」的固定文案判定账号看不到：
+    // 看得到的时候正常放行，看不到的时候石墨给的是和原生表格同一个 404 外壳。
+    assertPageAccess(await page.title(), bodyText);
+    return budgetLeft;
+  }
+
+  async downloadUploadedWorkbook(page, fileId, budgetLeft) {
+    const download = await downloadUploadedFileBytes(page, fileId, {
+      maxBytes: MAX_UPLOADED_FILE_BYTES,
+      timeoutMs: budgetBoundedTimeout(45_000, budgetLeft()),
+    });
+    const verdict = htmlShellVerdict(download.head, download.contentType);
+    if (verdict === 'login') throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
+    if (verdict) throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
+    return { bytes: download.bytes, workbook: loadUploadedWorkbook(download.bytes) };
+  }
+
+  async listUploadedFileSheets(storageState, url, fileId) {
+    const startedAt = this.now();
+    return this.withContext(storageState, async context => {
+      const page = await context.newPage();
+      const budgetLeft = await this.openUploadedFilePage(page, url, startedAt);
+      const { workbook } = await this.downloadUploadedWorkbook(page, fileId, budgetLeft);
+      return {
+        extracted_at: new Date().toISOString(),
+        sheets: workbook.sheets.map(sheet => ({ name: sheet.name, index: sheet.index, hidden: sheet.hidden })),
+        source_kind: 'uploaded_excel',
+      };
+    });
+  }
+
+  async readUploadedFileSheet(storageState, url, fileId, sheetName, cellRange, { startedAt }) {
+    return this.withContext(storageState, async context => {
+      const page = await context.newPage();
+      const budgetLeft = await this.openUploadedFilePage(page, url, startedAt);
+      const { bytes, workbook } = await this.downloadUploadedWorkbook(page, fileId, budgetLeft);
+      const sheet = workbook.sheets.find(item => item.name === sheetName);
+      if (!sheet) {
+        const available = workbook.sheets.map(item => item.name);
+        throw new ShimoWorkerError('SHEET_NOT_FOUND', '这份 Excel 里没有名为「' + sheetName + '」的工作表。现有工作表：' + available.join('、'), 404);
+      }
+      const grid = parseUploadedSheetGrid(bytes, workbook, sheet);
+      const sliced = sliceXlsxGrid(grid, cellRange);
+      return {
+        extracted_at: new Date().toISOString(),
+        values: sliced.values,
+        requested_range: cellRange,
+        // 上传件是整份下载后在本地裁剪，不存在上游分块，也不会只读到一半：请求窗口
+        // 一定被完整覆盖，所以 truncated 恒为 false。covered_through_row 与原生表格
+        // 路径保持同一语义（已成功覆盖到的最远行 = 窗口结束行），这样 skill 的快照
+        // 校验「covered_through_row 不得短于请求范围」对两种来源一视同仁。
+        requests: 1,
+        covered_through_row: parseA1Range(cellRange).endRow,
+        stopped_early: false,
+        truncated: false,
+        source_kind: 'uploaded_excel',
+        merged_ranges: sliced.merged_ranges,
+        sheet_max_row: grid.maxRow,
+        sheet_max_column: columnLabel(grid.maxColumn),
       };
     });
   }

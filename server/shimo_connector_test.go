@@ -319,3 +319,30 @@ func TestLoginResumeIsCreatedForGroupTopicsAndRefusesForeignOneToOneTopics(t *te
 		t.Fatalf("foreign one-to-one resume created: token=%q resume=%#v", token, resume)
 	}
 }
+
+// 石墨里用户看到的「表格」有两种链接：/sheets/ 是原生表格，/file/ 是上传的 Excel。
+// 连接器只校验「https + shimo.im + 非空路径」，两种都要原样接受并透传给 Worker，
+// 由 Worker 按路径类型分流到单元格接口或整份下载解析。
+func TestValidateShimoSourceURLKeepsUploadedExcelLinks(t *testing.T) {
+	cases := []struct{ input, want string }{
+		{"https://shimo.im/file/L9kBBwK8jlsVp8kK/", "https://shimo.im/file/L9kBBwK8jlsVp8kK/"},
+		{"https://shimo.im/file/L9kBBwK8jlsVp8kK/?from=link#frag", "https://shimo.im/file/L9kBBwK8jlsVp8kK/?from=link"},
+		{"https://shimo.im/sheets/Abc123/", "https://shimo.im/sheets/Abc123/"},
+		{"https://www.shimo.im/file/LoqeMBpl1Of1y7qn/", "https://www.shimo.im/file/LoqeMBpl1Of1y7qn/"},
+	}
+	for _, item := range cases {
+		got, err := validateShimoSourceURL(item.input)
+		if err != nil || got != item.want {
+			t.Fatalf("validateShimoSourceURL(%q) = %q, %v; want %q", item.input, got, err, item.want)
+		}
+	}
+	for _, rejected := range []string{
+		"http://shimo.im/file/Abc123/",
+		"https://example.com/file/Abc123/",
+		"https://shimo.im/",
+	} {
+		if _, err := validateShimoSourceURL(rejected); err == nil {
+			t.Fatalf("validateShimoSourceURL(%q) unexpectedly accepted", rejected)
+		}
+	}
+}

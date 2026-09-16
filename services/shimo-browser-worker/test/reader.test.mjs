@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
-  fetchRangeValues, looksLikeAccessDeniedPage, looksLikeLoginPromptPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
-  PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, UNREADABLE_DOCUMENT_MESSAGE,
+  downloadUploadedFileBytes, fetchRangeValues, htmlShellVerdict, loadUploadedWorkbook, looksLikeAccessDeniedPage,
+  looksLikeLoginPromptPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
+  MAX_UPLOADED_WINDOW_CELLS, PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, sliceXlsxGrid,
+  UNREADABLE_DOCUMENT_MESSAGE,
   upstreamExcerpt, UPSTREAM_MAX_CELLS_PER_REQUEST, validateShimoURL,
 } from '../src/reader.mjs';
 
@@ -11,6 +13,164 @@ test('Shimo URL validation pins HTTPS and the expected file kind', () => {
   assert.equal(validateShimoURL('https://shimo.im/sheets/Abc123/?share=1#x', 'sheet').fileId, 'Abc123');
   assert.throws(() => validateShimoURL('https://example.com/sheets/Abc123/', 'sheet'), error => error instanceof ShimoWorkerError && error.code === 'INVALID_URL');
   assert.throws(() => validateShimoURL('https://shimo.im/docs/Abc123/', 'sheet'), error => error instanceof ShimoWorkerError && error.code === 'NOT_A_SHEET');
+});
+
+test('上传到石墨的 Excel（/file/）与原生表格（/sheets/）在同一入口按 kind 分流', () => {
+  // 石墨里这两种链接在用户看来都是「表格」：/sheets/ 是原生表格（有单元格接口），
+  // /file/ 是用户上传的 .xlsx（只能整份下载后本地解析）。validateShimoURL 必须把
+  // 两者都放行并带上 kind，读取层才能各走各的路径。
+  const uploaded = validateShimoURL('https://shimo.im/file/L9kBBwK8jlsVp8kK/?from=link#frag', 'sheet');
+  assert.equal(uploaded.kind, 'uploaded_file');
+  assert.equal(uploaded.fileId, 'L9kBBwK8jlsVp8kK');
+  assert.equal(uploaded.url, 'https://shimo.im/file/L9kBBwK8jlsVp8kK/?from=link');
+  const native = validateShimoURL('https://shimo.im/sheets/Abc123/', 'sheet');
+  assert.equal(native.kind, 'sheet');
+  assert.throws(() => validateShimoURL('https://shimo.im/file/Abc123/', 'document'), error => error instanceof ShimoWorkerError && error.code === 'NOT_A_DOCUMENT');
+});
+
+test('sliceXlsxGrid 按请求窗口裁剪尾部空行空列，并保留合并区域的绝对坐标', () => {
+  const grid = {
+    cells: new Map([['1:1', '客户'], ['1:2', 1000], ['4:3', '尾']]),
+    merged: [
+      { startRow: 1, startColumn: 1, endRow: 2, endColumn: 1 },
+      { startRow: 99, startColumn: 1, endRow: 100, endColumn: 1 },
+    ],
+  };
+  const sliced = sliceXlsxGrid(grid, 'A1:D10');
+  // 返回的是矩形矩阵（每行列数一致），与原生表格路径的 values 形态相同：
+  // 窗口内最靠右的有值列决定列数，窗口内最靠下的有值行决定行数。
+  assert.deepEqual(sliced.values, [['客户', 1000, ''], ['', '', ''], ['', '', ''], ['', '', '尾']]);
+  // 与窗口相交的合并区域保留原表坐标；窗口外的不返回。
+  assert.deepEqual(sliced.merged_ranges, ['A1:A2']);
+});
+
+test('sliceXlsxGrid 遇到空窗口时返回空 values', () => {
+  const sliced = sliceXlsxGrid({ cells: new Map(), merged: [] }, 'A5:C9');
+  assert.deepEqual(sliced.values, []);
+  assert.deepEqual(sliced.merged_ranges, []);
+});
+
+test('sliceXlsxGrid 不按请求窗口付内存：超大范围按稀疏数据裁剪，有效矩阵超上限才拒绝', () => {
+  const grid = { cells: new Map([['1:1', '客户'], ['3:4', '尾']]), merged: [] };
+  // A1:ZZZ20000 = 3.66 亿格。按窗口直接建二维数组的话，即使表里只有两个格子也要申请数 GB（修复前实测 23s），
+  // 这里只按真正有数据的 3 行 4 列构造矩阵。
+  const startedAt = Date.now();
+  const sliced = sliceXlsxGrid(grid, 'A1:ZZZ20000');
+  assert.ok(Date.now() - startedAt < 1000, '超大窗口应该按稀疏数据裁剪，而不是按窗口面积申请内存');
+  assert.deepEqual(sliced.values, [['客户', '', '', ''], ['', '', '', ''], ['', '', '', '尾']]);
+  // 数据真的横跨大矩阵时不再兼容：按原生路径同一套语义拒绝（RANGE_TOO_LARGE / 400）。
+  const wide = { cells: new Map([['1:1', 'a'], ['2000:702', 'z']]), merged: [] };
+  assert.throws(
+    () => sliceXlsxGrid(wide, 'A1:ZZ2000'),
+    error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE' && error.status === 400,
+  );
+  // 边界：正好等于上限放行（与原生路径同一量级：40 块 x 4000 格），超过一格就拒绝。
+  assert.equal(MAX_UPLOADED_WINDOW_CELLS, 400 * 400);
+  assert.equal(sliceXlsxGrid({ cells: new Map([['400:400', 'x']]), merged: [] }, 'A1:ZZ1000').values.length, 400);
+  assert.throws(
+    () => sliceXlsxGrid({ cells: new Map([['401:400', 'x']]), merged: [] }, 'A1:ZZ1000'),
+    error => error instanceof ShimoWorkerError && error.code === 'RANGE_TOO_LARGE',
+  );
+});
+
+test('下载返回 HTML 外壳时区分登录失效与无权限，二进制内容不误判', () => {
+  assert.equal(htmlShellVerdict('<html><body>请先登录</body></html>', 'text/html; charset=utf-8'), 'login');
+  assert.equal(htmlShellVerdict('<!doctype html><html>你没有权限，请申请访问权限</html>', 'text/html'), 'denied');
+  assert.equal(htmlShellVerdict('<!doctype html><html>其他错误页面</html>', 'text/html'), 'denied');
+  assert.equal(htmlShellVerdict('PK\u0003\u0004binary', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), null);
+});
+
+test('上传件不是工作簿时翻译成可解释的 UNSUPPORTED_FILE_TYPE', () => {
+  assert.throws(
+    () => loadUploadedWorkbook(Buffer.from('这不是 Excel 文件')),
+    error => error instanceof ShimoWorkerError && error.code === 'UNSUPPORTED_FILE_TYPE',
+  );
+});
+
+function fakeDownloadPage(result) {
+  return { evaluate: async () => result };
+}
+
+test('下载上传件：401 归为登录失效、403/404 归为看不见文档、超限归为 FILE_TOO_LARGE', async () => {
+  await assert.rejects(
+    downloadUploadedFileBytes(fakeDownloadPage({ ok: false, status: 401 }), 'Abc123'),
+    error => error instanceof ShimoWorkerError && error.code === 'LOGIN_REQUIRED',
+  );
+  await assert.rejects(
+    downloadUploadedFileBytes(fakeDownloadPage({ ok: false, status: 404 }), 'Abc123'),
+    error => error instanceof ShimoWorkerError && error.code === 'DOCUMENT_NOT_ACCESSIBLE',
+  );
+  await assert.rejects(
+    downloadUploadedFileBytes(fakeDownloadPage({ ok: false, tooLarge: true, size: 40 * 1024 * 1024 }), 'Abc123'),
+    error => error instanceof ShimoWorkerError && error.code === 'FILE_TOO_LARGE' && error.status === 413,
+  );
+  await assert.rejects(
+    downloadUploadedFileBytes(fakeDownloadPage({ ok: false, status: 0, error: 'socket hang up' }), 'Abc123'),
+    error => error instanceof ShimoWorkerError && error.code === 'SHIMO_API_ERROR',
+  );
+});
+
+test('下载被自己的超时掐断时归类成可重试的 READ_BUDGET_EXHAUSTED，而不是 502', async () => {
+  // 这条走真的页面内逻辑：预算剩不多时 timeoutMs 会被压到 1ms，fetch 被自己的
+  // AbortController 掐断，不能当成上游挂了（502）。
+  const hangingPage = {
+    evaluate: async (callback, args) => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (url, options) => new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')));
+      });
+      try { return await callback(args); } finally { globalThis.fetch = originalFetch; }
+    },
+  };
+  const startedAt = Date.now();
+  await assert.rejects(
+    downloadUploadedFileBytes(hangingPage, 'Abc123', { timeoutMs: 5 }),
+    error => error instanceof ShimoWorkerError && error.code === 'READ_BUDGET_EXHAUSTED' && error.status === 503,
+  );
+  assert.ok(Date.now() - startedAt < 2000);
+  // 不带超时标记的网络错误仍然是上游错误（502），两者不能混。
+  await assert.rejects(
+    downloadUploadedFileBytes(fakeDownloadPage({ ok: false, status: 0, timedOut: false, error: '断开连接' }), 'Abc123'),
+    error => error instanceof ShimoWorkerError && error.code === 'SHIMO_API_ERROR' && error.status === 502,
+  );
+});
+
+test('下载上传件成功后返回原始字节与响应头信息', async () => {
+  const payload = Buffer.from('PK\u0003\u0004fake-xlsx');
+  const download = await downloadUploadedFileBytes(fakeDownloadPage({
+    ok: true, base64: payload.toString('base64'), size: payload.length,
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', head: 'PK\u0003\u0004',
+  }), 'Abc123');
+  assert.equal(download.bytes.toString(), 'PK\u0003\u0004fake-xlsx');
+  assert.equal(download.contentType, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+});
+
+test('listSheets 对 /file/ 链接走上传件路径，不打开原生表格页面', async () => {
+  const engine = new PlaywrightShimoEngine();
+  let calls = 0;
+  engine.listUploadedFileSheets = async (storageState, url, fileId) => {
+    calls += 1;
+    assert.equal(fileId, 'Abc123');
+    return { sheets: [{ name: 'S1', index: 0 }], source_kind: 'uploaded_excel' };
+  };
+  const result = await engine.listSheets({ cookies: [] }, 'https://shimo.im/file/Abc123/');
+  assert.equal(calls, 1);
+  assert.equal(result.source_kind, 'uploaded_excel');
+});
+
+test('readSheet 对 /file/ 链接走上传件路径，工作表名与范围原样传入', async () => {
+  const engine = new PlaywrightShimoEngine();
+  let captured = null;
+  engine.readUploadedFileSheet = async (storageState, url, fileId, sheetName, cellRange, meta) => {
+    captured = { url, fileId, sheetName, cellRange, hasStartedAt: Number.isFinite(meta?.startedAt) };
+    return { values: [['ok']], source_kind: 'uploaded_excel' };
+  };
+  const result = await engine.readSheet({}, 'https://shimo.im/file/Abc123/', '开票', 'A1:Z10', { budgetStartedAt: Date.now() - 5 });
+  assert.equal(captured.fileId, 'Abc123');
+  assert.equal(captured.sheetName, '开票');
+  assert.equal(captured.cellRange, 'A1:Z10');
+  assert.equal(captured.hasStartedAt, true);
+  assert.deepEqual(result, { values: [['ok']], source_kind: 'uploaded_excel' });
 });
 
 test('document cleanup removes duplicated table of contents and page chrome', () => {

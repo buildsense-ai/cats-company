@@ -828,6 +828,9 @@ func (mockShimoConnectorBackend) ListSheets(_ context.Context, _ shimoActor, _ s
 	return map[string]any{
 		"extracted_at": time.Now().UTC().Format(time.RFC3339),
 		"sheets":       []map[string]any{{"name": "工作表1", "index": 0}, {"name": "开票回款", "index": 1}},
+		// 真实 worker 会回传来源类型（native_sheet / uploaded_excel）；mock 只模拟原生
+		// 表格路径，字段保持与真实响应一致，避免契约在本地测试里失真。
+		"source_kind": "native_sheet",
 	}, nil
 }
 
@@ -842,6 +845,7 @@ func (mockShimoConnectorBackend) ReadSheet(_ context.Context, _ shimoActor, _ st
 		"covered_through_row": shimoRangeEndRow(cellRange),
 		"stopped_early":       false,
 		"truncated":           false,
+		"source_kind":         "native_sheet",
 	}, nil
 }
 
