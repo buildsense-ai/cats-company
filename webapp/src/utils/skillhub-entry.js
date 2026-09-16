@@ -139,10 +139,19 @@ export function resolveSkillHubEntry(skill, detail) {
 
 const SKILL_HUB_CONTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
+// A Bot-private capability is stored as an ordinary SkillHub reference: the
+// server keeps `source: 'skillhub'` and separates private entries by skillId
+// prefix (`isPrivateBotSkillReference` in server/skillhub_proxy.go), so the
+// source alone cannot tell a catalogue entry from a private one.
+export function isPrivateSkillHubReference(skillId) {
+  const value = String(skillId || '');
+  return value.startsWith('priv_') || value.startsWith('private/');
+}
+
 export function formatSkillHubVersion(version) {
   const value = String(version || '').trim();
   if (!value) return '';
-  return /^v/i.test(value) ? value : `v${value}`;
+  return /^v/i.test(value) ? `v${value.slice(1)}` : `v${value}`;
 }
 
 export function normalizeSkillHubContentHash(value) {
@@ -177,12 +186,19 @@ export function compareSkillHubVersions(left, right) {
 // metadata yet). Only public SkillHub references with a published version are
 // ranked, so an update can never be offered as a way to rewrite a Bot-private
 // or runtime-local skill, and an installed copy is never downgraded.
+//
+// `catalogueSkill` is a normalised catalogue entry. The catalogue list and the
+// detail route serve the same registry entry (SkillHub `toRegistryEntry`), so
+// `contentHash` is normally present and the same-version comparison costs no
+// extra request; an entry that still lacks it stays `current` instead of
+// guessing that the payload changed.
 export function resolveSkillHubUpdateStatus(installedReference, catalogueSkill) {
   if (!installedReference?.skillId) return 'add';
   if (!catalogueSkill) return 'unknown';
   if (!String(catalogueSkill.latestVersion || '').trim()) return 'unknown';
   if (
     String(installedReference.source || 'skillhub').trim().toLowerCase() !== 'skillhub'
+    || isPrivateSkillHubReference(installedReference.skillId)
   ) return 'current';
   const ranking = compareSkillHubVersions(catalogueSkill.latestVersion, installedReference.version);
   if (ranking === 1) return 'update';

@@ -3,6 +3,7 @@ import { api, requestSkillHubDeviceTool } from '../api';
 import { useFeedback } from '../components/feedback-system';
 import {
   formatSkillHubVersion,
+  isPrivateSkillHubReference,
   normalizeLocalSkillHubSkills,
   normalizeSkillHubSkills,
   resolveSkillHubEntry,
@@ -662,11 +663,6 @@ function skillHubWorkspacePaginationError(message) {
   const error = new Error(message);
   error.code = 'skillhub_workspace_pagination_invalid';
   return error;
-}
-
-export function isPrivateSkillHubReference(skillId) {
-  const value = String(skillId || '');
-  return value.startsWith('priv_') || value.startsWith('private/');
 }
 
 export function isLocalSkillShared(skill, installedReference) {
@@ -1644,7 +1640,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       if (
         initiatingBotUID === selectedBotUIDRef.current
         && definitionBotUID === initiatingBotUID
-      ) setDefinitionError(error?.message || '添加失败，未更改 Agent 当前配置。');
+      ) setDefinitionError(error?.message || '保存失败，未更改 Agent 当前配置。');
     } finally {
       if (initiatingBotUID === selectedBotUIDRef.current) setSkillAction(null);
     }

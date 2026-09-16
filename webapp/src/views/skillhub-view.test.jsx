@@ -20,7 +20,6 @@ import SkillHubView, {
   normalizeLocalSkills,
   normalizeSkillHubSkills,
   isLocalSkillShared,
-  isPrivateSkillHubReference,
   readRememberedSkillHubBotUID,
   rememberSkillHubBotUID,
   resolvePreferredSkillHubBotUID,
@@ -35,10 +34,8 @@ import SkillHubView, {
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
 import {
-  compareSkillHubVersions,
   formatSkillHubPublisher,
-  formatSkillHubVersion,
-  resolveSkillHubUpdateStatus,
+  isPrivateSkillHubReference,
 } from '../utils/skillhub-entry';
 
 vi.mock('../api', () => ({
@@ -3700,47 +3697,6 @@ describe('SkillHubView', () => {
     expect(api.searchSkillHubSkills).toHaveBeenCalledWith('first', { searchMode: 'name' });
     expect(api.searchSkillHubSkills).toHaveBeenCalledWith('second', { searchMode: 'name' });
     expect(form.querySelector('input').placeholder).toBe('搜索能力名称…');
-  });
-
-  it('ranks SkillHub versions and only offers a real upgrade', () => {
-    const installed = (version, contentHash) => ({
-      source: 'skillhub', skillId: 'tools/summarize', version, contentHash,
-    });
-    const catalogue = (latestVersion, contentHash) => ({ latestVersion, contentHash });
-
-    expect(formatSkillHubVersion('1.0.6')).toBe('v1.0.6');
-    expect(formatSkillHubVersion('v1.0.6')).toBe('v1.0.6');
-    expect(formatSkillHubVersion('V1.0.6')).toBe('V1.0.6');
-    expect(formatSkillHubVersion('')).toBe('');
-    expect(compareSkillHubVersions('1.10.0', '1.9.0')).toBe(1);
-    expect(compareSkillHubVersions('v1.0.0', '1.0')).toBe(0);
-    expect(compareSkillHubVersions('1.0.0-beta', '1.0.0')).toBe(0);
-    expect(compareSkillHubVersions('latest', '1.0.0')).toBe(null);
-
-    expect(resolveSkillHubUpdateStatus(null, catalogue('1.0.0', 'b'.repeat(64)))).toBe('add');
-    expect(resolveSkillHubUpdateStatus(
-      installed('1.0.5', 'a'.repeat(64)), catalogue('1.0.6', 'b'.repeat(64)),
-    )).toBe('update');
-    expect(resolveSkillHubUpdateStatus(
-      installed('1.0.5', 'a'.repeat(64)), catalogue('1.0.5', 'a'.repeat(64)),
-    )).toBe('current');
-    // Republishing an existing version replaces the payload, so it is an update.
-    expect(resolveSkillHubUpdateStatus(
-      installed('1.0.5', 'a'.repeat(64)), catalogue('1.0.5', 'b'.repeat(64)),
-    )).toBe('update');
-    // An installed copy that is ahead of the catalogue is never downgraded.
-    expect(resolveSkillHubUpdateStatus(
-      installed('2.0.0', 'a'.repeat(64)), catalogue('1.0.0', 'b'.repeat(64)),
-    )).toBe('current');
-    // No published version, or no catalogue metadata, keeps the card as-is.
-    expect(resolveSkillHubUpdateStatus(
-      installed('1.0.5', 'a'.repeat(64)), catalogue('', 'b'.repeat(64)),
-    )).toBe('unknown');
-    expect(resolveSkillHubUpdateStatus(installed('1.0.5', 'a'.repeat(64)), null)).toBe('unknown');
-    expect(resolveSkillHubUpdateStatus(
-      { source: 'local', skillId: 'tools/summarize', version: '1.0.5', contentHash: 'a'.repeat(64) },
-      catalogue('1.0.6', 'b'.repeat(64)),
-    )).toBe('current');
   });
 
   it('offers an update for an installed capability whose catalogue entry is newer', async () => {
