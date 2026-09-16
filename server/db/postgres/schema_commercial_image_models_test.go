@@ -223,12 +223,12 @@ func TestPostgresCommercialImageModelsRespectsScopeAndMetadata(t *testing.T) {
 	// Invite and operator_plan packages gain the add-on with their metadata copied.
 	assertImageMigrationPackage(t, db, "invite-ref", 10, 5, 11000, 500, now)
 	var inviteCopied int
-	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE source_ref='invite-ref' AND revoked_at IS NULL AND model LIKE 'gpt-image-%' AND invite_code_id = $1`, inviteID).Scan(&inviteCopied); err != nil || inviteCopied != 5 {
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE source_ref='invite-ref' AND revoked_at IS NULL AND model IN ('gpt-image-2','gpt-image-2.5','gpt-image-2.5-flare','gpt-image-2.5-sunburst','chatgpt-image-latest') AND invite_code_id = $1`, inviteID).Scan(&inviteCopied); err != nil || inviteCopied != 5 {
 		t.Fatalf("invite metadata was not copied: %v %d", err, inviteCopied)
 	}
 	assertImageMigrationPackage(t, db, "operator-ref", 10, 5, 33000, 1500, now)
 	var operatorCopied int
-	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE source_ref='operator-ref' AND revoked_at IS NULL AND model LIKE 'gpt-image-%' AND operator_uid = $1`, actorUID).Scan(&operatorCopied); err != nil || operatorCopied != 5 {
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE source_ref='operator-ref' AND revoked_at IS NULL AND model IN ('gpt-image-2','gpt-image-2.5','gpt-image-2.5-flare','gpt-image-2.5-sunburst','chatgpt-image-latest') AND operator_uid = $1`, actorUID).Scan(&operatorCopied); err != nil || operatorCopied != 5 {
 		t.Fatalf("operator metadata was not copied: %v %d", err, operatorCopied)
 	}
 	assertGLM53Ledger(t, db, inviteUID, "image_models_v1", 5, 500)
