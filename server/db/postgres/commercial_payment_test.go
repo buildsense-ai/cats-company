@@ -730,7 +730,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("reserve personal invite credit: %v", err)
 	}
 	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
-	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 6300 {
+	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 5250 {
 		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
 	}
 	var revokedPersonal, reservedPersonal, availablePro int
