@@ -10,9 +10,9 @@ import (
 // cannot drift apart unnoticed.
 func TestValidateCommercialOfficialPaidPlanModelsTracksImageAddOns(t *testing.T) {
 	personal := map[string]float64{
-		"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-v4-flash": 2100, "glm-5.3-flash": 2100,
-		"gpt-5.6-terra": 2100,
-		"gpt-image-2":   100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100,
+		"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750, "deepseek-flash": 1750,
+		"glm-5.3-flash": 1750, "gpt-5.6-terra": 1750,
+		"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100,
 		"chatgpt-image-latest": 100,
 	}
 	if err := validateCommercialOfficialPaidPlanModels(commercialPersonalPlanSlug, personal); err != nil {
@@ -25,9 +25,9 @@ func TestValidateCommercialOfficialPaidPlanModelsTracksImageAddOns(t *testing.T)
 	personal["gpt-image-2"] = 100
 
 	pro := map[string]float64{
-		"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-v4-flash": 6300, "glm-5.3-flash": 6300,
-		"gpt-5.6-terra": 6300,
-		"gpt-image-2":   300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300,
+		"MiniMax-M2.7": 5250, "MiniMax-M3": 5250, "deepseek-v4-flash": 5250, "deepseek-flash": 5250,
+		"glm-5.3-flash": 5250, "gpt-5.6-terra": 5250,
+		"gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300,
 		"chatgpt-image-latest": 300,
 	}
 	if err := validateCommercialOfficialPaidPlanModels(commercialProPlanSlug, pro); err != nil {
