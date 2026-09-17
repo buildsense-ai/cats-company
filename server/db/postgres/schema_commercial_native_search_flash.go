@@ -11,8 +11,8 @@ const migrateCommercialPlansNativeSearchFlash = `
 -- leaves manual and legacy quota untouched.
 UPDATE commercial_plans
 SET model_budgets = CASE slug
-    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"deepseek-flash":1750,"glm-5.3-flash":1750,"gpt-5.6-terra":1750}'::jsonb
-    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":5250,"MiniMax-M3":5250,"deepseek-v4-flash":5250,"deepseek-flash":5250,"glm-5.3-flash":5250,"gpt-5.6-terra":5250}'::jsonb
+    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"deepseek-flash":1750,"glm-5.3-flash":1750,"gpt-5.6-terra":1750,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}'::jsonb
+    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":5250,"MiniMax-M3":5250,"deepseek-v4-flash":5250,"deepseek-flash":5250,"glm-5.3-flash":5250,"gpt-5.6-terra":5250,"gpt-image-2":300,"gpt-image-2.5":300,"gpt-image-2.5-flare":300,"gpt-image-2.5-sunburst":300,"chatgpt-image-latest":300}'::jsonb
     ELSE model_budgets
 END
 WHERE slug IN ('catsco-personal', 'catsco-pro');
@@ -22,8 +22,8 @@ WHERE slug IN ('catsco-personal', 'catsco-pro');
 -- migrated separately below.
 UPDATE commercial_orders
 SET plan_model_budgets = CASE plan_slug
-    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"deepseek-flash":1750,"glm-5.3-flash":1750,"gpt-5.6-terra":1750}'::jsonb
-    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":5250,"MiniMax-M3":5250,"deepseek-v4-flash":5250,"deepseek-flash":5250,"glm-5.3-flash":5250,"gpt-5.6-terra":5250}'::jsonb
+    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"deepseek-flash":1750,"glm-5.3-flash":1750,"gpt-5.6-terra":1750,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}'::jsonb
+    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":5250,"MiniMax-M3":5250,"deepseek-v4-flash":5250,"deepseek-flash":5250,"glm-5.3-flash":5250,"gpt-5.6-terra":5250,"gpt-image-2":300,"gpt-image-2.5":300,"gpt-image-2.5-flare":300,"gpt-image-2.5-sunburst":300,"chatgpt-image-latest":300}'::jsonb
     ELSE plan_model_budgets
 END
 WHERE plan_slug IN ('catsco-personal', 'catsco-pro')
@@ -160,16 +160,16 @@ const rollbackCommercialPlansNativeSearchFlash = `
 -- grant set (2100 / 6300). Mirrors the 000017 rollback structure.
 UPDATE commercial_plans
 SET model_budgets = CASE slug
-    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-v4-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100}'::jsonb
-    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":6300,"MiniMax-M3":6300,"deepseek-v4-flash":6300,"glm-5.3-flash":6300,"gpt-5.6-terra":6300}'::jsonb
+    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-v4-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}'::jsonb
+    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":6300,"MiniMax-M3":6300,"deepseek-v4-flash":6300,"glm-5.3-flash":6300,"gpt-5.6-terra":6300,"gpt-image-2":300,"gpt-image-2.5":300,"gpt-image-2.5-flare":300,"gpt-image-2.5-sunburst":300,"chatgpt-image-latest":300}'::jsonb
     ELSE model_budgets
 END
 WHERE slug IN ('catsco-personal', 'catsco-pro');
 
 UPDATE commercial_orders
 SET plan_model_budgets = CASE plan_slug
-    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-v4-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100}'::jsonb
-    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":6300,"MiniMax-M3":6300,"deepseek-v4-flash":6300,"glm-5.3-flash":6300,"gpt-5.6-terra":6300}'::jsonb
+    WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-v4-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}'::jsonb
+    WHEN 'catsco-pro' THEN '{"MiniMax-M2.7":6300,"MiniMax-M3":6300,"deepseek-v4-flash":6300,"glm-5.3-flash":6300,"gpt-5.6-terra":6300,"gpt-image-2":300,"gpt-image-2.5":300,"gpt-image-2.5-flare":300,"gpt-image-2.5-sunburst":300,"chatgpt-image-latest":300}'::jsonb
     ELSE plan_model_budgets
 END
 WHERE plan_slug IN ('catsco-personal', 'catsco-pro')
