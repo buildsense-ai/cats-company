@@ -88,12 +88,12 @@ func TestPostgresCommercialNativeSearchFlashMigrationPreservesManualQuotaAndRoll
 		t.Fatalf("run native search flash migration through CreateSchema: %v", err)
 	}
 	assertFlashMigrationUp(t, db, personalUID, proUID, freeUID, 1)
-	assertFlashGrantRowCount(t, db, "personal-order", 11)
+	assertFlashGrantRowCount(t, db, "personal-order", 16)
 	if _, err := db.db.Exec(migrateCommercialPlansNativeSearchFlash); err != nil {
 		t.Fatalf("native search flash startup migration should be idempotent: %v", err)
 	}
 	assertFlashMigrationUp(t, db, personalUID, proUID, freeUID, 1)
-	assertFlashGrantRowCount(t, db, "personal-order", 11)
+	assertFlashGrantRowCount(t, db, "personal-order", 16)
 
 	execFlashMigrationFile(t, db, "000022_commercial_native_search_flash.down.sql")
 	assertFlashMigrationDown(t, db, personalUID, proUID, freeUID)

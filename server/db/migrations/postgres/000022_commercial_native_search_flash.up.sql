@@ -42,7 +42,6 @@ BEGIN
         WHERE p.slug IN ('catsco-personal', 'catsco-pro')
           AND g.grant_type IN ('order', 'invite', 'operator_plan')
           AND g.revoked_at IS NULL
-          AND g.effective_at <= CURRENT_TIMESTAMP
           AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)
           AND EXISTS (
               SELECT 1 FROM commercial_entitlements e
