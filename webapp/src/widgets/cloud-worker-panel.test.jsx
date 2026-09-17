@@ -58,6 +58,28 @@ describe('CloudWorkerPanel', () => {
     container.remove();
   });
 
+  test('explains a pending worker instead of an exhausted quota', async () => {
+    await renderPanel({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [worker({ runtime_status: 'not_connected' })],
+    });
+    const waitNote = container.querySelector('.cc-cloud-quota-wait');
+    expect(waitNote).not.toBeNull();
+    expect(waitNote.textContent).toContain('尚未上线');
+    expect(container.querySelector('.cc-cloud-quota-err')).toBeNull();
+  });
+
+  test('keeps the exhausted-quota copy when every worker is connected', async () => {
+    await renderPanel({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [worker({ runtime_status: 'connected' })],
+    });
+    const errNote = container.querySelector('.cc-cloud-quota-err');
+    expect(errNote).not.toBeNull();
+    expect(errNote.textContent).toContain('创建权益已用完');
+    expect(container.querySelector('.cc-cloud-quota-wait')).toBeNull();
+  });
+
   test('keeps reset images scoped to each worker and never falls back across regions', async () => {
     const workers = [worker(), worker({id:92,uid:92,tenant_name:'tenant-b'})];
     await renderPanel({workers, images:[{version:'wrong-region'}], imagesByWorker:{'tenant-a':[{version:'1.5.5'}],'tenant-b':[{version:'1.5.4'}]}});

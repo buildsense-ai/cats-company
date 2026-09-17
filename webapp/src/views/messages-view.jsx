@@ -3143,7 +3143,6 @@ export default function MessagesView({
   const cloudWorkerUpdateKey = cloudWorkerUpdate
     ? `${cloudWorkerUpdate.uid}:${cloudWorkerUpdate.latest_release}`
     : '';
-
   useEffect(() => {
     if (!cloudWorkerUpdateKey) {
       setCloudWorkerUpdateVisible(false);
@@ -3153,6 +3152,18 @@ export default function MessagesView({
     const timer = window.setTimeout(() => setCloudWorkerUpdateVisible(false), 8000);
     return () => window.clearTimeout(timer);
   }, [cloudWorkerUpdateKey]);
+  // A cloud worker that has not connected yet (still provisioning right after
+  // a purchase, or offline) cannot answer messages. Keep a persistent notice
+  // in the conversation until the roster reports it connected.
+  const activeCloudWorker = useMemo(() => {
+    if (!conversationBotUID) return null;
+    return cloudWorkers.find((candidate) => sameUID(candidate?.uid, conversationBotUID)) || null;
+  }, [cloudWorkers, conversationBotUID]);
+  const cloudWorkerPending = Boolean(
+    activeCloudWorker
+    && activeCloudWorker.runtime_status
+    && activeCloudWorker.runtime_status !== 'connected',
+  );
   const isTwoPersonGroupWithCurrentUser = useMemo(() => {
     if (!isGroup) return false;
     const memberUIDs = new Set(
@@ -4379,6 +4390,13 @@ export default function MessagesView({
       >
         <div ref={chatColumnRef} className="v3-chat-column">
           {topBar}
+          {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
+            <section className="cc-cloud-worker-pending-notice" role="status" aria-live="polite">
+              <span>
+                云员工「{activeCloudWorker.display_name || activeCloudWorker.username || '当前机器人'}」尚未上线（正在创建中或当前离线），暂时无法回复消息；上线后即可对话。
+              </span>
+            </section>
+          )}
           {cloudWorkerUpdate && cloudWorkerUpdateVisible && (
             <section className="cc-cloud-worker-update-notice" role="status" aria-live="polite">
               <span>云员工「{cloudWorkerUpdate.display_name || cloudWorkerUpdate.username || '当前机器人'}」有新版本 {cloudWorkerUpdate.latest_release}，可在云托管管理中更新。</span>

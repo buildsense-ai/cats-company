@@ -100,6 +100,13 @@ type CommercialPaymentHandlerOptions struct {
 	// deliberately outside the payment transaction so provider recovery or
 	// renewal failures never roll back a confirmed payment.
 	RenewCloudWorkers func(uid int64)
+	// EnsureCloudWorker runs after an official paid plan is fulfilled as well.
+	// A first purchase provisions the paid cloud instance automatically;
+	// renewals and upgrades of an account that already owns a worker are
+	// skipped inside the hook. Asynchronous for the same reason as
+	// RenewCloudWorkers: provisioning takes minutes and must never delay or
+	// roll back a confirmed payment.
+	EnsureCloudWorker func(uid int64)
 }
 
 type CommercialPaymentHandler struct {
@@ -112,6 +119,7 @@ type CommercialPaymentHandler struct {
 	saleChannels      map[string]bool
 	syncer            *CommercialRelaySyncer
 	renewCloudWorkers func(uid int64)
+	ensureCloudWorker func(uid int64)
 	queryMu           sync.Mutex
 	nextQueries       map[string]time.Time
 }
@@ -139,6 +147,7 @@ func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPa
 		saleChannels:      map[string]bool{},
 		syncer:            opts.Syncer,
 		renewCloudWorkers: opts.RenewCloudWorkers,
+		ensureCloudWorker: opts.EnsureCloudWorker,
 		nextQueries:       map[string]time.Time{},
 	}
 	for _, provider := range opts.Providers {
@@ -182,14 +191,22 @@ func (h *CommercialPaymentHandler) StartReconciliation(ctx context.Context, inte
 
 func (h *CommercialPaymentHandler) fulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error) {
 	fulfilled, changed, err := h.store.FulfillCommercialOrder(orderNo, confirmation)
-	if err != nil || !changed || fulfilled == nil || h.renewCloudWorkers == nil {
+	if err != nil || !changed || fulfilled == nil {
 		return fulfilled, changed, err
 	}
 	if strings.EqualFold(fulfilled.PlanSlug, "catsco-personal") || strings.EqualFold(fulfilled.PlanSlug, "catsco-pro") {
 		// Payment and the database lifecycle extension are already committed.
 		// Provider renewal remains asynchronous so a Tianyi failure never makes
 		// an Alipay callback fail or rolls back the paid entitlement.
-		go h.renewCloudWorkers(fulfilled.UID)
+		if h.renewCloudWorkers != nil {
+			go h.renewCloudWorkers(fulfilled.UID)
+		}
+		if h.ensureCloudWorker != nil {
+			// First purchases start the paid instance without the buyer having
+			// to click create; the hook skips accounts that already own a
+			// worker so renewals and upgrades stay untouched.
+			go h.ensureCloudWorker(fulfilled.UID)
+		}
 	}
 	return fulfilled, changed, nil
 }

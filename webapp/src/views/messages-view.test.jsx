@@ -622,6 +622,69 @@ describe('long pasted text detection', () => {
   });
 });
 
+describe('cloud worker pending notice', () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    sessionStorage.clear();
+    api.getMessages.mockResolvedValue({ messages: [] });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.getAgentQuota.mockResolvedValue({ configured: false, shared: true });
+    api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.getCloudWorkers.mockResolvedValue({ workers: [] });
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it('shows a persistent notice while the cloud worker has not connected', async () => {
+    api.getCloudWorkers.mockResolvedValue({
+      workers: [{
+        uid: 2,
+        tenant_name: 'tenant-a',
+        display_name: '云端审查助手',
+        username: 'bot-cloud-1',
+        runtime_status: 'not_connected',
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).not.toBeNull();
+    expect(container.textContent).toContain('尚未上线');
+  });
+
+  it('hides the notice once the cloud worker is connected', async () => {
+    api.getCloudWorkers.mockResolvedValue({
+      workers: [{
+        uid: 2,
+        tenant_name: 'tenant-a',
+        display_name: '云端审查助手',
+        username: 'bot-cloud-1',
+        runtime_status: 'connected',
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).toBeNull();
+  });
+});
+
 describe('MessagesView composer draft isolation', () => {
   let container;
   let root;

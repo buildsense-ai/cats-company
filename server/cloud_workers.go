@@ -892,6 +892,131 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 // payment has committed; the provider script is idempotent for active workers
 // and resubscribes provider-expired/freezing instances. Permanently
 // unsubscribed instances are not recoverable in the current worker region.
+// discardResponseWriter absorbs the response of an internal handler call that
+// has no live HTTP connection (post-purchase auto provisioning). It keeps the
+// status line and a bounded body so the caller can log a classified result.
+type discardResponseWriter struct {
+	header http.Header
+	status int
+	body   strings.Builder
+}
+
+func (w *discardResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *discardResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *discardResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if w.body.Len() < maxWorkerOutputLog {
+		w.body.Write(p)
+	}
+	return len(p), nil
+}
+
+// AutoProvisionForOwner provisions the paid cloud instance for a buyer who has
+// just purchased an official plan (399/799) and does not own a cloud worker
+// yet. It is wired to the commercial payment fulfillment hook via
+// CommercialPaymentHandlerOptions.EnsureCloudWorker and always runs off the
+// payment path. The heavy lifting is delegated to HandleCreate so the
+// automatic and manual flows share validation, credit reservation, rollback
+// and the auto-friend handshake.
+func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
+	if h == nil || uid <= 0 {
+		return
+	}
+	if h.provisionScript == "" {
+		log.Printf("[cloud-worker] auto provisioning skipped uid=%d: provision script not configured", uid)
+		return
+	}
+	workers, err := h.cloudWorkersOfOwner(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] auto provisioning check uid=%d failed: %v", uid, err)
+		return
+	}
+	if len(workers) > 0 {
+		// Renewals, upgrades and re-purchases keep the existing instance; only
+		// a first purchase without any worker provisions automatically.
+		return
+	}
+	// Match HandleCreate's admission check: either a durable credit from the
+	// purchase or a static rollout quota enables provisioning. The concrete
+	// reservation stays inside HandleCreate.
+	staticTotal := h.quota[uid]
+	if _, available := h.creditInfo(uid); staticTotal <= 0 && available <= 0 {
+		return
+	}
+	username, err := autoCloudWorkerUsername(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] auto provisioning uid=%d: %v", uid, err)
+		return
+	}
+	payload, err := json.Marshal(BotRegisterRequest{
+		Username:    username,
+		DisplayName: autoCloudWorkerDisplayName(h.db, uid),
+		Role:        "general",
+	})
+	if err != nil {
+		log.Printf("[cloud-worker] auto provisioning uid=%d: encode request: %v", uid, err)
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, "/api/cloud-workers", strings.NewReader(string(payload)))
+	if err != nil {
+		log.Printf("[cloud-worker] auto provisioning uid=%d: build request: %v", uid, err)
+		return
+	}
+	req = req.WithContext(context.WithValue(context.Background(), uidKey, uid))
+	recorder := &discardResponseWriter{}
+	h.HandleCreate(recorder, req)
+	if recorder.status >= 200 && recorder.status < 300 {
+		log.Printf("[cloud-worker] auto provisioning started uid=%d username=%s", uid, username)
+		return
+	}
+	log.Printf("[cloud-worker] auto provisioning failed uid=%d status=%d body=%s", uid, recorder.status, truncateWorkerOutput(recorder.body.String()))
+}
+
+// autoCloudWorkerUsername derives a unique, script-safe username for the
+// auto-provisioned worker. workerUsernameRe keeps it compatible with the
+// tenant naming and provider script argv rules.
+func autoCloudWorkerUsername(uid int64) (string, error) {
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate worker username: %w", err)
+	}
+	username := fmt.Sprintf("bot-%d-%s", uid, hex.EncodeToString(suffix[:]))
+	if !workerUsernameRe.MatchString(username) {
+		return "", fmt.Errorf("generated worker username is invalid")
+	}
+	return username, nil
+}
+
+// autoCloudWorkerDisplayName picks the default display name for the worker
+// created right after a purchase: "<owner>的云员工".
+func autoCloudWorkerDisplayName(db store.Store, uid int64) string {
+	name := "云员工"
+	if db != nil {
+		if user, err := db.GetUser(uid); err == nil && user != nil {
+			if display := strings.TrimSpace(user.DisplayName); display != "" {
+				name = display + "的云员工"
+			}
+		}
+	}
+	if runes := []rune(name); len(runes) > 40 {
+		name = string(runes[:40])
+	}
+	return name
+}
+
 func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return

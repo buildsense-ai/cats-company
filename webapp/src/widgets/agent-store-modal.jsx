@@ -461,10 +461,34 @@ const mergeCloudWorkerFacts = (bots, workers) => {
   });
 };
 
+// upsertCloudWorkerRow merges a createCloudWorker response into the local bot
+// roster so a freshly provisioned worker appears without a full reload. The
+// row carries the fields the cloud panel and the chat banner filter on
+// (tenant_name, runtime_status).
+const upsertCloudWorkerRow = (bots, created, { username, displayName } = {}) => {
+  const rawID = created?.uid ?? created?.id;
+  const id = Number(rawID) || rawID;
+  if (!id) return bots;
+  const row = {
+    id,
+    uid: id,
+    username: created?.username || username || '',
+    display_name: created?.display_name || displayName || created?.username || username || '云员工',
+    tenant_name: created?.tenant_name || '',
+    is_owner: true,
+    relation: 'owner',
+    is_bot: true,
+  };
+  const index = bots.findIndex((bot) => String(bot?.id ?? bot?.uid) === String(id));
+  if (index < 0) return [...bots, row];
+  const next = [...bots];
+  next[index] = { ...next[index], ...row };
+  return next;
+};
+
 const normalizeAssistantRole = (value) => (
   ASSISTANT_ROLES.some((role) => role.value === value) ? value : 'general'
 );
-
 const editableBot = (bot) => ({
   ...bot,
   newDisplayName: bot.display_name,
@@ -1211,7 +1235,12 @@ export default function AgentStoreModal({
     if (!visible || !api.getCloudWorkers) return undefined;
 
     let active = true;
-    let retryTimer = null;
+    let timer = null;
+    const schedule = (delay) => {
+      if (!active) return;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(refresh, delay);
+    };
     const refresh = async () => {
       try {
         const cloudRes = await api.getCloudWorkers();
@@ -1249,20 +1278,25 @@ export default function AgentStoreModal({
           });
         }
         if (cloudRes?.status_refreshing) {
-          if (retryTimer) window.clearTimeout(retryTimer);
-          retryTimer = window.setTimeout(refresh, 2_000);
+          schedule(2_000);
+          return;
         }
+        // Poll faster while a paid instance is still coming online so the
+        // roster moves from "未连接" to "已连接" without a manual refresh.
+        const pendingWorker = (cloudRes?.workers || []).some((worker) => (
+          worker?.runtime_status && worker.runtime_status !== 'connected'
+        ));
+        schedule(pendingWorker ? 5_000 : 15_000);
       } catch {
         if (active) setCloudQuotaError(true);
+        schedule(15_000);
       }
     };
 
     refresh();
-    const timer = window.setInterval(refresh, 15_000);
     return () => {
       active = false;
-      if (retryTimer) window.clearTimeout(retryTimer);
-      window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
     };
   }, [createMode, hubCloudView, tab]);
 
@@ -1374,6 +1408,13 @@ export default function AgentStoreModal({
     try {
       setError('');
       const created = await api.createCloudWorker({ username, display_name: trimmed });
+      // Show the new worker immediately (panel roster + chat banner) instead
+      // of waiting for the next roster refresh; the cloud panel keeps polling
+      // it until the runtime reports connected.
+      setBots((current) => mergeCloudWorkerFacts(
+        upsertCloudWorkerRow(current, created, { username, displayName: trimmed }),
+        [created],
+      ));
       await loadBots({ silent: true });
       if (onBotsChanged) onBotsChanged();
       feedback.notify({ tone: 'success', message: created.runtime_status === 'connected'
