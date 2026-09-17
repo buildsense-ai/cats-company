@@ -661,6 +661,7 @@ describe('cloud worker pending notice', () => {
         display_name: '云端审查助手',
         username: 'bot-cloud-1',
         runtime_status: 'not_connected',
+        created_time: new Date().toISOString(),
       }],
     });
     await mountTopic(root, 'p2p_1_2');
@@ -699,12 +700,29 @@ describe('cloud worker pending notice', () => {
         display_name: '云端审查助手',
         username: 'bot-cloud-1',
         runtime_status: 'not_connected',
+        created_time: new Date().toISOString(),
       }],
     });
     await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
     await flushPromises();
     expect(container.querySelector('.cc-cloud-worker-pending-notice')).not.toBeNull();
     expect(container.textContent).toContain('尚未上线');
+  });
+
+  it('hides the notice for an established worker that dropped offline', async () => {
+    api.getCloudWorkers.mockResolvedValue({
+      workers: [{
+        uid: 2,
+        tenant_name: 'tenant-a',
+        display_name: '云端审查助手',
+        username: 'bot-cloud-1',
+        runtime_status: 'not_connected',
+        created_time: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).toBeNull();
   });
 });
 

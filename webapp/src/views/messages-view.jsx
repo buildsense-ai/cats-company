@@ -6,6 +6,7 @@ import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
+import { isCloudWorkerPending } from '../cloud-worker-pending';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
@@ -3161,11 +3162,7 @@ export default function MessagesView({
     if (!cloudWorkerCandidateUID) return null;
     return cloudWorkers.find((candidate) => sameUID(candidate?.uid, cloudWorkerCandidateUID)) || null;
   }, [cloudWorkers, cloudWorkerCandidateUID]);
-  const cloudWorkerPending = Boolean(
-    activeCloudWorker
-    && activeCloudWorker.runtime_status
-    && activeCloudWorker.runtime_status !== 'connected',
-  );
+  const cloudWorkerPending = isCloudWorkerPending(activeCloudWorker);
   const isTwoPersonGroupWithCurrentUser = useMemo(() => {
     if (!isGroup) return false;
     const memberUIDs = new Set(

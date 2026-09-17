@@ -20,6 +20,7 @@ describe('CloudWorkerPanel', () => {
     app_version: '1.4.9',
     cloud_version: '1.4.8',
     cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+    created_time: new Date().toISOString(),
     ...overrides,
   });
 
@@ -73,6 +74,17 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       quota: { enabled: true, total: 1, used: 1, remaining: 0 },
       workers: [worker({ runtime_status: 'connected' })],
+    });
+    const errNote = container.querySelector('.cc-cloud-quota-err');
+    expect(errNote).not.toBeNull();
+    expect(errNote.textContent).toContain('创建权益已用完');
+    expect(container.querySelector('.cc-cloud-quota-wait')).toBeNull();
+  });
+
+  test('treats an established offline worker as normal, not as provisioning', async () => {
+    await renderPanel({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [worker({ runtime_status: 'not_connected', created_time: '2020-01-01T00:00:00Z' })],
     });
     const errNote = container.querySelector('.cc-cloud-quota-err');
     expect(errNote).not.toBeNull();

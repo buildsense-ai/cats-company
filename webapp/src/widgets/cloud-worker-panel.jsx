@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   Zap,
 } from 'lucide-react';
+import { isCloudWorkerPending } from '../cloud-worker-pending';
 
 const CLOUD_STATUS_META = {
   provisioning: { label: '实例创建中', tone: 'info' },
@@ -136,11 +137,10 @@ export default function CloudWorkerPanel({
     ? Math.min(100, Math.round((quota.used / quota.total) * 100))
     : 0;
   // A worker that has not connected yet may still be provisioning right after
-  // a purchase or a create click (the credit is already reserved). The panel
-  // explains that state instead of claiming the quota is simply exhausted.
-  const hasPendingWorker = (workers || []).some((worker) => (
-    worker?.runtime_status && worker.runtime_status !== 'connected'
-  ));
+  // a purchase or a create click (the credit is already reserved). Only fresh
+  // workers count: an established worker that dropped offline, or a
+  // self-hosted assistant, must not be shown as "创建中".
+  const hasPendingWorker = (workers || []).some((worker) => isCloudWorkerPending(worker));
 
   // Available image versions (deduplicated, order from the control plane).
   const imageVersions = [...new Set(

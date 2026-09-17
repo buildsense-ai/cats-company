@@ -444,6 +444,11 @@ func (h *CloudWorkerHandler) cloudWorkersOfOwner(uid int64) ([]cloudWorkerSummar
 		if s, ok := b["display_name"].(string); ok {
 			w.DisplayName = s
 		}
+		if s, ok := b["created_at"].(string); ok {
+			// The panel uses the account creation time to tell a brand-new
+			// provisioning worker from an established one that dropped offline.
+			w.CreatedTime = s
+		}
 		w.RuntimeStatus = h.cloudWorkerRuntimeStatus(uid, w.UID)
 		if lifecycle, ok := lifecycleByTenant[tenantName]; ok {
 			w.TrialNotice = trialNotice(lifecycle, time.Now().UTC())

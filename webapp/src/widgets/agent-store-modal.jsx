@@ -41,6 +41,7 @@ import {
 } from '../utils/skillhub-entry';
 import CustomSelect from './custom-select';
 import CloudWorkerPanel from './cloud-worker-panel';
+import { isCloudWorkerPending } from '../cloud-worker-pending';
 import AgentSystemPromptCard from './agent-system-prompt-card';
 import AgentCapabilityVisualization from './agent-capability-visualization';
 
@@ -475,6 +476,9 @@ const upsertCloudWorkerRow = (bots, created, { username, displayName } = {}) => 
     username: created?.username || username || '',
     display_name: created?.display_name || displayName || created?.username || username || '云员工',
     tenant_name: created?.tenant_name || '',
+    // Fresh creations carry their own timestamp so the provisioning notice and
+    // the fast poll window can tell them from established offline workers.
+    created_time: created?.created_time || new Date().toISOString(),
     is_owner: true,
     relation: 'owner',
     is_bot: true,
@@ -1283,9 +1287,7 @@ export default function AgentStoreModal({
         }
         // Poll faster while a paid instance is still coming online so the
         // roster moves from "未连接" to "已连接" without a manual refresh.
-        const pendingWorker = (cloudRes?.workers || []).some((worker) => (
-          worker?.runtime_status && worker.runtime_status !== 'connected'
-        ));
+        const pendingWorker = (cloudRes?.workers || []).some((worker) => isCloudWorkerPending(worker));
         schedule(pendingWorker ? 5_000 : 15_000);
       } catch {
         if (active) setCloudQuotaError(true);
