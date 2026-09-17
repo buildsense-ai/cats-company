@@ -7,6 +7,16 @@
 .cc-knowledge-wiki-summary { display: flex; align-items: baseline; gap: 12px; padding: 18px 20px; border: 1px solid var(--v3-border, #343434); border-radius: 14px; margin-bottom: 18px; }
 .cc-knowledge-wiki-summary strong { font-size: 30px; }
 .cc-knowledge-wiki-summary span { color: var(--v3-text-muted, #a0a0a0); }
+.cc-knowledge-wiki-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 16px; }
+.cc-knowledge-wiki-search { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; min-width: 0; padding: 0 12px; border: 1px solid var(--v3-border, #343434); border-radius: 10px; background: var(--v3-surface-elevated, #202020); color: var(--v3-text-muted, #a0a0a0); }
+.cc-knowledge-wiki-search:focus-within { border-color: var(--v3-accent, #38c9a4); }
+.cc-knowledge-wiki-search input { flex: 1 1 auto; min-width: 0; padding: 10px 0; border: 0; background: transparent; color: var(--v3-text-name, #f5f5f5); font-size: 13px; outline: none; }
+.cc-knowledge-wiki-search input::placeholder { color: var(--v3-text-muted, #a0a0a0); }
+.cc-knowledge-wiki-search-error { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--v3-border, #343434); border-radius: 10px; background: var(--v3-surface-elevated, #202020); color: var(--v3-text-name, #f5f5f5); font-size: 13px; }
+.cc-knowledge-wiki-search-error button { margin-left: auto; padding: 6px 10px; border: 1px solid var(--v3-border, #343434); border-radius: 8px; background: transparent; color: var(--v3-accent, #38c9a4); font-size: 13px; cursor: pointer; }
+.cc-knowledge-wiki-search-error button:hover { border-color: var(--v3-accent, #38c9a4); }
+.cc-knowledge-wiki-sort, .cc-knowledge-wiki-reset { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 10px 12px; border: 1px solid var(--v3-border, #343434); border-radius: 10px; background: var(--v3-surface-elevated, #202020); color: var(--v3-text-name, #f5f5f5); font-size: 13px; cursor: pointer; }
+.cc-knowledge-wiki-sort:hover, .cc-knowledge-wiki-reset:hover { border-color: var(--v3-accent, #38c9a4); }
 .cc-knowledge-wiki-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .cc-knowledge-wiki-card { display: flex; width: 100%; min-width: 0; box-sizing: border-box; text-align: left; justify-content: space-between; gap: 16px; min-height: 120px; padding: 18px; border: 1px solid var(--v3-border, #343434); border-radius: 14px; background: var(--v3-surface-elevated, #202020); color: inherit; cursor: pointer; }
 .cc-knowledge-wiki-card > div { flex: 1 1 auto; min-width: 0; }
