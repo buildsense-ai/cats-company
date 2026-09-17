@@ -78,6 +78,7 @@ instance="$(find_instance)"
 [[ -n "$instance" ]] || { echo "error: instance $INSTANCE_NAME not found; renewal never creates a replacement" >&2; exit 1; }
 instance_id="$(jq -r '.instanceID // ""' <<<"$instance")"
 state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$instance" | tr '[:upper:]' '[:lower:]')"
+pre_expires="$(jq -r '.expiredTime // ""' <<<"$instance")"
 [[ -n "$instance_id" ]] || { echo "error: instance $INSTANCE_NAME has no instanceID" >&2; exit 1; }
 
 case "$state" in
@@ -116,6 +117,9 @@ for attempt in 1 2 3; do
 done
 [[ "$resubscribed" -eq 1 ]] || { echo "error: failed to resubscribe instance_id=$instance_id" >&2; exit 1; }
 
+auto_renew_attempted=0
+auto_renew_disabled=0
+confirmed=0
 for _ in $(seq 1 90); do
   instance="$(find_instance)"
   if [[ -n "$instance" ]]; then
@@ -123,23 +127,29 @@ for _ in $(seq 1 90); do
     expires_at="$(jq -r '.expiredTime // ""' <<<"$instance")"
     case "$state" in
       running|active)
-        auto_renew_disabled=0
-        for attempt in 1 2 3 4 5; do
-          if ctyun ecs UpdateEcsAutoRenewConfig --regionID "$REGION_ID" \
-            --instanceIDList "$instance_id" --autoRenewStatus 0 >/dev/null; then
-            auto_renew_disabled=1
-            break
+        if [[ "$auto_renew_attempted" -eq 0 ]]; then
+          auto_renew_attempted=1
+          for attempt in 1 2 3 4 5; do
+            if ctyun ecs UpdateEcsAutoRenewConfig --regionID "$REGION_ID" \
+              --instanceIDList "$instance_id" --autoRenewStatus 0 >/dev/null; then
+              auto_renew_disabled=1
+              break
+            fi
+            [[ "$attempt" == "5" ]] || sleep 3
+          done
+          if [[ "$auto_renew_disabled" -ne 1 ]]; then
+            echo "warning: instance renewed but automatic renewal could not be disabled; operator reconciliation required (instance_id=$instance_id)" >&2
           fi
-          [[ "$attempt" == "5" ]] || sleep 3
-        done
-        if [[ "$auto_renew_disabled" -ne 1 ]]; then
-          echo "warning: instance renewed but automatic renewal could not be disabled; operator reconciliation required (instance_id=$instance_id)" >&2
         fi
-        jq -cn --arg status renewed --arg operation "$operation" --arg name "$INSTANCE_NAME" \
-          --arg instanceID "$instance_id" --arg expiresAt "$expires_at" \
-          --argjson autoRenewDisabled "$([[ "$auto_renew_disabled" -eq 1 ]] && echo true || echo false)" \
-          '{status:$status,operation:$operation,instance_name:$name,instance_id:$instanceID,expires_at:$expiresAt,auto_renew_disabled:$autoRenewDisabled}'
-        exit 0
+        # The renewal API can return before the provider publishes the new
+        # expiredTime, so a read taken right after resubscribe still carries
+        # the previous date. Wait until the date actually moves instead of
+        # reporting (and persisting) a stale expiry, but never block on a
+        # missing pre-renewal value.
+        if [[ -z "$pre_expires" || ( -n "$expires_at" && "$expires_at" != "$pre_expires" ) ]]; then
+          confirmed=1
+          break
+        fi
         ;;
       released|deleted)
         echo "error: instance $INSTANCE_NAME entered terminal state=$state during $operation" >&2
@@ -149,5 +159,12 @@ for _ in $(seq 1 90); do
   fi
   sleep 10
 done
-echo "error: timed out waiting for $operation of instance_id=$instance_id" >&2
-exit 1
+if [[ "$confirmed" -ne 1 ]]; then
+  echo "warning: renewal completed but the provider has not published the new expiry yet (instance_id=$instance_id); reporting no expiry so callers keep the paid period" >&2
+  expires_at=""
+fi
+jq -cn --arg status renewed --arg operation "$operation" --arg name "$INSTANCE_NAME" \
+  --arg instanceID "$instance_id" --arg expiresAt "$expires_at" \
+  --argjson autoRenewDisabled "$([[ "$auto_renew_disabled" -eq 1 ]] && echo true || echo false)" \
+  '{status:$status,operation:$operation,instance_name:$name,instance_id:$instanceID,expires_at:$expiresAt,auto_renew_disabled:$autoRenewDisabled}'
+exit 0
