@@ -3,9 +3,18 @@ import { BookOpen, CloudOff, LoaderCircle, X } from 'lucide-react';
 import { api, connectWS, disconnectWS, requestSkillHubDeviceTool } from '../api';
 import './knowledge-wiki-view.css';
 
+// Mirror the entry-gate normalization from utils/auth-routes so the router and
+// the view agree on trailing slashes. A malformed escape must not throw during
+// render: the view falls back to its existing invalid-entry state instead.
 function parseAgentID(pathname) {
-  const match = String(pathname || '').match(/^\/wiki\/agents\/([^/]+)\/?$/);
-  return match ? decodeURIComponent(match[1]) : '';
+  const normalized = String(pathname || '').replace(/\/+$/, '');
+  const match = normalized.match(/^\/wiki\/agents\/([^/]+)$/);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return '';
+  }
 }
 
 export function knowledgeWikiAgentID(pathname) {
