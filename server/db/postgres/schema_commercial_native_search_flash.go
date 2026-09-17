@@ -5,6 +5,10 @@ package postgres
 // The exact five-model predicate keeps the startup migration idempotent and
 // leaves manual and legacy quota untouched.
 const migrateCommercialPlansNativeSearchFlash = `
+-- Add DeepSeek Flash to every public plan without increasing the paid shared
+-- Relay pool: the six chat models split the same allowance the five used to
+-- hold. The exact five-model predicate keeps the migration idempotent and
+-- leaves manual and legacy quota untouched.
 UPDATE commercial_plans
 SET model_budgets = CASE slug
     WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"deepseek-flash":1750,"glm-5.3-flash":1750,"gpt-5.6-terra":1750}'::jsonb
@@ -57,13 +61,21 @@ BEGIN
                      OR (g.grant_type <> 'operator_plan' AND e.source = g.grant_type))
           )
         GROUP BY g.uid, g.plan_id, g.grant_type, g.source_ref, p.slug, p.name
-        HAVING COUNT(*) = 5
-           AND COUNT(DISTINCT g.model) = 5
-           AND COUNT(*) FILTER (WHERE g.model IN (
+        HAVING COUNT(*) FILTER (WHERE g.model IN (
                'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
                'glm-5.3-flash', 'gpt-5.6-terra'
            )) = 5
-           AND COALESCE(SUM(g.amount_cny), 0) = CASE p.slug
+           AND COUNT(*) FILTER (WHERE g.model = 'deepseek-flash') = 0
+           AND COUNT(*) FILTER (WHERE g.model NOT IN (
+               'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+               'glm-5.3-flash', 'gpt-5.6-terra',
+               'gpt-image-2', 'gpt-image-2.5', 'gpt-image-2.5-flare',
+               'gpt-image-2.5-sunburst', 'chatgpt-image-latest'
+           )) = 0
+           AND COALESCE(SUM(g.amount_cny) FILTER (WHERE g.model IN (
+               'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+               'glm-5.3-flash', 'gpt-5.6-terra'
+           )), 0) = CASE p.slug
                WHEN 'catsco-personal' THEN 10500
                WHEN 'catsco-pro' THEN 31500
            END
@@ -74,6 +86,10 @@ BEGIN
             WHERE uid = package.uid AND plan_id = package.plan_id
               AND grant_type = package.grant_type AND source_ref = package.source_ref
               AND revoked_at IS NULL
+              AND model IN (
+                  'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+                  'glm-5.3-flash', 'gpt-5.6-terra'
+              )
         LOOP
             INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
             VALUES (package.uid, grant_row.model, -grant_row.amount_cny, 'revoke',
@@ -86,7 +102,11 @@ BEGIN
             expires_at = LEAST(COALESCE(expires_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         WHERE uid = package.uid AND plan_id = package.plan_id
           AND grant_type = package.grant_type AND source_ref = package.source_ref
-          AND revoked_at IS NULL;
+          AND revoked_at IS NULL
+          AND model IN (
+              'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+              'glm-5.3-flash', 'gpt-5.6-terra'
+          );
 
         paid_amount := CASE package.plan_slug WHEN 'catsco-personal' THEN 1750 WHEN 'catsco-pro' THEN 5250 END;
         FOREACH paid_model IN ARRAY ARRAY[
@@ -146,6 +166,8 @@ FROM inserted;
 // Remove DeepSeek Flash from every public plan and restore the five-model paid
 // grant set (2100 / 6300). Mirrors 000017's rollback structure.
 const rollbackCommercialPlansNativeSearchFlash = `
+-- Remove DeepSeek Flash from every public plan and restore the five-model paid
+-- grant set (2100 / 6300). Mirrors the 000017 rollback structure.
 UPDATE commercial_plans
 SET model_budgets = CASE slug
     WHEN 'catsco-personal' THEN '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-v4-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100}'::jsonb
@@ -195,13 +217,20 @@ BEGIN
                      OR (g.grant_type <> 'operator_plan' AND e.source = g.grant_type))
           )
         GROUP BY g.uid, g.plan_id, g.grant_type, g.source_ref, p.slug, p.name
-        HAVING COUNT(*) = 6
-           AND COUNT(DISTINCT g.model) = 6
-           AND COUNT(*) FILTER (WHERE g.model IN (
+        HAVING COUNT(*) FILTER (WHERE g.model IN (
                'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
                'deepseek-flash', 'glm-5.3-flash', 'gpt-5.6-terra'
            )) = 6
-           AND COALESCE(SUM(g.amount_cny), 0) = CASE p.slug
+           AND COUNT(*) FILTER (WHERE g.model NOT IN (
+               'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+               'deepseek-flash', 'glm-5.3-flash', 'gpt-5.6-terra',
+               'gpt-image-2', 'gpt-image-2.5', 'gpt-image-2.5-flare',
+               'gpt-image-2.5-sunburst', 'chatgpt-image-latest'
+           )) = 0
+           AND COALESCE(SUM(g.amount_cny) FILTER (WHERE g.model IN (
+               'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+               'deepseek-flash', 'glm-5.3-flash', 'gpt-5.6-terra'
+           )), 0) = CASE p.slug
                WHEN 'catsco-personal' THEN 10500
                WHEN 'catsco-pro' THEN 31500
            END
@@ -212,6 +241,10 @@ BEGIN
             WHERE uid = package.uid AND plan_id = package.plan_id
               AND grant_type = package.grant_type AND source_ref = package.source_ref
               AND revoked_at IS NULL
+              AND model IN (
+                  'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+                  'deepseek-flash', 'glm-5.3-flash', 'gpt-5.6-terra'
+              )
         LOOP
             INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
             VALUES (package.uid, grant_row.model, -grant_row.amount_cny, 'revoke',
@@ -224,7 +257,11 @@ BEGIN
             expires_at = LEAST(COALESCE(expires_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         WHERE uid = package.uid AND plan_id = package.plan_id
           AND grant_type = package.grant_type AND source_ref = package.source_ref
-          AND revoked_at IS NULL;
+          AND revoked_at IS NULL
+          AND model IN (
+              'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
+              'deepseek-flash', 'glm-5.3-flash', 'gpt-5.6-terra'
+          );
 
         paid_amount := CASE package.plan_slug WHEN 'catsco-personal' THEN 2100 WHEN 'catsco-pro' THEN 6300 END;
         FOREACH paid_model IN ARRAY ARRAY[

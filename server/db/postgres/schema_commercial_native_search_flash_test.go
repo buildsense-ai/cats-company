@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,10 @@ var flashFivePaidModels = []string{
 var flashSixPaidModels = []string{
 	"MiniMax-M2.7", "MiniMax-M3", "deepseek-v4-flash", "deepseek-flash",
 	"glm-5.3-flash", "gpt-5.6-terra",
+}
+
+var flashImageModels = []string{
+	"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "chatgpt-image-latest",
 }
 
 func TestPostgresCommercialNativeSearchFlashMigrationPreservesManualQuotaAndRollsBack(t *testing.T) {
@@ -65,6 +70,8 @@ func TestPostgresCommercialNativeSearchFlashMigrationPreservesManualQuotaAndRoll
 	expiresAt := now.Add(30 * 24 * time.Hour)
 	seedFlashPaidPackage(t, db, personalUID, personalPlanID, "personal-order", 2100, now, expiresAt)
 	seedFlashPaidPackage(t, db, proUID, proPlanID, "pro-order", 6300, now, expiresAt)
+	seedFlashImageAddOn(t, db, personalUID, personalPlanID, "personal-order", 100, now, expiresAt)
+	seedFlashImageAddOn(t, db, proUID, proPlanID, "pro-order", 300, now, expiresAt)
 	seedFlashFreePackage(t, db, freeUID, freePlanID, "free-baseline", now, expiresAt)
 	if _, err := db.db.Exec(`
 		INSERT INTO commercial_quota_grants(
@@ -142,6 +149,20 @@ func seedFlashPaidPackage(t *testing.T, db *Adapter, uid, planID int64, sourceRe
 	}
 }
 
+func seedFlashImageAddOn(t *testing.T, db *Adapter, uid, planID int64, sourceRef string, amount float64, startsAt, expiresAt time.Time) {
+	t.Helper()
+	for _, model := range flashImageModels {
+		if _, err := db.db.Exec(`
+			INSERT INTO commercial_quota_grants(
+				uid, plan_id, grant_type, model, amount_cny, reset_duration,
+				effective_at, expires_at, source_ref, note
+			) VALUES ($1, $2, 'order', $3, $4, '1M', $5, $6, $7, 'image add-on fixture')`,
+			uid, planID, model, amount, startsAt, expiresAt, sourceRef); err != nil {
+			t.Fatalf("seed image add-on grant %s/%s: %v", sourceRef, model, err)
+		}
+	}
+}
+
 func seedFlashFreePackage(t *testing.T, db *Adapter, uid, planID int64, sourceRef string, startsAt, expiresAt time.Time) {
 	t.Helper()
 	if _, err := db.db.Exec(`
@@ -182,8 +203,8 @@ func assertFlashMigrationUp(t *testing.T, db *Adapter, personalUID, proUID, free
 	assertFlashPlanBudgets(t, db, "catsco-personal", flashPersonalSixModelBudgets)
 	assertFlashPlanBudgets(t, db, "catsco-pro", flashProSixModelBudgets)
 	assertFlashPlanBudgets(t, db, "catsco-free", flashFreeFiveModelBudgets)
-	assertFlashActivePackage(t, db, "personal-order", 6, 10500, 1750, true)
-	assertFlashActivePackage(t, db, "pro-order", 6, 31500, 5250, true)
+	assertFlashActivePackage(t, db, "personal-order", 11, 11000, 1750, true)
+	assertFlashActivePackage(t, db, "pro-order", 11, 33000, 5250, true)
 	assertFlashActivePackage(t, db, "free-baseline", 5, 1800, 1000, true)
 	assertFlashManualQuota(t, db, personalUID)
 	assertFlashOrderSnapshot(t, db, "flash-created", flashPersonalSixModelBudgets)
@@ -198,8 +219,8 @@ func assertFlashMigrationDown(t *testing.T, db *Adapter, personalUID, proUID, fr
 	assertFlashPlanBudgets(t, db, "catsco-personal", flashPersonalFiveModelBudgets)
 	assertFlashPlanBudgets(t, db, "catsco-pro", flashProFiveModelBudgets)
 	assertFlashPlanBudgets(t, db, "catsco-free", flashFreeFourModelBudgets)
-	assertFlashActivePackage(t, db, "personal-order", 5, 10500, 2100, false)
-	assertFlashActivePackage(t, db, "pro-order", 5, 31500, 6300, false)
+	assertFlashActivePackage(t, db, "personal-order", 10, 11000, 2100, false)
+	assertFlashActivePackage(t, db, "pro-order", 10, 33000, 6300, false)
 	assertFlashActivePackage(t, db, "free-baseline", 4, 1700, 1000, false)
 	assertFlashManualQuota(t, db, personalUID)
 	assertFlashOrderSnapshot(t, db, "flash-created", flashPersonalFiveModelBudgets)
@@ -303,5 +324,22 @@ func execFlashMigrationFile(t *testing.T, db *Adapter, name string) {
 	}
 	if _, err := db.db.Exec(string(contents)); err != nil {
 		t.Fatalf("execute migration %s: %v", name, err)
+	}
+}
+
+func TestNativeSearchFlashStartupMigrationMatchesFile(t *testing.T) {
+	up, err := os.ReadFile("../migrations/postgres/000022_commercial_native_search_flash.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(strings.ReplaceAll(string(up), "\r\n", "\n")) != strings.TrimSpace(migrateCommercialPlansNativeSearchFlash) {
+		t.Fatal("startup migration diverged from numbered SQL migration (up)")
+	}
+	down, err := os.ReadFile("../migrations/postgres/000022_commercial_native_search_flash.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(strings.ReplaceAll(string(down), "\r\n", "\n")) != strings.TrimSpace(rollbackCommercialPlansNativeSearchFlash) {
+		t.Fatal("startup migration diverged from numbered SQL migration (down)")
 	}
 }
