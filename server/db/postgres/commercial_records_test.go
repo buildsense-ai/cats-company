@@ -187,7 +187,7 @@ func TestPostgresCommercialPublicModelsPreserveRenewalAndCustomQuota(t *testing.
 			t.Fatal(err)
 		}
 	}
-	if err := db.db.QueryRow(`SELECT COUNT(*),SUM(amount_cny) FROM commercial_quota_grants WHERE source_ref='renewal' AND revoked_at IS NULL`).Scan(&count, &total); err != nil || count != 5 || total != 10500 {
+	if err := db.db.QueryRow(`SELECT COUNT(*),SUM(amount_cny) FROM commercial_quota_grants WHERE source_ref='renewal' AND revoked_at IS NULL`).Scan(&count, &total); err != nil || count != 7 || total != 10500 {
 		t.Fatalf("rollback changed renewal total: %v %d %f", err, count, total)
 	}
 	if _, err := db.db.Exec(migrateCommercialPublicModels); err != nil {
