@@ -20,6 +20,7 @@ describe('CloudWorkerPanel', () => {
     app_version: '1.4.9',
     cloud_version: '1.4.8',
     cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+    created_time: new Date().toISOString(),
     ...overrides,
   });
 
@@ -56,6 +57,39 @@ describe('CloudWorkerPanel', () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  test('explains a pending worker instead of an exhausted quota', async () => {
+    await renderPanel({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [worker({ runtime_status: 'not_connected' })],
+    });
+    const waitNote = container.querySelector('.cc-cloud-quota-wait');
+    expect(waitNote).not.toBeNull();
+    expect(waitNote.textContent).toContain('尚未上线');
+    expect(container.querySelector('.cc-cloud-quota-err')).toBeNull();
+  });
+
+  test('keeps the exhausted-quota copy when every worker is connected', async () => {
+    await renderPanel({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [worker({ runtime_status: 'connected' })],
+    });
+    const errNote = container.querySelector('.cc-cloud-quota-err');
+    expect(errNote).not.toBeNull();
+    expect(errNote.textContent).toContain('创建权益已用完');
+    expect(container.querySelector('.cc-cloud-quota-wait')).toBeNull();
+  });
+
+  test('treats an established offline worker as normal, not as provisioning', async () => {
+    await renderPanel({
+      quota: { enabled: true, total: 1, used: 1, remaining: 0 },
+      workers: [worker({ runtime_status: 'not_connected', created_time: '2020-01-01T00:00:00Z' })],
+    });
+    const errNote = container.querySelector('.cc-cloud-quota-err');
+    expect(errNote).not.toBeNull();
+    expect(errNote.textContent).toContain('创建权益已用完');
+    expect(container.querySelector('.cc-cloud-quota-wait')).toBeNull();
   });
 
   test('keeps reset images scoped to each worker and never falls back across regions', async () => {

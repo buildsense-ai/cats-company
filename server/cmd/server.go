@@ -561,6 +561,7 @@ func main() {
 		SaleChannels:      paymentSaleChannels,
 		Syncer:            commercialRelaySyncer,
 		RenewCloudWorkers: cloudWorkerHandler.RenewForOwner,
+		EnsureCloudWorker: cloudWorkerHandler.AutoProvisionForOwner,
 	})
 	commercialPaymentHandler.StartReconciliation(commercialServiceCtx, 5*time.Minute)
 	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)

@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   Zap,
 } from 'lucide-react';
+import { isCloudWorkerPending } from '../cloud-worker-pending';
 
 const CLOUD_STATUS_META = {
   provisioning: { label: '实例创建中', tone: 'info' },
@@ -135,6 +136,11 @@ export default function CloudWorkerPanel({
   const usedPct = quota && quota.total > 0
     ? Math.min(100, Math.round((quota.used / quota.total) * 100))
     : 0;
+  // A worker that has not connected yet may still be provisioning right after
+  // a purchase or a create click (the credit is already reserved). Only fresh
+  // workers count: an established worker that dropped offline, or a
+  // self-hosted assistant, must not be shown as "创建中".
+  const hasPendingWorker = (workers || []).some((worker) => isCloudWorkerPending(worker));
 
   // Available image versions (deduplicated, order from the control plane).
   const imageVersions = [...new Set(
@@ -224,7 +230,11 @@ export default function CloudWorkerPanel({
   ) : (!quota || !quota.enabled) ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端部署当前未开放，请联系管理员开通</p>
   ) : quota.remaining <= 0 ? (
-    <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云托管员工创建权益已用完，暂时无法继续创建</p>
+    hasPendingWorker ? (
+      <p className="cc-cloud-quota-wait"><RefreshCw size={13} /> 已有云托管员工尚未上线（正在创建中或当前离线）；上线后即可使用。</p>
+    ) : (
+      <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云托管员工创建权益已用完，暂时无法继续创建</p>
+    )
   ) : (
     <>
       <div className="cc-cloud-quota-bar"><i style={{ width: `${usedPct}%` }} /></div>
@@ -312,12 +322,14 @@ export default function CloudWorkerPanel({
             )}
           </>
         ) : (
-          <p className="cc-cloud-quota-err">
+          <p className={hasPendingWorker ? 'cc-cloud-quota-wait' : 'cc-cloud-quota-err'}>
             {quotaError
               ? '云端状态查询失败，暂时无法创建。'
               : (!actionAvailable('create')
                   ? '云端创建服务尚未配置，请联系管理员。'
-                  : '配额已用完或未开放，暂时无法继续创建。')}
+                  : hasPendingWorker
+                    ? '已有云托管员工尚未上线（正在创建中或当前离线）；上线后即可使用。'
+                    : '配额已用完或未开放，暂时无法继续创建。')}
           </p>
         )}
       </section>

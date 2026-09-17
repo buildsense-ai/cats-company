@@ -227,7 +227,7 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		        COALESCE(b.role, 'general') as role,
 		        COALESCE(b.description, '') as description,
 		        COALESCE(b.artifact_upload_enabled, true) as artifact_upload_enabled,
-		        COALESCE(b.skill_mutation_mode, 'owner_only') as skill_mutation_mode
+		        COALESCE(b.skill_mutation_mode, 'owner_only') as skill_mutation_mode, u.created_at
 		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
 		 WHERE u.account_type = 'bot' AND b.owner_id = $1
 		 ORDER BY u.created_at`,
@@ -243,10 +243,11 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		var id int64
 		var username, displayName, avatarURL, apiEndpoint, model, visibility, skillsVisibility, role, description, skillMutationMode string
 		var tenantName *string
+		var createdAt *string
 		var state int
 		var enabled, artifactUploadEnabled bool
 		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state,
-			&apiEndpoint, &model, &enabled, &visibility, &skillsVisibility, &tenantName, &role, &description, &artifactUploadEnabled, &skillMutationMode); err != nil {
+			&apiEndpoint, &model, &enabled, &visibility, &skillsVisibility, &tenantName, &role, &description, &artifactUploadEnabled, &skillMutationMode, &createdAt); err != nil {
 			return nil, err
 		}
 		mode, ok := types.ParseBotSkillMutationMode(skillMutationMode)
@@ -271,6 +272,11 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		}
 		if tenantName != nil {
 			bot["tenant_name"] = *tenantName
+		}
+		if createdAt != nil && *createdAt != "" {
+			// RFC3339-ish timestamp of the bot account; the cloud panel uses it
+			// to tell brand-new provisioning workers from offline old ones.
+			bot["created_at"] = *createdAt
 		}
 		bots = append(bots, bot)
 	}

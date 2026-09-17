@@ -1571,13 +1571,23 @@ describe('AgentStoreModal', () => {
     expect(reset.disabled).toBe(true);
   });
 
-  test('creates a cloud worker from the managed panel', async () => {
-    api.getMyBots.mockResolvedValue({ bots: [] });
-    api.getCloudWorkers.mockResolvedValue({
+  test('creates a cloud worker from the managed panel and shows it without a reload', async () => {
+    // The roster starts empty and only reports the new worker once the create
+    // call has happened — mirroring the real backend ordering.
+    const newWorker = {
+      id: 93, uid: 93, tenant_name: 'tenant-new', username: 'bot-cloud-new',
+      display_name: '云端审查助手', relation: 'owner', is_owner: true,
+    };
+    api.getMyBots.mockImplementation(() => Promise.resolve({
+      bots: api.createCloudWorker.mock.calls.length > 0 ? [newWorker] : [],
+    }));
+    api.getCloudWorkers.mockImplementation(() => Promise.resolve({
       quota: { enabled: true, total: 3, used: 1, remaining: 2 },
-      workers: [],
-    });
-    api.createCloudWorker.mockResolvedValue({ uid: 93, tenant_name: 'tenant-new' });
+      workers: api.createCloudWorker.mock.calls.length > 0
+        ? [{ uid: 93, tenant_name: 'tenant-new', status: 'creating', runtime_status: 'not_connected' }]
+        : [],
+    }));
+    api.createCloudWorker.mockResolvedValue({ uid: 93, tenant_name: 'tenant-new', runtime_status: 'not_connected' });
 
     await act(async () => {
       root.render(React.createElement(AgentStoreModal, {
@@ -1596,6 +1606,8 @@ describe('AgentStoreModal', () => {
 
     await selectManagedHosting();
 
+    expect(container.querySelector('.cc-cloud-worker')).toBeNull();
+
     const input = container.querySelector('.cc-cloud-create-card input');
     await act(async () => {
       Simulate.change(input, { target: { value: '云端审查助手' } });
@@ -1606,10 +1618,17 @@ describe('AgentStoreModal', () => {
       Simulate.click(createBtn);
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(api.createCloudWorker).toHaveBeenCalledTimes(1);
     expect(api.createCloudWorker).toHaveBeenCalledWith(expect.objectContaining({ display_name: '云端审查助手' }));
+    // The freshly created worker is listed immediately (no manual reload).
+    const workerRow = container.querySelector('.cc-cloud-worker');
+    expect(workerRow).not.toBeNull();
+    expect(workerRow.textContent).toContain('云端审查助手');
+    expect(workerRow.textContent).toContain('未连接，等待上线');
   });
 
   test.each([

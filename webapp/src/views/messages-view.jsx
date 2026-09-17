@@ -6,6 +6,7 @@ import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
+import { isCloudWorkerPending } from '../cloud-worker-pending';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
@@ -724,13 +725,26 @@ export default function MessagesView({
   // conversation bot before rendering a notice so other bots stay untouched.
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
+    const schedule = (delay) => {
+      if (timer) window.clearTimeout(timer);
+      timer = null;
+      if (!cancelled && delay > 0) {
+        timer = window.setTimeout(loadCloudWorkers, delay);
+      }
+    };
     const loadCloudWorkers = async () => {
       if (!api.getCloudWorkers) return;
       try {
         const response = await api.getCloudWorkers({ timeoutMs: 15_000 });
-        if (!cancelled && Array.isArray(response?.workers)) {
+        if (cancelled) return;
+        if (Array.isArray(response?.workers)) {
           setCloudWorkers((previous) => mergeCloudWorkerSnapshots(previous, response?.workers));
         }
+        // While a fresh worker is still provisioning, keep polling so the
+        // pending notice clears on its own once the runtime connects.
+        const pendingWorker = (response?.workers || []).some((worker) => isCloudWorkerPending(worker));
+        schedule(pendingWorker ? 10_000 : 0);
       } catch {
         // Keep the last successful snapshot so a transient refresh failure
         // cannot make the active conversation's update notice disappear.
@@ -742,6 +756,7 @@ export default function MessagesView({
     return () => {
       cancelled = true;
       window.removeEventListener('cc:data-changed', refresh);
+      if (timer) window.clearTimeout(timer);
     };
   }, [topic]);
 
@@ -3143,7 +3158,6 @@ export default function MessagesView({
   const cloudWorkerUpdateKey = cloudWorkerUpdate
     ? `${cloudWorkerUpdate.uid}:${cloudWorkerUpdate.latest_release}`
     : '';
-
   useEffect(() => {
     if (!cloudWorkerUpdateKey) {
       setCloudWorkerUpdateVisible(false);
@@ -3153,6 +3167,15 @@ export default function MessagesView({
     const timer = window.setTimeout(() => setCloudWorkerUpdateVisible(false), 8000);
     return () => window.clearTimeout(timer);
   }, [cloudWorkerUpdateKey]);
+  // A cloud worker that has not connected yet (still provisioning right after
+  // a purchase, or offline) cannot answer messages. Keep a persistent notice
+  // in the conversation until the roster reports it connected. Group task
+  // conversations already resolve their single bot through conversationBotUID.
+  const activeCloudWorker = useMemo(() => {
+    if (!conversationBotUID) return null;
+    return cloudWorkers.find((candidate) => sameUID(candidate?.uid, conversationBotUID)) || null;
+  }, [cloudWorkers, conversationBotUID]);
+  const cloudWorkerPending = isCloudWorkerPending(activeCloudWorker);
   const isTwoPersonGroupWithCurrentUser = useMemo(() => {
     if (!isGroup) return false;
     const memberUIDs = new Set(
@@ -4379,6 +4402,13 @@ export default function MessagesView({
       >
         <div ref={chatColumnRef} className="v3-chat-column">
           {topBar}
+          {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
+            <section className="cc-cloud-worker-pending-notice" role="status" aria-live="polite">
+              <span>
+                云员工「{activeCloudWorker.display_name || activeCloudWorker.username || '当前机器人'}」尚未上线（正在创建中或当前离线），暂时无法回复消息；上线后即可对话。
+              </span>
+            </section>
+          )}
           {cloudWorkerUpdate && cloudWorkerUpdateVisible && (
             <section className="cc-cloud-worker-update-notice" role="status" aria-live="polite">
               <span>云员工「{cloudWorkerUpdate.display_name || cloudWorkerUpdate.username || '当前机器人'}」有新版本 {cloudWorkerUpdate.latest_release}，可在云托管管理中更新。</span>

@@ -622,6 +622,148 @@ describe('long pasted text detection', () => {
   });
 });
 
+describe('cloud worker pending notice', () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    sessionStorage.clear();
+    api.getMessages.mockResolvedValue({ messages: [] });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.getAgentQuota.mockResolvedValue({ configured: false, shared: true });
+    api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.getCloudWorkers.mockResolvedValue({ workers: [] });
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    vi.useRealTimers();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it('shows a persistent notice while the cloud worker has not connected', async () => {
+    api.getCloudWorkers.mockResolvedValue({
+      workers: [{
+        uid: 2,
+        tenant_name: 'tenant-a',
+        display_name: '云端审查助手',
+        username: 'bot-cloud-1',
+        runtime_status: 'not_connected',
+        created_time: new Date().toISOString(),
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).not.toBeNull();
+    expect(container.textContent).toContain('尚未上线');
+  });
+
+  it('hides the notice once the cloud worker is connected', async () => {
+    api.getCloudWorkers.mockResolvedValue({
+      workers: [{
+        uid: 2,
+        tenant_name: 'tenant-a',
+        display_name: '云端审查助手',
+        username: 'bot-cloud-1',
+        runtime_status: 'connected',
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).toBeNull();
+  });
+
+  it('shows the notice in an agent-task conversation', async () => {
+    api.getGroupInfo.mockResolvedValue({
+      members: [
+        { user_id: 1, display_name: 'Me', account_type: 'human' },
+        { user_id: 2, display_name: '云端审查助手', account_type: 'bot', is_bot: true },
+      ],
+      group: { id: 10, name: '云员工任务', has_bot: true, is_agent_task: true },
+    });
+    api.getCloudWorkers.mockResolvedValue({
+      workers: [{
+        uid: 2,
+        tenant_name: 'tenant-a',
+        display_name: '云端审查助手',
+        username: 'bot-cloud-1',
+        runtime_status: 'not_connected',
+        created_time: new Date().toISOString(),
+      }],
+    });
+    await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).not.toBeNull();
+    expect(container.textContent).toContain('尚未上线');
+  });
+
+  it('hides the notice for an established worker that dropped offline', async () => {
+    api.getCloudWorkers.mockResolvedValue({
+      workers: [{
+        uid: 2,
+        tenant_name: 'tenant-a',
+        display_name: '云端审查助手',
+        username: 'bot-cloud-1',
+        runtime_status: 'not_connected',
+        created_time: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).toBeNull();
+  });
+
+  it('clears the notice automatically once the worker connects', async () => {
+    vi.useFakeTimers();
+    const fresh = new Date().toISOString();
+    api.getCloudWorkers
+      .mockResolvedValueOnce({
+        workers: [{
+          uid: 2,
+          tenant_name: 'tenant-a',
+          display_name: '云端审查助手',
+          username: 'bot-cloud-1',
+          runtime_status: 'not_connected',
+          created_time: fresh,
+        }],
+      })
+      .mockResolvedValue({
+        workers: [{
+          uid: 2,
+          tenant_name: 'tenant-a',
+          display_name: '云端审查助手',
+          username: 'bot-cloud-1',
+          runtime_status: 'connected',
+          created_time: fresh,
+        }],
+      });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).not.toBeNull();
+
+    // While the worker is pending the roster polls; once it reports connected
+    // the notice clears without any manual refresh.
+    await act(async () => {
+      vi.advanceTimersByTime(10_100);
+      await flushPromises();
+    });
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).toBeNull();
+  });
+});
+
 describe('MessagesView composer draft isolation', () => {
   let container;
   let root;
