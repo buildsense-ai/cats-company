@@ -43,15 +43,6 @@ BEGIN
           AND g.grant_type IN ('order', 'invite', 'operator_plan')
           AND g.revoked_at IS NULL
           AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)
-          AND EXISTS (
-              SELECT 1 FROM commercial_entitlements e
-              WHERE e.uid = g.uid AND e.plan_id = g.plan_id
-                AND e.state = 'active' AND e.starts_at <= CURRENT_TIMESTAMP
-                AND (e.expires_at IS NULL OR e.expires_at > CURRENT_TIMESTAMP)
-                AND e.source_ref = g.source_ref
-                AND ((g.grant_type = 'operator_plan' AND e.source = 'operator')
-                     OR (g.grant_type <> 'operator_plan' AND e.source = g.grant_type))
-          )
         GROUP BY g.uid, g.plan_id, g.grant_type, g.source_ref, p.slug, p.name
         HAVING COUNT(*) FILTER (WHERE g.model IN (
                'MiniMax-M2.7', 'MiniMax-M3', 'deepseek-v4-flash',
