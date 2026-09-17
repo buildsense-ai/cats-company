@@ -5,6 +5,7 @@ vi.mock('../api', () => ({
   resolveMediaURL: vi.fn((url) => url),
   api: {
     getCloudArtifacts: vi.fn(),
+    listArtifactApps: vi.fn(),
     getAgentFiles: vi.fn(),
     getTopicFiles: vi.fn(),
     publishCloudArtifact: vi.fn(),
@@ -151,7 +152,7 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '应用']);
+      .toEqual(['文件', '应用旧', '应用']);
     expect(container.textContent).toContain('共享成果');
     expect(container.querySelector('.cloud-artifacts-role-badge')).toBeNull();
     expect(container.textContent).not.toContain('你可管理全部成果');
@@ -649,6 +650,51 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('成果服务暂时不可用');
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
+  });
+
+  test('lists gateway applications in the 应用 tab and opens them in a new page', async () => {
+    api.listArtifactApps.mockResolvedValueOnce({
+      apps: [{
+        id: 'saturday-demo',
+        title: 'Saturday 演示应用',
+        url: 'https://artifact.catsco.cc/saturday-demo/',
+        status: 'ready',
+        updated_at: '2026-09-17T08:36:11.972Z',
+      }],
+    });
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+    await renderPanel({ initialTab: 'active' });
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '应用').click();
+      await Promise.resolve();
+    });
+
+    expect(api.listArtifactApps).toHaveBeenCalledWith(440);
+    expect(container.textContent).toContain('Saturday 演示应用');
+    expect(container.textContent).toContain('ready');
+
+    await act(async () => {
+      container.querySelector('.cloud-artifact-main').click();
+      await Promise.resolve();
+    });
+    expect(openSpy).toHaveBeenCalledWith('https://artifact.catsco.cc/saturday-demo/', '_blank', 'noopener,noreferrer');
+    openSpy.mockRestore();
+  });
+
+  test('explains an unavailable gateway list instead of showing a broken tab', async () => {
+    api.listArtifactApps.mockRejectedValueOnce(new Error('artifact_gateway_unavailable'));
+
+    await renderPanel({ initialTab: 'active' });
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '应用').click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('应用清单暂时不可用');
+    expect(container.textContent).not.toContain('成果读取失败');
   });
 
   async function renderPanel({

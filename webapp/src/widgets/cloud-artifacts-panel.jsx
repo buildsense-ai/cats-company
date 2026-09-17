@@ -156,7 +156,7 @@ export default function CloudArtifactsPanel({
   onPreviewFile,
 }) {
   const feedback = useFeedback();
-  const normalizedInitialTab = ['active', 'deleted', 'files'].includes(initialTab)
+  const normalizedInitialTab = ['active', 'deleted', 'files', 'gateway'].includes(initialTab)
     ? initialTab
     : 'files';
   const safeInitialTab = !topicId && normalizedInitialTab === 'files' ? 'active' : normalizedInitialTab;
@@ -165,6 +165,7 @@ export default function CloudArtifactsPanel({
   const tab = !topicId && requestedTab === 'files' ? 'active' : requestedTab;
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
+  const [gatewayApps, setGatewayApps] = useState([]);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [tagCounts, setTagCounts] = useState([]);
@@ -215,6 +216,7 @@ export default function CloudArtifactsPanel({
   }, [tab, agentUid]);
 
   const selectTab = (nextTab) => {
+    // 「文件」依赖 topicId；'gateway'（应用）是跨域公共只读清单，两者互不影响。
     if (nextTab === 'files' && !topicId) return;
     if (controlledTab == null) setLocalTab(nextTab);
     onTabChange?.(nextTab);
@@ -249,6 +251,12 @@ export default function CloudArtifactsPanel({
         setFileHasMore(Boolean(result?.has_more));
         return;
       }
+      if (tab === 'gateway') {
+        const result = await api.listArtifactApps(agentUid);
+        if (!isCurrentRequest()) return;
+        setGatewayApps(Array.isArray(result?.apps) ? result.apps : []);
+        return;
+      }
       const result = await api.getCloudArtifacts(agentUid, tab);
       if (!isCurrentRequest()) return;
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
@@ -263,7 +271,12 @@ export default function CloudArtifactsPanel({
       });
     } catch (err) {
       if (!isCurrentRequest()) return;
-      setError(err.message || (tab === 'files' ? '聊天文件读取失败' : '成果读取失败'));
+      const fallbackText = tab === 'files'
+        ? '聊天文件读取失败'
+        : tab === 'gateway' ? '应用清单读取失败' : '成果读取失败';
+      setError(err?.message === 'artifact_gateway_unavailable'
+        ? '应用清单暂时不可用，请稍后重试'
+        : err.message || fallbackText);
     } finally {
       if (isCurrentRequest()) setLoading(false);
     }
@@ -272,6 +285,7 @@ export default function CloudArtifactsPanel({
   useEffect(() => {
     setArtifacts([]);
     setFiles([]);
+    setGatewayApps([]);
     setViewerRelation('');
     setCanPublish(false);
     setTagCounts([]);
@@ -528,10 +542,14 @@ export default function CloudArtifactsPanel({
         : '这个 Agent 还没有共享成果'
     : tab === 'files'
       ? '当前聊天还没有文件'
-      : '回收站是空的';
+      : tab === 'gateway'
+        ? '应用清单暂时是空的'
+        : '回收站是空的';
   const visibleCount = tab === 'files'
     ? files.length
-    : visibleArtifacts.length;
+    : tab === 'gateway'
+      ? gatewayApps.length
+      : visibleArtifacts.length;
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
   const isOwner = viewerRelation === 'owner';
   const canManageTags = viewerRelation === 'owner' || viewerRelation === 'friend';
@@ -669,15 +687,26 @@ export default function CloudArtifactsPanel({
               文件
             </button>
             {hasAgent && (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={artifactTabSelected}
-                className={artifactTabSelected ? 'active' : ''}
-                onClick={() => selectTab('active')}
-              >
-                应用
-              </button>
+              <>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={artifactTabSelected}
+                  className={artifactTabSelected ? 'active' : ''}
+                  onClick={() => selectTab('active')}
+                >
+                  应用旧
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === 'gateway'}
+                  className={tab === 'gateway' ? 'active' : ''}
+                  onClick={() => selectTab('gateway')}
+                >
+                  应用
+                </button>
+              </>
             )}
           </div>
           <div className="cloud-artifacts-header-actions">
@@ -781,7 +810,7 @@ export default function CloudArtifactsPanel({
             <div className="cloud-artifacts-status" role="status" aria-live="polite">
               {tab === 'files'
                 ? '正在读取文件…'
-                : '正在读取成果…'}
+                : tab === 'gateway' ? '正在读取应用…' : '正在读取成果…'}
             </div>
           )}
           {!loading && error && (
@@ -820,6 +849,35 @@ export default function CloudArtifactsPanel({
                 </button>
               )}
             </>
+          )}
+          {tab === 'gateway' && gatewayApps.length > 0 && (
+            <div className="cloud-artifacts-list">
+              {gatewayApps.map((app) => {
+                const updatedAt = formatUpdatedAt(app?.updated_at || '');
+                return (
+                  <article className="cloud-artifact-item" key={app?.id || app?.url}>
+                    <button
+                      type="button"
+                      className="cloud-artifact-main"
+                      onClick={() => window.open(app?.url, '_blank', 'noopener,noreferrer')}
+                      aria-label={'打开应用 ' + (app?.title || app?.id || '')}
+                    >
+                      <span className="cloud-artifact-kind-icon application" aria-hidden="true">
+                        <Cloud size={22} />
+                      </span>
+                      <div className="cloud-artifact-copy">
+                        <h4>{app?.title || app?.id}</h4>
+                        <p>
+                          {app?.status && <span>{app.status}</span>}
+                          {updatedAt && <span>{updatedAt}</span>}
+                        </p>
+                      </div>
+                      <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
           )}
           {artifactTabSelected && visibleArtifacts.length > 0 && (
             <div className="cloud-artifact-result-groups">

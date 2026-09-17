@@ -49,6 +49,8 @@ const WS_STABLE_CONNECTION_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
+// 独立 artifact gateway 的公共只读清单（跨域，不走同源 request 封装）。
+const ARTIFACT_GATEWAY_BASE = 'https://artifact.catsco.cc';
 
 function normalizeArtifactPreviewSession(value) {
   if (!value || typeof value !== 'object'
@@ -810,6 +812,15 @@ export const api = {
       undefined,
       options,
     ),
+  listArtifactApps: (agentUid) => {
+    const agent = String(agentUid ?? '').trim();
+    const query = /^[0-9]+$/.test(agent) ? `?agent=${agent}` : '';
+    return fetch(`${ARTIFACT_GATEWAY_BASE}/api/apps${query}`).then(
+      (response) => (response.ok
+        ? response.json()
+        : Promise.reject(new Error('artifact_gateway_unavailable'))),
+    );
+  },
   publishCloudArtifact: (agentUid, artifact) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
   getTopicFiles: (topicId, { beforeId = 0, beforeCreatedAt = '', limit = 40 } = {}) => {
