@@ -11,6 +11,14 @@ describe('formatUploadErrorMessage', () => {
     })).toBe('上传失败：文件超过 300MB 限制。');
   });
 
+  test('follows the server-reported limit instead of a hardcoded default', () => {
+    expect(formatUploadErrorMessage({
+      status: 413,
+      message: 'file too large',
+      data: { max_size_mb: 500 },
+    })).toBe('上传失败：文件超过 500MB 限制。');
+  });
+
   test('describes a gateway rejection without claiming the product limit', () => {
     expect(formatUploadErrorMessage({
       code: 'upload_too_large',
