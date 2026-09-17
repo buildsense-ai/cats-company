@@ -271,7 +271,52 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	var resetCount int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'operator_reset'`, extendOwner).Scan(&resetCount); err != nil || resetCount != 1 {
 		t.Fatalf("combined extension reset marker missing: count=%d err=%v", resetCount, err)
-	}}
+	}
+	repeatedCombined, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: extendOwner, Action: "extend", OperationID: "extend-op-2", Note: "renewal with cycle reset",
+		ResetCycle: true, EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || repeatedCombined.Applied || repeatedCombined.CycleStartedAt == nil {
+		t.Fatalf("combined extension retry did not replay the reset marker: result=%#v err=%v", repeatedCombined, err)
+	}
+
+	// The Free baseline alone cannot be extended, and an expired paid package
+	// must surface the reopen hint instead of silently extending Free.
+	if _, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: uid, Action: "extend", OperationID: "extend-free-user", Note: "free user", EffectiveAt: time.Now().UTC(),
+	}); err == nil {
+		t.Fatal("extend without a paid package should be rejected")
+	} else {
+		var adjustmentErr *types.CommercialAdjustmentError
+		if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "unsupported_plan" {
+			t.Fatalf("free-user extend error mismatch: %v", err)
+		}
+	}
+	expiredOwner, err := db.CreateUser(&types.User{
+		Username: "commercial-extend-expired", Email: "commercial-extend-expired@example.test", DisplayName: "Extend Expired",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-extend-expired-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create expired extension owner: %v", err)
+	}
+	expiredStart := time.Now().UTC().Add(-40 * 24 * time.Hour)
+	expiredEnd := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'order', 'extend-expired-seed', 'active', $3, $4)`, expiredOwner, personalPlanID, expiredStart, expiredEnd); err != nil {
+		t.Fatalf("seed expired extension entitlement: %v", err)
+	}
+	if _, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: expiredOwner, Action: "extend", OperationID: "extend-expired-user", Note: "expired user", EffectiveAt: time.Now().UTC(),
+	}); err == nil {
+		t.Fatal("extend with an expired package should be rejected")
+	} else {
+		var adjustmentErr *types.CommercialAdjustmentError
+		if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "no_active_plan" {
+			t.Fatalf("expired-user extend error mismatch: %v", err)
+		}
+	}
+}
 
 func TestPostgresCommercialRelayBaselineContract(t *testing.T) {
 	rawDSN := os.Getenv("CATS_PG_TEST_DSN")

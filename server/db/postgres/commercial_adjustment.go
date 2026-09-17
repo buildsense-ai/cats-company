@@ -267,6 +267,22 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		}
 		if err == nil {
 			result.ExpiresAt = nullableTime(repeatedExpiresAt)
+			if adjustment.ResetCycle {
+				// Replay the Relay cycle reset on retries: the first attempt may
+				// have committed the ledger but failed the Relay sync, and an
+				// operator retry of the same operation must be able to self-heal.
+				var repeatedResetAt time.Time
+				if err := tx.QueryRow(`
+					SELECT created_at FROM commercial_quota_ledger
+					WHERE uid = $1 AND source_type = 'operator_reset'
+					  AND split_part(note, ' | ', 1) = $2
+					ORDER BY id DESC LIMIT 1`, adjustment.UID, operationID).Scan(&repeatedResetAt); err == nil {
+					repeatedResetAt = repeatedResetAt.UTC()
+					result.CycleStartedAt = &repeatedResetAt
+				} else if err != sql.ErrNoRows {
+					return nil, fmt.Errorf("check repeated renewal cycle reset: %w", err)
+				}
+			}
 			if err := tx.Commit(); err != nil {
 				return nil, fmt.Errorf("commit repeated commercial extension: %w", err)
 			}

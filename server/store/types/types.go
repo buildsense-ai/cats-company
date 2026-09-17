@@ -243,13 +243,16 @@ type CommercialAccountAdjustment struct {
 }
 
 type CommercialAccountAdjustmentResult struct {
-	Action           string     `json:"action"`
-	OperationID      string     `json:"operation_id"`
-	Applied          bool       `json:"applied"`
-	PreviousTotalCNY float64    `json:"previous_total_cny"`
-	NextTotalCNY     float64    `json:"next_total_cny"`
-	CycleStartedAt   *time.Time `json:"cycle_started_at,omitempty"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	Action           string  `json:"action"`
+	OperationID      string  `json:"operation_id"`
+	Applied          bool    `json:"applied"`
+	PreviousTotalCNY float64 `json:"previous_total_cny"`
+	// NextTotalCNY is the currently effective total; a renewal extension
+	// already includes the new period's quota even though it starts at the
+	// old expiry (future periods already paid for are not accumulated here).
+	NextTotalCNY   float64    `json:"next_total_cny"`
+	CycleStartedAt *time.Time `json:"cycle_started_at,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 }
 
 type CommercialAdjustmentError struct {

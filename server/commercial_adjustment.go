@@ -306,12 +306,15 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 }
 
 // commercialExtendablePlanSlug reports whether the plan participates in the
-// internal renewal extension. Keep this aligned with the paid official plans
-// that carry the cloud-worker perk.
+// internal renewal extension. Keep this in step with the postgres
+// commercialPersonalPlanSlug / commercialProPlanSlug pair (the paid official
+// plans that carry the cloud-worker perk).
 func commercialExtendablePlanSlug(slug string) bool {
 	return slug == "catsco-personal" || slug == "catsco-pro"
 }
 
+// commercialPlanQuotaTotal mirrors postgres commercialOperatorPlanQuota; keep
+// both in step when a plan gains new quota fields.
 func commercialPlanQuotaTotal(plan *types.CommercialPlan) float64 {
 	if plan == nil {
 		return 0
