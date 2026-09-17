@@ -1,5 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const wikiMocks = vi.hoisted(() => ({
@@ -27,6 +29,8 @@ vi.mock('../api', async (importOriginal) => {
 
 import TinodeWeb from './tinode-web';
 import { knowledgeWikiAgentID } from './knowledge-wiki-view';
+
+const wikiCss = readFileSync(resolve(process.cwd(), 'src/views/knowledge-wiki-view.css'), 'utf8');
 
 let container;
 let root;
@@ -121,5 +125,15 @@ describe('knowledge wiki routing without a local session token', () => {
       expect(container.textContent).toContain('知识库入口无效或已过期，请重新从 AI 助手管理进入。');
     });
     expect(container.textContent).not.toContain('unauthorized');
+  });
+});
+
+describe('knowledge wiki card layout', () => {
+  test('keeps the category chip inside the card for long titles and unbreakable tokens', () => {
+    // The chip previously overflowed the card's right edge on cards whose text
+    // contains long unbreakable tokens (e.g. paths like index/search/read).
+    expect(wikiCss).toContain('.cc-knowledge-wiki-card > div { flex: 1 1 auto; min-width: 0; }');
+    expect(wikiCss).toContain('white-space: nowrap');
+    expect((wikiCss.match(/overflow-wrap: anywhere/g) || []).length).toBeGreaterThanOrEqual(2);
   });
 });
