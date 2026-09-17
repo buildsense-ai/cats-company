@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Cloud, ChevronRight, Download, Laptop, X } from 'lucide-react';
 import { api } from '../api';
+import { describeBotInviteCodeError } from '../utils/bot-invite-error';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import './workspace-onboarding-card.css';
 
@@ -21,18 +22,6 @@ function openDialog(dialog) {
 function closeDialog(dialog) {
   if (dialog?.open && typeof dialog.close === 'function') dialog.close();
   else dialog?.removeAttribute('open');
-}
-
-function inviteErrorMessage(error) {
-  const message = String(error?.message || '').trim();
-  if (
-    !message
-    || /bot invite code is invalid or expired/i.test(message)
-    || /invalid or unavailable bot invite code/i.test(message)
-  ) {
-    return '邀请码无效或已失效';
-  }
-  return message;
 }
 
 function AssistantInviteDialog({ onComplete, onClose }) {
@@ -76,7 +65,7 @@ function AssistantInviteDialog({ onComplete, onClose }) {
       window.dispatchEvent(new Event('cc:data-changed'));
       setCompleted(true);
     } catch (requestError) {
-      setError(inviteErrorMessage(requestError));
+      setError(describeBotInviteCodeError(requestError));
     } finally {
       setSubmitting(false);
     }
