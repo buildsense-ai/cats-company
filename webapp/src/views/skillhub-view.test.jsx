@@ -3796,4 +3796,118 @@ describe('SkillHubView', () => {
     expect(itemFor('Summarize').querySelector('.cc-skillhub-availability.is-update').textContent).toContain('可更新');
     expect(itemFor('Review').querySelector('.cc-skillhub-availability.is-update')).toBeNull();
   });
+
+  it('confirms before adding a catalogue capability whose name is already taken', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'priv_local1',
+        version: 'v_private',
+        contentHash: 'c'.repeat(64),
+      }],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{
+        id: 'atridaisuki/cloud-html-artifact',
+        name: 'cloud-html-artifact',
+        description: 'Render artifacts',
+        author: { displayName: 'atridaisuki', catsCoUid: '85' },
+        latestVersion: '1.0.2',
+        publishedAt: '2026-09-15T02:03:04Z',
+        contentHash: 'b'.repeat(64),
+      }],
+    });
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        runtimeRole: 'desktop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: [{
+        local_skill_id: 'priv_local1',
+        name: 'cloud-html-artifact',
+        description: 'Bot-private copy',
+        source: 'user',
+        can_share: true,
+        skill_hub: {
+          reference: {
+            source: 'skillhub',
+            skillId: 'priv_local1',
+            version: 'v_private',
+            contentHash: 'c'.repeat(64),
+          },
+        },
+      }],
+    });
+
+    await act(async () => {
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await openCatalogue();
+
+    const catalogueCard = () => [...container.querySelectorAll('.cc-skillhub-card')]
+      .find((candidate) => candidate.textContent.includes('v1.0.2'));
+    const addButton = () => catalogueCard().querySelector('.cc-skillhub-card-footer button');
+    expect(catalogueCard()).toBeTruthy();
+    expect(addButton().textContent).toContain('添加');
+
+    await act(async () => {
+      Simulate.click(addButton());
+      await Promise.resolve();
+    });
+
+    const confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation?.textContent).toContain('已存在同名能力“cloud-html-artifact”');
+    expect(confirmation?.textContent).toContain('私有能力');
+    expect(confirmation?.textContent).toContain('如果只是想升级到 v1.0.2');
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Simulate.click(confirmation.querySelector('.cc-confirm-cancel'));
+      await Promise.resolve();
+    });
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Simulate.click(addButton());
+      await Promise.resolve();
+    });
+    const confirmedDialog = document.body.querySelector('[role="alertdialog"]');
+    await act(async () => {
+      Simulate.click([...confirmedDialog.querySelectorAll('button')]
+        .find((button) => button.textContent === '仍然添加'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, expect.arrayContaining([
+      expect.objectContaining({
+        skillId: 'atridaisuki/cloud-html-artifact',
+        version: '1.0.2',
+        contentHash: 'b'.repeat(64),
+      }),
+      expect.objectContaining({ skillId: 'priv_local1' }),
+    ]));
+  });
 });

@@ -1,5 +1,7 @@
 import {
   compareSkillHubVersions,
+  describeInstalledCapability,
+  findSameNameInstalledCapability,
   formatSkillHubVersion,
   isPrivateSkillHubReference,
   normalizeSkillHubSkills,
@@ -82,5 +84,43 @@ describe('skillhub entry versions', () => {
     }]);
     expect(entry).toMatchObject({ latestVersion: '1.0.6', contentHash: hash('b') });
     expect(resolveSkillHubUpdateStatus(installedReference('1.0.5', hash('a')), entry)).toBe('update');
+  });
+
+  it('finds an installed capability that already owns the catalogue Skill name', () => {
+    const catalogueEntry = normalizeSkillHubSkills([{
+      id: 'atridaisuki/cloud-html-artifact',
+      name: 'cloud-html-artifact',
+      latest_version: '1.0.2',
+      content_hash: hash('b'),
+    }])[0];
+
+    const privateCopy = { skillId: 'priv_da5461', name: 'cloud-html-artifact', version: 'v_private' };
+    expect(findSameNameInstalledCapability(catalogueEntry, [privateCopy])).toBe(privateCopy);
+    expect(describeInstalledCapability(privateCopy)).toBe('私有能力');
+
+    const otherPublisher = { skillId: 'lin/cloud-html-artifact', version: '1.0.1' };
+    expect(findSameNameInstalledCapability(catalogueEntry, [otherPublisher])).toBe(otherPublisher);
+    expect(describeInstalledCapability(otherPublisher)).toBe('lin/cloud-html-artifact · v1.0.1');
+
+    const localOnly = { skillId: 'local:abc', name: 'cloud-html-artifact' };
+    expect(findSameNameInstalledCapability(catalogueEntry, [localOnly])).toBe(localOnly);
+    expect(describeInstalledCapability(localOnly)).toBe('本机能力');
+  });
+
+  it('never treats the same reference or another name as a same-name collision', () => {
+    const catalogueEntry = normalizeSkillHubSkills([{
+      id: 'atridaisuki/cloud-html-artifact',
+      name: 'cloud-html-artifact',
+      latest_version: '1.0.2',
+      content_hash: hash('b'),
+    }])[0];
+
+    expect(findSameNameInstalledCapability(catalogueEntry, [
+      { skillId: 'atridaisuki/cloud-html-artifact', version: '1.0.0' },
+    ])).toBe(null);
+    expect(findSameNameInstalledCapability(catalogueEntry, [
+      { skillId: 'tools/summarize', name: 'Summarize' },
+    ])).toBe(null);
+    expect(findSameNameInstalledCapability(catalogueEntry, [])).toBe(null);
   });
 });
