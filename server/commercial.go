@@ -34,6 +34,17 @@ type RelayCommercialHandler struct {
 	enforceEnabled bool
 	enforceUIDs    map[int64]bool
 	syncer         *CommercialRelaySyncer
+	// cloudWorkerRenewer resumes provider-frozen cloud workers after a
+	// redemption reopens paid time. Optional; nil keeps redemption local-only.
+	cloudWorkerRenewer func(uid int64)
+}
+
+// SetCloudWorkerRenewer wires the async resume hook shared with payments and
+// operator extensions.
+func (h *RelayCommercialHandler) SetCloudWorkerRenewer(renew func(uid int64)) {
+	if h != nil {
+		h.cloudWorkerRenewer = renew
+	}
 }
 
 type RelayCommercialOptions struct {
@@ -226,6 +237,11 @@ func (h *RelayCommercialHandler) HandleRedeemInvite(w http.ResponseWriter, r *ht
 	}
 	if h.syncer != nil {
 		h.syncer.Enqueue(uid)
+	}
+	if h.cloudWorkerRenewer != nil {
+		// A redemption can reopen an expired package; resume provider-frozen
+		// workers the same way a payment renewal does.
+		go h.cloudWorkerRenewer(uid)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": publicCommercialSummary(summary)})
 }

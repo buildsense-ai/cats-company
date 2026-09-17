@@ -732,8 +732,34 @@ func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *ty
 	if _, err := tx.Exec(`
 		UPDATE cloud_worker_credits
 		SET state = 'revoked', reservation_ref = '', reserved_at = NULL
-		WHERE uid = $1 AND source_ref = $2 AND state IN ('available','reserved')`, order.UID, "order:"+order.OrderNo); err != nil {
+		WHERE uid = $1 AND source_ref = $2 AND state IN ('available','reserved','consumed')`, order.UID, "order:"+order.OrderNo); err != nil {
 		return nil, false, fmt.Errorf("revoke refunded cloud worker credit: %w", err)
+	}
+	// Cloud workers follow the paid window: after a refund the owner is rolled
+	// back to whatever paid time survives, or the worker is scheduled for
+	// cleanup when nothing remains. A refunded trial must not auto-convert to
+	// a monthly subscription the platform would pay for.
+	var remainingPaid sql.NullTime
+	if err := tx.QueryRow(`
+		SELECT MAX(expires_at) FROM commercial_entitlements
+		WHERE uid = $1 AND state = 'active' AND expires_at > CURRENT_TIMESTAMP`, order.UID).Scan(&remainingPaid); err != nil {
+		return nil, false, fmt.Errorf("check remaining paid time after refund: %w", err)
+	}
+	rollbackUntil := refundedAt
+	graceDays := 0
+	if remainingPaid.Valid {
+		rollbackUntil = remainingPaid.Time
+		graceDays = 15
+	}
+	if _, err := tx.Exec(`
+		UPDATE cloud_worker_lifecycles
+		SET package_expires_at = $2::timestamptz,
+		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
+		    conversion_pending = false,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`,
+		order.UID, rollbackUntil, graceDays); err != nil {
+		return nil, false, fmt.Errorf("roll back cloud worker lifecycles after refund: %w", err)
 	}
 	refunded, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders

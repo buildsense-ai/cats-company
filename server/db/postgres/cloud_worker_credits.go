@@ -348,11 +348,13 @@ func extendCloudWorkerLifecyclesWithPaidPeriod(tx *sql.Tx, ownerUID int64, expir
 	}
 	if _, err := tx.Exec(`
 		UPDATE cloud_worker_lifecycles
-		SET package_expires_at = $2::timestamptz,
+		SET package_expires_at = GREATEST(package_expires_at, $2::timestamptz),
 		    conversion_pending = CASE WHEN billing_mode='ondemand' THEN true ELSE conversion_pending END,
-		    delete_after = $2::timestamptz + INTERVAL '15 days',
+		    delete_after = GREATEST(package_expires_at, $2::timestamptz) + INTERVAL '15 days',
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
+		-- Paid periods only ever extend a worker's window: a refund or a plan
+		-- swap must not shorten time that is still paid for.
 		WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`, ownerUID, expiresAt.UTC()); err != nil {
 		return fmt.Errorf("extend cloud worker lifecycles: %w", err)
 	}
@@ -365,8 +367,8 @@ func (a *Adapter) ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, gr
 	}
 	_, err := a.db.Exec(`
 		UPDATE cloud_worker_lifecycles
-		SET package_expires_at = $2::timestamptz,
-		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
+		SET package_expires_at = GREATEST(package_expires_at, $2::timestamptz),
+		    delete_after = GREATEST(package_expires_at, $2::timestamptz) + ($3::int * INTERVAL '1 day'),
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
 		-- Never move a deletion already claimed by the sweeper back to active:
@@ -389,13 +391,35 @@ func (a *Adapter) ExtendCloudWorkerLifecycle(id int64, expiresAt time.Time, grac
 	}
 	_, err := a.db.Exec(`
 		UPDATE cloud_worker_lifecycles
-		SET package_expires_at = $2::timestamptz,
-		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
+		SET package_expires_at = GREATEST(package_expires_at, $2::timestamptz),
+		    delete_after = GREATEST(package_expires_at, $2::timestamptz) + ($3::int * INTERVAL '1 day'),
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
+		-- A per-worker provider sync must never roll a paid window backwards;
+		-- callers that cannot confirm the new provider date keep the old row.
 		WHERE id = $1 AND state IN ('active','delete_pending','delete_failed')`, id, expiresAt, graceDays)
 	if err != nil {
 		return fmt.Errorf("extend cloud worker lifecycle: %w", err)
+	}
+	return nil
+}
+
+// ForceCloudWorkerLifecyclePending marks a lifecycle due for cleanup
+// immediately, overriding a future paid expiry. The create path uses it when a
+// provider instance may exist without a confirmed destroy: the normal pending
+// transition refuses rows whose paid window has not elapsed, which would
+// otherwise delay cleanup of a failed provision until the credit expires.
+func (a *Adapter) ForceCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error {
+	if id <= 0 || deleteAfter.IsZero() {
+		return fmt.Errorf("invalid cloud worker lifecycle force-pending")
+	}
+	_, err := a.db.Exec(`
+		UPDATE cloud_worker_lifecycles
+		SET state = 'delete_pending', archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
+		    delete_after = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND state IN ('active','delete_pending')`, id, deleteAfter)
+	if err != nil {
+		return fmt.Errorf("force cloud worker lifecycle pending: %w", err)
 	}
 	return nil
 }

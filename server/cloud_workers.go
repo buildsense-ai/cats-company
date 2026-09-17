@@ -207,6 +207,14 @@ type CloudWorkerLifecycleRegistrar interface {
 	RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenantName string, packageExpiresAt time.Time, billingMode string, graceDays int) error
 }
 
+// CloudWorkerLifecycleForcer marks a lifecycle due for cleanup immediately.
+// The pending-cleanup path needs it because the normal pending transition
+// refuses rows whose (future) paid window has not elapsed, and a bounded
+// credit commit always registers such a row first.
+type CloudWorkerLifecycleForcer interface {
+	ForceCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error
+}
+
 type CloudWorkerLifecycle = types.CloudWorkerLifecycle
 
 // Tianyi ECS monthly instances enter a provider-side frozen retention period
@@ -1525,7 +1533,17 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			} else {
 				for _, lifecycle := range lifecycles {
 					if lifecycle.WorkerUID == result.UID && lifecycle.TenantName == tenantName && lifecycle.State == "active" {
-						if markErr := lifecycleStore.MarkCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC()); markErr != nil {
+						// The commit above may have registered a row whose paid window
+						// ends in the future; force it due so the sweeper retries the
+						// unconfirmed destroy instead of waiting for the credit to
+						// expire.
+						markErr := error(nil)
+						if forcer, ok := h.credits.(CloudWorkerLifecycleForcer); ok {
+							markErr = forcer.ForceCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC())
+						} else {
+							markErr = lifecycleStore.MarkCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC())
+						}
+						if markErr != nil {
 							log.Printf("[cloud-worker] failed to mark pending cleanup tenant=%s: %v", tenantName, markErr)
 						}
 						break

@@ -47,8 +47,8 @@ func TestExtendCloudWorkerLifecyclesDoesNotResurrectDeleteRunning(t *testing.T) 
 	expiresAt := time.Date(2026, time.August, 24, 0, 0, 0, 0, time.UTC)
 	mock.ExpectExec(regexp.QuoteMeta(`
 		UPDATE cloud_worker_lifecycles
-		SET package_expires_at = $2::timestamptz,
-		    delete_after = $2::timestamptz + ($3::int * INTERVAL '1 day'),
+		SET package_expires_at = GREATEST(package_expires_at, $2::timestamptz),
+		    delete_after = GREATEST(package_expires_at, $2::timestamptz) + ($3::int * INTERVAL '1 day'),
 		    state = 'active', archived_at = NULL, delete_started_at = NULL,
 		    last_error = '', updated_at = CURRENT_TIMESTAMP
 		-- Never move a deletion already claimed by the sweeper back to active:
