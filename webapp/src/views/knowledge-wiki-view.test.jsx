@@ -129,11 +129,19 @@ describe('knowledge wiki routing without a local session token', () => {
 });
 
 describe('knowledge wiki card layout', () => {
-  test('keeps the category chip inside the card for long titles and unbreakable tokens', () => {
+  test('keeps the text block shrinkable and breaks long tokens', () => {
     // The chip previously overflowed the card's right edge on cards whose text
     // contains long unbreakable tokens (e.g. paths like index/search/read).
-    expect(wikiCss).toContain('.cc-knowledge-wiki-card > div { flex: 1 1 auto; min-width: 0; }');
-    expect(wikiCss).toContain('white-space: nowrap');
+    expect(wikiCss).toMatch(/\.cc-knowledge-wiki-card > div \{[^}]*flex: 1 1 auto[^}]*min-width: 0/);
     expect((wikiCss.match(/overflow-wrap: anywhere/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('truncates the category chip instead of letting it leave the card', () => {
+    const chipRule = wikiCss.match(/\.cc-knowledge-wiki-card > span \{[^}]*\}/)?.[0] || '';
+    expect(chipRule).toContain('flex: none');
+    expect(chipRule).toContain('white-space: nowrap');
+    expect(chipRule).toContain('max-width: 100%');
+    expect(chipRule).toContain('overflow: hidden');
+    expect(chipRule).toContain('text-overflow: ellipsis');
   });
 });

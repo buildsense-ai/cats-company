@@ -20,7 +20,7 @@
 .cc-knowledge-wiki-card p { margin: 0; color: var(--v3-text-muted, #a0a0a0); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .cc-knowledge-wiki-card small, .cc-knowledge-wiki-review { display: block; margin-top: 10px; color: var(--v3-text-muted, #a0a0a0); font-size: 12px; }
 .cc-knowledge-wiki-sources { padding-left: 20px; color: var(--v3-text-muted, #a0a0a0); line-height: 1.5; }
-.cc-knowledge-wiki-card > span { flex: none; white-space: nowrap; color: var(--v3-accent, #38c9a4); font-size: 12px; }
+.cc-knowledge-wiki-card > span { flex: none; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--v3-accent, #38c9a4); font-size: 12px; }
 .cc-knowledge-wiki-state { display: flex; justify-content: center; align-items: center; gap: 10px; min-height: 45vh; color: var(--v3-text-muted, #a0a0a0); }
 .cc-knowledge-wiki-state.error { color: var(--v3-text-name, #f5f5f5); text-align: center; }
 .cc-knowledge-wiki-state.error p { color: var(--v3-text-muted, #a0a0a0); margin: 8px 0; }
