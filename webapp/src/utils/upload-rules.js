@@ -35,3 +35,31 @@ export function validateImageUpload(file, options = {}) {
   if (mimeAllowed && extensionAllowed) return '';
   return unsupportedTypeMessage;
 }
+
+// Turn an upload failure into a user-facing message. A 413 does not imply the
+// 300MB product limit: an intermediate gateway can reject a much smaller body
+// before the upload API sees it, so prefer the server-reported limit and
+// otherwise describe a gateway rejection instead of guessing.
+export function formatUploadErrorMessage(error) {
+  const limitMB = Number(error?.data?.max_size_mb);
+  if (Number.isFinite(limitMB) && limitMB > 0) {
+    return `上传失败：文件超过 ${limitMB}MB 限制。`;
+  }
+  const message = String(error?.message || '上传失败');
+  if (message.includes('413') || message.includes('Payload Too Large')) {
+    return '上传失败：文件被服务器网关拒绝，可能超出上传链路限制，请压缩或拆分后重试。';
+  }
+  if (message.includes('too large')) {
+    return '上传失败：文件过大，超出服务器允许的大小，请压缩后重试。';
+  }
+  if (message.includes('invalid image type')) {
+    return '上传失败：当前仅支持 JPG、PNG、GIF、WebP 图片。';
+  }
+  if (message.includes('file type not allowed')) {
+    return '上传失败：该文件类型暂不支持。';
+  }
+  if (message.includes('Unexpected token') || message.includes('invalid server response') || message.includes('JSON')) {
+    return '上传失败：服务器返回了无法识别的响应。';
+  }
+  return `上传失败：${message}`;
+}
