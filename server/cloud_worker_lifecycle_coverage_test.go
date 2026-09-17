@@ -129,6 +129,43 @@ func TestCloudWorkerCreateRegistersPackageLifecycleForPerpetualCredit(t *testing
 	}
 }
 
+func TestCloudWorkerFallbackLifecycleDefaults(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("")
+	credits := &lifecycleCaptureStub{}
+	h.credits = credits
+	before := time.Now().UTC()
+	h.registerFallbackCloudWorkerLifecycle(38, 101, "bot-bot-jack", types.CloudWorkerMonthly)
+	if len(credits.registrations) != 1 {
+		t.Fatalf("registrations=%+v", credits.registrations)
+	}
+	got := credits.registrations[0]
+	// The owner has no reachable package store in this handler, so the worker
+	// gets the bounded 30-day default instead of an eternal orphan row.
+	if got.expiresAt.Before(before.AddDate(0, 0, 30)) || got.expiresAt.After(time.Now().UTC().AddDate(0, 0, 30).Add(time.Minute)) {
+		t.Fatalf("fallback expiry=%s want ~now+30d", got.expiresAt)
+	}
+	if got.graceDays != cloudWorkerExpiryGraceDays || got.billingMode != types.CloudWorkerMonthly {
+		t.Fatalf("registration=%+v", got)
+	}
+
+	credits = &lifecycleCaptureStub{}
+	h.credits = credits
+	h.registerFallbackCloudWorkerLifecycle(7, 102, "bot-trial", types.CloudWorkerOnDemand)
+	if got := credits.registrations[0]; got.graceDays != 3 || got.billingMode != types.CloudWorkerOnDemand {
+		t.Fatalf("trial fallback registration=%+v", got)
+	}
+}
+
+func TestParseCloudWorkerRenewalResultKeepsAutoRenewSignalWithoutExpiry(t *testing.T) {
+	result, err := parseCloudWorkerRenewalResult(`{"expires_at":"","auto_renew_disabled":false}`)
+	if err == nil {
+		t.Fatal("an empty expiry must not parse as a renewal result")
+	}
+	if result.AutoRenewDisabled == nil || *result.AutoRenewDisabled {
+		t.Fatalf("auto-renew signal lost on malformed expiry: %v", result.AutoRenewDisabled)
+	}
+}
+
 func assertWorkerDeploymentEnv(t *testing.T, deployments map[string]types.CloudWorkerDeployment, key, want string) {
 	t.Helper()
 	if len(deployments) != 1 {

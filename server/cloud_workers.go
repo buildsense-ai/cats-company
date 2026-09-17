@@ -1087,10 +1087,20 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 		// pin the monthly step explicitly instead of inheriting that count.
 		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
 		if err != nil {
-			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				// The provider operation may already have been applied before the
+				// script timeout; keep the lifecycle date instead of recording a
+				// failure that prompts a second charge.
+				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d hit the script timeout; the renewal may already be applied, lifecycle date left unchanged: %v", lifecycle.TenantName, uid, err)
+			} else {
+				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+			}
 			continue
 		}
 		result, parseErr := parseCloudWorkerRenewalResult(out)
+		if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
+			log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
+		}
 		if parseErr != nil {
 			// The provider operation already succeeded. Do not turn a missing
 			// informational field into a second charge or a false failure, but
@@ -1106,9 +1116,6 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 			}
 			if extendErr != nil {
 				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
-			}
-			if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
-				log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
 			}
 		}
 		log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d completed", lifecycle.TenantName, uid)
@@ -1199,17 +1206,22 @@ func parseCloudWorkerRenewalResult(output string) (cloudWorkerRenewalResult, err
 			lastErr = err
 			continue
 		}
+		// Keep the provider's auto-renew reconciliation signal even when the
+		// expiry itself is missing or malformed: callers must still be able to
+		// report an unconfirmed automatic-renewal disable.
+		parsed := cloudWorkerRenewalResult{AutoRenewDisabled: result.AutoRenewDisabled}
 		if strings.TrimSpace(result.ExpiresAt) == "" {
-			return cloudWorkerRenewalResult{}, fmt.Errorf("provider response omitted expires_at")
+			return parsed, fmt.Errorf("provider response omitted expires_at")
 		}
 		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(result.ExpiresAt))
 		if err != nil {
-			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
+			return parsed, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
 		}
 		if !expiresAt.After(time.Now().UTC()) {
-			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
+			return parsed, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
 		}
-		return cloudWorkerRenewalResult{ExpiresAt: expiresAt.UTC(), AutoRenewDisabled: result.AutoRenewDisabled}, nil
+		parsed.ExpiresAt = expiresAt.UTC()
+		return parsed, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("provider response was empty")
@@ -1493,20 +1505,30 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if reservedCredit {
 			if commitErr := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, 0); commitErr != nil {
 				log.Printf("[cloud-worker] failed to bind reserved credit to pending cleanup uid=%d worker=%d: %v", uid, result.UID, commitErr)
-			} else if lifecycleStore, ok := h.credits.(interface {
-				ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
-				MarkCloudWorkerLifecyclePending(int64, time.Time) error
-			}); ok {
-				if lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid); listErr != nil {
-					log.Printf("[cloud-worker] failed to list pending cleanup lifecycle uid=%d worker=%d: %v", uid, result.UID, listErr)
-				} else {
-					for _, lifecycle := range lifecycles {
-						if lifecycle.WorkerUID == result.UID && lifecycle.TenantName == tenantName && lifecycle.State == "active" {
-							if markErr := lifecycleStore.MarkCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC()); markErr != nil {
-								log.Printf("[cloud-worker] failed to mark pending cleanup tenant=%s: %v", tenantName, markErr)
-							}
-							break
+			}
+		}
+		// Every pending-cleanup instance needs a durable sweeper handle: a
+		// perpetual-credit commit leaves no lifecycle row and a static-quota
+		// creation never had one. ON CONFLICT DO NOTHING keeps the row a bounded
+		// commit already inserted.
+		if registrar, ok := h.credits.(CloudWorkerLifecycleRegistrar); ok {
+			if registerErr := registrar.RegisterCloudWorkerLifecycle(result.UID, uid, tenantName, time.Now().UTC(), billing, 0); registerErr != nil {
+				log.Printf("[cloud-worker] failed to register pending-cleanup lifecycle uid=%d worker=%d: %v", uid, result.UID, registerErr)
+			}
+		}
+		if lifecycleStore, ok := h.credits.(interface {
+			ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+			MarkCloudWorkerLifecyclePending(int64, time.Time) error
+		}); ok {
+			if lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid); listErr != nil {
+				log.Printf("[cloud-worker] failed to list pending cleanup lifecycle uid=%d worker=%d: %v", uid, result.UID, listErr)
+			} else {
+				for _, lifecycle := range lifecycles {
+					if lifecycle.WorkerUID == result.UID && lifecycle.TenantName == tenantName && lifecycle.State == "active" {
+						if markErr := lifecycleStore.MarkCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC()); markErr != nil {
+							log.Printf("[cloud-worker] failed to mark pending cleanup tenant=%s: %v", tenantName, markErr)
 						}
+						break
 					}
 				}
 			}

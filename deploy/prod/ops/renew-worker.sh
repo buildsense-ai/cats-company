@@ -120,7 +120,10 @@ done
 auto_renew_attempted=0
 auto_renew_disabled=0
 confirmed=0
-for _ in $(seq 1 90); do
+# 45 x 10s keeps the worst case inside the server's 10-minute script timeout so
+# the unconfirmed-expiry fallback below is actually reachable before the
+# caller kills the process.
+for _ in $(seq 1 45); do
   instance="$(find_instance)"
   if [[ -n "$instance" ]]; then
     state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$instance" | tr '[:upper:]' '[:lower:]')"

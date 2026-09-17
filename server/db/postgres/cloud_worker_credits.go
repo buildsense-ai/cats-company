@@ -146,6 +146,10 @@ func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool,
 	return true, nil
 }
 
+// ReserveCloudWorkerProfileCredit is the legacy string-only wrapper around the
+// configured reservation. It cannot surface the reserved credit's paid window;
+// the create path uses ReserveCloudWorkerConfiguredCredit when it needs the
+// expiry to size the provider purchase.
 func (a *Adapter) ReserveCloudWorkerProfileCredit(uid int64, reservation, profile string) (string, bool, error) {
 	selection, reserved, err := a.ReserveCloudWorkerConfiguredCredit(uid, reservation, profile, types.CloudWorkerMonthly)
 	return selection.Profile, reserved, err
