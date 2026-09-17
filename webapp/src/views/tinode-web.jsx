@@ -115,8 +115,7 @@ const TABS = {
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
-const WorkspaceOnboardingPreview = import.meta.env.DEV
-  ? React.lazy(() => import('../dev/workspace-onboarding-card')) : null;
+const WorkspaceOnboardingCard = lazy(() => import('../widgets/workspace-onboarding-card'));
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
 const DEV_PREVIEW_ACCOUNT = import.meta.env.VITE_DEV_PREVIEW_ACCOUNT || 'ui-reviewer';
 const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo123456';
@@ -1563,7 +1562,7 @@ function TinodeWebApp({ location }) {
                 <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
-                    showOnboardingPreview={showOnboardingPreview}
+                    forceWorkspaceOnboarding={showOnboardingPreview}
                     onDownloadDashboard={() => openDesktopModal('download')}
                     dashboardDownloadOpen={showDesktopConnectModal}
                     user={user}
@@ -1884,7 +1883,7 @@ function resolveDisplayedActiveAgent(
 
 function NoActiveTask({
   user,
-  showOnboardingPreview = false,
+  forceWorkspaceOnboarding = false,
   onDownloadDashboard,
   dashboardDownloadOpen = false,
   initialAgent,
@@ -1902,9 +1901,14 @@ function NoActiveTask({
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
           <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
-        {import.meta.env.DEV && WorkspaceOnboardingPreview && showOnboardingPreview && (
-            <Suspense fallback={null}><WorkspaceOnboardingPreview onDownloadDashboard={onDownloadDashboard} dashboardDownloadOpen={dashboardDownloadOpen} /></Suspense>
-          )}
+        <Suspense fallback={null}>
+          <WorkspaceOnboardingCard
+            userId={user?.uid}
+            forceVisible={forceWorkspaceOnboarding}
+            onDownloadDashboard={onDownloadDashboard}
+            dashboardDownloadOpen={dashboardDownloadOpen}
+          />
+        </Suspense>
         <EmptyTaskComposer
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}

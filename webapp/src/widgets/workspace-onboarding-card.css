@@ -51,16 +51,13 @@
 .cc-workspace-onboarding-invite-form input:hover { border-color: var(--cc-muted); }
 .cc-workspace-onboarding-invite-form input:focus { outline: none; border-color: var(--cc-text-secondary); }
 .cc-workspace-onboarding-invite-dialog .cc-workspace-onboarding-invite-note { margin-top: 12px; font-size: 12px; color: var(--cc-muted); line-height: 1.65; }
+.cc-workspace-onboarding-invite-error { color: var(--cc-danger, #b42318) !important; }
 .cc-workspace-onboarding-invite-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .cc-workspace-onboarding-invite-footer button { min-width: 88px; height: 36px; min-height: 36px; padding: 0 16px; font-size: 13px; }
-.cc-workspace-onboarding-card .cc-workspace-onboarding-status { min-height: 24px; margin: 20px 0 0; font-size: 13px; }
-.cc-workspace-onboarding-status:empty { display: none; }
-.cc-workspace-onboarding-footer { display: flex; align-items: center; justify-content: flex-end; gap: 16px; margin-top: 8px; }
-.cc-workspace-onboarding-status:empty + .cc-workspace-onboarding-footer { margin-top: 16px; }
+.cc-workspace-onboarding-footer { display: flex; align-items: center; justify-content: flex-end; gap: 16px; margin-top: 24px; }
 .cc-workspace-onboarding-footer .cc-workspace-onboarding-start { min-width: 108px; }
 .cc-workspace-onboarding-card .cc-workspace-onboarding-start { background: #383838; border-color: transparent; color: #fff; font-weight: var(--cc-font-weight-medium); }
 .cc-workspace-onboarding-card .cc-workspace-onboarding-start:hover:not(:disabled) { background: #444; }
-.cc-workspace-onboarding-card small { display: block; margin-top: 8px; font-size: 11px; line-height: 1.6; color: var(--cc-muted); }
 .cc-workspace-onboarding-card.cc-workspace-onboarding-help-dialog { width: min(600px, calc(100% - 32px)); max-height: calc(100dvh - 48px); margin: auto; padding: 28px; overflow: hidden; }
 .cc-workspace-onboarding-help-dialog[open] { display: flex; flex-direction: column; }
 .cc-workspace-onboarding-help-dialog .cc-workspace-onboarding-heading { padding-right: 32px; flex-shrink: 0; }
