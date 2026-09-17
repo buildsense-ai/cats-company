@@ -1211,10 +1211,11 @@ func TestCommercialRelayBaselineClassifiesFreeAndLegacyProfiles(t *testing.T) {
 		{Provider: "m27-b", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 1000}},
 		{Provider: "m3", Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 500}},
 		{Provider: "deepseek", Model: "deepseek-v4-flash", Budget: commercialRelayBudget{MaxLimit: 100}},
+		{Provider: "deepseek-flash", Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 100}},
 		{Provider: "glm", Model: "glm-5.3-flash", Budget: commercialRelayBudget{MaxLimit: 100}},
 	}}}
 	profile, budgets := commercialRelayBaseline(freeUser)
-	if profile != commercialRelayBaselineProfileFree || len(budgets) != 4 || budgets["MiniMax-M2.7"] != 1000 {
+	if profile != commercialRelayBaselineProfileFree || len(budgets) != 5 || budgets["MiniMax-M2.7"] != 1000 {
 		t.Fatalf("default profile was not recognized: profile=%s budgets=%#v", profile, budgets)
 	}
 
@@ -1393,6 +1394,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 			{Provider: "m27", Model: "MiniMax-M2.7", AllowedModels: []string{"MiniMax-M2.7"}, Budget: commercialRelayBudget{MaxLimit: 1000, ResetDuration: "1M", LastReset: reset}},
 			{Provider: "m3", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500, ResetDuration: "1M", LastReset: reset}},
 			{Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"}, Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M", LastReset: reset}},
+			{Provider: "deepseek-flash", Model: "deepseek-flash", AllowedModels: []string{"deepseek-flash"}, Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M", LastReset: reset}},
 			{Provider: "glm", Model: "glm-5.3-flash", AllowedModels: []string{"glm-5.3-flash"}, Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M", LastReset: reset}},
 		},
 	}}
@@ -1411,7 +1413,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: posted["monthly_budget"].(float64), ResetDuration: "1M"}
 			state.UsageWindowStart = posted["usage_window_start"].(string)
 			for index := range state.Limits.ModelLimits {
-				state.Limits.ModelLimits[index].Budget.MaxLimit = 1700
+				state.Limits.ModelLimits[index].Budget.MaxLimit = 1800
 			}
 			var scopes []commercialRelayModelScope
 			raw, _ := json.Marshal(posted["model_scopes"])
@@ -1426,16 +1428,16 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
 		t.Fatal(err)
 	}
-	if store.created != 1 || store.profile != commercialRelayBaselineProfileFree || len(store.budgets) != 4 {
+	if store.created != 1 || store.profile != commercialRelayBaselineProfileFree || len(store.budgets) != 5 {
 		t.Fatalf("baseline was not created exactly once: %#v", store)
 	}
 	if got := store.startsAt.Format(time.RFC3339Nano); got != "2026-08-01T08:30:00.123456789Z" {
 		t.Fatalf("reset anchor changed: %s", got)
 	}
-	if posted["monthly_budget"] != float64(1700) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
+	if posted["monthly_budget"] != float64(1800) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
 		t.Fatalf("shared policy mismatch: %#v", posted)
 	}
-	if len(state.Limits.ModelScopes) != 5 || !state.Limits.FreeTerraTrial.Enabled {
+	if len(state.Limits.ModelScopes) != 6 || !state.Limits.FreeTerraTrial.Enabled {
 		t.Fatalf("free models were not scoped: %#v", state.Limits.ModelScopes)
 	}
 }
