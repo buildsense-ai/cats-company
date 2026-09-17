@@ -3,9 +3,18 @@ import { BookOpen, CloudOff, LoaderCircle, X } from 'lucide-react';
 import { api, connectWS, disconnectWS, requestSkillHubDeviceTool } from '../api';
 import './knowledge-wiki-view.css';
 
+// Mirror the entry-gate normalization from utils/auth-routes so the router and
+// the view agree on trailing slashes. A malformed escape must not throw during
+// render: the view falls back to its existing invalid-entry state instead.
 function parseAgentID(pathname) {
-  const match = String(pathname || '').match(/^\/wiki\/agents\/([^/]+)\/?$/);
-  return match ? decodeURIComponent(match[1]) : '';
+  const normalized = String(pathname || '').replace(/\/+$/, '');
+  const match = normalized.match(/^\/wiki\/agents\/([^/]+)$/);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return '';
+  }
 }
 
 export function knowledgeWikiAgentID(pathname) {
@@ -49,7 +58,11 @@ export default function KnowledgeWikiView({ location = window.location } = {}) {
         if (active) setState({ status: 'ready', data: { ...handoff, ...result }, error: '' });
       })
       .catch((error) => {
-        if (active) setState({ status: 'error', data: null, error: error?.message || '暂时无法读取知识库' });
+        if (!active) return;
+        const message = error?.status === 401 || error?.status === 403
+          ? '知识库入口无效或已过期，请重新从 AI 助手管理进入。'
+          : (error?.message || '暂时无法读取知识库');
+        setState({ status: 'error', data: null, error: message });
       });
     return () => { active = false; disconnectWS(); };
   }, [agentUid]);

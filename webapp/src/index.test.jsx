@@ -194,6 +194,29 @@ test('registers the PWA for a standalone route without requiring authentication'
   expect(mocks.registerPwaServiceWorker).toHaveBeenCalledTimes(1);
 });
 
+test('loads the knowledge wiki handoff route without a session token or login gate', async () => {
+  window.history.replaceState(null, '', '/wiki/agents/982');
+
+  await act(async () => {
+    root.render(<App />);
+  });
+
+  expect(container.querySelector('[data-testid="auth-gateway"]')).toBeFalsy();
+  expect(container.querySelector('[data-testid="tinode-web"]')?.textContent).toBe('/wiki/agents/982');
+  expect(mocks.setToken).not.toHaveBeenCalled();
+});
+
+test('keeps the login gate for wiki paths outside the handoff route', async () => {
+  window.history.replaceState(null, '', '/wiki/agents');
+
+  await act(async () => {
+    root.render(<App />);
+  });
+
+  expect(container.querySelector('[data-testid="auth-gateway"]')).toBeTruthy();
+  expect(container.querySelector('[data-testid="tinode-web"]')).toBeFalsy();
+});
+
 test('loads the workspace to recover a token whose profile cache is missing', async () => {
   mocks.getToken.mockReturnValue('stale-session-token');
   mocks.readStoredUserProfile.mockReturnValue(null);

@@ -89,6 +89,7 @@ import {
 } from '../utils/composer-draft-storage';
 import {
   authenticationRedirectPath,
+  isKnowledgeWikiPathname,
   isNameOnboardingPathname,
   navigateBrowserPath,
   postAuthenticationPathFromSearch,
@@ -265,7 +266,7 @@ export default function TinodeWeb({ location = window.location } = {}) {
   if (pathname === ARTIFACT_VIEWER_PATH) {
     return <ArtifactFullscreenViewer location={location} />;
   }
-  if (/^\/wiki\/agents\/[^/]+\/?$/.test(pathname)) {
+  if (isKnowledgeWikiPathname(pathname)) {
     return <KnowledgeWikiView location={location} />;
   }
   const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
