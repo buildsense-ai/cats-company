@@ -18,6 +18,7 @@ const (
 	commercialAdjustmentDecrease   = "decrease"
 	commercialAdjustmentChangePlan = "change_plan"
 	commercialAdjustmentResetCycle = "reset_cycle"
+	commercialAdjustmentExtend     = "extend"
 )
 
 type commercialAccountAdjustmentStore interface {
@@ -26,31 +27,34 @@ type commercialAccountAdjustmentStore interface {
 }
 
 type commercialAdjustmentRequest struct {
-	UID              int64    `json:"uid"`
-	Action           string   `json:"action"`
-	AmountCNY        float64  `json:"amount_cny"`
-	PlanID           int64    `json:"plan_id"`
-	ExpectedTotalCNY *float64 `json:"expected_total_cny"`
-	OperationID      string   `json:"operation_id"`
-	Note             string   `json:"note"`
-	Preview          bool     `json:"preview"`
+	UID              int64      `json:"uid"`
+	Action           string     `json:"action"`
+	AmountCNY        float64    `json:"amount_cny"`
+	PlanID           int64      `json:"plan_id"`
+	ExpectedTotalCNY *float64   `json:"expected_total_cny"`
+	ExpectedExpiry   *time.Time `json:"expected_expiry"`
+	ResetCycle       bool       `json:"reset_cycle"`
+	OperationID      string     `json:"operation_id"`
+	Note             string     `json:"note"`
+	Preview          bool       `json:"preview"`
 }
 
 type commercialAdjustmentPreview struct {
-	UID              int64                 `json:"uid"`
-	Action           string                `json:"action"`
-	CurrentTotalCNY  float64               `json:"current_total_cny"`
-	NextTotalCNY     float64               `json:"next_total_cny"`
-	RelayUsageCNY    float64               `json:"relay_usage_cny"`
-	NextRemainingCNY float64               `json:"next_remaining_cny"`
-	UsageWillReset   bool                  `json:"usage_will_reset"`
-	ExpiresAt        *time.Time            `json:"expires_at,omitempty"`
-	CurrentPlan      *types.CommercialPlan `json:"current_plan,omitempty"`
-	TargetPlan       *types.CommercialPlan `json:"target_plan,omitempty"`
-	RelayConfigured  bool                  `json:"relay_configured"`
-	EnforceEnabled   bool                  `json:"enforce_enabled"`
-	CanApply         bool                  `json:"can_apply"`
-	Warnings         []string              `json:"warnings,omitempty"`
+	UID               int64                 `json:"uid"`
+	Action            string                `json:"action"`
+	CurrentTotalCNY   float64               `json:"current_total_cny"`
+	NextTotalCNY      float64               `json:"next_total_cny"`
+	RelayUsageCNY     float64               `json:"relay_usage_cny"`
+	NextRemainingCNY  float64               `json:"next_remaining_cny"`
+	UsageWillReset    bool                  `json:"usage_will_reset"`
+	ExpiresAt         *time.Time            `json:"expires_at,omitempty"`
+	PreviousExpiresAt *time.Time            `json:"previous_expires_at,omitempty"`
+	CurrentPlan       *types.CommercialPlan `json:"current_plan,omitempty"`
+	TargetPlan        *types.CommercialPlan `json:"target_plan,omitempty"`
+	RelayConfigured   bool                  `json:"relay_configured"`
+	EnforceEnabled    bool                  `json:"enforce_enabled"`
+	CanApply          bool                  `json:"can_apply"`
+	Warnings          []string              `json:"warnings,omitempty"`
 }
 
 func (h *AccountAdminHandler) HandleCommercialAdjustment(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +87,10 @@ func (h *AccountAdminHandler) HandleCommercialAdjustment(w http.ResponseWriter, 
 	}
 	if req.ExpectedTotalCNY == nil {
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "expected_total_cny is required after preview"})
+		return
+	}
+	if req.Action == commercialAdjustmentExtend && req.ExpectedExpiry == nil {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "expected_expiry is required after preview"})
 		return
 	}
 	if !nearlyEqual(preview.CurrentTotalCNY, *req.ExpectedTotalCNY) {
@@ -120,6 +128,7 @@ func (h *AccountAdminHandler) HandleCommercialAdjustment(w http.ResponseWriter, 
 		result, err = adjustmentStore.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
 			UID: req.UID, Action: req.Action, AmountCNY: req.AmountCNY, PlanID: req.PlanID,
 			ExpectedTotalCNY: req.ExpectedTotalCNY, OperationID: req.OperationID,
+			ExpectedExpiresAt: req.ExpectedExpiry, ResetCycle: req.ResetCycle,
 			Note: req.Note, EffectiveAt: now,
 		})
 		if err != nil {
@@ -128,6 +137,11 @@ func (h *AccountAdminHandler) HandleCommercialAdjustment(w http.ResponseWriter, 
 		}
 	}
 
+	if req.Action == commercialAdjustmentExtend && result != nil && result.Applied && h.cloudWorkerRenewer != nil {
+		// Resume provider-frozen workers asynchronously; provider calls must
+		// never delay or fail the committed ledger response.
+		go h.cloudWorkerRenewer(req.UID)
+	}
 	if err := h.applyCommercialAdjustmentToRelay(r.Context(), req.UID, req.Action, result); err != nil {
 		if h.commercialRelaySyncer != nil {
 			h.commercialRelaySyncer.Enqueue(req.UID)
@@ -162,6 +176,7 @@ func normalizeCommercialAdjustmentRequest(req *commercialAdjustmentRequest) erro
 			return fmt.Errorf("plan_id is required")
 		}
 	case commercialAdjustmentResetCycle:
+	case commercialAdjustmentExtend:
 	default:
 		return fmt.Errorf("unsupported adjustment action")
 	}
@@ -228,6 +243,39 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 		preview.UsageWillReset = true
 	case commercialAdjustmentResetCycle:
 		preview.UsageWillReset = true
+	case commercialAdjustmentExtend:
+		// Chain the extension on the latest paid-period end. Extension segments
+		// start at the previous expiry, so the newest segment may start in the
+		// future; the summary only lists unexpired entitlements.
+		var latestExtendable *types.CommercialEntitlement
+		for _, ent := range summary.Entitlements {
+			if ent == nil || ent.State != "active" || !commercialExtendablePlanSlug(ent.PlanSlug) {
+				continue
+			}
+			if ent.ExpiresAt == nil || !ent.ExpiresAt.After(now) {
+				continue
+			}
+			if latestExtendable == nil || ent.ExpiresAt.After(*latestExtendable.ExpiresAt) {
+				latestExtendable = ent
+			}
+		}
+		if latestExtendable == nil {
+			return nil, &types.CommercialAdjustmentError{Code: "no_active_plan", Message: "当前没有有效的个人版/专业版套餐；如已到期，请使用「更换套餐」重新开通"}
+		}
+		plan := planByID[latestExtendable.PlanID]
+		if plan == nil {
+			return nil, &types.CommercialAdjustmentError{Code: "no_active_plan", Message: "无法识别当前套餐"}
+		}
+		if plan.DurationDays <= 0 {
+			return nil, &types.CommercialAdjustmentError{Code: "unsupported_plan", Message: "该套餐不支持按期顺延"}
+		}
+		previousExpiry := latestExtendable.ExpiresAt.UTC()
+		nextExpiry := previousExpiry.AddDate(0, 0, plan.DurationDays)
+		preview.CurrentPlan = plan
+		preview.PreviousExpiresAt = &previousExpiry
+		preview.ExpiresAt = &nextExpiry
+		preview.NextTotalCNY = summary.TotalCNY + commercialPlanQuotaTotal(plan)
+		preview.UsageWillReset = req.ResetCycle
 	}
 
 	if h.relayAdmin != nil {
@@ -257,6 +305,16 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 	return preview, nil
 }
 
+// commercialExtendablePlanSlug reports whether the plan participates in the
+// internal renewal extension. Keep this in step with the postgres
+// commercialPersonalPlanSlug / commercialProPlanSlug pair (the paid official
+// plans that carry the cloud-worker perk).
+func commercialExtendablePlanSlug(slug string) bool {
+	return slug == "catsco-personal" || slug == "catsco-pro"
+}
+
+// commercialPlanQuotaTotal mirrors postgres commercialOperatorPlanQuota; keep
+// both in step when a plan gains new quota fields.
 func commercialPlanQuotaTotal(plan *types.CommercialPlan) float64 {
 	if plan == nil {
 		return 0
@@ -304,7 +362,8 @@ func (h *AccountAdminHandler) applyCommercialAdjustmentToRelay(ctx context.Conte
 	if h.relayAdmin == nil || h.commercialRelaySyncer == nil {
 		return fmt.Errorf("commercial Relay sync is not configured")
 	}
-	if action == commercialAdjustmentResetCycle || action == commercialAdjustmentChangePlan {
+	if action == commercialAdjustmentResetCycle || action == commercialAdjustmentChangePlan ||
+		(action == commercialAdjustmentExtend && result != nil && result.CycleStartedAt != nil) {
 		if result == nil || result.CycleStartedAt == nil {
 			return fmt.Errorf("commercial cycle start is unavailable")
 		}
@@ -351,7 +410,7 @@ func writeCommercialAdjustmentError(w http.ResponseWriter, err error) {
 		status := http.StatusBadRequest
 		if adjustmentErr.Code == "not_found" {
 			status = http.StatusNotFound
-		} else if adjustmentErr.Code == "stale_total" || adjustmentErr.Code == "insufficient_quota" || adjustmentErr.Code == "same_plan" {
+		} else if adjustmentErr.Code == "stale_total" || adjustmentErr.Code == "stale_expiry" || adjustmentErr.Code == "insufficient_quota" || adjustmentErr.Code == "same_plan" {
 			status = http.StatusConflict
 		}
 		writeAccountAdminJSON(w, status, map[string]string{"error": adjustmentErr.Message, "code": adjustmentErr.Code})

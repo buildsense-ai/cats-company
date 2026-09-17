@@ -29,6 +29,9 @@ type AccountAdminHandler struct {
 	commercialRelaySyncer    *CommercialRelaySyncer
 	commercialEnforceEnabled bool
 	commercialEnforceUIDs    map[int64]bool
+	// cloudWorkerRenewer resumes provider-frozen cloud workers after a paid
+	// period is committed (payment fulfillment or operator renewal extension).
+	cloudWorkerRenewer func(uid int64)
 }
 
 // SetCloudWorkerCreditAdmin wires the operator-only manual credit grant
@@ -49,6 +52,14 @@ func (h *AccountAdminHandler) SetCommercialPaymentHandler(handler *CommercialPay
 func (h *AccountAdminHandler) SetCommercialRelaySyncer(syncer *CommercialRelaySyncer) {
 	if h != nil {
 		h.commercialRelaySyncer = syncer
+	}
+}
+
+// SetCloudWorkerRenewer wires the cloud-worker resume hook so an operator
+// renewal extension revives frozen workers the same way a paid renewal does.
+func (h *AccountAdminHandler) SetCloudWorkerRenewer(renew func(uid int64)) {
+	if h != nil {
+		h.cloudWorkerRenewer = renew
 	}
 }
 

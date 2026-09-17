@@ -321,6 +321,32 @@ func (a *Adapter) ReleaseCloudWorkerCredit(uid int64, reservation string) error 
 	return nil
 }
 
+// extendCloudWorkerLifecyclesWithPaidPeriod applies one committed paid period
+// to every cloud-worker lifecycle the owner can still recover. Payment
+// fulfillment and operator renewal extensions share this update so both paths
+// keep the same recovery window (expiry plus the 15-day grace period).
+//
+// A deletion already claimed by the sweeper is an external operation in
+// flight. Do not resurrect its row in the database while the cloud destroy
+// script is running; a delete_failed row has no active provider operation and
+// is safe to restore after a successful renewal.
+func extendCloudWorkerLifecyclesWithPaidPeriod(tx *sql.Tx, ownerUID int64, expiresAt time.Time) error {
+	if tx == nil || ownerUID <= 0 || expiresAt.IsZero() {
+		return fmt.Errorf("invalid cloud worker lifecycle extension")
+	}
+	if _, err := tx.Exec(`
+		UPDATE cloud_worker_lifecycles
+		SET package_expires_at = $2::timestamptz,
+		    conversion_pending = CASE WHEN billing_mode='ondemand' THEN true ELSE conversion_pending END,
+		    delete_after = $2::timestamptz + INTERVAL '15 days',
+		    state = 'active', archived_at = NULL, delete_started_at = NULL,
+		    last_error = '', updated_at = CURRENT_TIMESTAMP
+		WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`, ownerUID, expiresAt.UTC()); err != nil {
+		return fmt.Errorf("extend cloud worker lifecycles: %w", err)
+	}
+	return nil
+}
+
 func (a *Adapter) ExtendCloudWorkerLifecycles(uid int64, expiresAt time.Time, graceDays int) error {
 	if uid <= 0 || expiresAt.IsZero() || graceDays < 0 || graceDays > 90 {
 		return fmt.Errorf("invalid cloud worker lifecycle extension")

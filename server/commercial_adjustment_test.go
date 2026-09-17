@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +89,132 @@ func TestCommercialAdjustmentPreviewProtectsUsedSharedQuota(t *testing.T) {
 	}
 	if !reset.UsageWillReset || reset.RelayUsageCNY != 70 || reset.NextRemainingCNY != 100 {
 		t.Fatalf("cycle reset preview did not show the post-reset balance: %#v", reset)
+	}
+}
+
+func TestCommercialAdjustmentExtendPreviewAppendsOnePeriod(t *testing.T) {
+	now := time.Now().UTC()
+	currentExpiry := now.Add(10 * 24 * time.Hour)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
+		UID: 38, TotalCNY: 600,
+		Entitlements: []*types.CommercialEntitlement{{UID: 38, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: &currentExpiry}},
+	}}
+	s.plans = []*types.CommercialPlan{personal}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	preview, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 38, Action: commercialAdjustmentExtend, Preview: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := currentExpiry.AddDate(0, 0, 30)
+	if preview.ExpiresAt == nil || !preview.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("extension expiry mismatch: %#v want %v", preview.ExpiresAt, wantExpiry)
+	}
+	if preview.PreviousExpiresAt == nil || !preview.PreviousExpiresAt.Equal(currentExpiry) {
+		t.Fatalf("previous expiry missing: %#v", preview.PreviousExpiresAt)
+	}
+	if preview.NextTotalCNY != 1100 || preview.UsageWillReset || preview.CurrentPlan == nil || preview.CurrentPlan.ID != 7 {
+		t.Fatalf("extension preview: %#v", preview)
+	}
+	reset, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 38, Action: commercialAdjustmentExtend, ResetCycle: true, Preview: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reset.UsageWillReset {
+		t.Fatalf("combined reset preview did not flag the usage reset: %#v", reset)
+	}
+}
+
+func TestCommercialAdjustmentExtendPreviewRejectsExpiredAndUnsupportedPlans(t *testing.T) {
+	now := time.Now().UTC()
+	expired := now.Add(-time.Hour)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	free := &types.CommercialPlan{ID: 1, Slug: "catsco-free", Name: "Free"}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{UID: 38, TotalCNY: 100, Entitlements: []*types.CommercialEntitlement{
+		{UID: 38, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-40 * 24 * time.Hour), ExpiresAt: &expired},
+	}}}
+	s.plans = []*types.CommercialPlan{free, personal}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	_, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 38, Action: commercialAdjustmentExtend, Preview: true}, now)
+	var adjustmentErr *types.CommercialAdjustmentError
+	if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "no_active_plan" {
+		t.Fatalf("expired package should be rejected: %v", err)
+	}
+
+	freeSummary := &types.CommercialSummary{UID: 39, TotalCNY: 100, Entitlements: []*types.CommercialEntitlement{
+		{UID: 39, PlanID: 1, PlanSlug: "catsco-free", Source: "free", State: "active", StartsAt: now.Add(-24 * time.Hour)},
+	}}
+	s2 := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: freeSummary}
+	s2.plans = []*types.CommercialPlan{free, personal}
+	h2 := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s2)
+	_, err = h2.buildCommercialAdjustmentPreview(context.Background(), s2, &commercialAdjustmentRequest{UID: 39, Action: commercialAdjustmentExtend, Preview: true}, now)
+	if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "no_active_plan" {
+		t.Fatalf("free package should be rejected: %v", err)
+	}
+}
+
+func TestCommercialAdjustmentExtendPreviewChainsOnNewestSegment(t *testing.T) {
+	now := time.Now().UTC()
+	currentExpiry := now.Add(10 * 24 * time.Hour)
+	extensionExpiry := currentExpiry.AddDate(0, 0, 30)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
+		UID: 40, TotalCNY: 600,
+		Entitlements: []*types.CommercialEntitlement{
+			{UID: 40, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: &currentExpiry},
+			{UID: 40, PlanID: 7, PlanSlug: "catsco-personal", Source: "operator", State: "active", StartsAt: currentExpiry, ExpiresAt: &extensionExpiry},
+		},
+	}}
+	s.plans = []*types.CommercialPlan{personal}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	preview, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 40, Action: commercialAdjustmentExtend, Preview: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.PreviousExpiresAt == nil || !preview.PreviousExpiresAt.Equal(extensionExpiry) {
+		t.Fatalf("preview did not chain on the newest segment: %#v", preview.PreviousExpiresAt)
+	}
+	if preview.ExpiresAt == nil || !preview.ExpiresAt.Equal(extensionExpiry.AddDate(0, 0, 30)) {
+		t.Fatalf("chained expiry mismatch: %#v", preview.ExpiresAt)
+	}
+}
+
+func TestCommercialAdjustmentExtendPreviewRejectsZeroDurationPlan(t *testing.T) {
+	now := time.Now().UTC()
+	currentExpiry := now.Add(10 * 24 * time.Hour)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", DurationDays: -1}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
+		UID: 41, TotalCNY: 100,
+		Entitlements: []*types.CommercialEntitlement{{UID: 41, PlanID: 7, PlanSlug: "catsco-personal", Source: "operator", State: "active", StartsAt: now.Add(-time.Hour), ExpiresAt: &currentExpiry}},
+	}}
+	s.plans = []*types.CommercialPlan{personal}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	_, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 41, Action: commercialAdjustmentExtend, Preview: true}, now)
+	var adjustmentErr *types.CommercialAdjustmentError
+	if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "unsupported_plan" {
+		t.Fatalf("zero-duration plan should be rejected: %v", err)
+	}
+}
+
+func TestCommercialAdjustmentExtendApplyRequiresExpectedExpiry(t *testing.T) {
+	now := time.Now().UTC()
+	currentExpiry := now.Add(10 * 24 * time.Hour)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
+		UID: 42, TotalCNY: 600,
+		Entitlements: []*types.CommercialEntitlement{{UID: 42, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: &currentExpiry}},
+	}}
+	s.plans = []*types.CommercialPlan{personal}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	body, _ := json.Marshal(map[string]interface{}{
+		"uid": 42, "action": "extend", "note": "合同续费", "operation_id": "extend-op-test", "expected_total_cny": 600.0,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/account-admin/commercial/adjustments", bytes.NewReader(body))
+	req = withCommercialOpsService(req, AccountService{Slug: "test-ops", Scopes: []string{"commercial.ops.write"}})
+	rec := httptest.NewRecorder()
+	h.HandleCommercialAdjustment(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "expected_expiry is required") {
+		t.Fatalf("extend apply without expected_expiry: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

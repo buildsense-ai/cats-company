@@ -571,19 +571,8 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		// If the user already has a cloud worker, a renewal/upgrade extends the
 		// retention window atomically with the paid entitlement. The worker is
 		// not deleted at the old expiry while a new monthly package is active.
-		if _, err := tx.Exec(`
-			UPDATE cloud_worker_lifecycles
-			SET package_expires_at = $2::timestamptz,
-			    conversion_pending = CASE WHEN billing_mode='ondemand' THEN true ELSE conversion_pending END,
-			    delete_after = $2::timestamptz + INTERVAL '15 days',
-			    state = 'active', archived_at = NULL, delete_started_at = NULL,
-			    last_error = '', updated_at = CURRENT_TIMESTAMP
-			-- A deletion already claimed by the sweeper is an external operation
-			-- in flight. Do not resurrect its row in the database while the cloud
-			-- destroy script is running; a delete_failed row has no active provider
-			-- operation and is safe to restore after a successful renewal.
-			WHERE owner_uid = $1 AND state IN ('active','delete_pending','delete_failed')`, order.UID, expiresAt); err != nil {
-			return nil, false, fmt.Errorf("extend cloud worker lifecycle: %w", err)
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, order.UID, expiresAt); err != nil {
+			return nil, false, err
 		}
 	}
 	fulfilled, err := scanCommercialOrder(tx.QueryRow(`
