@@ -892,11 +892,6 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, meta)
 }
 
-// RenewForOwner extends or resumes all provider instances attached to an
-// owner's paid cloud-worker lifecycles. It is called only after a commercial
-// payment has committed; the provider script is idempotent for active workers
-// and resubscribes provider-expired/freezing instances. Permanently
-// unsubscribed instances are not recoverable in the current worker region.
 // discardResponseWriter absorbs the response of an internal handler call that
 // has no live HTTP connection (post-purchase auto provisioning). It keeps the
 // status line and a bounded body so the caller can log a classified result.
@@ -937,6 +932,13 @@ func (w *discardResponseWriter) Write(p []byte) (int, error) {
 // automatic and manual flows share validation, credit reservation, rollback
 // and the auto-friend handshake.
 func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Runs on the payment path's background goroutine: a panic here must
+			// never take the process down with it.
+			log.Printf("[cloud-worker] CRITICAL auto provisioning panicked uid=%d: %v", uid, r)
+		}
+	}()
 	if h == nil || uid <= 0 {
 		return
 	}
@@ -975,19 +977,44 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 		log.Printf("[cloud-worker] auto provisioning uid=%d: encode request: %v", uid, err)
 		return
 	}
-	req, err := http.NewRequest(http.MethodPost, "/api/cloud-workers", strings.NewReader(string(payload)))
-	if err != nil {
-		log.Printf("[cloud-worker] auto provisioning uid=%d: build request: %v", uid, err)
+	for attempt := 1; attempt <= autoProvisionMaxAttempts; attempt++ {
+		// The request body is consumed by HandleCreate; rebuild it per attempt.
+		req, err := http.NewRequest(http.MethodPost, "/api/cloud-workers", strings.NewReader(string(payload)))
+		if err != nil {
+			log.Printf("[cloud-worker] auto provisioning uid=%d: build request: %v", uid, err)
+			return
+		}
+		req = req.WithContext(context.WithValue(context.Background(), uidKey, uid))
+		recorder := &discardResponseWriter{}
+		h.HandleCreate(recorder, req)
+		if recorder.status >= 200 && recorder.status < 300 {
+			log.Printf("[cloud-worker] auto provisioning started uid=%d username=%s", uid, username)
+			return
+		}
+		if recorder.status == http.StatusConflict && attempt < autoProvisionMaxAttempts {
+			// An in-flight cloud operation (a manual create/update/reset or a
+			// parallel payment path) holds the owner's operation lock. Retry
+			// after a short backoff instead of leaving a paid account without
+			// its worker; the conflict returns before any credit is reserved,
+			// so a retry cannot double-provision.
+			log.Printf("[cloud-worker] auto provisioning busy uid=%d, retrying in %s", uid, autoProvisionRetryDelay(attempt))
+			time.Sleep(autoProvisionRetryDelay(attempt))
+			continue
+		}
+		log.Printf("[cloud-worker] CRITICAL auto provisioning failed uid=%d status=%d body=%s", uid, recorder.status, truncateWorkerOutput(recorder.body.String()))
 		return
 	}
-	req = req.WithContext(context.WithValue(context.Background(), uidKey, uid))
-	recorder := &discardResponseWriter{}
-	h.HandleCreate(recorder, req)
-	if recorder.status >= 200 && recorder.status < 300 {
-		log.Printf("[cloud-worker] auto provisioning started uid=%d username=%s", uid, username)
-		return
+}
+
+// autoProvisionMaxAttempts bounds the 409 retries of AutoProvisionForOwner.
+const autoProvisionMaxAttempts = 3
+
+// autoProvisionRetryDelay is a variable so tests can compress the backoff.
+var autoProvisionRetryDelay = func(attempt int) time.Duration {
+	if attempt <= 1 {
+		return 3 * time.Second
 	}
-	log.Printf("[cloud-worker] auto provisioning failed uid=%d status=%d body=%s", uid, recorder.status, truncateWorkerOutput(recorder.body.String()))
+	return 10 * time.Second
 }
 
 // autoCloudWorkerUsername derives a unique, script-safe username for the
@@ -1022,6 +1049,11 @@ func autoCloudWorkerDisplayName(db store.Store, uid int64) string {
 	return name
 }
 
+// RenewForOwner extends or resumes all provider instances attached to an
+// owner's paid cloud-worker lifecycles. It is called only after a commercial
+// payment has committed; the provider script is idempotent for active workers
+// and resubscribes provider-expired/freezing instances. Permanently
+// unsubscribed instances are not recoverable in the current worker region.
 func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return

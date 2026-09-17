@@ -725,13 +725,26 @@ export default function MessagesView({
   // conversation bot before rendering a notice so other bots stay untouched.
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
+    const schedule = (delay) => {
+      if (timer) window.clearTimeout(timer);
+      timer = null;
+      if (!cancelled && delay > 0) {
+        timer = window.setTimeout(loadCloudWorkers, delay);
+      }
+    };
     const loadCloudWorkers = async () => {
       if (!api.getCloudWorkers) return;
       try {
         const response = await api.getCloudWorkers({ timeoutMs: 15_000 });
-        if (!cancelled && Array.isArray(response?.workers)) {
+        if (cancelled) return;
+        if (Array.isArray(response?.workers)) {
           setCloudWorkers((previous) => mergeCloudWorkerSnapshots(previous, response?.workers));
         }
+        // While a fresh worker is still provisioning, keep polling so the
+        // pending notice clears on its own once the runtime connects.
+        const pendingWorker = (response?.workers || []).some((worker) => isCloudWorkerPending(worker));
+        schedule(pendingWorker ? 10_000 : 0);
       } catch {
         // Keep the last successful snapshot so a transient refresh failure
         // cannot make the active conversation's update notice disappear.
@@ -743,6 +756,7 @@ export default function MessagesView({
     return () => {
       cancelled = true;
       window.removeEventListener('cc:data-changed', refresh);
+      if (timer) window.clearTimeout(timer);
     };
   }, [topic]);
 
@@ -3155,13 +3169,12 @@ export default function MessagesView({
   }, [cloudWorkerUpdateKey]);
   // A cloud worker that has not connected yet (still provisioning right after
   // a purchase, or offline) cannot answer messages. Keep a persistent notice
-  // in the conversation until the roster reports it connected. Task
-  // conversations address the single task bot instead of a p2p peer.
-  const cloudWorkerCandidateUID = conversationBotUID || taskBotUID;
+  // in the conversation until the roster reports it connected. Group task
+  // conversations already resolve their single bot through conversationBotUID.
   const activeCloudWorker = useMemo(() => {
-    if (!cloudWorkerCandidateUID) return null;
-    return cloudWorkers.find((candidate) => sameUID(candidate?.uid, cloudWorkerCandidateUID)) || null;
-  }, [cloudWorkers, cloudWorkerCandidateUID]);
+    if (!conversationBotUID) return null;
+    return cloudWorkers.find((candidate) => sameUID(candidate?.uid, conversationBotUID)) || null;
+  }, [cloudWorkers, conversationBotUID]);
   const cloudWorkerPending = isCloudWorkerPending(activeCloudWorker);
   const isTwoPersonGroupWithCurrentUser = useMemo(() => {
     if (!isGroup) return false;

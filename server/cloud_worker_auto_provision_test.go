@@ -3,6 +3,7 @@ package server
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -108,5 +109,38 @@ func TestAutoCloudWorkerDisplayName(t *testing.T) {
 	long := &cloudWorkerTestStore{creatorUser: &types.User{Username: "creator", DisplayName: strings.Repeat("很", 60)}}
 	if got := autoCloudWorkerDisplayName(long, 42); len([]rune(got)) > 40 {
 		t.Fatalf("display_name rune length=%d must be bounded to 40", len([]rune(got)))
+	}
+}
+
+// A concurrent cloud operation holds the per-owner operation lock; the auto
+// provision must back off and retry instead of leaving a paid account without
+// its worker. The conflict returns before any credit is reserved, so the
+// retry cannot double-provision.
+func TestAutoProvisionForOwnerRetriesBusyOperation(t *testing.T) {
+	cfg := workerScriptCfg(t, "42=1", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
+	if cfg.ProvisionScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	previousDelay := autoProvisionRetryDelay
+	autoProvisionRetryDelay = func(int) time.Duration { return 30 * time.Millisecond }
+	t.Cleanup(func() { autoProvisionRetryDelay = previousDelay })
+
+	h.opMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.AutoProvisionForOwner(42)
+	}()
+	time.Sleep(15 * time.Millisecond)
+	h.opMu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("auto provisioning did not finish")
+	}
+	if len(ts.tenantNames) != 1 {
+		t.Fatalf("tenantNames=%v want exactly one worker after retry", ts.tenantNames)
 	}
 }

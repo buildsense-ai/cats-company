@@ -649,6 +649,7 @@ describe('cloud worker pending notice', () => {
     await act(async () => {
       root.unmount();
     });
+    vi.useRealTimers();
     container.remove();
     vi.clearAllMocks();
   });
@@ -722,6 +723,43 @@ describe('cloud worker pending notice', () => {
     });
     await mountTopic(root, 'p2p_1_2');
     await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).toBeNull();
+  });
+
+  it('clears the notice automatically once the worker connects', async () => {
+    vi.useFakeTimers();
+    const fresh = new Date().toISOString();
+    api.getCloudWorkers
+      .mockResolvedValueOnce({
+        workers: [{
+          uid: 2,
+          tenant_name: 'tenant-a',
+          display_name: '云端审查助手',
+          username: 'bot-cloud-1',
+          runtime_status: 'not_connected',
+          created_time: fresh,
+        }],
+      })
+      .mockResolvedValue({
+        workers: [{
+          uid: 2,
+          tenant_name: 'tenant-a',
+          display_name: '云端审查助手',
+          username: 'bot-cloud-1',
+          runtime_status: 'connected',
+          created_time: fresh,
+        }],
+      });
+    await mountTopic(root, 'p2p_1_2');
+    await flushPromises();
+    expect(container.querySelector('.cc-cloud-worker-pending-notice')).not.toBeNull();
+
+    // While the worker is pending the roster polls; once it reports connected
+    // the notice clears without any manual refresh.
+    await act(async () => {
+      vi.advanceTimersByTime(10_100);
+      await flushPromises();
+    });
     expect(container.querySelector('.cc-cloud-worker-pending-notice')).toBeNull();
   });
 });
