@@ -3154,11 +3154,13 @@ export default function MessagesView({
   }, [cloudWorkerUpdateKey]);
   // A cloud worker that has not connected yet (still provisioning right after
   // a purchase, or offline) cannot answer messages. Keep a persistent notice
-  // in the conversation until the roster reports it connected.
+  // in the conversation until the roster reports it connected. Task
+  // conversations address the single task bot instead of a p2p peer.
+  const cloudWorkerCandidateUID = conversationBotUID || taskBotUID;
   const activeCloudWorker = useMemo(() => {
-    if (!conversationBotUID) return null;
-    return cloudWorkers.find((candidate) => sameUID(candidate?.uid, conversationBotUID)) || null;
-  }, [cloudWorkers, conversationBotUID]);
+    if (!cloudWorkerCandidateUID) return null;
+    return cloudWorkers.find((candidate) => sameUID(candidate?.uid, cloudWorkerCandidateUID)) || null;
+  }, [cloudWorkers, cloudWorkerCandidateUID]);
   const cloudWorkerPending = Boolean(
     activeCloudWorker
     && activeCloudWorker.runtime_status
