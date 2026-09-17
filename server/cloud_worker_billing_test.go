@@ -16,6 +16,7 @@ import (
 type configuredCreditStub struct {
 	profileCreditStub
 	billing, requestedBilling string
+	expiresAt                 *time.Time
 }
 
 func (s *configuredCreditStub) CloudWorkerConfiguredCreditSummary(int64, string, string) (int, int, error) {
@@ -27,7 +28,7 @@ func (s *configuredCreditStub) GrantCloudWorkerConfiguredCredits(int64, int, str
 func (s *configuredCreditStub) ReserveCloudWorkerConfiguredCredit(_ int64, _ string, profile, billing string) (types.CloudWorkerCreditSelection, bool, error) {
 	s.requested = profile
 	s.requestedBilling = billing
-	return types.CloudWorkerCreditSelection{Profile: s.profile, BillingMode: s.billing}, true, nil
+	return types.CloudWorkerCreditSelection{Profile: s.profile, BillingMode: s.billing, ExpiresAt: s.expiresAt}, true, nil
 }
 
 func TestCloudWorkerBillingCannotBeSelectedByFrontend(t *testing.T) {

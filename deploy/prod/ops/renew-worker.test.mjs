@@ -30,6 +30,15 @@ const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
 const json = value => process.stdout.write(JSON.stringify(value));
 if (op === "ecs ListEcsInstances") {
   const name = val("--instanceName");
+  if (state.pendingExpiredTime) {
+    if ((state.expireAfterReads || 0) > 0) {
+      state.expireAfterReads -= 1;
+    } else {
+      state.instances = (state.instances || []).map(i => ({ ...i, expiredTime: state.pendingExpiredTime }));
+      state.pendingExpiredTime = null;
+    }
+    save();
+  }
   json({ statusCode: "800", returnObj: { results: (state.instances || []).filter(i => !name || i.instanceName === name) } });
 } else if (op === "ecs ResubscribeEcsInstance") {
   state.resubscribeAttempts = (state.resubscribeAttempts || 0) + 1;
@@ -38,7 +47,15 @@ if (op === "ecs ListEcsInstances") {
   if (state.failResubscribeAttempts >= state.resubscribeAttempts) { save(); json({ statusCode: "900", errorCode: "E.RESUB", message: "retry" }); process.exit(0); }
   if (state.failResubscribe) { json({ statusCode: "900", errorCode: "E.RESUB", message: "boom" }); process.exit(0); }
   state.resubscribeCalls = (state.resubscribeCalls || 0) + 1;
-  state.instances = (state.instances || []).map(i => ({ ...i, state: "running", instanceStatus: "running", expiredTime: "2099-01-01T00:00:00Z" }));
+  state.instances = (state.instances || []).map(i => ({ ...i, state: "running", instanceStatus: "running" }));
+  if (state.lagExpiryByReads) {
+    // Simulate provider propagation lag: the new expiry only becomes visible
+    // after this many further ListEcsInstances reads.
+    state.pendingExpiredTime = "2099-01-01T00:00:00Z";
+    state.expireAfterReads = state.lagExpiryByReads;
+  } else {
+    state.instances = state.instances.map(i => ({ ...i, expiredTime: "2099-01-01T00:00:00Z" }));
+  }
   save();
   json({ statusCode: "800", returnObj: {} });
 } else if (op === "ecs UpdateEcsAutoRenewConfig") {
@@ -217,4 +234,27 @@ test("renew-worker: retries resubscribe with one idempotent operation", () => {
   assert.equal(state.resubscribeAttempts, 3);
   assert.equal(state.resubscribeCalls, 1);
   assert.equal(new Set(state.resubscribeTokens).size, 1);
+});
+
+test("renew-worker: waits for the provider to publish the new expiry before reporting it", () => {
+  const sb = setup(
+    { instanceName: "worker-bot-a", instanceID: "i-active", instanceStatus: "running", state: "running", expiredTime: "2030-01-01T00:00:00Z" },
+    { lagExpiryByReads: 3 },
+  );
+  const result = run(sb, ["--name", "bot-a"]);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /"expires_at":"2099-01-01T00:00:00Z"/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.resubscribeCalls, 1);
+});
+
+test("renew-worker: unconfirmed expiry keeps callers on the paid period", () => {
+  const sb = setup(
+    { instanceName: "worker-bot-a", instanceID: "i-active", instanceStatus: "running", state: "running", expiredTime: "2030-01-01T00:00:00Z" },
+    { lagExpiryByReads: 500 },
+  );
+  const result = run(sb, ["--name", "bot-a"]);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /has not published the new expiry/);
+  assert.match(result.stdout, /"expires_at":""/);
 });

@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // Deployment profiles are operator-issued capabilities, never a public create input.
 const (
 	CloudWorkerPrivateNAT = "private_nat"
@@ -18,6 +20,10 @@ func NormalizeCloudWorkerBilling(mode string) (string, bool) {
 type CloudWorkerCreditSelection struct {
 	Profile     string
 	BillingMode string
+	// ExpiresAt carries the paid window of the reserved credit so the create
+	// path can prepay the provider for every month the credit covers. It is
+	// nil for perpetual manual grants.
+	ExpiresAt *time.Time
 }
 
 func NormalizeCloudWorkerProfile(profile string) (string, bool) {

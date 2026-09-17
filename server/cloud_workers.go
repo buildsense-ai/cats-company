@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -196,12 +197,14 @@ type CloudWorkerCreditAdminStore interface {
 	GrantCloudWorkerCredits(uid int64, count int, sourceRef string, expiresAt *time.Time) (int, error)
 }
 
-// CloudWorkerLifecycleRegistrar lets the create path persist an immediately
-// due cleanup row when a provider instance was created but its paid credit was
-// revoked concurrently (for example by a refund). It is intentionally
+// CloudWorkerLifecycleRegistrar lets the create path persist a cleanup row of
+// its own: an immediately due one when a provider instance was created but its
+// paid credit was revoked concurrently (for example by a refund), or a
+// package-following one for creations that carry no bounded credit at all
+// (legacy static quota, perpetual manual grants). It is intentionally
 // separate from CloudWorkerCreditStore so focused test stores remain small.
 type CloudWorkerLifecycleRegistrar interface {
-	RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenantName string, packageExpiresAt time.Time, graceDays int) error
+	RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenantName string, packageExpiresAt time.Time, billingMode string, graceDays int) error
 }
 
 type CloudWorkerLifecycle = types.CloudWorkerLifecycle
@@ -1079,12 +1082,25 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 		if h.renewTrial(lifecycle) {
 			continue
 		}
-		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName)
+		// One renewal event buys exactly one more paid month. A tenant's
+		// deployment snapshot can record a multi-month creation purchase, so
+		// pin the monthly step explicitly instead of inheriting that count.
+		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
 		if err != nil {
-			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				// The provider operation may already have been applied before the
+				// script timeout; keep the lifecycle date instead of recording a
+				// failure that prompts a second charge.
+				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d hit the script timeout; the renewal may already be applied, lifecycle date left unchanged: %v", lifecycle.TenantName, uid, err)
+			} else {
+				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+			}
 			continue
 		}
 		result, parseErr := parseCloudWorkerRenewalResult(out)
+		if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
+			log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
+		}
 		if parseErr != nil {
 			// The provider operation already succeeded. Do not turn a missing
 			// informational field into a second charge or a false failure, but
@@ -1101,13 +1117,69 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 			if extendErr != nil {
 				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
 			}
-			if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
-				log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
-			}
 		}
 		log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d completed", lifecycle.TenantName, uid)
 	}
 	h.requestCloudStatusRefresh(true)
+}
+
+// cloudWorkerPaidUntil resolves the paid window a new worker should match:
+// the reserved credit's own expiry when it has one, otherwise the owner's
+// current package expiry (static-quota creations and perpetual manual grants
+// carry no bounded credit). Zero means no paid window is known.
+func (h *CloudWorkerHandler) cloudWorkerPaidUntil(ownerUID int64, creditExpiresAt *time.Time) time.Time {
+	if creditExpiresAt != nil && !creditExpiresAt.IsZero() {
+		return creditExpiresAt.UTC()
+	}
+	if value, err := cloudWorkerProvisionExpiry(h.db, ownerUID, ""); err == nil && value != nil {
+		return value.UTC()
+	}
+	return time.Time{}
+}
+
+// cloudWorkerProvisionCycles converts a paid window into whole prepaid months
+// (Tianyi prepaid instances are billed in monthly cycles). One hour of slack
+// keeps a window a few seconds short of a whole month from buying an extra
+// cycle; the result is capped at the provider script's 1-60 month contract.
+func cloudWorkerProvisionCycles(now, paidUntil time.Time) int {
+	if paidUntil.IsZero() || !paidUntil.After(now) {
+		return 1
+	}
+	months := int(math.Ceil((paidUntil.Sub(now) - time.Hour).Hours() / (24 * 30)))
+	if months < 1 {
+		months = 1
+	}
+	if months > 60 {
+		months = 60
+	}
+	return months
+}
+
+// registerFallbackCloudWorkerLifecycle persists a cleanup handle for creations
+// that hold no bounded credit. The worker follows the owner's active package
+// expiry; when the owner has no package at all, a bounded 30-day default keeps
+// the instance visible to the retention sweep instead of orphaning it, and the
+// event is logged for operators. Best-effort: the creation already succeeded.
+func (h *CloudWorkerHandler) registerFallbackCloudWorkerLifecycle(ownerUID, workerUID int64, tenantName, billingMode string) {
+	registrar, ok := h.credits.(CloudWorkerLifecycleRegistrar)
+	if !ok {
+		log.Printf("[cloud-worker] lifecycle registrar unavailable; worker=%d owner=%d registered without lifecycle", workerUID, ownerUID)
+		return
+	}
+	expiresAt := time.Time{}
+	if value, err := cloudWorkerProvisionExpiry(h.db, ownerUID, ""); err == nil && value != nil {
+		expiresAt = value.UTC()
+	} else {
+		expiresAt = time.Now().UTC().AddDate(0, 0, 30)
+		log.Printf("[cloud-worker] owner uid=%d has no active package; registering worker=%d tenant=%s with a 30-day default lifetime", ownerUID, workerUID, tenantName)
+	}
+	graceDays := cloudWorkerExpiryGraceDays
+	if billingMode == types.CloudWorkerOnDemand {
+		graceDays = 3
+	}
+	if err := registrar.RegisterCloudWorkerLifecycle(workerUID, ownerUID, tenantName, expiresAt, billingMode, graceDays); err != nil {
+		log.Printf("[cloud-worker] fallback lifecycle registration worker=%d tenant=%s failed: %v", workerUID, tenantName, err)
+	}
 }
 
 type cloudWorkerRenewalResult struct {
@@ -1134,17 +1206,22 @@ func parseCloudWorkerRenewalResult(output string) (cloudWorkerRenewalResult, err
 			lastErr = err
 			continue
 		}
+		// Keep the provider's auto-renew reconciliation signal even when the
+		// expiry itself is missing or malformed: callers must still be able to
+		// report an unconfirmed automatic-renewal disable.
+		parsed := cloudWorkerRenewalResult{AutoRenewDisabled: result.AutoRenewDisabled}
 		if strings.TrimSpace(result.ExpiresAt) == "" {
-			return cloudWorkerRenewalResult{}, fmt.Errorf("provider response omitted expires_at")
+			return parsed, fmt.Errorf("provider response omitted expires_at")
 		}
 		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(result.ExpiresAt))
 		if err != nil {
-			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
+			return parsed, fmt.Errorf("provider expires_at is not RFC3339: %w", err)
 		}
 		if !expiresAt.After(time.Now().UTC()) {
-			return cloudWorkerRenewalResult{}, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
+			return parsed, fmt.Errorf("provider expires_at %s is not in the future", expiresAt.UTC().Format(time.RFC3339))
 		}
-		return cloudWorkerRenewalResult{ExpiresAt: expiresAt.UTC(), AutoRenewDisabled: result.AutoRenewDisabled}, nil
+		parsed.ExpiresAt = expiresAt.UTC()
+		return parsed, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("provider response was empty")
@@ -1227,6 +1304,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	}
 	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
 	reservedCredit := false
+	var creditExpiresAt *time.Time
 	profile := types.CloudWorkerPrivateNAT
 	billing := types.CloudWorkerMonthly
 	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
@@ -1240,6 +1318,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		reservedCredit = reserved
 		if reserved {
 			profile, billing = selected.Profile, selected.BillingMode
+			creditExpiresAt = selected.ExpiresAt
 		}
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
@@ -1269,6 +1348,15 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	deployment, deploymentErr := h.deploymentForProfile(profile)
 	if deploymentErr == nil {
 		deployment.Env["CTYUN_WORKER_BILLING_MODE"] = billing
+		if billing == types.CloudWorkerMonthly {
+			// Tianyi prepaid instances are sold in whole monthly cycles. Prepay
+			// one cycle for every month the paid window covers so a 90-day grant
+			// opens a 3-month subscription instead of a single month that
+			// silently freezes on day 30. Later renewal events top the
+			// subscription up one month at a time.
+			paidUntil := h.cloudWorkerPaidUntil(uid, creditExpiresAt)
+			deployment.Env["CTYUN_WORKER_CYCLE_COUNT"] = strconv.Itoa(cloudWorkerProvisionCycles(time.Now().UTC(), paidUntil))
+		}
 	}
 	if deploymentErr != nil {
 		if reservedCredit {
@@ -1417,20 +1505,30 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if reservedCredit {
 			if commitErr := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, 0); commitErr != nil {
 				log.Printf("[cloud-worker] failed to bind reserved credit to pending cleanup uid=%d worker=%d: %v", uid, result.UID, commitErr)
-			} else if lifecycleStore, ok := h.credits.(interface {
-				ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
-				MarkCloudWorkerLifecyclePending(int64, time.Time) error
-			}); ok {
-				if lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid); listErr != nil {
-					log.Printf("[cloud-worker] failed to list pending cleanup lifecycle uid=%d worker=%d: %v", uid, result.UID, listErr)
-				} else {
-					for _, lifecycle := range lifecycles {
-						if lifecycle.WorkerUID == result.UID && lifecycle.TenantName == tenantName && lifecycle.State == "active" {
-							if markErr := lifecycleStore.MarkCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC()); markErr != nil {
-								log.Printf("[cloud-worker] failed to mark pending cleanup tenant=%s: %v", tenantName, markErr)
-							}
-							break
+			}
+		}
+		// Every pending-cleanup instance needs a durable sweeper handle: a
+		// perpetual-credit commit leaves no lifecycle row and a static-quota
+		// creation never had one. ON CONFLICT DO NOTHING keeps the row a bounded
+		// commit already inserted.
+		if registrar, ok := h.credits.(CloudWorkerLifecycleRegistrar); ok {
+			if registerErr := registrar.RegisterCloudWorkerLifecycle(result.UID, uid, tenantName, time.Now().UTC(), billing, 0); registerErr != nil {
+				log.Printf("[cloud-worker] failed to register pending-cleanup lifecycle uid=%d worker=%d: %v", uid, result.UID, registerErr)
+			}
+		}
+		if lifecycleStore, ok := h.credits.(interface {
+			ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+			MarkCloudWorkerLifecyclePending(int64, time.Time) error
+		}); ok {
+			if lifecycles, listErr := lifecycleStore.ListCloudWorkerLifecycles(uid); listErr != nil {
+				log.Printf("[cloud-worker] failed to list pending cleanup lifecycle uid=%d worker=%d: %v", uid, result.UID, listErr)
+			} else {
+				for _, lifecycle := range lifecycles {
+					if lifecycle.WorkerUID == result.UID && lifecycle.TenantName == tenantName && lifecycle.State == "active" {
+						if markErr := lifecycleStore.MarkCloudWorkerLifecyclePending(lifecycle.ID, time.Now().UTC()); markErr != nil {
+							log.Printf("[cloud-worker] failed to mark pending cleanup tenant=%s: %v", tenantName, markErr)
 						}
+						break
 					}
 				}
 			}
@@ -1467,7 +1565,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 				}
 			}
 			if registrar, ok := h.credits.(CloudWorkerLifecycleRegistrar); ok {
-				if registerErr := registrar.RegisterCloudWorkerLifecycle(result.UID, uid, tenantName, time.Now().UTC(), 0); registerErr != nil {
+				if registerErr := registrar.RegisterCloudWorkerLifecycle(result.UID, uid, tenantName, time.Now().UTC(), billing, 0); registerErr != nil {
 					log.Printf("[cloud-worker] failed to register commit-recovery lifecycle uid=%d worker=%d: %v", uid, result.UID, registerErr)
 				}
 			}
@@ -1477,6 +1575,14 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
+	}
+
+	// Static-quota creations and perpetual manual grants carry no bounded
+	// credit, so they would otherwise leave no lifecycle record and escape the
+	// hourly retention sweep entirely. Give them the same durable handle as
+	// paid creations: follow the owner's active package when one exists.
+	if !reservedCredit || creditExpiresAt == nil {
+		h.registerFallbackCloudWorkerLifecycle(uid, result.UID, tenantName, billing)
 	}
 
 	friendAutoAdded := false

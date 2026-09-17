@@ -146,6 +146,10 @@ func (a *Adapter) ReserveCloudWorkerCredit(uid int64, reservation string) (bool,
 	return true, nil
 }
 
+// ReserveCloudWorkerProfileCredit is the legacy string-only wrapper around the
+// configured reservation. It cannot surface the reserved credit's paid window;
+// the create path uses ReserveCloudWorkerConfiguredCredit when it needs the
+// expiry to size the provider purchase.
 func (a *Adapter) ReserveCloudWorkerProfileCredit(uid int64, reservation, profile string) (string, bool, error) {
 	selection, reserved, err := a.ReserveCloudWorkerConfiguredCredit(uid, reservation, profile, types.CloudWorkerMonthly)
 	return selection.Profile, reserved, err
@@ -200,12 +204,13 @@ func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, pro
 	}
 	var id int64
 	var selectedProfile, selectedBilling string
+	var selectedExpiresAt sql.NullTime
 	err = tx.QueryRow(`
-		SELECT id, deployment_profile, billing_mode FROM cloud_worker_credits
+		SELECT id, deployment_profile, billing_mode, expires_at FROM cloud_worker_credits
 		WHERE uid = $1 AND state = 'available' AND ($2 = '' OR deployment_profile = $2) AND ($3 = '' OR billing_mode = $3)
 		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		ORDER BY CASE WHEN billing_mode = 'month' THEN 0 ELSE 1 END, CASE WHEN deployment_profile = 'public_ip' THEN 0 ELSE 1 END, created_at, id
-		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile, billing).Scan(&id, &selectedProfile, &selectedBilling)
+		FOR UPDATE SKIP LOCKED LIMIT 1`, uid, profile, billing).Scan(&id, &selectedProfile, &selectedBilling, &selectedExpiresAt)
 	if err == sql.ErrNoRows {
 		return selection, false, nil
 	}
@@ -221,7 +226,12 @@ func (a *Adapter) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, pro
 	if err := tx.Commit(); err != nil {
 		return selection, false, fmt.Errorf("commit cloud worker credit reservation: %w", err)
 	}
-	return types.CloudWorkerCreditSelection{Profile: selectedProfile, BillingMode: selectedBilling}, true, nil
+	selection = types.CloudWorkerCreditSelection{Profile: selectedProfile, BillingMode: selectedBilling}
+	if selectedExpiresAt.Valid {
+		value := selectedExpiresAt.Time.UTC()
+		selection.ExpiresAt = &value
+	}
+	return selection, true, nil
 }
 
 func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerUID int64, tenantName string, graceDays int) error {
@@ -275,20 +285,22 @@ func (a *Adapter) CommitCloudWorkerCredit(uid int64, reservation string, workerU
 }
 
 // RegisterCloudWorkerLifecycle persists a cleanup handle independently of a
-// paid credit. It is used only when a provider instance was created but the
-// credit reservation disappeared concurrently (for example after a refund),
-// so the lifecycle sweeper can retry destruction instead of leaving a billed
-// orphan with no durable handle.
-func (a *Adapter) RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenantName string, packageExpiresAt time.Time, graceDays int) error {
-	if workerUID <= 0 || ownerUID <= 0 || strings.TrimSpace(tenantName) == "" || packageExpiresAt.IsZero() || graceDays < 0 || graceDays > 90 {
+// paid credit. It is used when a provider instance was created outside the
+// bounded-credit flow: a reservation that disappeared concurrently (for
+// example after a refund), legacy static-quota creations, or perpetual manual
+// grants. The explicit billing mode keeps trial (ondemand) rows out of the
+// monthly archive schedule.
+func (a *Adapter) RegisterCloudWorkerLifecycle(workerUID, ownerUID int64, tenantName string, packageExpiresAt time.Time, billingMode string, graceDays int) error {
+	normalizedBilling, validBilling := types.NormalizeCloudWorkerBilling(billingMode)
+	if workerUID <= 0 || ownerUID <= 0 || strings.TrimSpace(tenantName) == "" || packageExpiresAt.IsZero() || !validBilling || graceDays < 0 || graceDays > 90 {
 		return fmt.Errorf("invalid cloud worker lifecycle registration")
 	}
 	deleteAfter := packageExpiresAt.AddDate(0, 0, graceDays)
 	_, err := a.db.Exec(`
-		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
-		VALUES ($1, $2, $3, $4, $5, 'active')
+		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode)
+		VALUES ($1, $2, $3, $4, $5, 'active', $6)
 		ON CONFLICT (worker_uid) DO NOTHING`,
-		workerUID, ownerUID, strings.TrimSpace(tenantName), packageExpiresAt, deleteAfter)
+		workerUID, ownerUID, strings.TrimSpace(tenantName), packageExpiresAt, deleteAfter, normalizedBilling)
 	if err != nil {
 		return fmt.Errorf("register cloud worker lifecycle: %w", err)
 	}
