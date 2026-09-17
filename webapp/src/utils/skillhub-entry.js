@@ -148,6 +148,57 @@ export function isPrivateSkillHubReference(skillId) {
   return value.startsWith('priv_') || value.startsWith('private/');
 }
 
+// A Skill name is only unique per publisher, so the catalogue can offer a name
+// that this Agent already holds under a different publisher or as a Bot-private
+// copy. Installing that entry leaves two same-name capabilities in one Agent,
+// so the install action confirms before it adds the duplicate.
+const SKILL_HUB_NON_NAME_SUFFIXES = ['priv_', 'private/', 'local:'];
+
+function skillHubNameKeys(skill) {
+  const keys = new Set();
+  for (const value of [skill?.name, skill?.displayName]) {
+    const text = String(value || '').trim().toLowerCase();
+    if (text) keys.add(text);
+  }
+  const suffix = String(skill?.skillId || '').trim().split('/').pop().trim().toLowerCase();
+  if (suffix && !SKILL_HUB_NON_NAME_SUFFIXES.some(prefix => suffix.startsWith(prefix))) {
+    keys.add(suffix);
+  }
+  return keys;
+}
+
+/**
+ * Returns the installed capability that already owns the same Skill name as the
+ * given catalogue entry without being that entry, or null when the name is free
+ * or already owned by the same reference (an in-place update).
+ */
+export function findSameNameInstalledCapability(catalogueSkill, installedCapabilities = []) {
+  const catalogueID = String(catalogueSkill?.skillId || '').trim();
+  const catalogueNames = skillHubNameKeys(catalogueSkill);
+  if (!catalogueNames.size) return null;
+  for (const capability of Array.isArray(installedCapabilities) ? installedCapabilities : []) {
+    const capabilityID = String(capability?.skillId || '').trim();
+    if (capabilityID && capabilityID === catalogueID) continue;
+    for (const name of skillHubNameKeys(capability)) {
+      if (catalogueNames.has(name)) return capability;
+    }
+  }
+  return null;
+}
+
+/** Short description of an installed capability for confirmation copy. */
+export function describeInstalledCapability(capability) {
+  const skillId = String(capability?.skillId || '').trim();
+  // A workspace Skill that has no Hub reference yet is keyed `local:<id>`, so
+  // unwrap that prefix before deciding whether this is a Bot-private copy.
+  const bareId = skillId.replace(/^local:/, '');
+  if (isPrivateSkillHubReference(bareId)) return '私有能力';
+  if (skillId.startsWith('local:')) return '本机能力';
+  const version = formatSkillHubVersion(capability?.version);
+  const label = skillId || String(capability?.name || '').trim() || '本地能力';
+  return version ? `${label} · ${version}` : label;
+}
+
 export function formatSkillHubVersion(version) {
   const value = String(version || '').trim();
   if (!value) return '';

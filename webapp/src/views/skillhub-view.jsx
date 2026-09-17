@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, requestSkillHubDeviceTool } from '../api';
 import { useFeedback } from '../components/feedback-system';
 import {
+  describeInstalledCapability,
+  findSameNameInstalledCapability,
   formatSkillHubVersion,
   isPrivateSkillHubReference,
   normalizeLocalSkillHubSkills,
@@ -983,6 +985,37 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     (definition.skills || []).map((skill) => [skill.skillId, skill]),
   ), [definition.skills]);
 
+  // One merged view of every capability this Agent already owns: the Definition
+  // supplies the reference and version, the Runtime workspace supplies the Skill
+  // name that a catalogue install would collide with.
+  const installedCapabilities = useMemo(() => {
+    const merged = new Map();
+    for (const skill of definition.skills || []) {
+      const skillId = String(skill?.skillId || '').trim();
+      if (!skillId) continue;
+      merged.set(skillId, {
+        skillId,
+        name: String(skill?.displayName || skill?.localName || '').trim(),
+        version: String(skill?.version || '').trim(),
+      });
+    }
+    for (const skill of (selectedAgentIsFriend ? [] : localSkills)) {
+      const localSkillId = String(skill?.localSkillId || '').trim();
+      const skillId = String(skill?.skillHub?.reference?.skillId || '').trim()
+        || String(skill?.cloudSkillId || '').trim()
+        || (localSkillId ? `local:${localSkillId}` : '');
+      if (!skillId) continue;
+      const previous = merged.get(skillId) || {};
+      merged.set(skillId, {
+        ...previous,
+        skillId,
+        name: String(skill?.name || skill?.displayName || previous.name || '').trim(),
+        version: String(previous.version || skill?.latestVersion || '').trim(),
+      });
+    }
+    return [...merged.values()];
+  }, [definition.skills, localSkills, selectedAgentIsFriend]);
+
   const localSkillsByReference = useMemo(() => {
     const result = new Map();
     for (const skill of localSkills) {
@@ -1599,6 +1632,25 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       candidate?.skillId === skill.skillId
       && resolveSkillHubUpdateStatus(candidate, skill) === 'update'
     ));
+    // Installing a catalogue entry that only shares a name with an installed
+    // capability adds a second same-name ability instead of replacing it, so
+    // make that duplicate an explicit choice.
+    if (!replacing) {
+      const sameName = findSameNameInstalledCapability(skill, installedCapabilities);
+      if (sameName) {
+        const catalogueVersion = formatSkillHubVersion(skill.latestVersion);
+        const confirmed = await feedback.confirm({
+          title: `已存在同名能力“${skill.displayName || skill.skillId}”`,
+          message: `当前 Agent 里已经有一个同名能力（${describeInstalledCapability(sameName)}）。`
+            + '继续添加会再装一份，界面上会出现两个同名条目，需要你手动清理旧的那份。'
+            + (catalogueVersion
+              ? `如果只是想升级到 ${catalogueVersion}，建议先删除本地旧版本。`
+              : '如果只是想升级，建议先删除本地旧版本。'),
+          confirmLabel: '仍然添加',
+        });
+        if (!confirmed || initiatingBotUID !== selectedBotUIDRef.current) return;
+      }
+    }
     const agentName = botLabel(selectedAgent);
     setSkillAction({ type: 'add', skillId: skill.skillId, update: replacing });
     setActionNotice('');
