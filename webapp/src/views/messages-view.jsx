@@ -34,7 +34,7 @@ import {
 } from '../utils/composer-draft-storage';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
 import { useShowThinkingPreference } from '../utils/show-thinking-preference';
-import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
+import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, formatUploadErrorMessage, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
 import {
   artifactContextRefFromSnapshot,
@@ -5123,20 +5123,8 @@ function validateAttachmentBeforeUpload(file, type) {
 }
 
 function formatUploadError(err) {
-  const message = String(err?.message || '上传失败');
-  if (message.includes('413') || message.includes('Payload Too Large')) {
-    return `上传失败：文件超过 ${MAX_ATTACHMENT_SIZE_MB}MB 限制。`;
-  }
-  if (message.includes('invalid image type')) {
-    return '上传失败：当前仅支持 JPG、PNG、GIF、WebP 图片。';
-  }
-  if (message.includes('file type not allowed')) {
-    return '上传失败：该文件类型暂不支持。';
-  }
-  if (message.includes('Unexpected token') || message.includes('invalid server response') || message.includes('JSON')) {
-    return '上传失败：服务器返回了无法识别的响应。';
-  }
-  return `上传失败：${message}`;
+  // Shared mapping lives in utils/upload-rules; keep this name for call sites.
+  return formatUploadErrorMessage(err);
 }
 
 function buildAtomicContentBlocks(text, attachments) {
