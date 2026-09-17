@@ -20,7 +20,7 @@ import {
   subscribeToPwaRefresh,
 } from './pwa-registration';
 import { applyDocumentTheme, THEME_STORAGE_KEY } from './utils/theme-access';
-import { shouldMountPwaForPathname } from './utils/auth-routes';
+import { isKnowledgeWikiPathname, shouldMountPwaForPathname } from './utils/auth-routes';
 import { readStorageValue } from './utils/storage-access';
 import { clearPersistedComposerDrafts } from './utils/composer-draft-storage';
 import { clearStoredUserProfile, readStoredUserProfile } from './utils/user-profile';
@@ -240,7 +240,11 @@ export function App() {
     if (readStoredUserProfile()) clearStoredUserProfile();
   }, [auth.loggedIn, auth.revision]);
 
+  // The knowledge wiki signs in through the host-scoped handoff cookie and must
+  // load before any local session token exists on that origin; the wiki view
+  // keeps access enforced through the API session checks.
   const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
+    || isKnowledgeWikiPathname(browserLocation.pathname)
     || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
   const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
   const shouldMountPwaController = auth.loggedIn

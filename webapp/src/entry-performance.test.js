@@ -42,6 +42,7 @@ describe('entry bundle split', () => {
     expect(entrySource).toContain('function isWorkspaceChunkLoadError(error)');
     expect(entrySource).toContain('loggedIn: hasUsableSessionToken(token),');
     expect(entrySource).toContain("browserLocation.pathname.startsWith('/mobile-upload/')");
+    expect(entrySource).toContain('isKnowledgeWikiPathname(browserLocation.pathname)');
     expect(entrySource).toContain("get('workflow_demo') === '1'");
     expect(entrySource).toContain('onAuthenticationIntent={preloadWorkspace}');
     expect(entrySource).toContain('const shouldMountPwaController = auth.loggedIn');

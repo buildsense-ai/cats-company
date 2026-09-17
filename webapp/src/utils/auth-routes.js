@@ -65,6 +65,16 @@ export function isNameOnboardingPathname(pathname) {
   return normalizedPathname(pathname) === NAME_ONBOARDING_PATH;
 }
 
+const KNOWLEDGE_WIKI_AGENT_PATH = /^\/wiki\/agents\/[^/]+$/;
+
+// The read-only knowledge wiki is served on its own host and signs in through
+// the short-lived handoff session cookie dropped by /wiki/handoff, so the page
+// must load without any locally stored session token. The wiki view and its
+// APIs still enforce access and surface authentication failures.
+export function isKnowledgeWikiPathname(pathname) {
+  return KNOWLEDGE_WIKI_AGENT_PATH.test(normalizedPathname(pathname));
+}
+
 export function nameOnboardingPathForNext(nextPath = '') {
   const next = safePostAuthenticationPath(nextPath);
   return next === '/'

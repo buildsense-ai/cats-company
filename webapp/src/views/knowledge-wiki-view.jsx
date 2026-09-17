@@ -49,7 +49,11 @@ export default function KnowledgeWikiView({ location = window.location } = {}) {
         if (active) setState({ status: 'ready', data: { ...handoff, ...result }, error: '' });
       })
       .catch((error) => {
-        if (active) setState({ status: 'error', data: null, error: error?.message || '暂时无法读取知识库' });
+        if (!active) return;
+        const message = error?.status === 401 || error?.status === 403
+          ? '知识库入口无效或已过期，请重新从 AI 助手管理进入。'
+          : (error?.message || '暂时无法读取知识库');
+        setState({ status: 'error', data: null, error: message });
       });
     return () => { active = false; disconnectWS(); };
   }, [agentUid]);

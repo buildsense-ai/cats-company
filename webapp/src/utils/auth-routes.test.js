@@ -2,6 +2,7 @@ import {
   authModeForPathname,
   authPathForMode,
   authenticationRedirectPath,
+  isKnowledgeWikiPathname,
   isNameOnboardingPathname,
   nameOnboardingPathForNext,
   isAuthenticationPathname,
@@ -18,6 +19,16 @@ test('keeps post-registration naming in a dedicated route and preserves the safe
   expect(nameOnboardingPathForNext('/e/invite-1?source=email')).toBe(
     '/onboarding/name?next=%2Fe%2Finvite-1%3Fsource%3Demail',
   );
+});
+
+test('recognizes the knowledge wiki handoff route without opening other wiki paths', () => {
+  expect(isKnowledgeWikiPathname('/wiki/agents/982')).toBe(true);
+  expect(isKnowledgeWikiPathname('/wiki/agents/982/')).toBe(true);
+  expect(isKnowledgeWikiPathname('/wiki/agents/982/extra')).toBe(false);
+  expect(isKnowledgeWikiPathname('/wiki/agents/')).toBe(false);
+  expect(isKnowledgeWikiPathname('/wiki/agents')).toBe(false);
+  expect(isKnowledgeWikiPathname('/wiki')).toBe(false);
+  expect(isKnowledgeWikiPathname('/login')).toBe(false);
 });
 
 describe('authentication routes', () => {
