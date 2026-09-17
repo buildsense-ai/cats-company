@@ -240,6 +240,15 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), now, expiresAt); err != nil {
 			return nil, err
 		}
+		// A plan change reopens or replaces the paid window; keep cloud-worker
+		// lifecycles on the same paid period so workers are not destroyed while
+		// the replacement package is active (and resume from grace on a reopen).
+		// GREATEST semantics never shorten a longer remaining window.
+		if expiresAt != nil {
+			if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, *expiresAt); err != nil {
+				return nil, err
+			}
+		}
 		nextTotal, err := commercialActiveQuotaTotal(tx, adjustment.UID, now)
 		if err != nil {
 			return nil, err

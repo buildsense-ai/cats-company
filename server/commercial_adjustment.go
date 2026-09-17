@@ -137,7 +137,7 @@ func (h *AccountAdminHandler) HandleCommercialAdjustment(w http.ResponseWriter, 
 		}
 	}
 
-	if req.Action == commercialAdjustmentExtend && result != nil && result.Applied && h.cloudWorkerRenewer != nil {
+	if h.cloudWorkerRenewer != nil && commercialAdjustmentRenewsCloudWorkers(req.Action, result, preview) {
 		// Resume provider-frozen workers asynchronously; provider calls must
 		// never delay or fail the committed ledger response.
 		go h.cloudWorkerRenewer(req.UID)
@@ -239,6 +239,13 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 		}
 		preview.TargetPlan = target
 		preview.NextTotalCNY = commercialPreservedQuota(summary) + commercialPlanQuotaTotal(target)
+		if preview.ExpiresAt != nil {
+			// Keep the previous paid window so the apply step can tell a reopen or
+			// forward move (which a provider subscription must catch up with)
+			// from a lateral plan swap.
+			previous := preview.ExpiresAt.UTC()
+			preview.PreviousExpiresAt = &previous
+		}
 		preview.ExpiresAt = commercialPreviewPlanExpiry(target, now)
 		preview.UsageWillReset = true
 	case commercialAdjustmentResetCycle:
@@ -303,6 +310,29 @@ func (h *AccountAdminHandler) buildCommercialAdjustmentPreview(ctx context.Conte
 	}
 	preview.CanApply = len(preview.Warnings) == 0
 	return preview, nil
+}
+
+// commercialAdjustmentRenewsCloudWorkers reports whether a committed
+// adjustment moved the owner onto a fresh paid window that the provider
+// subscription must catch up with. A lateral plan change (same or shorter
+// remaining time) must not buy another provider month.
+func commercialAdjustmentRenewsCloudWorkers(action string, result *types.CommercialAccountAdjustmentResult, preview *commercialAdjustmentPreview) bool {
+	if result == nil || !result.Applied {
+		return false
+	}
+	switch action {
+	case commercialAdjustmentExtend:
+		return true
+	case commercialAdjustmentChangePlan:
+		if preview == nil || preview.PreviousExpiresAt == nil {
+			// No paid window existed before (reopen or first package); the worker
+			// needs a resumed subscription.
+			return true
+		}
+		return result.ExpiresAt != nil && result.ExpiresAt.After(*preview.PreviousExpiresAt)
+	default:
+		return false
+	}
 }
 
 // commercialExtendablePlanSlug reports whether the plan participates in the

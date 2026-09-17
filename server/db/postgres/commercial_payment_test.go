@@ -157,6 +157,70 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 		t.Fatal("reapplying current Free plan should be rejected")
 	}
 
+	// A plan change must move cloud-worker lifecycles onto the replacement
+	// paid window: archived rows revive (reopen) and a longer remaining window
+	// is never shortened (GREATEST semantics).
+	reopenOwner, err := db.CreateUser(&types.User{
+		Username: "commercial-reopen-owner", Email: "commercial-reopen-owner@example.test", DisplayName: "Reopen Owner",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-reopen-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create reopen owner: %v", err)
+	}
+	reopenBot, err := db.CreateUser(&types.User{Username: "reopen-bot-a", Email: "reopen-bot-a@example.test", AccountType: types.AccountHuman, PassHash: []byte("reopen-bot-a")})
+	if err != nil {
+		t.Fatalf("create reopen bot a: %v", err)
+	}
+	reopenBotLong, err := db.CreateUser(&types.User{Username: "reopen-bot-long", Email: "reopen-bot-long@example.test", AccountType: types.AccountHuman, PassHash: []byte("reopen-bot-long")})
+	if err != nil {
+		t.Fatalf("create reopen bot long: %v", err)
+	}
+	reopenPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: "adjustment-reopen", Name: "Adjustment Reopen", ModelBudgets: map[string]float64{"gpt-5.6-terra": 300}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create reopen plan: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'order', 'adjustment-reopen-seed', 'active', $3, $4)`, reopenOwner, currentPlanID, startsAt, expiresAt); err != nil {
+		t.Fatalf("seed reopen entitlement: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode)
+		VALUES ($1, $2, 'bot-bot-reopen-a', CURRENT_TIMESTAMP + INTERVAL '5 days', CURRENT_TIMESTAMP + INTERVAL '20 days', 'delete_pending', 'month'),
+		       ($3, $2, 'bot-bot-reopen-long', CURRENT_TIMESTAMP + INTERVAL '90 days', CURRENT_TIMESTAMP + INTERVAL '105 days', 'delete_pending', 'month')`,
+		reopenBot, reopenOwner, reopenBotLong); err != nil {
+		t.Fatalf("seed reopen lifecycles: %v", err)
+	}
+	reopenSummary, err := db.GetCommercialSummary(reopenOwner)
+	if err != nil {
+		t.Fatalf("load reopen summary: %v", err)
+	}
+	expectedReopen := reopenSummary.TotalCNY
+	reopened, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: reopenOwner, Action: "change_plan", PlanID: reopenPlanID, ExpectedTotalCNY: &expectedReopen,
+		OperationID: "reopen-workers", Note: "reopen plan for workers", EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !reopened.Applied || reopened.ExpiresAt == nil {
+		t.Fatalf("reopen plan change failed: result=%#v err=%v", reopened, err)
+	}
+	var shortState, longState string
+	var shortExpiry, longExpiry time.Time
+	if err := db.db.QueryRow(`SELECT state, package_expires_at FROM cloud_worker_lifecycles WHERE worker_uid = $1`, reopenBot).Scan(&shortState, &shortExpiry); err != nil {
+		t.Fatalf("read short reopen lifecycle: %v", err)
+	}
+	if err := db.db.QueryRow(`SELECT state, package_expires_at FROM cloud_worker_lifecycles WHERE worker_uid = $1`, reopenBotLong).Scan(&longState, &longExpiry); err != nil {
+		t.Fatalf("read long reopen lifecycle: %v", err)
+	}
+	nowCheck := time.Now().UTC()
+	if shortState != "active" || !shortExpiry.After(nowCheck.Add(28*24*time.Hour)) || !shortExpiry.Before(nowCheck.Add(31*24*time.Hour)) {
+		t.Fatalf("archived worker did not revive onto the replacement window: state=%s expiry=%v", shortState, shortExpiry)
+	}
+	if longState != "active" || !longExpiry.After(nowCheck.Add(85*24*time.Hour)) {
+		t.Fatalf("longer paid window was shortened by the plan change: state=%s expiry=%v", longState, longExpiry)
+	}
+
 	resetAt := time.Now().UTC()
 	applied, recordedAt, err := db.RecordCommercialCycleReset(uid, "adjustment-reset", "contract reset", resetAt)
 	if err != nil || !applied || recordedAt.IsZero() {
@@ -599,6 +663,19 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	}); err == nil || !strings.Contains(err.Error(), "purchase limit") {
 		t.Fatalf("expected purchase limit rejection, got %v", err)
 	}
+	refundWorkerUID, err := db.CreateUser(&types.User{
+		Username: "refund-worker-bot", Email: "refund-worker-bot@example.test", DisplayName: "Refund Worker Bot",
+		AccountType: types.AccountHuman, PassHash: []byte("refund-worker-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create refund worker bot: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state, billing_mode, conversion_pending)
+		VALUES ($1, $2, 'bot-refund-worker', CURRENT_TIMESTAMP + INTERVAL '10 days', CURRENT_TIMESTAMP + INTERVAL '25 days', 'active', 'ondemand', true)`,
+		refundWorkerUID, uid); err != nil {
+		t.Fatalf("seed refund worker lifecycle: %v", err)
+	}
 	refundRequestNo := "CCRF-" + created.OrderNo
 	const testRefundClaimTTL = time.Minute
 	refunding, claimed, err := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL)
@@ -649,6 +726,23 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	refundedSummary, err := db.GetCommercialSummary(uid)
 	if err != nil || len(refundedSummary.Entitlements) != 0 || refundedSummary.TotalsByModel["MiniMax-M3"] != 0 {
 		t.Fatalf("refunded commercial summary retained quota: summary=%#v err=%v", refundedSummary, err)
+	}
+	// Nothing paid survives the refund: the worker is due for cleanup at once
+	// and the refunded trial must not auto-convert to a monthly subscription.
+	var refundWorkerState string
+	var refundWorkerExpiry, refundWorkerDeleteAfter time.Time
+	var refundWorkerConversion bool
+	if err := db.db.QueryRow(`
+		SELECT state, package_expires_at, delete_after, conversion_pending
+		FROM cloud_worker_lifecycles WHERE worker_uid = $1`, refundWorkerUID).
+		Scan(&refundWorkerState, &refundWorkerExpiry, &refundWorkerDeleteAfter, &refundWorkerConversion); err != nil {
+		t.Fatalf("read refunded worker lifecycle: %v", err)
+	}
+	if refundWorkerConversion {
+		t.Fatal("refunded trial is still scheduled for conversion")
+	}
+	if time.Until(refundWorkerDeleteAfter) > time.Minute || refundWorkerExpiry.After(time.Now().UTC().Add(time.Minute)) {
+		t.Fatalf("refunded worker not scheduled for cleanup: state=%s expiry=%v delete_after=%v", refundWorkerState, refundWorkerExpiry, refundWorkerDeleteAfter)
 	}
 	var revokedGrants, reversalEntries int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE grant_type = 'order' AND source_ref = $1 AND revoked_at IS NOT NULL`, created.OrderNo).Scan(&revokedGrants); err != nil {

@@ -494,6 +494,14 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}
+	if entitlementExpires != nil {
+		// A redemption reopens or extends the paid window; keep existing cloud
+		// workers on the same retention schedule instead of letting them expire
+		// against the replaced package. GREATEST keeps a longer paid window.
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, *entitlementExpires); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := tx.Exec(`UPDATE commercial_invite_codes SET redeemed_count = redeemed_count + 1 WHERE id = $1`, inviteID); err != nil {
 		return nil, fmt.Errorf("update invite redemption count: %w", err)
 	}
