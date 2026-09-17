@@ -15,6 +15,7 @@ const (
 	commercialAdjustmentCredit = "increase"
 	commercialAdjustmentDebit  = "decrease"
 	commercialAdjustmentPlan   = "change_plan"
+	commercialAdjustmentExtend = "extend"
 )
 
 func (a *Adapter) RecordCommercialCycleReset(uid int64, operationID, note string, effectiveAt time.Time) (bool, time.Time, error) {
@@ -248,6 +249,107 @@ func (a *Adapter) ApplyCommercialAccountAdjustment(adjustment *types.CommercialA
 		result.CycleStartedAt = &now
 		result.ExpiresAt = expiresAt
 
+	case commercialAdjustmentExtend:
+		// Renewal extension appends one more paid period after the current
+		// expiry. The new entitlement and its operator plan grants start exactly
+		// at the old expiry so paid time never gaps, and usage is only reset
+		// when the operator explicitly pairs the extension with a cycle reset.
+		// Cloud-worker lifecycles move with the paid period so workers on the
+		// package keep their retention window.
+		var repeatedStartsAt time.Time
+		var repeatedExpiresAt sql.NullTime
+		err := tx.QueryRow(`
+			SELECT starts_at, expires_at FROM commercial_entitlements
+			WHERE uid = $1 AND source = 'operator' AND source_ref = $2
+			ORDER BY id DESC LIMIT 1`, adjustment.UID, operationID).Scan(&repeatedStartsAt, &repeatedExpiresAt)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, fmt.Errorf("check repeated commercial extension: %w", err)
+		}
+		if err == nil {
+			result.ExpiresAt = nullableTime(repeatedExpiresAt)
+			if err := tx.Commit(); err != nil {
+				return nil, fmt.Errorf("commit repeated commercial extension: %w", err)
+			}
+			return result, nil
+		}
+
+		// Chain the extension on the latest paid-period end, not the currently
+		// effective row: an extension segment starts at the previous expiry, so
+		// consecutive extensions must follow the newest segment.
+		var currentPlanID int64
+		var currentExpires time.Time
+		err = tx.QueryRow(`
+			SELECT e.plan_id, e.expires_at
+			FROM commercial_entitlements e
+			JOIN commercial_plans p ON p.id = e.plan_id
+			WHERE e.uid = $1 AND e.state = 'active'
+			  AND p.slug IN ($2, $3)
+			  AND e.expires_at IS NOT NULL AND e.expires_at > $4
+			ORDER BY e.expires_at DESC, e.starts_at DESC, e.id DESC
+			LIMIT 1`, adjustment.UID, commercialPersonalPlanSlug, commercialProPlanSlug, now).Scan(&currentPlanID, &currentExpires)
+		if err == sql.ErrNoRows {
+			// Distinguish an expired paid package from an account that never
+			// had one so the operator knows if a plan change can reopen it.
+			var hadPaid bool
+			if err := tx.QueryRow(`
+				SELECT EXISTS(
+					SELECT 1 FROM commercial_entitlements e
+					JOIN commercial_plans p ON p.id = e.plan_id
+					WHERE e.uid = $1 AND e.state = 'active' AND p.slug IN ($2, $3))`,
+				adjustment.UID, commercialPersonalPlanSlug, commercialProPlanSlug).Scan(&hadPaid); err != nil {
+				return nil, fmt.Errorf("check expired commercial package: %w", err)
+			}
+			if hadPaid {
+				return nil, commercialAdjustmentError("no_active_plan", "the current package has expired; use a plan change to reopen it")
+			}
+			return nil, commercialAdjustmentError("unsupported_plan", "only the personal and pro packages support renewal extension")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("load extendable commercial package: %w", err)
+		}
+		plan, err := scanCommercialPlan(tx.QueryRow(`SELECT `+commercialPlanColumns+` FROM commercial_plans WHERE id = $1`, currentPlanID))
+		if err != nil {
+			return nil, fmt.Errorf("load extendable commercial plan: %w", err)
+		}
+		if plan.DurationDays <= 0 {
+			return nil, commercialAdjustmentError("unsupported_plan", "the current package cannot be extended by whole periods")
+		}
+		currentExpiry := currentExpires.UTC()
+		if adjustment.ExpectedExpiresAt != nil && !adjustment.ExpectedExpiresAt.UTC().Equal(currentExpiry) {
+			return nil, commercialAdjustmentError("stale_expiry", "package expiry changed after preview; refresh and try again")
+		}
+		newExpiry := currentExpiry.AddDate(0, 0, plan.DurationDays)
+		if _, err := tx.Exec(`
+			INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+			VALUES ($1, $2, 'operator', $3, 'active', $4, $5)`,
+			adjustment.UID, currentPlanID, operationID, currentExpiry, newExpiry); err != nil {
+			return nil, fmt.Errorf("create renewal extension entitlement: %w", err)
+		}
+		if err := createOperatorPlanGrants(tx, adjustment.UID, plan, operationID, strings.TrimSpace(adjustment.Note), currentExpiry, &newExpiry); err != nil {
+			return nil, err
+		}
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, adjustment.UID, newExpiry); err != nil {
+			return nil, err
+		}
+		if adjustment.ResetCycle {
+			// The combined action records the same operator_reset marker the
+			// standalone cycle reset uses, keeping retries idempotent and letting
+			// Relay reset its usage window in the same pass.
+			marker := operationID + " | "
+			var resetAt time.Time
+			if err := tx.QueryRow(`
+				INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, note, created_at)
+				VALUES ($1, '*', 0, 'reset', 'operator_reset', $2, $3)
+				RETURNING created_at`, adjustment.UID, marker+strings.TrimSpace(adjustment.Note), now).Scan(&resetAt); err != nil {
+				return nil, fmt.Errorf("record renewal extension cycle reset: %w", err)
+			}
+			resetAt = resetAt.UTC()
+			result.CycleStartedAt = &resetAt
+		}
+		result.Applied = true
+		result.NextTotalCNY = previousTotal + commercialOperatorPlanQuota(plan)
+		result.ExpiresAt = &newExpiry
+
 	default:
 		return nil, commercialAdjustmentError("invalid_request", "unsupported commercial adjustment action")
 	}
@@ -288,6 +390,22 @@ func commercialActiveQuotaTotal(tx *sql.Tx, uid int64, now time.Time) (float64, 
 		return 0, fmt.Errorf("load active commercial quota total: %w", err)
 	}
 	return total, nil
+}
+
+// commercialOperatorPlanQuota mirrors the shared quota total of one plan
+// period as granted by createOperatorPlanGrants (monthly budget plus positive
+// per-model budgets).
+func commercialOperatorPlanQuota(plan *types.CommercialPlan) float64 {
+	if plan == nil {
+		return 0
+	}
+	total := plan.MonthlyBudget
+	for _, amount := range plan.ModelBudgets {
+		if amount > 0 {
+			total += amount
+		}
+	}
+	return total
 }
 
 func commercialPrimaryPackageExpiry(tx *sql.Tx, uid int64, now time.Time) (*time.Time, error) {

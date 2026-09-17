@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -165,7 +166,112 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	if err != nil || applied || !repeatedAt.Equal(recordedAt) {
 		t.Fatalf("cycle reset idempotency failed: applied=%v first=%v repeat=%v err=%v", applied, recordedAt, repeatedAt, err)
 	}
-}
+	// Renewal extension: append one paid period after the current expiry
+	// without resetting usage, move the cloud-worker lifecycle with it, stay
+	// idempotent, and reject a stale preview expiry.
+	personalPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: "catsco-personal", Name: "Personal", DurationDays: 30,
+		ModelBudgets: map[string]float64{
+			"MiniMax-M2.7": 1900, "MiniMax-M3": 1900, "deepseek-v4-flash": 1900,
+			"glm-5.3-flash": 1900, "gpt-5.6-terra": 1900, "deepseek-flash": 1000,
+			"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100,
+			"gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100,
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed personal plan for extension: %v", err)
+	}
+	extendOwner, err := db.CreateUser(&types.User{
+		Username: "commercial-extend", Email: "commercial-extend@example.test", DisplayName: "Extend Owner",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-extend-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create extension owner: %v", err)
+	}
+	extendWorker, err := db.CreateUser(&types.User{
+		Username: "commercial-extend-worker", Email: "commercial-extend-worker@example.test", DisplayName: "Extend Worker",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-extend-worker-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create extension worker: %v", err)
+	}
+	seedStart := time.Now().UTC().Add(-20 * 24 * time.Hour).Truncate(time.Millisecond)
+	seedExpiry := seedStart.Add(30 * 24 * time.Hour)
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_entitlements(uid, plan_id, source, source_ref, state, starts_at, expires_at)
+		VALUES ($1, $2, 'order', 'extend-seed', 'active', $3, $4)`, extendOwner, personalPlanID, seedStart, seedExpiry); err != nil {
+		t.Fatalf("seed extension entitlement: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO commercial_quota_grants(uid, plan_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, source_ref)
+		VALUES ($1, $2, 'order', 'gpt-5.6-terra', 100, '1M', $3, $4, 'extend-seed')`, extendOwner, personalPlanID, seedStart, seedExpiry); err != nil {
+		t.Fatalf("seed extension grants: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
+		VALUES ($1, $2, 'extend-tenant', $3, $4, 'active')`, extendWorker, extendOwner, seedExpiry, seedExpiry.Add(15*24*time.Hour)); err != nil {
+		t.Fatalf("seed extension lifecycle: %v", err)
+	}
+
+	expectedSeed := seedExpiry
+	extended, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: extendOwner, Action: "extend", OperationID: "extend-op-1", Note: "offline payment renewal",
+		ExpectedExpiresAt: &expectedSeed, EffectiveAt: time.Now().UTC(),
+	})
+	wantExpiry := seedExpiry.AddDate(0, 0, 30)
+	if err != nil || !extended.Applied || extended.ExpiresAt == nil || !extended.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("extension adjustment failed: result=%#v err=%v", extended, err)
+	}
+	var extensionStarts, extensionExpires time.Time
+	if err := db.db.QueryRow(`
+		SELECT starts_at, expires_at FROM commercial_entitlements
+		WHERE uid = $1 AND source = 'operator' AND source_ref = 'extend-op-1'`, extendOwner).Scan(&extensionStarts, &extensionExpires); err != nil {
+		t.Fatalf("load extension entitlement: %v", err)
+	}
+	if !extensionStarts.Equal(seedExpiry) || !extensionExpires.Equal(wantExpiry) {
+		t.Fatalf("extension entitlement window: start=%v want=%v expiry=%v want=%v", extensionStarts, seedExpiry, extensionExpires, wantExpiry)
+	}
+	var lifecycleExpiry, lifecycleDelete time.Time
+	var lifecycleState string
+	if err := db.db.QueryRow(`
+		SELECT package_expires_at, delete_after, state FROM cloud_worker_lifecycles WHERE worker_uid = $1`, extendWorker).
+		Scan(&lifecycleExpiry, &lifecycleDelete, &lifecycleState); err != nil {
+		t.Fatalf("load extension lifecycle: %v", err)
+	}
+	if lifecycleState != "active" || !lifecycleExpiry.Equal(wantExpiry) || !lifecycleDelete.Equal(wantExpiry.Add(15*24*time.Hour)) {
+		t.Fatalf("lifecycle did not follow the extension: state=%s expiry=%v delete=%v", lifecycleState, lifecycleExpiry, lifecycleDelete)
+	}
+	repeatedExtension, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: extendOwner, Action: "extend", OperationID: "extend-op-1", Note: "offline payment renewal",
+		ExpectedExpiresAt: &expectedSeed, EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || repeatedExtension.Applied || repeatedExtension.ExpiresAt == nil || !repeatedExtension.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("extension idempotency failed: result=%#v err=%v", repeatedExtension, err)
+	}
+	staleSeed := seedExpiry.Add(-time.Hour)
+	if _, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: extendOwner, Action: "extend", OperationID: "extend-op-stale", Note: "stale preview",
+		ExpectedExpiresAt: &staleSeed, EffectiveAt: time.Now().UTC(),
+	}); err == nil {
+		t.Fatal("stale extension preview should be rejected")
+	} else {
+		var adjustmentErr *types.CommercialAdjustmentError
+		if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "stale_expiry" {
+			t.Fatalf("stale extension error mismatch: %v", err)
+		}
+	}
+	expectedNew := wantExpiry
+	combined, err := db.ApplyCommercialAccountAdjustment(&types.CommercialAccountAdjustment{
+		UID: extendOwner, Action: "extend", OperationID: "extend-op-2", Note: "renewal with cycle reset",
+		ExpectedExpiresAt: &expectedNew, ResetCycle: true, EffectiveAt: time.Now().UTC(),
+	})
+	if err != nil || !combined.Applied || combined.CycleStartedAt == nil {
+		t.Fatalf("combined extension reset failed: result=%#v err=%v", combined, err)
+	}
+	var resetCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'operator_reset'`, extendOwner).Scan(&resetCount); err != nil || resetCount != 1 {
+		t.Fatalf("combined extension reset marker missing: count=%d err=%v", resetCount, err)
+	}}
 
 func TestPostgresCommercialRelayBaselineContract(t *testing.T) {
 	rawDSN := os.Getenv("CATS_PG_TEST_DSN")

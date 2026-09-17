@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -86,6 +87,67 @@ func TestCommercialAdjustmentPreviewProtectsUsedSharedQuota(t *testing.T) {
 	}
 	if !reset.UsageWillReset || reset.RelayUsageCNY != 70 || reset.NextRemainingCNY != 100 {
 		t.Fatalf("cycle reset preview did not show the post-reset balance: %#v", reset)
+	}
+}
+
+func TestCommercialAdjustmentExtendPreviewAppendsOnePeriod(t *testing.T) {
+	now := time.Now().UTC()
+	currentExpiry := now.Add(10 * 24 * time.Hour)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{
+		UID: 38, TotalCNY: 600,
+		Entitlements: []*types.CommercialEntitlement{{UID: 38, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: &currentExpiry}},
+	}}
+	s.plans = []*types.CommercialPlan{personal}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	preview, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 38, Action: commercialAdjustmentExtend, Preview: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := currentExpiry.AddDate(0, 0, 30)
+	if preview.ExpiresAt == nil || !preview.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("extension expiry mismatch: %#v want %v", preview.ExpiresAt, wantExpiry)
+	}
+	if preview.PreviousExpiresAt == nil || !preview.PreviousExpiresAt.Equal(currentExpiry) {
+		t.Fatalf("previous expiry missing: %#v", preview.PreviousExpiresAt)
+	}
+	if preview.NextTotalCNY != 1100 || preview.UsageWillReset || preview.CurrentPlan == nil || preview.CurrentPlan.ID != 7 {
+		t.Fatalf("extension preview: %#v", preview)
+	}
+	reset, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 38, Action: commercialAdjustmentExtend, ResetCycle: true, Preview: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reset.UsageWillReset {
+		t.Fatalf("combined reset preview did not flag the usage reset: %#v", reset)
+	}
+}
+
+func TestCommercialAdjustmentExtendPreviewRejectsExpiredAndUnsupportedPlans(t *testing.T) {
+	now := time.Now().UTC()
+	expired := now.Add(-time.Hour)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	free := &types.CommercialPlan{ID: 1, Slug: "catsco-free", Name: "Free"}
+	s := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: &types.CommercialSummary{UID: 38, TotalCNY: 100, Entitlements: []*types.CommercialEntitlement{
+		{UID: 38, PlanID: 7, PlanSlug: "catsco-personal", Source: "order", State: "active", StartsAt: now.Add(-40 * 24 * time.Hour), ExpiresAt: &expired},
+	}}}
+	s.plans = []*types.CommercialPlan{free, personal}
+	h := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s)
+	_, err := h.buildCommercialAdjustmentPreview(context.Background(), s, &commercialAdjustmentRequest{UID: 38, Action: commercialAdjustmentExtend, Preview: true}, now)
+	var adjustmentErr *types.CommercialAdjustmentError
+	if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "no_active_plan" {
+		t.Fatalf("expired package should be rejected: %v", err)
+	}
+
+	freeSummary := &types.CommercialSummary{UID: 39, TotalCNY: 100, Entitlements: []*types.CommercialEntitlement{
+		{UID: 39, PlanID: 1, PlanSlug: "catsco-free", Source: "free", State: "active", StartsAt: now.Add(-24 * time.Hour)},
+	}}
+	s2 := &commercialAdjustmentPreviewStore{commercialTestStore: newCommercialTestStore(), summary: freeSummary}
+	s2.plans = []*types.CommercialPlan{free, personal}
+	h2 := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, s2)
+	_, err = h2.buildCommercialAdjustmentPreview(context.Background(), s2, &commercialAdjustmentRequest{UID: 39, Action: commercialAdjustmentExtend, Preview: true}, now)
+	if !errors.As(err, &adjustmentErr) || adjustmentErr.Code != "no_active_plan" {
+		t.Fatalf("free package should be rejected: %v", err)
 	}
 }
 

@@ -232,9 +232,14 @@ type CommercialAccountAdjustment struct {
 	AmountCNY        float64
 	PlanID           int64
 	ExpectedTotalCNY *float64
-	OperationID      string
-	Note             string
-	EffectiveAt      time.Time
+	// ExpectedExpiresAt guards renewal extensions against a concurrent change
+	// of the current package expiry between preview and apply.
+	ExpectedExpiresAt *time.Time
+	// ResetCycle pairs a renewal extension with a cycle reset when set.
+	ResetCycle  bool
+	OperationID string
+	Note        string
+	EffectiveAt time.Time
 }
 
 type CommercialAccountAdjustmentResult struct {
