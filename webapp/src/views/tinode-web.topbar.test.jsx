@@ -16,6 +16,7 @@ import {
   resolveInitialUser,
   resolveDisplayedActiveAgent,
   shouldOpenProfileSettingsDirectly,
+  shouldDeferWorkspaceAssistantGuide,
   shouldShowWorkspaceAssistantGuide,
   workspaceAssistantGuideStorageKey,
 } from './tinode-web';
@@ -362,7 +363,13 @@ describe('mobile model context wiring', () => {
     expect(shouldShowWorkspaceAssistantGuide('43')).toBe(false);
     window.localStorage.removeItem(guideKey);
 
-    expect(tinodeWebSource).toContain('openDesktopModal(requestedOpen === \'download\' ? \'download\' : \'connect\')');
+    expect(shouldDeferWorkspaceAssistantGuide()).toBe(false);
+    expect(shouldDeferWorkspaceAssistantGuide({ requestedOpen: 'download' })).toBe(false);
+    expect(shouldDeferWorkspaceAssistantGuide({ requestedOpen: 'relay' })).toBe(true);
+    expect(shouldDeferWorkspaceAssistantGuide({ channelDeviceLink: true })).toBe(true);
+    expect(shouldDeferWorkspaceAssistantGuide({ channelAccountLink: true })).toBe(true);
+
+    expect(tinodeWebSource).toContain('onClose={closeRelayModal}');
     expect(tinodeWebSource).not.toContain('allowDailyPrompt');
     expect(tinodeWebSource).not.toContain('desktopPromptStorageKey');
   });

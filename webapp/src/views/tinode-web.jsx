@@ -238,6 +238,14 @@ export function shouldShowWorkspaceAssistantGuide(userId) {
   return Boolean(key) && readStorageValue(key) !== WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE;
 }
 
+export function shouldDeferWorkspaceAssistantGuide({
+  requestedOpen = '',
+  channelDeviceLink = false,
+  channelAccountLink = false,
+} = {}) {
+  return channelDeviceLink || channelAccountLink || requestedOpen === 'relay';
+}
+
 function isInvalidSessionError(error) {
   return error?.status === 401 || error?.status === 403 || error?.status === 404;
 }
@@ -374,6 +382,19 @@ function TinodeWebApp({ location }) {
     setShowDesktopConnectModal(true);
   }, []);
 
+  const openFirstVisitAssistantGuide = useCallback((mode = 'connect') => {
+    if (!user?.uid || !shouldShowWorkspaceAssistantGuide(user.uid)) return false;
+    const guideKey = workspaceAssistantGuideStorageKey(user.uid);
+    writeStorageValue(guideKey, WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE);
+    openDesktopModal(mode);
+    return true;
+  }, [openDesktopModal, user?.uid]);
+
+  const closeRelayModal = useCallback(() => {
+    setShowRelayModal(false);
+    openFirstVisitAssistantGuide();
+  }, [openFirstVisitAssistantGuide]);
+
   useEffect(() => {
     const params = new URLSearchParams(search);
     if (params.get('open') === 'relay') setShowRelayModal(true);
@@ -382,13 +403,9 @@ function TinodeWebApp({ location }) {
 
   useEffect(() => {
     const requestedOpen = new URLSearchParams(search).get('open');
-    if (!user?.uid || (requestedOpen && requestedOpen !== 'download')) return;
-    if (!shouldShowWorkspaceAssistantGuide(user.uid)) return;
-
-    const guideKey = workspaceAssistantGuideStorageKey(user.uid);
-    writeStorageValue(guideKey, WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE);
-    openDesktopModal(requestedOpen === 'download' ? 'download' : 'connect');
-  }, [openDesktopModal, search, user?.uid]);
+    if (shouldDeferWorkspaceAssistantGuide({ requestedOpen, channelDeviceLink, channelAccountLink })) return;
+    openFirstVisitAssistantGuide(requestedOpen === 'download' ? 'download' : 'connect');
+  }, [channelAccountLink, channelDeviceLink, openFirstVisitAssistantGuide, search]);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
@@ -1636,7 +1653,7 @@ function TinodeWebApp({ location }) {
       {showRelayModal && (
         <RelayAccessModal
           initialPlanSlug={new URLSearchParams(search).get('plan') || ''}
-          onClose={() => setShowRelayModal(false)}
+          onClose={closeRelayModal}
         />
       )}
 
