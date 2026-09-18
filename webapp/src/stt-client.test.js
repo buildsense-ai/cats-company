@@ -2129,6 +2129,74 @@ describe('ContinuousStreamingSTTSession', () => {
     }
   });
 
+  it('does not emit a duplicate final when a segment completes during capture flush', async () => {
+    let resolveCaptureStop;
+    const finals = [];
+    const capture = {
+      stop: vi.fn(() => new Promise((resolve) => { resolveCaptureStop = resolve; })),
+    };
+    const createSegment = vi.fn((callbacks) => ({
+      ...callbacks,
+      stopRequested: false,
+      terminal: false,
+      handleFrame: vi.fn(),
+      publishAudioLevel: vi.fn(),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    }));
+    const session = new ContinuousStreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createSegment,
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    await session.start();
+    const segment = createSegment.mock.results[0].value;
+    const stopPromise = session.stop();
+    segment.onFinal('已完成', { reason: 'complete' });
+    resolveCaptureStop();
+    await stopPromise;
+
+    expect(finals).toEqual([{ text: '已完成', details: { reason: 'complete' } }]);
+  });
+
+  it('does not emit completion after a segment errors during capture flush', async () => {
+    let resolveCaptureStop;
+    const finals = [];
+    const errors = [];
+    const capture = {
+      stop: vi.fn(() => new Promise((resolve) => { resolveCaptureStop = resolve; })),
+    };
+    const createSegment = vi.fn((callbacks) => ({
+      ...callbacks,
+      stopRequested: false,
+      terminal: false,
+      handleFrame: vi.fn(),
+      publishAudioLevel: vi.fn(),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    }));
+    const error = new Error('socket closed');
+    const session = new ContinuousStreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createSegment,
+      onFinal: (text, details) => finals.push({ text, details }),
+      onError: (...args) => errors.push(args),
+    });
+
+    await session.start();
+    const segment = createSegment.mock.results[0].value;
+    const stopPromise = session.stop();
+    segment.onError(error, 'partial', { reason: 'error' });
+    resolveCaptureStop();
+    await stopPromise;
+
+    expect(finals).toEqual([]);
+    expect(errors).toEqual([[error, 'partial', { reason: 'error' }]]);
+  });
+
   it('releases the composer when stopped during the segment handoff', async () => {
     vi.useFakeTimers();
     const finals = [];

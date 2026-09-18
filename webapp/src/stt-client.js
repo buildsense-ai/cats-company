@@ -1428,6 +1428,7 @@ export class ContinuousStreamingSTTSession {
     this.stopping = true;
     // Flush audio before instructing the provider to finalize the segment.
     await this.stopPhysicalCapture();
+    if (this.terminal) return;
     if (this.segment) {
       await this.segment.stop(reason);
       return;
