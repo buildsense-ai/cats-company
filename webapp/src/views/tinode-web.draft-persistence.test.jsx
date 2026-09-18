@@ -117,16 +117,19 @@ vi.mock('../widgets/empty-task-composer', () => ({
     const key = String(draftKey || 'new-task');
     const inputDrafts = composerDraftStore?.inputDrafts;
     return (
-      <textarea
-        aria-label="新任务草稿"
-        defaultValue={inputDrafts?.get?.(key) || ''}
-        onChange={(event) => {
-          const value = event.target.value;
-          if (value) inputDrafts?.set?.(key, value);
-          else inputDrafts?.delete?.(key);
-          composerDraftStore?.persist?.();
-        }}
-      />
+      <div className="cc-empty-composer-wrap">
+        <textarea
+          className="v3-composer-input"
+          aria-label="新任务草稿"
+          defaultValue={inputDrafts?.get?.(key) || ''}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value) inputDrafts?.set?.(key, value);
+            else inputDrafts?.delete?.(key);
+            composerDraftStore?.persist?.();
+          }}
+        />
+      </div>
     );
   },
 }));
@@ -225,6 +228,25 @@ test('shows the onboarding card once for a new account entering the workspace', 
 
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+});
+
+test('restores empty-workspace composer focus after automatic onboarding closes', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+  const composer = container.querySelector('[aria-label="新任务草稿"]');
+  await act(async () => {
+    document.querySelector('[aria-label="稍后设置助手"]').click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
+  expect(document.activeElement).toBe(composer);
 });
 
 test('does not repeat onboarding after its local download handoff closes', async () => {
