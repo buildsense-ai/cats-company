@@ -371,6 +371,9 @@ describe('mobile model context wiring', () => {
     expect(isWorkspaceOnboardingNewUser({ uid: '46', created_at: '09/19/2026' }, cohortStart)).toBe(false);
     expect(isWorkspaceOnboardingNewUser({ uid: '47', created_at: '2026-02-30T00:00:00Z' }, cohortStart)).toBe(false);
     expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00Z')).not.toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.123456789Z')).not.toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.1234567891Z')).toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.120Z')).toBeNull();
     expect(parseWorkspaceOnboardingTimestamp('2026-09-18T25:00:00Z')).toBeNull();
     expect(resolveWorkspaceOnboardingCohortStart('not-a-timestamp')).toBe(DEFAULT_WORKSPACE_ONBOARDING_COHORT_START);
     expect(shouldShowWorkspaceOnboarding(newUser, cohortStart)).toBe(true);
