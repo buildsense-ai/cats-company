@@ -524,6 +524,7 @@ func main() {
 		EnforceUIDs:    relayCommercialEnforceUIDs,
 		Syncer:         commercialRelaySyncer,
 	})
+	relayCommercialHandler.SetCloudWorkerRenewer(cloudWorkerHandler.RenewForOwner)
 	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
 	commercialOpsHandler.SetCloudWorkerAdmin(cloudWorkerHandler)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")

@@ -111,14 +111,27 @@ func TestArtifactLaunchMapsUpstreamFailures(t *testing.T) {
 	cases := []struct {
 		name       string
 		upstream   int
-		foreignURL bool
+		launch     func(r *http.Request) string
 		wantStatus int
 		wantCode   string
 	}{
-		{"unknown application", http.StatusNotFound, false, http.StatusNotFound, "artifact_app_not_found"},
-		{"our credential rejected", http.StatusUnauthorized, false, http.StatusBadGateway, "artifact_gateway_unauthorized"},
-		{"gateway failure", http.StatusInternalServerError, false, http.StatusBadGateway, "artifact_gateway_unavailable"},
-		{"foreign launch url", http.StatusCreated, true, http.StatusBadGateway, "artifact_gateway_unavailable"},
+		{name: "unknown application", upstream: http.StatusNotFound, wantStatus: http.StatusNotFound, wantCode: "artifact_app_not_found"},
+		{name: "our credential rejected", upstream: http.StatusUnauthorized, wantStatus: http.StatusBadGateway, wantCode: "artifact_gateway_unauthorized"},
+		{name: "gateway failure", upstream: http.StatusInternalServerError, wantStatus: http.StatusBadGateway, wantCode: "artifact_gateway_unavailable"},
+		{
+			name: "launch url on another origin", upstream: http.StatusCreated, wantStatus: http.StatusBadGateway, wantCode: "artifact_gateway_unavailable",
+			launch: func(*http.Request) string { return "https://evil.example/_launch/code" },
+		},
+		{
+			// Shares the gateway's string prefix while pointing elsewhere: the
+			// old HasPrefix check accepted this, so it is covered explicitly.
+			name: "launch url only sharing the gateway prefix", upstream: http.StatusCreated, wantStatus: http.StatusBadGateway, wantCode: "artifact_gateway_unavailable",
+			launch: func(r *http.Request) string { return "http://" + r.Host + ".evil.example/_launch/code" },
+		},
+		{
+			name: "launch url downgrading the scheme", upstream: http.StatusCreated, wantStatus: http.StatusBadGateway, wantCode: "artifact_gateway_unavailable",
+			launch: func(r *http.Request) string { return "https://" + r.Host + "/_launch/code" },
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -126,8 +139,8 @@ func TestArtifactLaunchMapsUpstreamFailures(t *testing.T) {
 				w.WriteHeader(testCase.upstream)
 				if testCase.upstream == http.StatusCreated {
 					launch := "http://" + r.Host + "/_launch/code"
-					if testCase.foreignURL {
-						launch = "https://evil.example/_launch/code"
+					if testCase.launch != nil {
+						launch = testCase.launch(r)
 					}
 					_, _ = w.Write([]byte(`{"app_id":"saturday-demo","code":"code","expires_at":"2026-09-17T09:00:00Z","launch_url":"` + launch + `"}`))
 				}
@@ -143,6 +156,32 @@ func TestArtifactLaunchMapsUpstreamFailures(t *testing.T) {
 				t.Errorf("body = %s, want code %s", recorder.Body.String(), testCase.wantCode)
 			}
 		})
+	}
+}
+
+func TestLaunchURLBelongsToGateway(t *testing.T) {
+	const gateway = "https://artifact.catsco.cc"
+	allowed := []string{
+		"https://artifact.catsco.cc/_launch/abc?next=/saturday-demo/",
+		"https://ARTIFACT.CATSCO.CC/_launch/abc",
+	}
+	for _, launch := range allowed {
+		if !launchURLBelongsToGateway(launch, gateway) {
+			t.Errorf("should be accepted: %s", launch)
+		}
+	}
+	rejected := []string{
+		"https://artifact.catsco.cc.evil.example/_launch/abc",
+		"http://artifact.catsco.cc/_launch/abc",
+		"https://evil.example/_launch/abc",
+		"//artifact.catsco.cc/_launch/abc",
+		"/_launch/abc",
+		"",
+	}
+	for _, launch := range rejected {
+		if launchURLBelongsToGateway(launch, gateway) {
+			t.Errorf("should be rejected: %s", launch)
+		}
 	}
 }
 

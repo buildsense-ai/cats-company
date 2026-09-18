@@ -172,8 +172,10 @@ func (h *ArtifactLaunchHandler) requestCode(ctx context.Context, app string, uid
 		ExpiresAt string `json:"expires_at"`
 		LaunchURL string `json:"launch_url"`
 	}
-	if err := json.Unmarshal(responseBody, &upstream); err != nil ||
-		upstream.Code == "" || !strings.HasPrefix(upstream.LaunchURL, h.gatewayURL) {
+	if err := json.Unmarshal(responseBody, &upstream); err != nil || upstream.Code == "" {
+		return empty, http.StatusBadGateway, "artifact_gateway_unavailable"
+	}
+	if !launchURLBelongsToGateway(upstream.LaunchURL, h.gatewayURL) {
 		return empty, http.StatusBadGateway, "artifact_gateway_unavailable"
 	}
 	return ArtifactLaunchResult{
@@ -182,4 +184,19 @@ func (h *ArtifactLaunchHandler) requestCode(ctx context.Context, app string, uid
 		ExpiresAt: upstream.ExpiresAt,
 		LaunchURL: upstream.LaunchURL,
 	}, http.StatusOK, ""
+}
+
+// launchURLBelongsToGateway requires the launch URL to be the same origin as the
+// gateway. A prefix comparison is not enough: `https://gateway.example.evil.com/`
+// shares the gateway's prefix while pointing somewhere else entirely.
+func launchURLBelongsToGateway(launchURL, gatewayURL string) bool {
+	launch, err := url.Parse(launchURL)
+	if err != nil || launch.Host == "" {
+		return false
+	}
+	gateway, err := url.Parse(gatewayURL)
+	if err != nil || gateway.Host == "" {
+		return false
+	}
+	return launch.Scheme == gateway.Scheme && strings.EqualFold(launch.Host, gateway.Host)
 }
