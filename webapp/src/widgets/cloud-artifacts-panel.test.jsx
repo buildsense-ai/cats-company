@@ -652,7 +652,7 @@ describe('CloudArtifactsPanel', () => {
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
   });
 
-  test('lists gateway applications in the 应用 tab and opens them in a new page', async () => {
+  test('lists gateway applications and opens one inside the sidebar', async () => {
     api.listArtifactApps.mockResolvedValueOnce({
       apps: [{
         id: 'saturday-demo',
@@ -675,11 +675,31 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('Saturday 演示应用');
     expect(container.textContent).toContain('ready');
 
+    // Opening an application keeps the user in the sidebar.
     await act(async () => {
       container.querySelector('.cloud-artifact-main').click();
       await Promise.resolve();
     });
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame?.getAttribute('src')).toBe('https://artifact.catsco.cc/saturday-demo/');
+    expect(openSpy).not.toHaveBeenCalled();
+
+    // Opening in a new page stays available as a secondary action.
+    await act(async () => {
+      [...container.querySelectorAll('button')]
+        .find((button) => button.textContent === '新页面打开').click();
+      await Promise.resolve();
+    });
     expect(openSpy).toHaveBeenCalledWith('https://artifact.catsco.cc/saturday-demo/', '_blank', 'noopener,noreferrer');
+
+    // Going back returns to the list.
+    await act(async () => {
+      [...container.querySelectorAll('button')]
+        .find((button) => button.textContent === '返回').click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBeNull();
+    expect(container.textContent).toContain('Saturday 演示应用');
     openSpy.mockRestore();
   });
 

@@ -166,6 +166,7 @@ export default function CloudArtifactsPanel({
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
   const [gatewayApps, setGatewayApps] = useState([]);
+  const [gatewayPreview, setGatewayPreview] = useState(null);
   const [viewerRelation, setViewerRelation] = useState('');
   const [canPublish, setCanPublish] = useState(false);
   const [tagCounts, setTagCounts] = useState([]);
@@ -850,7 +851,37 @@ export default function CloudArtifactsPanel({
               )}
             </>
           )}
-          {tab === 'gateway' && gatewayApps.length > 0 && (
+          {tab === 'gateway' && gatewayPreview && (
+            <div
+              className="cloud-artifacts-gateway-viewer"
+              style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
+            >
+              <div className="cloud-artifacts-gateway-viewer-bar">
+                <button type="button" onClick={() => setGatewayPreview(null)} aria-label="返回应用列表">
+                  返回
+                </button>
+                <span className="cloud-artifacts-gateway-viewer-title">
+                  {gatewayPreview.title || gatewayPreview.id}
+                </span>
+                <button
+                  type="button"
+                  aria-label={'在新页面打开 ' + (gatewayPreview.title || gatewayPreview.id || '')}
+                  onClick={() => window.open(gatewayPreview.url, '_blank', 'noopener,noreferrer')}
+                >
+                  新页面打开
+                </button>
+              </div>
+              <iframe
+                className="cloud-artifacts-gateway-frame"
+                src={gatewayPreview.url}
+                title={gatewayPreview.title || gatewayPreview.id}
+                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
+                referrerPolicy="no-referrer"
+                style={{ flex: 1, width: '100%', border: 0, background: '#fff' }}
+              />
+            </div>
+          )}
+          {tab === 'gateway' && !gatewayPreview && gatewayApps.length > 0 && (
             <div className="cloud-artifacts-list">
               {gatewayApps.map((app) => {
                 const updatedAt = formatUpdatedAt(app?.updated_at || '');
@@ -859,7 +890,7 @@ export default function CloudArtifactsPanel({
                     <button
                       type="button"
                       className="cloud-artifact-main"
-                      onClick={() => window.open(app?.url, '_blank', 'noopener,noreferrer')}
+                      onClick={() => setGatewayPreview(app)}
                       aria-label={'打开应用 ' + (app?.title || app?.id || '')}
                     >
                       <span className="cloud-artifact-kind-icon application" aria-hidden="true">
@@ -873,6 +904,14 @@ export default function CloudArtifactsPanel({
                         </p>
                       </div>
                       <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="cloud-artifact-open-external"
+                      aria-label={'在新页面打开 ' + (app?.title || app?.id || '')}
+                      onClick={() => window.open(app?.url, '_blank', 'noopener,noreferrer')}
+                    >
+                      新页面打开
                     </button>
                   </article>
                 );
