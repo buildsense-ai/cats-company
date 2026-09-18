@@ -283,10 +283,35 @@ export default function CloudArtifactsPanel({
     }
   }, [agentUid, tab, topicId]);
 
+  // Opening a gateway application. The sidebar can always open the plain URL,
+  // but then the application only ever sees a guest: the platform's login state
+  // lives in storage on the platform origin, which the application's origin
+  // cannot read. Asking the server for a one-time code first makes the gateway
+  // set its session cookie during the open, so the application recognises the
+  // visitor and knows which conversation they came from. If that request fails
+  // for any reason we still open the plain URL, so the action never dead-ends.
+  const openGatewayApp = useCallback(async (app, target = 'panel') => {
+    if (!app?.id || !app?.url) return;
+    let viewerURL = app.url;
+    let visitor = true;
+    try {
+      const launch = await api.requestArtifactLaunch({ app: app.id, topic_id: topicId });
+      if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
+    } catch {
+      // Keep the plain URL; the application will render as a guest.
+    }
+    if (target === 'window') {
+      window.open(viewerURL, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    setGatewayPreview({ ...app, viewerURL, visitor });
+  }, [topicId]);
+
   useEffect(() => {
     setArtifacts([]);
     setFiles([]);
     setGatewayApps([]);
+    setGatewayPreview(null);
     setViewerRelation('');
     setCanPublish(false);
     setTagCounts([]);
@@ -866,14 +891,19 @@ export default function CloudArtifactsPanel({
                 <button
                   type="button"
                   aria-label={'在新页面打开 ' + (gatewayPreview.title || gatewayPreview.id || '')}
-                  onClick={() => window.open(gatewayPreview.url, '_blank', 'noopener,noreferrer')}
+                  onClick={() => openGatewayApp(gatewayPreview, 'window')}
                 >
                   新页面打开
                 </button>
               </div>
+              {gatewayPreview.visitor && (
+                <p className="cloud-artifacts-gateway-viewer-note" role="status">
+                  身份未附带，按访客打开
+                </p>
+              )}
               <iframe
                 className="cloud-artifacts-gateway-frame"
-                src={gatewayPreview.url}
+                src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
                 referrerPolicy="no-referrer"
@@ -890,7 +920,7 @@ export default function CloudArtifactsPanel({
                     <button
                       type="button"
                       className="cloud-artifact-main"
-                      onClick={() => setGatewayPreview(app)}
+                      onClick={() => openGatewayApp(app, 'panel')}
                       aria-label={'打开应用 ' + (app?.title || app?.id || '')}
                     >
                       <span className="cloud-artifact-kind-icon application" aria-hidden="true">
@@ -909,7 +939,7 @@ export default function CloudArtifactsPanel({
                       type="button"
                       className="cloud-artifact-open-external"
                       aria-label={'在新页面打开 ' + (app?.title || app?.id || '')}
-                      onClick={() => window.open(app?.url, '_blank', 'noopener,noreferrer')}
+                      onClick={() => openGatewayApp(app, 'window')}
                     >
                       新页面打开
                     </button>

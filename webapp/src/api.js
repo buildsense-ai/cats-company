@@ -51,6 +51,9 @@ const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 const ARTIFACT_PREVIEW_SESSION_CONTRACT = 'catsco.artifact-preview-session.v1';
 // 独立 artifact gateway 的公共只读清单（跨域，不走同源 request 封装）。
 const ARTIFACT_GATEWAY_BASE = 'https://artifact.catsco.cc';
+// Asking the server for a one-time code is a short round trip; keep it bounded
+// so a slow platform never blocks opening an application.
+const ARTIFACT_LAUNCH_TIMEOUT_MS = 8_000;
 
 function normalizeArtifactPreviewSession(value) {
   if (!value || typeof value !== 'object'
@@ -856,6 +859,17 @@ export const api = {
         ? response.json()
         : Promise.reject(new Error('artifact_gateway_unavailable'))),
     );
+  },
+  // Ask the platform for a one-time Artifact code. Opening the returned
+  // launch_url makes the gateway set its session cookie on the way in, so the
+  // application can recognise the viewer (and the conversation it came from).
+  // Without it the application can only ever see a guest: the platform's login
+  // state lives in storage on the platform origin and is unreadable from the
+  // application's origin. Callers fall back to the plain URL when this fails.
+  requestArtifactLaunch: ({ app, topic_id }) => {
+    const payload = { app };
+    if (topic_id) payload.topic_id = topic_id;
+    return request('POST', '/api/artifacts/launch', payload, { timeoutMs: ARTIFACT_LAUNCH_TIMEOUT_MS });
   },
   publishCloudArtifact: (agentUid, artifact) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),

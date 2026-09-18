@@ -1420,6 +1420,70 @@ body {
   outline-offset: 2px;
 }
 
+/* Gateway application viewer: opens inside the panel, not in a new tab. */
+.cloud-artifacts-gateway-viewer {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cloud-artifacts-gateway-viewer-bar {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--v3-border);
+}
+
+.cloud-artifacts-gateway-viewer-bar button,
+.cloud-artifact-open-external {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--v3-radius);
+  background: transparent;
+  color: var(--v3-text-muted);
+  font: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.cloud-artifacts-gateway-viewer-bar button:hover,
+.cloud-artifact-open-external:hover {
+  color: var(--v3-text-main);
+  background: var(--v3-bg-message-hover);
+}
+
+.cloud-artifacts-gateway-viewer-bar button:focus-visible,
+.cloud-artifact-open-external:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 2px;
+}
+
+.cloud-artifacts-gateway-viewer-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--v3-text-main);
+}
+
+.cloud-artifacts-gateway-viewer-note {
+  flex: 0 0 auto;
+  margin: 6px 2px 0;
+  font-size: 12px;
+  color: var(--v3-text-muted);
+}
+
+.cloud-artifact-open-external {
+  margin-left: 4px;
+}
+
 .cloud-artifacts-body {
   flex: 1 1 auto;
   min-height: 220px;
