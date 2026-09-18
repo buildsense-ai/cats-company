@@ -1416,11 +1416,10 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 	return updates, nextManaged
 }
 
-// commercialRelayQuotaRealCostCNY anchors each official plan's points to the
-// real upstream cost the package may consume (399 -> 300 CNY and 799 -> 700
-// CNY of actual provider spend). Relay applies the resulting rate to real-cost
-// accounting so a package empties at the true cost pace instead of the
-// list-price pace.
+// commercialRelayQuotaRealCostCNY anchors each official plan's real upstream
+// cost budget: the sale price minus the 99 CNY per-order server-cost margin
+// (399 - 99 = 300, 799 - 99 = 700). Relay applies the resulting rate to
+// real-cost accounting so a package empties at the true cost pace.
 var commercialRelayQuotaRealCostCNY = map[string]float64{
 	"catsco-personal": 300,
 	"catsco-pro":      700,
@@ -1435,9 +1434,17 @@ var commercialRelayQuotaPlanPoints = map[string]float64{
 	"catsco-pro":      33000,
 }
 
+// commercialRelayQuotaDefaultSlug is the entry-level official package whose
+// points-per-CNY rate every plan without its own anchor shares. Free
+// baselines, legacy placeholders and unconfigured internal packages burn
+// quota at the same real-cost pace instead of falling back to a made-up
+// default; operators override it by setting real_cost_cny on the plan.
+const commercialRelayQuotaDefaultSlug = "catsco-personal"
+
 // commercialRelayQuotaRate returns the platform-points-per-CNY conversion rate
-// for the user's active official package, or 0 when no official package
-// applies (the relay then keeps its built-in default rate).
+// for the user's active package. Official packages use their own anchor, plan
+// rows may override it, and everything else falls back to the entry-level
+// rate so quota always burns at the true cost pace.
 func commercialRelayQuotaRate(summary *types.CommercialSummary) float64 {
 	if summary == nil {
 		return 0
@@ -1449,27 +1456,28 @@ func commercialRelayQuotaRate(summary *types.CommercialSummary) float64 {
 		return 0
 	}
 	slug := strings.ToLower(strings.TrimSpace(primary.PlanSlug))
-	realCost := commercialRelayQuotaRealCostCNY[slug]
 	points := commercialRelayQuotaPlanPoints[slug]
-	if realCost <= 0 || points <= 0 {
-		return 0
-	}
-	if planPoints := commercialRelayPlanPoints(summary, slug); planPoints > 0 {
-		points = planPoints
-	}
-	return points / realCost
-}
-
-func commercialRelayPlanPoints(summary *types.CommercialSummary, slug string) float64 {
+	realCost := commercialRelayQuotaRealCostCNY[slug]
+	// A plan row carries the authoritative totals; its real-cost anchor (set
+	// by operators for internal/custom packages) overrides the static table.
 	for _, plan := range summary.Plans {
 		if plan == nil || !strings.EqualFold(strings.TrimSpace(plan.Slug), slug) {
 			continue
 		}
-		// Same total the plan validators and grant creation use, so the rate
-		// cannot drift from the pool that is actually handed out.
 		if total := commercialPlanQuotaTotal(plan); total > 0 {
-			return total
+			points = total
 		}
+		if plan.RealCostCNY > 0 {
+			realCost = plan.RealCostCNY
+		}
+	}
+	if points > 0 && realCost > 0 {
+		return points / realCost
+	}
+	defaultPoints := commercialRelayQuotaPlanPoints[commercialRelayQuotaDefaultSlug]
+	defaultCost := commercialRelayQuotaRealCostCNY[commercialRelayQuotaDefaultSlug]
+	if defaultPoints > 0 && defaultCost > 0 {
+		return defaultPoints / defaultCost
 	}
 	return 0
 }

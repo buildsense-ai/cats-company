@@ -28,7 +28,7 @@ func TestCommercialRelayQuotaRate(t *testing.T) {
 	}{
 		{"personal", quotaRateSummary("catsco-personal", 11000), 11000.0 / 300.0},
 		{"pro", quotaRateSummary("catsco-pro", 33000), 33000.0 / 700.0},
-		{"unknown plan", quotaRateSummary("internal-custom", 5000), 0},
+		{"unknown plan falls back to the entry rate", quotaRateSummary("internal-custom", 5000), 11000.0 / 300.0},
 		{"nil summary", nil, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -52,6 +52,33 @@ func TestCommercialRelayQuotaRate(t *testing.T) {
 	noPlans.Plans = nil
 	if got := commercialRelayQuotaRate(noPlans); !nearlyEqual(got, 33000.0/700.0) {
 		t.Fatalf("static plan points rate=%v", got)
+	}
+
+	// Internal/custom plans carry their own real-cost anchor in the plan row.
+	custom := quotaRateSummary("catsco-internal-all-models-50k", 50000)
+	custom.Plans[0].RealCostCNY = 1000
+	if got := commercialRelayQuotaRate(custom); !nearlyEqual(got, 50.0) {
+		t.Fatalf("custom plan rate=%v", got)
+	}
+	// Without an anchor every package shares the entry-level rate so quota
+	// still burns at the true cost pace instead of a made-up default.
+	unanchored := quotaRateSummary("catsco-internal-all-models-50k", 50000)
+	if got := commercialRelayQuotaRate(unanchored); !nearlyEqual(got, 11000.0/300.0) {
+		t.Fatalf("unanchored custom plan rate=%v", got)
+	}
+	free := quotaRateSummary("catsco-free", 1800)
+	if got := commercialRelayQuotaRate(free); !nearlyEqual(got, 11000.0/300.0) {
+		t.Fatalf("free rate=%v", got)
+	}
+	legacy := quotaRateSummary("catsco-legacy-custom", 1600)
+	if got := commercialRelayQuotaRate(legacy); !nearlyEqual(got, 11000.0/300.0) {
+		t.Fatalf("legacy rate=%v", got)
+	}
+	// An operator anchor on an official plan wins over the static table.
+	override := quotaRateSummary("catsco-pro", 33000)
+	override.Plans[0].RealCostCNY = 660
+	if got := commercialRelayQuotaRate(override); !nearlyEqual(got, 50.0) {
+		t.Fatalf("plan anchor override rate=%v", got)
 	}
 
 	// A revoked entitlement must not enable a conversion rate.
@@ -179,8 +206,8 @@ func TestSyncResetsQuotaRateWhenLeavingOfficialPackages(t *testing.T) {
 	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
 		t.Fatal(err)
 	}
-	if len(rates) == 0 || rates[len(rates)-1] != 0 {
-		t.Fatalf("expected an explicit rate reset, got %v", rates)
+	if len(rates) == 0 || !nearlyEqual(rates[len(rates)-1], 11000.0/300.0) {
+		t.Fatalf("expected the entry-level rate after leaving pro, got %v", rates)
 	}
 	before := len(rates)
 	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {

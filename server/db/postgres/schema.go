@@ -44,6 +44,7 @@ func (a *Adapter) CreateSchema() error {
 		createAuthServicesTable,
 		createCommercialPlansTable,
 		migrateCommercialPlansAddSaleFields,
+		migrateCommercialPlansAddRealCost,
 		migrateCommercialPlansAddInternalQuota,
 		createCommercialInviteCodesTable,
 		migrateCommercialInviteWorkerCredits,
@@ -688,6 +689,7 @@ CREATE TABLE IF NOT EXISTS commercial_plans (
 	sale_state VARCHAR(16) NOT NULL DEFAULT 'hidden',
 	purchase_limit INT NOT NULL DEFAULT 0,
     monthly_budget_cny NUMERIC(14,6) NOT NULL DEFAULT 0,
+    real_cost_cny NUMERIC(14,6) NOT NULL DEFAULT 0,
     model_budgets JSONB NOT NULL DEFAULT '{}'::jsonb,
     internal_quota_tokens BIGINT NOT NULL DEFAULT 0,
     duration_days INT NOT NULL DEFAULT 30,
@@ -701,7 +703,8 @@ CREATE TABLE IF NOT EXISTS commercial_plans (
 	CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0),
     CONSTRAINT chk_commercial_plans_internal_quota_tokens CHECK (internal_quota_tokens >= 0),
     CONSTRAINT chk_commercial_plans_duration CHECK (duration_days > 0),
-    CONSTRAINT chk_commercial_plans_budget CHECK (monthly_budget_cny >= 0)
+    CONSTRAINT chk_commercial_plans_budget CHECK (monthly_budget_cny >= 0),
+    CONSTRAINT chk_commercial_plans_real_cost CHECK (real_cost_cny >= 0)
 );
 `
 
@@ -720,6 +723,15 @@ DO $$ BEGIN
 	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_purchase_limit') THEN
 		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0);
 	END IF;
+END $$;
+`
+
+const migrateCommercialPlansAddRealCost = `
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS real_cost_cny NUMERIC(14,6) NOT NULL DEFAULT 0;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_real_cost') THEN
+        ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_real_cost CHECK (real_cost_cny >= 0);
+    END IF;
 END $$;
 `
 

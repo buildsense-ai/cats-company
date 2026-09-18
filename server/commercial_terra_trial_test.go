@@ -58,6 +58,7 @@ func TestTerraTrialSyncRestoresPaidAndInternalWithoutRefillingTrial(t *testing.T
 				Window  string                                `json:"usage_window_start"`
 				Budgets []commercialRelayProviderBudgetUpdate `json:"provider_config_budgets"`
 				Scopes  []commercialRelayModelScope           `json:"model_scopes"`
+				Quota   *float64                              `json:"quota_rate"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
@@ -67,6 +68,9 @@ func TestTerraTrialSyncRestoresPaidAndInternalWithoutRefillingTrial(t *testing.T
 			state.Limits.FreeTerraTrial.Enabled = body.Trial
 			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: body.Monthly, ResetDuration: "1M"}
 			state.UsageWindowStart = body.Window
+			if body.Quota != nil {
+				state.Key.QuotaRate = *body.Quota
+			}
 			if body.Scopes != nil {
 				state.Limits.ModelScopes = body.Scopes
 			}

@@ -51,6 +51,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.SaleState,
 		&plan.PurchaseLimit,
 		&plan.MonthlyBudget,
+		&plan.RealCostCNY,
 		&budgets,
 		&plan.InternalQuotaTokens,
 		&plan.DurationDays,
@@ -73,7 +74,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at, cloud_worker_billing_mode
+		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at, cloud_worker_billing_mode
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -98,6 +99,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	}
 	if plan.InternalQuotaTokens < 0 {
 		return 0, fmt.Errorf("commercial plan internal quota must be non-negative")
+	}
+	if plan.RealCostCNY < 0 {
+		return 0, fmt.Errorf("commercial plan real cost must be non-negative")
 	}
 	if err := validateCommercialOfficialPaidPlanModels(plan.Slug, plan.ModelBudgets); err != nil {
 		return 0, err
@@ -125,9 +129,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode
+			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -136,6 +140,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			sale_state = EXCLUDED.sale_state,
 			purchase_limit = EXCLUDED.purchase_limit,
 			monthly_budget_cny = EXCLUDED.monthly_budget_cny,
+			real_cost_cny = EXCLUDED.real_cost_cny,
 			model_budgets = EXCLUDED.model_budgets,
 			internal_quota_tokens = EXCLUDED.internal_quota_tokens,
 			duration_days = EXCLUDED.duration_days,
@@ -152,6 +157,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		normalizeCommercialSaleState(plan.SaleState),
 		maxInt(plan.PurchaseLimit, 0),
 		plan.MonthlyBudget,
+		plan.RealCostCNY,
 		string(budgets),
 		plan.InternalQuotaTokens,
 		durationDays,

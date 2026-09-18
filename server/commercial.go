@@ -896,6 +896,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			SaleState              string             `json:"sale_state"`
 			PurchaseLimit          int                `json:"purchase_limit"`
 			MonthlyBudget          float64            `json:"monthly_budget_cny"`
+			RealCostCNY            float64            `json:"real_cost_cny"`
 			ModelBudgets           map[string]float64 `json:"model_budgets"`
 			InternalQuota          int64              `json:"internal_quota_tokens"`
 			DurationDays           int                `json:"duration_days"`
@@ -917,8 +918,8 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan name is required"})
 			return
 		}
-		if req.MonthlyBudget < 0 {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "monthly budget must be non-negative"})
+		if req.MonthlyBudget < 0 || req.RealCostCNY < 0 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "monthly budget and real cost must be non-negative"})
 			return
 		}
 		if req.PriceFen < 0 || req.PurchaseLimit < 0 || req.InternalQuota < 0 {
@@ -968,6 +969,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			SaleState:              req.SaleState,
 			PurchaseLimit:          req.PurchaseLimit,
 			MonthlyBudget:          req.MonthlyBudget,
+			RealCostCNY:            req.RealCostCNY,
 			ModelBudgets:           modelBudgets,
 			InternalQuotaTokens:    req.InternalQuota,
 			CloudWorkerBillingMode: req.CloudWorkerBillingMode,

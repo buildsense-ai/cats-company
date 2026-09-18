@@ -1098,6 +1098,7 @@ func TestCommercialRelaySyncWritesScopeAndNarrowedBudgetTogether(t *testing.T) {
 		MonthlyBudget         float64                               `json:"monthly_budget"`
 		MonthlyBudgetDuration string                                `json:"monthly_budget_duration"`
 		UsageWindowStart      *string                               `json:"usage_window_start"`
+		QuotaRate             float64                               `json:"quota_rate"`
 	}
 	applied := false
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1114,7 +1115,13 @@ func TestCommercialRelaySyncWritesScopeAndNarrowedBudgetTogether(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(commercialRelayUsageUser{
 				Configured: true,
-				Key:        &commercialRelayKeySummary{State: "active"},
+				Key: &commercialRelayKeySummary{State: "active",
+					QuotaRate: func() float64 {
+						if applied {
+							return posted.QuotaRate
+						}
+						return 0
+					}()},
 				UsageWindowStart: func() string {
 					if applied && posted.UsageWindowStart != nil {
 						return *posted.UsageWindowStart
@@ -1355,6 +1362,9 @@ func TestCommercialRelayBaselineLegacyMigrationIsIdempotent(t *testing.T) {
 			}
 			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: posted["monthly_budget"].(float64), ResetDuration: "1M"}
 			state.UsageWindowStart = posted["usage_window_start"].(string)
+			if quota, ok := posted["quota_rate"].(float64); ok {
+				state.Key.QuotaRate = quota
+			}
 			for index := range state.Limits.ModelLimits {
 				state.Limits.ModelLimits[index].Budget.MaxLimit = state.Limits.MonthlyBudget.MaxLimit
 			}
@@ -1412,6 +1422,9 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 			state.Limits.FreeTerraTrial.Enabled = posted["free_terra_trial"].(bool)
 			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: posted["monthly_budget"].(float64), ResetDuration: "1M"}
 			state.UsageWindowStart = posted["usage_window_start"].(string)
+			if quota, ok := posted["quota_rate"].(float64); ok {
+				state.Key.QuotaRate = quota
+			}
 			for index := range state.Limits.ModelLimits {
 				state.Limits.ModelLimits[index].Budget.MaxLimit = 1800
 			}
@@ -1604,6 +1617,9 @@ func TestCommercialRelaySyncWritesAndVerifiesSharedPoolPolicy(t *testing.T) {
 			state.Limits.MonthlyBudget.MaxLimit = posted["monthly_budget"].(float64)
 			state.Limits.MonthlyBudget.ResetDuration = posted["monthly_budget_duration"].(string)
 			state.UsageWindowStart = posted["usage_window_start"].(string)
+			if quota, ok := posted["quota_rate"].(float64); ok {
+				state.Key.QuotaRate = quota
+			}
 			rawUpdates, _ := json.Marshal(posted["provider_config_budgets"])
 			var updates []commercialRelayProviderBudgetUpdate
 			_ = json.Unmarshal(rawUpdates, &updates)
