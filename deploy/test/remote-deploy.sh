@@ -160,11 +160,11 @@ compose -f "$compose_file" --env-file "$env_file" ps
 printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
 
 wait_for_health "api" "$health_api"
-# The web image resolves the Compose service name when nginx starts.  A
-# server recreation (for example after an environment/secret change) can
-# therefore leave an existing web container pointing at the old server IP.
-# Recreate web after the API is ready so nginx resolves the current address.
-compose -f "$compose_file" --env-file "$env_file" up -d --force-recreate --no-deps web
+# The web container resolves `server` through the Docker DNS resolver on
+# every request (deploy/nginx/nginx.conf), so a server recreation no longer
+# strands nginx on the previous address and no follow-up web recreate is
+# needed.  Waiting for web health below still guards deploys that recreate
+# the web container itself.
 wait_for_health "web" "$health_web"
 wait_for_health "website" "$health_website"
 

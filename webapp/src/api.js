@@ -246,6 +246,12 @@ const RAW_UPLOAD_FILE_SIZE_HEADER = 'X-CatsCo-File-Size';
 const UPLOAD_INCOMPLETE_CODE = 'upload_incomplete';
 const UPLOAD_RESPONSE_INTERRUPTED_CODE = 'upload_response_interrupted';
 const UPLOAD_TOO_LARGE_CODE = 'upload_too_large';
+// A deploy briefly drops every upload connection while containers restart.
+// Retry those transport failures for roughly half a minute (2+4+8+15s of
+// pauses) before surfacing the error, so a file selected during a rollout
+// still lands instead of vanishing with the page refresh.
+const UPLOAD_TRANSPORT_RETRY_DELAYS_MS = [2000, 4000, 8000, 15000];
+const UPLOAD_GATEWAY_RETRY_STATUSES = new Set([502, 503, 504]);
 
 function rawUploadHeaders(file, authToken = '') {
   const headers = {
@@ -309,8 +315,15 @@ async function readUploadResponse(response, path) {
   return data;
 }
 
+function waitForUploadRetry(delayMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
+}
+
 async function uploadRawFile(path, file, { authToken = '' } = {}) {
-  let attempts = 0;
+  let incompleteRetries = 0;
+  let transportRetries = 0;
   while (true) {
     let response;
     try {
@@ -320,20 +333,36 @@ async function uploadRawFile(path, file, { authToken = '' } = {}) {
         body: file,
       });
     } catch (cause) {
+      if (transportRetries < UPLOAD_TRANSPORT_RETRY_DELAYS_MS.length) {
+        await waitForUploadRetry(UPLOAD_TRANSPORT_RETRY_DELAYS_MS[transportRetries]);
+        transportRetries += 1;
+        continue;
+      }
       const error = new Error('上传连接中断，请检查网络后重试。');
       error.code = 'upload_network_error';
       error.cause = cause;
       throw error;
     }
 
+    if (
+      UPLOAD_GATEWAY_RETRY_STATUSES.has(response.status)
+      && transportRetries < UPLOAD_TRANSPORT_RETRY_DELAYS_MS.length
+    ) {
+      // The gateway answered on behalf of a stack that is still restarting;
+      // the request never reached the API, so retrying cannot duplicate work.
+      await waitForUploadRetry(UPLOAD_TRANSPORT_RETRY_DELAYS_MS[transportRetries]);
+      transportRetries += 1;
+      continue;
+    }
+
     try {
       return await readUploadResponse(response, path);
     } catch (error) {
-      const canRetry = attempts === 0
+      const canRetry = incompleteRetries === 0
         && error?.code === UPLOAD_INCOMPLETE_CODE
         && error?.retryable === true;
       if (!canRetry) throw error;
-      attempts += 1;
+      incompleteRetries += 1;
     }
   }
 }

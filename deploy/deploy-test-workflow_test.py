@@ -23,13 +23,14 @@ class DeployTestWorkflowTest(unittest.TestCase):
         self.assertIn("SHIMO_WORKER_ENABLED", workflow)
         self.assertIn("Shimo Worker enablement requires actor, Worker, and session secrets", workflow)
 
-    def test_test_deploy_refreshes_web_after_api_recreation(self):
+    def test_test_deploy_does_not_recreate_web_after_api_recreation(self):
+        # The web nginx config resolves the API container per request through
+        # the Docker DNS resolver, so a second web recreate would only add
+        # another multi-second 502 window to every deploy.
         script = (ROOT / "deploy/test/remote-deploy.sh").read_text(encoding="utf-8")
-        self.assertIn(
-            'compose -f "$compose_file" --env-file "$env_file" up -d --force-recreate --no-deps web',
-            script,
-        )
-        self.assertLess(script.index('wait_for_health "api" "$health_api"'), script.index("--force-recreate --no-deps web"))
+        self.assertNotIn("--force-recreate", script)
+        self.assertIn('wait_for_health "api" "$health_api"', script)
+        self.assertIn('wait_for_health "web" "$health_web"', script)
 
     def test_deploy_hands_the_shimo_session_mount_to_the_worker_user(self):
         # The Shimo worker image runs as uid/gid 1000.  When the deploy only
