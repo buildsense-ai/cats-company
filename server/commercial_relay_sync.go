@@ -513,9 +513,11 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		updates, nextManaged = commercialRelaySharedManagedPlan(uid, summary, relayUser, managed)
 	}
 	sharedLimit := commercialRelaySharedLimit(summary)
+	quotaRate := commercialRelayQuotaRate(summary)
 	usageWindowStart := commercialRelayUsageWindowStartForSync(summary, relayUser)
 	policyNeedsSync := sharedQuota && (!nearlyEqual(relayUser.Limits.MonthlyBudget.MaxLimit, sharedLimit) ||
 		defaultRelayResetDuration(relayUser.Limits.MonthlyBudget.ResetDuration) != "1M" ||
+		!commercialRelayQuotaRateMatches(relayUser, quotaRate) ||
 		!sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart))
 	if len(updates) > 0 || scopesChanged || policyNeedsSync || trialChanged {
 		payload := map[string]interface{}{}
@@ -531,6 +533,9 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		if sharedQuota {
 			payload["monthly_budget"] = sharedLimit
 			payload["monthly_budget_duration"] = "1M"
+			if quotaRate > 0 {
+				payload["quota_rate"] = quotaRate
+			}
 			if usageWindowStart == "" {
 				payload["usage_window_start"] = nil
 			} else {
@@ -1408,6 +1413,84 @@ func commercialRelayManagedPlanForMode(uid int64, summary *types.CommercialSumma
 		return commercialManagedBudgetKey(nextManaged[i].Provider, nextManaged[i].AllowedModels) < commercialManagedBudgetKey(nextManaged[j].Provider, nextManaged[j].AllowedModels)
 	})
 	return updates, nextManaged
+}
+
+// commercialRelayQuotaRealCostCNY anchors each official plan's points to the
+// real upstream cost the package may consume (399 -> 300 CNY and 799 -> 700
+// CNY of actual provider spend). Relay applies the resulting rate to real-cost
+// accounting so a package empties at the true cost pace instead of the
+// list-price pace.
+var commercialRelayQuotaRealCostCNY = map[string]float64{
+	"catsco-personal": 300,
+	"catsco-pro":      700,
+}
+
+// commercialRelayQuotaPlanPoints mirrors the official plan validators
+// (11000 points for catsco-personal, 33000 for catsco-pro). It is only a
+// fallback: whenever the commercial summary carries the plan row, its points
+// win so operator plan edits flow through without a rebuild.
+var commercialRelayQuotaPlanPoints = map[string]float64{
+	"catsco-personal": 11000,
+	"catsco-pro":      33000,
+}
+
+// commercialRelayQuotaRate returns the platform-points-per-CNY conversion rate
+// for the user's active official package, or 0 when no official package
+// applies (the relay then keeps its built-in default rate).
+func commercialRelayQuotaRate(summary *types.CommercialSummary) float64 {
+	if summary == nil {
+		return 0
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil || !strings.EqualFold(strings.TrimSpace(entitlement.State), "active") {
+			continue
+		}
+		slug := strings.ToLower(strings.TrimSpace(entitlement.PlanSlug))
+		realCost := commercialRelayQuotaRealCostCNY[slug]
+		points := commercialRelayQuotaPlanPoints[slug]
+		if realCost <= 0 || points <= 0 {
+			continue
+		}
+		if planPoints := commercialRelayPlanPoints(summary, slug); planPoints > 0 {
+			points = planPoints
+		}
+		return points / realCost
+	}
+	return 0
+}
+
+func commercialRelayPlanPoints(summary *types.CommercialSummary, slug string) float64 {
+	for _, plan := range summary.Plans {
+		if plan == nil || !strings.EqualFold(strings.TrimSpace(plan.Slug), slug) {
+			continue
+		}
+		if plan.MonthlyBudget > 0 {
+			return plan.MonthlyBudget
+		}
+		total := 0.0
+		for _, amount := range plan.ModelBudgets {
+			if amount > 0 {
+				total += amount
+			}
+		}
+		if total > 0 {
+			return total
+		}
+	}
+	return 0
+}
+
+// commercialRelayQuotaRateMatches reports whether the relay already uses the
+// desired conversion rate. A zero rate means "no official package", which
+// never forces a resync loop.
+func commercialRelayQuotaRateMatches(relayUser *commercialRelayUsageUser, rate float64) bool {
+	if rate <= 0 {
+		return true
+	}
+	if relayUser == nil || relayUser.Key == nil {
+		return true
+	}
+	return nearlyEqual(relayUser.Key.QuotaRate, rate)
 }
 
 func commercialRelaySharedLimit(summary *types.CommercialSummary) float64 {

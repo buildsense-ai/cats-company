@@ -338,10 +338,11 @@ type commercialRelayLimits struct {
 }
 
 type commercialRelayKeySummary struct {
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Prefix string `json:"prefix,omitempty"`
-	State  string `json:"state,omitempty"`
+	ID        string  `json:"id,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Prefix    string  `json:"prefix,omitempty"`
+	State     string  `json:"state,omitempty"`
+	QuotaRate float64 `json:"quota_rate,omitempty"`
 }
 
 type commercialRelayUsageUser struct {
