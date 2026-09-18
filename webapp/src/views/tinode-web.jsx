@@ -240,21 +240,24 @@ function saveAppSidebarCollapsed(collapsed) {
 
 export function parseWorkspaceOnboardingTimestamp(value) {
   if (typeof value !== 'string') return null;
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{0,8}[1-9])?Z$/);
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{0,8}[1-9]))?Z$/);
   if (!match) return null;
 
-  const timestamp = Date.parse(value);
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction = ''] = match;
+  const timestamp = Date.parse(`${yearText}-${monthText}-${dayText}T${hourText}:${minuteText}:${secondText}Z`);
   if (!Number.isFinite(timestamp)) return null;
   const date = new Date(timestamp);
-  const [, year, month, day, hour, minute, second] = match.map(Number);
-  return date.getUTCFullYear() === year
-    && date.getUTCMonth() + 1 === month
-    && date.getUTCDate() === day
-    && date.getUTCHours() === hour
-    && date.getUTCMinutes() === minute
-    && date.getUTCSeconds() === second
-    ? timestamp
-    : null;
+  const [year, month, day, hour, minute, second] = [
+    yearText, monthText, dayText, hourText, minuteText, secondText,
+  ].map(Number);
+  if (date.getUTCFullYear() !== year
+    || date.getUTCMonth() + 1 !== month
+    || date.getUTCDate() !== day
+    || date.getUTCHours() !== hour
+    || date.getUTCMinutes() !== minute
+    || date.getUTCSeconds() !== second) return null;
+
+  return (BigInt(timestamp) * 1_000_000n) + BigInt(fraction.padEnd(9, '0') || '0');
 }
 
 export function resolveWorkspaceOnboardingCohortStart(configuredStart) {

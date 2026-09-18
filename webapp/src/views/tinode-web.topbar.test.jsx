@@ -362,6 +362,7 @@ describe('mobile model context wiring', () => {
     const cohortStart = '2026-09-18T00:00:00Z';
     const newUser = { uid: '43', created_at: '2026-09-18T00:00:01Z' };
     const existingUser = { uid: '44', created_at: '2026-09-17T23:59:59Z' };
+    const fractionalCohortStart = '2026-09-18T00:00:00.123999Z';
     const onboardingKey = workspaceOnboardingStorageKey(newUser.uid);
     window.localStorage.removeItem(onboardingKey);
 
@@ -370,6 +371,9 @@ describe('mobile model context wiring', () => {
     expect(isWorkspaceOnboardingNewUser({ uid: '45' }, cohortStart)).toBe(false);
     expect(isWorkspaceOnboardingNewUser({ uid: '46', created_at: '09/19/2026' }, cohortStart)).toBe(false);
     expect(isWorkspaceOnboardingNewUser({ uid: '47', created_at: '2026-02-30T00:00:00Z' }, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '48', created_at: '2026-09-18T00:00:00.123998Z' }, fractionalCohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '49', created_at: fractionalCohortStart }, fractionalCohortStart)).toBe(true);
+    expect(isWorkspaceOnboardingNewUser({ uid: '50', created_at: '2026-09-18T00:00:00.124Z' }, fractionalCohortStart)).toBe(true);
     expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00Z')).not.toBeNull();
     expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.123456789Z')).not.toBeNull();
     expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.1234567891Z')).toBeNull();
