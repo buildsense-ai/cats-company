@@ -445,10 +445,10 @@ func relayAdminPathAllowed(rawPath string) bool {
 
 // relayAdminMethodAllowed mirrors the verbs the portal needs. The relay
 // enforces its own per-endpoint method matrix; rejecting unknown verbs here
-// keeps PUT/PATCH/HEAD and stray DELETEs from ever reaching it:
+// keeps PUT/PATCH/HEAD/DELETE from ever reaching it:
 //   - GET for every whitelisted read path
-//   - POST for the known local write paths and the provider-capacity family
-//   - DELETE only for the provider-capacity accounts endpoint
+//   - POST for the known local write paths, user-key endpoints, and the
+//     provider-capacity API (the relay answers 405 to everything else)
 func relayAdminMethodAllowed(method, rawPath string) bool {
 	path := strings.SplitN(rawPath, "?", 2)[0]
 	switch method {
@@ -457,10 +457,7 @@ func relayAdminMethodAllowed(method, rawPath string) bool {
 	case http.MethodPost:
 		return relayAdminLocalWriteMarker(method, path) != "" ||
 			relayAdminUserKeyPath.MatchString(path) ||
-			path == "/local/provider-capacity" ||
 			relayAdminProviderCapacityAPIPath.MatchString(path)
-	case http.MethodDelete:
-		return strings.TrimRight(path, "/") == "/local/provider-capacity/api/accounts"
 	default:
 		return false
 	}

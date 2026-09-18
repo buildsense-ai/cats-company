@@ -42,6 +42,8 @@ func TestRelayAdminProxyMethodAllowlist(t *testing.T) {
 		{http.MethodDelete, "/local/users/38/key/limits", http.StatusMethodNotAllowed},
 		{http.MethodPost, "/local/usage-summary", http.StatusMethodNotAllowed},
 		{http.MethodPost, "/local/pricing-analytics/data", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/local/provider-capacity", http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/local/provider-capacity/api/accounts", http.StatusMethodNotAllowed},
 		{http.MethodPost, "/local/pricing-rules", http.StatusOK},
 		{http.MethodPost, "/local/users/38/key/limits", http.StatusOK},
 	} {
