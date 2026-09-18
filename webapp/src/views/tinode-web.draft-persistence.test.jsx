@@ -297,7 +297,7 @@ test('opens the same onboarding card from the DesktopConnectModal New User Guide
   });
 
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
-  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+  await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
 });
 
 test('replays onboarding from the computer entry over an active conversation and redeems invites', async () => {

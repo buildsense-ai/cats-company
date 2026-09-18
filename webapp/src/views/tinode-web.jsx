@@ -1971,14 +1971,16 @@ function NoActiveTask({
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
           <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
-        <Suspense fallback={null}>
-          <WorkspaceOnboardingCard
-            userId={user?.uid}
-            visible={showWorkspaceOnboarding}
-            onDownloadDashboard={onDownloadDashboard}
-            dashboardDownloadOpen={dashboardDownloadOpen}
-          />
-        </Suspense>
+        {showWorkspaceOnboarding && (
+          <Suspense fallback={null}>
+            <WorkspaceOnboardingCard
+              userId={user?.uid}
+              visible
+              onDownloadDashboard={onDownloadDashboard}
+              dashboardDownloadOpen={dashboardDownloadOpen}
+            />
+          </Suspense>
+        )}
         <EmptyTaskComposer
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}
