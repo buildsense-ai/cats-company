@@ -99,6 +99,7 @@ vi.mock('./messages-view', () => ({
   default: ({ composerDraftStore, topic }) => (
     <textarea
       aria-label="消息草稿"
+      data-topic={topic}
       defaultValue={composerDraftStore.inputDrafts.get(topic) || ''}
       onChange={(event) => {
         const value = event.target.value;
@@ -166,7 +167,7 @@ async function selectTestConversation() {
 
 async function openOnboardingReplayFromDesktopEntry() {
   await selectTestConversation();
-  await vi.waitFor(() => expect(container.querySelector('[aria-label="消息草稿"]')).not.toBeNull());
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="消息草稿"][data-topic="p2p_1_2"]')).not.toBeNull());
   const profileTrigger = container.querySelector('[aria-label="cats，打开个人菜单"]');
   await act(async () => profileTrigger.click());
   const desktopEntry = [...document.querySelectorAll('[role="menuitem"]')]
@@ -184,7 +185,7 @@ async function openOnboardingReplayFromDesktopEntry() {
   });
 
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
-  expect(container.querySelector('[aria-label="消息草稿"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="消息草稿"][data-topic="p2p_1_2"]')).not.toBeNull();
 }
 
 beforeEach(() => {

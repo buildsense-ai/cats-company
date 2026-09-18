@@ -120,11 +120,13 @@ describe('DesktopConnectModal', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    const guide = [...container.querySelectorAll('button')]
+    const modal = container.querySelector('[role="dialog"][aria-labelledby="catsco-desktop-modal-title"]');
+    expect(modal).not.toBeNull();
+    const guide = [...modal.querySelectorAll('button')]
       .find((button) => button.textContent.includes('新手指引'));
     await act(async () => guide.click());
 
-    expect(container.querySelector('.catsco-desktop-modal')).toBeNull();
+    expect(container.querySelector('[role="dialog"][aria-labelledby="catsco-desktop-modal-title"]')).toBeNull();
     await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
   });
 
