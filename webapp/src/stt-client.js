@@ -1247,8 +1247,7 @@ export class ContinuousStreamingSTTSession {
     if (this.capturePromise) return this.capturePromise;
     this.installLifecycleListeners();
     if (isPageHidden()) {
-      this.terminal = true;
-      this.setState('complete');
+      this.cancel();
       return undefined;
     }
     this.capturePromise = Promise.resolve(this.createCapture({

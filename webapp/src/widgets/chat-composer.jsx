@@ -305,7 +305,27 @@ export default function ChatComposer({
     let session;
     session = createVoiceSession({
       onState: (state) => {
-        if (voiceSessionRef.current === session) setVoiceState(state);
+        if (voiceSessionRef.current !== session) return;
+        if (state === 'cancelled') {
+          voiceSessionRef.current = null;
+          voiceInsertionRef.current = null;
+          voiceLatestTextRef.current = '';
+          voiceWarningAnnouncementKeyRef.current = null;
+          clearVoiceHoldTimer();
+          voiceHoldGestureRef.current = null;
+          voiceHoldTouchStartsRef.current = [];
+          setVoiceHoldActive(false);
+          setVoiceHoldCancel(false);
+          setVoiceState('idle');
+          setVoicePartial('');
+          setVoiceError('');
+          setVoiceNotice('');
+          setVoiceNoticeTone('notice');
+          setVoiceLiveStatus('');
+          voiceWaveLevelRef.current = 0;
+          return;
+        }
+        setVoiceState(state);
       },
       onPartial: (text) => {
         if (voiceSessionRef.current !== session) return;

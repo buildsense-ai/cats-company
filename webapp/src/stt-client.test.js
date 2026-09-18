@@ -1927,6 +1927,28 @@ describe('StreamingSTTSession', () => {
 });
 
 describe('ContinuousStreamingSTTSession', () => {
+  it('cancels a prewarmed session when the page is hidden before activation', async () => {
+    const states = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new ContinuousStreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue(capture),
+      onState: (state) => states.push(state),
+    });
+
+    try {
+      await session.prepare();
+      setDocumentVisibility('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      await flushMicrotasks();
+
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+      expect(session.terminal).toBe(true);
+      expect(states).toEqual(['cancelled']);
+    } finally {
+      setDocumentVisibility('visible');
+    }
+  });
+
   it('keeps one capture open and carries transition audio into the next active speech segment', async () => {
     vi.useFakeTimers();
     const segments = [];

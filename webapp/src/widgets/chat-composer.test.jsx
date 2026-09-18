@@ -666,6 +666,52 @@ describe('ChatComposer', () => {
     vi.useRealTimers();
   });
 
+  it('releases a lifecycle-cancelled pre-roll so a later tap starts a new session', async () => {
+    vi.useFakeTimers();
+    const callbacks = [];
+    const sessions = [];
+    const createVoiceSession = vi.fn((options) => {
+      callbacks.push(options);
+      const session = {
+        prepare: vi.fn().mockResolvedValue(undefined),
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn(),
+        cancel: vi.fn(),
+      };
+      sessions.push(session);
+      return session;
+    });
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 35,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+      callbacks[0].onState('cancelled');
+    });
+    expect(sessions[0].prepare).toHaveBeenCalledTimes(1);
+    expect(sessions[0].start).not.toHaveBeenCalled();
+
+    await act(async () => {
+      voiceButton.click();
+      await Promise.resolve();
+    });
+
+    expect(createVoiceSession).toHaveBeenCalledTimes(2);
+    expect(sessions[1].prepare).toHaveBeenCalledTimes(1);
+    expect(sessions[1].start).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it('reuses touch pre-roll when a short tap starts normal voice input', async () => {
     vi.useFakeTimers();
     const sessions = [];
