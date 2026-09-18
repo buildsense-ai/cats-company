@@ -322,6 +322,7 @@ test('keeps exactly one onboarding card when replaying the local onboarding prev
     expect(modal).not.toBeNull();
     return modal;
   });
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   await act(async () => {
     [...desktopModal.querySelectorAll('button')]
       .find((button) => button.textContent === '新手指引').click();

@@ -1620,7 +1620,7 @@ function TinodeWebApp({ location }) {
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    showWorkspaceOnboarding={!showWorkspaceOnboardingReplay && !workspaceOnboardingDismissedInSession && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
+                    showWorkspaceOnboarding={!showDesktopConnectModal && !showWorkspaceOnboardingReplay && !workspaceOnboardingDismissedInSession && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
                       && !shouldDeferWorkspaceOnboarding({
                         channelDeviceLink,
                         channelAccountLink,
