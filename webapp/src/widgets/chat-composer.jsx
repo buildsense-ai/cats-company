@@ -367,6 +367,31 @@ export default function ChatComposer({
         voiceWarningAnnouncementKeyRef.current = null;
         setVoiceLiveStatus('正在听…');
       },
+      onSegmentFinal: (text) => {
+        if (voiceSessionRef.current !== session) return;
+        const insertion = voiceInsertionRef.current;
+        const committedText = String(text || '').trim();
+        if (committedText) {
+          onVoiceFinal?.(committedText, insertion);
+          if (insertion) {
+            const baseValue = String(insertion.baseValue || '');
+            const start = Math.min(baseValue.length, Math.max(0, Number(insertion.start) || 0));
+            const end = Math.min(baseValue.length, Math.max(start, Number(insertion.end) || start));
+            voiceInsertionRef.current = {
+              baseValue: baseValue.slice(0, start) + committedText + baseValue.slice(end),
+              start: start + committedText.length,
+              end: start + committedText.length,
+            };
+          }
+        }
+        voiceLatestTextRef.current = '';
+        setVoicePartial('');
+        setVoiceError('');
+        setVoiceNotice('已保存本段，正在继续录音…');
+        setVoiceNoticeTone('success');
+        voiceWarningAnnouncementKeyRef.current = null;
+        setVoiceLiveStatus('已保存本段，正在继续录音');
+      },
       onFinal: (text, details = {}) => {
         if (voiceSessionRef.current !== session) return;
         const insertion = voiceInsertionRef.current;

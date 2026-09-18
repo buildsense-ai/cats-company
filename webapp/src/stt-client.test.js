@@ -2,6 +2,7 @@ import {
   createPCM16Capture,
   releaseReusableMicrophoneStream,
   StreamingSTTSession,
+  ContinuousStreamingSTTSession,
   StreamingTranscript,
 } from './stt-client';
 
@@ -1918,6 +1919,101 @@ describe('StreamingSTTSession', () => {
       expect(errors).toHaveLength(1);
       expect(errors[0].details.reason).toBe('idle_timeout');
       expect(errors[0].transcript).toBe('静音边界前的内容');
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('ContinuousStreamingSTTSession', () => {
+  it('keeps one capture open and carries transition audio into the next active speech segment', async () => {
+    vi.useFakeTimers();
+    const segments = [];
+    const segmentFinals = [];
+    const finals = [];
+    let emitFrame;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const createSegment = vi.fn((callbacks) => {
+      const segment = {
+        ...callbacks,
+        stopRequested: false,
+        terminal: false,
+        handleFrame: vi.fn(),
+        publishAudioLevel: vi.fn(),
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        cancel: vi.fn(),
+      };
+      segments.push(segment);
+      return segment;
+    });
+    const session = new ContinuousStreamingSTTSession({
+      createCapture: vi.fn().mockImplementation(({ onFrame }) => {
+        emitFrame = onFrame;
+        return Promise.resolve(capture);
+      }),
+      createSegment,
+      onSegmentFinal: (text) => segmentFinals.push(text),
+      onFinal: (text) => finals.push(text),
+    });
+
+    try {
+      await session.start();
+      expect(segments).toHaveLength(1);
+      const first = segments[0];
+      first.onDurationLimit({ hadRecentInput: true });
+      first.stopRequested = true;
+      const transitionFrame = new ArrayBuffer(3_200);
+      emitFrame(transitionFrame);
+      first.onFinal('第一段', { reason: 'duration_limit' });
+
+      await vi.runOnlyPendingTimersAsync();
+      expect(segmentFinals).toEqual(['第一段']);
+      expect(finals).toEqual([]);
+      expect(capture.stop).not.toHaveBeenCalled();
+      expect(segments).toHaveLength(2);
+      expect(segments[1].handleFrame).toHaveBeenCalledWith(transitionFrame);
+
+      segments[1].onFinal('第二段', { reason: 'complete' });
+      await flushMicrotasks();
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+      expect(finals).toEqual(['第二段']);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('releases the composer when stopped during the segment handoff', async () => {
+    vi.useFakeTimers();
+    const finals = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const createSegment = vi.fn((callbacks) => ({
+      ...callbacks,
+      stopRequested: false,
+      terminal: false,
+      handleFrame: vi.fn(),
+      publishAudioLevel: vi.fn(),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    }));
+    const session = new ContinuousStreamingSTTSession({
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createSegment,
+      onFinal: (text, details) => finals.push({ text, details }),
+    });
+
+    try {
+      await session.start();
+      const first = createSegment.mock.results[0].value;
+      first.onDurationLimit({ hadRecentInput: true });
+      first.onFinal('第一段', { reason: 'duration_limit' });
+      await session.stop();
+
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+      expect(finals).toEqual([{ text: '', details: { reason: 'user_stop' } }]);
     } finally {
       session.cancel();
       vi.useRealTimers();
