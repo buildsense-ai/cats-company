@@ -104,11 +104,17 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 	// External/manual instances have no bot row and therefore need a separate
 	// inventory query. They are intentionally returned with no lifecycle or
 	// credit state so callers cannot mistake them for platform-managed workers.
+	// The owner identity is joined back in because the dashboard labels rows by
+	// account; without it an imported host shows up as a bare "UID <n>" and is
+	// impossible to recognise next to platform-managed workers.
 	bindings, err := a.db.Query(`
-		SELECT worker_uid, owner_uid, tenant_name, provider, region_id, project_id,
-		       az_name, instance_id, instance_name, public_ip, management_mode,
-		       lifecycle_mode, source, status, last_verified_at
-		FROM cloud_worker_bindings ORDER BY id`)
+		SELECT b.worker_uid, b.owner_uid, COALESCE(owner.username, ''), COALESCE(owner.display_name, ''),
+		       b.tenant_name, b.provider, b.region_id, b.project_id,
+		       b.az_name, b.instance_id, b.instance_name, b.public_ip, b.management_mode,
+		       b.lifecycle_mode, b.source, b.status, b.last_verified_at
+		FROM cloud_worker_bindings b
+		LEFT JOIN users owner ON owner.id = b.owner_uid
+		ORDER BY b.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list external cloud worker bindings: %w", err)
 	}
@@ -117,7 +123,7 @@ func (a *Adapter) ListCloudWorkerAdminRecords() ([]types.CloudWorkerAdminRecord,
 		var record types.CloudWorkerAdminRecord
 		var workerUID, ownerUID sql.NullInt64
 		var verifiedAt sql.NullTime
-		if err := bindings.Scan(&workerUID, &ownerUID, &record.TenantName, &record.Provider, &record.RegionID, &record.ProjectID, &record.AZName, &record.InstanceID, &record.InstanceName, &record.PublicIP, &record.ManagementMode, &record.LifecycleMode, &record.BindingSource, &record.BindingStatus, &verifiedAt); err != nil {
+		if err := bindings.Scan(&workerUID, &ownerUID, &record.OwnerUsername, &record.OwnerDisplayName, &record.TenantName, &record.Provider, &record.RegionID, &record.ProjectID, &record.AZName, &record.InstanceID, &record.InstanceName, &record.PublicIP, &record.ManagementMode, &record.LifecycleMode, &record.BindingSource, &record.BindingStatus, &verifiedAt); err != nil {
 			return nil, fmt.Errorf("scan external cloud worker binding: %w", err)
 		}
 		if workerUID.Valid {
