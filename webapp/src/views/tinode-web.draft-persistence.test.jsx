@@ -300,6 +300,28 @@ test('opens the same onboarding card from the DesktopConnectModal New User Guide
   await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
 });
 
+test('keeps exactly one onboarding card when replaying the local onboarding preview', async () => {
+  setCachedUser('2026-09-17T23:59:59Z');
+  await act(async () => {
+    renderWorkspace({ pathname: '/', search: '?onboarding_preview=1&open=download', hash: '' });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const desktopModal = await vi.waitFor(() => {
+    const modal = container.querySelector('[data-testid="desktop-connect-modal"]');
+    expect(modal).not.toBeNull();
+    return modal;
+  });
+  await act(async () => {
+    [...desktopModal.querySelectorAll('button')]
+      .find((button) => button.textContent === '新手指引').click();
+  });
+
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+  await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
+});
+
 test('replays onboarding from the computer entry over an active conversation and redeems invites', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
   await act(async () => renderWorkspace());
