@@ -565,8 +565,22 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		return nil, false, err
 	}
 	if order.PlanSlug == commercialPersonalPlanSlug || order.PlanSlug == commercialProPlanSlug {
-		if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt); err != nil {
+		// A renewal must not mint a second provisioning credit while the buyer
+		// still owns something it can extend or spend: an existing instance (any
+		// lifecycle that has not been destroyed yet keeps the single machine the
+		// package covers) is renewed further down, and an unspent credit already
+		// is the ticket for the next creation. Only a buyer with neither — a
+		// first purchase, or a worker whose destroy already started and cannot
+		// be recovered — receives a fresh credit, which the sweep rebuild hook
+		// then spends on a replacement instance.
+		survives, err := cloudWorkerSurvivesRenewal(tx, order.UID)
+		if err != nil {
 			return nil, false, err
+		}
+		if !survives {
+			if err := grantCloudWorkerCredit(tx, order.UID, "order:"+order.OrderNo, expiresAt); err != nil {
+				return nil, false, err
+			}
 		}
 		// If the user already has a cloud worker, a renewal/upgrade extends the
 		// retention window atomically with the paid entitlement. The worker is
@@ -588,6 +602,37 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 		return nil, false, fmt.Errorf("commit commercial fulfillment: %w", err)
 	}
 	return fulfilled, true, nil
+}
+
+// cloudWorkerSurvivesRenewal reports whether a paid order already has a cloud
+// worker to renew or a provisioning credit to spend, in which case fulfillment
+// must not grant another credit.
+//
+// A lifecycle row in any state except a completed deletion means the buyer's
+// single instance still exists and is extended by the same fulfillment. A
+// delete_running row is the one exception: the sweeper already claimed it and
+// the provider destroy script is running outside the database, so the buyer
+// gets a credit for a replacement instead.
+//
+// The credit check matches what ReserveCloudWorkerCredit would hand out: an
+// unspent, unexpired credit is the ticket for one machine that has not been
+// provisioned yet. A credit superseded by an upgrade is already revoked by
+// revokeCommercialPlanTier, so a dead credit can never read as "the buyer
+// already has one" here.
+func cloudWorkerSurvivesRenewal(tx *sql.Tx, uid int64) (bool, error) {
+	var survives bool
+	if err := tx.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 FROM cloud_worker_lifecycles
+			WHERE owner_uid = $1 AND state NOT IN ('deleted', 'delete_running')
+		) OR EXISTS (
+			SELECT 1 FROM cloud_worker_credits
+			WHERE uid = $1 AND state IN ('available', 'reserved')
+			  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		)`, uid).Scan(&survives); err != nil {
+		return false, fmt.Errorf("check cloud worker renewal target: %w", err)
+	}
+	return survives, nil
 }
 
 func (a *Adapter) BeginCommercialOrderRefund(orderNo, refundRequestNo string, staleAfter time.Duration) (*types.CommercialOrder, bool, error) {
