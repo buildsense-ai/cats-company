@@ -302,11 +302,20 @@ test('opens the same onboarding card from the DesktopConnectModal New User Guide
 
 test('keeps exactly one onboarding card when replaying the local onboarding preview', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
+  localStorage.setItem('v3_last_topic:1', JSON.stringify({
+    topicId: 'p2p_restored_preview',
+    name: 'Restored preview conversation',
+    isGroup: false,
+  }));
   await act(async () => {
     renderWorkspace({ pathname: '/', search: '?onboarding_preview=1&open=download', hash: '' });
     await Promise.resolve();
     await Promise.resolve();
   });
+
+  // The preview flag must replace the restored message view with the new-task workspace.
+  expect(container.querySelector('[aria-label="消息草稿"]')).toBeNull();
+  expect(container.querySelector('[aria-label="新任务草稿"]')).not.toBeNull();
 
   const desktopModal = await vi.waitFor(() => {
     const modal = container.querySelector('[data-testid="desktop-connect-modal"]');
