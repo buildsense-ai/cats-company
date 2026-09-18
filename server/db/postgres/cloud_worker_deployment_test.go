@@ -260,4 +260,50 @@ func TestPostgresCloudWorkerDeploymentContract(t *testing.T) {
 	}
 	testPostgresMigrationFiles(t, db)
 	testCloudWorkerDeploymentContract(t, db)
+	testCloudWorkerAdminRecordsBindingOwner(t, db)
+}
+
+// testCloudWorkerAdminRecordsBindingOwner pins the dashboard projection for
+// imported (external) hosts: the row must carry the owner's username so the
+// commercial-ops table can label it like any other worker instead of a bare
+// "UID <n>".
+func testCloudWorkerAdminRecordsBindingOwner(t *testing.T, db *Adapter) {
+	t.Helper()
+	ownerID, err := db.CreateUser(&types.User{
+		Username: "binding-owner", Email: "binding-owner@example.test", DisplayName: "Binding Owner",
+		AccountType: types.AccountHuman, PassHash: []byte("binding-owner-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create binding owner: %v", err)
+	}
+	if err := db.UpsertExternalCloudWorkerBinding(types.CloudWorkerBindingRecord{
+		OwnerUID:     &ownerID,
+		TenantName:   "manual-host",
+		Provider:     "ctyun",
+		RegionID:     "200000004421",
+		ProjectID:    "project-manual",
+		AZName:       "cn-gd-fos7-1a",
+		InstanceID:   "instance-manual-1",
+		InstanceName: "manual-host",
+		PublicIP:     "218.13.157.180",
+	}); err != nil {
+		t.Fatalf("upsert external cloud worker binding: %v", err)
+	}
+	records, err := db.ListCloudWorkerAdminRecords()
+	if err != nil {
+		t.Fatalf("list cloud worker admin records: %v", err)
+	}
+	for _, record := range records {
+		if record.InstanceID != "instance-manual-1" {
+			continue
+		}
+		if record.OwnerUID != ownerID || record.OwnerUsername != "binding-owner" || record.OwnerDisplayName != "Binding Owner" {
+			t.Fatalf("external binding lost its owner identity: uid=%d username=%q display=%q", record.OwnerUID, record.OwnerUsername, record.OwnerDisplayName)
+		}
+		if record.ManagementMode != "manual_import" || record.LifecycleState != "external" {
+			t.Fatalf("external binding modes changed: management=%q lifecycle=%q", record.ManagementMode, record.LifecycleState)
+		}
+		return
+	}
+	t.Fatal("imported binding missing from the admin records projection")
 }
