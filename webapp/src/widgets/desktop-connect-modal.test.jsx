@@ -1,6 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import DesktopConnectModal, { resolveConnectedDesktopDevice } from './desktop-connect-modal';
+import WorkspaceOnboardingCard from './workspace-onboarding-card';
 
 vi.mock('../api', () => ({
   api: {
@@ -85,6 +86,46 @@ describe('DesktopConnectModal', () => {
       guide.click();
     });
     expect(onOpenOnboardingGuide).toHaveBeenCalledTimes(1);
+  });
+
+  test('hands off from the real guide card to exactly one shared onboarding card', async () => {
+    function ReplayHarness() {
+      const [desktopOpen, setDesktopOpen] = React.useState(true);
+      const [onboardingOpen, setOnboardingOpen] = React.useState(false);
+      return (
+        <>
+          {desktopOpen && (
+            <DesktopConnectModal
+              userId="38"
+              onClose={() => setDesktopOpen(false)}
+              onOpenOnboardingGuide={() => {
+                setDesktopOpen(false);
+                setOnboardingOpen(true);
+              }}
+            />
+          )}
+          {onboardingOpen && (
+            <WorkspaceOnboardingCard
+              userId="38"
+              visible
+              onDismiss={() => setOnboardingOpen(false)}
+            />
+          )}
+        </>
+      );
+    }
+
+    await act(async () => {
+      root.render(<ReplayHarness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const guide = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('新手指引'));
+    await act(async () => guide.click());
+
+    expect(container.querySelector('.catsco-desktop-modal')).toBeNull();
+    await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
   });
 
   test('keeps connected device management in the unified modal', async () => {

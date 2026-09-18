@@ -166,6 +166,7 @@ async function selectTestConversation() {
 
 async function openOnboardingReplayFromDesktopEntry() {
   await selectTestConversation();
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="消息草稿"]')).not.toBeNull());
   const profileTrigger = container.querySelector('[aria-label="cats，打开个人菜单"]');
   await act(async () => profileTrigger.click());
   const desktopEntry = [...document.querySelectorAll('[role="menuitem"]')]
@@ -183,6 +184,7 @@ async function openOnboardingReplayFromDesktopEntry() {
   });
 
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+  expect(container.querySelector('[aria-label="消息草稿"]')).not.toBeNull();
 }
 
 beforeEach(() => {
