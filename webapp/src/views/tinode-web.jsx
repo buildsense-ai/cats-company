@@ -417,6 +417,7 @@ function TinodeWebApp({ location }) {
   const profileTriggerRef = useRef(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
+  const [showWorkspaceOnboardingReplay, setShowWorkspaceOnboardingReplay] = useState(false);
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
@@ -428,6 +429,11 @@ function TinodeWebApp({ location }) {
   const openDesktopModal = useCallback((mode = 'connect') => {
     setDesktopModalMode(mode === 'download' ? 'download' : 'connect');
     setShowDesktopConnectModal(true);
+  }, []);
+
+  const openWorkspaceOnboardingReplay = useCallback(() => {
+    setShowDesktopConnectModal(false);
+    setShowWorkspaceOnboardingReplay(true);
   }, []);
 
   const closeRelayModal = useCallback(() => {
@@ -1610,12 +1616,12 @@ function TinodeWebApp({ location }) {
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    showWorkspaceOnboarding={showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
+                    showWorkspaceOnboarding={!showWorkspaceOnboardingReplay && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
                       && !shouldDeferWorkspaceOnboarding({
                         channelDeviceLink,
                         channelAccountLink,
                         relayLinkPending: requestedOpen === 'relay' && !relayLinkHandled,
-                      }))}
+                      })))}
                     onDownloadDashboard={() => openDesktopModal('download')}
                     dashboardDownloadOpen={showDesktopConnectModal}
                     initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
@@ -1688,8 +1694,20 @@ function TinodeWebApp({ location }) {
           onClose={() => setShowDesktopConnectModal(false)}
           onConnected={handleDesktopConnected}
           onStatusChange={(status) => setLocalAgentStatus(status)}
+          onOpenOnboardingGuide={openWorkspaceOnboardingReplay}
           initialMode={desktopModalMode}
         />
+      )}
+
+      {showWorkspaceOnboardingReplay && (
+        <Suspense fallback={null}>
+          <WorkspaceOnboardingCard
+            userId={user.uid}
+            visible
+            onDismiss={() => setShowWorkspaceOnboardingReplay(false)}
+            onDownloadDashboard={() => openDesktopModal('download')}
+          />
+        </Suspense>
       )}
 
       {showRelayModal && (

@@ -128,9 +128,10 @@ vi.mock('../widgets/empty-task-composer', () => ({
 }));
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
 vi.mock('../widgets/desktop-connect-modal', () => ({
-  default: ({ initialMode, onClose }) => (
+  default: ({ initialMode, onClose, onOpenOnboardingGuide }) => (
     <section data-testid="desktop-connect-modal" data-mode={initialMode}>
       <button type="button" onClick={onClose}>关闭桌面端</button>
+      <button type="button" onClick={onOpenOnboardingGuide}>新手指引</button>
     </section>
   ),
 }));
@@ -249,6 +250,26 @@ test('keeps download mode and defers onboarding when a new account arrives throu
   await act(async () => {
     container.querySelector('[data-testid="desktop-connect-modal"] button').click();
   });
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+});
+
+test('opens the same onboarding card from the DesktopConnectModal New User Guide entry', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+
+  await act(async () => {
+    renderWorkspace({ pathname: '/', search: '?open=download', hash: '' });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const desktopModal = container.querySelector('[data-testid="desktop-connect-modal"]');
+  expect(desktopModal).not.toBeNull();
+  await act(async () => {
+    [...desktopModal.querySelectorAll('button')]
+      .find((button) => button.textContent === '新手指引').click();
+  });
+
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
 });
 

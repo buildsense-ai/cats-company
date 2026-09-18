@@ -1,6 +1,5 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Simulate } from 'react-dom/test-utils';
 import DesktopConnectModal, { resolveConnectedDesktopDevice } from './desktop-connect-modal';
 
 vi.mock('../api', () => ({
@@ -10,7 +9,6 @@ vi.mock('../api', () => ({
     getAgents: vi.fn(),
     getCatsCoDesktopReleases: vi.fn(),
     getDevices: vi.fn(),
-    redeemBotInviteCode: vi.fn(),
     getDeviceAudit: vi.fn(),
     unlinkDevice: vi.fn(),
   },
@@ -33,7 +31,6 @@ describe('DesktopConnectModal', () => {
     api.getDevices.mockResolvedValue({ devices: [] });
     api.getDeviceAudit.mockResolvedValue({ events: [] });
     api.unlinkDevice.mockReset();
-    api.redeemBotInviteCode.mockReset().mockResolvedValue({});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -70,37 +67,24 @@ describe('DesktopConnectModal', () => {
     expect(moreDownloads.lastElementChild?.tagName).toBe('svg');
   });
 
-  test('puts the assistant guide and real invite redemption in the unified modal', async () => {
-    const onDataChanged = vi.fn();
-    window.addEventListener('cc:data-changed', onDataChanged);
+  test('offers a compact New User Guide card that opens the shared onboarding card', async () => {
+    const onOpenOnboardingGuide = vi.fn();
     await act(async () => {
-      root.render(<DesktopConnectModal userId="38" onClose={vi.fn()} />);
+      root.render(<DesktopConnectModal userId="38" onClose={vi.fn()} onOpenOnboardingGuide={onOpenOnboardingGuide} />);
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('开始使用 AI 助手');
-    expect(container.textContent).toContain('添加云端 AI 助手');
-    expect(container.textContent).toContain('激活本地 AI 助手');
-    expect(container.querySelector('label[for="catsco-assistant-invite"]')?.textContent).toBe('助手邀请码');
-    await act(async () => {
-      container.querySelector('.catsco-assistant-download-action').click();
-    });
-    expect(container.querySelector('#catsco-desktop-downloads')).not.toBeNull();
-    const input = container.querySelector('#catsco-assistant-invite');
-    await act(async () => {
-      Simulate.change(input, { target: { value: 'join-123' } });
-    });
-    await act(async () => {
-      Simulate.submit(input.closest('form'));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    const guide = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('新手指引'));
+    expect(guide).not.toBeNull();
+    expect(guide.textContent).toContain('重新查看添加助手和激活本地助手的步骤。');
+    expect(container.querySelector('#catsco-assistant-invite')).toBeNull();
 
-    expect(api.redeemBotInviteCode).toHaveBeenCalledWith('JOIN-123');
-    expect(onDataChanged).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('云端助手已添加，现在可在新任务中选择它。');
-    window.removeEventListener('cc:data-changed', onDataChanged);
+    await act(async () => {
+      guide.click();
+    });
+    expect(onOpenOnboardingGuide).toHaveBeenCalledTimes(1);
   });
 
   test('keeps connected device management in the unified modal', async () => {

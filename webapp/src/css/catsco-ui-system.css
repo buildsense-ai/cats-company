@@ -10417,84 +10417,37 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   overflow: auto;
 }
 
-.catsco-assistant-guide {
+.catsco-onboarding-replay-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
   padding: 14px;
   border: 1px solid var(--cc-border);
   border-radius: 8px;
   background: var(--cc-panel-raised, var(--cc-panel));
-}
-
-.catsco-assistant-guide .catsco-section-heading { align-items: flex-start; }
-.catsco-assistant-guide .catsco-download-section-title { padding: 0; }
-.catsco-assistant-guide .catsco-section-heading p {
-  margin: 4px 0 0;
-  color: var(--cc-text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.catsco-assistant-guide-methods {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.catsco-assistant-guide-method {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--cc-border);
-  border-radius: 7px;
-  background: var(--cc-panel);
-}
-
-.catsco-assistant-guide-method > svg { margin-top: 1px; color: var(--cc-accent-text); }
-.catsco-assistant-guide-method h5 { margin: 0; color: var(--cc-text); font-size: 13px; line-height: 1.4; }
-.catsco-assistant-guide-method p { margin: 4px 0 0; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.5; }
-
-.catsco-assistant-invite-form {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  margin-top: 2px;
-}
-
-.catsco-assistant-invite-form label {
-  grid-column: 1 / -1;
-  color: var(--cc-text-secondary);
-  font-size: 12px;
-  font-weight: var(--cc-font-weight-medium);
-}
-
-.catsco-assistant-invite-form input {
-  min-width: 0;
-  height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--cc-border);
-  border-radius: 7px;
-  background: var(--cc-input-surface);
   color: var(--cc-text);
   font: inherit;
-  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
 }
 
-.catsco-assistant-invite-form input:focus { outline: 2px solid var(--cc-focus-ring); outline-offset: 1px; }
-.catsco-assistant-invite-form .oc-btn { min-height: 36px; padding-inline: 12px; }
-.catsco-assistant-download-action {
-  grid-column: 1 / -1;
-  justify-self: start;
-  min-height: 34px;
-  gap: 6px;
-  padding-inline: 10px;
-  font-size: 12px;
+.catsco-onboarding-replay-card:hover {
+  border-color: var(--cc-accent-text);
+  background: var(--cc-secondary-action-bg-hover);
 }
-.catsco-assistant-invite-feedback { grid-column: 1 / -1; margin: -2px 0 0; font-size: 12px; line-height: 1.45; }
-.catsco-assistant-invite-feedback.is-error { color: var(--cc-danger); }
-.catsco-assistant-invite-feedback.is-success { color: var(--cc-accent); }
+
+.catsco-onboarding-replay-card:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
+.catsco-onboarding-replay-card > svg { flex: 0 0 auto; color: var(--cc-accent-text); }
+.catsco-onboarding-replay-card > svg:last-child { margin-left: auto; color: var(--cc-muted); }
+.catsco-onboarding-replay-copy { display: grid; gap: 3px; min-width: 0; }
+.catsco-onboarding-replay-copy > span:first-child { font-size: 14px; font-weight: var(--cc-font-weight-semibold); }
+.catsco-onboarding-replay-copy > span:last-child { color: var(--cc-text-secondary); font-size: 12px; line-height: 1.5; }
 
 .catsco-connect-summary {
   display: flex;
@@ -11001,7 +10954,6 @@ button[aria-label="关闭"]:not(:disabled):active {
     grid-template-columns: 1fr;
   }
 
-  .catsco-assistant-guide-methods { grid-template-columns: 1fr; }
 
   .catsco-connect-body {
     padding-inline: 14px;

@@ -182,13 +182,13 @@ export default function WorkspaceOnboardingCard({
 
   const markExperienced = () => {
     if (userId) writeStorageValue(workspaceOnboardingStorageKey(userId), WORKSPACE_ONBOARDING_DISMISSED_VALUE);
-    onDismiss?.();
   };
 
   const dismiss = () => {
     markExperienced();
     closeDialog(dialogRef.current);
     setVisible(false);
+    onDismiss?.();
     requestAnimationFrame(() => document.querySelector('.cc-empty-composer-wrap textarea')?.focus());
   };
 
@@ -196,6 +196,7 @@ export default function WorkspaceOnboardingCard({
     markExperienced();
     closeDialog(dialogRef.current);
     setVisible(false);
+    onDismiss?.();
     onDownloadDashboard?.();
   };
 
