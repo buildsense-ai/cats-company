@@ -24,10 +24,12 @@ class ComposeRolloutTest(unittest.TestCase):
         return match.group(1)
 
     def test_server_health_check_flips_fast_after_a_deploy(self):
+        # Scope to the server block: the same strings exist on other services,
+        # so a whole-file assertion would not notice the server losing them.
         for stack in ("prod", "test"):
-            compose = self.compose_text(stack)
-            self.assertIn("start_interval: 2s", compose)
-            self.assertIn("start_period: 30s", compose)
+            block = self.service_block(stack, "server")
+            self.assertIn("start_interval: 2s", block)
+            self.assertIn("start_period: 30s", block)
 
     def test_web_does_not_wait_for_api_health(self):
         for stack in ("prod", "test"):
