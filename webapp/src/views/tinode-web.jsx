@@ -350,6 +350,7 @@ function TinodeWebApp({ location }) {
   const channelDeviceLink = pathname === '/channel-device-link';
   const channelAccountLink = pathname === '/channel-account-link';
   const requestedOpen = new URLSearchParams(search).get('open') || '';
+  const downloadLinkKey = requestedOpen === 'download' ? `${pathname}?${search}#${hash}` : '';
   const [user, setUser] = useState(() => getInitialUser());
   const [sessionRestoreError, setSessionRestoreError] = useState('');
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
@@ -417,7 +418,8 @@ function TinodeWebApp({ location }) {
   const profileTriggerRef = useRef(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
-  const [downloadLinkPending, setDownloadLinkPending] = useState(() => requestedOpen === 'download');
+  const [handledDownloadLinkKey, setHandledDownloadLinkKey] = useState('');
+  const downloadLinkPending = Boolean(downloadLinkKey && handledDownloadLinkKey !== downloadLinkKey);
   const [showWorkspaceOnboardingReplay, setShowWorkspaceOnboardingReplay] = useState(false);
   const [workspaceOnboardingDismissedInSession, setWorkspaceOnboardingDismissedInSession] = useState(false);
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
@@ -433,13 +435,18 @@ function TinodeWebApp({ location }) {
     setShowDesktopConnectModal(true);
   }, []);
 
+  const closeDesktopConnectModal = useCallback(() => {
+    setShowDesktopConnectModal(false);
+    if (downloadLinkKey) setHandledDownloadLinkKey(downloadLinkKey);
+  }, [downloadLinkKey]);
+
   const openWorkspaceOnboardingReplay = useCallback(() => {
     // A manual replay owns the onboarding slot for the rest of this session.
     // This prevents a preview/automatic card from resurfacing after it is closed.
     setWorkspaceOnboardingDismissedInSession(true);
-    setShowDesktopConnectModal(false);
+    closeDesktopConnectModal();
     setShowWorkspaceOnboardingReplay(true);
-  }, []);
+  }, [closeDesktopConnectModal]);
 
   const closeRelayModal = useCallback(() => {
     setShowRelayModal(false);
@@ -449,13 +456,8 @@ function TinodeWebApp({ location }) {
   useEffect(() => {
     setRelayLinkHandled(false);
     if (requestedOpen === 'relay') setShowRelayModal(true);
-    if (requestedOpen === 'download') {
-      setDownloadLinkPending(true);
-      openDesktopModal('download');
-    } else {
-      setDownloadLinkPending(false);
-    }
-  }, [openDesktopModal, requestedOpen]);
+    if (requestedOpen === 'download' && downloadLinkPending) openDesktopModal('download');
+  }, [downloadLinkPending, openDesktopModal, requestedOpen]);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
@@ -1330,7 +1332,7 @@ function TinodeWebApp({ location }) {
       const agentUid = device?.botUid;
       if (!agentUid) {
         setLocalAgentStatus('connected');
-        setShowDesktopConnectModal(false);
+        closeDesktopConnectModal();
         window.dispatchEvent(new Event('cc:data-changed'));
         return;
       }
@@ -1338,7 +1340,7 @@ function TinodeWebApp({ location }) {
       const agent = (res.agents || []).find((candidate) => String(candidate.uid || candidate.id) === String(agentUid));
       if (agent) await activateAgentTopic(agent);
       setLocalAgentStatus('connected');
-      setShowDesktopConnectModal(false);
+      closeDesktopConnectModal();
       window.dispatchEvent(new Event('cc:data-changed'));
     } catch (error) {
       console.warn('Failed to open connected desktop agent:', error);
@@ -1702,10 +1704,7 @@ function TinodeWebApp({ location }) {
       {showDesktopConnectModal && (
         <DesktopConnectModal
           userId={user.uid}
-          onClose={() => {
-            setShowDesktopConnectModal(false);
-            setDownloadLinkPending(false);
-          }}
+          onClose={closeDesktopConnectModal}
           onConnected={handleDesktopConnected}
           onStatusChange={(status) => setLocalAgentStatus(status)}
           onOpenOnboardingGuide={openWorkspaceOnboardingReplay}

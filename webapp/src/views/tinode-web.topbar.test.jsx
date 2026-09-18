@@ -393,7 +393,8 @@ describe('mobile model context wiring', () => {
     expect(shouldDeferWorkspaceOnboarding({ channelAccountLink: true })).toBe(true);
 
     expect(tinodeWebSource).toContain('onClose={closeRelayModal}');
-    expect(tinodeWebSource).toContain("useState(() => requestedOpen === 'download')");
+    expect(tinodeWebSource).toContain("const downloadLinkKey = requestedOpen === 'download'");
+    expect(tinodeWebSource).toContain('const downloadLinkPending = Boolean(downloadLinkKey');
     expect(tinodeWebSource).toContain('!downloadLinkPending && !showDesktopConnectModal');
     expect(tinodeWebSource).not.toContain('allowDailyPrompt');
     expect(tinodeWebSource).not.toContain('desktopPromptStorageKey');
