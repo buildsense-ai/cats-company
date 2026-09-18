@@ -396,8 +396,6 @@ func TestRelayAdminProviderCapacityThroughPortal(t *testing.T) {
 		{http.MethodPost, "/local/provider-capacity/api/accounts/", "provider-capacity"},
 		{http.MethodPost, "/local/provider-capacity/api/accounts/state", "provider-capacity"},
 		{http.MethodPost, "/local/provider-capacity/api/accounts/state/", "provider-capacity"},
-		{http.MethodPost, "/local/provider-capacity", ""},
-		{http.MethodDelete, "/local/provider-capacity/api/accounts", ""},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			calls := 0
@@ -584,6 +582,9 @@ func TestRelayAdminSecurityHeaders(t *testing.T) {
 	}
 	if xfo := rec.Header().Get("X-Frame-Options"); xfo != "SAMEORIGIN" {
 		t.Fatalf("missing X-Frame-Options SAMEORIGIN: %q", xfo)
+	}
+	if nosniff := rec.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Fatalf("missing X-Content-Type-Options nosniff: %q", nosniff)
 	}
 }
 

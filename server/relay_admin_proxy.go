@@ -32,17 +32,28 @@ import (
 //  2. uid whitelist (CATSCO_ADMIN_UID_WHITELIST, server-side enforced).
 //  3. path whitelist (only usage-admin /local/* paths; /internal/, /public/,
 //     /health, /api/ are never forwarded).
-//  4. rate limiting (per uid + per IP) and audit logging (writes highlighted).
+//  4. rate limiting (separate read/write budgets per uid + per IP) and audit
+//     logging (writes highlighted).
+//  5. verb allowlist: GET for reads, POST only on known write paths.
 type RelayAdminProxyHandler struct {
 	config            relayAdminConfig
 	client            *http.Client
-	rateLimit         int
+	readLimit         int
+	writeLimit        int
 	rateWindowSeconds int
-	rateByUID         map[int64]*fixedWindowRateLimiter
-	rateByIP          map[string]*fixedWindowRateLimiter
+	rateByUID         map[int64]*relayAdminRatePair
+	rateByIP          map[string]*relayAdminRatePair
 	rateMu            sync.Mutex
 	auditLogger       *log.Logger
 	managedBudgets    relayAdminManagedBudgetStore
+}
+
+// relayAdminRatePair keeps one caller's read and write budgets apart: the
+// embedded panel legitimately bursts read-only polls while a snapshot refresh
+// runs, but state changes stay on the tighter budget.
+type relayAdminRatePair struct {
+	read  *fixedWindowRateLimiter
+	write *fixedWindowRateLimiter
 }
 
 type relayAdminManagedBudgetStore interface {
@@ -50,6 +61,15 @@ type relayAdminManagedBudgetStore interface {
 }
 
 const relayAdminRewritePrefix = "/api/admin/relay"
+
+// The embedded analytics page polls read-only endpoints while a snapshot
+// refresh runs, so reads get a wider ceiling than writes. The page keeps its
+// own poll backoff and 429 handling; these budgets are the safety limit.
+const (
+	relayAdminReadRateLimit  = 120
+	relayAdminWriteRateLimit = 30
+	relayAdminRateWindow     = 60
+)
 
 // Long-window pricing analytics can take tens of seconds on a busy relay.
 // Keep the portal proxy longer than the relay calculation so it does not turn
@@ -96,14 +116,14 @@ func NewRelayAdminProxyHandler(cfg relayAdminConfig, managedBudgets ...relayAdmi
 	h := &RelayAdminProxyHandler{
 		config:      cfg,
 		client:      &http.Client{Timeout: relayAdminProxyTimeout},
-		rateByUID:   map[int64]*fixedWindowRateLimiter{},
-		rateByIP:    map[string]*fixedWindowRateLimiter{},
+		rateByUID:   map[int64]*relayAdminRatePair{},
+		rateByIP:    map[string]*relayAdminRatePair{},
 		auditLogger: nil,
 	}
 	if len(managedBudgets) > 0 {
 		h.managedBudgets = managedBudgets[0]
 	}
-	h.setRateLimit(30, 60)
+	h.setRateLimits(relayAdminReadRateLimit, relayAdminWriteRateLimit, relayAdminRateWindow)
 	return h
 }
 
@@ -214,9 +234,21 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
-	if !h.allow(uid, r.RemoteAddr) {
+	if !relayAdminMethodAllowed(r.Method, relayPath) {
+		h.audit(r, uid, http.StatusMethodNotAllowed, "method-not-allowed:"+r.Method)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeRequest := r.Method != http.MethodGet
+	if ok, retryAfter := h.allow(uid, r.RemoteAddr, writeRequest); !ok {
 		h.audit(r, uid, http.StatusTooManyRequests, "rate-limited")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limited"})
+		// Retry-After (and the JSON copy) lets the embedded page back off
+		// instead of hammering the budget until the window rolls over.
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error":               "rate limited",
+			"retry_after_seconds": strconv.Itoa(retryAfter),
+		})
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -315,6 +347,7 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 	// same-origin iframe can render, while off-origin framing is still blocked.
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
@@ -410,6 +443,26 @@ func relayAdminPathAllowed(rawPath string) bool {
 	return false
 }
 
+// relayAdminMethodAllowed mirrors the verbs the portal needs. The relay
+// enforces its own per-endpoint method matrix; rejecting unknown verbs here
+// keeps PUT/PATCH/HEAD/DELETE from ever reaching it:
+//   - GET for every whitelisted read path
+//   - POST for the known local write paths, user-key endpoints, and the
+//     provider-capacity API (the relay answers 405 to everything else)
+func relayAdminMethodAllowed(method, rawPath string) bool {
+	path := strings.SplitN(rawPath, "?", 2)[0]
+	switch method {
+	case http.MethodGet:
+		return true
+	case http.MethodPost:
+		return relayAdminLocalWriteMarker(method, path) != "" ||
+			relayAdminUserKeyPath.MatchString(path) ||
+			relayAdminProviderCapacityAPIPath.MatchString(path)
+	default:
+		return false
+	}
+}
+
 // fixedWindowRateLimiter is a simple per-key fixed-window limiter.
 type fixedWindowRateLimiter struct {
 	limit    int
@@ -439,34 +492,76 @@ func (l *fixedWindowRateLimiter) allow() bool {
 	return true
 }
 
-func (h *RelayAdminProxyHandler) setRateLimit(limit, windowSeconds int) {
-	h.rateMu.Lock()
-	defer h.rateMu.Unlock()
-	h.rateLimit = limit
-	h.rateWindowSeconds = windowSeconds
-	h.rateByUID = map[int64]*fixedWindowRateLimiter{}
-	h.rateByIP = map[string]*fixedWindowRateLimiter{}
+// retryAfterSeconds reports how long the caller should wait before the current
+// fixed window rolls over. Callers must hold the rate lock so the window state
+// is stable while it is read.
+func (l *fixedWindowRateLimiter) retryAfterSeconds() int {
+	remaining := l.startNS + l.windowNS - time.Now().UnixNano()
+	if remaining <= 0 {
+		return 1
+	}
+	seconds := int((remaining + int64(time.Second) - 1) / int64(time.Second))
+	if seconds < 1 {
+		seconds = 1
+	}
+	return seconds
 }
 
-func (h *RelayAdminProxyHandler) allow(uid int64, remoteAddr string) bool {
+// setRateLimit applies one budget to reads and writes alike (used by tests).
+func (h *RelayAdminProxyHandler) setRateLimit(limit, windowSeconds int) {
+	h.setRateLimits(limit, limit, windowSeconds)
+}
+
+func (h *RelayAdminProxyHandler) setRateLimits(readLimit, writeLimit, windowSeconds int) {
+	h.rateMu.Lock()
+	defer h.rateMu.Unlock()
+	h.readLimit = readLimit
+	h.writeLimit = writeLimit
+	h.rateWindowSeconds = windowSeconds
+	h.rateByUID = map[int64]*relayAdminRatePair{}
+	h.rateByIP = map[string]*relayAdminRatePair{}
+}
+
+func (h *RelayAdminProxyHandler) newRatePairLocked() *relayAdminRatePair {
+	return &relayAdminRatePair{
+		read:  newFixedWindowRateLimiter(h.readLimit, h.rateWindowSeconds),
+		write: newFixedWindowRateLimiter(h.writeLimit, h.rateWindowSeconds),
+	}
+}
+
+func (h *RelayAdminProxyHandler) allow(uid int64, remoteAddr string, write bool) (bool, int) {
 	h.rateMu.Lock()
 	defer h.rateMu.Unlock()
 	limiter := h.rateByUID[uid]
 	if limiter == nil {
-		limiter = newFixedWindowRateLimiter(h.rateLimit, h.rateWindowSeconds)
+		limiter = h.newRatePairLocked()
 		h.rateByUID[uid] = limiter
 	}
-	if !limiter.allow() {
-		return false
+	if !limiter.allow(write) {
+		return false, limiter.retryAfter(write)
 	}
 	ip := remoteHost(remoteAddr)
 	ipLimiter := h.rateByIP[ip]
 	if ipLimiter == nil {
-		ipLimiter = newFixedWindowRateLimiter(h.rateLimit, h.rateWindowSeconds)
+		ipLimiter = h.newRatePairLocked()
 		h.rateByIP[ip] = ipLimiter
 	}
-	return ipLimiter.allow()
+	if !ipLimiter.allow(write) {
+		return false, ipLimiter.retryAfter(write)
+	}
+	return true, 0
 }
+
+func (p *relayAdminRatePair) limiter(write bool) *fixedWindowRateLimiter {
+	if write {
+		return p.write
+	}
+	return p.read
+}
+
+func (p *relayAdminRatePair) allow(write bool) bool { return p.limiter(write).allow() }
+
+func (p *relayAdminRatePair) retryAfter(write bool) int { return p.limiter(write).retryAfterSeconds() }
 
 func (h *RelayAdminProxyHandler) audit(r *http.Request, uid int64, status int, detail string) {
 	ip := remoteHost(r.RemoteAddr)
