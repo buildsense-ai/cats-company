@@ -16,6 +16,8 @@ import {
   resolveInitialUser,
   resolveDisplayedActiveAgent,
   shouldOpenProfileSettingsDirectly,
+  shouldShowWorkspaceAssistantGuide,
+  workspaceAssistantGuideStorageKey,
 } from './tinode-web';
 import { api } from '../api';
 
@@ -351,7 +353,16 @@ describe('mobile model context wiring', () => {
     expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");
   });
 
-  it('does not automatically open the desktop modal while checking device status', () => {
+  it('opens the assistant guide once per user without restoring the daily device prompt', () => {
+    const guideKey = workspaceAssistantGuideStorageKey('43');
+    window.localStorage.removeItem(guideKey);
+    expect(shouldShowWorkspaceAssistantGuide('43')).toBe(true);
+
+    window.localStorage.setItem(guideKey, 'seen');
+    expect(shouldShowWorkspaceAssistantGuide('43')).toBe(false);
+    window.localStorage.removeItem(guideKey);
+
+    expect(tinodeWebSource).toContain('openDesktopModal(requestedOpen === \'download\' ? \'download\' : \'connect\')');
     expect(tinodeWebSource).not.toContain('allowDailyPrompt');
     expect(tinodeWebSource).not.toContain('desktopPromptStorageKey');
   });

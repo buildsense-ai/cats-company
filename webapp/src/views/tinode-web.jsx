@@ -113,6 +113,7 @@ const TABS = {
   CHATS: 'chats'
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
+const WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE = 'seen';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
@@ -225,6 +226,16 @@ function loadAppSidebarCollapsed() {
 
 function saveAppSidebarCollapsed(collapsed) {
   writeStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
+}
+
+export function workspaceAssistantGuideStorageKey(userId) {
+  const normalizedUserId = String(userId || '').trim();
+  return normalizedUserId ? `cc_workspace_assistant_guide_seen:v1:${normalizedUserId}` : '';
+}
+
+export function shouldShowWorkspaceAssistantGuide(userId) {
+  const key = workspaceAssistantGuideStorageKey(userId);
+  return Boolean(key) && readStorageValue(key) !== WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE;
 }
 
 function isInvalidSessionError(error) {
@@ -368,6 +379,16 @@ function TinodeWebApp({ location }) {
     if (params.get('open') === 'relay') setShowRelayModal(true);
     if (params.get('open') === 'download') openDesktopModal('download');
   }, [openDesktopModal, search]);
+
+  useEffect(() => {
+    const requestedOpen = new URLSearchParams(search).get('open');
+    if (!user?.uid || (requestedOpen && requestedOpen !== 'download')) return;
+    if (!shouldShowWorkspaceAssistantGuide(user.uid)) return;
+
+    const guideKey = workspaceAssistantGuideStorageKey(user.uid);
+    writeStorageValue(guideKey, WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE);
+    openDesktopModal(requestedOpen === 'download' ? 'download' : 'connect');
+  }, [openDesktopModal, search, user?.uid]);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
