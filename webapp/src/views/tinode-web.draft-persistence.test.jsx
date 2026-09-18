@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   connectWS: vi.fn(),
   disconnectWS: vi.fn(),
   getMe: vi.fn(),
+  redeemBotInviteCode: vi.fn(),
 }));
 
 vi.mock('../api', () => {
@@ -25,6 +26,7 @@ vi.mock('../api', () => {
     getRelayUsage: vi.fn().mockResolvedValue({ summary: null }),
     login: vi.fn(),
     openAgent: vi.fn(),
+    redeemBotInviteCode: mocks.redeemBotInviteCode,
     unsubscribePush: vi.fn().mockResolvedValue({}),
     updateConversationTitle: vi.fn(),
     updateGroup: vi.fn(),
@@ -162,10 +164,32 @@ async function selectTestConversation() {
   });
 }
 
+async function openOnboardingReplayFromDesktopEntry() {
+  await selectTestConversation();
+  const profileTrigger = container.querySelector('[aria-label="cats，打开个人菜单"]');
+  await act(async () => profileTrigger.click());
+  const desktopEntry = [...document.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.textContent.includes('CatsCo 桌面端'));
+  await act(async () => desktopEntry.click());
+
+  const desktopModal = await vi.waitFor(() => {
+    const modal = container.querySelector('[data-testid="desktop-connect-modal"]');
+    expect(modal).not.toBeNull();
+    return modal;
+  });
+  await act(async () => {
+    [...desktopModal.querySelectorAll('button')]
+      .find((button) => button.textContent === '新手指引').click();
+  });
+
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+}
+
 beforeEach(() => {
   mocks.token = 'session-token';
   mocks.sessionRevision = 1;
   mocks.getMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', created_at: '2026-01-01T00:00:00Z' });
+  mocks.redeemBotInviteCode.mockReset().mockResolvedValue({});
   window.matchMedia = vi.fn(() => ({ matches: false }));
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   container = document.createElement('div');
@@ -271,6 +295,46 @@ test('opens the same onboarding card from the DesktopConnectModal New User Guide
 
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+});
+
+test('replays onboarding from the computer entry over an active conversation and redeems invites', async () => {
+  setCachedUser('2026-09-17T23:59:59Z');
+  await act(async () => renderWorkspace());
+  await openOnboardingReplayFromDesktopEntry();
+
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+  expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1);
+  await act(async () => {
+    Simulate.click([...document.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('使用邀请码')));
+  });
+  const input = document.querySelector('#workspace-onboarding-invite');
+  await act(async () => {
+    Simulate.change(input, { target: { value: 'replay-123' } });
+  });
+  await act(async () => {
+    Simulate.submit(input.closest('form'));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(mocks.redeemBotInviteCode).toHaveBeenCalledWith('REPLAY-123');
+  expect(document.querySelector('#workspace-invite-title')?.textContent).toBe('云端助手已添加');
+});
+
+test('replays onboarding from the computer entry over an active conversation and hands off download', async () => {
+  setCachedUser('2026-09-17T23:59:59Z');
+  await act(async () => renderWorkspace());
+  await openOnboardingReplayFromDesktopEntry();
+
+  await act(async () => {
+    [...document.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('下载桌面端')).click();
+  });
+
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
+  expect(localStorage.getItem(workspaceOnboardingStorageKey(1))).toBe('dismissed');
 });
 
 test('shows the new-account onboarding card after the relay deep link is closed', async () => {
