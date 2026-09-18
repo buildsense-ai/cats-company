@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   sessionRevision: 1,
   connectWS: vi.fn(),
   disconnectWS: vi.fn(),
+  getMe: vi.fn(),
 }));
 
 vi.mock('../api', () => {
@@ -18,7 +19,7 @@ vi.mock('../api', () => {
     getConversations: vi.fn().mockResolvedValue({ conversations: [] }),
     getDevices: vi.fn().mockResolvedValue({ devices: [] }),
     getGroupInfo: vi.fn().mockResolvedValue({}),
-    getMe: vi.fn().mockResolvedValue({ uid: 1, username: 'cats' }),
+    getMe: mocks.getMe,
     getRelayAdminAccess: vi.fn().mockResolvedValue({ allowed: false }),
     getRelayConfig: vi.fn().mockResolvedValue({}),
     getRelayUsage: vi.fn().mockResolvedValue({ summary: null }),
@@ -126,17 +127,29 @@ vi.mock('../widgets/empty-task-composer', () => ({
   },
 }));
 vi.mock('../widgets/catsco-download-modal', () => ({ default: () => null }));
-vi.mock('../widgets/desktop-connect-modal', () => ({ default: () => null }));
+vi.mock('../widgets/desktop-connect-modal', () => ({
+  default: ({ initialMode, onClose }) => (
+    <section data-testid="desktop-connect-modal" data-mode={initialMode}>
+      <button type="button" onClick={onClose}>关闭桌面端</button>
+    </section>
+  ),
+}));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
-vi.mock('../widgets/relay-access-modal', () => ({ default: () => null }));
+vi.mock('../widgets/relay-access-modal', () => ({
+  default: ({ onClose }) => (
+    <section data-testid="relay-access-modal">
+      <button type="button" onClick={onClose}>关闭套餐与权益</button>
+    </section>
+  ),
+}));
 
-import TinodeWeb from './tinode-web';
+import TinodeWeb, { workspaceAssistantGuideStorageKey } from './tinode-web';
 
 let container;
 let root;
 
-function renderWorkspace() {
-  root.render(<TinodeWeb location={{ pathname: '/', search: '', hash: '' }} />);
+function renderWorkspace(location = { pathname: '/', search: '', hash: '' }) {
+  root.render(<TinodeWeb location={location} />);
 }
 
 async function selectTestConversation() {
@@ -150,6 +163,7 @@ async function selectTestConversation() {
 beforeEach(() => {
   mocks.token = 'session-token';
   mocks.sessionRevision = 1;
+  mocks.getMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', created_at: '2026-01-01T00:00:00Z' });
   window.matchMedia = vi.fn(() => ({ matches: false }));
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   container = document.createElement('div');
@@ -162,6 +176,72 @@ afterEach(async () => {
   container.remove();
   localStorage.clear();
   sessionStorage.clear();
+});
+
+function setCachedUser(createdAt) {
+  const profile = { uid: 1, username: 'cats', created_at: createdAt };
+  mocks.getMe.mockResolvedValue(profile);
+  localStorage.setItem('oc_user', JSON.stringify(profile));
+}
+
+test('opens the assistant guide once for a new account entering the workspace', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+  const guideKey = workspaceAssistantGuideStorageKey(1);
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')).not.toBeNull());
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('connect');
+  expect(localStorage.getItem(guideKey)).toBe('seen');
+});
+
+test('does not automatically open the assistant guide for an existing account', async () => {
+  setCachedUser('2026-09-17T23:59:59Z');
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+  expect(localStorage.getItem(workspaceAssistantGuideStorageKey(1))).toBeNull();
+});
+
+test('keeps download mode when a new account arrives through the download deep link', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+
+  await act(async () => {
+    renderWorkspace({ pathname: '/', search: '?open=download', hash: '' });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+});
+
+test('shows the new-account guide after the relay deep link is closed', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+
+  await act(async () => {
+    renderWorkspace({ pathname: '/', search: '?open=relay', hash: '' });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const relay = container.querySelector('[data-testid="relay-access-modal"]');
+  expect(relay).not.toBeNull();
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+
+  await act(async () => {
+    relay.querySelector('button').click();
+  });
+
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')).not.toBeNull());
 });
 
 test.each(['Escape', 'close button', 'cancel button'])('returns focus to the desktop profile entry after settings closes via %s', async (method) => {
