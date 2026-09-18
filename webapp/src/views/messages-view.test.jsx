@@ -3381,7 +3381,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用');
+        .find((button) => button.textContent === '应用旧');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -4153,7 +4153,7 @@ describe('MessagesView composer draft isolation', () => {
 
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -4263,7 +4263,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -4379,7 +4379,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -4492,7 +4492,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -4597,7 +4597,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -4651,7 +4651,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -4737,7 +4737,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -4814,7 +4814,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -4866,7 +4866,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用');
+        .find((button) => button.textContent === '应用旧');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await Promise.resolve();
@@ -4951,7 +4951,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => flushPromises());
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5064,7 +5064,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => flushPromises());
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5114,7 +5114,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5168,7 +5168,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5263,7 +5263,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用');
+        .find((button) => button.textContent === '应用旧');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -5370,7 +5370,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => { await flushPromises(); });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5497,7 +5497,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => { await flushPromises(); });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5584,7 +5584,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => { await flushPromises(); });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5742,7 +5742,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => { await flushPromises(); });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -5919,7 +5919,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => { await flushPromises(); });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -6018,7 +6018,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -6118,7 +6118,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
@@ -6246,7 +6246,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '应用'));
+        .find((button) => button.textContent === '应用旧'));
       await flushPromises();
     });
     await act(async () => {
