@@ -1203,7 +1203,9 @@ export class ContinuousStreamingSTTSession {
     this.onError = options.onError || (() => {});
     this.capture = null;
     this.capturePromise = null;
+    this.startPromise = null;
     this.segment = null;
+    this.segmentAcceptingAudio = false;
     this.transitionFrames = [];
     this.transitionBytes = 0;
     this.activated = false;
@@ -1265,22 +1267,26 @@ export class ContinuousStreamingSTTSession {
     return this.capturePromise;
   }
 
-  async start() {
-    if (this.terminal) return;
+  start() {
+    if (this.terminal) return Promise.resolve();
+    if (this.startPromise) return this.startPromise;
     this.activated = true;
     this.setState('starting');
-    try {
-      await this.prepare();
-      if (!this.terminal) await this.startSegment();
-    } catch {
-      // prepare() has already reported the normalized error.
-    }
+    this.startPromise = (async () => {
+      try {
+        await this.prepare();
+        if (!this.terminal) await this.startSegment();
+      } catch {
+        // prepare() has already reported the normalized error.
+      }
+    })();
+    return this.startPromise;
   }
 
   routeFrame(frame) {
     if (this.terminal || !(frame instanceof ArrayBuffer) || frame.byteLength === 0) return;
     const segment = this.segment;
-    if (segment && !segment.stopRequested && !segment.terminal) {
+    if (segment && this.segmentAcceptingAudio && !segment.stopRequested && !segment.terminal) {
       segment.handleFrame(frame);
       return;
     }
@@ -1301,7 +1307,7 @@ export class ContinuousStreamingSTTSession {
     if (this.segment && !this.segment.stopRequested && !this.segment.terminal) {
       this.segment.publishAudioLevel(level);
     }
-    this.onAudioLevel(level);
+    this.onAudioLevel(normalizeAudioLevel(level));
   }
 
   async startSegment() {
@@ -1318,8 +1324,12 @@ export class ContinuousStreamingSTTSession {
         if (this.segment !== segment || this.terminal) return;
         if (state === 'complete' && this.continuing) return;
         if (state === 'recording') {
+          this.segmentAcceptingAudio = true;
+          this.drainTransitionFrames(segment);
           this.restarting = false;
           this.segmentRetryCount = 0;
+        } else if (state === 'finalizing' || state === 'complete' || state === 'error') {
+          this.segmentAcceptingAudio = false;
         }
         this.setState(state);
       },
@@ -1347,26 +1357,28 @@ export class ContinuousStreamingSTTSession {
       onError: (error, transcript, details) => this.handleSegmentError(segment, error, transcript, details),
     });
     this.segment = segment;
-    // Replay PCM captured while waiting for the preceding final. The segment
-    // buffers it until its new WebSocket emits ready, preserving FIFO order.
+    this.segmentAcceptingAudio = false;
+    await segment.start();
+  }
+
+  drainTransitionFrames(segment) {
+    if (this.segment !== segment || this.terminal || !this.segmentAcceptingAudio) return;
     for (const frame of this.transitionFrames) segment.handleFrame(frame);
     this.transitionFrames = [];
     this.transitionBytes = 0;
-    await segment.start();
   }
 
   handleSegmentFinal(segment, text, details = {}) {
     if (this.segment !== segment || this.terminal) return;
     const shouldContinue = this.continuing
       && details.reason === 'duration_limit'
-      && Boolean(String(text || '').trim())
       && !this.stopping;
     this.continuing = false;
     if (shouldContinue) {
       this.onSegmentFinal(text, details);
       this.segment = null;
+      this.segmentAcceptingAudio = false;
       this.restarting = true;
-      this.setState('connecting');
       // Let the server return from its final-event handler and release the
       // per-user admission slot before opening the next WebSocket.
       globalThis.setTimeout(() => {
@@ -1375,6 +1387,7 @@ export class ContinuousStreamingSTTSession {
       return;
     }
     this.segment = null;
+    this.segmentAcceptingAudio = false;
     this.terminal = true;
     void this.stopPhysicalCapture();
     this.removeLifecycleListeners();
@@ -1385,6 +1398,7 @@ export class ContinuousStreamingSTTSession {
   handleSegmentError(segment, error, transcript, details = {}) {
     if (this.segment !== segment || this.terminal) return;
     this.segment = null;
+    this.segmentAcceptingAudio = false;
     if (error?.code === 'session_active' && this.restarting && !this.stopping && this.segmentRetryCount < 5) {
       this.segmentRetryCount += 1;
       // Final delivery and limiter release happen on separate peers. Retry the
@@ -1432,6 +1446,7 @@ export class ContinuousStreamingSTTSession {
     this.stopping = true;
     this.segment?.cancel();
     this.segment = null;
+    this.segmentAcceptingAudio = false;
     void this.stopPhysicalCapture();
     this.transitionFrames = [];
     this.transitionBytes = 0;
@@ -1444,6 +1459,7 @@ export class ContinuousStreamingSTTSession {
     this.terminal = true;
     this.segment?.cancel();
     this.segment = null;
+    this.segmentAcceptingAudio = false;
     void this.stopPhysicalCapture();
     this.removeLifecycleListeners();
     this.setState('error');
