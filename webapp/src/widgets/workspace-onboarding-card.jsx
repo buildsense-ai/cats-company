@@ -24,7 +24,7 @@ function closeDialog(dialog) {
   else dialog?.removeAttribute('open');
 }
 
-function AssistantInviteDialog({ onComplete, onClose }) {
+function AssistantInviteDialog({ onPersist, onComplete, onClose }) {
   const dialogRef = useRef(null);
   const inputRef = useRef(null);
   const titleRef = useRef(null);
@@ -62,6 +62,7 @@ function AssistantInviteDialog({ onComplete, onClose }) {
     setError('');
     try {
       await api.redeemBotInviteCode(code);
+      onPersist();
       window.dispatchEvent(new Event('cc:data-changed'));
       setCompleted(true);
     } catch (requestError) {
@@ -166,8 +167,6 @@ export default function WorkspaceOnboardingCard({
   const [helpKind, setHelpKind] = useState(null);
   const dialogRef = useRef(null);
   const headingRef = useRef(null);
-  const downloadRef = useRef(null);
-  const restoreDownloadFocusRef = useRef(false);
 
   useEffect(() => {
     setVisible(initiallyVisible);
@@ -177,17 +176,27 @@ export default function WorkspaceOnboardingCard({
     if (!initiallyVisible || !visible || dashboardDownloadOpen) return undefined;
     const dialog = dialogRef.current;
     openDialog(dialog);
-    (restoreDownloadFocusRef.current ? downloadRef : headingRef).current?.focus();
-    restoreDownloadFocusRef.current = false;
+    headingRef.current?.focus();
     return () => closeDialog(dialog);
   }, [initiallyVisible, visible, dashboardDownloadOpen]);
 
-  const dismiss = () => {
+  const markExperienced = () => {
     if (userId) writeStorageValue(workspaceOnboardingStorageKey(userId), WORKSPACE_ONBOARDING_DISMISSED_VALUE);
+    onDismiss?.();
+  };
+
+  const dismiss = () => {
+    markExperienced();
     closeDialog(dialogRef.current);
     setVisible(false);
-    onDismiss?.();
     requestAnimationFrame(() => document.querySelector('.cc-empty-composer-wrap textarea')?.focus());
+  };
+
+  const openDesktopDownload = () => {
+    markExperienced();
+    closeDialog(dialogRef.current);
+    setVisible(false);
+    onDownloadDashboard?.();
   };
 
   if (!initiallyVisible || !visible) return null;
@@ -214,7 +223,7 @@ export default function WorkspaceOnboardingCard({
             <p>下载 Dashboard 并登录，系统会自动关联你的本地助手。</p>
             <div className="cc-workspace-onboarding-method-actions">
               <button type="button" className="cc-workspace-onboarding-help" aria-haspopup="dialog" onClick={() => setHelpKind('local')}>使用说明</button>
-              <button ref={downloadRef} type="button" className="cc-workspace-onboarding-action" onClick={() => { restoreDownloadFocusRef.current = true; onDownloadDashboard?.(); }}>下载桌面端<Download size={14} aria-hidden="true" /></button>
+              <button type="button" className="cc-workspace-onboarding-action" onClick={openDesktopDownload}>下载桌面端<Download size={14} aria-hidden="true" /></button>
             </div>
           </section>
         </div>
@@ -223,7 +232,7 @@ export default function WorkspaceOnboardingCard({
         </footer>
       </dialog>
       {helpKind && <AssistantHelpDialog kind={helpKind} onClose={() => setHelpKind(null)} />}
-      {inviteOpen && <AssistantInviteDialog onComplete={dismiss} onClose={() => setInviteOpen(false)} />}
+      {inviteOpen && <AssistantInviteDialog onPersist={markExperienced} onComplete={dismiss} onClose={() => setInviteOpen(false)} />}
     </>, document.body,
   );
 }

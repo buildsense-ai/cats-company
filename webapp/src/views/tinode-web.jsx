@@ -120,7 +120,10 @@ const TABS = {
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 // Accounts created before this rollout remain manual-only: the computer Logo can
 // always reopen the guide without treating a storage reset as a new signup.
-const WORKSPACE_ONBOARDING_COHORT_START = import.meta.env.VITE_WORKSPACE_ASSISTANT_GUIDE_COHORT_START || '2026-09-18T00:00:00Z';
+export const DEFAULT_WORKSPACE_ONBOARDING_COHORT_START = '2026-09-18T00:00:00Z';
+const WORKSPACE_ONBOARDING_COHORT_START = resolveWorkspaceOnboardingCohortStart(
+  import.meta.env.VITE_WORKSPACE_ASSISTANT_GUIDE_COHORT_START,
+);
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
@@ -235,10 +238,35 @@ function saveAppSidebarCollapsed(collapsed) {
   writeStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
 }
 
+export function parseWorkspaceOnboardingTimestamp(value) {
+  if (typeof value !== 'string') return null;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/);
+  if (!match) return null;
+
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  const date = new Date(timestamp);
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() + 1 === month
+    && date.getUTCDate() === day
+    && date.getUTCHours() === hour
+    && date.getUTCMinutes() === minute
+    && date.getUTCSeconds() === second
+    ? timestamp
+    : null;
+}
+
+export function resolveWorkspaceOnboardingCohortStart(configuredStart) {
+  return parseWorkspaceOnboardingTimestamp(configuredStart) === null
+    ? DEFAULT_WORKSPACE_ONBOARDING_COHORT_START
+    : configuredStart;
+}
+
 export function isWorkspaceOnboardingNewUser(user, cohortStart = WORKSPACE_ONBOARDING_COHORT_START) {
-  const createdAt = Date.parse(user?.created_at || '');
-  const rolloutAt = Date.parse(cohortStart);
-  return Number.isFinite(createdAt) && Number.isFinite(rolloutAt) && createdAt >= rolloutAt;
+  const createdAt = parseWorkspaceOnboardingTimestamp(user?.created_at);
+  const rolloutAt = parseWorkspaceOnboardingTimestamp(cohortStart);
+  return createdAt !== null && rolloutAt !== null && createdAt >= rolloutAt;
 }
 
 export function shouldShowWorkspaceOnboarding(user, cohortStart) {

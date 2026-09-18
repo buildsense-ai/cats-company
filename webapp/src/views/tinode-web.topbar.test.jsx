@@ -16,7 +16,10 @@ import {
   resolveInitialUser,
   resolveDisplayedActiveAgent,
   shouldOpenProfileSettingsDirectly,
+  DEFAULT_WORKSPACE_ONBOARDING_COHORT_START,
   isWorkspaceOnboardingNewUser,
+  parseWorkspaceOnboardingTimestamp,
+  resolveWorkspaceOnboardingCohortStart,
   shouldDeferWorkspaceOnboarding,
   shouldShowWorkspaceOnboarding,
 } from './tinode-web';
@@ -365,6 +368,11 @@ describe('mobile model context wiring', () => {
     expect(isWorkspaceOnboardingNewUser(newUser, cohortStart)).toBe(true);
     expect(isWorkspaceOnboardingNewUser(existingUser, cohortStart)).toBe(false);
     expect(isWorkspaceOnboardingNewUser({ uid: '45' }, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '46', created_at: '09/19/2026' }, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '47', created_at: '2026-02-30T00:00:00Z' }, cohortStart)).toBe(false);
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00Z')).not.toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T25:00:00Z')).toBeNull();
+    expect(resolveWorkspaceOnboardingCohortStart('not-a-timestamp')).toBe(DEFAULT_WORKSPACE_ONBOARDING_COHORT_START);
     expect(shouldShowWorkspaceOnboarding(newUser, cohortStart)).toBe(true);
     expect(shouldShowWorkspaceOnboarding(existingUser, cohortStart)).toBe(false);
 

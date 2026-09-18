@@ -134,15 +134,6 @@ vi.mock('../widgets/desktop-connect-modal', () => ({
     </section>
   ),
 }));
-vi.mock('../widgets/workspace-onboarding-card', () => ({
-  default: ({ visible, dashboardDownloadOpen, onDismiss }) => (
-    visible && !dashboardDownloadOpen ? (
-      <section data-testid="workspace-onboarding-card">
-        <button type="button" onClick={onDismiss}>稍后再说</button>
-      </section>
-    ) : null
-  ),
-}));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
 vi.mock('../widgets/relay-access-modal', () => ({
   default: ({ onClose }) => (
@@ -153,6 +144,7 @@ vi.mock('../widgets/relay-access-modal', () => ({
 }));
 
 import TinodeWeb from './tinode-web';
+import { workspaceOnboardingStorageKey } from '../utils/workspace-onboarding';
 
 let container;
 let root;
@@ -201,8 +193,33 @@ test('shows the onboarding card once for a new account entering the workspace', 
     await Promise.resolve();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).not.toBeNull());
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+});
+
+test('does not repeat onboarding after its local download handoff closes', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+  const downloadButton = [...document.querySelectorAll('button')]
+    .find((button) => button.textContent.includes('下载桌面端'));
+  await act(async () => {
+    downloadButton.click();
+  });
+
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+  expect(localStorage.getItem(workspaceOnboardingStorageKey(1))).toBe('dismissed');
+
+  await act(async () => {
+    container.querySelector('[data-testid="desktop-connect-modal"] button').click();
+  });
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 });
 
 test('does not automatically show onboarding for an existing account', async () => {
@@ -214,10 +231,10 @@ test('does not automatically show onboarding for an existing account', async () 
     await Promise.resolve();
   });
 
-  expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).toBeNull();
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 });
 
-test('keeps download mode when a new account arrives through the download deep link', async () => {
+test('keeps download mode and defers onboarding when a new account arrives through the download deep link', async () => {
   setCachedUser('2026-09-18T00:00:01Z');
 
   await act(async () => {
@@ -227,7 +244,12 @@ test('keeps download mode when a new account arrives through the download deep l
   });
 
   await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
-  expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).toBeNull();
+  expect(document.querySelector('.cc-workspace-onboarding-card[open]')).toBeNull();
+
+  await act(async () => {
+    container.querySelector('[data-testid="desktop-connect-modal"] button').click();
+  });
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
 });
 
 test('shows the new-account onboarding card after the relay deep link is closed', async () => {
@@ -241,13 +263,13 @@ test('shows the new-account onboarding card after the relay deep link is closed'
 
   const relay = container.querySelector('[data-testid="relay-access-modal"]');
   expect(relay).not.toBeNull();
-  expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).toBeNull();
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 
   await act(async () => {
     relay.querySelector('button').click();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).not.toBeNull());
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
 });
 
 test.each(['Escape', 'close button', 'cancel button'])('returns focus to the desktop profile entry after settings closes via %s', async (method) => {
