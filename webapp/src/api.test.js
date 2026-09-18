@@ -1113,6 +1113,7 @@ describe('upload transport', () => {
 
   afterEach(() => {
     apiModule.disconnectWS();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -1223,17 +1224,60 @@ describe('upload transport', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  test.each([502, 503, 504])('uses gateway status copy for an upload JSON response with HTTP %i', async (status) => {
+  test('rides out a deploy-length transport outage for a composer upload', async () => {
+    vi.useFakeTimers();
+    global.fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(response(200, {
+        file_key: 'stored.pdf',
+        name: 'spec.pdf',
+        size: 5,
+        type: 'file',
+        url: '/uploads/files/stored.pdf',
+      }));
+    const file = new File(['paper'], 'spec.pdf', { type: 'application/pdf' });
+
+    const pending = apiModule.api.uploadFile(file, 'file');
+    await vi.advanceTimersByTimeAsync(6500);
+
+    await expect(pending).resolves.toMatchObject({ file_key: 'stored.pdf' });
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  test('gives up after the transport retry budget with the interrupted message', async () => {
+    vi.useFakeTimers();
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    const file = new File(['paper'], 'spec.pdf', { type: 'application/pdf' });
+
+    const pending = apiModule.api.uploadFile(file, 'file');
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: 'upload_network_error',
+      message: '上传连接中断，请检查网络后重试。',
+    });
+    await vi.advanceTimersByTimeAsync(30000);
+
+    await rejection;
+    expect(global.fetch).toHaveBeenCalledTimes(5);
+  });
+
+  test.each([502, 503, 504])('rides out gateway HTTP %i during a rollout, then reports it', async (status) => {
+    vi.useFakeTimers();
     global.fetch = vi.fn().mockResolvedValue(response(status, {
       error: '后端服务暂时异常',
     }));
     const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
 
-    await expect(apiModule.api.uploadFile(file, 'image')).rejects.toMatchObject({
+    const pending = apiModule.api.uploadFile(file, 'image');
+    const rejection = expect(pending).rejects.toMatchObject({
       message: '服务暂时不可用，请稍后重试',
       status,
       data: { error: '后端服务暂时异常' },
     });
+    await vi.advanceTimersByTimeAsync(30000);
+
+    await rejection;
+    expect(global.fetch).toHaveBeenCalledTimes(5);
   });
 });
 

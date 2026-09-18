@@ -234,7 +234,12 @@ services:
       - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
-      interval: 15s
+      # Poll fast while the process boots: the default 15s cadence made a
+      # rollout wait up to two ticks (~30s) before the API was seen as
+      # healthy, which kept the whole site on 502 during deploys.
+      start_interval: 2s
+      start_period: 30s
+      interval: 5s
       timeout: 5s
       retries: 10
     networks:
@@ -275,9 +280,12 @@ services:
   web:
     image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-web:${IMAGE_TAG}"
     restart: unless-stopped
+    # Start order only: nginx resolves `server` through the Docker DNS
+    # resolver on every request (deploy/nginx/nginx.conf), so waiting for
+    # API health here would only delay the web recreate and stretch the
+    # rollout's 502 window.
     depends_on:
-      server:
-        condition: service_healthy
+      - server
     ports:
       - "${TEST_WEB_BIND_HOST:-127.0.0.1}:${TEST_WEB_HOST_PORT:-18080}:80"
     healthcheck:

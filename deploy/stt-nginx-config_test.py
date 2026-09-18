@@ -72,7 +72,7 @@ class SttNginxConfigTest(unittest.TestCase):
         config = (ROOT / "deploy/nginx/nginx.conf").read_text(encoding="utf-8")
         self.assertRegex(
             config,
-            r"location = /ready\s*\{[^}]*proxy_pass http://api/ready;",
+            r"location = /ready\s*\{[^}]*proxy_pass \$api_upstream/ready;",
             "the SPA fallback must not handle /ready",
         )
 
