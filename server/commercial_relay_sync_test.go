@@ -106,3 +106,87 @@ func TestSyncSendsPlanQuotaRateAndStaysIdempotent(t *testing.T) {
 		t.Fatalf("quota_rate sync is not idempotent: %d -> %d", before, writes)
 	}
 }
+
+func TestSyncResetsQuotaRateWhenLeavingOfficialPackages(t *testing.T) {
+	// The user previously held catsco-pro and the relay still bills 47.14;
+	// after the package lapses only the free baseline remains, so the sync must
+	// push an explicit 0 to reset the relay back to its default rate.
+	store := &commercialRelayBaselineTestStore{commercialRelaySyncTestStore: &commercialRelaySyncTestStore{summary: &types.CommercialSummary{
+		UID:          38,
+		TotalCNY:     1700,
+		Entitlements: []*types.CommercialEntitlement{{Source: "free", State: "active", StartsAt: time.Now().UTC().Add(-time.Hour)}},
+	}}}
+	state := commercialRelayUsageUser{Configured: true, Key: &commercialRelayKeySummary{State: "active", QuotaRate: 33000.0 / 700.0}, Limits: commercialRelayLimits{
+		MonthlyBudget:  commercialRelayBudget{ResetDuration: "1M"},
+		FreeTerraTrial: &commercialRelayTerraTrial{MaxLimit: 100, ResetDuration: "never"},
+		AvailableModelLimits: []commercialRelayModelLimit{
+			{Provider: "gpt", Model: commercialTerraTrialModel, AllowedModels: []string{commercialTerraTrialModel}},
+		},
+	}}
+	var rates []float64
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body struct {
+				Monthly float64                               `json:"monthly_budget"`
+				Quota   *float64                              `json:"quota_rate"`
+				Window  *string                               `json:"usage_window_start"`
+				Trial   *bool                                 `json:"free_terra_trial"`
+				Scopes  []commercialRelayModelScope           `json:"model_scopes"`
+				Budgets []commercialRelayProviderBudgetUpdate `json:"provider_config_budgets"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			if body.Quota == nil {
+				t.Errorf("quota_rate must be sent on every shared-pool sync")
+			} else {
+				rates = append(rates, *body.Quota)
+				state.Key.QuotaRate = *body.Quota
+			}
+			state.Limits.MonthlyBudget.MaxLimit = body.Monthly
+			if body.Window != nil {
+				state.UsageWindowStart = *body.Window
+			}
+			if body.Trial != nil {
+				state.Limits.FreeTerraTrial.Enabled = *body.Trial
+			}
+			if body.Scopes != nil {
+				state.Limits.ModelScopes = body.Scopes
+			}
+			for _, update := range body.Budgets {
+				for _, model := range update.AllowedModels {
+					found := false
+					for i := range state.Limits.ModelLimits {
+						if state.Limits.ModelLimits[i].Model == model {
+							state.Limits.ModelLimits[i].Budget = commercialRelayBudget{MaxLimit: update.MaxLimit, ResetDuration: update.ResetDuration}
+							found = true
+						}
+					}
+					if !found {
+						state.Limits.ModelLimits = append(state.Limits.ModelLimits, commercialRelayModelLimit{
+							Provider: update.Provider, Model: model, AllowedModels: update.AllowedModels,
+							Budget: commercialRelayBudget{MaxLimit: update.MaxLimit, ResetDuration: update.ResetDuration}})
+					}
+				}
+			}
+		}
+		_ = json.NewEncoder(w).Encode(state)
+	}))
+	defer relay.Close()
+	syncer := NewCommercialRelaySyncer(store, &RelayAdminClient{baseURL: relay.URL, token: "fixture", client: relay.Client()}, CommercialRelaySyncerOptions{EnforceEnabled: true})
+	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
+		t.Fatal(err)
+	}
+	if len(rates) == 0 || rates[len(rates)-1] != 0 {
+		t.Fatalf("expected an explicit rate reset, got %v", rates)
+	}
+	before := len(rates)
+	if _, err := syncer.SyncUID(context.Background(), 38); err != nil {
+		t.Fatal(err)
+	}
+	if len(rates) != before {
+		t.Fatalf("rate reset is not idempotent: %v", rates)
+	}
+}

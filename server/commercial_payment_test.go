@@ -1535,17 +1535,17 @@ func TestCommercialRelaySharedPolicyUsesEarliestActiveEntitlement(t *testing.T) 
 	user := &commercialRelayUsageUser{Configured: true, UsageWindowStart: "2026-08-01T00:00:00Z", Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{},
 		MonthlyBudget: commercialRelayBudget{MaxLimit: 33600, ResetDuration: "1M"},
 	}}
-	if err := verifyCommercialRelaySharedPolicy(33600, commercialRelayUsageWindowStart(summary), user); err != nil {
+	if err := verifyCommercialRelaySharedPolicy(33600, commercialRelayUsageWindowStart(summary), 0, user); err != nil {
 		t.Fatal(err)
 	}
 	cleared := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{FreeTerraTrial: &commercialRelayTerraTrial{},
 		MonthlyBudget: commercialRelayBudget{MaxLimit: commercialRelayBlockedLimit, ResetDuration: "1M"},
 	}}
-	if err := verifyCommercialRelaySharedPolicy(commercialRelayBlockedLimit, "", cleared); err != nil {
+	if err := verifyCommercialRelaySharedPolicy(commercialRelayBlockedLimit, "", 0, cleared); err != nil {
 		t.Fatalf("cleared commercial window should verify: %v", err)
 	}
 	cleared.UsageWindowStart = "2026-08-14T07:32:08Z"
-	if err := verifyCommercialRelaySharedPolicy(commercialRelayBlockedLimit, "", cleared); err == nil {
+	if err := verifyCommercialRelaySharedPolicy(commercialRelayBlockedLimit, "", 0, cleared); err == nil {
 		t.Fatal("stale commercial window was accepted after entitlement removal")
 	}
 }

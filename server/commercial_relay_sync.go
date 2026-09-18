@@ -533,9 +533,10 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		if sharedQuota {
 			payload["monthly_budget"] = sharedLimit
 			payload["monthly_budget_duration"] = "1M"
-			if quotaRate > 0 {
-				payload["quota_rate"] = quotaRate
-			}
+			// Always send the rate: 0 explicitly resets the relay back to its
+			// built-in default when the user leaves the official package
+			// (downgrade, expiry, or an internal package without an anchor).
+			payload["quota_rate"] = quotaRate
 			if usageWindowStart == "" {
 				payload["usage_window_start"] = nil
 			} else {
@@ -560,7 +561,7 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 			return nil, fmt.Errorf("Relay Terra trial policy verification failed")
 		}
 		if sharedQuota {
-			if err := verifyCommercialRelaySharedPolicy(sharedLimit, usageWindowStart, verified); err != nil {
+			if err := verifyCommercialRelaySharedPolicy(sharedLimit, usageWindowStart, quotaRate, verified); err != nil {
 				return nil, err
 			}
 		}
@@ -1441,22 +1442,22 @@ func commercialRelayQuotaRate(summary *types.CommercialSummary) float64 {
 	if summary == nil {
 		return 0
 	}
-	for _, entitlement := range summary.Entitlements {
-		if entitlement == nil || !strings.EqualFold(strings.TrimSpace(entitlement.State), "active") {
-			continue
-		}
-		slug := strings.ToLower(strings.TrimSpace(entitlement.PlanSlug))
-		realCost := commercialRelayQuotaRealCostCNY[slug]
-		points := commercialRelayQuotaPlanPoints[slug]
-		if realCost <= 0 || points <= 0 {
-			continue
-		}
-		if planPoints := commercialRelayPlanPoints(summary, slug); planPoints > 0 {
-			points = planPoints
-		}
-		return points / realCost
+	// Reuse the platform-wide ordering (baseline last, latest expiry first)
+	// so a second official package cannot silently pick the cheaper anchor.
+	primary := types.PrimaryCommercialEntitlement(summary.Entitlements, time.Now().UTC())
+	if primary == nil {
+		return 0
 	}
-	return 0
+	slug := strings.ToLower(strings.TrimSpace(primary.PlanSlug))
+	realCost := commercialRelayQuotaRealCostCNY[slug]
+	points := commercialRelayQuotaPlanPoints[slug]
+	if realCost <= 0 || points <= 0 {
+		return 0
+	}
+	if planPoints := commercialRelayPlanPoints(summary, slug); planPoints > 0 {
+		points = planPoints
+	}
+	return points / realCost
 }
 
 func commercialRelayPlanPoints(summary *types.CommercialSummary, slug string) float64 {
@@ -1464,16 +1465,9 @@ func commercialRelayPlanPoints(summary *types.CommercialSummary, slug string) fl
 		if plan == nil || !strings.EqualFold(strings.TrimSpace(plan.Slug), slug) {
 			continue
 		}
-		if plan.MonthlyBudget > 0 {
-			return plan.MonthlyBudget
-		}
-		total := 0.0
-		for _, amount := range plan.ModelBudgets {
-			if amount > 0 {
-				total += amount
-			}
-		}
-		if total > 0 {
+		// Same total the plan validators and grant creation use, so the rate
+		// cannot drift from the pool that is actually handed out.
+		if total := commercialPlanQuotaTotal(plan); total > 0 {
 			return total
 		}
 	}
@@ -1481,12 +1475,11 @@ func commercialRelayPlanPoints(summary *types.CommercialSummary, slug string) fl
 }
 
 // commercialRelayQuotaRateMatches reports whether the relay already uses the
-// desired conversion rate. A zero rate means "no official package", which
-// never forces a resync loop.
+// desired conversion rate. Zero is a meaningful expectation: it resets the
+// relay to its built-in default, so a stale non-zero rate (for example after
+// an expiry or an internal-package swap) must trigger a resync instead of
+// silently keeping the previous plan's conversion.
 func commercialRelayQuotaRateMatches(relayUser *commercialRelayUsageUser, rate float64) bool {
-	if rate <= 0 {
-		return true
-	}
 	if relayUser == nil || relayUser.Key == nil {
 		return true
 	}
@@ -1563,7 +1556,7 @@ func sameCommercialRelayTimestamp(left, right string) bool {
 	return leftOK && rightOK && leftTime.Truncate(time.Second).Equal(rightTime.Truncate(time.Second))
 }
 
-func verifyCommercialRelaySharedPolicy(limit float64, usageWindowStart string, relayUser *commercialRelayUsageUser) error {
+func verifyCommercialRelaySharedPolicy(limit float64, usageWindowStart string, quotaRate float64, relayUser *commercialRelayUsageUser) error {
 	if relayUser == nil || !relayUser.Configured {
 		return fmt.Errorf("relay shared quota verification failed: relay key is not configured")
 	}
@@ -1573,6 +1566,12 @@ func verifyCommercialRelaySharedPolicy(limit float64, usageWindowStart string, r
 	}
 	if !sameCommercialRelayTimestamp(relayUser.UsageWindowStart, usageWindowStart) {
 		return fmt.Errorf("relay shared quota verification failed: usage window mismatch")
+	}
+	// The relay must persist the plan conversion rate we sent; a relay without
+	// quota_rate support fails here instead of silently billing the default.
+	// A missing key summary is tolerated (nothing to compare against).
+	if relayUser.Key != nil && !nearlyEqual(relayUser.Key.QuotaRate, quotaRate) {
+		return fmt.Errorf("relay shared quota verification failed: quota rate mismatch")
 	}
 	return nil
 }
