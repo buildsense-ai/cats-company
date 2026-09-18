@@ -413,7 +413,7 @@ func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.plans = []*types.CommercialPlan{
 		{ID: 1, Slug: "hidden", Name: "Hidden", PriceFen: 100, Currency: "CNY", SaleState: "hidden", DurationDays: 30, State: 0, ModelBudgets: map[string]float64{"MiniMax-M3": 1}},
-		{ID: 2, Slug: "test", Name: "Test", PriceFen: 200, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, InternalQuotaTokens: 50_000_000, ModelBudgets: map[string]float64{"MiniMax-M3": 2}},
+		{ID: 2, Slug: "test", Name: "Test", PriceFen: 200, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, InternalQuotaTokens: 50_000_000, RealCostCNY: 99, ModelBudgets: map[string]float64{"MiniMax-M3": 2}},
 		{ID: 3, Slug: "public", Name: "Public", PriceFen: 300, Currency: "CNY", SaleState: "public", DurationDays: 30, State: 0, ModelBudgets: map[string]float64{"MiniMax-M3": 3}},
 		{ID: 4, Slug: "empty", Name: "Empty", PriceFen: 400, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0},
 		{ID: 5, Slug: "monthly-only", Name: "Monthly only", PriceFen: 500, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, MonthlyBudget: 10},
@@ -438,10 +438,10 @@ func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
 	if len(payload.Plans) != 2 || payload.Plans[0].Slug != "test" || payload.Plans[1].Slug != "public" {
 		t.Fatalf("unexpected plans: %#v", payload.Plans)
 	}
-	if payload.Plans[0].InternalQuotaTokens != 0 || len(payload.Plans[0].ModelBudgets) != 0 || payload.Plans[0].MonthlyBudget != 0 {
+	if payload.Plans[0].InternalQuotaTokens != 0 || len(payload.Plans[0].ModelBudgets) != 0 || payload.Plans[0].MonthlyBudget != 0 || payload.Plans[0].RealCostCNY != 0 {
 		t.Fatalf("public catalog leaked internal quota data: %#v", payload.Plans[0])
 	}
-	if strings.Contains(recorder.Body.String(), "internal_quota_tokens") || strings.Contains(recorder.Body.String(), "model_budgets") || strings.Contains(recorder.Body.String(), "monthly_budget_cny") {
+	if strings.Contains(recorder.Body.String(), "internal_quota_tokens") || strings.Contains(recorder.Body.String(), "model_budgets") || strings.Contains(recorder.Body.String(), "monthly_budget_cny") || strings.Contains(recorder.Body.String(), "real_cost_cny") {
 		t.Fatalf("public catalog leaked internal quota fields: %s", recorder.Body.String())
 	}
 	if len(payload.Channels) != 1 || payload.Channels[0].ID != commercialPaymentChannelTest {

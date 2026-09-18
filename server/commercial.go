@@ -68,6 +68,9 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	}
 	copy := *plan
 	copy.MonthlyBudget = 0
+	// RealCostCNY is an internal cost anchor and must never reach the public
+	// catalog, same as the other stripped commercial internals.
+	copy.RealCostCNY = 0
 	copy.ModelBudgets = nil
 	copy.InternalQuotaTokens = 0
 	copy.CloudWorkerBillingMode = ""

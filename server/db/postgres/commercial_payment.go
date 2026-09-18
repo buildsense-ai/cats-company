@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-	monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at, cloud_worker_billing_mode`
+	monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at, cloud_worker_billing_mode`
 
 func (a *Adapter) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
 	if id <= 0 {
