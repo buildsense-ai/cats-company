@@ -61,17 +61,21 @@ type AuthService struct {
 // CommercialPlan describes an operator-managed relay package. It is the
 // commercial source record; relay-admin/Bifrost remain the execution layer.
 type CommercialPlan struct {
-	CloudWorkerBillingMode string             `json:"cloud_worker_billing_mode,omitempty"`
-	ID                     int64              `json:"id"`
-	Slug                   string             `json:"slug"`
-	Name                   string             `json:"name"`
-	Description            string             `json:"description,omitempty"`
-	PriceFen               int64              `json:"price_fen"`
-	Currency               string             `json:"currency"`
-	SaleState              string             `json:"sale_state"`
-	PurchaseLimit          int                `json:"purchase_limit"`
-	MonthlyBudget          float64            `json:"monthly_budget_cny,omitempty"`
-	ModelBudgets           map[string]float64 `json:"model_budgets,omitempty"`
+	CloudWorkerBillingMode string  `json:"cloud_worker_billing_mode,omitempty"`
+	ID                     int64   `json:"id"`
+	Slug                   string  `json:"slug"`
+	Name                   string  `json:"name"`
+	Description            string  `json:"description,omitempty"`
+	PriceFen               int64   `json:"price_fen"`
+	Currency               string  `json:"currency"`
+	SaleState              string  `json:"sale_state"`
+	PurchaseLimit          int     `json:"purchase_limit"`
+	MonthlyBudget          float64 `json:"monthly_budget_cny,omitempty"`
+	// RealCostCNY is the real upstream cost budget behind this plan's points.
+	// Quota conversion uses points / real_cost_cny when set; 0 keeps the
+	// built-in official anchor (or the relay default for custom plans).
+	RealCostCNY  float64            `json:"real_cost_cny,omitempty"`
+	ModelBudgets map[string]float64 `json:"model_budgets,omitempty"`
 	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
 	// Relay enforcement continues to use the CNY budgets above.
 	InternalQuotaTokens int64     `json:"internal_quota_tokens,omitempty"`
