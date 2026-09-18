@@ -10463,6 +10463,13 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   margin-top: 2px;
 }
 
+.catsco-assistant-invite-form label {
+  grid-column: 1 / -1;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-medium);
+}
+
 .catsco-assistant-invite-form input {
   min-width: 0;
   height: 36px;

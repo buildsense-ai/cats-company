@@ -543,8 +543,9 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
                   <p>输入助手所有者或官方分享的邀请码，即可开始对话和任务。</p>
                 </div>
                 <form className="catsco-assistant-invite-form" onSubmit={handleRedeemInvite}>
+                  <label htmlFor="catsco-assistant-invite">助手邀请码</label>
                   <input
-                    aria-label="助手邀请码"
+                    id="catsco-assistant-invite"
                     autoCapitalize="off"
                     autoComplete="off"
                     placeholder="输入助手邀请码"

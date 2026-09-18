@@ -82,11 +82,12 @@ describe('DesktopConnectModal', () => {
     expect(container.textContent).toContain('开始使用 AI 助手');
     expect(container.textContent).toContain('添加云端 AI 助手');
     expect(container.textContent).toContain('激活本地 AI 助手');
+    expect(container.querySelector('label[for="catsco-assistant-invite"]')?.textContent).toBe('助手邀请码');
     await act(async () => {
       container.querySelector('.catsco-assistant-download-action').click();
     });
     expect(container.querySelector('#catsco-desktop-downloads')).not.toBeNull();
-    const input = container.querySelector('[aria-label="助手邀请码"]');
+    const input = container.querySelector('#catsco-assistant-invite');
     await act(async () => {
       Simulate.change(input, { target: { value: 'join-123' } });
     });
