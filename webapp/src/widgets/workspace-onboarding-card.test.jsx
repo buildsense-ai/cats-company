@@ -57,15 +57,14 @@ describe('WorkspaceOnboardingCard', () => {
 
   async function mount(props = {}) {
     await act(async () => {
-      root.render(<WorkspaceOnboardingCard userId={42} {...props} />);
+      root.render(<WorkspaceOnboardingCard userId={42} visible {...props} />);
       await flushPromises();
     });
   }
 
-  it('shows only for a user without available agents and remembers dismissal', async () => {
+  it('shows for an eligible new account and remembers dismissal', async () => {
     await mount();
 
-    expect(api.getAgents).toHaveBeenCalledTimes(1);
     expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull();
 
     await act(async () => {
@@ -76,10 +75,8 @@ describe('WorkspaceOnboardingCard', () => {
     expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   });
 
-  it('does not interrupt users who already have an available agent', async () => {
-    api.getAgents.mockResolvedValueOnce({ agents: [{ uid: 7 }] });
-
-    await mount();
+  it('does not render when the workspace says onboarding is ineligible', async () => {
+    await mount({ visible: false });
 
     expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   });
@@ -103,6 +100,7 @@ describe('WorkspaceOnboardingCard', () => {
 
     expect(api.redeemBotInviteCode).toHaveBeenCalledWith('JOIN-123');
     expect(onDataChanged).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(workspaceOnboardingStorageKey(42))).toBe('dismissed');
     expect(document.querySelector('#workspace-invite-title').textContent).toBe('云端助手已添加');
 
     await act(async () => {
@@ -112,6 +110,19 @@ describe('WorkspaceOnboardingCard', () => {
     expect(localStorage.getItem(workspaceOnboardingStorageKey(42))).toBe('dismissed');
     expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
     window.removeEventListener('cc:data-changed', onDataChanged);
+  });
+
+  it('treats the desktop download handoff as onboarding completion', async () => {
+    const onDownloadDashboard = vi.fn();
+    await mount({ onDownloadDashboard });
+
+    await act(async () => {
+      Simulate.click(buttonWithText('下载桌面端'));
+    });
+
+    expect(onDownloadDashboard).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(workspaceOnboardingStorageKey(42))).toBe('dismissed');
+    expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   });
 
   it('surfaces an invalid invite error without dismissing the onboarding', async () => {

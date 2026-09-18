@@ -1,6 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import DesktopConnectModal, { resolveConnectedDesktopDevice } from './desktop-connect-modal';
+import WorkspaceOnboardingCard from './workspace-onboarding-card';
 
 vi.mock('../api', () => ({
   api: {
@@ -65,6 +66,68 @@ describe('DesktopConnectModal', () => {
     const moreDownloads = container.querySelector('.catsco-download-more');
     expect(moreDownloads.firstChild.textContent).toBe('其他系统版本');
     expect(moreDownloads.lastElementChild?.tagName).toBe('svg');
+  });
+
+  test('offers a compact New User Guide card that opens the shared onboarding card', async () => {
+    const onOpenOnboardingGuide = vi.fn();
+    await act(async () => {
+      root.render(<DesktopConnectModal userId="38" onClose={vi.fn()} onOpenOnboardingGuide={onOpenOnboardingGuide} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const guide = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('新手指引'));
+    expect(guide).not.toBeNull();
+    expect(guide.textContent).toContain('重新查看添加助手和激活本地助手的步骤。');
+    expect(container.querySelector('#catsco-assistant-invite')).toBeNull();
+
+    await act(async () => {
+      guide.click();
+    });
+    expect(onOpenOnboardingGuide).toHaveBeenCalledTimes(1);
+  });
+
+  test('hands off from the real guide card to exactly one shared onboarding card', async () => {
+    function ReplayHarness() {
+      const [desktopOpen, setDesktopOpen] = React.useState(true);
+      const [onboardingOpen, setOnboardingOpen] = React.useState(false);
+      return (
+        <>
+          {desktopOpen && (
+            <DesktopConnectModal
+              userId="38"
+              onClose={() => setDesktopOpen(false)}
+              onOpenOnboardingGuide={() => {
+                setDesktopOpen(false);
+                setOnboardingOpen(true);
+              }}
+            />
+          )}
+          {onboardingOpen && (
+            <WorkspaceOnboardingCard
+              userId="38"
+              visible
+              onDismiss={() => setOnboardingOpen(false)}
+            />
+          )}
+        </>
+      );
+    }
+
+    await act(async () => {
+      root.render(<ReplayHarness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const modal = container.querySelector('[role="dialog"][aria-labelledby="catsco-desktop-modal-title"]');
+    expect(modal).not.toBeNull();
+    const guide = [...modal.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('新手指引'));
+    await act(async () => guide.click());
+
+    expect(container.querySelector('[role="dialog"][aria-labelledby="catsco-desktop-modal-title"]')).toBeNull();
+    await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
   });
 
   test('keeps connected device management in the unified modal', async () => {

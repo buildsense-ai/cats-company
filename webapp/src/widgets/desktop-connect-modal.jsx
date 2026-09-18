@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, CheckCircle2, ChevronDown, ChevronUp, Cloud, Download, Laptop, Loader2, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
+import { AlertCircle, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Cloud, Download, Laptop, Loader2, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import PwaDownloadLink from './pwa-download-link';
 import {
@@ -76,7 +76,7 @@ function openDesktopDeepLink(href) {
   link.remove();
 }
 
-export default function DesktopConnectModal({ userId, onClose, onConnected, onStatusChange, initialMode = 'connect' }) {
+export default function DesktopConnectModal({ userId, onClose, onConnected, onStatusChange, onOpenOnboardingGuide, initialMode = 'connect' }) {
   const [state, setState] = useState('idle');
   const [error, setError] = useState('');
   const [showDownloads, setShowDownloads] = useState(initialMode === 'download');
@@ -504,6 +504,21 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
         </div>
 
         <div className="catsco-connect-body">
+          <section className="catsco-onboarding-replay" aria-labelledby="catsco-onboarding-replay-title">
+            <button
+              type="button"
+              className="catsco-onboarding-replay-card"
+              onClick={onOpenOnboardingGuide}
+            >
+              <BookOpen size={20} aria-hidden="true" />
+              <span className="catsco-onboarding-replay-copy">
+                <span id="catsco-onboarding-replay-title">新手指引</span>
+                <span>重新查看添加助手和激活本地助手的步骤。</span>
+              </span>
+              <ChevronRight size={18} aria-hidden="true" />
+            </button>
+          </section>
+
           <div className="catsco-connect-summary">
             {connectionReady ? <CheckCircle2 size={20} color="#0BA36D" /> : busy ? <Loader2 className="catsco-spin" size={20} /> : <Laptop size={20} />}
             <div className="catsco-connect-copy">
@@ -576,7 +591,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
           </div>
 
           {showDownloads && (
-            <div className="catsco-desktop-download-section">
+            <div id="catsco-desktop-downloads" className="catsco-desktop-download-section">
               <div className="catsco-section-heading">
                 <h4 className="catsco-download-section-title">可下载版本</h4>
                 <span className="catsco-section-meta">v{releaseVersion(desktopRelease)}</span>

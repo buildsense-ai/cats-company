@@ -314,14 +314,28 @@ html[data-theme="liquid"][data-liquid-variant="green"] .v3-composer-box:focus-wi
   border-color: color-mix(in srgb, var(--cc-text) 58%, var(--cc-liquid-edge));
 }
 
-html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay),
+html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay) {
+  background: rgba(0, 10, 8, 0.56);
+  -webkit-backdrop-filter: blur(8px) saturate(108%);
+  backdrop-filter: blur(8px) saturate(108%);
+}
+
 html[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card::backdrop {
   background: rgba(0, 10, 8, 0.56);
   -webkit-backdrop-filter: blur(8px) saturate(108%);
   backdrop-filter: blur(8px) saturate(108%);
 }
 
-html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog, .oc-modal, .settings-panel, .collaboration-manager),
+html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog, .oc-modal, .settings-panel, .collaboration-manager) {
+  border-color: var(--cc-liquid-edge);
+  background: #1a1c1d;
+  box-shadow:
+    0 24px 56px rgba(0, 8, 6, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 1px 0 0 rgba(55, 190, 153, 0.07),
+    inset -1px 0 0 rgba(130, 114, 217, 0.06);
+}
+
 html[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card {
   border-color: var(--cc-liquid-edge);
   background: #1a1c1d;

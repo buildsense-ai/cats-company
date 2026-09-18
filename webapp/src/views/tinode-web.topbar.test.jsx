@@ -16,8 +16,15 @@ import {
   resolveInitialUser,
   resolveDisplayedActiveAgent,
   shouldOpenProfileSettingsDirectly,
+  DEFAULT_WORKSPACE_ONBOARDING_COHORT_START,
+  isWorkspaceOnboardingNewUser,
+  parseWorkspaceOnboardingTimestamp,
+  resolveWorkspaceOnboardingCohortStart,
+  shouldDeferWorkspaceOnboarding,
+  shouldShowWorkspaceOnboarding,
 } from './tinode-web';
 import { api } from '../api';
+import { workspaceOnboardingStorageKey } from '../utils/workspace-onboarding';
 
 const topbarCss = readFileSync(
   resolve(process.cwd(), 'src/css/catsco-topbar.css'),
@@ -349,6 +356,48 @@ describe('mobile model context wiring', () => {
   it('routes profile desktop actions through the modal mode setter', () => {
     expect(tinodeWebSource).toContain("onOpenDownload={() => openDesktopModal('download')}");
     expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");
+  });
+
+  it('shows onboarding once for new accounts without restoring the daily device prompt', () => {
+    const cohortStart = '2026-09-18T00:00:00Z';
+    const newUser = { uid: '43', created_at: '2026-09-18T00:00:01Z' };
+    const existingUser = { uid: '44', created_at: '2026-09-17T23:59:59Z' };
+    const fractionalCohortStart = '2026-09-18T00:00:00.123999Z';
+    const onboardingKey = workspaceOnboardingStorageKey(newUser.uid);
+    window.localStorage.removeItem(onboardingKey);
+
+    expect(isWorkspaceOnboardingNewUser(newUser, cohortStart)).toBe(true);
+    expect(isWorkspaceOnboardingNewUser(existingUser, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '45' }, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '46', created_at: '09/19/2026' }, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '47', created_at: '2026-02-30T00:00:00Z' }, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '48', created_at: '2026-09-18T00:00:00.123998Z' }, fractionalCohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '49', created_at: fractionalCohortStart }, fractionalCohortStart)).toBe(true);
+    expect(isWorkspaceOnboardingNewUser({ uid: '50', created_at: '2026-09-18T00:00:00.124Z' }, fractionalCohortStart)).toBe(true);
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00Z')).not.toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.123456789Z')).not.toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.1234567891Z')).toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T00:00:00.120Z')).toBeNull();
+    expect(parseWorkspaceOnboardingTimestamp('2026-09-18T25:00:00Z')).toBeNull();
+    expect(resolveWorkspaceOnboardingCohortStart('not-a-timestamp')).toBe(DEFAULT_WORKSPACE_ONBOARDING_COHORT_START);
+    expect(shouldShowWorkspaceOnboarding(newUser, cohortStart)).toBe(true);
+    expect(shouldShowWorkspaceOnboarding(existingUser, cohortStart)).toBe(false);
+
+    window.localStorage.setItem(onboardingKey, 'dismissed');
+    expect(shouldShowWorkspaceOnboarding(newUser, cohortStart)).toBe(false);
+    window.localStorage.removeItem(onboardingKey);
+
+    expect(shouldDeferWorkspaceOnboarding()).toBe(false);
+    expect(shouldDeferWorkspaceOnboarding({ relayLinkPending: true })).toBe(true);
+    expect(shouldDeferWorkspaceOnboarding({ channelDeviceLink: true })).toBe(true);
+    expect(shouldDeferWorkspaceOnboarding({ channelAccountLink: true })).toBe(true);
+
+    expect(tinodeWebSource).toContain('onClose={closeRelayModal}');
+    expect(tinodeWebSource).toContain("const downloadLinkKey = requestedOpen === 'download'");
+    expect(tinodeWebSource).toContain('const downloadLinkPending = Boolean(downloadLinkKey');
+    expect(tinodeWebSource).toContain('!downloadLinkPending && !showDesktopConnectModal');
+    expect(tinodeWebSource).not.toContain('allowDailyPrompt');
+    expect(tinodeWebSource).not.toContain('desktopPromptStorageKey');
   });
 });
 

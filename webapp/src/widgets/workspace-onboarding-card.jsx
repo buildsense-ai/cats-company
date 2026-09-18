@@ -3,14 +3,14 @@ import { createPortal } from 'react-dom';
 import { Cloud, ChevronRight, Download, Laptop, X } from 'lucide-react';
 import { api } from '../api';
 import { describeBotInviteCodeError } from '../utils/bot-invite-error';
-import { readStorageValue, writeStorageValue } from '../utils/storage-access';
+import { writeStorageValue } from '../utils/storage-access';
+import {
+  WORKSPACE_ONBOARDING_DISMISSED_VALUE,
+  workspaceOnboardingStorageKey,
+} from '../utils/workspace-onboarding';
 import './workspace-onboarding-card.css';
 
-const ONBOARDING_DISMISSED_VALUE = 'dismissed';
-
-export function workspaceOnboardingStorageKey(userId) {
-  return `cc_workspace_onboarding_v1:${userId}`;
-}
+export { workspaceOnboardingStorageKey };
 
 function openDialog(dialog) {
   if (!dialog?.open) {
@@ -24,7 +24,7 @@ function closeDialog(dialog) {
   else dialog?.removeAttribute('open');
 }
 
-function AssistantInviteDialog({ onComplete, onClose }) {
+function AssistantInviteDialog({ onPersist, onComplete, onClose }) {
   const dialogRef = useRef(null);
   const inputRef = useRef(null);
   const titleRef = useRef(null);
@@ -62,6 +62,7 @@ function AssistantInviteDialog({ onComplete, onClose }) {
     setError('');
     try {
       await api.redeemBotInviteCode(code);
+      onPersist();
       window.dispatchEvent(new Event('cc:data-changed'));
       setCompleted(true);
     } catch (requestError) {
@@ -154,53 +155,57 @@ function AssistantHelpDialog({ kind, onClose }) {
   </dialog>;
 }
 
-export default function WorkspaceOnboardingCard({ userId, onDownloadDashboard, dashboardDownloadOpen = false, forceVisible = false }) {
-  const [eligible, setEligible] = useState(false);
-  const [visible, setVisible] = useState(true);
+export default function WorkspaceOnboardingCard({
+  userId,
+  visible: initiallyVisible = false,
+  onDismiss,
+  onDownloadDashboard,
+  dashboardDownloadOpen = false,
+}) {
+  const [visible, setVisible] = useState(initiallyVisible);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [helpKind, setHelpKind] = useState(null);
   const dialogRef = useRef(null);
   const headingRef = useRef(null);
-  const downloadRef = useRef(null);
-  const restoreDownloadFocusRef = useRef(false);
 
   useEffect(() => {
-    let cancelled = false;
-    const loadEligibility = async () => {
-      if (forceVisible) {
-        if (!cancelled) setEligible(true);
-        return;
-      }
-      if (!userId || readStorageValue(workspaceOnboardingStorageKey(userId)) === ONBOARDING_DISMISSED_VALUE) return;
-      try {
-        const response = await api.getAgents();
-        if (!cancelled) setEligible(Array.isArray(response?.agents) && response.agents.length === 0);
-      } catch {
-        // A failed roster request must not block the workspace with a modal.
-        if (!cancelled) setEligible(false);
-      }
-    };
-    loadEligibility();
-    return () => { cancelled = true; };
-  }, [forceVisible, userId]);
+    setVisible(initiallyVisible);
+  }, [initiallyVisible, userId]);
 
   useEffect(() => {
-    if (!eligible || !visible || dashboardDownloadOpen) return undefined;
+    if (!initiallyVisible || !visible || dashboardDownloadOpen) return undefined;
     const dialog = dialogRef.current;
     openDialog(dialog);
-    (restoreDownloadFocusRef.current ? downloadRef : headingRef).current?.focus();
-    restoreDownloadFocusRef.current = false;
+    headingRef.current?.focus();
     return () => closeDialog(dialog);
-  }, [eligible, visible, dashboardDownloadOpen]);
+  }, [initiallyVisible, visible, dashboardDownloadOpen]);
 
-  const dismiss = () => {
-    if (!forceVisible && userId) writeStorageValue(workspaceOnboardingStorageKey(userId), ONBOARDING_DISMISSED_VALUE);
-    closeDialog(dialogRef.current);
-    setVisible(false);
-    requestAnimationFrame(() => document.querySelector('.cc-empty-composer-wrap textarea')?.focus());
+  const markExperienced = () => {
+    if (userId) writeStorageValue(workspaceOnboardingStorageKey(userId), WORKSPACE_ONBOARDING_DISMISSED_VALUE);
   };
 
-  if (!eligible || !visible) return null;
+  const dismiss = () => {
+    markExperienced();
+    closeDialog(dialogRef.current);
+    setVisible(false);
+    onDismiss?.();
+    requestAnimationFrame(() => {
+      const composer = document.querySelector(
+        '.cc-empty-composer-wrap textarea:not([disabled]), textarea.v3-composer-input:not([disabled])',
+      );
+      if (composer?.isConnected) composer.focus();
+    });
+  };
+
+  const openDesktopDownload = () => {
+    markExperienced();
+    closeDialog(dialogRef.current);
+    setVisible(false);
+    onDismiss?.();
+    onDownloadDashboard?.();
+  };
+
+  if (!initiallyVisible || !visible) return null;
   return createPortal(
     <>
       <dialog ref={dialogRef} className="cc-workspace-onboarding-card" aria-labelledby="workspace-onboarding-title" aria-describedby="workspace-onboarding-description" onCancel={(event) => { event.preventDefault(); dismiss(); }}>
@@ -224,7 +229,7 @@ export default function WorkspaceOnboardingCard({ userId, onDownloadDashboard, d
             <p>下载 Dashboard 并登录，系统会自动关联你的本地助手。</p>
             <div className="cc-workspace-onboarding-method-actions">
               <button type="button" className="cc-workspace-onboarding-help" aria-haspopup="dialog" onClick={() => setHelpKind('local')}>使用说明</button>
-              <button ref={downloadRef} type="button" className="cc-workspace-onboarding-action" onClick={() => { restoreDownloadFocusRef.current = true; onDownloadDashboard?.(); }}>下载桌面端<Download size={14} aria-hidden="true" /></button>
+              <button type="button" className="cc-workspace-onboarding-action" onClick={openDesktopDownload}>下载桌面端<Download size={14} aria-hidden="true" /></button>
             </div>
           </section>
         </div>
@@ -233,7 +238,7 @@ export default function WorkspaceOnboardingCard({ userId, onDownloadDashboard, d
         </footer>
       </dialog>
       {helpKind && <AssistantHelpDialog kind={helpKind} onClose={() => setHelpKind(null)} />}
-      {inviteOpen && <AssistantInviteDialog onComplete={dismiss} onClose={() => setInviteOpen(false)} />}
+      {inviteOpen && <AssistantInviteDialog onPersist={markExperienced} onComplete={dismiss} onClose={() => setInviteOpen(false)} />}
     </>, document.body,
   );
 }

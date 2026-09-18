@@ -559,11 +559,11 @@ describe('CatsCo shell styling', () => {
     );
     const standardLiquidOverlayRule = ruleIn(
       css,
-      'html[data-theme="liquid"] :is(.name-dialog-overlay, .oc-modal-overlay),\nhtml[data-theme="liquid"] .cc-workspace-onboarding-card::backdrop',
+      'html[data-theme="liquid"] :is(.name-dialog-overlay, .oc-modal-overlay)',
     );
     const greenLiquidOverlayRule = ruleIn(
       liquidGreenCss,
-      'html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay),\nhtml[data-theme="liquid"][data-liquid-variant="green"] .cc-workspace-onboarding-card::backdrop',
+      'html[data-theme="liquid"][data-liquid-variant="green"] :is(.name-dialog-overlay, .oc-modal-overlay)',
     );
 
     expect(previewBackdropRule).toContain('background: rgba(0, 0, 0, 0.72);');

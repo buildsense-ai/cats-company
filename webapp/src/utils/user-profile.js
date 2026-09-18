@@ -14,6 +14,7 @@ export function normalizeUserProfile(raw) {
     display_name: raw.display_name || username,
     avatar_url: raw.avatar_url || '',
     account_type: raw.account_type || 'human',
+    created_at: typeof raw.created_at === 'string' ? raw.created_at : '',
   };
 }
 

@@ -80,6 +80,10 @@ import {
   writeStorageValue,
 } from '../utils/storage-access';
 import {
+  WORKSPACE_ONBOARDING_DISMISSED_VALUE,
+  workspaceOnboardingStorageKey,
+} from '../utils/workspace-onboarding';
+import {
   clearPersistedComposerDrafts,
   createComposerDraftStore,
   NEW_TASK_DRAFT_KEY,
@@ -104,6 +108,7 @@ const MobileUploadView = lazy(() => import('./mobile-upload-view'));
 const SkillHubView = lazy(() => import('./skillhub-view'));
 const GroupSettings = lazy(() => import('../widgets/group-settings'));
 const WorkflowRichMediaDemo = lazy(() => import('./workflow-rich-media-demo'));
+const WorkspaceOnboardingCard = lazy(() => import('../widgets/workspace-onboarding-card'));
 
 function SecondaryViewLoading({ label }) {
   return <div className="v3-empty-state" role="status" aria-live="polite">正在加载{label}…</div>;
@@ -113,9 +118,14 @@ const TABS = {
   CHATS: 'chats'
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
+// Accounts created before this rollout remain manual-only: the computer Logo can
+// always reopen the guide without treating a storage reset as a new signup.
+export const DEFAULT_WORKSPACE_ONBOARDING_COHORT_START = '2026-09-18T00:00:00Z';
+const WORKSPACE_ONBOARDING_COHORT_START = resolveWorkspaceOnboardingCohortStart(
+  import.meta.env.VITE_WORKSPACE_ASSISTANT_GUIDE_COHORT_START,
+);
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
-const WorkspaceOnboardingCard = lazy(() => import('../widgets/workspace-onboarding-card'));
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
 const DEV_PREVIEW_ACCOUNT = import.meta.env.VITE_DEV_PREVIEW_ACCOUNT || 'ui-reviewer';
 const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo123456';
@@ -228,16 +238,53 @@ function saveAppSidebarCollapsed(collapsed) {
   writeStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
 }
 
-function desktopPromptStorageKey(uid) {
-  return `catsco_desktop_connect_prompted:v1:${uid}`;
+export function parseWorkspaceOnboardingTimestamp(value) {
+  if (typeof value !== 'string') return null;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{0,8}[1-9]))?Z$/);
+  if (!match) return null;
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction = ''] = match;
+  const timestamp = Date.parse(`${yearText}-${monthText}-${dayText}T${hourText}:${minuteText}:${secondText}Z`);
+  if (!Number.isFinite(timestamp)) return null;
+  const date = new Date(timestamp);
+  const [year, month, day, hour, minute, second] = [
+    yearText, monthText, dayText, hourText, minuteText, secondText,
+  ].map(Number);
+  if (date.getUTCFullYear() !== year
+    || date.getUTCMonth() + 1 !== month
+    || date.getUTCDate() !== day
+    || date.getUTCHours() !== hour
+    || date.getUTCMinutes() !== minute
+    || date.getUTCSeconds() !== second) return null;
+
+  return (BigInt(timestamp) * 1_000_000n) + BigInt(fraction.padEnd(9, '0') || '0');
 }
 
-function todayKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+export function resolveWorkspaceOnboardingCohortStart(configuredStart) {
+  return parseWorkspaceOnboardingTimestamp(configuredStart) === null
+    ? DEFAULT_WORKSPACE_ONBOARDING_COHORT_START
+    : configuredStart;
+}
+
+export function isWorkspaceOnboardingNewUser(user, cohortStart = WORKSPACE_ONBOARDING_COHORT_START) {
+  const createdAt = parseWorkspaceOnboardingTimestamp(user?.created_at);
+  const rolloutAt = parseWorkspaceOnboardingTimestamp(cohortStart);
+  return createdAt !== null && rolloutAt !== null && createdAt >= rolloutAt;
+}
+
+export function shouldShowWorkspaceOnboarding(user, cohortStart) {
+  const key = workspaceOnboardingStorageKey(user?.uid);
+  return isWorkspaceOnboardingNewUser(user, cohortStart)
+    && Boolean(key)
+    && readStorageValue(key) !== WORKSPACE_ONBOARDING_DISMISSED_VALUE;
+}
+
+export function shouldDeferWorkspaceOnboarding({
+  channelDeviceLink = false,
+  channelAccountLink = false,
+  relayLinkPending = false,
+} = {}) {
+  return channelDeviceLink || channelAccountLink || relayLinkPending;
 }
 
 function isInvalidSessionError(error) {
@@ -302,6 +349,8 @@ function TinodeWebApp({ location }) {
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = pathname === '/channel-device-link';
   const channelAccountLink = pathname === '/channel-account-link';
+  const requestedOpen = new URLSearchParams(search).get('open') || '';
+  const downloadLinkKey = requestedOpen === 'download' ? `${pathname}?${search}#${hash}` : '';
   const [user, setUser] = useState(() => getInitialUser());
   const [sessionRestoreError, setSessionRestoreError] = useState('');
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
@@ -369,9 +418,14 @@ function TinodeWebApp({ location }) {
   const profileTriggerRef = useRef(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
+  const [handledDownloadLinkKey, setHandledDownloadLinkKey] = useState('');
+  const downloadLinkPending = Boolean(downloadLinkKey && handledDownloadLinkKey !== downloadLinkKey);
+  const [showWorkspaceOnboardingReplay, setShowWorkspaceOnboardingReplay] = useState(false);
+  const [workspaceOnboardingDismissedInSession, setWorkspaceOnboardingDismissedInSession] = useState(false);
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [relayLinkHandled, setRelayLinkHandled] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
@@ -381,11 +435,29 @@ function TinodeWebApp({ location }) {
     setShowDesktopConnectModal(true);
   }, []);
 
+  const closeDesktopConnectModal = useCallback(() => {
+    setShowDesktopConnectModal(false);
+    if (downloadLinkKey) setHandledDownloadLinkKey(downloadLinkKey);
+  }, [downloadLinkKey]);
+
+  const openWorkspaceOnboardingReplay = useCallback(() => {
+    // A manual replay owns the onboarding slot for the rest of this session.
+    // This prevents a preview/automatic card from resurfacing after it is closed.
+    setWorkspaceOnboardingDismissedInSession(true);
+    closeDesktopConnectModal();
+    setShowWorkspaceOnboardingReplay(true);
+  }, [closeDesktopConnectModal]);
+
+  const closeRelayModal = useCallback(() => {
+    setShowRelayModal(false);
+    setRelayLinkHandled(true);
+  }, []);
+
   useEffect(() => {
-    const params = new URLSearchParams(search);
-    if (params.get('open') === 'relay') setShowRelayModal(true);
-    if (params.get('open') === 'download') openDesktopModal('download');
-  }, [openDesktopModal, search]);
+    setRelayLinkHandled(false);
+    if (requestedOpen === 'relay') setShowRelayModal(true);
+    if (requestedOpen === 'download' && downloadLinkPending) openDesktopModal('download');
+  }, [downloadLinkPending, openDesktopModal, requestedOpen]);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
@@ -1029,7 +1101,7 @@ function TinodeWebApp({ location }) {
     };
   }, [user?.uid, persistUser, clearAuthenticatedSession]);
 
-  const refreshLocalAgentStatus = useCallback(async ({ allowDailyPrompt = false } = {}) => {
+  const refreshLocalAgentStatus = useCallback(async () => {
     if (!user?.uid) return;
     try {
       setLocalAgentStatus((status) => (status === 'connected' ? status : 'checking'));
@@ -1039,23 +1111,16 @@ function TinodeWebApp({ location }) {
         return;
       }
       setLocalAgentStatus('disconnected');
-      if (allowDailyPrompt) {
-        const promptKey = desktopPromptStorageKey(user.uid);
-        if (readStorageValue(promptKey) !== todayKey()) {
-          writeStorageValue(promptKey, todayKey());
-          openDesktopModal('connect');
-        }
-      }
     } catch (error) {
       console.warn('Failed to check desktop agent connection:', error);
       setLocalAgentStatus('unknown');
     }
-  }, [openDesktopModal, user?.uid]);
+  }, [user?.uid]);
 
   useEffect(() => {
     if (!user?.uid) return undefined;
     let cancelled = false;
-    refreshLocalAgentStatus({ allowDailyPrompt: !showOnboardingPreview }).catch(() => {
+    refreshLocalAgentStatus().catch(() => {
       if (!cancelled) setLocalAgentStatus('unknown');
     });
     const onDataChanged = () => refreshLocalAgentStatus().catch(() => {});
@@ -1064,7 +1129,7 @@ function TinodeWebApp({ location }) {
       cancelled = true;
       window.removeEventListener('cc:data-changed', onDataChanged);
     };
-  }, [user?.uid, refreshLocalAgentStatus, showOnboardingPreview]);
+  }, [user?.uid, refreshLocalAgentStatus]);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -1267,7 +1332,7 @@ function TinodeWebApp({ location }) {
       const agentUid = device?.botUid;
       if (!agentUid) {
         setLocalAgentStatus('connected');
-        setShowDesktopConnectModal(false);
+        closeDesktopConnectModal();
         window.dispatchEvent(new Event('cc:data-changed'));
         return;
       }
@@ -1275,7 +1340,7 @@ function TinodeWebApp({ location }) {
       const agent = (res.agents || []).find((candidate) => String(candidate.uid || candidate.id) === String(agentUid));
       if (agent) await activateAgentTopic(agent);
       setLocalAgentStatus('connected');
-      setShowDesktopConnectModal(false);
+      closeDesktopConnectModal();
       window.dispatchEvent(new Event('cc:data-changed'));
     } catch (error) {
       console.warn('Failed to open connected desktop agent:', error);
@@ -1347,10 +1412,10 @@ function TinodeWebApp({ location }) {
       currentModelName={currentModelName}
       onDownload={() => openDesktopModal('download')}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
-      title={showOnboardingPreview ? '新任务' : activeTopic?.name || taskDraftTitle(taskDraft || persistedTaskContext)}
+      title={activeTopic?.name || taskDraftTitle(taskDraft || persistedTaskContext)}
       mobileModelInfo={mobileModelInfo}
       onNewTask={() => setNewTaskRequest((request) => request + 1)}
-      onRenameTitle={!showOnboardingPreview && activeTopic ? handleRenameActiveTopic : undefined}
+      onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
       relayAdminAllowed={relayAdminAllowed}
       onOpenRelayAdmin={() => setRelayAdminOpen(true)}
     />
@@ -1529,7 +1594,7 @@ function TinodeWebApp({ location }) {
         </button>
         <div className="v3-main-body">
           <div className="v3-main-content">
-            {!showOnboardingPreview && activeView === 'skillhub' ? (
+            {activeView === 'skillhub' ? (
               <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
                 <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
               </Suspense>
@@ -1562,10 +1627,16 @@ function TinodeWebApp({ location }) {
                 <div className={`v3-message-workspace${standaloneCloudArtifactsRequest ? ' has-preview' : ''}`}>
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
-                    forceWorkspaceOnboarding={showOnboardingPreview}
-                    onDownloadDashboard={() => openDesktopModal('download')}
-                    dashboardDownloadOpen={showDesktopConnectModal}
                     user={user}
+                    showWorkspaceOnboarding={!downloadLinkPending && !showDesktopConnectModal && !showWorkspaceOnboardingReplay && !workspaceOnboardingDismissedInSession && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
+                      && !shouldDeferWorkspaceOnboarding({
+                        channelDeviceLink,
+                        channelAccountLink,
+                        relayLinkPending: requestedOpen === 'relay' && !relayLinkHandled,
+                      })))}
+                    onDownloadDashboard={() => openDesktopModal('download')}
+                    onWorkspaceOnboardingDismiss={() => setWorkspaceOnboardingDismissedInSession(true)}
+                    dashboardDownloadOpen={showDesktopConnectModal}
                     initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
                     composerDraftStore={composerDraftStoreRef.current}
                     draftKey={NEW_TASK_DRAFT_KEY}
@@ -1633,17 +1704,32 @@ function TinodeWebApp({ location }) {
       {showDesktopConnectModal && (
         <DesktopConnectModal
           userId={user.uid}
-          onClose={() => setShowDesktopConnectModal(false)}
+          onClose={closeDesktopConnectModal}
           onConnected={handleDesktopConnected}
           onStatusChange={(status) => setLocalAgentStatus(status)}
+          onOpenOnboardingGuide={openWorkspaceOnboardingReplay}
           initialMode={desktopModalMode}
         />
+      )}
+
+      {showWorkspaceOnboardingReplay && (
+        <Suspense fallback={null}>
+          <WorkspaceOnboardingCard
+            userId={user.uid}
+            visible
+            onDismiss={() => {
+              setWorkspaceOnboardingDismissedInSession(true);
+              setShowWorkspaceOnboardingReplay(false);
+            }}
+            onDownloadDashboard={() => openDesktopModal('download')}
+          />
+        </Suspense>
       )}
 
       {showRelayModal && (
         <RelayAccessModal
           initialPlanSlug={new URLSearchParams(search).get('plan') || ''}
-          onClose={() => setShowRelayModal(false)}
+          onClose={closeRelayModal}
         />
       )}
 
@@ -1883,8 +1969,9 @@ function resolveDisplayedActiveAgent(
 
 function NoActiveTask({
   user,
-  forceWorkspaceOnboarding = false,
+  showWorkspaceOnboarding = false,
   onDownloadDashboard,
+  onWorkspaceOnboardingDismiss,
   dashboardDownloadOpen = false,
   initialAgent,
   composerDraftStore,
@@ -1901,14 +1988,17 @@ function NoActiveTask({
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
           <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
-        <Suspense fallback={null}>
-          <WorkspaceOnboardingCard
-            userId={user?.uid}
-            forceVisible={forceWorkspaceOnboarding}
-            onDownloadDashboard={onDownloadDashboard}
-            dashboardDownloadOpen={dashboardDownloadOpen}
-          />
-        </Suspense>
+        {showWorkspaceOnboarding && (
+          <Suspense fallback={null}>
+            <WorkspaceOnboardingCard
+              userId={user?.uid}
+              visible
+              onDismiss={onWorkspaceOnboardingDismiss}
+              onDownloadDashboard={onDownloadDashboard}
+              dashboardDownloadOpen={dashboardDownloadOpen}
+            />
+          </Suspense>
+        )}
         <EmptyTaskComposer
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}
