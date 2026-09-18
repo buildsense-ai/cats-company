@@ -329,6 +329,10 @@ test('keeps exactly one onboarding card when replaying the local onboarding prev
 
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
   await vi.waitFor(() => expect(document.querySelectorAll('#workspace-onboarding-title')).toHaveLength(1));
+  await act(async () => {
+    document.querySelector('[aria-label="稍后设置助手"]').click();
+  });
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
 });
 
 test('replays onboarding from the computer entry over an active conversation and redeems invites', async () => {

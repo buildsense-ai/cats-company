@@ -418,6 +418,7 @@ function TinodeWebApp({ location }) {
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [showWorkspaceOnboardingReplay, setShowWorkspaceOnboardingReplay] = useState(false);
+  const [workspaceOnboardingDismissedInSession, setWorkspaceOnboardingDismissedInSession] = useState(false);
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
@@ -432,6 +433,9 @@ function TinodeWebApp({ location }) {
   }, []);
 
   const openWorkspaceOnboardingReplay = useCallback(() => {
+    // A manual replay owns the onboarding slot for the rest of this session.
+    // This prevents a preview/automatic card from resurfacing after it is closed.
+    setWorkspaceOnboardingDismissedInSession(true);
     setShowDesktopConnectModal(false);
     setShowWorkspaceOnboardingReplay(true);
   }, []);
@@ -1616,13 +1620,14 @@ function TinodeWebApp({ location }) {
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    showWorkspaceOnboarding={!showWorkspaceOnboardingReplay && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
+                    showWorkspaceOnboarding={!showWorkspaceOnboardingReplay && !workspaceOnboardingDismissedInSession && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
                       && !shouldDeferWorkspaceOnboarding({
                         channelDeviceLink,
                         channelAccountLink,
                         relayLinkPending: requestedOpen === 'relay' && !relayLinkHandled,
                       })))}
                     onDownloadDashboard={() => openDesktopModal('download')}
+                    onWorkspaceOnboardingDismiss={() => setWorkspaceOnboardingDismissedInSession(true)}
                     dashboardDownloadOpen={showDesktopConnectModal}
                     initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
                     composerDraftStore={composerDraftStoreRef.current}
@@ -1704,7 +1709,10 @@ function TinodeWebApp({ location }) {
           <WorkspaceOnboardingCard
             userId={user.uid}
             visible
-            onDismiss={() => setShowWorkspaceOnboardingReplay(false)}
+            onDismiss={() => {
+              setWorkspaceOnboardingDismissedInSession(true);
+              setShowWorkspaceOnboardingReplay(false);
+            }}
             onDownloadDashboard={() => openDesktopModal('download')}
           />
         </Suspense>
@@ -1955,6 +1963,7 @@ function NoActiveTask({
   user,
   showWorkspaceOnboarding = false,
   onDownloadDashboard,
+  onWorkspaceOnboardingDismiss,
   dashboardDownloadOpen = false,
   initialAgent,
   composerDraftStore,
@@ -1976,6 +1985,7 @@ function NoActiveTask({
             <WorkspaceOnboardingCard
               userId={user?.uid}
               visible
+              onDismiss={onWorkspaceOnboardingDismiss}
               onDownloadDashboard={onDownloadDashboard}
               dashboardDownloadOpen={dashboardDownloadOpen}
             />
