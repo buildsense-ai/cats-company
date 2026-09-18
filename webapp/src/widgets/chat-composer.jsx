@@ -305,7 +305,27 @@ export default function ChatComposer({
     let session;
     session = createVoiceSession({
       onState: (state) => {
-        if (voiceSessionRef.current === session) setVoiceState(state);
+        if (voiceSessionRef.current !== session) return;
+        if (state === 'cancelled') {
+          voiceSessionRef.current = null;
+          voiceInsertionRef.current = null;
+          voiceLatestTextRef.current = '';
+          voiceWarningAnnouncementKeyRef.current = null;
+          clearVoiceHoldTimer();
+          voiceHoldGestureRef.current = null;
+          voiceHoldTouchStartsRef.current = [];
+          setVoiceHoldActive(false);
+          setVoiceHoldCancel(false);
+          setVoiceState('idle');
+          setVoicePartial('');
+          setVoiceError('');
+          setVoiceNotice('');
+          setVoiceNoticeTone('notice');
+          setVoiceLiveStatus('');
+          voiceWaveLevelRef.current = 0;
+          return;
+        }
+        setVoiceState(state);
       },
       onPartial: (text) => {
         if (voiceSessionRef.current !== session) return;
@@ -366,6 +386,31 @@ export default function ChatComposer({
         setVoiceNoticeTone('notice');
         voiceWarningAnnouncementKeyRef.current = null;
         setVoiceLiveStatus('正在听…');
+      },
+      onSegmentFinal: (text) => {
+        if (voiceSessionRef.current !== session) return;
+        const insertion = voiceInsertionRef.current;
+        const committedText = String(text || '').trim();
+        if (committedText) {
+          onVoiceFinal?.(committedText, insertion);
+          if (insertion) {
+            const baseValue = String(insertion.baseValue || '');
+            const start = Math.min(baseValue.length, Math.max(0, Number(insertion.start) || 0));
+            const end = Math.min(baseValue.length, Math.max(start, Number(insertion.end) || start));
+            voiceInsertionRef.current = {
+              baseValue: baseValue.slice(0, start) + committedText + baseValue.slice(end),
+              start: start + committedText.length,
+              end: start + committedText.length,
+            };
+          }
+        }
+        voiceLatestTextRef.current = '';
+        setVoicePartial('');
+        setVoiceError('');
+        setVoiceNotice('已保存本段，正在继续录音…');
+        setVoiceNoticeTone('success');
+        voiceWarningAnnouncementKeyRef.current = null;
+        setVoiceLiveStatus('已保存本段，正在继续录音');
       },
       onFinal: (text, details = {}) => {
         if (voiceSessionRef.current !== session) return;

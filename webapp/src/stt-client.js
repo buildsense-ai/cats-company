@@ -1186,6 +1186,287 @@ export class StreamingSTTSession {
   }
 }
 
+export class ContinuousStreamingSTTSession {
+  constructor(options = {}) {
+    this.options = options;
+    this.createCapture = options.createCapture || createPCM16Capture;
+    this.createSegment = options.createSegment || ((segmentOptions) => new StreamingSTTSession(segmentOptions));
+    this.onState = options.onState || (() => {});
+    this.onPartial = options.onPartial || (() => {});
+    this.onAudioLevel = options.onAudioLevel || (() => {});
+    this.onDurationWarning = options.onDurationWarning || (() => {});
+    this.onDurationLimit = options.onDurationLimit || (() => {});
+    this.onIdleWarning = options.onIdleWarning || (() => {});
+    this.onIdleResumed = options.onIdleResumed || (() => {});
+    this.onSegmentFinal = options.onSegmentFinal || (() => {});
+    this.onFinal = options.onFinal || (() => {});
+    this.onError = options.onError || (() => {});
+    this.capture = null;
+    this.capturePromise = null;
+    this.startPromise = null;
+    this.segment = null;
+    this.segmentAcceptingAudio = false;
+    this.transitionFrames = [];
+    this.transitionBytes = 0;
+    this.activated = false;
+    this.stopping = false;
+    this.terminal = false;
+    this.continuing = false;
+    this.restarting = false;
+    this.segmentRetryCount = 0;
+    this.lifecycleListenersInstalled = false;
+    this.handleLifecycleEnd = () => {
+      if (this.terminal) return;
+      if (this.activated) void this.stop(STT_LIFECYCLE_STOP_REASON);
+      else this.cancel();
+    };
+    this.handleVisibilityChange = () => {
+      if (isPageHidden()) this.handleLifecycleEnd();
+    };
+  }
+
+  setState(state) {
+    this.onState(state);
+  }
+
+  installLifecycleListeners() {
+    if (this.lifecycleListenersInstalled) return;
+    this.lifecycleListenersInstalled = true;
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    globalThis.addEventListener?.('pagehide', this.handleLifecycleEnd);
+  }
+
+  removeLifecycleListeners() {
+    if (!this.lifecycleListenersInstalled) return;
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    globalThis.removeEventListener?.('pagehide', this.handleLifecycleEnd);
+    this.lifecycleListenersInstalled = false;
+  }
+
+  async prepare() {
+    if (this.capturePromise) return this.capturePromise;
+    this.installLifecycleListeners();
+    if (isPageHidden()) {
+      this.cancel();
+      return undefined;
+    }
+    this.capturePromise = Promise.resolve(this.createCapture({
+      onFrame: (frame) => this.routeFrame(frame),
+      onLevel: (level) => this.routeLevel(level),
+      onSuspended: this.handleLifecycleEnd,
+    })).then((capture) => {
+      this.capture = capture;
+      if (this.terminal) return this.stopPhysicalCapture();
+      return capture;
+    }).catch((error) => {
+      if (!this.terminal) this.fail(error);
+      throw error;
+    });
+    this.capturePromise.catch(() => {});
+    return this.capturePromise;
+  }
+
+  start() {
+    if (this.terminal) return Promise.resolve();
+    if (this.startPromise) return this.startPromise;
+    this.activated = true;
+    this.setState('starting');
+    this.startPromise = (async () => {
+      try {
+        await this.prepare();
+        if (!this.terminal) await this.startSegment();
+      } catch {
+        // prepare() has already reported the normalized error.
+      }
+    })();
+    return this.startPromise;
+  }
+
+  routeFrame(frame) {
+    if (this.terminal || !(frame instanceof ArrayBuffer) || frame.byteLength === 0) return;
+    const segment = this.segment;
+    if (segment && this.segmentAcceptingAudio && !segment.stopRequested && !segment.terminal) {
+      segment.handleFrame(frame);
+      return;
+    }
+    const limit = this.activated ? MAX_BUFFERED_AUDIO_BYTES : MAX_PRE_ROLL_AUDIO_BYTES;
+    if (frame.byteLength > limit || (this.activated && this.transitionBytes + frame.byteLength > limit)) {
+      this.fail(new Error('语音识别连接超时，请重试'));
+      return;
+    }
+    while (this.transitionFrames.length > 0 && this.transitionBytes + frame.byteLength > limit) {
+      this.transitionBytes -= this.transitionFrames.shift().byteLength;
+    }
+    this.transitionFrames.push(frame);
+    this.transitionBytes += frame.byteLength;
+  }
+
+  routeLevel(level) {
+    if (this.terminal) return;
+    if (this.segment && !this.segment.stopRequested && !this.segment.terminal) {
+      this.segment.publishAudioLevel(level);
+    }
+    this.onAudioLevel(normalizeAudioLevel(level));
+  }
+
+  async startSegment() {
+    if (this.terminal || this.stopping) return;
+    const segment = this.createSegment({
+      createSession: this.options.createSession,
+      createWebSocket: this.options.createWebSocket,
+      resolveWebSocketURL: this.options.resolveWebSocketURL,
+      // Capture belongs to the continuous controller. A segment's stop only
+      // closes its upstream session; physical capture keeps buffering PCM for
+      // the next segment.
+      createCapture: async () => ({ stop: async () => {} }),
+      onState: (state) => {
+        if (this.segment !== segment || this.terminal) return;
+        if (state === 'complete' && this.continuing) return;
+        if (state === 'recording') {
+          this.segmentAcceptingAudio = true;
+          this.drainTransitionFrames(segment);
+          this.restarting = false;
+          this.segmentRetryCount = 0;
+        } else if (state === 'finalizing' || state === 'complete' || state === 'error') {
+          this.segmentAcceptingAudio = false;
+        }
+        this.setState(state);
+      },
+      onPartial: (text) => {
+        if (this.segment === segment && !this.terminal) this.onPartial(text);
+      },
+      onAudioLevel: () => {},
+      onDurationWarning: (details) => {
+        if (this.segment === segment && !this.terminal) this.onDurationWarning(details);
+      },
+      onDurationLimit: (details) => {
+        if (this.segment !== segment || this.terminal) return;
+        // Do not continue a quiet boundary: it would just open another idle
+        // provider session. Continuous segmentation is only for ongoing speech.
+        this.continuing = Boolean(details?.hadRecentInput);
+        this.onDurationLimit(details);
+      },
+      onIdleWarning: (details) => {
+        if (this.segment === segment && !this.terminal) this.onIdleWarning(details);
+      },
+      onIdleResumed: () => {
+        if (this.segment === segment && !this.terminal) this.onIdleResumed();
+      },
+      onFinal: (text, details) => this.handleSegmentFinal(segment, text, details),
+      onError: (error, transcript, details) => this.handleSegmentError(segment, error, transcript, details),
+    });
+    this.segment = segment;
+    this.segmentAcceptingAudio = false;
+    await segment.start();
+  }
+
+  drainTransitionFrames(segment) {
+    if (this.segment !== segment || this.terminal || !this.segmentAcceptingAudio) return;
+    for (const frame of this.transitionFrames) segment.handleFrame(frame);
+    this.transitionFrames = [];
+    this.transitionBytes = 0;
+  }
+
+  handleSegmentFinal(segment, text, details = {}) {
+    if (this.segment !== segment || this.terminal) return;
+    const shouldContinue = this.continuing
+      && details.reason === 'duration_limit'
+      && !this.stopping;
+    this.continuing = false;
+    if (shouldContinue) {
+      this.onSegmentFinal(text, details);
+      this.segment = null;
+      this.segmentAcceptingAudio = false;
+      this.restarting = true;
+      // Let the server return from its final-event handler and release the
+      // per-user admission slot before opening the next WebSocket.
+      globalThis.setTimeout(() => {
+        if (!this.terminal && !this.stopping) void this.startSegment();
+      }, 0);
+      return;
+    }
+    this.segment = null;
+    this.segmentAcceptingAudio = false;
+    this.terminal = true;
+    void this.stopPhysicalCapture();
+    this.removeLifecycleListeners();
+    this.setState('complete');
+    this.onFinal(text, details);
+  }
+
+  handleSegmentError(segment, error, transcript, details = {}) {
+    if (this.segment !== segment || this.terminal) return;
+    this.segment = null;
+    this.segmentAcceptingAudio = false;
+    if (error?.code === 'session_active' && this.restarting && !this.stopping && this.segmentRetryCount < 5) {
+      this.segmentRetryCount += 1;
+      // Final delivery and limiter release happen on separate peers. Retry the
+      // one-user admission race briefly while retaining transition PCM.
+      globalThis.setTimeout(() => {
+        if (!this.terminal && !this.stopping) void this.startSegment();
+      }, 100);
+      return;
+    }
+    this.continuing = false;
+    this.restarting = false;
+    this.terminal = true;
+    void this.stopPhysicalCapture();
+    this.removeLifecycleListeners();
+    this.setState('error');
+    this.onError(error, transcript, details);
+  }
+
+  async stopPhysicalCapture() {
+    const capture = this.capture;
+    this.capture = null;
+    if (capture?.stop) await capture.stop();
+  }
+
+  async stop(reason = 'user_stop') {
+    if (this.terminal || this.stopping) return;
+    this.stopping = true;
+    // Flush audio before instructing the provider to finalize the segment.
+    await this.stopPhysicalCapture();
+    if (this.terminal) return;
+    if (this.segment) {
+      await this.segment.stop(reason);
+      return;
+    }
+    this.terminal = true;
+    this.removeLifecycleListeners();
+    this.setState('complete');
+    // A user can stop during the short handoff after a segment final, before
+    // its replacement WebSocket exists. Release the composer in that gap too.
+    this.onFinal('', { reason });
+  }
+
+  cancel() {
+    if (this.terminal) return;
+    this.terminal = true;
+    this.stopping = true;
+    this.segment?.cancel();
+    this.segment = null;
+    this.segmentAcceptingAudio = false;
+    void this.stopPhysicalCapture();
+    this.transitionFrames = [];
+    this.transitionBytes = 0;
+    this.removeLifecycleListeners();
+    this.setState('cancelled');
+  }
+
+  fail(error) {
+    if (this.terminal) return;
+    this.terminal = true;
+    this.segment?.cancel();
+    this.segment = null;
+    this.segmentAcceptingAudio = false;
+    void this.stopPhysicalCapture();
+    this.removeLifecycleListeners();
+    this.setState('error');
+    this.onError(error instanceof Error ? error : new Error('语音识别失败'), '', { reason: 'error' });
+  }
+}
+
 export function createStreamingSTTSession(options) {
-  return new StreamingSTTSession(options);
+  return new ContinuousStreamingSTTSession(options);
 }

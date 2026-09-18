@@ -345,6 +345,45 @@ describe('ChatComposer', () => {
       .toContain('已保存到输入框，可继续录音');
   });
 
+  it('keeps the voice session active while committing an auto-continued segment', async () => {
+    let callbacks;
+    const onVoiceFinal = vi.fn();
+    await renderComposer({
+      onVoiceFinal,
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+      },
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks.onState('recording');
+      callbacks.onSegmentFinal('第一段');
+    });
+
+    expect(onVoiceFinal).toHaveBeenCalledWith('第一段', expect.objectContaining({
+      baseValue: '', start: 0, end: 0,
+    }));
+    expect(container.querySelector('button[aria-label="停止语音输入"]')).not.toBeNull();
+    expect(container.querySelector('.v3-composer-hint')?.textContent)
+      .toContain('已保存本段，正在继续录音');
+
+    await act(async () => {
+      callbacks.onFinal('第二段');
+    });
+    expect(onVoiceFinal).toHaveBeenLastCalledWith('第二段', expect.objectContaining({
+      baseValue: '第一段', start: 3, end: 3,
+    }));
+  });
+
   it('keeps the visual countdown current without announcing every second', async () => {
     let callbacks;
     await renderComposer({
@@ -624,6 +663,52 @@ describe('ChatComposer', () => {
       }));
     });
     expect(voiceSession.stop).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('releases a lifecycle-cancelled pre-roll so a later tap starts a new session', async () => {
+    vi.useFakeTimers();
+    const callbacks = [];
+    const sessions = [];
+    const createVoiceSession = vi.fn((options) => {
+      callbacks.push(options);
+      const session = {
+        prepare: vi.fn().mockResolvedValue(undefined),
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn(),
+        cancel: vi.fn(),
+      };
+      sessions.push(session);
+      return session;
+    });
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 35,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+      callbacks[0].onState('cancelled');
+    });
+    expect(sessions[0].prepare).toHaveBeenCalledTimes(1);
+    expect(sessions[0].start).not.toHaveBeenCalled();
+
+    await act(async () => {
+      voiceButton.click();
+      await Promise.resolve();
+    });
+
+    expect(createVoiceSession).toHaveBeenCalledTimes(2);
+    expect(sessions[1].prepare).toHaveBeenCalledTimes(1);
+    expect(sessions[1].start).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 
