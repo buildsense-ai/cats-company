@@ -280,6 +280,9 @@ services:
   web:
     image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-web:${IMAGE_TAG}"
     restart: unless-stopped
+    # nginx exits as soon as it receives SIGTERM, but bound the grace anyway
+    # so a stuck stop can never hold back the rest of the rollout.
+    stop_grace_period: 2s
     # Start order only: nginx resolves `server` through the Docker DNS
     # resolver on every request (deploy/nginx/nginx.conf), so waiting for
     # API health here would only delay the web recreate and stretch the

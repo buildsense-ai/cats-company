@@ -101,6 +101,15 @@ class DeployProdWorkflowTest(unittest.TestCase):
         self.assertIn('wait_for_health "api" "$health_api"', script)
         self.assertIn('wait_for_health "web" "$health_web"', script)
 
+    def test_prod_deploy_waits_for_the_dreamina_worker(self):
+        # A one-shot `compose ps` snapshot raced the worker's boot once the
+        # rest of the rollout got fast enough (the 2026-09-18 deploy failed
+        # and rolled back). The worker now gets a bounded wait.
+        script = (ROOT / "deploy/prod/remote-deploy.sh").read_text(encoding="utf-8")
+        self.assertIn("wait_for_worker_health()", script)
+        self.assertIn("wait_for_worker_health dreamina-worker", script)
+        self.assertNotIn('echo "Dreamina worker is not healthy"', script)
+
     def test_deploy_hands_the_shimo_session_mount_to_the_worker_user(self):
         # The Shimo worker image runs as uid/gid 1000.  When the deploy only
         # ran `mkdir`, the container could read the session mount but never

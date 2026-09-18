@@ -41,6 +41,28 @@ wait_for_health() {
   return 1
 }
 
+wait_for_worker_health() {
+  local name="$1"
+  local attempts="${2:-30}"
+  local delay="${3:-2}"
+
+  for attempt in $(seq 1 "$attempts"); do
+    local status_json
+    status_json="$(compose -f "$compose_file" --env-file "$env_file" ps --format json "$name" 2>/dev/null || true)"
+    if printf '%s' "$status_json" | grep -q '"Health":"healthy"'; then
+      echo "$name worker health ok"
+      return 0
+    fi
+
+    echo "waiting for $name worker health ($attempt/$attempts)"
+    sleep "$delay"
+  done
+
+  echo "$name worker is not healthy after $attempts attempts" >&2
+  compose -f "$compose_file" --env-file "$env_file" logs --tail 100 "$name" >&2 || true
+  return 1
+}
+
 if [ -z "$revision" ]; then
   echo "usage: $0 <stack-root> <revision>" >&2
   exit 1
@@ -208,11 +230,9 @@ if printf '%s' "$compose_profiles" | tr ',' '\n' | grep -qx 'shimo'; then
   wait_for_health "Shimo worker" "http://127.0.0.1:${shimo_worker_port:-26070}/healthz"
 fi
 
-worker_health="$(compose -f "$compose_file" --env-file "$env_file" ps --format json dreamina-worker 2>/dev/null || true)"
-if ! printf '%s' "$worker_health" | grep -q '"Health":"healthy"'; then
-  echo "Dreamina worker is not healthy" >&2
-  compose -f "$compose_file" --env-file "$env_file" logs --tail 100 dreamina-worker >&2 || true
-  exit 1
-fi
+# The worker boots slower than the rest of the stack now that the rollout is
+# fast; a single `ps` snapshot raced its health check and failed the deploy
+# (2026-09-18). Wait for it with the same bounded pattern as the others.
+wait_for_worker_health dreamina-worker
 
 echo "deployed revision $revision to $root"
