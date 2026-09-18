@@ -1637,11 +1637,27 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // deleting the bot record.
 // It is deliberately best-effort and idempotent; a failed destroy remains
 // visible as delete_failed for operator retry and never silently disappears.
+//
+// Workers that were already past recovery when a payment arrived are rebuilt
+// afterwards: a renewal cannot revive a destroy that is already running, so
+// the credit granted by that payment is spent on a replacement instance.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 	if !h.opMu.TryLock() {
 		return
 	}
-	defer h.opMu.Unlock()
+	rebuildOwners := h.sweepExpiredWorkersLocked(now)
+	h.opMu.Unlock()
+	// Rebuilding provisions a new worker through HandleCreate, which takes the
+	// same gate: it must run after the sweep has released it.
+	for _, uid := range rebuildOwners {
+		h.restoreCloudWorkerAfterDeletion(uid)
+	}
+}
+
+// sweepExpiredWorkersLocked performs the lifecycle transitions documented on
+// SweepExpiredWorkers and returns the owners that need a replacement worker.
+// The caller owns h.opMu.
+func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	started := time.Now()
 	store, ok := h.credits.(interface {
 		ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorkerLifecycle, error)
@@ -1650,17 +1666,19 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 		MarkCloudWorkerLifecycleDeleted(int64, string) error
 	})
 	if !ok || h.destroyScript == "" {
-		return
+		return nil
 	}
 	items, err := store.ListCloudWorkerLifecycleDue(now, 100)
 	if err != nil {
 		log.Printf("[cloud-worker] lifecycle sweep list failed: %v", err)
-		return
+		return nil
 	}
 	if len(items) == 0 {
-		return
+		return nil
 	}
 	markedPending, claimedCount, deleted, failed := 0, 0, 0, 0
+	var rebuildOwners []int64
+	queuedRebuild := map[int64]bool{}
 	for _, item := range items {
 		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") {
 			action := "suspend"
@@ -1708,8 +1726,56 @@ func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
 			continue
 		}
 		deleted++
+		if !queuedRebuild[item.OwnerUID] {
+			queuedRebuild[item.OwnerUID] = true
+			rebuildOwners = append(rebuildOwners, item.OwnerUID)
+		}
 	}
 	log.Printf("[cloud-worker] lifecycle sweep scanned=%d pending=%d claimed=%d deleted=%d failed=%d duration=%s", len(items), markedPending, claimedCount, deleted, failed, time.Since(started).Round(time.Millisecond))
+	return rebuildOwners
+}
+
+// restoreCloudWorkerAfterDeletion provisions a replacement instance for an
+// owner whose worker was permanently deleted while a payment was granting a
+// fresh provisioning credit (the destroy had already been claimed, so the
+// renewal could not rescue the instance). Without the rebuild the buyer keeps
+// paying for a machine that no longer exists.
+//
+// An available credit is the only ticket accepted here: the shared rollout
+// quota is a one-time grant and must never silently mint a new free instance
+// on every expiry. Runs outside h.opMu because HandleCreate acquires it.
+func (h *CloudWorkerHandler) restoreCloudWorkerAfterDeletion(uid int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[cloud-worker] CRITICAL rebuild after deletion panicked uid=%d: %v", uid, r)
+		}
+	}()
+	if h == nil || uid <= 0 {
+		return
+	}
+	_, available := h.creditInfo(uid)
+	if available <= 0 {
+		return
+	}
+	lifecycleStore, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+	})
+	if !ok {
+		log.Printf("[cloud-worker] rebuild check uid=%d skipped: lifecycle store unavailable", uid)
+		return
+	}
+	lifecycles, err := lifecycleStore.ListCloudWorkerLifecycles(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] rebuild check uid=%d failed: %v", uid, err)
+		return
+	}
+	if len(lifecycles) > 0 {
+		// Another instance (or a deletion still in flight) is attached to this
+		// owner; the credit stays available for whenever it is needed.
+		return
+	}
+	log.Printf("[cloud-worker] rebuilding paid worker after deletion uid=%d available_credits=%d", uid, available)
+	h.AutoProvisionForOwner(uid)
 }
 
 // HandleRollback handles POST /api/cloud-workers/{name}/rollback — swap Part A

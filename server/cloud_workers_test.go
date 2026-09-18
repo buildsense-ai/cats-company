@@ -83,6 +83,8 @@ func TestParseCloudWorkerRenewalResultReportsAutoRenewReconciliation(t *testing.
 type cloudWorkerTestStore struct {
 	store.Store
 	ownerBots         []map[string]interface{}
+	listBotsCalls     int
+	listBotsErr       error
 	deletedBots       []int64
 	tenantNames       map[int64]string
 	nextUID           int64
@@ -155,6 +157,10 @@ func (s *cloudWorkerTestStore) GetBotDefinition(botUID int64) (*types.BotDefinit
 }
 
 func (s *cloudWorkerTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
+	s.listBotsCalls++
+	if s.listBotsErr != nil {
+		return nil, s.listBotsErr
+	}
 	return s.ownerBots, nil
 }
 

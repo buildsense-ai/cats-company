@@ -925,6 +925,62 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		}
 	}
 
+	// A paid renewal must extend the buyer's existing worker instead of
+	// granting a second provisioning credit: the machine the package covers
+	// already exists, and a duplicate credit would entitle a second one. The
+	// credit only comes back when the worker is past recovery — the destroy
+	// already started — so a payment that lands during that window can still
+	// fund a replacement instance.
+	tierWorker, err := db.CreateUser(&types.User{
+		Username: "commercial-tier-worker", Email: "commercial-tier-worker@example.test", DisplayName: "Tier Worker",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-tier-worker-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create tier worker: %v", err)
+	}
+	// Simulate the credit already spent on that worker.
+	if _, err := db.db.Exec(`UPDATE cloud_worker_credits SET state = 'consumed' WHERE uid = $1 AND state = 'available'`, paidUID); err != nil {
+		t.Fatalf("consume tier cloud-worker credit: %v", err)
+	}
+	if _, err := db.db.Exec(`
+		INSERT INTO cloud_worker_lifecycles(worker_uid, owner_uid, tenant_name, package_expires_at, delete_after, state)
+		VALUES ($1, $2, 'tier-tenant', $3, $4, 'active')`, tierWorker, paidUID, renewalExpiresAt, renewalExpiresAt.Add(15*24*time.Hour)); err != nil {
+		t.Fatalf("seed tier lifecycle: %v", err)
+	}
+	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERWORKERDUP", "tier_worker_dup_request", "tier-worker-dup-event")
+	var dupExpiresAt time.Time
+	if err := db.db.QueryRow(`SELECT expires_at FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, "CCTIERWORKERDUP").Scan(&dupExpiresAt); err != nil {
+		t.Fatalf("read duplicate renewal entitlement: %v", err)
+	}
+	var tierLifecycleExpiry time.Time
+	if err := db.db.QueryRow(`SELECT package_expires_at FROM cloud_worker_lifecycles WHERE worker_uid = $1`, tierWorker).Scan(&tierLifecycleExpiry); err != nil {
+		t.Fatalf("read tier lifecycle: %v", err)
+	}
+	if !tierLifecycleExpiry.Equal(dupExpiresAt) {
+		t.Fatalf("renewal did not extend the existing worker: lifecycle=%s entitlement=%s", tierLifecycleExpiry.UTC().Format(time.RFC3339Nano), dupExpiresAt.UTC().Format(time.RFC3339Nano))
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 0 {
+		t.Fatalf("renewal of an existing worker granted a duplicate credit: count=%d err=%v", availableCredits, err)
+	}
+	// Once the sweep has claimed the destroy, the instance cannot be revived.
+	// The next payment must hand back a credit for a replacement worker.
+	if _, err := db.db.Exec(`UPDATE cloud_worker_lifecycles SET state = 'delete_running' WHERE worker_uid = $1`, tierWorker); err != nil {
+		t.Fatalf("mark tier lifecycle unrecoverable: %v", err)
+	}
+	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERWORKERREBUILD", "tier_worker_rebuild_request", "tier-worker-rebuild-event")
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 1 {
+		t.Fatalf("payment during an unrecoverable destroy must provide a rebuild credit: count=%d err=%v", availableCredits, err)
+	}
+	// An unspent credit already is the rebuild ticket: paying again while it
+	// waits must not stack a second one.
+	if _, err := db.db.Exec(`UPDATE cloud_worker_lifecycles SET state = 'deleted' WHERE worker_uid = $1`, tierWorker); err != nil {
+		t.Fatalf("finish tier lifecycle deletion: %v", err)
+	}
+	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERWORKERHOLD", "tier_worker_hold_request", "tier-worker-hold-event")
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM cloud_worker_credits WHERE uid = $1 AND state = 'available' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, paidUID).Scan(&availableCredits); err != nil || availableCredits != 1 {
+		t.Fatalf("an unspent rebuild credit must not be duplicated: count=%d err=%v", availableCredits, err)
+	}
+
 	personalInvite := &types.CommercialInviteCode{Code: "TIER-PERSONAL", PlanID: personalID, MaxRedemptions: 1, CloudWorkerCredits: 2}
 	if _, err := db.CreateCommercialInviteCode(personalInvite); err != nil {
 		t.Fatalf("create personal invite: %v", err)
