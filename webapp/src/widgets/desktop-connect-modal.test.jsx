@@ -1,5 +1,6 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Simulate } from 'react-dom/test-utils';
 import DesktopConnectModal, { resolveConnectedDesktopDevice } from './desktop-connect-modal';
 
 vi.mock('../api', () => ({
@@ -9,6 +10,7 @@ vi.mock('../api', () => ({
     getAgents: vi.fn(),
     getCatsCoDesktopReleases: vi.fn(),
     getDevices: vi.fn(),
+    redeemBotInviteCode: vi.fn(),
     getDeviceAudit: vi.fn(),
     unlinkDevice: vi.fn(),
   },
@@ -31,6 +33,7 @@ describe('DesktopConnectModal', () => {
     api.getDevices.mockResolvedValue({ devices: [] });
     api.getDeviceAudit.mockResolvedValue({ events: [] });
     api.unlinkDevice.mockReset();
+    api.redeemBotInviteCode.mockReset().mockResolvedValue({});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -65,6 +68,38 @@ describe('DesktopConnectModal', () => {
     const moreDownloads = container.querySelector('.catsco-download-more');
     expect(moreDownloads.firstChild.textContent).toBe('其他系统版本');
     expect(moreDownloads.lastElementChild?.tagName).toBe('svg');
+  });
+
+  test('puts the assistant guide and real invite redemption in the unified modal', async () => {
+    const onDataChanged = vi.fn();
+    window.addEventListener('cc:data-changed', onDataChanged);
+    await act(async () => {
+      root.render(<DesktopConnectModal userId="38" onClose={vi.fn()} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('开始使用 AI 助手');
+    expect(container.textContent).toContain('添加云端 AI 助手');
+    expect(container.textContent).toContain('激活本地 AI 助手');
+    await act(async () => {
+      container.querySelector('.catsco-assistant-download-action').click();
+    });
+    expect(container.querySelector('#catsco-desktop-downloads')).not.toBeNull();
+    const input = container.querySelector('[aria-label="助手邀请码"]');
+    await act(async () => {
+      Simulate.change(input, { target: { value: 'join-123' } });
+    });
+    await act(async () => {
+      Simulate.submit(input.closest('form'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.redeemBotInviteCode).toHaveBeenCalledWith('JOIN-123');
+    expect(onDataChanged).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('云端助手已添加，现在可在新任务中选择它。');
+    window.removeEventListener('cc:data-changed', onDataChanged);
   });
 
   test('keeps connected device management in the unified modal', async () => {

@@ -350,6 +350,11 @@ describe('mobile model context wiring', () => {
     expect(tinodeWebSource).toContain("onOpenDownload={() => openDesktopModal('download')}");
     expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");
   });
+
+  it('does not automatically open the desktop modal while checking device status', () => {
+    expect(tinodeWebSource).not.toContain('allowDailyPrompt');
+    expect(tinodeWebSource).not.toContain('desktopPromptStorageKey');
+  });
 });
 
 describe('LocalAssistantBar model selector', () => {

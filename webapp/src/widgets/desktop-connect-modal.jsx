@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Check, CheckCircle2, ChevronDown, ChevronUp, Cloud, Download, Laptop, Loader2, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
+import { describeBotInviteCodeError } from '../utils/bot-invite-error';
 import PwaDownloadLink from './pwa-download-link';
 import {
   FALLBACK_RELEASE_VERSION,
@@ -87,6 +88,10 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
   const [preferredDesktopDeviceId, setPreferredDesktopDeviceId] = useState(() => readPreferredDesktopDeviceId(userId));
   const [selectingDesktopDevice, setSelectingDesktopDevice] = useState(false);
   const [launchDetected, setLaunchDetected] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [redeemingInvite, setRedeemingInvite] = useState(false);
+  const [inviteError, setInviteError] = useState('');
+  const [inviteSuccess, setInviteSuccess] = useState(false);
   const sessionRef = useRef(null);
   const connectedRef = useRef(false);
   const launchDetectedRef = useRef(false);
@@ -353,6 +358,25 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
     }
   };
 
+  const handleRedeemInvite = async (event) => {
+    event.preventDefault();
+    const code = inviteCode.trim();
+    if (!code || redeemingInvite) return;
+    setRedeemingInvite(true);
+    setInviteError('');
+    setInviteSuccess(false);
+    try {
+      await api.redeemBotInviteCode(code);
+      setInviteCode('');
+      setInviteSuccess(true);
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (requestError) {
+      setInviteError(describeBotInviteCodeError(requestError));
+    } finally {
+      setRedeemingInvite(false);
+    }
+  };
+
   const handleUnlinkDevice = async (deviceId) => {
     setError('');
     try {
@@ -504,6 +528,56 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
         </div>
 
         <div className="catsco-connect-body">
+          <section className="catsco-assistant-guide" aria-labelledby="catsco-assistant-guide-title">
+            <div className="catsco-section-heading">
+              <div>
+                <h4 id="catsco-assistant-guide-title" className="catsco-download-section-title">开始使用 AI 助手</h4>
+                <p>添加云端助手，或连接这台电脑上的本地助手。</p>
+              </div>
+            </div>
+            <div className="catsco-assistant-guide-methods">
+              <section className="catsco-assistant-guide-method" aria-labelledby="catsco-cloud-assistant-title">
+                <Cloud size={18} aria-hidden="true" />
+                <div>
+                  <h5 id="catsco-cloud-assistant-title">添加云端 AI 助手</h5>
+                  <p>输入助手所有者或官方分享的邀请码，即可开始对话和任务。</p>
+                </div>
+                <form className="catsco-assistant-invite-form" onSubmit={handleRedeemInvite}>
+                  <input
+                    aria-label="助手邀请码"
+                    autoCapitalize="off"
+                    autoComplete="off"
+                    placeholder="输入助手邀请码"
+                    spellCheck={false}
+                    value={inviteCode}
+                    onChange={(event) => { setInviteError(''); setInviteSuccess(false); setInviteCode(event.target.value.toUpperCase()); }}
+                    onKeyDown={(event) => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }}
+                  />
+                  <button type="submit" className="oc-btn oc-btn-default" disabled={redeemingInvite || !inviteCode.trim()}>
+                    {redeemingInvite ? '添加中…' : '添加助手'}
+                  </button>
+                </form>
+                {inviteError && <p className="catsco-assistant-invite-feedback is-error" role="alert">{inviteError}</p>}
+                {inviteSuccess && <p className="catsco-assistant-invite-feedback is-success" role="status">云端助手已添加，现在可在新任务中选择它。</p>}
+              </section>
+              <section className="catsco-assistant-guide-method" aria-labelledby="catsco-local-assistant-title">
+                <Laptop size={18} aria-hidden="true" />
+                <div>
+                  <h5 id="catsco-local-assistant-title">激活本地 AI 助手</h5>
+                  <p>下载并登录 CatsCo 桌面端，保持电脑联网，即可让助手在这台电脑上工作。</p>
+                </div>
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-default catsco-assistant-download-action"
+                  aria-controls="catsco-desktop-downloads"
+                  onClick={() => setShowDownloads(true)}
+                >
+                  下载桌面端 <Download size={14} aria-hidden="true" />
+                </button>
+              </section>
+            </div>
+          </section>
+
           <div className="catsco-connect-summary">
             {connectionReady ? <CheckCircle2 size={20} color="#0BA36D" /> : busy ? <Loader2 className="catsco-spin" size={20} /> : <Laptop size={20} />}
             <div className="catsco-connect-copy">
@@ -576,7 +650,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
           </div>
 
           {showDownloads && (
-            <div className="catsco-desktop-download-section">
+            <div id="catsco-desktop-downloads" className="catsco-desktop-download-section">
               <div className="catsco-section-heading">
                 <h4 className="catsco-download-section-title">可下载版本</h4>
                 <span className="catsco-section-meta">v{releaseVersion(desktopRelease)}</span>
