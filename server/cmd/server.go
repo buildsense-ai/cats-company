@@ -460,6 +460,7 @@ func main() {
 	artifactResultHandler := server.NewArtifactResultHandler(hub)
 	artifactTaskHandler := server.NewArtifactTaskHandler(hub)
 	artifactRuntimeHandler := server.NewArtifactRuntimeHandler(hub, db)
+	artifactLaunchHandler := server.NewArtifactLaunchHandlerFromEnv()
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	imageUpscaleTaskStore, _ := db.(store.ImageUpscaleTaskStore)
 	imageUpscaleHandler := server.NewImageUpscaleProxyHandlerFromEnv(imageUpscaleTaskStore)
@@ -523,7 +524,6 @@ func main() {
 		EnforceUIDs:    relayCommercialEnforceUIDs,
 		Syncer:         commercialRelaySyncer,
 	})
-	relayCommercialHandler.SetCloudWorkerRenewer(cloudWorkerHandler.RenewForOwner)
 	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
 	commercialOpsHandler.SetCloudWorkerAdmin(cloudWorkerHandler)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
@@ -810,6 +810,7 @@ func main() {
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
 	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
+	mux.HandleFunc("POST /api/artifacts/launch", jwtAuthWithDB(artifactLaunchHandler.HandleLaunch))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("POST /api/agents/{uid}/knowledge/handoff", jwtAuthWithDB(agentHandler.IssueKnowledgeWikiHandoff))
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/manifest", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiManifest, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiManifest)))

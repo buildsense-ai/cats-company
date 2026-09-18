@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>正在确认身份</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#0f1115; color:#e8ecf3;
+         font:16px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  main { width:min(460px, 88vw); padding:28px; background:#171a21; border:1px solid #2a2f3a; border-radius:12px; }
+  h1 { font-size:19px; margin:0 0 10px; }
+  p { color:#9aa4b2; margin:0 0 8px; }
+  a { color:#58a6ff; }
+  .actions a { display:block; padding:12px 16px; border-radius:9px; text-align:center; margin:8px 0; text-decoration:none; }
+  .primary { background:#1f6feb; color:#fff; }
+  .secondary { border:1px solid #2a2f3a; color:#e8ecf3; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">正在确认你的身份…</h1>
+  <p id="detail">即将返回应用。如果没有自动跳转，请使用下面的按钮。</p>
+  <div class="actions" id="actions" hidden>
+    <a class="primary" id="login" href="#">登录 CatsCompany</a>
+    <a class="secondary" id="guest" href="#">以访客身份继续</a>
+  </div>
+</main>
+
+<script>
+// Handshake page. It lives on the platform origin, so the browser's existing
+// CatsCompany login state is available here; that is the whole reason the
+// automatic identity attempt comes through this page. Nothing is trusted from
+// the URL beyond an application id, a return path and the gateway origin, and
+// the returned code is consumed by the gateway, not here.
+(function () {
+  var params = new URLSearchParams(location.search);
+  var app = params.get('app') || '';
+  var next = params.get('next') || '';
+  var gateway = params.get('gw') || '';
+  var tokenKey = 'oc_token';
+
+  var title = document.getElementById('title');
+  var detail = document.getElementById('detail');
+  var actions = document.getElementById('actions');
+  var loginLink = document.getElementById('login');
+  var guestLink = document.getElementById('guest');
+
+  function isSafeApp(value) { return /^[a-z][a-z0-9_-]{0,47}$/.test(value); }
+  function gatewayOrigin(value) {
+    try {
+      var url = new URL(value);
+      return url.protocol === 'https:' ? url.origin : '';
+    } catch (error) { return ''; }
+  }
+  // Only paths inside the requesting application may be returned to.
+  function safeNext(value) {
+    if (value === '/' + app || value.indexOf('/' + app + '/') === 0) return value;
+    return '/' + app + '/';
+  }
+
+  function showChoice(message) {
+    var origin = gatewayOrigin(gateway);
+    title.textContent = '无法自动确认身份';
+    detail.textContent = message;
+    actions.hidden = false;
+    var loginNext = origin ? origin + '/_auth/start?app=' + encodeURIComponent(app) + '&next=' + encodeURIComponent(safeNext(next)) : location.href;
+    loginLink.href = loginNext;
+    if (origin) {
+      guestLink.hidden = false;
+      guestLink.href = origin + safeNext(next) + (safeNext(next).indexOf('?') >= 0 ? '&' : '?') + 'identity=guest';
+    } else {
+      guestLink.hidden = true;
+    }
+  }
+
+  if (!isSafeApp(app)) {
+    title.textContent = '参数无效';
+    detail.textContent = '缺少或非法的应用标识，请从 CatsCompany 侧边栏重新打开。';
+    return;
+  }
+  var loginReturn = location.pathname + location.search;
+  loginLink.href = '/login?next=' + encodeURIComponent(loginReturn);
+
+  var token = '';
+  try { token = localStorage.getItem(tokenKey) || ''; } catch (error) { token = ''; }
+  if (!token) {
+    detail.textContent = '检测到尚未登录，正在前往登录页面…';
+    location.replace('/login?next=' + encodeURIComponent(loginReturn));
+    return;
+  }
+
+  fetch('/api/artifacts/launch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ app: app, topic_id: params.get('topic') || '' }),
+  }).then(function (response) {
+    if (response.status === 401) {
+      try { localStorage.removeItem(tokenKey); } catch (error) {}
+      location.replace('/login?next=' + encodeURIComponent(loginReturn));
+      return null;
+    }
+    if (!response.ok) {
+      return response.json().catch(function () { return {}; }).then(function (body) {
+        showChoice(body && body.error === 'artifact_app_not_found'
+          ? '这个应用没有在 Artifact 网关注册，或者已经下架。'
+          : 'Artifact 服务暂时不可用。');
+        return null;
+      });
+    }
+    return response.json();
+  }).then(function (result) {
+    if (!result || !result.launch_url) return;
+    location.replace(result.launch_url);
+  }).catch(function () {
+    showChoice('网络异常，未能完成身份确认。');
+  });
+})();
+</script>
+</body>
+</html>
