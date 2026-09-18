@@ -267,8 +267,14 @@ services:
       - "/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro"
       - "${PROD_STACK_ROOT}/data/dreamina-home:/home/dreamina"
       - "${PROD_STACK_ROOT}/data/dreamina-worker:/var/lib/dreamina-worker"
+    # Bound the stop phase: the worker ignores SIGTERM until the default 10s
+    # grace expires, and containers only start after every recreate finished
+    # creating, so this delay held back the whole `up -d` phase (2026-09-18).
+    stop_grace_period: 2s
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      start_interval: 2s
+      start_period: 30s
       interval: 15s
       timeout: 5s
       retries: 10
@@ -310,6 +316,10 @@ services:
   web:
     image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-web:${IMAGE_TAG}"
     restart: unless-stopped
+    # docker sends SIGQUIT (the image's STOPSIGNAL): nginx drains open
+    # connections and the default 10s grace was consumed on every deploy,
+    # holding back the whole `up -d` phase. Bound the drain to 2s.
+    stop_grace_period: 2s
     # Start order only: nginx resolves `server` through the Docker DNS
     # resolver on every request (deploy/nginx/nginx.conf), so waiting for
     # API health here would only delay the web recreate and stretch the

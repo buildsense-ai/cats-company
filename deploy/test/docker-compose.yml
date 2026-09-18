@@ -280,6 +280,10 @@ services:
   web:
     image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-web:${IMAGE_TAG}"
     restart: unless-stopped
+    # docker sends SIGQUIT (the image's STOPSIGNAL): nginx drains open
+    # connections and the default 10s grace was consumed on every deploy,
+    # holding back the whole `up -d` phase. Bound the drain to 2s.
+    stop_grace_period: 2s
     # Start order only: nginx resolves `server` through the Docker DNS
     # resolver on every request (deploy/nginx/nginx.conf), so waiting for
     # API health here would only delay the web recreate and stretch the
