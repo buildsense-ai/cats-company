@@ -348,8 +348,15 @@ async function uploadRawFile(path, file, { authToken = '' } = {}) {
       UPLOAD_GATEWAY_RETRY_STATUSES.has(response.status)
       && transportRetries < UPLOAD_TRANSPORT_RETRY_DELAYS_MS.length
     ) {
-      // The gateway answered on behalf of a stack that is still restarting;
-      // the request never reached the API, so retrying cannot duplicate work.
+      // The gateway answered on behalf of a stack that is still restarting.
+      // Retrying beats failing the file outright: in rare cases (a cut
+      // connection, a slow upstream) an upload that was already stored may
+      // be stored again, but a duplicate beats a vanished attachment.
+      try {
+        await response.body?.cancel?.();
+      } catch {
+        // Cancelling the rejected body is best effort only.
+      }
       await waitForUploadRetry(UPLOAD_TRANSPORT_RETRY_DELAYS_MS[transportRetries]);
       transportRetries += 1;
       continue;

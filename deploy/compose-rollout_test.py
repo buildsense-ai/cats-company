@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -25,7 +26,15 @@ class ComposeRolloutTest(unittest.TestCase):
     def test_web_does_not_wait_for_api_health(self):
         for stack in ("prod", "test"):
             compose = self.compose_text(stack)
-            self.assertNotIn("condition: service_healthy", compose)
+            # Scope the assertion to the web service block: another service
+            # may legitimately gate on health without stretching the rollout.
+            web_block = re.search(r"\n  web:\n(.*?)(?=\n  \S)", compose, re.DOTALL)
+            self.assertIsNotNone(web_block, f"web service missing in deploy/{stack}/docker-compose.yml")
+            self.assertNotIn(
+                "condition: service_healthy",
+                web_block.group(1),
+                f"web must not gate on API health in deploy/{stack}/docker-compose.yml",
+            )
 
 
 if __name__ == "__main__":
