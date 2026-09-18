@@ -20,7 +20,7 @@ function OnboardingPreview() {
   if (assistantStep) return <a href={workspacePreviewUrl}>进入助手引导预览</a>;
   return <>
     <aside className="cc-onboarding-preview-bar" aria-label="本地测试工具">
-      <span>本地引导预览 · 添加与激活均为模拟</span>
+      <span>本地引导预览 · 使用正式工作台流程</span>
       <button type="button" onClick={() => window.location.reload()}>重新体验</button>
       <a href="/register">返回注册页</a>
     </aside>

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, UserPlus, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
+import { describeBotInviteCodeError } from '../utils/bot-invite-error';
 import Avatar from './avatar';
 import CustomSelect from './custom-select';
 import FriendRequest from './friend-request';
@@ -31,18 +32,6 @@ function FriendSearchModeSelect({ value, onValueChange }) {
       ))}
     </CustomSelect>
   );
-}
-
-function botInviteErrorMessage(error) {
-  const message = String(error?.message || '').trim();
-  if (
-    !message
-    || /bot invite code is invalid or expired/i.test(message)
-    || /invalid or unavailable bot invite code/i.test(message)
-  ) {
-    return '邀请码无效或已失效';
-  }
-  return message;
 }
 
 export default function AddFriend({ currentUser, onClose, onSent, initialFocus = 'search' }) {
@@ -153,7 +142,7 @@ export default function AddFriend({ currentUser, onClose, onSent, initialFocus =
       if (onSent) onSent();
       window.dispatchEvent(new Event('cc:data-changed'));
     } catch (e) {
-      setError(botInviteErrorMessage(e));
+      setError(describeBotInviteCodeError(e));
     } finally {
       redeemingInviteRef.current = false;
       setRedeemingInvite(false);
