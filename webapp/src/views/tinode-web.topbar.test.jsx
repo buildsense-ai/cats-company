@@ -16,6 +16,7 @@ import {
   resolveInitialUser,
   resolveDisplayedActiveAgent,
   shouldOpenProfileSettingsDirectly,
+  isWorkspaceAssistantGuideNewUser,
   shouldDeferWorkspaceAssistantGuide,
   shouldShowWorkspaceAssistantGuide,
   workspaceAssistantGuideStorageKey,
@@ -354,13 +355,21 @@ describe('mobile model context wiring', () => {
     expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");
   });
 
-  it('opens the assistant guide once per user without restoring the daily device prompt', () => {
-    const guideKey = workspaceAssistantGuideStorageKey('43');
+  it('opens the assistant guide once for new accounts without restoring the daily device prompt', () => {
+    const cohortStart = '2026-09-18T00:00:00Z';
+    const newUser = { uid: '43', created_at: '2026-09-18T00:00:01Z' };
+    const existingUser = { uid: '44', created_at: '2026-09-17T23:59:59Z' };
+    const guideKey = workspaceAssistantGuideStorageKey(newUser.uid);
     window.localStorage.removeItem(guideKey);
-    expect(shouldShowWorkspaceAssistantGuide('43')).toBe(true);
+
+    expect(isWorkspaceAssistantGuideNewUser(newUser, cohortStart)).toBe(true);
+    expect(isWorkspaceAssistantGuideNewUser(existingUser, cohortStart)).toBe(false);
+    expect(isWorkspaceAssistantGuideNewUser({ uid: '45' }, cohortStart)).toBe(false);
+    expect(shouldShowWorkspaceAssistantGuide(newUser, cohortStart)).toBe(true);
+    expect(shouldShowWorkspaceAssistantGuide(existingUser, cohortStart)).toBe(false);
 
     window.localStorage.setItem(guideKey, 'seen');
-    expect(shouldShowWorkspaceAssistantGuide('43')).toBe(false);
+    expect(shouldShowWorkspaceAssistantGuide(newUser, cohortStart)).toBe(false);
     window.localStorage.removeItem(guideKey);
 
     expect(shouldDeferWorkspaceAssistantGuide()).toBe(false);

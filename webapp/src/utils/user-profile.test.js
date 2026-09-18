@@ -15,7 +15,13 @@ describe('normalizeUserProfile', () => {
       display_name: 'cats',
       avatar_url: '',
       account_type: 'human',
+      created_at: '',
     });
+  });
+
+  test('preserves the server account creation timestamp', () => {
+    expect(normalizeUserProfile({ id: 8, username: 'cats', created_at: '2026-09-18T01:02:03Z' }))
+      .toMatchObject({ created_at: '2026-09-18T01:02:03Z' });
   });
 
   test('returns null when no profile is available', () => {
@@ -50,6 +56,7 @@ describe('normalizeUserProfile', () => {
       display_name: 'cats',
       avatar_url: '',
       account_type: 'human',
+      created_at: '',
     });
     expect(readStoredUserProfile(storage)).toMatchObject({ uid: 8, username: 'cats' });
 

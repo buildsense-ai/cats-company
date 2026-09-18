@@ -114,6 +114,9 @@ const TABS = {
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 const WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE = 'seen';
+// Accounts created before this rollout remain manual-only: the computer Logo can
+// always reopen the guide without treating a storage reset as a new signup.
+const WORKSPACE_ASSISTANT_GUIDE_COHORT_START = import.meta.env.VITE_WORKSPACE_ASSISTANT_GUIDE_COHORT_START || '2026-09-18T00:00:00Z';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
@@ -233,9 +236,17 @@ export function workspaceAssistantGuideStorageKey(userId) {
   return normalizedUserId ? `cc_workspace_assistant_guide_seen:v1:${normalizedUserId}` : '';
 }
 
-export function shouldShowWorkspaceAssistantGuide(userId) {
-  const key = workspaceAssistantGuideStorageKey(userId);
-  return Boolean(key) && readStorageValue(key) !== WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE;
+export function isWorkspaceAssistantGuideNewUser(user, cohortStart = WORKSPACE_ASSISTANT_GUIDE_COHORT_START) {
+  const createdAt = Date.parse(user?.created_at || '');
+  const rolloutAt = Date.parse(cohortStart);
+  return Number.isFinite(createdAt) && Number.isFinite(rolloutAt) && createdAt >= rolloutAt;
+}
+
+export function shouldShowWorkspaceAssistantGuide(user, cohortStart) {
+  const key = workspaceAssistantGuideStorageKey(user?.uid);
+  return isWorkspaceAssistantGuideNewUser(user, cohortStart)
+    && Boolean(key)
+    && readStorageValue(key) !== WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE;
 }
 
 export function shouldDeferWorkspaceAssistantGuide({
@@ -383,7 +394,7 @@ function TinodeWebApp({ location }) {
   }, []);
 
   const openFirstVisitAssistantGuide = useCallback((mode = 'connect') => {
-    if (!user?.uid || !shouldShowWorkspaceAssistantGuide(user.uid)) return false;
+    if (!shouldShowWorkspaceAssistantGuide(user)) return false;
     const guideKey = workspaceAssistantGuideStorageKey(user.uid);
     writeStorageValue(guideKey, WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE);
     openDesktopModal(mode);
