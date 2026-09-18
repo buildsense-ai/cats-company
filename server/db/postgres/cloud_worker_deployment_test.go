@@ -289,21 +289,44 @@ func testCloudWorkerAdminRecordsBindingOwner(t *testing.T, db *Adapter) {
 	}); err != nil {
 		t.Fatalf("upsert external cloud worker binding: %v", err)
 	}
+	// The owner FK is ON DELETE SET NULL, so an ownerless binding is a real
+	// row. It must stay on the roster (an inner join would silently hide it,
+	// which is exactly the "imported host disappears" bug this covers).
+	if err := db.UpsertExternalCloudWorkerBinding(types.CloudWorkerBindingRecord{
+		TenantName:   "orphan-host",
+		Provider:     "ctyun",
+		RegionID:     "200000002530",
+		InstanceID:   "instance-orphan-1",
+		InstanceName: "orphan-host",
+	}); err != nil {
+		t.Fatalf("upsert orphan binding: %v", err)
+	}
 	records, err := db.ListCloudWorkerAdminRecords()
 	if err != nil {
 		t.Fatalf("list cloud worker admin records: %v", err)
 	}
+	seenOwned, seenOrphan := false, false
 	for _, record := range records {
-		if record.InstanceID != "instance-manual-1" {
-			continue
+		switch record.InstanceID {
+		case "instance-manual-1":
+			seenOwned = true
+			if record.OwnerUID != ownerID || record.OwnerUsername != "binding-owner" || record.OwnerDisplayName != "Binding Owner" {
+				t.Fatalf("external binding lost its owner identity: uid=%d username=%q display=%q", record.OwnerUID, record.OwnerUsername, record.OwnerDisplayName)
+			}
+			if record.ManagementMode != "manual_import" || record.LifecycleState != "external" {
+				t.Fatalf("external binding modes changed: management=%q lifecycle=%q", record.ManagementMode, record.LifecycleState)
+			}
+		case "instance-orphan-1":
+			seenOrphan = true
+			if record.OwnerUID != 0 || record.OwnerUsername != "" || record.OwnerDisplayName != "" {
+				t.Fatalf("ownerless binding invented an owner: uid=%d username=%q display=%q", record.OwnerUID, record.OwnerUsername, record.OwnerDisplayName)
+			}
 		}
-		if record.OwnerUID != ownerID || record.OwnerUsername != "binding-owner" || record.OwnerDisplayName != "Binding Owner" {
-			t.Fatalf("external binding lost its owner identity: uid=%d username=%q display=%q", record.OwnerUID, record.OwnerUsername, record.OwnerDisplayName)
-		}
-		if record.ManagementMode != "manual_import" || record.LifecycleState != "external" {
-			t.Fatalf("external binding modes changed: management=%q lifecycle=%q", record.ManagementMode, record.LifecycleState)
-		}
-		return
 	}
-	t.Fatal("imported binding missing from the admin records projection")
+	if !seenOwned {
+		t.Fatal("imported binding missing from the admin records projection")
+	}
+	if !seenOrphan {
+		t.Fatal("ownerless binding missing from the admin records projection")
+	}
 }
