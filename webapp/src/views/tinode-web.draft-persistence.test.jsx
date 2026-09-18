@@ -134,6 +134,15 @@ vi.mock('../widgets/desktop-connect-modal', () => ({
     </section>
   ),
 }));
+vi.mock('../widgets/workspace-onboarding-card', () => ({
+  default: ({ visible, dashboardDownloadOpen, onDismiss }) => (
+    visible && !dashboardDownloadOpen ? (
+      <section data-testid="workspace-onboarding-card">
+        <button type="button" onClick={onDismiss}>稍后再说</button>
+      </section>
+    ) : null
+  ),
+}));
 vi.mock('../widgets/feedback-modal', () => ({ default: () => null }));
 vi.mock('../widgets/relay-access-modal', () => ({
   default: ({ onClose }) => (
@@ -143,7 +152,7 @@ vi.mock('../widgets/relay-access-modal', () => ({
   ),
 }));
 
-import TinodeWeb, { workspaceAssistantGuideStorageKey } from './tinode-web';
+import TinodeWeb from './tinode-web';
 
 let container;
 let root;
@@ -184,22 +193,19 @@ function setCachedUser(createdAt) {
   localStorage.setItem('oc_user', JSON.stringify(profile));
 }
 
-test('opens the assistant guide once for a new account entering the workspace', async () => {
+test('shows the onboarding card once for a new account entering the workspace', async () => {
   setCachedUser('2026-09-18T00:00:01Z');
-  const guideKey = workspaceAssistantGuideStorageKey(1);
-
   await act(async () => {
     renderWorkspace();
     await Promise.resolve();
     await Promise.resolve();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')).not.toBeNull());
-  expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('connect');
-  expect(localStorage.getItem(guideKey)).toBe('seen');
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).not.toBeNull());
+  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
 });
 
-test('does not automatically open the assistant guide for an existing account', async () => {
+test('does not automatically show onboarding for an existing account', async () => {
   setCachedUser('2026-09-17T23:59:59Z');
 
   await act(async () => {
@@ -208,8 +214,7 @@ test('does not automatically open the assistant guide for an existing account', 
     await Promise.resolve();
   });
 
-  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
-  expect(localStorage.getItem(workspaceAssistantGuideStorageKey(1))).toBeNull();
+  expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).toBeNull();
 });
 
 test('keeps download mode when a new account arrives through the download deep link', async () => {
@@ -222,9 +227,10 @@ test('keeps download mode when a new account arrives through the download deep l
   });
 
   await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')?.dataset.mode).toBe('download'));
+  expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).toBeNull();
 });
 
-test('shows the new-account guide after the relay deep link is closed', async () => {
+test('shows the new-account onboarding card after the relay deep link is closed', async () => {
   setCachedUser('2026-09-18T00:00:01Z');
 
   await act(async () => {
@@ -235,13 +241,13 @@ test('shows the new-account guide after the relay deep link is closed', async ()
 
   const relay = container.querySelector('[data-testid="relay-access-modal"]');
   expect(relay).not.toBeNull();
-  expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+  expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).toBeNull();
 
   await act(async () => {
     relay.querySelector('button').click();
   });
 
-  await vi.waitFor(() => expect(container.querySelector('[data-testid="desktop-connect-modal"]')).not.toBeNull());
+  await vi.waitFor(() => expect(container.querySelector('[data-testid="workspace-onboarding-card"]')).not.toBeNull());
 });
 
 test.each(['Escape', 'close button', 'cancel button'])('returns focus to the desktop profile entry after settings closes via %s', async (method) => {

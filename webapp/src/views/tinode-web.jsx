@@ -80,6 +80,10 @@ import {
   writeStorageValue,
 } from '../utils/storage-access';
 import {
+  WORKSPACE_ONBOARDING_DISMISSED_VALUE,
+  workspaceOnboardingStorageKey,
+} from '../utils/workspace-onboarding';
+import {
   clearPersistedComposerDrafts,
   createComposerDraftStore,
   NEW_TASK_DRAFT_KEY,
@@ -104,6 +108,7 @@ const MobileUploadView = lazy(() => import('./mobile-upload-view'));
 const SkillHubView = lazy(() => import('./skillhub-view'));
 const GroupSettings = lazy(() => import('../widgets/group-settings'));
 const WorkflowRichMediaDemo = lazy(() => import('./workflow-rich-media-demo'));
+const WorkspaceOnboardingCard = lazy(() => import('../widgets/workspace-onboarding-card'));
 
 function SecondaryViewLoading({ label }) {
   return <div className="v3-empty-state" role="status" aria-live="polite">正在加载{label}…</div>;
@@ -113,10 +118,9 @@ const TABS = {
   CHATS: 'chats'
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
-const WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE = 'seen';
 // Accounts created before this rollout remain manual-only: the computer Logo can
 // always reopen the guide without treating a storage reset as a new signup.
-const WORKSPACE_ASSISTANT_GUIDE_COHORT_START = import.meta.env.VITE_WORKSPACE_ASSISTANT_GUIDE_COHORT_START || '2026-09-18T00:00:00Z';
+const WORKSPACE_ONBOARDING_COHORT_START = import.meta.env.VITE_WORKSPACE_ASSISTANT_GUIDE_COHORT_START || '2026-09-18T00:00:00Z';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
@@ -231,30 +235,25 @@ function saveAppSidebarCollapsed(collapsed) {
   writeStorageValue(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
 }
 
-export function workspaceAssistantGuideStorageKey(userId) {
-  const normalizedUserId = String(userId || '').trim();
-  return normalizedUserId ? `cc_workspace_assistant_guide_seen:v1:${normalizedUserId}` : '';
-}
-
-export function isWorkspaceAssistantGuideNewUser(user, cohortStart = WORKSPACE_ASSISTANT_GUIDE_COHORT_START) {
+export function isWorkspaceOnboardingNewUser(user, cohortStart = WORKSPACE_ONBOARDING_COHORT_START) {
   const createdAt = Date.parse(user?.created_at || '');
   const rolloutAt = Date.parse(cohortStart);
   return Number.isFinite(createdAt) && Number.isFinite(rolloutAt) && createdAt >= rolloutAt;
 }
 
-export function shouldShowWorkspaceAssistantGuide(user, cohortStart) {
-  const key = workspaceAssistantGuideStorageKey(user?.uid);
-  return isWorkspaceAssistantGuideNewUser(user, cohortStart)
+export function shouldShowWorkspaceOnboarding(user, cohortStart) {
+  const key = workspaceOnboardingStorageKey(user?.uid);
+  return isWorkspaceOnboardingNewUser(user, cohortStart)
     && Boolean(key)
-    && readStorageValue(key) !== WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE;
+    && readStorageValue(key) !== WORKSPACE_ONBOARDING_DISMISSED_VALUE;
 }
 
-export function shouldDeferWorkspaceAssistantGuide({
-  requestedOpen = '',
+export function shouldDeferWorkspaceOnboarding({
   channelDeviceLink = false,
   channelAccountLink = false,
+  relayLinkPending = false,
 } = {}) {
-  return channelDeviceLink || channelAccountLink || requestedOpen === 'relay';
+  return channelDeviceLink || channelAccountLink || relayLinkPending;
 }
 
 function isInvalidSessionError(error) {
@@ -310,10 +309,16 @@ export default function TinodeWeb({ location = window.location } = {}) {
 function TinodeWebApp({ location }) {
   const feedback = useFeedback();
   const { pathname = '/', search = '', hash = '' } = location;
+  // Preview the new-task surface even when this browser restores an old conversation.
+  // Keep the saved conversation intact so the regular workspace can resume it.
+  const showOnboardingPreview = import.meta.env.DEV
+    && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+    && new URLSearchParams(search).get('onboarding_preview') === '1';
   const entryMatch = pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = pathname === '/channel-device-link';
   const channelAccountLink = pathname === '/channel-account-link';
+  const requestedOpen = new URLSearchParams(search).get('open') || '';
   const [user, setUser] = useState(() => getInitialUser());
   const [sessionRestoreError, setSessionRestoreError] = useState('');
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
@@ -384,6 +389,7 @@ function TinodeWebApp({ location }) {
   const [desktopModalMode, setDesktopModalMode] = useState('connect');
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [relayLinkHandled, setRelayLinkHandled] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
@@ -393,30 +399,16 @@ function TinodeWebApp({ location }) {
     setShowDesktopConnectModal(true);
   }, []);
 
-  const openFirstVisitAssistantGuide = useCallback((mode = 'connect') => {
-    if (!shouldShowWorkspaceAssistantGuide(user)) return false;
-    const guideKey = workspaceAssistantGuideStorageKey(user.uid);
-    writeStorageValue(guideKey, WORKSPACE_ASSISTANT_GUIDE_SEEN_VALUE);
-    openDesktopModal(mode);
-    return true;
-  }, [openDesktopModal, user?.uid]);
-
   const closeRelayModal = useCallback(() => {
     setShowRelayModal(false);
-    openFirstVisitAssistantGuide();
-  }, [openFirstVisitAssistantGuide]);
+    setRelayLinkHandled(true);
+  }, []);
 
   useEffect(() => {
-    const params = new URLSearchParams(search);
-    if (params.get('open') === 'relay') setShowRelayModal(true);
-    if (params.get('open') === 'download') openDesktopModal('download');
-  }, [openDesktopModal, search]);
-
-  useEffect(() => {
-    const requestedOpen = new URLSearchParams(search).get('open');
-    if (shouldDeferWorkspaceAssistantGuide({ requestedOpen, channelDeviceLink, channelAccountLink })) return;
-    openFirstVisitAssistantGuide(requestedOpen === 'download' ? 'download' : 'connect');
-  }, [channelAccountLink, channelDeviceLink, openFirstVisitAssistantGuide, search]);
+    setRelayLinkHandled(false);
+    if (requestedOpen === 'relay') setShowRelayModal(true);
+    if (requestedOpen === 'download') openDesktopModal('download');
+  }, [openDesktopModal, requestedOpen]);
 
   useEffect(() => {
     // A token without its cached profile is being recovered below. Keep
@@ -1557,7 +1549,7 @@ function TinodeWebApp({ location }) {
               <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
                 <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
               </Suspense>
-            ) : activeTopic ? (
+            ) : !showOnboardingPreview && activeTopic ? (
               <MessagesView
                 key={composerDraftOwner || 'anonymous'}
                 topBar={localAssistantBar}
@@ -1587,6 +1579,14 @@ function TinodeWebApp({ location }) {
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
+                    showWorkspaceOnboarding={showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
+                      && !shouldDeferWorkspaceOnboarding({
+                        channelDeviceLink,
+                        channelAccountLink,
+                        relayLinkPending: requestedOpen === 'relay' && !relayLinkHandled,
+                      }))}
+                    onDownloadDashboard={() => openDesktopModal('download')}
+                    dashboardDownloadOpen={showDesktopConnectModal}
                     initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
                     composerDraftStore={composerDraftStoreRef.current}
                     draftKey={NEW_TASK_DRAFT_KEY}
@@ -1904,6 +1904,9 @@ function resolveDisplayedActiveAgent(
 
 function NoActiveTask({
   user,
+  showWorkspaceOnboarding = false,
+  onDownloadDashboard,
+  dashboardDownloadOpen = false,
   initialAgent,
   composerDraftStore,
   draftKey,
@@ -1919,6 +1922,14 @@ function NoActiveTask({
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
           <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
+        <Suspense fallback={null}>
+          <WorkspaceOnboardingCard
+            userId={user?.uid}
+            visible={showWorkspaceOnboarding}
+            onDownloadDashboard={onDownloadDashboard}
+            dashboardDownloadOpen={dashboardDownloadOpen}
+          />
+        </Suspense>
         <EmptyTaskComposer
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}

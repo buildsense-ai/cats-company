@@ -16,12 +16,12 @@ import {
   resolveInitialUser,
   resolveDisplayedActiveAgent,
   shouldOpenProfileSettingsDirectly,
-  isWorkspaceAssistantGuideNewUser,
-  shouldDeferWorkspaceAssistantGuide,
-  shouldShowWorkspaceAssistantGuide,
-  workspaceAssistantGuideStorageKey,
+  isWorkspaceOnboardingNewUser,
+  shouldDeferWorkspaceOnboarding,
+  shouldShowWorkspaceOnboarding,
 } from './tinode-web';
 import { api } from '../api';
+import { workspaceOnboardingStorageKey } from '../utils/workspace-onboarding';
 
 const topbarCss = readFileSync(
   resolve(process.cwd(), 'src/css/catsco-topbar.css'),
@@ -355,28 +355,27 @@ describe('mobile model context wiring', () => {
     expect(tinodeWebSource).toContain("onOpenDesktopConnect={() => openDesktopModal('connect')}");
   });
 
-  it('opens the assistant guide once for new accounts without restoring the daily device prompt', () => {
+  it('shows onboarding once for new accounts without restoring the daily device prompt', () => {
     const cohortStart = '2026-09-18T00:00:00Z';
     const newUser = { uid: '43', created_at: '2026-09-18T00:00:01Z' };
     const existingUser = { uid: '44', created_at: '2026-09-17T23:59:59Z' };
-    const guideKey = workspaceAssistantGuideStorageKey(newUser.uid);
-    window.localStorage.removeItem(guideKey);
+    const onboardingKey = workspaceOnboardingStorageKey(newUser.uid);
+    window.localStorage.removeItem(onboardingKey);
 
-    expect(isWorkspaceAssistantGuideNewUser(newUser, cohortStart)).toBe(true);
-    expect(isWorkspaceAssistantGuideNewUser(existingUser, cohortStart)).toBe(false);
-    expect(isWorkspaceAssistantGuideNewUser({ uid: '45' }, cohortStart)).toBe(false);
-    expect(shouldShowWorkspaceAssistantGuide(newUser, cohortStart)).toBe(true);
-    expect(shouldShowWorkspaceAssistantGuide(existingUser, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser(newUser, cohortStart)).toBe(true);
+    expect(isWorkspaceOnboardingNewUser(existingUser, cohortStart)).toBe(false);
+    expect(isWorkspaceOnboardingNewUser({ uid: '45' }, cohortStart)).toBe(false);
+    expect(shouldShowWorkspaceOnboarding(newUser, cohortStart)).toBe(true);
+    expect(shouldShowWorkspaceOnboarding(existingUser, cohortStart)).toBe(false);
 
-    window.localStorage.setItem(guideKey, 'seen');
-    expect(shouldShowWorkspaceAssistantGuide(newUser, cohortStart)).toBe(false);
-    window.localStorage.removeItem(guideKey);
+    window.localStorage.setItem(onboardingKey, 'dismissed');
+    expect(shouldShowWorkspaceOnboarding(newUser, cohortStart)).toBe(false);
+    window.localStorage.removeItem(onboardingKey);
 
-    expect(shouldDeferWorkspaceAssistantGuide()).toBe(false);
-    expect(shouldDeferWorkspaceAssistantGuide({ requestedOpen: 'download' })).toBe(false);
-    expect(shouldDeferWorkspaceAssistantGuide({ requestedOpen: 'relay' })).toBe(true);
-    expect(shouldDeferWorkspaceAssistantGuide({ channelDeviceLink: true })).toBe(true);
-    expect(shouldDeferWorkspaceAssistantGuide({ channelAccountLink: true })).toBe(true);
+    expect(shouldDeferWorkspaceOnboarding()).toBe(false);
+    expect(shouldDeferWorkspaceOnboarding({ relayLinkPending: true })).toBe(true);
+    expect(shouldDeferWorkspaceOnboarding({ channelDeviceLink: true })).toBe(true);
+    expect(shouldDeferWorkspaceOnboarding({ channelAccountLink: true })).toBe(true);
 
     expect(tinodeWebSource).toContain('onClose={closeRelayModal}');
     expect(tinodeWebSource).not.toContain('allowDailyPrompt');
