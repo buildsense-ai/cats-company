@@ -98,6 +98,7 @@ vi.mock('./skillhub-view', () => ({
 vi.mock('./messages-view', () => ({
   default: ({ composerDraftStore, topic }) => (
     <textarea
+      className="v3-composer-input"
       aria-label="消息草稿"
       data-topic={topic}
       defaultValue={composerDraftStore.inputDrafts.get(topic) || ''}
@@ -382,6 +383,27 @@ test('replays onboarding from the computer entry over an active conversation and
 
   expect(mocks.redeemBotInviteCode).toHaveBeenCalledWith('REPLAY-123');
   expect(document.querySelector('#workspace-invite-title')?.textContent).toBe('云端助手已添加');
+});
+
+test.each(['Escape', 'close button'])('restores active conversation composer focus when replay onboarding closes via %s', async (method) => {
+  setCachedUser('2026-09-17T23:59:59Z');
+  await act(async () => renderWorkspace());
+  await openOnboardingReplayFromDesktopEntry();
+  const composer = container.querySelector('[aria-label="消息草稿"]');
+  expect(composer).not.toBeNull();
+
+  const dialog = document.querySelector('dialog.cc-workspace-onboarding-card');
+  await act(async () => {
+    if (method === 'Escape') {
+      dialog.dispatchEvent(new Event('cancel', { bubbles: true, cancelable: true }));
+    } else {
+      dialog.querySelector('[aria-label="稍后设置助手"]').click();
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
+  expect(document.activeElement).toBe(composer);
 });
 
 test('replays onboarding from the computer entry over an active conversation and hands off download', async () => {

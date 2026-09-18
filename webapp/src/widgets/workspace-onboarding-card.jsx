@@ -189,7 +189,12 @@ export default function WorkspaceOnboardingCard({
     closeDialog(dialogRef.current);
     setVisible(false);
     onDismiss?.();
-    requestAnimationFrame(() => document.querySelector('.cc-empty-composer-wrap textarea')?.focus());
+    requestAnimationFrame(() => {
+      const composer = document.querySelector(
+        '.cc-empty-composer-wrap textarea:not([disabled]), textarea.v3-composer-input:not([disabled])',
+      );
+      if (composer?.isConnected) composer.focus();
+    });
   };
 
   const openDesktopDownload = () => {
