@@ -24,6 +24,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
 
 const (
@@ -568,7 +571,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 			http.NotFound(w, r)
 			return
 		}
-		serveUploadPreviewPage(w, r, fileName, ext)
+		serveUploadPreviewPage(w, r, fullPath, fileName, ext)
 		return
 	}
 
@@ -594,7 +597,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	http.ServeFile(w, r, fullPath)
 }
 
-func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ext string) {
+func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fileName, ext string) {
 	publicOrigin, err := configuredPublicBaseURL()
 	if err != nil {
 		w.Header().Set("Cache-Control", "no-store")
@@ -609,6 +612,10 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
 	kind := "PDF"
 	if isHTMLUploadExtension(ext) {
 		kind = "HTML"
+	}
+	isMarkdown := strings.EqualFold(ext, ".md")
+	if isMarkdown {
+		kind = "MARKDOWN"
 	}
 	isVideo := isInlineVideoExt(ext)
 	if isVideo {
@@ -647,6 +654,14 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
 			escapedResourceURL,
 			escapedName,
 		)
+	} else if isMarkdown {
+		markdownHTML, renderErr := renderMarkdownUploadPreview(fullPath)
+		if renderErr != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "preview unavailable", http.StatusInternalServerError)
+			return
+		}
+		previewElement = `<article class="markdown-preview">` + markdownHTML + `</article>`
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -686,8 +701,19 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
     header { display: grid; gap: 4px; }
     h1 { margin: 0; font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
     p { margin: 0; color: #60716b; font-size: 14px; }
-    iframe, video { display: block; width: 100%%; min-height: min(72vh, 900px); border: 0; border-radius: 12px; background: #fdfefd; }
+    iframe, video, .markdown-preview { display: block; width: 100%%; min-height: min(72vh, 900px); box-sizing: border-box; border: 0; border-radius: 12px; background: #fdfefd; }
     video { max-height: min(72vh, 900px); object-fit: contain; }
+    .markdown-preview { padding: clamp(20px, 4vw, 52px); overflow-wrap: anywhere; line-height: 1.7; }
+    .markdown-preview > :first-child { margin-top: 0; }
+    .markdown-preview > :last-child { margin-bottom: 0; }
+    .markdown-preview h1, .markdown-preview h2, .markdown-preview h3 { line-height: 1.3; }
+    .markdown-preview pre { overflow: auto; padding: 16px; border-radius: 10px; background: #eef4f1; }
+    .markdown-preview code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .markdown-preview :not(pre) > code { padding: 2px 5px; border-radius: 5px; background: #eef4f1; }
+    .markdown-preview table { display: block; max-width: 100%%; overflow-x: auto; border-collapse: collapse; }
+    .markdown-preview th, .markdown-preview td { padding: 8px 12px; border: 1px solid #cedbd6; text-align: left; }
+    .markdown-preview blockquote { margin-inline: 0; padding-left: 16px; border-left: 4px solid #8fb8aa; color: #60716b; }
+    .markdown-preview img { max-width: 100%%; height: auto; }
     nav { display: flex; flex-wrap: wrap; gap: 12px; }
     a { display: inline-flex; align-items: center; min-height: 40px; box-sizing: border-box; padding: 0 16px; border-radius: 10px; background: #fdfefd; color: #176b57; font-weight: 600; text-decoration: none; }
     a[download] { background: #176b57; color: #fdfefd; }
@@ -710,6 +736,20 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fileName, ex
 `, escapedName, escapedPageURL, escapedKind, escapedOGType, mediaMetadata, escapedName, escapedKind, escapedPageURL, escapedOGImageURL,
 		escapedName, escapedKind, escapedOGImageURL, escapedName, escapedKind, previewElement,
 		escapedResourceURL, escapedDownloadURL)
+}
+
+func renderMarkdownUploadPreview(fullPath string) (string, error) {
+	source, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", err
+	}
+
+	var rendered bytes.Buffer
+	renderer := goldmark.New(goldmark.WithExtensions(extension.GFM))
+	if err := renderer.Convert(source, &rendered); err != nil {
+		return "", err
+	}
+	return rendered.String(), nil
 }
 
 func htmlAttributeForUploadPreview(ext string) string {
@@ -803,7 +843,7 @@ func isHTMLUploadExtension(ext string) bool {
 }
 
 func isUploadPreviewableExtension(ext string) bool {
-	return strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext)
+	return strings.EqualFold(ext, ".pdf") || strings.EqualFold(ext, ".md") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext)
 }
 
 func normalizedUploadMimeType(ext, headerType string) string {

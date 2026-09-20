@@ -1,4 +1,4 @@
-import { sharePreviewLink } from './preview-share';
+import { previewPageURL, sharePreviewLink } from './preview-share';
 
 describe('sharePreviewLink', () => {
   it('shares the inline preview URL instead of the download URL', async () => {
@@ -51,6 +51,12 @@ describe('sharePreviewLink', () => {
     expect(result).toMatchObject({ status: 'copied', method: 'clipboard' });
     expect(writeText).toHaveBeenCalledWith(
       new URL('/uploads/files/report.html?preview=1&name=report.html', window.location.href).toString(),
+    );
+  });
+
+  it('builds a Markdown preview URL for opening in a new tab', () => {
+    expect(previewPageURL('/uploads/files/summary.md?download=1', '项目总结.md')).toBe(
+      new URL('/uploads/files/summary.md?preview=1&name=%E9%A1%B9%E7%9B%AE%E6%80%BB%E7%BB%93.md', window.location.href).toString(),
     );
   });
 

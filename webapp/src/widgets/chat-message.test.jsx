@@ -3153,6 +3153,9 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelectorAll('.v3-file-preview-panel')).toHaveLength(1);
     expect(container.querySelector('.v3-file-preview-title h3').textContent).toBe('summary.md');
+    expect(container.querySelector('a[aria-label="在新窗口打开"]').getAttribute('href')).toBe(
+      new URL('/uploads/files/summary.md?preview=1&name=summary.md', window.location.href).toString(),
+    );
   });
 
   it('uses the side preview for legacy JSON file messages', async () => {

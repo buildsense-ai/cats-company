@@ -1,6 +1,6 @@
-const UPLOAD_PREVIEW_PATH = /^\/uploads\/files\/[^/]+\.(?:pdf|html?|mp4|webm|ogv|m4v|mov)$/i;
+const UPLOAD_PREVIEW_PATH = /^\/uploads\/files\/[^/]+\.(?:pdf|html?|md|mp4|webm|ogv|m4v|mov)$/i;
 
-function shareablePreviewURL(url, name = '') {
+export function previewPageURL(url, name = '') {
   const value = String(url || '').trim();
   if (!value) return '';
 
@@ -24,7 +24,7 @@ function shareablePreviewURL(url, name = '') {
 }
 
 export async function sharePreviewLink({ url, name = '文件', navigatorLike = globalThis.navigator } = {}) {
-  const shareURL = shareablePreviewURL(url, name);
+  const shareURL = previewPageURL(url, name);
   if (!shareURL) return { status: 'error', reason: 'missing-url' };
 
   if (typeof navigatorLike?.share === 'function') {

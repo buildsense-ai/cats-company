@@ -407,9 +407,9 @@ func TestHandleServeFileServesHTMLFilesInlineWithSandbox(t *testing.T) {
 	}
 }
 
-func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
+func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T) {
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
-	for _, ext := range []string{".pdf", ".html"} {
+	for _, ext := range []string{".pdf", ".html", ".md"} {
 		t.Run(ext, func(t *testing.T) {
 			dir := t.TempDir()
 			fileName := "20260428_0123456789abcdef0123456789abcdef" + ext
@@ -417,7 +417,11 @@ func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(fullPath, []byte("file body must not be rendered as the share page"), 0644); err != nil {
+			bodyContent := "file body must not be rendered as the share page"
+			if ext == ".md" {
+				bodyContent = "# 学情总结\n\n| 指标 | 结果 |\n| --- | --- |\n| 完成率 | 96% |\n\n[危险链接](javascript:alert(1))\n\n<script>alert('unsafe')</script>"
+			}
+			if err := os.WriteFile(fullPath, []byte(bodyContent), 0644); err != nil {
 				t.Fatal(err)
 			}
 
@@ -452,11 +456,24 @@ func TestHandleServeFileRendersPreviewMetadataForPDFAndHTML(t *testing.T) {
 					t.Fatalf("body missing %q: %s", expected, body)
 				}
 			}
-			if strings.Contains(body, "file body must not be rendered") {
+			if ext != ".md" && strings.Contains(body, "file body must not be rendered") {
 				t.Fatal("preview page rendered the uploaded file body")
 			}
 			if ext == ".html" && !strings.Contains(body, `sandbox="allow-scripts allow-forms allow-popups allow-modals"`) {
 				t.Fatal("HTML preview iframe is not sandboxed")
+			}
+			if ext == ".md" {
+				for _, expected := range []string{`<article class="markdown-preview">`, "学情总结", "<table>"} {
+					if !strings.Contains(body, expected) {
+						t.Fatalf("Markdown preview missing %q: %s", expected, body)
+					}
+				}
+				if strings.Contains(body, "<script>alert('unsafe')</script>") {
+					t.Fatal("Markdown preview rendered raw HTML")
+				}
+				if strings.Contains(body, "javascript:alert(1)") {
+					t.Fatal("Markdown preview rendered a dangerous link URL")
+				}
 			}
 		})
 	}
@@ -514,7 +531,7 @@ func TestHandleServeFileReturnsNotFoundForMissingPreviewFile(t *testing.T) {
 	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
 
-	for _, ext := range []string{".pdf", ".html", ".mp4"} {
+	for _, ext := range []string{".pdf", ".html", ".md", ".mp4"} {
 		t.Run(ext, func(t *testing.T) {
 			fileName := "20260428_0123456789abcdef0123456789abcdef" + ext
 			recorder := httptest.NewRecorder()
