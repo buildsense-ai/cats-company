@@ -31,9 +31,10 @@ Before enabling the updated config, verify DNS for `catsco.cn` and
 `www.catsco.cn` and extend the `catsco.cn` certificate without touching the
 live app certificate. Keep every existing SAN (`app.catsco.cn`,
 `api.catsco.cn`, `relay.catsco.cn`) and add the two root names. Prefer DNS-01
-through the artifact-gateway hook (`deploy/prod/ops/dns01-certbot-hook.mjs`,
-zone selected via `CATSCO_ARTIFACT_DNS_ZONE`); the port-80 vhost also exposes
-`/.well-known/acme-challenge/` under `/var/www/html` for HTTP-01.
+through the Volcengine hook already installed on the host
+(`/usr/local/sbin/volcdns-certbot-hook`, with `VOLC_DNS_ZONE=catsco.cn`); the
+vhosts also expose `/.well-known/acme-challenge/` under `/var/www/letsencrypt`
+(the certbot webroot) so HTTP-01 keeps working as a fallback.
 
 For the internal preview, first create `preview.catsco.cc` in DNS pointing to
 the intended preview host, then issue its separate certificate:
