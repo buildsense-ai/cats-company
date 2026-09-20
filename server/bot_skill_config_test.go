@@ -280,8 +280,16 @@ func TestBotDefinitionSkillsRejectStaleRevisionAndInvalidRefs(t *testing.T) {
 }
 
 func TestBotDefinitionSkillsAcceptFullOwnerWorkspace(t *testing.T) {
-	handler, _ := newBotSkillDefinitionTestHandler()
+	// Pin the shared value: the XiaoBa runtime and the SkillHub metadata service
+	// enforce the same number, and a silent rollback here is exactly how the
+	// friends view lost every Skill but the one installed from SkillHub.
+	if maxBotSkillRefs != 1024 {
+		t.Fatalf("maxBotSkillRefs=%d want 1024 to match XiaoBa-CLI and SkillHub", maxBotSkillRefs)
+	}
+	// Every case saves once, so each one needs its own store: a second save
+	// would fail on the revision the first one advanced.
 	patch := func(count int) *httptest.ResponseRecorder {
+		handler, _ := newBotSkillDefinitionTestHandler()
 		refs := make([]types.BotSkillRef, 0, count)
 		for index := 0; index < count; index++ {
 			refs = append(refs, types.BotSkillRef{
@@ -301,11 +309,21 @@ func TestBotDefinitionSkillsAcceptFullOwnerWorkspace(t *testing.T) {
 		handler.HandleRuntimeSkills(rec, req)
 		return rec
 	}
-	if rec := patch(maxBotSkillRefs); rec.Code != http.StatusOK {
-		t.Fatalf("full workspace status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if rec := patch(maxBotSkillRefs + 1); rec.Code != http.StatusBadRequest {
-		t.Fatalf("over-cap status=%d body=%s", rec.Code, rec.Body.String())
+	// 374 is a real operator workspace, which the previous 256 rejected.
+	for _, testCase := range []struct {
+		name   string
+		count  int
+		status int
+	}{
+		{name: "real workspace", count: 374, status: http.StatusOK},
+		{name: "full workspace", count: 1024, status: http.StatusOK},
+		{name: "over cap", count: 1025, status: http.StatusBadRequest},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if rec := patch(testCase.count); rec.Code != testCase.status {
+				t.Fatalf("status=%d body=%s want=%d", rec.Code, rec.Body.String(), testCase.status)
+			}
+		})
 	}
 }
 
