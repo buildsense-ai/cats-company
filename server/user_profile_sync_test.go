@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,8 @@ func (s *userProfileSyncTestStore) GetUser(uid int64) (*types.User, error) {
 }
 
 func TestHandleUpdateMeSynchronizesSkillHubPublisherAfterCatsCoCommit(t *testing.T) {
-	db := &userProfileSyncTestStore{user: &types.User{ID: 85, Username: "arrowhaken"}}
+	createdAt := time.Date(2026, time.September, 20, 8, 30, 0, 0, time.UTC)
+	db := &userProfileSyncTestStore{user: &types.User{ID: 85, Username: "arrowhaken", CreatedAt: createdAt}}
 	handler := NewUserHandler(db)
 	synced := make(chan struct {
 		token       string
@@ -60,6 +62,15 @@ func TestHandleUpdateMeSynchronizesSkillHubPublisherAfterCatsCoCommit(t *testing
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.CreatedAt != createdAt.Format(time.RFC3339) {
+		t.Fatalf("created_at=%q want=%q", response.CreatedAt, createdAt.Format(time.RFC3339))
 	}
 	select {
 	case got := <-synced:

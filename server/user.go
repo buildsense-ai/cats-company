@@ -585,6 +585,7 @@ func (h *UserHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		"display_name": user.DisplayName,
 		"avatar_url":   user.AvatarURL,
 		"account_type": user.AccountType,
+		"created_at":   user.CreatedAt,
 		"persistent":   req.Persistent,
 	})
 }
@@ -651,6 +652,7 @@ func (h *UserHandler) HandleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		"display_name": user.DisplayName,
 		"avatar_url":   user.AvatarURL,
 		"account_type": user.AccountType,
+		"created_at":   user.CreatedAt,
 	})
 	h.synchronizeSkillHubPublisherProfile(uid, extractToken(r))
 }
