@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -271,6 +274,54 @@ func TestBotDefinitionSkillsRejectStaleRevisionAndInvalidRefs(t *testing.T) {
 			handler.HandleRuntimeSkills(rec, req)
 			if rec.Code != tc.status {
 				t.Fatalf("status=%d body=%s want=%d", rec.Code, rec.Body.String(), tc.status)
+			}
+		})
+	}
+}
+
+func TestBotDefinitionSkillsAcceptFullOwnerWorkspace(t *testing.T) {
+	// Pin the shared value: the XiaoBa runtime and the SkillHub metadata service
+	// enforce the same number, and a silent rollback here is exactly how the
+	// friends view lost every Skill but the one installed from SkillHub.
+	if maxBotSkillRefs != 1024 {
+		t.Fatalf("maxBotSkillRefs=%d want 1024 to match XiaoBa-CLI and SkillHub", maxBotSkillRefs)
+	}
+	// Every case saves once, so each one needs its own store: a second save
+	// would fail on the revision the first one advanced.
+	patch := func(count int) *httptest.ResponseRecorder {
+		handler, _ := newBotSkillDefinitionTestHandler()
+		refs := make([]types.BotSkillRef, 0, count)
+		for index := 0; index < count; index++ {
+			refs = append(refs, types.BotSkillRef{
+				Source:      "skillhub",
+				SkillID:     fmt.Sprintf("priv_%064x", index),
+				Version:     fmt.Sprintf("v_%s", testSkillHash[:32]),
+				ContentHash: testSkillHash,
+			})
+		}
+		payload, err := json.Marshal(map[string]any{"revision": 2, "skills": refs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPatch, "/api/bot/definition/skills", bytes.NewReader(payload))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(43)))
+		rec := httptest.NewRecorder()
+		handler.HandleRuntimeSkills(rec, req)
+		return rec
+	}
+	// 374 is a real operator workspace, which the previous 256 rejected.
+	for _, testCase := range []struct {
+		name   string
+		count  int
+		status int
+	}{
+		{name: "real workspace", count: 374, status: http.StatusOK},
+		{name: "full workspace", count: 1024, status: http.StatusOK},
+		{name: "over cap", count: 1025, status: http.StatusBadRequest},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if rec := patch(testCase.count); rec.Code != testCase.status {
+				t.Fatalf("status=%d body=%s want=%d", rec.Code, rec.Body.String(), testCase.status)
 			}
 		})
 	}

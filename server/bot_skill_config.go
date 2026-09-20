@@ -17,8 +17,18 @@ import (
 )
 
 const (
-	maxBotSkillConfigBodyBytes = 128 << 10
-	maxBotSkillRefs            = 256
+	// A Bot publishes its whole local workspace into its own BotDefinition as
+	// Bot-private packages, so these bounds cover every Skill an operator
+	// accumulated locally. Real workspaces already hold 374 entries, which is
+	// why the previous 256/128KiB pair could never be written.
+	//
+	// Both values are shared with the XiaoBa runtime and the SkillHub metadata
+	// service; the body bound is derived from the reference bound: 1024
+	// references at the widest permitted fields (240B id + 120B version + 64B
+	// hash) serialize to roughly 509KiB, so 1MiB leaves real headroom instead of
+	// a few percent and also covers a client that pretty-prints its JSON.
+	maxBotSkillConfigBodyBytes = 1 << 20
+	maxBotSkillRefs            = 1024
 	maxBotSkillIDBytes         = 240
 	maxBotSkillVersionBytes    = 120
 )
