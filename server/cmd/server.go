@@ -461,6 +461,10 @@ func main() {
 	artifactTaskHandler := server.NewArtifactTaskHandler(hub)
 	artifactRuntimeHandler := server.NewArtifactRuntimeHandler(hub, db)
 	artifactLaunchHandler := server.NewArtifactLaunchHandlerFromEnv()
+	// Optional: issue the domain-level Artifact identity cookie and serve the
+	// read-only lookup the gateway uses. Off unless configured.
+	server.ConfigureArtifactIdentity(server.ArtifactIdentityConfigFromEnv())
+	artifactIdentityHandler := server.NewArtifactIdentityHandlerFromEnv()
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	imageUpscaleTaskStore, _ := db.(store.ImageUpscaleTaskStore)
 	imageUpscaleHandler := server.NewImageUpscaleProxyHandlerFromEnv(imageUpscaleTaskStore)
@@ -812,6 +816,7 @@ func main() {
 	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("POST /api/artifacts/launch", jwtAuthWithDB(artifactLaunchHandler.HandleLaunch))
+	mux.HandleFunc("GET /api/artifacts/identity", artifactIdentityHandler.HandleIdentity)
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("POST /api/agents/{uid}/knowledge/handoff", jwtAuthWithDB(agentHandler.IssueKnowledgeWikiHandoff))
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/manifest", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiManifest, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiManifest)))
