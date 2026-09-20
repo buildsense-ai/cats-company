@@ -158,7 +158,9 @@ func tencentSESRequiredConfig() (secretID, secretKey, region, fromEmail, templat
 	secretKey = envTrim("TENCENTCLOUD_SECRET_KEY")
 	region = envTrim("TENCENTCLOUD_REGION")
 	if region == "" {
-		region = "ap-guangzhou"
+		// The SES identities for this account live in the Hong Kong region.
+		// Falling back to a mainland region would silently fail every send.
+		region = "ap-hongkong"
 	}
 	fromEmail = envTrim("TENCENT_SES_FROM_EMAIL")
 	templateID = envTrim("TENCENT_SES_TEMPLATE_ID")
@@ -243,9 +245,6 @@ func sendEmailViaTencentSES(email, code, subject string) error {
 	}
 
 	templateData, _ := json.Marshal(map[string]string{"code": code})
-	if envSubject := envTrim("TENCENT_SES_SUBJECT"); envSubject != "" {
-		subject = envSubject
-	}
 	replyTo := envTrim("TENCENT_SES_REPLY_TO")
 	if replyTo == "" {
 		replyTo = fromEmail
@@ -354,9 +353,19 @@ func storeVerificationCode(email, code string, expires int64, purpose string) {
 	codesMutex.Unlock()
 }
 
+// verificationEmailSubject resolves the subject for a verification purpose.
+// The env overrides are scoped per purpose so a registration subject can never
+// leak into a password-reset email (and vice versa); Resend and Tencent SES
+// both receive the same per-purpose subject.
 func verificationEmailSubject(purpose string) string {
 	if purpose == verificationPurposePasswordReset {
+		if subject := envTrim("TENCENT_SES_SUBJECT_PASSWORD_RESET"); subject != "" {
+			return subject
+		}
 		return "Cats Company 重置密码验证码"
+	}
+	if subject := envTrim("TENCENT_SES_SUBJECT"); subject != "" {
+		return subject
 	}
 	return "Cats Company 注册验证码"
 }
