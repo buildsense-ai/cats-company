@@ -12,9 +12,10 @@ import (
 
 func newTestLaunchHandler(gateway *httptest.Server) *ArtifactLaunchHandler {
 	return &ArtifactLaunchHandler{
-		gatewayURL:   gateway.URL,
-		controlToken: "test-control-token-0123456789abcdef",
-		httpClient:   gateway.Client(),
+		gatewayURL:    gateway.URL,
+		launchOrigins: []string{gateway.URL},
+		controlToken:  "test-control-token-0123456789abcdef",
+		httpClient:    gateway.Client(),
 	}
 }
 
@@ -204,12 +205,13 @@ func TestArtifactLaunchMapsUpstreamFailures(t *testing.T) {
 
 func TestLaunchURLBelongsToGateway(t *testing.T) {
 	const gateway = "https://artifact.catsco.cc"
+	origins := []string{gateway}
 	allowed := []string{
 		"https://artifact.catsco.cc/_launch/abc?next=/saturday-demo/",
 		"https://ARTIFACT.CATSCO.CC/_launch/abc",
 	}
 	for _, launch := range allowed {
-		if !launchURLBelongsToGateway(launch, gateway) {
+		if !launchURLBelongsToGateway(launch, origins) {
 			t.Errorf("should be accepted: %s", launch)
 		}
 	}
@@ -220,10 +222,61 @@ func TestLaunchURLBelongsToGateway(t *testing.T) {
 		"//artifact.catsco.cc/_launch/abc",
 		"/_launch/abc",
 		"",
+		// The gateway's other domain is a foreign origin until it is listed.
+		"https://artifact.catsco.cn/_launch/abc",
 	}
 	for _, launch := range rejected {
-		if launchURLBelongsToGateway(launch, gateway) {
+		if launchURLBelongsToGateway(launch, origins) {
 			t.Errorf("should be rejected: %s", launch)
+		}
+	}
+
+	// Once the second public domain is configured, a launch on it is legitimate —
+	// that is the whole point of the list, and without it a `.cn` visitor would
+	// get a 502 instead of an identity.
+	both := []string{gateway, "https://artifact.catsco.cn"}
+	for _, launch := range []string{"https://artifact.catsco.cc/_launch/a", "https://artifact.catsco.cn/_launch/a"} {
+		if !launchURLBelongsToGateway(launch, both) {
+			t.Errorf("should be accepted once listed: %s", launch)
+		}
+	}
+	for _, launch := range []string{"https://evil.example/_launch/a", "https://artifact.catsco.com/_launch/a"} {
+		if launchURLBelongsToGateway(launch, both) {
+			t.Errorf("listing a second origin must not widen the rule: %s", launch)
+		}
+	}
+}
+
+func TestArtifactLaunchReadsEveryGatewayOrigin(t *testing.T) {
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_TOKEN", strings.Repeat("a", 32))
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_URLS", "")
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_URL", "https://artifact.catsco.cc")
+	handler := NewArtifactLaunchHandlerFromEnv()
+	if !handler.Enabled() || len(handler.launchOrigins) != 1 {
+		t.Fatalf("unset list must keep exactly the outbound origin, got %v", handler.launchOrigins)
+	}
+
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_URLS", " https://artifact.catsco.cn , ")
+	handler = NewArtifactLaunchHandlerFromEnv()
+	if !handler.Enabled() {
+		t.Fatal("a valid extra origin must be accepted")
+	}
+	if len(handler.launchOrigins) != 2 || handler.launchOrigins[1] != "https://artifact.catsco.cn" {
+		t.Fatalf("origins = %v", handler.launchOrigins)
+	}
+	if handler.gatewayURL != "https://artifact.catsco.cc" {
+		t.Fatalf("the outbound endpoint must not move: %s", handler.gatewayURL)
+	}
+
+	for _, bad := range []string{
+		"http://artifact.catsco.cn",
+		"https://artifact.catsco.cn/extra",
+		"https://artifact.catsco.cn?x=1",
+		"not-a-url",
+	} {
+		t.Setenv("CATSCO_ARTIFACT_GATEWAY_URLS", bad)
+		if NewArtifactLaunchHandlerFromEnv().Enabled() {
+			t.Fatalf("must be rejected: %s", bad)
 		}
 	}
 }

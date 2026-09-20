@@ -29,10 +29,14 @@ const (
 var artifactLaunchAppPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,47}$`)
 
 type ArtifactLaunchHandler struct {
-	gatewayURL   string
-	controlToken string
-	httpClient   *http.Client
-	configErr    error
+	gatewayURL string
+	// Origins the gateway may legitimately hand back. The outbound endpoint is a
+	// single URL, but the gateway answers on more than one public domain — one per
+	// platform site — and a launch has to be allowed to land on the visitor's own.
+	launchOrigins []string
+	controlToken  string
+	httpClient    *http.Client
+	configErr     error
 }
 
 type artifactLaunchRequest struct {
@@ -59,11 +63,34 @@ func NewArtifactLaunchHandlerFromEnv() *ArtifactLaunchHandler {
 		h.configErr = errors.New("artifact gateway is not configured")
 		return h
 	}
-	parsed, err := url.Parse(h.gatewayURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" {
+	if !validGatewayOrigin(h.gatewayURL) {
 		h.configErr = errors.New("invalid CATSCO_ARTIFACT_GATEWAY_URL")
+		return h
+	}
+	h.launchOrigins = append(h.launchOrigins, h.gatewayURL)
+	// The gateway's other public domains. Without them, a launch the gateway
+	// placed on its second domain is rejected here as a foreign origin — which is
+	// exactly the asymmetry this list exists to remove, and it would surface as a
+	// 502 rather than as a guest.
+	for _, raw := range strings.Split(os.Getenv("CATSCO_ARTIFACT_GATEWAY_URLS"), ",") {
+		origin := strings.TrimRight(strings.TrimSpace(raw), "/")
+		if origin == "" {
+			continue
+		}
+		if !validGatewayOrigin(origin) {
+			h.configErr = errors.New("invalid CATSCO_ARTIFACT_GATEWAY_URLS")
+			return h
+		}
+		h.launchOrigins = append(h.launchOrigins, origin)
 	}
 	return h
+}
+
+// validGatewayOrigin accepts an absolute https origin with no path or query, so
+// a configured value can be compared against a launch URL without normalisation.
+func validGatewayOrigin(origin string) bool {
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.Path == "" && parsed.RawQuery == ""
 }
 
 // Enabled reports whether the handler can serve requests, so callers can decide
@@ -184,7 +211,7 @@ func (h *ArtifactLaunchHandler) requestCode(ctx context.Context, app string, uid
 	if err := json.Unmarshal(responseBody, &upstream); err != nil || upstream.Code == "" {
 		return empty, http.StatusBadGateway, "artifact_gateway_unavailable"
 	}
-	if !launchURLBelongsToGateway(upstream.LaunchURL, h.gatewayURL) {
+	if !launchURLBelongsToGateway(upstream.LaunchURL, h.launchOrigins) {
 		return empty, http.StatusBadGateway, "artifact_gateway_unavailable"
 	}
 	return ArtifactLaunchResult{
@@ -195,17 +222,23 @@ func (h *ArtifactLaunchHandler) requestCode(ctx context.Context, app string, uid
 	}, http.StatusOK, ""
 }
 
-// launchURLBelongsToGateway requires the launch URL to be the same origin as the
-// gateway. A prefix comparison is not enough: `https://gateway.example.evil.com/`
-// shares the gateway's prefix while pointing somewhere else entirely.
-func launchURLBelongsToGateway(launchURL, gatewayURL string) bool {
+// launchURLBelongsToGateway requires the launch URL to sit on one of the
+// gateway's own origins. A prefix comparison is not enough:
+// `https://gateway.example.evil.com/` shares the gateway's prefix while pointing
+// somewhere else entirely.
+func launchURLBelongsToGateway(launchURL string, origins []string) bool {
 	launch, err := url.Parse(launchURL)
 	if err != nil || launch.Host == "" {
 		return false
 	}
-	gateway, err := url.Parse(gatewayURL)
-	if err != nil || gateway.Host == "" {
-		return false
+	for _, origin := range origins {
+		gateway, err := url.Parse(origin)
+		if err != nil || gateway.Host == "" {
+			continue
+		}
+		if launch.Scheme == gateway.Scheme && strings.EqualFold(launch.Host, gateway.Host) {
+			return true
+		}
 	}
-	return launch.Scheme == gateway.Scheme && strings.EqualFold(launch.Host, gateway.Host)
+	return false
 }
