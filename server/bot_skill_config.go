@@ -17,8 +17,12 @@ import (
 )
 
 const (
-	maxBotSkillConfigBodyBytes = 128 << 10
-	maxBotSkillRefs            = 256
+	// A Bot publishes its whole local workspace into its own BotDefinition as
+	// Bot-private packages, so these bounds cover every Skill an operator
+	// accumulated locally. Real workspaces already hold 374 entries, which is
+	// why the previous 256/128KiB pair could never be written.
+	maxBotSkillConfigBodyBytes = 512 << 10
+	maxBotSkillRefs            = 1024
 	maxBotSkillIDBytes         = 240
 	maxBotSkillVersionBytes    = 120
 )

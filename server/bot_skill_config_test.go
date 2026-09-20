@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -273,6 +276,36 @@ func TestBotDefinitionSkillsRejectStaleRevisionAndInvalidRefs(t *testing.T) {
 				t.Fatalf("status=%d body=%s want=%d", rec.Code, rec.Body.String(), tc.status)
 			}
 		})
+	}
+}
+
+func TestBotDefinitionSkillsAcceptFullOwnerWorkspace(t *testing.T) {
+	handler, _ := newBotSkillDefinitionTestHandler()
+	patch := func(count int) *httptest.ResponseRecorder {
+		refs := make([]types.BotSkillRef, 0, count)
+		for index := 0; index < count; index++ {
+			refs = append(refs, types.BotSkillRef{
+				Source:      "skillhub",
+				SkillID:     fmt.Sprintf("priv_%064x", index),
+				Version:     fmt.Sprintf("v_%s", testSkillHash[:32]),
+				ContentHash: testSkillHash,
+			})
+		}
+		payload, err := json.Marshal(map[string]any{"revision": 2, "skills": refs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPatch, "/api/bot/definition/skills", bytes.NewReader(payload))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(43)))
+		rec := httptest.NewRecorder()
+		handler.HandleRuntimeSkills(rec, req)
+		return rec
+	}
+	if rec := patch(maxBotSkillRefs); rec.Code != http.StatusOK {
+		t.Fatalf("full workspace status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := patch(maxBotSkillRefs + 1); rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-cap status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
