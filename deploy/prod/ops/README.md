@@ -72,8 +72,8 @@ CATSCO_WORKER_ARTIFACT_ENDPOINT=https://tos-cn-guangzhou.volces.com
 CATSCO_WORKER_ARTIFACT_ACCESS_KEY_ID=<read-only-ak>
 CATSCO_WORKER_ARTIFACT_SECRET_ACCESS_KEY=<read-only-sk>
 CATSCO_WORKER_ARTIFACT_CACHE_DIR=/var/lib/catsco-worker/.artifacts
-CATSCO_WORKER_HTTP_BASE_URL=https://app.catsco.cc   # 缺省
-CATSCO_WORKER_SERVER_URL=wss://app.catsco.cc/v0/channels  # 缺省
+CATSCO_WORKER_HTTP_BASE_URL=https://app.catsco.cn   # 缺省 .cn（可显式覆盖为 .cc）
+CATSCO_WORKER_SERVER_URL=wss://app.catsco.cn/v0/channels  # 缺省 .cn（可显式覆盖为 .cc）
 ```
 
 - `CTYUN_WORKER_*`（region/az/flavor/vpc/subnet/sg）与 XiaoBa-CLI bake 管线的

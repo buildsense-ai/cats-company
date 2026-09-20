@@ -329,7 +329,7 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.equal(lc.device.installationId, "inst-1");
   assert.equal(lc.account.token, "USERJWT");
   assert.equal(lc.account.uid, "7");
-  assert.equal(lc.endpoints.serverUrl, "wss://app.catsco.cc/v0/channels");
+  assert.equal(lc.endpoints.serverUrl, "wss://app.catsco.cn/v0/channels");
   assert.ok((state.keypairs || []).some(k => k.keyPairName === "worker-key-bot-a"), "key pair created");
 });
 
