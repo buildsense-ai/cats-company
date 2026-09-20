@@ -196,13 +196,6 @@ cd "$compose_dir"
 if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
   compose -f "$compose_file" --env-file "$env_file" pull server dreamina-worker web website
 fi
-# The first preview rollout used a standalone container while the production
-# stack did not yet declare the website service. Remove only that known
-# temporary container before Compose claims 127.0.0.1:28081; all application
-# containers remain managed by the existing Compose project.
-if docker inspect catsco-website-preview >/dev/null 2>&1; then
-  docker rm -f catsco-website-preview >/dev/null
-fi
 compose -f "$compose_file" --env-file "$env_file" up -d
 
 # Gateway tooling must understand both route kinds before public workers are

@@ -52,6 +52,7 @@ import sys
 
 path = Path(sys.argv[1])
 data = path.read_bytes()
+# The preview target is kept so deploys stay idempotent from any past state.
 patterns = [
     (b"server_name catsco.cc www.catsco.cc;\n    return 301 https://app.catsco.cc$request_uri;",
      b"server_name catsco.cc www.catsco.cc;\n    return 301 https://www.catsco.cc$request_uri;"),
