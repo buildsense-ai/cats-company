@@ -320,6 +320,7 @@ func TestLoginPersistentTokenRequiresExplicitRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
+	createdAt := time.Date(2026, time.September, 20, 8, 30, 0, 0, time.UTC)
 	handler := NewUserHandler(authStateTestStore{users: map[int64]*types.User{
 		6: {
 			ID:          6,
@@ -328,6 +329,7 @@ func TestLoginPersistentTokenRequiresExplicitRequest(t *testing.T) {
 			PassHash:    passHash,
 			AccountType: types.AccountHuman,
 			State:       0,
+			CreatedAt:   createdAt,
 		},
 	}})
 
@@ -356,12 +358,16 @@ func TestLoginPersistentTokenRequiresExplicitRequest(t *testing.T) {
 			var response struct {
 				Token      string `json:"token"`
 				Persistent bool   `json:"persistent"`
+				CreatedAt  string `json:"created_at"`
 			}
 			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 				t.Fatalf("decode response: %v", err)
 			}
 			if response.Persistent != tc.persistent {
 				t.Fatalf("persistent=%v want=%v", response.Persistent, tc.persistent)
+			}
+			if response.CreatedAt != createdAt.Format(time.RFC3339) {
+				t.Fatalf("created_at=%q want=%q", response.CreatedAt, createdAt.Format(time.RFC3339))
 			}
 			claims, err := ParseToken(response.Token)
 			if err != nil {

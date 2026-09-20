@@ -1178,8 +1178,31 @@ function TinodeWebApp({ location }) {
   }, [search, user?.uid]);
 
   const handleIdentityComplete = async (displayName) => {
-    const nextUser = await api.updateMe(displayName, user?.avatar_url || '');
-    persistUser(normalizeUserProfile(nextUser));
+    const updatedUser = normalizeUserProfile(
+      await api.updateMe(displayName, user?.avatar_url || ''),
+    );
+    let nextUser = updatedUser
+      ? {
+        ...user,
+        ...updatedUser,
+        created_at: updatedUser.created_at || user?.created_at || '',
+      }
+      : user;
+
+    // Older API deployments did not include created_at in the profile-update
+    // response. Refresh once before entering the workspace so the new-account
+    // guide cannot be suppressed by an incomplete cached profile.
+    if (!nextUser?.created_at) {
+      try {
+        const refreshedUser = normalizeUserProfile(await api.getMe());
+        if (refreshedUser) nextUser = refreshedUser;
+      } catch {
+        // The name was saved successfully; profile refresh can retry normally
+        // after navigation instead of trapping the user on this step.
+      }
+    }
+
+    persistUser(nextUser);
     window.dispatchEvent(new Event('cc:data-changed'));
     navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };

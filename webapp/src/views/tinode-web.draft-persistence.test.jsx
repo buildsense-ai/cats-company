@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   disconnectWS: vi.fn(),
   getMe: vi.fn(),
   redeemBotInviteCode: vi.fn(),
+  updateMe: vi.fn(),
 }));
 
 vi.mock('../api', () => {
@@ -30,7 +31,7 @@ vi.mock('../api', () => {
     unsubscribePush: vi.fn().mockResolvedValue({}),
     updateConversationTitle: vi.fn(),
     updateGroup: vi.fn(),
-    updateMe: vi.fn(),
+    updateMe: mocks.updateMe,
   };
   return {
     api,
@@ -198,6 +199,7 @@ beforeEach(() => {
   mocks.sessionRevision = 1;
   mocks.getMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', created_at: '2026-01-01T00:00:00Z' });
   mocks.redeemBotInviteCode.mockReset().mockResolvedValue({});
+  mocks.updateMe.mockReset().mockResolvedValue({ uid: 1, username: 'cats', display_name: 'Cats' });
   window.matchMedia = vi.fn(() => ({ matches: false }));
   localStorage.setItem('oc_user', JSON.stringify({ uid: 1, username: 'cats' }));
   container = document.createElement('div');
@@ -228,6 +230,45 @@ test('shows the onboarding card once for a new account entering the workspace', 
 
   await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
+});
+
+test('preserves new-account eligibility after completing the name onboarding', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+  mocks.updateMe.mockResolvedValue({ uid: 1, username: 'cats', display_name: 'Alex' });
+
+  await act(async () => {
+    renderWorkspace({ pathname: '/onboarding/name', search: '', hash: '' });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const input = container.querySelector('#catsco-display-name');
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  ).set;
+  await act(async () => {
+    valueSetter.call(input, 'Alex');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => {
+    container.querySelector('form').dispatchEvent(new Event('submit', {
+      bubbles: true,
+      cancelable: true,
+    }));
+    await Promise.resolve();
+  });
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+  });
+
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+  expect(JSON.parse(localStorage.getItem('oc_user'))).toMatchObject({
+    display_name: 'Alex',
+    created_at: '2026-09-18T00:00:01Z',
+  });
 });
 
 test('shows onboarding for an eligible new account over a restored active conversation', async () => {
