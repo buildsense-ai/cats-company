@@ -9,7 +9,6 @@ The Tencent CVM uses Let's Encrypt certificates managed by certbot:
 - `app.catsco.cc`
 - `catsco.cn` (including `www.catsco.cn` for the public website)
 - `catsco.cc` (including `www.catsco.cc` for the public website)
-- `preview.catsco.cc` (internal preview entry)
 - `wecom.catsco.cn` (WeCom callback and authenticated Agent API proxy)
 
 They are stored under `/etc/letsencrypt/live/...` and renew automatically via
@@ -24,9 +23,6 @@ to their `www` host, preserving the request path and query string.
 config only owns the root `.cc` HTTP-to-HTTPS redirect and is not replaced
 during a public-site rollout.
 
-`preview.catsco.cc` keeps its own certificate and vhost at
-`/etc/nginx/sites-available/catsco-preview` as an internal preview entry.
-
 Before enabling the updated config, verify DNS for `catsco.cn` and
 `www.catsco.cn` and extend the `catsco.cn` certificate without touching the
 live app certificate. Keep every existing SAN (`app.catsco.cn`,
@@ -35,13 +31,6 @@ through the Volcengine hook already installed on the host
 (`/usr/local/sbin/volcdns-certbot-hook`, with `VOLC_DNS_ZONE=catsco.cn`); the
 vhosts also expose `/.well-known/acme-challenge/` under `/var/www/letsencrypt`
 (the certbot webroot) so HTTP-01 keeps working as a fallback.
-
-For the internal preview, first create `preview.catsco.cc` in DNS pointing to
-the intended preview host, then issue its separate certificate:
-
-```bash
-sudo certbot certonly --nginx -d preview.catsco.cc
-```
 
 The WeCom middleware uses a separate HTTPS vhost on the CatsCompany gateway.
 Create `wecom.catsco.cn` in the Volcengine DNS zone, issue its independent
@@ -72,7 +61,6 @@ Install without enabling traffic:
 ```bash
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-app.conf /etc/nginx/sites-available/catscompany-app
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-public.conf /etc/nginx/sites-available/catsco-public
-sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-preview.conf /etc/nginx/sites-available/catsco-preview
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-api.conf /etc/nginx/sites-available/catscompany-api
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-safe-log.conf /etc/nginx/conf.d/catsco-safe-log.conf
 sudo nginx -t
@@ -83,7 +71,6 @@ Enable on the host:
 ```bash
 sudo ln -sfn /etc/nginx/sites-available/catscompany-app /etc/nginx/sites-enabled/catscompany-app
 sudo ln -sfn /etc/nginx/sites-available/catsco-public /etc/nginx/sites-enabled/catsco-public
-sudo ln -sfn /etc/nginx/sites-available/catsco-preview /etc/nginx/sites-enabled/catsco-preview
 sudo ln -sfn /etc/nginx/sites-available/catscompany-api /etc/nginx/sites-enabled/catscompany-api
 sudo nginx -t
 sudo systemctl reload nginx
