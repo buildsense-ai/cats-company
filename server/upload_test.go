@@ -419,7 +419,7 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 			}
 			bodyContent := "file body must not be rendered as the share page"
 			if ext == ".md" {
-				bodyContent = "# 学情总结\n\n| 指标 | 结果 |\n| --- | --- |\n| 完成率 | 96% |\n\n[危险链接](javascript:alert(1))\n\n<script>alert('unsafe')</script>"
+				bodyContent = "# 学情总结\n\n| 指标 | 结果 |\n| --- | --- |\n| 完成率 | 96% |\n\n![外链图表](https://example.com/chart.png)\n\n[危险链接](javascript:alert(1))\n\n<script>alert('unsafe')</script>"
 			}
 			if err := os.WriteFile(fullPath, []byte(bodyContent), 0644); err != nil {
 				t.Fatal(err)
@@ -463,10 +463,13 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 				t.Fatal("HTML preview iframe is not sandboxed")
 			}
 			if ext == ".md" {
-				for _, expected := range []string{`<article class="markdown-preview">`, "学情总结", "<table>"} {
+				for _, expected := range []string{`<article class="markdown-preview">`, "学情总结", "<table>", `<img src="https://example.com/chart.png" alt="外链图表">`, "main > header"} {
 					if !strings.Contains(body, expected) {
 						t.Fatalf("Markdown preview missing %q: %s", expected, body)
 					}
+				}
+				if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "img-src 'self' http: https: data:") {
+					t.Fatalf("Content-Security-Policy = %q, want external Markdown image sources", got)
 				}
 				if strings.Contains(body, "<script>alert('unsafe')</script>") {
 					t.Fatal("Markdown preview rendered raw HTML")
@@ -476,6 +479,90 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+func TestHandleServeFileRejectsOversizedMarkdownPreviews(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.md"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxMarkdownPreviewSize + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	requestPath := "/uploads/files/" + fileName + "?preview=1"
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.HandleServeFile(recorder, httptest.NewRequest(method, requestPath, nil))
+
+			if recorder.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusRequestEntityTooLarge)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if method == http.MethodHead && recorder.Body.Len() != 0 {
+				t.Fatalf("HEAD body length = %d, want 0", recorder.Body.Len())
+			}
+			if method == http.MethodGet && !strings.Contains(recorder.Body.String(), "limited to 5MB") {
+				t.Fatalf("GET body = %q, want preview size guidance", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestServeUploadPreviewPageHEADDoesNotReadMarkdown(t *testing.T) {
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodHead, "/uploads/files/20260428_0123456789abcdef0123456789abcdef.md?preview=1", nil)
+
+	serveUploadPreviewPage(
+		recorder,
+		request,
+		filepath.Join(t.TempDir(), "missing.md"),
+		"20260428_0123456789abcdef0123456789abcdef.md",
+		".md",
+		0,
+	)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("body length = %d, want 0", recorder.Body.Len())
+	}
+}
+
+func TestRenderMarkdownUploadPreviewEnforcesSizeLimit(t *testing.T) {
+	fullPath := filepath.Join(t.TempDir(), "large.md")
+	file, err := os.Create(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxMarkdownPreviewSize + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := renderMarkdownUploadPreview(fullPath); !errors.Is(err, errMarkdownPreviewTooLarge) {
+		t.Fatalf("error = %v, want errMarkdownPreviewTooLarge", err)
 	}
 }
 

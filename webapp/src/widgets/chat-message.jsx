@@ -3150,7 +3150,7 @@ export function FilePreviewPanel({
                 <ExternalLink size={18} />
               </button>
             ) : (
-              <a href={previewPageURL(url, file.name)} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
+              <a href={isMarkdown ? previewPageURL(url, file.name) : url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
                 <ExternalLink size={18} />
               </a>
             )}

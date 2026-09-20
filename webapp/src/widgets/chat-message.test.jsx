@@ -195,6 +195,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('sandbox')).toContain('allow-forms');
     expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
+    expect(
+      container.querySelector('a[aria-label="在新窗口打开"]').getAttribute('href'),
+    ).toBe('https://app.catsco.cc/uploads/files/report.html');
   });
 
   it('describes a failed preview as a temporary service problem when the media endpoint returns a gateway error', async () => {
@@ -3047,6 +3050,9 @@ describe('ChatMessage rich file rendering', () => {
       expect(panel.hasAttribute('role')).toBe(false);
       expect(panel.hasAttribute('aria-modal')).toBe(false);
       expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/desktop-report.pdf');
+      expect(
+        panel.querySelector('a[aria-label="在新窗口打开"]').getAttribute('href'),
+      ).toBe('/uploads/files/desktop-report.pdf');
       expect(panel.querySelector('.v3-mobile-pdf-preview-mock')).toBeNull();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });

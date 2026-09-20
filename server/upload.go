@@ -33,6 +33,8 @@ const (
 	maxUploadSizeMB           = 300
 	maxImageSize              = maxUploadSizeMB << 20
 	maxFileSize               = maxUploadSizeMB << 20
+	maxMarkdownPreviewSizeMB  = 5
+	maxMarkdownPreviewSize    = maxMarkdownPreviewSizeMB << 20
 	uploadDir                 = "uploads"
 	rawUploadQueryParam       = "raw"
 	rawUploadQueryValue       = "1"
@@ -571,7 +573,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 			http.NotFound(w, r)
 			return
 		}
-		serveUploadPreviewPage(w, r, fullPath, fileName, ext)
+		serveUploadPreviewPage(w, r, fullPath, fileName, ext, fileInfo.Size())
 		return
 	}
 
@@ -597,7 +599,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	http.ServeFile(w, r, fullPath)
 }
 
-func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fileName, ext string) {
+func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fileName, ext string, fileSize int64) {
 	publicOrigin, err := configuredPublicBaseURL()
 	if err != nil {
 		w.Header().Set("Cache-Control", "no-store")
@@ -617,6 +619,24 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 	if isMarkdown {
 		kind = "MARKDOWN"
 	}
+	if isMarkdown && fileSize > maxMarkdownPreviewSize {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		if r.Method != http.MethodHead {
+			_, _ = fmt.Fprintf(w, "Markdown preview is limited to %dMB. Download the original file instead.\n", maxMarkdownPreviewSizeMB)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; media-src 'self'; img-src 'self' http: https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	isVideo := isInlineVideoExt(ext)
 	if isVideo {
 		kind = "VIDEO"
@@ -658,18 +678,15 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 		markdownHTML, renderErr := renderMarkdownUploadPreview(fullPath)
 		if renderErr != nil {
 			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			if errors.Is(renderErr, errMarkdownPreviewTooLarge) {
+				http.Error(w, fmt.Sprintf("Markdown preview is limited to %dMB. Download the original file instead.", maxMarkdownPreviewSizeMB), http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "preview unavailable", http.StatusInternalServerError)
 			return
 		}
 		previewElement = `<article class="markdown-preview">` + markdownHTML + `</article>`
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
-	if r.Method == http.MethodHead {
-		w.WriteHeader(http.StatusOK)
-		return
 	}
 
 	_, _ = fmt.Fprintf(w, `<!doctype html>
@@ -698,25 +715,31 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
     :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f3f7f5; color: #243a33; }
     main { display: grid; gap: 16px; min-height: 100vh; box-sizing: border-box; padding: 24px; }
-    header { display: grid; gap: 4px; }
-    h1 { margin: 0; font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
-    p { margin: 0; color: #60716b; font-size: 14px; }
+    main > header { display: grid; gap: 4px; }
+    main > header > h1 { margin: 0; font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
+    main > header > p { margin: 0; color: #60716b; font-size: 14px; }
     iframe, video, .markdown-preview { display: block; width: 100%%; min-height: min(72vh, 900px); box-sizing: border-box; border: 0; border-radius: 12px; background: #fdfefd; }
     video { max-height: min(72vh, 900px); object-fit: contain; }
-    .markdown-preview { padding: clamp(20px, 4vw, 52px); overflow-wrap: anywhere; line-height: 1.7; }
+    .markdown-preview { max-width: 72ch; margin-inline: auto; padding: clamp(20px, 4vw, 52px); color: #314b42; font-size: 16px; line-height: 1.75; overflow-wrap: anywhere; }
     .markdown-preview > :first-child { margin-top: 0; }
     .markdown-preview > :last-child { margin-bottom: 0; }
-    .markdown-preview h1, .markdown-preview h2, .markdown-preview h3 { line-height: 1.3; }
+    .markdown-preview h1, .markdown-preview h2, .markdown-preview h3, .markdown-preview h4, .markdown-preview h5, .markdown-preview h6 { margin: 1.6em 0 0.6em; color: #243a33; line-height: 1.3; }
+    .markdown-preview h1 { font-size: 2rem; }
+    .markdown-preview h2 { font-size: 1.5rem; }
+    .markdown-preview h3 { font-size: 1.25rem; }
+    .markdown-preview p, .markdown-preview ul, .markdown-preview ol { margin: 0 0 1em; }
+    .markdown-preview a { color: #176b57; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+    .markdown-preview a:focus-visible, nav > a:focus-visible { outline: 3px solid #8fb8aa; outline-offset: 3px; }
     .markdown-preview pre { overflow: auto; padding: 16px; border-radius: 10px; background: #eef4f1; }
-    .markdown-preview code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .markdown-preview code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.9em; }
     .markdown-preview :not(pre) > code { padding: 2px 5px; border-radius: 5px; background: #eef4f1; }
     .markdown-preview table { display: block; max-width: 100%%; overflow-x: auto; border-collapse: collapse; }
     .markdown-preview th, .markdown-preview td { padding: 8px 12px; border: 1px solid #cedbd6; text-align: left; }
-    .markdown-preview blockquote { margin-inline: 0; padding-left: 16px; border-left: 4px solid #8fb8aa; color: #60716b; }
-    .markdown-preview img { max-width: 100%%; height: auto; }
+    .markdown-preview blockquote { margin-inline: 0; padding: 4px 0 4px 16px; border-inline-start: 1px solid #8fb8aa; color: #526b62; }
+    .markdown-preview img { display: block; max-width: 100%%; height: auto; border-radius: 8px; }
     nav { display: flex; flex-wrap: wrap; gap: 12px; }
-    a { display: inline-flex; align-items: center; min-height: 40px; box-sizing: border-box; padding: 0 16px; border-radius: 10px; background: #fdfefd; color: #176b57; font-weight: 600; text-decoration: none; }
-    a[download] { background: #176b57; color: #fdfefd; }
+    nav > a { display: inline-flex; align-items: center; min-height: 40px; box-sizing: border-box; padding: 0 16px; border-radius: 10px; background: #fdfefd; color: #176b57; font-weight: 600; text-decoration: none; }
+    nav > a[download] { background: #176b57; color: #fdfefd; }
   </style>
 </head>
 <body>
@@ -738,10 +761,21 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 		escapedResourceURL, escapedDownloadURL)
 }
 
+var errMarkdownPreviewTooLarge = errors.New("markdown preview exceeds size limit")
+
 func renderMarkdownUploadPreview(fullPath string) (string, error) {
-	source, err := os.ReadFile(fullPath)
+	file, err := os.Open(fullPath)
 	if err != nil {
 		return "", err
+	}
+	defer file.Close()
+
+	source, err := io.ReadAll(io.LimitReader(file, maxMarkdownPreviewSize+1))
+	if err != nil {
+		return "", err
+	}
+	if len(source) > maxMarkdownPreviewSize {
+		return "", errMarkdownPreviewTooLarge
 	}
 
 	var rendered bytes.Buffer
