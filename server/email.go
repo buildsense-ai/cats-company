@@ -158,7 +158,9 @@ func tencentSESRequiredConfig() (secretID, secretKey, region, fromEmail, templat
 	secretKey = envTrim("TENCENTCLOUD_SECRET_KEY")
 	region = envTrim("TENCENTCLOUD_REGION")
 	if region == "" {
-		region = "ap-guangzhou"
+		// The SES identities for this account live in the Hong Kong region.
+		// Falling back to a mainland region would silently fail every send.
+		region = "ap-hongkong"
 	}
 	fromEmail = envTrim("TENCENT_SES_FROM_EMAIL")
 	templateID = envTrim("TENCENT_SES_TEMPLATE_ID")
