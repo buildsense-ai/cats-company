@@ -477,13 +477,15 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 					`width: min(100%, 800px)`,
 					`--cc-bg: #151718`,
 					"position: sticky",
-					`aria-label="打开原文件"`,
 					`aria-label="下载文件"`,
 					`<svg aria-hidden="true"`,
 				} {
 					if !strings.Contains(body, expected) {
 						t.Fatalf("Markdown preview missing %q: %s", expected, body)
 					}
+				}
+				if strings.Contains(body, `aria-label="打开原文件"`) {
+					t.Fatal("Markdown preview includes a redundant open-original action")
 				}
 				if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "img-src 'self' http: https: data:") {
 					t.Fatalf("Content-Security-Policy = %q, want external Markdown image sources", got)

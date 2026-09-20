@@ -780,7 +780,7 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
       align-content: center;
       min-width: 0;
       min-height: 68px;
-      padding: 12px 112px;
+      padding: 12px 64px;
       background: var(--cc-bg);
       text-align: center;
     }
@@ -877,26 +877,26 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 
     @media (max-width: 640px) {
       .markdown-preview-page main {
-        grid-template: "header" auto "actions" auto "document" 1fr / minmax(0, 1fr);
+        grid-template: "toolbar" auto "document" 1fr / minmax(0, 1fr);
         width: 100%%;
         padding: 0;
       }
       .markdown-preview-page main > header {
-        grid-area: header;
+        grid-area: toolbar;
         min-height: 62px;
-        padding: 11px 20px;
+        padding: 11px 64px;
         border-bottom: 1px solid var(--cc-border);
       }
       .markdown-preview-page main > header > h1 { font-size: 15px; }
       .markdown-preview-page nav {
-        grid-area: actions;
-        position: static;
-        justify-self: center;
-        padding: 10px 16px;
+        grid-area: toolbar;
+        position: sticky;
+        justify-self: end;
+        padding: 9px 12px;
       }
       .markdown-preview-page nav > a { width: 44px; height: 44px; }
       .markdown-preview-page .markdown-preview {
-        min-height: calc(100vh - 126px);
+        min-height: calc(100vh - 62px);
         padding: 36px 20px 52px;
         border-right: 0;
         border-left: 0;
@@ -919,10 +919,6 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
     </header>
     %s
     <nav aria-label="文件操作">
-      <a href="%s" target="_blank" rel="noopener noreferrer" aria-label="打开原文件" title="打开原文件">
-        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-        <span>打开原文件</span>
-      </a>
       <a href="%s" download aria-label="下载文件" title="下载文件">
         <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
         <span>下载文件</span>
@@ -933,7 +929,7 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 </html>
 `, escapedName, escapedPageURL, escapedKind, escapedOGType, mediaMetadata, escapedName, escapedKind, escapedPageURL, escapedOGImageURL,
 		escapedName, escapedKind, escapedOGImageURL, bodyClass, escapedName, escapedKind, previewElement,
-		escapedResourceURL, escapedDownloadURL)
+		escapedDownloadURL)
 }
 
 var errMarkdownPreviewTooLarge = errors.New("markdown preview exceeds size limit")
