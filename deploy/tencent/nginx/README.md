@@ -7,37 +7,38 @@ The Tencent CVM uses Let's Encrypt certificates managed by certbot:
 
 - `api.catsco.cc`
 - `app.catsco.cc`
+- `catsco.cn` (including `www.catsco.cn` for the public website)
 - `catsco.cc` (including `www.catsco.cc` for the public website)
-- `preview.catsco.cc` (temporary public-site preview)
+- `preview.catsco.cc` (internal preview entry)
 - `wecom.catsco.cn` (WeCom callback and authenticated Agent API proxy)
 
 They are stored under `/etc/letsencrypt/live/...` and renew automatically via
-the certbot timer. The root-domain certificate must contain both
-`catsco.cc` and `www.catsco.cc`. The temporary root HTTPS server is installed
-separately as `/etc/nginx/sites-available/catsco-public` and redirects these
-names to `preview.catsco.cc`; the preview vhost proxies to the public website
-container on `127.0.0.1:28081`.
+the certbot timer. The `catsco.cn` certificate must contain both `catsco.cn`
+and `www.catsco.cn`; the `catsco.cc` certificate must contain both `catsco.cc`
+and `www.catsco.cc`. The public HTTPS server is installed separately as
+`/etc/nginx/sites-available/catsco-public`: `www.catsco.cn` (primary) and
+`www.catsco.cc` (alternate) proxy to the public website container on
+`127.0.0.1:28081`, while the root domains `catsco.cn` and `catsco.cc` redirect
+to their `www` host, preserving the request path and query string.
 `app.catsco.cc` remains the authenticated workspace on `127.0.0.1:28080`; its
-config only owns the root HTTP-to-HTTPS redirect and is not replaced during a
-public-site rollout.
+config only owns the root `.cc` HTTP-to-HTTPS redirect and is not replaced
+during a public-site rollout.
 
-The temporary preview uses its own certificate and vhost at
-`/etc/nginx/sites-available/catsco-preview`. It must point to a server whose
-备案/主体 relationship is valid for the intended audience; adding a subdomain
-does not change the registrant of `catsco.cc`.
+`preview.catsco.cc` keeps its own certificate and vhost at
+`/etc/nginx/sites-available/catsco-preview` as an internal preview entry.
 
-While this temporary preview is active, both HTTP and HTTPS requests for
-`catsco.cc` and `www.catsco.cc` redirect to `preview.catsco.cc`, preserving the
-request path and query string. `app.catsco.cc` remains unchanged.
-
-Before enabling the updated config, verify DNS for both root names and issue
-the certificate without changing the live app certificate:
+Before enabling the updated config, verify DNS for `catsco.cn` and
+`www.catsco.cn` and extend the certificate without touching the live app
+certificate. List every existing SAN of the `catsco.cn` certificate (for
+example `app.catsco.cn`, `api.catsco.cn`, `relay.catsco.cn`) and keep them in
+the command:
 
 ```bash
-sudo certbot certonly --nginx -d catsco.cc -d www.catsco.cc
+sudo certbot certonly --nginx --expand \
+  -d catsco.cn -d www.catsco.cn -d app.catsco.cn -d api.catsco.cn -d relay.catsco.cn
 ```
 
-For the temporary preview, first create `preview.catsco.cc` in DNS pointing to
+For the internal preview, first create `preview.catsco.cc` in DNS pointing to
 the intended preview host, then issue its separate certificate:
 
 ```bash
@@ -59,9 +60,9 @@ callback authenticates with the WeCom signature protocol; Agent endpoints
 still require their API key. Traffic reaches the Foshan middleware over the
 WireGuard address `10.254.0.2:12345`.
 
-The deployment helper will leave the existing routing unchanged until
-`/etc/letsencrypt/live/preview.catsco.cc/fullchain.pem` exists and
-`127.0.0.1:28081/health` succeeds.
+The deployment helper leaves the existing routing unchanged until the
+`catsco.cn` certificate exists and covers `www.catsco.cn`, the `catsco.cc`
+certificate exists, and `127.0.0.1:28081/health` succeeds.
 
 Then verify `127.0.0.1:28081/health`, install the independent public config,
 run `sudo nginx -t`, and reload nginx. If the certificate or website container

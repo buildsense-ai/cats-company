@@ -6,7 +6,8 @@ source_config="$root/compose/catsco-public.conf"
 target_config="/etc/nginx/sites-available/catsco-public"
 enabled_link="/etc/nginx/sites-enabled/catsco-public"
 app_config="/etc/nginx/sites-available/catscompany-app"
-certificate="/etc/letsencrypt/live/catsco.cc/fullchain.pem"
+certificate="${PUBLIC_WEBSITE_CERTIFICATE:-/etc/letsencrypt/live/catsco.cn/fullchain.pem}"
+legacy_certificate="${PUBLIC_WEBSITE_LEGACY_CERTIFICATE:-/etc/letsencrypt/live/catsco.cc/fullchain.pem}"
 website_health="${PROD_HEALTH_WEBSITE:-http://127.0.0.1:28081/health}"
 
 if [ ! -s "$source_config" ]; then
@@ -14,8 +15,13 @@ if [ ! -s "$source_config" ]; then
   exit 1
 fi
 
-if ! sudo test -s "$certificate"; then
-  echo "public website certificate is not installed; keeping current nginx config" >&2
+if ! sudo test -s "$certificate" || ! sudo test -s "$legacy_certificate"; then
+  echo "public website certificates are not installed; keeping current nginx config" >&2
+  exit 0
+fi
+
+if ! sudo openssl x509 -noout -checkhost www.catsco.cn -in "$certificate" >/dev/null 2>&1; then
+  echo "public website certificate does not cover www.catsco.cn; keeping current nginx config" >&2
   exit 0
 fi
 
@@ -36,7 +42,7 @@ sudo cp -p "$source_config" "$public_candidate"
 sudo cp -p "$app_config" "$app_candidate"
 
 # Preserve the production app config and only point its root HTTP redirect at
-# the temporary preview. Root HTTPS remains in an independent config file.
+# the public website. Root HTTPS remains in an independent config file.
 if ! sudo python3 - "$app_candidate" <<'PY'
 from pathlib import Path
 import sys
@@ -45,13 +51,17 @@ path = Path(sys.argv[1])
 data = path.read_bytes()
 patterns = [
     (b"server_name catsco.cc www.catsco.cc;\n    return 301 https://app.catsco.cc$request_uri;",
-     b"server_name catsco.cc www.catsco.cc;\n    return 301 https://preview.catsco.cc$request_uri;"),
+     b"server_name catsco.cc www.catsco.cc;\n    return 301 https://www.catsco.cc$request_uri;"),
     (b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://app.catsco.cc$request_uri;",
-     b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://preview.catsco.cc$request_uri;"),
+     b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://www.catsco.cc$request_uri;"),
+    (b"server_name catsco.cc www.catsco.cc;\n    return 301 https://preview.catsco.cc$request_uri;",
+     b"server_name catsco.cc www.catsco.cc;\n    return 301 https://www.catsco.cc$request_uri;"),
+    (b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://preview.catsco.cc$request_uri;",
+     b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://www.catsco.cc$request_uri;"),
     (b"server_name catsco.cc www.catsco.cc;\n    return 301 https://$host$request_uri;",
-     b"server_name catsco.cc www.catsco.cc;\n    return 301 https://preview.catsco.cc$request_uri;"),
+     b"server_name catsco.cc www.catsco.cc;\n    return 301 https://www.catsco.cc$request_uri;"),
     (b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://$host$request_uri;",
-     b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://preview.catsco.cc$request_uri;"),
+     b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://www.catsco.cc$request_uri;"),
 ]
 for old, new in patterns:
     count = data.count(old)
@@ -62,8 +72,8 @@ for old, new in patterns:
         path.write_bytes(data)
         break
 else:
-    if (b"server_name catsco.cc www.catsco.cc;\n    return 301 https://preview.catsco.cc$request_uri;" not in data
-            and b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://preview.catsco.cc$request_uri;" not in data):
+    if (b"server_name catsco.cc www.catsco.cc;\n    return 301 https://www.catsco.cc$request_uri;" not in data
+            and b"server_name catsco.cc www.catsco.cc;\r\n    return 301 https://www.catsco.cc$request_uri;" not in data):
         raise SystemExit("root HTTP redirect was not found in app nginx config")
 PY
 then
