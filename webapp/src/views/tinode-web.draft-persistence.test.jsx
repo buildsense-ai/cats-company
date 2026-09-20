@@ -230,6 +230,25 @@ test('shows the onboarding card once for a new account entering the workspace', 
   expect(container.querySelector('[data-testid="desktop-connect-modal"]')).toBeNull();
 });
 
+test('shows onboarding for an eligible new account over a restored active conversation', async () => {
+  setCachedUser('2026-09-18T00:00:01Z');
+  localStorage.setItem('v3_last_topic:1', JSON.stringify({
+    topicId: 'p2p_1_2',
+    name: 'Restored conversation',
+    isGroup: false,
+  }));
+
+  await act(async () => {
+    renderWorkspace();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+  expect(container.querySelector('[aria-label="消息草稿"]')?.dataset.topic).toBe('p2p_1_2');
+  expect(container.querySelector('[aria-label="新任务草稿"]')).toBeNull();
+});
+
 test('restores empty-workspace composer focus after automatic onboarding closes', async () => {
   setCachedUser('2026-09-18T00:00:01Z');
   await act(async () => {
@@ -426,6 +445,39 @@ test.each(['Escape', 'close button'])('restores active conversation composer foc
 
   expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
   expect(document.activeElement).toBe(composer);
+});
+
+test('restores SkillHub entry focus when onboarding replay closes over SkillHub', async () => {
+  setCachedUser('2026-09-17T23:59:59Z');
+  await act(async () => renderWorkspace());
+  const skillHubEntry = container.querySelector('[aria-label="打开 SkillHub"]');
+  await act(async () => skillHubEntry.click());
+  expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
+
+  const profileTrigger = container.querySelector('[aria-label="cats，打开个人菜单"]');
+  await act(async () => profileTrigger.click());
+  const desktopEntry = [...document.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.textContent.includes('CatsCo 桌面端'));
+  await act(async () => desktopEntry.click());
+  const desktopModal = await vi.waitFor(() => {
+    const modal = container.querySelector('[data-testid="desktop-connect-modal"]');
+    expect(modal).not.toBeNull();
+    return modal;
+  });
+  await act(async () => {
+    [...desktopModal.querySelectorAll('button')]
+      .find((button) => button.textContent === '新手指引').click();
+  });
+  await vi.waitFor(() => expect(document.querySelector('#workspace-onboarding-title')).not.toBeNull());
+
+  await act(async () => {
+    document.querySelector('[aria-label="稍后设置助手"]').click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+
+  expect(document.querySelector('#workspace-onboarding-title')).toBeNull();
+  expect(container.querySelector('[data-testid="skillhub-view"]')).not.toBeNull();
+  expect(document.activeElement).toBe(skillHubEntry);
 });
 
 test('replays onboarding from the computer entry over an active conversation and hands off download', async () => {

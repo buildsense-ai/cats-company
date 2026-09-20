@@ -191,7 +191,7 @@ export default function WorkspaceOnboardingCard({
     onDismiss?.();
     requestAnimationFrame(() => {
       const composer = document.querySelector(
-        '.cc-empty-composer-wrap textarea:not([disabled]), textarea.v3-composer-input:not([disabled])',
+        '.cc-empty-composer-wrap textarea:not([disabled]), textarea.v3-composer-input:not([disabled]), .cc-sidebar-skillhub-entry[aria-current="page"]:not([disabled])',
       );
       if (composer?.isConnected) composer.focus();
     });
