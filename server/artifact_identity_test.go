@@ -11,6 +11,7 @@ import (
 
 func testIdentityConfig() ArtifactIdentityConfig {
 	return ArtifactIdentityConfig{
+		OptIn:   true,
 		Domains: []string{".catsco.cc", ".catsco.cn"},
 		TTL:     time.Hour,
 		Secure:  true,
@@ -44,12 +45,13 @@ func identityRequest(host, cookie string) *http.Request {
 func normalizeDomain(value string) string { return strings.TrimPrefix(value, ".") }
 
 func TestArtifactIdentityConfigDefaultsAndEnablement(t *testing.T) {
+	t.Setenv("CATSCO_ARTIFACT_IDENTITY_ENABLED", "")
 	t.Setenv("CATSCO_ARTIFACT_IDENTITY_DOMAINS", "")
 	t.Setenv("CATSCO_ARTIFACT_GATEWAY_TOKEN", "")
 	t.Setenv("CATSCO_ARTIFACT_IDENTITY_TTL", "")
 	config := ArtifactIdentityConfigFromEnv()
 	if config.Enabled() {
-		t.Fatal("without the shared token the feature must stay off")
+		t.Fatal("nothing configured must stay off")
 	}
 	if len(config.Domains) != 2 || config.Domains[0] != ".catsco.cc" || config.Domains[1] != ".catsco.cn" {
 		t.Fatalf("default domains = %v, want both public domains", config.Domains)
@@ -58,9 +60,16 @@ func TestArtifactIdentityConfigDefaultsAndEnablement(t *testing.T) {
 		t.Fatal("Secure must default to true")
 	}
 
+	// A shared token alone must not switch a cross-subdomain identity cookie on:
+	// that token is also configured for the unrelated launch endpoint.
 	t.Setenv("CATSCO_ARTIFACT_GATEWAY_TOKEN", "token")
+	if ArtifactIdentityConfigFromEnv().Enabled() {
+		t.Fatal("the shared token alone must not enable the identity cookie")
+	}
+
+	t.Setenv("CATSCO_ARTIFACT_IDENTITY_ENABLED", "1")
 	if !ArtifactIdentityConfigFromEnv().Enabled() {
-		t.Fatal("with the token the feature must be enabled")
+		t.Fatal("with the explicit opt-in and the token the feature must be enabled")
 	}
 	t.Setenv("CATSCO_ARTIFACT_IDENTITY_DOMAINS", ".example.test")
 	t.Setenv("CATSCO_ARTIFACT_IDENTITY_TTL", "30m")
@@ -173,6 +182,21 @@ func TestArtifactIdentityIssueSkipsFreshCookiesAndForeignHosts(t *testing.T) {
 	config.Issue(refreshed, stale, 363)
 	if len(refreshed.Result().Cookies()) != 1 {
 		t.Error("a cookie close to expiry must be reissued")
+	}
+
+	// A different account on the same browser must replace the identity at once,
+	// even though the existing cookie is still fresh.
+	switched := identityHostRequest("app.catsco.cc")
+	switched.AddCookie(issued[0])
+	reissued := httptest.NewRecorder()
+	config.Issue(reissued, switched, 441)
+	replacement := reissued.Result().Cookies()
+	if len(replacement) != 1 {
+		t.Fatal("a different uid must be written immediately, not after the renewal point")
+	}
+	uid, _, ok := config.readCookie(identityRequest("app.catsco.cc", replacement[0].Value))
+	if !ok || uid != 441 {
+		t.Fatalf("the reissued cookie must carry the new uid, got uid=%d ok=%v", uid, ok)
 	}
 
 	foreign := httptest.NewRecorder()

@@ -32,9 +32,12 @@ const (
 )
 
 // ArtifactIdentityConfig is the policy for the domain cookie. Disabled unless
-// both domains and the shared token are configured, so the default deployment
-// behaves exactly as before.
+// explicitly switched on, and then only with both domains and the shared token
+// configured. Opt-in matters here: configuring the gateway token for another
+// Artifact feature must not silently start handing out a cross-subdomain
+// identity cookie.
 type ArtifactIdentityConfig struct {
+	OptIn   bool
 	Domains []string
 	TTL     time.Duration
 	Secure  bool
@@ -43,6 +46,7 @@ type ArtifactIdentityConfig struct {
 
 func ArtifactIdentityConfigFromEnv() ArtifactIdentityConfig {
 	config := ArtifactIdentityConfig{
+		OptIn:  os.Getenv("CATSCO_ARTIFACT_IDENTITY_ENABLED") == "1",
 		TTL:    artifactIdentityDefaultTTL,
 		Secure: os.Getenv("CATSCO_ARTIFACT_IDENTITY_INSECURE") != "1",
 		Token:  strings.TrimSpace(os.Getenv("CATSCO_ARTIFACT_GATEWAY_TOKEN")),
@@ -66,7 +70,7 @@ func ArtifactIdentityConfigFromEnv() ArtifactIdentityConfig {
 }
 
 func (c ArtifactIdentityConfig) Enabled() bool {
-	return len(c.Domains) > 0 && c.Token != ""
+	return c.OptIn && len(c.Domains) > 0 && c.Token != ""
 }
 
 func artifactIdentitySign(payload string) string {
@@ -76,13 +80,16 @@ func artifactIdentitySign(payload string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// Issue writes the cookie for one user. A cookie that is still fresh is left
-// alone, so calling this on every authenticated request stays cheap.
+// Issue writes the cookie for one user. A cookie that is still fresh *and
+// belongs to the same user* is left alone, so calling this on every
+// authenticated request stays cheap. The uid comparison matters: without it, a
+// second account signing in on the same browser would keep presenting the first
+// account's identity until the cookie happened to come up for renewal.
 func (c ArtifactIdentityConfig) Issue(w http.ResponseWriter, r *http.Request, uid int64) {
 	if !c.Enabled() || uid <= 0 {
 		return
 	}
-	if _, exp, ok := c.readCookie(r); ok && time.Until(exp) > c.TTL/2 {
+	if current, exp, ok := c.readCookie(r); ok && current == uid && time.Until(exp) > c.TTL/2 {
 		return
 	}
 	domain := c.domainForHost(r.Host)
