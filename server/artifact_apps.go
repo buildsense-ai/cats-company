@@ -186,9 +186,9 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		writeArtifactAppsFailure(w, failure)
 		return
 	} else if taken {
-		// Existence is not a secret (the application list is public), so a
-		// conflict is reported as one instead of being disguised as a 404.
-		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusConflict, value: "artifact_app_id_taken"})
+		// The same answer GET and DELETE give, so a caller cannot use this route
+		// to tell "somebody else has it" from "nothing has it".
+		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusNotFound, value: "artifact_app_not_found"})
 		return
 	}
 
@@ -343,7 +343,8 @@ func (h *ArtifactAppsHandler) ownedByAnother(ctx context.Context, uid int64, id 
 	return false, nil
 }
 
-func (h *ArtifactAppsHandler) listApps(ctx context.Context, uid int64) ([]artifactApp, *artifactAppsFailure) {	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
+func (h *ArtifactAppsHandler) listApps(ctx context.Context, uid int64) ([]artifactApp, *artifactAppsFailure) {
+	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
 	if failure != nil {
 		return nil, failure
 	}
@@ -439,6 +440,11 @@ func artifactAppsGatewayFailure(status int, body []byte) *artifactAppsFailure {
 		}
 		return &artifactAppsFailure{status: http.StatusBadRequest, value: value}
 	case http.StatusNotFound:
+		return &artifactAppsFailure{status: http.StatusNotFound, value: "artifact_app_not_found"}
+	case http.StatusConflict:
+		// The gateway refused a cross-account update. That only happens if the
+		// ownership pre-check raced with another registration, and it must read
+		// the same as "not yours" rather than as a gateway fault.
 		return &artifactAppsFailure{status: http.StatusNotFound, value: "artifact_app_not_found"}
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return &artifactAppsFailure{status: http.StatusBadGateway, value: "artifact_gateway_unauthorized"}

@@ -410,10 +410,12 @@ func TestArtifactAppsRegisterRefusesAnotherAccountsID(t *testing.T) {
 	handler.HandleApps(recorder, artifactAppsRequest(441, http.MethodPost, "/api/artifacts/apps",
 		`{"id":"taken","title":"我的看板","publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA example"}`))
 
-	if recorder.Code != http.StatusConflict {
+	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "artifact_app_id_taken") {
+	// The same answer GET and DELETE give, so this route cannot be used to tell
+	// "somebody else has it" from "nothing has it".
+	if !strings.Contains(recorder.Body.String(), "artifact_app_not_found") {
 		t.Errorf("body = %s", recorder.Body.String())
 	}
 	// Proving ownership is a read: nothing may reach the gateway's write path.
