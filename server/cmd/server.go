@@ -461,6 +461,10 @@ func main() {
 	artifactTaskHandler := server.NewArtifactTaskHandler(hub)
 	artifactRuntimeHandler := server.NewArtifactRuntimeHandler(hub, db)
 	artifactLaunchHandler := server.NewArtifactLaunchHandlerFromEnv()
+	// Publishing an Artifact application goes through the platform: the bot
+	// authenticates with its own login and the platform uses the shared gateway
+	// token, so a bot never needs write access to the gateway configuration.
+	artifactAppsHandler := server.NewArtifactAppsHandlerFromEnv()
 	// Optional: issue the domain-level Artifact identity cookie and serve the
 	// read-only lookup the gateway uses. Off unless configured.
 	server.ConfigureArtifactIdentity(server.ArtifactIdentityConfigFromEnv())
@@ -817,6 +821,11 @@ func main() {
 	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("POST /api/artifacts/launch", jwtAuthWithDB(artifactLaunchHandler.HandleLaunch))
 	mux.HandleFunc("GET /api/artifacts/identity", artifactIdentityHandler.HandleIdentity)
+	// The apps routes sit next to the other artifact routes and are more specific
+	// than the /api/artifacts/ subtree above, which would otherwise read "apps"
+	// as an artifact id.
+	mux.HandleFunc("/api/artifacts/apps", jwtAuthWithDB(artifactAppsHandler.HandleApps))
+	mux.HandleFunc("/api/artifacts/apps/", jwtAuthWithDB(artifactAppsHandler.HandleApps))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("POST /api/agents/{uid}/knowledge/handoff", jwtAuthWithDB(agentHandler.IssueKnowledgeWikiHandoff))
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/manifest", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiManifest, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiManifest)))
