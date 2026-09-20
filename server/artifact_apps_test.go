@@ -213,6 +213,22 @@ func TestArtifactAppsRequireLoginThroughTheMiddleware(t *testing.T) {
 	}
 }
 
+// The registration path reads the application list before writing, to prove the
+// id is not already somebody else's, so the write is the last call rather than
+// the only one.
+func artifactAppsWrite(t *testing.T, gateway *artifactAppsGateway) artifactAppsCall {
+	t.Helper()
+	calls := gateway.recorded()
+	if len(calls) == 0 {
+		t.Fatal("the gateway was never called")
+	}
+	last := calls[len(calls)-1]
+	if last.method != http.MethodPost {
+		t.Fatalf("last upstream call = %s %s, want POST", last.method, last.path)
+	}
+	return last
+}
+
 func TestArtifactAppsRegisterForwardsTheSessionOwner(t *testing.T) {
 	gateway := newArtifactAppsGateway(t)
 	handler := gateway.handler()
@@ -224,16 +240,17 @@ func TestArtifactAppsRegisterForwardsTheSessionOwner(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	calls := gateway.recorded()
-	if len(calls) != 1 {
-		t.Fatalf("gateway calls = %d, want 1", len(calls))
+	if len(calls) != 2 || calls[0].method != http.MethodGet {
+		t.Fatalf("gateway calls = %+v, want an ownership lookup then the write", calls)
 	}
-	if calls[0].method != http.MethodPost || calls[0].path != artifactAppsGatewayPath {
-		t.Errorf("upstream request = %s %s, want POST %s", calls[0].method, calls[0].path, artifactAppsGatewayPath)
+	write := artifactAppsWrite(t, gateway)
+	if write.path != artifactAppsGatewayPath {
+		t.Errorf("upstream request = %s %s, want POST %s", write.method, write.path, artifactAppsGatewayPath)
 	}
-	if calls[0].auth != "Bearer "+handler.token {
-		t.Errorf("upstream authorization = %q", calls[0].auth)
+	if write.auth != "Bearer "+handler.token {
+		t.Errorf("upstream authorization = %q", write.auth)
 	}
-	forwarded := artifactAppsForwarded(t, calls[0])
+	forwarded := artifactAppsForwarded(t, write)
 	// The owner is the session, never the body.
 	if forwarded["agent"] != "441" {
 		t.Errorf("forwarded agent = %v, want the authenticated caller 441", forwarded["agent"])
@@ -273,12 +290,13 @@ func TestArtifactAppsRegisterIgnoresAnAgentInTheBody(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	forwarded := artifactAppsForwarded(t, gateway.recorded()[0])
+	write := artifactAppsWrite(t, gateway)
+	forwarded := artifactAppsForwarded(t, write)
 	if forwarded["agent"] != "441" {
 		t.Errorf("forwarded agent = %v, want the session's 441 rather than the body's 365", forwarded["agent"])
 	}
-	if strings.Contains(string(gateway.recorded()[0].body), "365") {
-		t.Errorf("the body's agent leaked into the payload: %s", gateway.recorded()[0].body)
+	if strings.Contains(string(write.body), "365") {
+		t.Errorf("the body's agent leaked into the payload: %s", write.body)
 	}
 }
 
@@ -294,7 +312,7 @@ func TestArtifactAppsRegisterOmitsAnAbsentLocalPort(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	forwarded := artifactAppsForwarded(t, gateway.recorded()[0])
+	forwarded := artifactAppsForwarded(t, artifactAppsWrite(t, gateway))
 	if _, present := forwarded["localPort"]; present {
 		t.Errorf("localPort = %v, want the field to be omitted", forwarded["localPort"])
 	}
@@ -373,6 +391,48 @@ func TestArtifactAppsListReturnsOnlyTheCallersApps(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "theirs") {
 		t.Errorf("another account's application leaked: %s", recorder.Body.String())
+	}
+}
+
+// Registration can also be an update, and the gateway replaces an entry by id
+// alone — it has no account of its own to check against. That is the same reason
+// DELETE proves ownership first: without it any signed-in caller could move
+// another account's application, and the public key its tunnel is built from,
+// onto itself.
+func TestArtifactAppsRegisterRefusesAnotherAccountsID(t *testing.T) {
+	gateway := newArtifactAppsGateway(t)
+	gateway.setApps(
+		artifactApp{ID: "taken", Agent: "365", RemotePort: 28194, URL: "https://artifact.catsco.cc/taken/"},
+		artifactApp{ID: "mine", Agent: "441", RemotePort: 28193, URL: "https://artifact.catsco.cc/mine/"},
+	)
+	handler := gateway.handler()
+	recorder := httptest.NewRecorder()
+	handler.HandleApps(recorder, artifactAppsRequest(441, http.MethodPost, "/api/artifacts/apps",
+		`{"id":"taken","title":"我的看板","publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA example"}`))
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "artifact_app_id_taken") {
+		t.Errorf("body = %s", recorder.Body.String())
+	}
+	// Proving ownership is a read: nothing may reach the gateway's write path.
+	for _, call := range gateway.recorded() {
+		if call.method != http.MethodGet {
+			t.Errorf("forwarded %s %s, want only the ownership lookup", call.method, call.path)
+		}
+	}
+
+	// The caller's own id is an update, not a conflict.
+	before := len(gateway.recorded())
+	own := httptest.NewRecorder()
+	handler.HandleApps(own, artifactAppsRequest(441, http.MethodPost, "/api/artifacts/apps",
+		`{"id":"mine","title":"我的看板","publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA example"}`))
+	if own.Code != http.StatusCreated {
+		t.Fatalf("re-publishing the caller's own application: status = %d, body = %s", own.Code, own.Body.String())
+	}
+	if len(gateway.recorded()) != before+2 {
+		t.Errorf("gateway calls = %d, want a lookup and a write", len(gateway.recorded())-before)
 	}
 }
 

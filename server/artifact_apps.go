@@ -176,6 +176,22 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// A registration can also be an update, and the gateway replaces an entry by
+	// id alone — it has no account of its own to check against. Without this
+	// step any signed-in caller could take over somebody else's application by
+	// naming its id: the owner, the public key and therefore the tunnel would all
+	// move to the caller. The read paths filter by owner; registration cannot,
+	// because "not mine" and "does not exist" mean different things here.
+	if taken, failure := h.ownedByAnother(r.Context(), uid, app); failure != nil {
+		writeArtifactAppsFailure(w, failure)
+		return
+	} else if taken {
+		// Existence is not a secret (the application list is public), so a
+		// conflict is reported as one instead of being disguised as a 404.
+		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusConflict, value: "artifact_app_id_taken"})
+		return
+	}
+
 	payload := map[string]any{
 		"id":    app,
 		"title": title,
@@ -300,8 +316,34 @@ func (h *ArtifactAppsHandler) caller(w http.ResponseWriter, r *http.Request) (in
 // listApps reads every registered application and keeps the caller's. A
 // malformed or oversized answer is treated as a gateway failure: an empty list
 // here would otherwise read as "you have no applications".
-func (h *ArtifactAppsHandler) listApps(ctx context.Context, uid int64) ([]artifactApp, *artifactAppsFailure) {
+// ownedByAnother reports whether an id is already registered to a different
+// account. It reads the gateway's unfiltered list on purpose: filtering by owner
+// first, the way the read paths do, would make somebody else's application look
+// absent, and registering over it would then move the entry — and the public key
+// with it — to the caller.
+func (h *ArtifactAppsHandler) ownedByAnother(ctx context.Context, uid int64, id string) (bool, *artifactAppsFailure) {
 	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
+	if failure != nil {
+		return false, failure
+	}
+	var payload struct {
+		Apps []artifactApp `json:"apps"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false, &artifactAppsFailure{status: http.StatusBadGateway, value: "artifact_gateway_unavailable"}
+	}
+	owner := fmt.Sprint(uid)
+	for _, app := range payload.Apps {
+		if app.ID == id {
+			// An application that declares no owner is a conflict too: it is not
+			// the caller's to take over.
+			return app.Agent != owner, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *ArtifactAppsHandler) listApps(ctx context.Context, uid int64) ([]artifactApp, *artifactAppsFailure) {	_, body, failure := h.call(ctx, http.MethodGet, artifactAppsGatewayPath, nil)
 	if failure != nil {
 		return nil, failure
 	}
