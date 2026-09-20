@@ -29,7 +29,7 @@ import {
   requestArtifactPageContext,
 } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
-import { sharePreviewLink } from './preview-share';
+import { previewPageURL, sharePreviewLink } from './preview-share';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -2583,7 +2583,7 @@ export function FilePreviewPanel({
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
   const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
-  const shareType = isPdf ? 'PDF' : isHtml ? 'HTML' : '文件';
+  const shareType = isPdf ? 'PDF' : isHtml ? 'HTML' : isMarkdown ? 'Markdown' : '文件';
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
@@ -3026,7 +3026,7 @@ export function FilePreviewPanel({
   };
 
   const handleShare = async () => {
-    if (!(isPdf || isHtml) || shareState === 'pending') return;
+    if (!(isPdf || isHtml || isMarkdown) || shareState === 'pending') return;
     const requestID = shareRequestRef.current + 1;
     shareRequestRef.current = requestID;
     setShareState('pending');
@@ -3121,7 +3121,7 @@ export function FilePreviewPanel({
             </div>
           </div>
           <div className="v3-file-preview-actions">
-            {(isPdf || isHtml) && (
+            {(isPdf || isHtml || isMarkdown) && (
               <button
                 className={`v3-file-preview-share-action${shareState === 'copied' ? ' is-success' : ''}${shareState === 'error' ? ' is-error' : ''}`}
                 type="button"
@@ -3150,7 +3150,7 @@ export function FilePreviewPanel({
                 <ExternalLink size={18} />
               </button>
             ) : (
-              <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
+              <a href={isMarkdown ? previewPageURL(url, file.name) : url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
                 <ExternalLink size={18} />
               </a>
             )}
