@@ -180,7 +180,7 @@ build_website_image() {
   website_build_timeout="${REMOTE_WEBSITE_BUILD_TIMEOUT_SECONDS:-900}"
   echo "Building website image locally (timeout ${website_build_timeout}s)."
   timeout "$website_build_timeout" docker build --progress=plain \
-    --build-arg VITE_APP_BASE_URL="${REMOTE_WEBSITE_APP_BASE_URL:-https://app.catsco.cc}" \
+    --build-arg VITE_APP_BASE_URL="${REMOTE_WEBSITE_APP_BASE_URL:-https://app.catsco.cn}" \
     -f deploy/Dockerfile.website \
     -t "$website_image" \
     .

@@ -333,7 +333,7 @@ jobs:
           - name: public website without media
             file: deploy/Dockerfile.website
             tag: cats-company-website-ci
-            build_args: "--build-arg VITE_APP_BASE_URL=https://app.catsco.cc"
+            build_args: "--build-arg VITE_APP_BASE_URL=https://app.catsco.cn"
     steps:
       - name: Checkout
         uses: actions/checkout@v6

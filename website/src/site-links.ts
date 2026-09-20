@@ -5,7 +5,7 @@ export const GITHUB_URL = 'https://github.com/buildsense-ai'
  * credentials and payment flows on the same-origin product workspace instead
  * of posting secrets from the marketing domain.
  */
-export const APP_BASE_URL = (import.meta.env.VITE_APP_BASE_URL || 'https://app.catsco.cc').replace(/\/+$/, '')
+export const APP_BASE_URL = (import.meta.env.VITE_APP_BASE_URL || 'https://app.catsco.cn').replace(/\/+$/, '')
 
 export function appUrl(path: string, params?: Record<string, string | undefined>) {
   const url = new URL(path.replace(/^\/?/, '/'), `${APP_BASE_URL}/`)
