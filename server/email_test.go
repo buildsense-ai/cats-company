@@ -146,4 +146,32 @@ func TestPasswordResetEmailSubject(t *testing.T) {
 	if got := verificationEmailSubject(verificationPurposePasswordReset); got != "Cats Company 重置密码验证码" {
 		t.Fatalf("unexpected password reset subject: %s", got)
 	}
+
+	// The registration subject override must not leak into password-reset
+	// emails: production sets TENCENT_SES_SUBJECT for registration codes.
+	t.Setenv("TENCENT_SES_SUBJECT", "Cats Company 注册验证码-自定义")
+	if got := verificationEmailSubject(verificationPurposePasswordReset); got != "Cats Company 重置密码验证码" {
+		t.Fatalf("register override leaked into password reset subject: %s", got)
+	}
+
+	t.Setenv("TENCENT_SES_SUBJECT_PASSWORD_RESET", "Cats Company 重置密码验证码-自定义")
+	if got := verificationEmailSubject(verificationPurposePasswordReset); got != "Cats Company 重置密码验证码-自定义" {
+		t.Fatalf("password reset override not applied: %s", got)
+	}
+}
+
+func TestRegisterEmailSubject(t *testing.T) {
+	if got := verificationEmailSubject(verificationPurposeRegister); got != "Cats Company 注册验证码" {
+		t.Fatalf("unexpected registration subject: %s", got)
+	}
+
+	t.Setenv("TENCENT_SES_SUBJECT", "Cats Company 注册验证码-自定义")
+	if got := verificationEmailSubject(verificationPurposeRegister); got != "Cats Company 注册验证码-自定义" {
+		t.Fatalf("registration override not applied: %s", got)
+	}
+
+	t.Setenv("TENCENT_SES_SUBJECT_PASSWORD_RESET", "Cats Company 重置密码验证码-自定义")
+	if got := verificationEmailSubject(verificationPurposeRegister); got != "Cats Company 注册验证码-自定义" {
+		t.Fatalf("password reset override leaked into registration subject: %s", got)
+	}
 }
