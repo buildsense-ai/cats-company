@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -21,14 +22,18 @@ import (
 // sends it to artifact.catsco.cc, and the gateway can exchange it for an
 // identity. `__Host-` cannot be used here because that prefix forbids Domain.
 //
-// It is deliberately narrow: a signed uid plus expiry, HttpOnly, Secure,
-// SameSite=Lax, and readable only through a read-only lookup that requires the
-// shared gateway token. The long-lived platform credential never leaves the
-// platform origin.
+// It is deliberately narrow: a signed uid, the account username and an expiry,
+// HttpOnly, Secure, SameSite=Lax, and readable only through a read-only lookup
+// that requires the shared gateway token. The long-lived platform credential
+// never leaves the platform origin.
 const (
 	artifactIdentityCookieName = "catsco_artifact_id"
 	artifactIdentityKeyLabel   = "catscompany/artifact-identity/v1"
 	artifactIdentityDefaultTTL = 24 * time.Hour
+	// Leading segment of the current payload. Cookies issued before the
+	// username was added carry a bare "uid:exp" payload and must keep working,
+	// so the tag is what tells the two shapes apart.
+	artifactIdentityPayloadVersion = "v1"
 )
 
 // ArtifactIdentityConfig is the policy for the domain cookie. Disabled unless
@@ -73,6 +78,14 @@ func (c ArtifactIdentityConfig) Enabled() bool {
 	return c.OptIn && len(c.Domains) > 0 && c.Token != ""
 }
 
+// Encode one payload field so it can never contribute a separator of its own.
+// QueryEscape covers ':' and whitespace but deliberately leaves '.' alone, and
+// '.' is the payload/signature separator — a dotted username would otherwise
+// split the payload in half and invalidate every cookie it signs.
+func artifactIdentityField(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), ".", "%2E")
+}
+
 func artifactIdentitySign(payload string) string {
 	mac := hmac.New(sha256.New, jwtSecret)
 	mac.Write([]byte(artifactIdentityKeyLabel))
@@ -85,11 +98,15 @@ func artifactIdentitySign(payload string) string {
 // authenticated request stays cheap. The uid comparison matters: without it, a
 // second account signing in on the same browser would keep presenting the first
 // account's identity until the cookie happened to come up for renewal.
-func (c ArtifactIdentityConfig) Issue(w http.ResponseWriter, r *http.Request, uid int64) {
+//
+// The username is what lets an application anchor a visitor to a platform
+// account, so it belongs inside the signed payload. It may be empty: the field
+// is still written, because its position is what identifies a v1 payload.
+func (c ArtifactIdentityConfig) Issue(w http.ResponseWriter, r *http.Request, uid int64, username string) {
 	if !c.Enabled() || uid <= 0 {
 		return
 	}
-	if current, exp, ok := c.readCookie(r); ok && current == uid && time.Until(exp) > c.TTL/2 {
+	if current, exp, _, ok := c.readCookie(r); ok && current == uid && time.Until(exp) > c.TTL/2 {
 		return
 	}
 	domain := c.domainForHost(r.Host)
@@ -97,7 +114,7 @@ func (c ArtifactIdentityConfig) Issue(w http.ResponseWriter, r *http.Request, ui
 		return
 	}
 	exp := time.Now().Add(c.TTL)
-	payload := fmt.Sprintf("%d:%d", uid, exp.Unix())
+	payload := fmt.Sprintf("%s:%d:%d:%s", artifactIdentityPayloadVersion, uid, exp.Unix(), artifactIdentityField(username))
 	http.SetCookie(w, &http.Cookie{
 		Name:     artifactIdentityCookieName,
 		Value:    payload + "." + artifactIdentitySign(payload),
@@ -126,35 +143,52 @@ func (c ArtifactIdentityConfig) domainForHost(host string) string {
 	return ""
 }
 
-func (c ArtifactIdentityConfig) readCookie(r *http.Request) (int64, time.Time, bool) {
+// readCookie verifies and decodes the cookie. The username is empty for the
+// legacy "uid:exp" payloads still held by browsers from before the upgrade, so
+// rolling this out does not invalidate them. The signature is checked first:
+// nothing derived from an unverified payload is ever parsed.
+func (c ArtifactIdentityConfig) readCookie(r *http.Request) (int64, time.Time, string, bool) {
 	cookie, err := r.Cookie(artifactIdentityCookieName)
 	if err != nil || cookie.Value == "" {
-		return 0, time.Time{}, false
+		return 0, time.Time{}, "", false
 	}
 	payload, signature, found := strings.Cut(cookie.Value, ".")
 	if !found || payload == "" || signature == "" {
-		return 0, time.Time{}, false
+		return 0, time.Time{}, "", false
 	}
 	if !hmac.Equal([]byte(artifactIdentitySign(payload)), []byte(signature)) {
-		return 0, time.Time{}, false
+		return 0, time.Time{}, "", false
 	}
-	uidPart, expPart, found := strings.Cut(payload, ":")
-	if !found {
-		return 0, time.Time{}, false
+	var uidPart, expPart, username string
+	// The username is percent-encoded, so it never contributes a ':' of its own
+	// and the field count is exact for both formats.
+	fields := strings.Split(payload, ":")
+	switch {
+	case len(fields) == 2:
+		uidPart, expPart = fields[0], fields[1]
+	case len(fields) == 4 && fields[0] == artifactIdentityPayloadVersion:
+		uidPart, expPart = fields[1], fields[2]
+		decoded, err := url.QueryUnescape(fields[3])
+		if err != nil {
+			return 0, time.Time{}, "", false
+		}
+		username = decoded
+	default:
+		return 0, time.Time{}, "", false
 	}
 	uid, err := strconv.ParseInt(uidPart, 10, 64)
 	if err != nil || uid <= 0 {
-		return 0, time.Time{}, false
+		return 0, time.Time{}, "", false
 	}
 	expUnix, err := strconv.ParseInt(expPart, 10, 64)
 	if err != nil {
-		return 0, time.Time{}, false
+		return 0, time.Time{}, "", false
 	}
 	exp := time.Unix(expUnix, 0)
 	if time.Now().After(exp) {
-		return 0, time.Time{}, false
+		return 0, time.Time{}, "", false
 	}
-	return uid, exp, true
+	return uid, exp, username, true
 }
 
 // Package wiring. The zero value keeps the feature off, so nothing changes
@@ -166,11 +200,11 @@ func ConfigureArtifactIdentity(config ArtifactIdentityConfig) { artifactIdentity
 
 // MaybeIssueArtifactIdentityCookie is called after a successful user
 // authentication and is a no-op unless the feature is configured.
-func MaybeIssueArtifactIdentityCookie(w http.ResponseWriter, r *http.Request, uid int64) {
+func MaybeIssueArtifactIdentityCookie(w http.ResponseWriter, r *http.Request, uid int64, username string) {
 	if !artifactIdentity.Enabled() {
 		return
 	}
-	artifactIdentity.Issue(w, r, uid)
+	artifactIdentity.Issue(w, r, uid, username)
 }
 
 // ArtifactIdentityHandler is the read-only lookup the Artifact gateway uses to
@@ -205,7 +239,7 @@ func (h *ArtifactIdentityHandler) HandleIdentity(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
-	uid, exp, ok := h.config.readCookie(r)
+	uid, exp, username, ok := h.config.readCookie(r)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
@@ -213,6 +247,8 @@ func (h *ArtifactIdentityHandler) HandleIdentity(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
 		"uid":           uid,
-		"expires_at":    exp.UTC().Format(time.RFC3339),
+		// Empty for legacy cookies issued before the username was added.
+		"username":   username,
+		"expires_at": exp.UTC().Format(time.RFC3339),
 	})
 }

@@ -204,7 +204,7 @@ func JWTAuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.Handler
 
 			// Refresh the optional Artifact identity cookie while the user is
 			// active on the platform. No-op unless it is configured.
-			MaybeIssueArtifactIdentityCookie(w, r, claims.UID)
+			MaybeIssueArtifactIdentityCookie(w, r, claims.UID, claims.Username)
 
 			ctx := contextWithClaims(r.Context(), claims)
 			next(w, r.WithContext(ctx))

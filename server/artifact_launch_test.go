@@ -19,10 +19,18 @@ func newTestLaunchHandler(gateway *httptest.Server) *ArtifactLaunchHandler {
 }
 
 func launchRequest(uid int64, body string) *http.Request {
+	return launchRequestAs(uid, "", body)
+}
+
+func launchRequestAs(uid int64, username, body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/api/artifacts/launch", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	if uid > 0 {
 		request = request.WithContext(context.WithValue(request.Context(), uidKey, uid))
+	}
+	if username != "" {
+		// Mirrors the middleware, which stores the username next to the uid.
+		request = request.WithContext(context.WithValue(request.Context(), usernameKey, username))
 	}
 	return request
 }
@@ -42,7 +50,7 @@ func TestArtifactLaunchIssuesCodeForAuthenticatedUser(t *testing.T) {
 
 	handler := newTestLaunchHandler(gateway)
 	recorder := httptest.NewRecorder()
-	handler.HandleLaunch(recorder, launchRequest(441, `{"app":"saturday-demo","topic_id":"topic-1"}`))
+	handler.HandleLaunch(recorder, launchRequestAs(441, "saturday", `{"app":"saturday-demo","topic_id":"topic-1"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -64,10 +72,45 @@ func TestArtifactLaunchIssuesCodeForAuthenticatedUser(t *testing.T) {
 	if forwarded["app"] != "saturday-demo" || forwarded["topic"] != "topic-1" {
 		t.Errorf("forwarded app/topic = %v/%v", forwarded["app"], forwarded["topic"])
 	}
+	if forwarded["username"] != "saturday" {
+		t.Errorf("forwarded username = %v, want the authenticated 441's username", forwarded["username"])
+	}
+	// The host is the platform origin the user came from; the gateway matches it
+	// against its own allow-list, so it must be forwarded untouched.
+	if forwarded["host"] != "example.com" {
+		t.Errorf("forwarded host = %v, want the request host", forwarded["host"])
+	}
 	for _, field := range []string{"app_id", "code", "expires_at", "launch_url"} {
 		if !strings.Contains(recorder.Body.String(), `"`+field+`"`) {
 			t.Errorf("response is missing %s: %s", field, recorder.Body.String())
 		}
+	}
+}
+
+// A session without a username is still forwarded, with the field empty, so the
+// gateway always sees the same payload shape.
+func TestArtifactLaunchForwardsAnEmptyUsernameWithoutGuessingOne(t *testing.T) {
+	var forwarded map[string]any
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &forwarded)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"app_id":"saturday-demo","code":"code","expires_at":"2026-09-17T09:00:00Z","launch_url":"http://` + r.Host + `/_launch/code"}`))
+	}))
+	defer gateway.Close()
+
+	request := launchRequest(441, `{"app":"saturday-demo"}`)
+	recorder := httptest.NewRecorder()
+	newTestLaunchHandler(gateway).HandleLaunch(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if forwarded["username"] != "" {
+		t.Errorf("forwarded username = %v, want an empty string", forwarded["username"])
+	}
+	if forwarded["host"] != request.Host {
+		t.Errorf("forwarded host = %v, want %q", forwarded["host"], request.Host)
 	}
 }
 

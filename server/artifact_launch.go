@@ -122,7 +122,7 @@ func (h *ArtifactLaunchHandler) HandleLaunch(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, status, code := h.requestCode(r.Context(), app, uid, topic)
+	result, status, code := h.requestCode(r.Context(), app, uid, UsernameFromContext(r.Context()), r.Host, topic)
 	if code != "" {
 		writeJSON(w, status, map[string]string{"error": code})
 		return
@@ -130,9 +130,18 @@ func (h *ArtifactLaunchHandler) HandleLaunch(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (h *ArtifactLaunchHandler) requestCode(ctx context.Context, app string, uid int64, topic string) (ArtifactLaunchResult, int, string) {
+// requestCode asks the gateway for a one-time code. username anchors the code
+// to a platform account, and host is a hint the gateway matches against its own
+// allow-list before falling back; both are forwarded verbatim.
+func (h *ArtifactLaunchHandler) requestCode(ctx context.Context, app string, uid int64, username, host, topic string) (ArtifactLaunchResult, int, string) {
 	var empty ArtifactLaunchResult
-	payload, err := json.Marshal(map[string]any{"app": app, "uid": fmt.Sprint(uid), "topic": topic})
+	payload, err := json.Marshal(map[string]any{
+		"app":      app,
+		"uid":      fmt.Sprint(uid),
+		"topic":    topic,
+		"username": username,
+		"host":     host,
+	})
 	if err != nil {
 		return empty, http.StatusInternalServerError, "artifact_request_invalid"
 	}
