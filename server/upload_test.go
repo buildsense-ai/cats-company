@@ -419,7 +419,7 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 			}
 			bodyContent := "file body must not be rendered as the share page"
 			if ext == ".md" {
-				bodyContent = "# 学情总结\n\n| 指标 | 结果 |\n| --- | --- |\n| 完成率 | 96% |\n\n![外链图表](https://example.com/chart.png)\n\n[危险链接](javascript:alert(1))\n\n<script>alert('unsafe')</script>"
+				bodyContent = "# 学情总结\n\n[跳转到安装说明](#安装说明)\n\n## 安装说明\n\n## 安装说明\n\n### Café résumé\n\n| 指标 | 结果 |\n| --- | --- |\n| 完成率 | 96% |\n\n![外链图表](https://example.com/chart.png)\n\n[危险链接](javascript:alert(1))\n\n<script>alert('unsafe')</script>"
 			}
 			if err := os.WriteFile(fullPath, []byte(bodyContent), 0644); err != nil {
 				t.Fatal(err)
@@ -463,7 +463,24 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 				t.Fatal("HTML preview iframe is not sandboxed")
 			}
 			if ext == ".md" {
-				for _, expected := range []string{`<article class="markdown-preview">`, "学情总结", "<table>", `<img src="https://example.com/chart.png" alt="外链图表">`, "main > header"} {
+				for _, expected := range []string{
+					`<body class="markdown-preview-page">`,
+					`<article class="markdown-preview">`,
+					`<h1 id="学情总结">`,
+					`<a href="#%E5%AE%89%E8%A3%85%E8%AF%B4%E6%98%8E">`,
+					`<h2 id="安装说明">`,
+					`<h2 id="安装说明-2">`,
+					`<h3 id="cafe-resume">`,
+					"<table>",
+					`<img src="https://example.com/chart.png" alt="外链图表">`,
+					`grid-template: "toolbar" auto "document" 1fr`,
+					`width: min(100%, 800px)`,
+					`--cc-bg: #151718`,
+					"position: sticky",
+					`aria-label="打开原文件"`,
+					`aria-label="下载文件"`,
+					`<svg aria-hidden="true"`,
+				} {
 					if !strings.Contains(body, expected) {
 						t.Fatalf("Markdown preview missing %q: %s", expected, body)
 					}
@@ -477,6 +494,8 @@ func TestHandleServeFileRendersPreviewMetadataForPDFHTMLAndMarkdown(t *testing.T
 				if strings.Contains(body, "javascript:alert(1)") {
 					t.Fatal("Markdown preview rendered a dangerous link URL")
 				}
+			} else if !strings.Contains(body, `<body class="media-preview-page">`) {
+				t.Fatalf("non-Markdown preview missing media page class: %s", body)
 			}
 		})
 	}
