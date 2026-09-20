@@ -429,6 +429,17 @@ function TinodeWebApp({ location }) {
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
+  const showAutomaticWorkspaceOnboarding = activeView !== 'skillhub'
+    && !downloadLinkPending
+    && !showDesktopConnectModal
+    && !showWorkspaceOnboardingReplay
+    && !workspaceOnboardingDismissedInSession
+    && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
+      && !shouldDeferWorkspaceOnboarding({
+        channelDeviceLink,
+        channelAccountLink,
+        relayLinkPending: requestedOpen === 'relay' && !relayLinkHandled,
+      })));
 
   const openDesktopModal = useCallback((mode = 'connect') => {
     setDesktopModalMode(mode === 'download' ? 'download' : 'connect');
@@ -1651,15 +1662,6 @@ function TinodeWebApp({ location }) {
                   <NoActiveTask
                     key={taskDraft?.key || NEW_TASK_DRAFT_KEY}
                     user={user}
-                    showWorkspaceOnboarding={!downloadLinkPending && !showDesktopConnectModal && !showWorkspaceOnboardingReplay && !workspaceOnboardingDismissedInSession && (showOnboardingPreview || (shouldShowWorkspaceOnboarding(user)
-                      && !shouldDeferWorkspaceOnboarding({
-                        channelDeviceLink,
-                        channelAccountLink,
-                        relayLinkPending: requestedOpen === 'relay' && !relayLinkHandled,
-                      })))}
-                    onDownloadDashboard={() => openDesktopModal('download')}
-                    onWorkspaceOnboardingDismiss={() => setWorkspaceOnboardingDismissedInSession(true)}
-                    dashboardDownloadOpen={showDesktopConnectModal}
                     initialAgent={taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent}
                     composerDraftStore={composerDraftStoreRef.current}
                     draftKey={NEW_TASK_DRAFT_KEY}
@@ -1733,6 +1735,18 @@ function TinodeWebApp({ location }) {
           onOpenOnboardingGuide={openWorkspaceOnboardingReplay}
           initialMode={desktopModalMode}
         />
+      )}
+
+      {showAutomaticWorkspaceOnboarding && (
+        <Suspense fallback={null}>
+          <WorkspaceOnboardingCard
+            userId={user.uid}
+            visible
+            onDismiss={() => setWorkspaceOnboardingDismissedInSession(true)}
+            onDownloadDashboard={() => openDesktopModal('download')}
+            dashboardDownloadOpen={showDesktopConnectModal}
+          />
+        </Suspense>
       )}
 
       {showWorkspaceOnboardingReplay && (
@@ -1992,10 +2006,6 @@ function resolveDisplayedActiveAgent(
 
 function NoActiveTask({
   user,
-  showWorkspaceOnboarding = false,
-  onDownloadDashboard,
-  onWorkspaceOnboardingDismiss,
-  dashboardDownloadOpen = false,
   initialAgent,
   composerDraftStore,
   draftKey,
@@ -2011,17 +2021,6 @@ function NoActiveTask({
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
           <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
-        {showWorkspaceOnboarding && (
-          <Suspense fallback={null}>
-            <WorkspaceOnboardingCard
-              userId={user?.uid}
-              visible
-              onDismiss={onWorkspaceOnboardingDismiss}
-              onDownloadDashboard={onDownloadDashboard}
-              dashboardDownloadOpen={dashboardDownloadOpen}
-            />
-          </Suspense>
-        )}
         <EmptyTaskComposer
           initialAgent={initialAgent}
           composerDraftStore={composerDraftStore}
