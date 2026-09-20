@@ -200,10 +200,12 @@ jobs:
           # Preview is an independent vhost and only activates after its own
           # certificate and the website health check.
           sudo -n "$root/compose/ensure-preview-website-nginx.sh" "$root"
-          # Once preview is healthy, make the temporary root-domain behavior
-          # explicit: catsco.cc/www redirect there, while app/relay vhosts are
-          # left untouched. This helper is fail-closed and restores configs on
-          # nginx validation failure.
+          # Once the website is healthy and the catsco.cn certificate covers
+          # www.catsco.cn, enable the public entry points: www.catsco.cn and
+          # www.catsco.cc proxy to the website container, root domains redirect
+          # to their www host, while app/relay vhosts are left untouched. This
+          # helper is fail-closed and restores configs on nginx validation
+          # failure.
           sudo -n "$root/compose/ensure-public-website-nginx.sh" "$root"
           sudo -n "$root/compose/ensure-wecom-agent-nginx.sh" "$root"
           sudo -n "$root/compose/remote-status.sh" "$root"
