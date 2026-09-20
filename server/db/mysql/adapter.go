@@ -4,7 +4,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -154,23 +153,22 @@ func (a *Adapter) HealthCheck() map[string]interface{} {
 		}
 		result["pool"] = pool
 
-		// All connections checked out right now. OpenConnections == max_open with
-		// idle connections is normal pool behaviour and must not raise a warning.
-		if stats.MaxOpenConnections > 0 && stats.InUse >= stats.MaxOpenConnections {
-			result["status"] = "warning"
-			result["message"] = "connection pool saturated"
-		}
-
 		// Waits accumulated since the previous recorded sample. The cumulative
 		// WaitCount only ever grows, so a fixed threshold on it would leave a
-		// long-running process stuck in "warning" until the next restart.
-		if delta, elapsed, ok := a.healthWatch.Observe(stats.WaitCount, time.Now()); ok {
-			pool["waits_since_last_sample"] = delta
-			pool["sample_window_seconds"] = int(elapsed.Seconds())
-			if delta >= poolhealth.BurstThreshold {
-				result["status"] = "warning"
-				result["message"] = fmt.Sprintf("recent pool queueing: %d waits in %s", delta, elapsed.Round(time.Second))
-			}
+		// long-running process stuck in "warning" until the next restart; the
+		// sample is sticky so concurrent probes see the same verdict.
+		sample := a.healthWatch.Observe(stats.WaitCount, time.Now())
+		if sample.Valid {
+			pool["waits_since_last_sample"] = sample.Delta
+			pool["sample_window_seconds"] = int(sample.Elapsed.Round(time.Second).Seconds())
+		} else {
+			pool["waits_since_last_sample"] = nil
+			pool["sample_window_seconds"] = nil
+		}
+
+		if status, message := poolhealth.Evaluate(stats, sample); status != "healthy" {
+			result["status"] = status
+			result["message"] = message
 		}
 	} else {
 		result["status"] = "unhealthy"
