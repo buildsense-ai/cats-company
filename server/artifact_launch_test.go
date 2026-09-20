@@ -12,17 +12,26 @@ import (
 
 func newTestLaunchHandler(gateway *httptest.Server) *ArtifactLaunchHandler {
 	return &ArtifactLaunchHandler{
-		gatewayURL:   gateway.URL,
-		controlToken: "test-control-token-0123456789abcdef",
-		httpClient:   gateway.Client(),
+		gatewayURL:    gateway.URL,
+		launchOrigins: []string{gateway.URL},
+		controlToken:  "test-control-token-0123456789abcdef",
+		httpClient:    gateway.Client(),
 	}
 }
 
 func launchRequest(uid int64, body string) *http.Request {
+	return launchRequestAs(uid, "", body)
+}
+
+func launchRequestAs(uid int64, username, body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/api/artifacts/launch", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	if uid > 0 {
 		request = request.WithContext(context.WithValue(request.Context(), uidKey, uid))
+	}
+	if username != "" {
+		// Mirrors the middleware, which stores the username next to the uid.
+		request = request.WithContext(context.WithValue(request.Context(), usernameKey, username))
 	}
 	return request
 }
@@ -42,7 +51,7 @@ func TestArtifactLaunchIssuesCodeForAuthenticatedUser(t *testing.T) {
 
 	handler := newTestLaunchHandler(gateway)
 	recorder := httptest.NewRecorder()
-	handler.HandleLaunch(recorder, launchRequest(441, `{"app":"saturday-demo","topic_id":"topic-1"}`))
+	handler.HandleLaunch(recorder, launchRequestAs(441, "saturday", `{"app":"saturday-demo","topic_id":"topic-1"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -64,10 +73,45 @@ func TestArtifactLaunchIssuesCodeForAuthenticatedUser(t *testing.T) {
 	if forwarded["app"] != "saturday-demo" || forwarded["topic"] != "topic-1" {
 		t.Errorf("forwarded app/topic = %v/%v", forwarded["app"], forwarded["topic"])
 	}
+	if forwarded["username"] != "saturday" {
+		t.Errorf("forwarded username = %v, want the authenticated 441's username", forwarded["username"])
+	}
+	// The host is the platform origin the user came from; the gateway matches it
+	// against its own allow-list, so it must be forwarded untouched.
+	if forwarded["host"] != "example.com" {
+		t.Errorf("forwarded host = %v, want the request host", forwarded["host"])
+	}
 	for _, field := range []string{"app_id", "code", "expires_at", "launch_url"} {
 		if !strings.Contains(recorder.Body.String(), `"`+field+`"`) {
 			t.Errorf("response is missing %s: %s", field, recorder.Body.String())
 		}
+	}
+}
+
+// A session without a username is still forwarded, with the field empty, so the
+// gateway always sees the same payload shape.
+func TestArtifactLaunchForwardsAnEmptyUsernameWithoutGuessingOne(t *testing.T) {
+	var forwarded map[string]any
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &forwarded)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"app_id":"saturday-demo","code":"code","expires_at":"2026-09-17T09:00:00Z","launch_url":"http://` + r.Host + `/_launch/code"}`))
+	}))
+	defer gateway.Close()
+
+	request := launchRequest(441, `{"app":"saturday-demo"}`)
+	recorder := httptest.NewRecorder()
+	newTestLaunchHandler(gateway).HandleLaunch(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if forwarded["username"] != "" {
+		t.Errorf("forwarded username = %v, want an empty string", forwarded["username"])
+	}
+	if forwarded["host"] != request.Host {
+		t.Errorf("forwarded host = %v, want %q", forwarded["host"], request.Host)
 	}
 }
 
@@ -161,12 +205,13 @@ func TestArtifactLaunchMapsUpstreamFailures(t *testing.T) {
 
 func TestLaunchURLBelongsToGateway(t *testing.T) {
 	const gateway = "https://artifact.catsco.cc"
+	origins := []string{gateway}
 	allowed := []string{
 		"https://artifact.catsco.cc/_launch/abc?next=/saturday-demo/",
 		"https://ARTIFACT.CATSCO.CC/_launch/abc",
 	}
 	for _, launch := range allowed {
-		if !launchURLBelongsToGateway(launch, gateway) {
+		if !launchURLBelongsToGateway(launch, origins) {
 			t.Errorf("should be accepted: %s", launch)
 		}
 	}
@@ -177,10 +222,61 @@ func TestLaunchURLBelongsToGateway(t *testing.T) {
 		"//artifact.catsco.cc/_launch/abc",
 		"/_launch/abc",
 		"",
+		// The gateway's other domain is a foreign origin until it is listed.
+		"https://artifact.catsco.cn/_launch/abc",
 	}
 	for _, launch := range rejected {
-		if launchURLBelongsToGateway(launch, gateway) {
+		if launchURLBelongsToGateway(launch, origins) {
 			t.Errorf("should be rejected: %s", launch)
+		}
+	}
+
+	// Once the second public domain is configured, a launch on it is legitimate —
+	// that is the whole point of the list, and without it a `.cn` visitor would
+	// get a 502 instead of an identity.
+	both := []string{gateway, "https://artifact.catsco.cn"}
+	for _, launch := range []string{"https://artifact.catsco.cc/_launch/a", "https://artifact.catsco.cn/_launch/a"} {
+		if !launchURLBelongsToGateway(launch, both) {
+			t.Errorf("should be accepted once listed: %s", launch)
+		}
+	}
+	for _, launch := range []string{"https://evil.example/_launch/a", "https://artifact.catsco.com/_launch/a"} {
+		if launchURLBelongsToGateway(launch, both) {
+			t.Errorf("listing a second origin must not widen the rule: %s", launch)
+		}
+	}
+}
+
+func TestArtifactLaunchReadsEveryGatewayOrigin(t *testing.T) {
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_TOKEN", strings.Repeat("a", 32))
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_URLS", "")
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_URL", "https://artifact.catsco.cc")
+	handler := NewArtifactLaunchHandlerFromEnv()
+	if !handler.Enabled() || len(handler.launchOrigins) != 1 {
+		t.Fatalf("unset list must keep exactly the outbound origin, got %v", handler.launchOrigins)
+	}
+
+	t.Setenv("CATSCO_ARTIFACT_GATEWAY_URLS", " https://artifact.catsco.cn , ")
+	handler = NewArtifactLaunchHandlerFromEnv()
+	if !handler.Enabled() {
+		t.Fatal("a valid extra origin must be accepted")
+	}
+	if len(handler.launchOrigins) != 2 || handler.launchOrigins[1] != "https://artifact.catsco.cn" {
+		t.Fatalf("origins = %v", handler.launchOrigins)
+	}
+	if handler.gatewayURL != "https://artifact.catsco.cc" {
+		t.Fatalf("the outbound endpoint must not move: %s", handler.gatewayURL)
+	}
+
+	for _, bad := range []string{
+		"http://artifact.catsco.cn",
+		"https://artifact.catsco.cn/extra",
+		"https://artifact.catsco.cn?x=1",
+		"not-a-url",
+	} {
+		t.Setenv("CATSCO_ARTIFACT_GATEWAY_URLS", bad)
+		if NewArtifactLaunchHandlerFromEnv().Enabled() {
+			t.Fatalf("must be rejected: %s", bad)
 		}
 	}
 }
