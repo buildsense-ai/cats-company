@@ -28,15 +28,12 @@ during a public-site rollout.
 `/etc/nginx/sites-available/catsco-preview` as an internal preview entry.
 
 Before enabling the updated config, verify DNS for `catsco.cn` and
-`www.catsco.cn` and extend the certificate without touching the live app
-certificate. List every existing SAN of the `catsco.cn` certificate (for
-example `app.catsco.cn`, `api.catsco.cn`, `relay.catsco.cn`) and keep them in
-the command:
-
-```bash
-sudo certbot certonly --nginx --expand \
-  -d catsco.cn -d www.catsco.cn -d app.catsco.cn -d api.catsco.cn -d relay.catsco.cn
-```
+`www.catsco.cn` and extend the `catsco.cn` certificate without touching the
+live app certificate. Keep every existing SAN (`app.catsco.cn`,
+`api.catsco.cn`, `relay.catsco.cn`) and add the two root names. Prefer DNS-01
+through the artifact-gateway hook (`deploy/prod/ops/dns01-certbot-hook.mjs`,
+zone selected via `CATSCO_ARTIFACT_DNS_ZONE`); the port-80 vhost also exposes
+`/.well-known/acme-challenge/` under `/var/www/html` for HTTP-01.
 
 For the internal preview, first create `preview.catsco.cc` in DNS pointing to
 the intended preview host, then issue its separate certificate:

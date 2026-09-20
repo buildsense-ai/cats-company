@@ -20,10 +20,13 @@ if ! sudo test -s "$certificate" || ! sudo test -s "$legacy_certificate"; then
   exit 0
 fi
 
-if ! sudo openssl x509 -noout -checkhost www.catsco.cn -in "$certificate" >/dev/null 2>&1; then
-  echo "public website certificate does not cover www.catsco.cn; keeping current nginx config" >&2
-  exit 0
-fi
+# OpenSSL 3.0 x509 -checkhost always exits 0, so match its output text instead.
+for host in catsco.cn www.catsco.cn; do
+  if ! sudo openssl x509 -noout -checkhost "$host" -in "$certificate" 2>/dev/null | grep -qi "does match certificate"; then
+    echo "public website certificate does not cover $host; keeping current nginx config" >&2
+    exit 0
+  fi
+done
 
 if ! curl -fsS -m 10 "$website_health" >/dev/null; then
   echo "public website health check failed; keeping current nginx config" >&2
