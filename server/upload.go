@@ -24,9 +24,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -616,8 +622,10 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 		kind = "HTML"
 	}
 	isMarkdown := strings.EqualFold(ext, ".md")
+	bodyClass := "media-preview-page"
 	if isMarkdown {
 		kind = "MARKDOWN"
+		bodyClass = "markdown-preview-page"
 	}
 	if isMarkdown && fileSize > maxMarkdownPreviewSize {
 		w.Header().Set("Cache-Control", "no-store")
@@ -712,37 +720,198 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
   <meta name="twitter:description" content="在 CatsCo 中预览 %s 文件。">
   <meta name="twitter:image" content="%s">
   <style>
-    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f3f7f5; color: #243a33; }
-    main { display: grid; gap: 16px; min-height: 100vh; box-sizing: border-box; padding: 24px; }
-    main > header { display: grid; gap: 4px; }
-    main > header > h1 { margin: 0; font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
-    main > header > p { margin: 0; color: #60716b; font-size: 14px; }
-    iframe, video, .markdown-preview { display: block; width: 100%%; min-height: min(72vh, 900px); box-sizing: border-box; border: 0; border-radius: 12px; background: #fdfefd; }
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --cc-bg: #fcfcfc;
+      --cc-panel: #ffffff;
+      --cc-control: #f2f2f4;
+      --cc-border: #ececef;
+      --cc-border-strong: #d8d8dc;
+      --cc-text: #1f1f1f;
+      --cc-text-secondary: #454549;
+      --cc-muted: #747479;
+      --cc-accent: #29bc95;
+      --cc-accent-hover: #219f7e;
+      --cc-accent-soft: rgba(41, 188, 149, 0.12);
+      --cc-focus: rgba(41, 188, 149, 0.42);
+      --cc-code: #f2f2f4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --cc-bg: #151718;
+        --cc-panel: #1a1c1d;
+        --cc-control: #252829;
+        --cc-border: rgba(184, 229, 216, 0.12);
+        --cc-border-strong: rgba(198, 240, 228, 0.22);
+        --cc-text: #f2f5f3;
+        --cc-text-secondary: #c7d1cd;
+        --cc-muted: #a0b2aa;
+        --cc-accent: #29bc95;
+        --cc-accent-hover: #7be0c1;
+        --cc-accent-soft: rgba(41, 188, 149, 0.12);
+        --cc-focus: rgba(123, 224, 193, 0.46);
+        --cc-code: rgba(2, 14, 12, 0.78);
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--cc-bg); color: var(--cc-text); }
+    ::selection { background: var(--cc-accent-soft); color: var(--cc-text); }
+    main { display: grid; gap: 16px; min-height: 100vh; padding: 24px; }
+    main > header { display: grid; gap: 3px; }
+    main > header > h1 { margin: 0; color: var(--cc-text); font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
+    main > header > p { margin: 0; color: var(--cc-muted); font-size: 13px; }
+    iframe, video, .markdown-preview { display: block; width: 100%%; min-height: min(72vh, 900px); border: 0; border-radius: 12px; background: var(--cc-panel); }
     video { max-height: min(72vh, 900px); object-fit: contain; }
-    .markdown-preview { max-width: 72ch; margin-inline: auto; padding: clamp(20px, 4vw, 52px); color: #314b42; font-size: 16px; line-height: 1.75; overflow-wrap: anywhere; }
+
+    .markdown-preview-page main {
+      grid-template: "toolbar" auto "document" 1fr / minmax(0, 1fr);
+      gap: 0;
+      width: min(100%%, 800px);
+      margin-inline: auto;
+      padding: 0 20px 64px;
+    }
+    .markdown-preview-page main > header {
+      grid-area: toolbar;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      align-content: center;
+      min-width: 0;
+      min-height: 68px;
+      padding: 12px 112px;
+      background: var(--cc-bg);
+      text-align: center;
+    }
+    .markdown-preview-page main > header > h1 {
+      overflow: hidden;
+      color: var(--cc-text);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .markdown-preview-page main > header > p { color: var(--cc-muted); font-size: 12px; }
+    .markdown-preview-page .markdown-preview {
+      grid-area: document;
+      width: 100%%;
+      max-width: none;
+      min-height: calc(100vh - 132px);
+      margin: 0;
+      padding: clamp(40px, 7vw, 64px) clamp(28px, 8vw, 64px) 72px;
+      border: 1px solid var(--cc-border);
+      border-radius: 16px;
+      background: var(--cc-panel);
+      color: var(--cc-text-secondary);
+      font-size: 16px;
+      line-height: 1.75;
+      overflow-wrap: anywhere;
+    }
     .markdown-preview > :first-child { margin-top: 0; }
     .markdown-preview > :last-child { margin-bottom: 0; }
-    .markdown-preview h1, .markdown-preview h2, .markdown-preview h3, .markdown-preview h4, .markdown-preview h5, .markdown-preview h6 { margin: 1.6em 0 0.6em; color: #243a33; line-height: 1.3; }
-    .markdown-preview h1 { font-size: 2rem; }
-    .markdown-preview h2 { font-size: 1.5rem; }
-    .markdown-preview h3 { font-size: 1.25rem; }
+    .markdown-preview h1, .markdown-preview h2, .markdown-preview h3, .markdown-preview h4, .markdown-preview h5, .markdown-preview h6 {
+      scroll-margin-top: 92px;
+      margin: 1.7em 0 0.6em;
+      color: var(--cc-text);
+      line-height: 1.3;
+    }
+    .markdown-preview h1 { font-size: clamp(1.75rem, 5vw, 2.25rem); letter-spacing: 0; }
+    .markdown-preview h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--cc-border); font-size: 1.5rem; letter-spacing: 0; }
+    .markdown-preview h3 { font-size: 1.2rem; }
+    .markdown-preview h4, .markdown-preview h5, .markdown-preview h6 { font-size: 1rem; }
     .markdown-preview p, .markdown-preview ul, .markdown-preview ol { margin: 0 0 1em; }
-    .markdown-preview a { color: #176b57; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
-    .markdown-preview a:focus-visible, nav > a:focus-visible { outline: 3px solid #8fb8aa; outline-offset: 3px; }
-    .markdown-preview pre { overflow: auto; padding: 16px; border-radius: 10px; background: #eef4f1; }
+    .markdown-preview ul, .markdown-preview ol { padding-inline-start: 1.5em; }
+    .markdown-preview li + li { margin-top: 0.25em; }
+    .markdown-preview strong { color: var(--cc-text); font-weight: 650; }
+    .markdown-preview a { color: var(--cc-accent); text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+    .markdown-preview a:hover { color: var(--cc-accent-hover); text-decoration-thickness: 2px; }
+    .markdown-preview a:focus-visible, nav > a:focus-visible { outline: 3px solid var(--cc-focus); outline-offset: 3px; }
+    .markdown-preview hr { height: 1px; margin: 2em 0; border: 0; background: var(--cc-border); }
+    .markdown-preview pre { overflow: auto; margin: 1.25em 0; padding: 18px 20px; border-radius: 12px; background: var(--cc-code); scrollbar-color: var(--cc-muted) transparent; }
     .markdown-preview code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.9em; }
-    .markdown-preview :not(pre) > code { padding: 2px 5px; border-radius: 5px; background: #eef4f1; }
-    .markdown-preview table { display: block; max-width: 100%%; overflow-x: auto; border-collapse: collapse; }
-    .markdown-preview th, .markdown-preview td { padding: 8px 12px; border: 1px solid #cedbd6; text-align: left; }
-    .markdown-preview blockquote { margin-inline: 0; padding: 4px 0 4px 16px; border-inline-start: 1px solid #8fb8aa; color: #526b62; }
-    .markdown-preview img { display: block; max-width: 100%%; height: auto; border-radius: 8px; }
-    nav { display: flex; flex-wrap: wrap; gap: 12px; }
-    nav > a { display: inline-flex; align-items: center; min-height: 40px; box-sizing: border-box; padding: 0 16px; border-radius: 10px; background: #fdfefd; color: #176b57; font-weight: 600; text-decoration: none; }
-    nav > a[download] { background: #176b57; color: #fdfefd; }
+    .markdown-preview :not(pre) > code { padding: 2px 5px; border-radius: 5px; background: var(--cc-code); color: var(--cc-text); }
+    .markdown-preview table { display: block; max-width: 100%%; margin: 1.25em 0; overflow-x: auto; border-spacing: 0; border-collapse: separate; scrollbar-color: var(--cc-muted) transparent; }
+    .markdown-preview th, .markdown-preview td { padding: 9px 12px; border: 0; border-right: 1px solid var(--cc-border); border-bottom: 1px solid var(--cc-border); text-align: left; white-space: nowrap; }
+    .markdown-preview th { background: var(--cc-control); color: var(--cc-text); font-size: 0.9em; font-weight: 650; }
+    .markdown-preview tr > :first-child { border-left: 1px solid var(--cc-border); }
+    .markdown-preview thead tr:first-child > * { border-top: 1px solid var(--cc-border); }
+    .markdown-preview thead tr:first-child > :first-child { border-start-start-radius: 8px; }
+    .markdown-preview thead tr:first-child > :last-child { border-start-end-radius: 8px; }
+    .markdown-preview tbody tr:last-child > :first-child { border-end-start-radius: 8px; }
+    .markdown-preview tbody tr:last-child > :last-child { border-end-end-radius: 8px; }
+    .markdown-preview blockquote { margin: 1.25em 0; padding: 2px 0 2px 16px; border-inline-start: 1px solid var(--cc-border-strong); color: var(--cc-muted); }
+    .markdown-preview blockquote > :last-child { margin-bottom: 0; }
+    .markdown-preview img { display: block; max-width: 100%%; height: auto; margin: 1.5em auto; border-radius: 12px; }
+
+    nav { display: flex; flex-wrap: wrap; gap: 8px; }
+    nav > a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border: 1px solid var(--cc-border);
+      border-radius: 10px;
+      background: var(--cc-control);
+      color: var(--cc-text-secondary);
+      text-decoration: none;
+      transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+    nav > a:hover { border-color: var(--cc-border-strong); background: var(--cc-accent-soft); color: var(--cc-accent-hover); }
+    nav > a:active { transform: translateY(1px); }
+    nav svg { width: 17px; height: 17px; flex: 0 0 auto; }
+    nav > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%%); white-space: nowrap; }
+    .markdown-preview-page nav {
+      grid-area: toolbar;
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      align-self: start;
+      justify-self: end;
+      flex-wrap: nowrap;
+      padding: 14px 0;
+    }
+
+    @media (max-width: 640px) {
+      .markdown-preview-page main {
+        grid-template: "header" auto "actions" auto "document" 1fr / minmax(0, 1fr);
+        width: 100%%;
+        padding: 0;
+      }
+      .markdown-preview-page main > header {
+        grid-area: header;
+        min-height: 62px;
+        padding: 11px 20px;
+        border-bottom: 1px solid var(--cc-border);
+      }
+      .markdown-preview-page main > header > h1 { font-size: 15px; }
+      .markdown-preview-page nav {
+        grid-area: actions;
+        position: static;
+        justify-self: center;
+        padding: 10px 16px;
+      }
+      .markdown-preview-page nav > a { width: 44px; height: 44px; }
+      .markdown-preview-page .markdown-preview {
+        min-height: calc(100vh - 126px);
+        padding: 36px 20px 52px;
+        border-right: 0;
+        border-left: 0;
+        border-radius: 0;
+      }
+      .markdown-preview h1, .markdown-preview h2, .markdown-preview h3, .markdown-preview h4, .markdown-preview h5, .markdown-preview h6 { scroll-margin-top: 76px; }
+      .markdown-preview table { margin-inline: -20px; padding-inline: 20px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      nav > a { transition: none; }
+    }
   </style>
 </head>
-<body>
+<body class="%s">
   <main>
     <header>
       <h1>%s</h1>
@@ -750,18 +919,71 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
     </header>
     %s
     <nav aria-label="文件操作">
-      <a href="%s" target="_blank" rel="noopener noreferrer">打开原文件</a>
-      <a href="%s" download>下载文件</a>
+      <a href="%s" target="_blank" rel="noopener noreferrer" aria-label="打开原文件" title="打开原文件">
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        <span>打开原文件</span>
+      </a>
+      <a href="%s" download aria-label="下载文件" title="下载文件">
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+        <span>下载文件</span>
+      </a>
     </nav>
   </main>
 </body>
 </html>
 `, escapedName, escapedPageURL, escapedKind, escapedOGType, mediaMetadata, escapedName, escapedKind, escapedPageURL, escapedOGImageURL,
-		escapedName, escapedKind, escapedOGImageURL, escapedName, escapedKind, previewElement,
+		escapedName, escapedKind, escapedOGImageURL, bodyClass, escapedName, escapedKind, previewElement,
 		escapedResourceURL, escapedDownloadURL)
 }
 
 var errMarkdownPreviewTooLarge = errors.New("markdown preview exceeds size limit")
+
+type markdownHeadingIDTransformer struct{}
+
+func (markdownHeadingIDTransformer) Transform(document *ast.Document, reader text.Reader, _ parser.Context) {
+	usedIDs := make(map[string]struct{})
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering || node.Kind() != ast.KindHeading {
+			return ast.WalkContinue, nil
+		}
+
+		baseID := markdownHeadingSlug(string(node.Text(reader.Source())))
+		headingID := baseID
+		for suffix := 2; ; suffix++ {
+			if _, exists := usedIDs[headingID]; !exists {
+				break
+			}
+			headingID = fmt.Sprintf("%s-%d", baseID, suffix)
+		}
+		usedIDs[headingID] = struct{}{}
+		node.SetAttributeString("id", headingID)
+		return ast.WalkContinue, nil
+	})
+}
+
+func markdownHeadingSlug(value string) string {
+	normalized := norm.NFKD.String(strings.ToLower(strings.TrimSpace(value)))
+	var slug strings.Builder
+	pendingHyphen := false
+	for _, char := range normalized {
+		switch {
+		case unicode.Is(unicode.Mn, char):
+			continue
+		case unicode.IsLetter(char) || unicode.IsDigit(char):
+			if pendingHyphen && slug.Len() > 0 {
+				slug.WriteByte('-')
+			}
+			slug.WriteRune(char)
+			pendingHyphen = false
+		case unicode.IsSpace(char) || char == '_' || char == '-':
+			pendingHyphen = slug.Len() > 0
+		}
+	}
+	if slug.Len() == 0 {
+		return "section"
+	}
+	return slug.String()
+}
 
 func renderMarkdownUploadPreview(fullPath string) (string, error) {
 	file, err := os.Open(fullPath)
@@ -779,7 +1001,12 @@ func renderMarkdownUploadPreview(fullPath string) (string, error) {
 	}
 
 	var rendered bytes.Buffer
-	renderer := goldmark.New(goldmark.WithExtensions(extension.GFM))
+	renderer := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithParserOptions(
+			parser.WithASTTransformers(util.Prioritized(markdownHeadingIDTransformer{}, 100)),
+		),
+	)
 	if err := renderer.Convert(source, &rendered); err != nil {
 		return "", err
 	}
