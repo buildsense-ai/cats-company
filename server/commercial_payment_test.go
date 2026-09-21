@@ -1888,6 +1888,9 @@ func TestCommercialPaymentCallbackOriginHostAllowlist(t *testing.T) {
 		{"app.catsco.cc.evil.example", ""},
 		{"relay.catsco.cn", ""},
 		{"127.0.0.1:26061", ""},
+		{"[::1]:443", ""},
+		{"app.catsco.cn.", ""},
+		{"app.catsco.cn@evil.example", ""},
 	}
 	for _, tc := range cases {
 		request := httptest.NewRequest(http.MethodPost, "https://placeholder.example/", nil)
@@ -1924,6 +1927,34 @@ func TestCommercialPaymentCreateOrderFollowsRequestOrigin(t *testing.T) {
 	}
 	if provider.lastCreateOrigin != "https://app.catsco.cn" {
 		t.Fatalf("provider did not receive the request origin: %q", provider.lastCreateOrigin)
+	}
+}
+
+func TestCommercialPaymentOrderRefreshFollowsRequestOrigin(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	expiresAt := time.Now().UTC().Add(20 * time.Minute)
+	orderNo := "CC-ORIGIN-REFRESH"
+	store.orders[orderNo] = &types.CommercialOrder{
+		OrderNo: orderNo, UID: 38, PlanID: 71, Channel: commercialPaymentChannelAlipayPage,
+		Status: "created", AmountFen: 39900, Currency: "CNY", ExpiresAt: &expiresAt,
+	}
+	provider := &queryCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay",
+		ExpiresAt:   time.Now().UTC().Add(20 * time.Minute),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider},
+	})
+
+	request := commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no="+orderNo, "", 38)
+	request.Host = "app.catsco.cc"
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, request)
+	if recorder.Code != http.StatusOK || provider.createCalls != 1 {
+		t.Fatalf("refresh status=%d calls=%d body=%s", recorder.Code, provider.createCalls, recorder.Body.String())
+	}
+	if provider.lastCreateOrigin != "https://app.catsco.cc" {
+		t.Fatalf("refresh did not receive the request origin: %q", provider.lastCreateOrigin)
 	}
 }
 

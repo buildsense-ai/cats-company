@@ -18,6 +18,8 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// alipayNotifyPath must stay in sync with the /api/payments/alipay/notify route
+// registered in server/cmd/server.go.
 const (
 	alipayProductCodePagePay   = "FAST_INSTANT_TRADE_PAY"
 	alipayIntegrationTypePCWeb = "PCWEB"
