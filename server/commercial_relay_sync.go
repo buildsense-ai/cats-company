@@ -572,12 +572,19 @@ const (
 	commercialRelayUniversalModel        = "deepseek-flash"
 )
 
+// commercialRelayFreeBudgets is the Free baseline pool, including the image
+// lane since 000023 so every public plan can use image generation.
 var commercialRelayFreeBudgets = map[string]float64{
-	"MiniMax-M2.7":      1000,
-	"MiniMax-M3":        500,
-	"deepseek-v4-flash": 100,
-	"deepseek-flash":    100,
-	"glm-5.3-flash":     100,
+	"MiniMax-M2.7":           1000,
+	"MiniMax-M3":             500,
+	"deepseek-v4-flash":      100,
+	"deepseek-flash":         100,
+	"glm-5.3-flash":          100,
+	"gpt-image-2":            100,
+	"gpt-image-2.5":          100,
+	"gpt-image-2.5-flare":    100,
+	"gpt-image-2.5-sunburst": 100,
+	"chatgpt-image-latest":   100,
 }
 
 func commercialRelayHasBaselineEntitlement(summary *types.CommercialSummary) bool {
