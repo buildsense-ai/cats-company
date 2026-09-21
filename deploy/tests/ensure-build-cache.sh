@@ -16,9 +16,10 @@ mkdir -p "$fake_bin"
 : > "$docker_images"
 
 # The seed step has to be exercised without a daemon, so this stub only records
-# pulls and tags. FAKE_PULL_OK names the one source whose pull succeeds; a tag
-# makes both the tagged reference and its digest-qualified form inspectable,
-# which mirrors how the deploy host resolves the base after a mirror pull.
+# inspections, pulls and tags. FAKE_PULL_OK names the one source whose pull
+# succeeds; a tag makes both the tagged reference and its digest-qualified form
+# inspectable, which mirrors how the deploy host resolves the base after a
+# mirror pull.
 cat > "$fake_bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -26,8 +27,10 @@ set -euo pipefail
 if [ "${1:-}" = "image" ] && [ "${2:-}" = "inspect" ]; then
   if [ "${3:-}" = "--format" ]; then
     ref="${5:-}"
+    printf 'inspect-id %s\n' "$ref" >> "$FAKE_DOCKER_LOG"
   else
     ref="${3:-}"
+    printf 'inspect %s\n' "$ref" >> "$FAKE_DOCKER_LOG"
   fi
   if grep -Fxq "$ref" "$FAKE_DOCKER_IMAGES"; then
     if [ "${3:-}" = "--format" ]; then
@@ -64,7 +67,7 @@ run_ensure() {
   FAKE_DOCKER_LOG="$docker_log" \
   FAKE_DOCKER_IMAGES="$docker_images" \
   FAKE_PULL_OK="$1" \
-  FAKE_TAG_DIGEST="$base_digest" \
+  FAKE_TAG_DIGEST="${4-$base_digest}" \
   REMOTE_WEB_BASE_MIRRORS="$2" \
     bash "$repo_root/deploy/shared/ensure-build-cache.sh" "$3"
 }
@@ -78,6 +81,7 @@ test -d "$cache_root/releases"
 test -d "$cache_root/source"
 test "$(stat -c '%a' "$cache_root")" = "700"
 test "$(grep -c '^pull ' "$docker_log" || true)" = "0"
+test "$(grep -c '^tag ' "$docker_log" || true)" = "0"
 
 # A missing base is seeded from the first source whose pull works; the registry
 # reference is tried before the mirrors.
@@ -87,9 +91,15 @@ seed_output="$(run_ensure 1panel docker.1panel.live "$cache_root" 2>&1)"
 grep -q "Seeding Web build base from ${base_reference}" <<<"$seed_output"
 grep -q "Seeding Web build base from docker.1panel.live/${base_reference}" <<<"$seed_output"
 grep -q "Web build base seeded from docker.1panel.live/${base_reference}" <<<"$seed_output"
-test "$(head -n 1 "$docker_log")" = "pull ${base_reference}"
-grep -q "^pull docker.1panel.live/${base_reference}$" "$docker_log"
-grep -q "^tag .* georgjung/nginx-brotli:latest$" "$docker_log"
+# The presence check runs first, the registry reference is pulled before the
+# mirror, and the tag is immediately followed by the digest-qualified
+# verification — the same check the build itself applies.
+test "$(head -n 1 "$docker_log")" = "inspect ${base_reference}"
+canonical_line="$(grep -n "^pull ${base_reference}$" "$docker_log" | cut -d: -f1)"
+mirror_line="$(grep -n "^pull docker.1panel.live/${base_reference}$" "$docker_log" | cut -d: -f1)"
+test "$canonical_line" -lt "$mirror_line"
+test "$(grep '^tag ' "$docker_log" | awk '{print $3}')" = "georgjung/nginx-brotli:latest"
+test "$(grep -A1 '^tag ' "$docker_log" | tail -n 1)" = "inspect ${base_reference}"
 grep -Fxq "$base_reference" "$docker_images"
 
 # Every source failing is a warning, not a failure: the build's own fallback
@@ -98,6 +108,19 @@ grep -Fxq "$base_reference" "$docker_images"
 : > "$docker_images"
 missing_output="$(run_ensure nosuch docker.1panel.live "$cache_root" 2>&1)"
 grep -q "WARNING: the pinned Web build base ${base_reference} is missing" <<<"$missing_output"
+grep -q "Manual fix:" <<<"$missing_output"
+! grep -q 'Web build base seeded' <<<"$missing_output"
+test "$(grep -c '^pull ' "$docker_log" || true)" = "2"
+test "$(grep -c '^tag ' "$docker_log" || true)" = "0"
+
+# A tag that does not verify must not report success: the digest-qualified
+# check gates the "seeded" message, and through it the build that trusts it.
+: > "$docker_log"
+: > "$docker_images"
+unverified_output="$(run_ensure 1panel docker.1panel.live "$cache_root" '' 2>&1)"
+grep -q '^tag ' "$docker_log"
+! grep -q 'Web build base seeded' <<<"$unverified_output"
+grep -q "WARNING: the pinned Web build base ${base_reference} is missing" <<<"$unverified_output"
 
 # A cache root that needs chmod is still repaired.
 chmod 755 "$cache_root"
