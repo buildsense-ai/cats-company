@@ -36,6 +36,10 @@ ensure_web_base_image() {
   command -v docker >/dev/null 2>&1 || return 0
   docker image inspect "$web_base_reference" >/dev/null 2>&1 && return 0
 
+  # The tagable name half of the reference: the tag step and the warning below
+  # must never drift from the reference the verification (and the build) uses.
+  local tag_reference="${web_base_reference%%@*}"
+
   # Sources are tried in order: the registry reference first, then one
   # <mirror>/<reference> per mirror. REMOTE_WEB_BASE_MIRRORS overrides the list;
   # an empty value leaves the registry as the only source.
@@ -47,14 +51,16 @@ ensure_web_base_image() {
     candidates="$candidates $mirror/$web_base_reference"
   done
 
-  local pull_timeout="${REMOTE_WEB_BASE_PULL_TIMEOUT_SECONDS:-300}"
+  # Kept well under the deploying step's 8-minute budget even if every source
+  # hangs: seeding must never be what times out a deploy.
+  local pull_timeout="${REMOTE_WEB_BASE_PULL_TIMEOUT_SECONDS:-120}"
   local candidate image_id
   for candidate in $candidates; do
     echo "Seeding Web build base from ${candidate}..." >&2
     timeout "$pull_timeout" docker pull "$candidate" >/dev/null 2>&1 || continue
     image_id="$(docker image inspect --format '{{.Id}}' "$candidate" 2>/dev/null || true)"
     [ -n "$image_id" ] || continue
-    docker tag "$image_id" "georgjung/nginx-brotli:latest" >/dev/null 2>&1 || continue
+    docker tag "$image_id" "$tag_reference" >/dev/null 2>&1 || continue
     if docker image inspect "$web_base_reference" >/dev/null 2>&1; then
       echo "Web build base seeded from ${candidate}." >&2
       return 0
@@ -64,6 +70,7 @@ ensure_web_base_image() {
   echo "WARNING: the pinned Web build base ${web_base_reference} is missing and could not be seeded." >&2
   echo "The next Web build falls back to the previous revision's image and grows the layer chain." >&2
   echo "Seed it manually or point REMOTE_WEB_BASE_IMAGE at a local base to stop that." >&2
+  echo "Manual fix: docker pull <registry>/${web_base_reference}, then docker tag <image-id> ${tag_reference}." >&2
   return 0
 }
 
