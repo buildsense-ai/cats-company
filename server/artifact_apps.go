@@ -16,10 +16,11 @@ import (
 // machine. Their public address and tunnel belong to the Artifact gateway, but
 // the gateway's control token lets whoever holds it publish for any account, so
 // a bot never gets one. A bot therefore asks this endpoint to publish on its
-// behalf: the request is authenticated with the bot's own platform login, and
-// only after the platform knows who is calling does it use the shared gateway
-// token — the same credential artifact_launch.go uses for a launch handoff — to
-// write the gateway configuration.
+// behalf: the request carries the bot's own platform credential — its API key,
+// or a person's login when a person is publishing — and only after the platform
+// knows who is calling does it use the shared gateway token, the same credential
+// artifact_launch.go uses for a launch handoff, to write the gateway
+// configuration.
 //
 // The relay is the ownership boundary, not the gateway: the gateway trusts the
 // `agent` it is handed, and its list endpoint answers for every account. So the

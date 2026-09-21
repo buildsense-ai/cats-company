@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // artifactAppsCall is one request the fake gateway saw, so a test can assert on
@@ -210,6 +213,58 @@ func TestArtifactAppsRequireLoginThroughTheMiddleware(t *testing.T) {
 	}
 	if calls := gateway.recorded(); len(calls) != 0 {
 		t.Errorf("unauthenticated requests reached the gateway: %+v", calls)
+	}
+}
+
+// These routes also accept a bot API key, because the owner is taken from the
+// caller: a bot publishing with its own key lands under its own uid, which is the
+// only thing its sidebar queries. Nothing else in the suite covers that wiring,
+// so a later tidy-up could put the routes back behind login-only auth and the
+// failure would show up only as an application nobody can find.
+func TestArtifactAppsAcceptABotKeyAndOwnTheApplication(t *testing.T) {
+	const (
+		botKey = "cc_16d_ownkey"
+		botUID = 365
+	)
+
+	gateway := newArtifactAppsGateway(t)
+	handler := gateway.handler()
+	db := botIdentityTestStore{
+		users:   map[int64]*types.User{botUID: {ID: botUID, Username: "bot-saturday", AccountType: types.AccountBot}},
+		botKeys: map[string]int64{botKey: botUID},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(artifactAppsAPIPath, AuthMiddlewareWithDB(db)(handler.HandleApps))
+	mux.HandleFunc(artifactAppsAPIPath+"/", AuthMiddlewareWithDB(db)(handler.HandleApps))
+
+	post := func(key string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, artifactAppsAPIPath,
+			strings.NewReader(`{"id":"saturday-board","title":"看板","publicKey":"ssh-ed25519 AAAA"}`))
+		request.Header.Set("Content-Type", "application/json")
+		if key != "" {
+			request.Header.Set("Authorization", "ApiKey "+key)
+		}
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	if recorder := post(""); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("no credential: status = %d, want 401", recorder.Code)
+	}
+	// A well-formed key that is not in the database must not authenticate: the
+	// uid inside it is a claim, not proof.
+	if recorder := post(fmt.Sprintf("cc_%x_forged", botUID)); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("unknown key: status = %d, want 401", recorder.Code)
+	}
+
+	recorder := post(botKey)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("bot key: status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	forwarded := artifactAppsForwarded(t, artifactAppsWrite(t, gateway))
+	if forwarded["agent"] != fmt.Sprint(botUID) {
+		t.Errorf("forwarded agent = %v, want the calling bot's own uid %d", forwarded["agent"], botUID)
 	}
 }
 

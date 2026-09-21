@@ -824,8 +824,14 @@ func main() {
 	// The apps routes sit next to the other artifact routes and are more specific
 	// than the /api/artifacts/ subtree above, which would otherwise read "apps"
 	// as an artifact id.
-	mux.HandleFunc("/api/artifacts/apps", jwtAuthWithDB(artifactAppsHandler.HandleApps))
-	mux.HandleFunc("/api/artifacts/apps/", jwtAuthWithDB(artifactAppsHandler.HandleApps))
+	//
+	// Unlike the launch route, these accept a bot API key as well as a login,
+	// because ownership is taken from whoever calls: a bot publishing with its own
+	// key gets an application under its own uid, which is the only thing its
+	// sidebar lists. With a login the application would be owned by the person,
+	// and no bot's sidebar would ever show it.
+	mux.HandleFunc("/api/artifacts/apps", authWithDB(artifactAppsHandler.HandleApps))
+	mux.HandleFunc("/api/artifacts/apps/", authWithDB(artifactAppsHandler.HandleApps))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("POST /api/agents/{uid}/knowledge/handoff", jwtAuthWithDB(agentHandler.IssueKnowledgeWikiHandoff))
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/manifest", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiManifest, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiManifest)))
