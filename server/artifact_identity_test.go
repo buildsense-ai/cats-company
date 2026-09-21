@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func testIdentityConfig() ArtifactIdentityConfig {
@@ -412,6 +414,43 @@ func TestArtifactIdentityHandlerUnavailableWhenUnconfigured(t *testing.T) {
 	handler.HandleIdentity(recorder, identityHostRequest("app.catsco.cc"))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unconfigured = %d, want 503", recorder.Code)
+	}
+}
+
+func TestAuthMiddlewareWithDBAlsoRefreshesTheArtifactIdentityCookie(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("artifact-identity-middleware-test-secret")
+
+	previous := artifactIdentity
+	defer func() { artifactIdentity = previous }()
+	ConfigureArtifactIdentity(testIdentityConfig())
+
+	token, err := GenerateToken(363, "saturday", "saturday@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	db := authStateTestStore{users: map[int64]*types.User{363: {ID: 363, Username: "saturday"}}}
+	handler := AuthMiddlewareWithDB(db)(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	request.Host = "app.catsco.cc"
+	request.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+
+	handler(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d want=%d body=%s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != artifactIdentityCookieName {
+		t.Fatalf("cookies=%v want exactly one %s", cookies, artifactIdentityCookieName)
+	}
+	uid, _, username, ok := artifactIdentity.readCookie(identityRequest("app.catsco.cc", cookies[0].Value))
+	if !ok || uid != 363 || username != "saturday" {
+		t.Fatalf("the cookie must round trip, got uid=%d username=%q ok=%v", uid, username, ok)
 	}
 }
 

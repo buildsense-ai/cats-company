@@ -261,6 +261,12 @@ func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFun
 						writeJSON(w, status, map[string]string{"error": msg})
 						return
 					}
+					// Refresh the optional Artifact identity cookie here as well.
+					// This middleware carries the routes a signed-in browser hits
+					// constantly, so issuing the cookie only on the stricter one
+					// would make the domain cookie depend on which route happened
+					// to be requested. No-op unless it is configured.
+					MaybeIssueArtifactIdentityCookie(w, r, claims.UID, claims.Username)
 					ctx := contextWithClaims(r.Context(), claims)
 					next(w, r.WithContext(ctx))
 					return
