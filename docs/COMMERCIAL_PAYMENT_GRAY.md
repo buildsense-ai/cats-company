@@ -72,6 +72,7 @@ Personal 和 Pro 每次成功支付各赠送 1 次云托管员工创建权益，
 - 支付宝 RSA2 公钥 `alipay_public_key.pem`
 - 公网 HTTPS 回调地址：`https://app.catsco.cc/api/payments/alipay/notify`
 - 用户支付完成后的 HTTPS 返回地址：`https://app.catsco.cc/`
+- 回调与返回地址会优先跟随买家下单时使用的门店域名（白名单 `app.catsco.cc` / `app.catsco.cn`）；上面两个环境变量是非门店域名请求（内部调用等）的兜底
 
 当前版本采用普通公钥模式，先不接公钥证书模式。应用公钥需要上传到支付宝开放平台，服务端保存的是与之对应的应用私钥和支付宝提供的验签公钥。应用私钥只用于请求签名，支付宝公钥只用于响应及回调验签。
 

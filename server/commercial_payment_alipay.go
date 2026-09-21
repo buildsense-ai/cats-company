@@ -18,10 +18,13 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// alipayNotifyPath must stay in sync with the /api/payments/alipay/notify route
+// registered in server/cmd/server.go.
 const (
 	alipayProductCodePagePay   = "FAST_INSTANT_TRADE_PAY"
 	alipayIntegrationTypePCWeb = "PCWEB"
 	alipayTimeLayout           = "2006-01-02 15:04:05"
+	alipayNotifyPath           = "/api/payments/alipay/notify"
 	maxAlipayNotificationBytes = 64 << 10
 )
 
@@ -127,10 +130,18 @@ func (p *alipayPagePaymentProvider) CreatePayment(ctx context.Context, order *ty
 		expiresAt = order.ExpiresAt.UTC()
 	}
 	subject := truncateUTF8Bytes("CatsCo "+strings.TrimSpace(order.PlanName), 128)
+	// Buyer callbacks follow the storefront domain this order was created on so
+	// cc and cn both round-trip; other callers keep the configured URLs.
+	notifyURL := p.notifyURL
+	returnURL := p.returnURL
+	if origin, ok := commercialPaymentCallbackOrigin(ctx); ok {
+		notifyURL = origin + alipayNotifyPath
+		returnURL = origin + "/"
+	}
 	paymentURL, err := p.client.TradePagePay(alipay.TradePagePay{
 		Trade: alipay.Trade{
-			NotifyURL:   p.notifyURL,
-			ReturnURL:   p.returnURL,
+			NotifyURL:   notifyURL,
+			ReturnURL:   returnURL,
 			Subject:     subject,
 			OutTradeNo:  strings.TrimSpace(order.OrderNo),
 			TotalAmount: formatCNYFen(order.AmountFen),

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -451,7 +452,7 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "order not found"})
 				return
 			}
-			order = h.refreshPendingCommercialOrder(r.Context(), order)
+			order = h.refreshPendingCommercialOrder(withCommercialPaymentCallbackOrigin(r.Context(), r), order)
 			if order.Status == "pending" && order.ExpiresAt != nil && !order.ExpiresAt.After(time.Now().UTC()) {
 				_, _ = h.store.CloseExpiredCommercialOrders(100)
 				if closed, loadErr := h.store.GetCommercialOrder(uid, orderNo); loadErr == nil && closed != nil {
@@ -740,6 +741,56 @@ func (h *CommercialPaymentHandler) clearCommercialPaymentQuery(orderNo string) {
 	h.queryMu.Unlock()
 }
 
+// commercialPaymentCallbackOriginHosts lists the public storefront hosts whose
+// request origin may be echoed back to payment providers. Hosts outside this
+// allowlist (internal callers, unknown domains a client tried to spoof) keep
+// the static callback URLs configured through the environment.
+var commercialPaymentCallbackOriginHosts = map[string]bool{
+	"app.catsco.cc": true,
+	"app.catsco.cn": true,
+}
+
+type commercialPaymentOriginKey struct{}
+
+// withCommercialPaymentCallbackOrigin records the verified storefront origin
+// (for example "https://app.catsco.cn") on the request context so providers
+// can send buyer callbacks to the domain the buyer actually uses. The
+// allowlist keeps a spoofed Host header from redirecting callbacks elsewhere.
+func withCommercialPaymentCallbackOrigin(ctx context.Context, r *http.Request) context.Context {
+	host := commercialPaymentCallbackHost(r)
+	if host == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, commercialPaymentOriginKey{}, "https://"+host)
+}
+
+func commercialPaymentCallbackHost(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(r.Host))
+	if trimmed, _, err := net.SplitHostPort(host); err == nil {
+		host = trimmed
+	}
+	if !commercialPaymentCallbackOriginHosts[host] {
+		return ""
+	}
+	return host
+}
+
+// commercialPaymentCallbackOrigin returns the verified "https://<host>"
+// origin recorded for this request, when present.
+func commercialPaymentCallbackOrigin(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	origin, ok := ctx.Value(commercialPaymentOriginKey{}).(string)
+	if !ok || origin == "" {
+		return "", false
+	}
+	return origin, true
+}
+
 func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Request, uid int64) {
 	var req struct {
 		PlanID          int64  `json:"plan_id"`
@@ -826,7 +877,7 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
 		return
 	}
-	intent, err := provider.CreatePayment(r.Context(), order)
+	intent, err := provider.CreatePayment(withCommercialPaymentCallbackOrigin(r.Context(), r), order)
 	if err != nil {
 		_ = h.store.FailCommercialOrder(order.OrderNo, err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to create payment"})
