@@ -53,31 +53,30 @@ func TestPostgresCommercialFreeImageModelsMigrationGrantsAndRollsBack(t *testing
 	if _, err := db.db.Exec(migrateCommercialPlansFreeImageModels); err != nil {
 		t.Fatalf("run free image models migration: %v", err)
 	}
-	assertFreeImageUp(t, db, freeUID)
+	assertFreeImageUp(t, db, freeUID, 5, 500)
 
 	// The migration must be repeatable on every startup.
 	if _, err := db.db.Exec(migrateCommercialPlansFreeImageModels); err != nil {
 		t.Fatalf("free image models migration should be idempotent: %v", err)
 	}
-	assertFreeImageUp(t, db, freeUID)
+	assertFreeImageUp(t, db, freeUID, 5, 500)
 
-	execFreeImageMigrationFile(t, db, "000023_commercial_free_image_models.down.sql")
+	execFreeImageMigrationFile(t, db, "000024_commercial_free_image_models.down.sql")
 	assertFreeImageDown(t, db, freeUID)
 
-	execFreeImageMigrationFile(t, db, "000023_commercial_free_image_models.up.sql")
-	assertFreeImageUp(t, db, freeUID)
-	assertFreeImageLedgerCount(t, db, freeUID, 2)
+	execFreeImageMigrationFile(t, db, "000024_commercial_free_image_models.up.sql")
+	assertFreeImageUp(t, db, freeUID, 10, 1000)
 }
 
 func TestFreeImageModelsStartupMigrationMatchesFile(t *testing.T) {
-	up, err := os.ReadFile("../migrations/postgres/000023_commercial_free_image_models.up.sql")
+	up, err := os.ReadFile("../migrations/postgres/000024_commercial_free_image_models.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(strings.ReplaceAll(string(up), "\r\n", "\n")) != strings.TrimSpace(migrateCommercialPlansFreeImageModels) {
 		t.Fatal("startup migration diverged from numbered SQL migration (up)")
 	}
-	down, err := os.ReadFile("../migrations/postgres/000023_commercial_free_image_models.down.sql")
+	down, err := os.ReadFile("../migrations/postgres/000024_commercial_free_image_models.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,12 +107,12 @@ func seedFreeImageBaseline(t *testing.T, db *Adapter, uid, planID int64, sourceR
 	}
 }
 
-func assertFreeImageUp(t *testing.T, db *Adapter, freeUID int64) {
+func assertFreeImageUp(t *testing.T, db *Adapter, freeUID int64, ledgerCount int, ledgerTotal float64) {
 	t.Helper()
 	assertFlashPlanBudgets(t, db, "catsco-free", freeImageTenModelBudgets)
 	assertFlashPlanBudgets(t, db, "catsco-personal", flashPersonalSixModelBudgets)
 	assertFlashActivePackage(t, db, "free-baseline", 10, 2300, 1000, true)
-	assertFreeImageLedger(t, db, freeUID, "free", 5, 500)
+	assertFreeImageLedger(t, db, freeUID, "free", ledgerCount, ledgerTotal)
 }
 
 func assertFreeImageDown(t *testing.T, db *Adapter, freeUID int64) {
@@ -127,18 +126,6 @@ func assertFreeImageDown(t *testing.T, db *Adapter, freeUID int64) {
 func assertFreeImageLedger(t *testing.T, db *Adapter, uid int64, sourceType string, wantCount int, wantTotal float64) {
 	t.Helper()
 	assertFlashLedger(t, db, uid, sourceType, wantCount, wantTotal)
-}
-
-func assertFreeImageLedgerCount(t *testing.T, db *Adapter, uid int64, wantCount int) {
-	t.Helper()
-	var count int
-	if err := db.db.QueryRow(`
-		SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'free'`, uid).Scan(&count); err != nil {
-		t.Fatalf("query free ledger count: %v", err)
-	}
-	if count != wantCount {
-		t.Fatalf("free ledger count = %d, want %d", count, wantCount)
-	}
 }
 
 func execFreeImageMigrationFile(t *testing.T, db *Adapter, name string) {

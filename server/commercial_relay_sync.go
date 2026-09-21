@@ -573,7 +573,7 @@ const (
 )
 
 // commercialRelayFreeBudgets is the Free baseline pool, including the image
-// lane since 000023 so every public plan can use image generation.
+// lane since 000024 so every public plan can use image generation.
 var commercialRelayFreeBudgets = map[string]float64{
 	"MiniMax-M2.7":           1000,
 	"MiniMax-M3":             500,
@@ -585,6 +585,32 @@ var commercialRelayFreeBudgets = map[string]float64{
 	"gpt-image-2.5-flare":    100,
 	"gpt-image-2.5-sunburst": 100,
 	"chatgpt-image-latest":   100,
+}
+
+// commercialRelayLegacyFreeBudgets is the pre-image-lane Free pool, kept so
+// Relay keys created before 000024 are still recognized as Free and upgraded.
+var commercialRelayLegacyFreeBudgets = map[string]float64{
+	"MiniMax-M2.7":      1000,
+	"MiniMax-M3":        500,
+	"deepseek-v4-flash": 100,
+	"deepseek-flash":    100,
+	"glm-5.3-flash":     100,
+}
+
+func commercialRelayBudgetsMatch(budgets, expected map[string]float64) bool {
+	if len(budgets) != len(expected) {
+		return false
+	}
+	normalized := make(map[string]float64, len(budgets))
+	for model, amount := range budgets {
+		normalized[normalizeRelayModelName(model)] = amount
+	}
+	for model, amount := range expected {
+		if !nearlyEqual(normalized[normalizeRelayModelName(model)], amount) {
+			return false
+		}
+	}
+	return true
 }
 
 func commercialRelayHasBaselineEntitlement(summary *types.CommercialSummary) bool {
@@ -719,22 +745,20 @@ func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[s
 			}
 		}
 	}
-	profile := commercialRelayBaselineProfileFree
-	if len(budgets) != len(commercialRelayFreeBudgets) {
-		profile = commercialRelayBaselineProfileLegacy
-	} else {
-		normalizedBudgets := map[string]float64{}
-		for model, amount := range budgets {
-			normalizedBudgets[normalizeRelayModelName(model)] = amount
-		}
-		for model, amount := range commercialRelayFreeBudgets {
-			if !nearlyEqual(normalizedBudgets[normalizeRelayModelName(model)], amount) {
-				profile = commercialRelayBaselineProfileLegacy
-				break
-			}
-		}
+	if commercialRelayBudgetsMatch(budgets, commercialRelayFreeBudgets) {
+		return commercialRelayBaselineProfileFree, budgets
 	}
-	return profile, budgets
+	// Relay keys created before the image lane opened still carry the original
+	// five-model Free pool. Recognize them as Free and upgrade them to the
+	// current baseline so legacy keys are not frozen out of the image models.
+	if commercialRelayBudgetsMatch(budgets, commercialRelayLegacyFreeBudgets) {
+		upgraded := make(map[string]float64, len(commercialRelayFreeBudgets))
+		for model, amount := range commercialRelayFreeBudgets {
+			upgraded[model] = amount
+		}
+		return commercialRelayBaselineProfileFree, upgraded
+	}
+	return commercialRelayBaselineProfileLegacy, budgets
 }
 
 func commercialRelayBaselineStart(relayUser *commercialRelayUsageUser) time.Time {
