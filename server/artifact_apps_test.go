@@ -341,7 +341,6 @@ func TestArtifactAppsRejectsBadInputWithoutCallingGateway(t *testing.T) {
 		{name: "id starting with a digit", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"1board",` + valid + `}`, want: http.StatusBadRequest},
 		{name: "missing title", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board","publicKey":"ssh-ed25519 AAAA"}`, want: http.StatusBadRequest},
 		{name: "title with a newline", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board","title":"a\nb","publicKey":"ssh-ed25519 AAAA"}`, want: http.StatusBadRequest},
-		{name: "missing publicKey", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board","title":"看板"}`, want: http.StatusBadRequest},
 		{name: "publicKey with a newline", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board","title":"看板","publicKey":"ssh-ed25519 AAAA\nevil"}`, want: http.StatusBadRequest},
 		{name: "localPort zero", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board",` + valid + `,"localPort":0}`, want: http.StatusBadRequest},
 		{name: "localPort too large", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board",` + valid + `,"localPort":65536}`, want: http.StatusBadRequest},
@@ -435,6 +434,29 @@ func TestArtifactAppsRegisterRefusesAnotherAccountsID(t *testing.T) {
 	}
 	if len(gateway.recorded()) != before+2 {
 		t.Errorf("gateway calls = %d, want a lookup and a write", len(gateway.recorded())-before)
+	}
+}
+
+// A rename must not force a key rotation. The stored key cannot be read back, so
+// an update that does not name one keeps whatever is registered — that decision
+// lives at the gateway, which is why the field is simply left out here.
+func TestArtifactAppsRegisterOmitsAnAbsentPublicKey(t *testing.T) {
+	gateway := newArtifactAppsGateway(t)
+	gateway.setApps(artifactApp{ID: "saturday-board", Agent: "441", RemotePort: 28193, URL: "https://artifact.catsco.cc/saturday-board/"})
+	handler := gateway.handler()
+	recorder := httptest.NewRecorder()
+	handler.HandleApps(recorder, artifactAppsRequest(441, http.MethodPost, "/api/artifacts/apps",
+		`{"id":"saturday-board","title":"只改标题"}`))
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	forwarded := artifactAppsForwarded(t, artifactAppsWrite(t, gateway))
+	if _, present := forwarded["publicKey"]; present {
+		t.Errorf("publicKey = %v, want the field to be omitted", forwarded["publicKey"])
+	}
+	if forwarded["title"] != "只改标题" {
+		t.Errorf("forwarded title = %v", forwarded["title"])
 	}
 }
 

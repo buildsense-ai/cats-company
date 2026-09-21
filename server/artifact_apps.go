@@ -167,7 +167,11 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	publicKey := strings.TrimSpace(request.PublicKey)
-	if publicKey == "" || len(publicKey) > artifactAppsMaxKeyLen || strings.ContainsAny(publicKey, "\r\n\x00") {
+	// A key is optional: an update that does not rotate it has to be able to omit
+	// it, because the stored key cannot be read back. Whether one is required is
+	// decided where the stored value lives — the gateway refuses a first
+	// registration without one, and keeps the existing key when none is sent.
+	if len(publicKey) > artifactAppsMaxKeyLen || strings.ContainsAny(publicKey, "\r\n\x00") {
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "artifact_app_key_invalid"})
 		return
 	}
@@ -198,8 +202,12 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		// The gateway routes the tunnel by this field and cannot verify it, so it
 		// is taken from the session only. A body that carries an "agent" of its
 		// own is simply never read.
-		"agent":     fmt.Sprint(uid),
-		"publicKey": publicKey,
+		"agent": fmt.Sprint(uid),
+	}
+	if publicKey != "" {
+		// Omitted rather than sent empty, so the gateway can tell "rotate to this
+		// key" from "leave the key alone".
+		payload["publicKey"] = publicKey
 	}
 	if request.LocalPort != nil {
 		// Omitted rather than sent as zero: the gateway assigns a port when it is
