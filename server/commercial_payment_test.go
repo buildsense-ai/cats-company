@@ -126,24 +126,26 @@ func (s *commercialRelaySyncTestStore) ListCommercialReconcileUIDs(afterUID int6
 }
 
 type queryCommercialPaymentProvider struct {
-	paid         bool
-	confirmation *types.CommercialPaymentConfirmation
-	calls        int
-	intent       *CommercialPaymentIntent
-	createCalls  int
-	closeErr     error
-	closeCalls   int
-	refund       *types.CommercialRefundConfirmation
-	refundErr    error
-	refundCalls  int
+	paid             bool
+	confirmation     *types.CommercialPaymentConfirmation
+	calls            int
+	intent           *CommercialPaymentIntent
+	createCalls      int
+	lastCreateOrigin string
+	closeErr         error
+	closeCalls       int
+	refund           *types.CommercialRefundConfirmation
+	refundErr        error
+	refundCalls      int
 }
 
 func (p *queryCommercialPaymentProvider) Channel() string {
 	return commercialPaymentChannelAlipayPage
 }
 func (p *queryCommercialPaymentProvider) Label() string { return "支付宝" }
-func (p *queryCommercialPaymentProvider) CreatePayment(context.Context, *types.CommercialOrder) (*CommercialPaymentIntent, error) {
+func (p *queryCommercialPaymentProvider) CreatePayment(ctx context.Context, _ *types.CommercialOrder) (*CommercialPaymentIntent, error) {
 	p.createCalls++
+	p.lastCreateOrigin, _ = commercialPaymentCallbackOrigin(ctx)
 	if p.intent == nil {
 		return nil, context.Canceled
 	}
@@ -1826,6 +1828,102 @@ func TestAlipayPaymentCreatesExactPageIntent(t *testing.T) {
 	}
 	if trade.TimeExpire != expiresAt.In(alipayChinaLocation).Format(alipayTimeLayout) {
 		t.Fatalf("unexpected expiry %q", trade.TimeExpire)
+	}
+}
+
+func TestAlipayPaymentFollowsRequestOriginForCallbacks(t *testing.T) {
+	paymentURL, err := url.Parse("https://openapi-sandbox.dl.alipaydev.com/gateway.do?method=alipay.trade.page.pay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAlipayPaymentClient{pageURL: paymentURL}
+	provider := &alipayPagePaymentProvider{
+		appID: "2026000000000001", sellerID: "2088000000000001",
+		notifyURL: "https://app.catsco.cc/api/payments/alipay/notify",
+		returnURL: "https://app.catsco.cc/", client: fake,
+	}
+	order := func(orderNo string) *types.CommercialOrder {
+		expiresAt := time.Now().UTC().Add(20 * time.Minute)
+		return &types.CommercialOrder{OrderNo: orderNo, PlanName: "Personal", AmountFen: 39900, Currency: "CNY", ExpiresAt: &expiresAt}
+	}
+
+	cnRequest := httptest.NewRequest(http.MethodPost, "https://app.catsco.cn/api/relay/commercial/orders", nil)
+	if _, err := provider.CreatePayment(withCommercialPaymentCallbackOrigin(context.Background(), cnRequest), order("CC-ORIGIN-CN")); err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastPagePay.Trade.NotifyURL != "https://app.catsco.cn/api/payments/alipay/notify" ||
+		fake.lastPagePay.Trade.ReturnURL != "https://app.catsco.cn/" {
+		t.Fatalf("expected cn callbacks, got %#v", fake.lastPagePay.Trade)
+	}
+
+	ccRequest := httptest.NewRequest(http.MethodPost, "https://app.catsco.cc/api/relay/commercial/orders", nil)
+	if _, err := provider.CreatePayment(withCommercialPaymentCallbackOrigin(context.Background(), ccRequest), order("CC-ORIGIN-CC")); err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastPagePay.Trade.NotifyURL != "https://app.catsco.cc/api/payments/alipay/notify" ||
+		fake.lastPagePay.Trade.ReturnURL != "https://app.catsco.cc/" {
+		t.Fatalf("expected cc callbacks, got %#v", fake.lastPagePay.Trade)
+	}
+
+	unknownRequest := httptest.NewRequest(http.MethodPost, "https://internal.example/api/relay/commercial/orders", nil)
+	if _, err := provider.CreatePayment(withCommercialPaymentCallbackOrigin(context.Background(), unknownRequest), order("CC-ORIGIN-UNKNOWN")); err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastPagePay.Trade.NotifyURL != provider.notifyURL || fake.lastPagePay.Trade.ReturnURL != provider.returnURL {
+		t.Fatalf("non-storefront host must keep configured callbacks, got %#v", fake.lastPagePay.Trade)
+	}
+}
+
+func TestCommercialPaymentCallbackOriginHostAllowlist(t *testing.T) {
+	cases := []struct {
+		host string
+		want string
+	}{
+		{"app.catsco.cc", "app.catsco.cc"},
+		{"app.catsco.cn", "app.catsco.cn"},
+		{"APP.CatsCo.CN", "app.catsco.cn"},
+		{"app.catsco.cn:443", "app.catsco.cn"},
+		{"", ""},
+		{"evil.example", ""},
+		{"app.catsco.cc.evil.example", ""},
+		{"relay.catsco.cn", ""},
+		{"127.0.0.1:26061", ""},
+	}
+	for _, tc := range cases {
+		request := httptest.NewRequest(http.MethodPost, "https://placeholder.example/", nil)
+		request.Host = tc.host
+		if got := commercialPaymentCallbackHost(request); got != tc.want {
+			t.Fatalf("host %q: got %q want %q", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestCommercialPaymentCreateOrderFollowsRequestOrigin(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.plans = []*types.CommercialPlan{commercialChaosPlan()}
+	relay := newCommercialDeployRelayServer(t, 0)
+	provider := &queryCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay",
+		ExpiresAt:   time.Now().UTC().Add(20 * time.Minute),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs:  map[int64]bool{38: true},
+		Providers: []CommercialPaymentProvider{provider},
+		SaleChannels: map[string]bool{
+			commercialPaymentChannelAlipayPage: true,
+		},
+		Syncer: newCommercialDeploySyncer(newCommercialDeploySyncStore(false), relay),
+	})
+
+	request := commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", `{"plan_id":71,"channel":"alipay_page","client_request_id":"origin_host_0001"}`, 38)
+	request.Host = "app.catsco.cn"
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, request)
+	if recorder.Code != http.StatusOK || provider.createCalls != 1 {
+		t.Fatalf("create order status=%d calls=%d body=%s", recorder.Code, provider.createCalls, recorder.Body.String())
+	}
+	if provider.lastCreateOrigin != "https://app.catsco.cn" {
+		t.Fatalf("provider did not receive the request origin: %q", provider.lastCreateOrigin)
 	}
 }
 
