@@ -4501,6 +4501,7 @@
 .team-avatar-photo--standalone {
   overflow: hidden;
   background-image: none;
+  background-color: #dfe3e1;
 }
 
 .team-avatar-photo-image {
@@ -4510,6 +4511,10 @@
   object-fit: cover;
   transform: scale(1.22);
   transform-origin: 50% 48%;
+}
+
+.team-avatar-photo-image--neutral {
+  mix-blend-mode: multiply;
 }
 
 .team-avatar figcaption {

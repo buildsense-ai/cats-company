@@ -25,6 +25,7 @@ type TeamMember = {
   imageHeight?: number
   imageScale?: number
   imageOffsetY?: number
+  imageBlend?: 'neutral'
   left: number
   top: number
   size: number
@@ -42,7 +43,7 @@ const teamMembers: TeamMember[] = [
   { name: '方快', role: '工程', position: '100% 0%', image: '/team-avatar-fangkuai.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.22, left: 59, top: 20, size: 90, mobileLeft: 17, mobileTop: 38, mobileSize: 66 },
   { name: '钟慧', role: '团队', position: '0% 50%', image: '/team-avatar-zhonghui.webp', imageWidth: 512, imageHeight: 512, imageScale: 1, left: 77, top: 31, size: 96, mobileLeft: 50, mobileTop: 36, mobileSize: 70 },
   { name: '陈永轩', role: '团队', position: '33.333% 50%', image: '/team-avatar-chenyongxuan.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.05, left: 90, top: 46, size: 82, mobileLeft: 83, mobileTop: 39, mobileSize: 64 },
-  { name: '陈曦', role: '工程', position: '66.667% 50%', image: '/team-avatar-chenxi.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.3, imageOffsetY: 2, left: 74, top: 57, size: 94, mobileLeft: 18, mobileTop: 58, mobileSize: 74 },
+  { name: '钟全', role: '工程', position: '66.667% 50%', image: '/team-avatar-zhongquan.png', imageWidth: 924, imageHeight: 852, imageScale: 1.06, imageBlend: 'neutral', left: 74, top: 57, size: 94, mobileLeft: 18, mobileTop: 58, mobileSize: 74 },
   { name: '陈坤', role: '团队', position: '100% 50%', image: '/team-avatar-chenkun.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.15, left: 56, top: 68, size: 110, mobileLeft: 50, mobileTop: 57, mobileSize: 68 },
   { name: '王荩婧', role: '团队', position: '0% 100%', image: '/team-avatar-wangjinjing.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.5, left: 36, top: 59, size: 88, mobileLeft: 82, mobileTop: 58, mobileSize: 74 },
   { name: '陈大为', role: '团队', position: '33.333% 100%', image: '/team-avatar-chendawei.webp', imageWidth: 512, imageHeight: 512, imageScale: 1.08, left: 18, top: 69, size: 102, mobileLeft: 18, mobileTop: 78, mobileSize: 64 },
@@ -221,7 +222,7 @@ export function Team() {
                     {member.image ? (
                       <span className="team-avatar-photo team-avatar-photo--standalone" aria-hidden="true">
                         <img
-                          className="team-avatar-photo-image"
+                          className={`team-avatar-photo-image${member.imageBlend ? ` team-avatar-photo-image--${member.imageBlend}` : ''}`}
                           src={member.image}
                           alt=""
                           width={member.imageWidth ?? 1413}
