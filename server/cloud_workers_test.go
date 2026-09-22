@@ -261,7 +261,10 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "slow-status":
 			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho worker-bot-bot-a\trunning\timg-slow\tv1.4.8\r\n"
 		case "slow":
-			body = "@echo off\r\nping 127.0.0.1 -n 3 >nul\r\necho ok\r\n"
+			// ping -n 3（约 2s）会撞上 waitCloudWorkerOperation 的 2s 等待上限，
+			// 导致 Windows 本地稳定超时；-n 2（约 1s）仍足够慢，让并发请求能
+			// 观察到运行中的 operation。
+			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho ok\r\n"
 		case "require-identity":
 			// Credentials must arrive through the restricted file, never argv.
 			body = "@echo off\r\nif not \"%3\"==\"--credential-file\" exit /b 1\r\nif not exist \"%4\" exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
