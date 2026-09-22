@@ -33,6 +33,10 @@ const (
 	artifactAppsMaxBody     = 16 << 10
 	artifactAppsMaxTitleLen = 128
 	artifactAppsMaxKeyLen   = 4096
+	// nginx size syntax is digits plus an optional unit, so a handful of bytes is
+	// plenty. The gateway decides which values it accepts; this only keeps an
+	// obvious non-value from being forwarded.
+	artifactAppsMaxBodySizeLen = 16
 	// Bound on the gateway's own error text before it is relayed to a caller.
 	artifactAppsMaxErrorTextLen = 200
 )
@@ -57,6 +61,11 @@ type artifactAppRequest struct {
 	Title     string `json:"title"`
 	PublicKey string `json:"publicKey"`
 	LocalPort *int   `json:"localPort,omitempty"`
+	// Optional request body ceiling, in the syntax nginx uses. An application that
+	// accepts uploads declares its own; the gateway bounds the value and reports a
+	// declaration above its ceiling as an invalid registration, so the limit that
+	// matters stays enforced where the rendered configuration lives.
+	MaxBody string `json:"maxBody,omitempty"`
 }
 
 // artifactApp is the gateway's view of a registered application. remote_port and
@@ -180,6 +189,11 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "artifact_app_port_invalid"})
 		return
 	}
+	maxBody := strings.TrimSpace(request.MaxBody)
+	if len(maxBody) > artifactAppsMaxBodySizeLen || strings.ContainsAny(maxBody, "\r\n\x00") {
+		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "artifact_app_max_body_invalid"})
+		return
+	}
 
 	// A registration can also be an update, and the gateway replaces an entry by
 	// id alone — it has no account of its own to check against. Without this
@@ -214,6 +228,11 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		// Omitted rather than sent as zero: the gateway assigns a port when it is
 		// not asked for one, and 0 is not a port it could honour.
 		payload["localPort"] = *request.LocalPort
+	}
+	if maxBody != "" {
+		// Omitted rather than sent empty, so the gateway can tell "change the
+		// ceiling" from "keep the stored one".
+		payload["maxBody"] = maxBody
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {

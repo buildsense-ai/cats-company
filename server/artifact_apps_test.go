@@ -289,7 +289,7 @@ func TestArtifactAppsRegisterForwardsTheSessionOwner(t *testing.T) {
 	handler := gateway.handler()
 	recorder := httptest.NewRecorder()
 	handler.HandleApps(recorder, artifactAppsRequest(441, http.MethodPost, "/api/artifacts/apps",
-		`{"id":"saturday-board","title":"我的看板","publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA example","localPort":20000}`))
+		`{"id":"saturday-board","title":"我的看板","publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA example","localPort":20000,"maxBody":"256m"}`))
 
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -318,6 +318,9 @@ func TestArtifactAppsRegisterForwardsTheSessionOwner(t *testing.T) {
 	}
 	if forwarded["localPort"] != float64(20000) {
 		t.Errorf("forwarded localPort = %v (%T), want 20000", forwarded["localPort"], forwarded["localPort"])
+	}
+	if forwarded["maxBody"] != "256m" {
+		t.Errorf("forwarded maxBody = %v, want the declared 256m", forwarded["maxBody"])
 	}
 	for _, field := range []string{`"url"`, `"urls"`, `"remote_port"`, `"transport_url"`, `"status"`} {
 		if !strings.Contains(recorder.Body.String(), field) {
@@ -370,6 +373,12 @@ func TestArtifactAppsRegisterOmitsAnAbsentLocalPort(t *testing.T) {
 	forwarded := artifactAppsForwarded(t, artifactAppsWrite(t, gateway))
 	if _, present := forwarded["localPort"]; present {
 		t.Errorf("localPort = %v, want the field to be omitted", forwarded["localPort"])
+	}
+	// Same rule for the body ceiling: an update that does not declare one has to
+	// leave the gateway's stored value alone rather than reset it to the default,
+	// which would silently shrink the uploads the application already accepts.
+	if _, present := forwarded["maxBody"]; present {
+		t.Errorf("maxBody = %v, want the field to be omitted", forwarded["maxBody"])
 	}
 }
 
