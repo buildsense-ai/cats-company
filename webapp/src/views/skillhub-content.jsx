@@ -745,7 +745,8 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
         </div>
         {!isReadOnly && <button
           type='button'
-          className={installed && !updatable ? 'added' : 'primary'}
+          className={updatable ? 'update' : installed ? 'added' : 'primary'}
+          aria-label={updatable ? `更新 ${label} 到 ${formatSkillHubVersion(skill.latestVersion) || '最新版本'}` : undefined}
           disabled={!definitionReady || (installed && !updatable) || unavailable || saving || Boolean(sharingSkill)}
           title={unavailable
             ? '此能力暂时不能同步'

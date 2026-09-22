@@ -429,6 +429,18 @@
   color: var(--cc-on-action);
 }
 
+.cc-skillhub-page button.update {
+  border-color: var(--cc-accent);
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent-text);
+}
+
+.cc-skillhub-page button.update:hover:not(:disabled) {
+  border-color: var(--cc-accent-hover);
+  background: color-mix(in srgb, var(--cc-accent) 22%, var(--cc-panel));
+  color: var(--cc-accent-text);
+}
+
 .cc-skillhub-page button.bound {
   border-color: var(--cc-border);
   background: var(--cc-selected);
