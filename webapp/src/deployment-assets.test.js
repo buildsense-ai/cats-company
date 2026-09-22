@@ -5,9 +5,21 @@ import viteConfig from '../vite.config.js';
 
 function nginxLocationBlock(config, path) {
   const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = config.match(new RegExp(`location\\s+${escapedPath}\\s*\\{([^}]*)\\}`));
-  expect(match, `missing Nginx location for ${path}`).not.toBeNull();
-  return match[1];
+  const startMatch = config.match(new RegExp(`location\\s+${escapedPath}\\s*\\{`));
+  expect(startMatch, `missing Nginx location for ${path}`).not.toBeNull();
+  let depth = 0;
+  const start = startMatch.index + startMatch[0].length - 1;
+  for (let i = start; i < config.length; i += 1) {
+    if (config[i] === '{') {
+      depth += 1;
+    } else if (config[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return config.slice(start + 1, i);
+      }
+    }
+  }
+  throw new Error(`unterminated Nginx location for ${path}`);
 }
 
 function expectImmutableAssetLocation(config, path) {
