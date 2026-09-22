@@ -33,6 +33,13 @@ const (
 	artifactAppsMaxBody     = 16 << 10
 	artifactAppsMaxTitleLen = 128
 	artifactAppsMaxKeyLen   = 4096
+	// Keep the platform's public contract to a small set of predictable upload
+	// presets. The gateway itself accepts a bounded nginx-size string (`maxBody`)
+	// rather than this integer; the registration adapter below performs that
+	// conversion. The field is omitted when absent, so the gateway keeps an
+	// existing app's maxBody on updates; a new app then gets the gateway's 1m
+	// default. One MiB remains an explicit preset for callers that want it.
+	artifactAppsDefaultUploadLimitMB = 1
 	// Bound on the gateway's own error text before it is relayed to a caller.
 	artifactAppsMaxErrorTextLen = 200
 )
@@ -53,10 +60,11 @@ type ArtifactAppsHandler struct {
 // let a bot publish an application under another account's identity, because the
 // gateway has no way to tell the difference.
 type artifactAppRequest struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	PublicKey string `json:"publicKey"`
-	LocalPort *int   `json:"localPort,omitempty"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	PublicKey     string `json:"publicKey"`
+	LocalPort     *int   `json:"localPort,omitempty"`
+	UploadLimitMB *int   `json:"uploadLimitMb,omitempty"`
 }
 
 // artifactApp is the gateway's view of a registered application. remote_port and
@@ -180,6 +188,10 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "artifact_app_port_invalid"})
 		return
 	}
+	if request.UploadLimitMB != nil && !validArtifactAppsUploadLimitMB(*request.UploadLimitMB) {
+		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusBadRequest, value: "artifact_app_upload_limit_invalid"})
+		return
+	}
 
 	// A registration can also be an update, and the gateway replaces an entry by
 	// id alone — it has no account of its own to check against. Without this
@@ -215,6 +227,12 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		// not asked for one, and 0 is not a port it could honour.
 		payload["localPort"] = *request.LocalPort
 	}
+	if request.UploadLimitMB != nil {
+		// The platform-facing Skill contract uses an integer MiB value. The
+		// gateway-facing contract deliberately uses nginx syntax so it can render
+		// the value verbatim without a unit-conversion ambiguity.
+		payload["maxBody"] = fmt.Sprintf("%dm", *request.UploadLimitMB)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		writeArtifactAppsFailure(w, &artifactAppsFailure{status: http.StatusInternalServerError, value: "artifact_request_invalid"})
@@ -232,6 +250,15 @@ func (h *ArtifactAppsHandler) handleRegister(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, status, registration)
+}
+
+func validArtifactAppsUploadLimitMB(value int) bool {
+	switch value {
+	case artifactAppsDefaultUploadLimitMB, 16, 64, 128, 256:
+		return true
+	default:
+		return false
+	}
 }
 
 // handleList returns the caller's applications only. The filter has to happen

@@ -371,6 +371,41 @@ func TestArtifactAppsRegisterOmitsAnAbsentLocalPort(t *testing.T) {
 	if _, present := forwarded["localPort"]; present {
 		t.Errorf("localPort = %v, want the field to be omitted", forwarded["localPort"])
 	}
+	if _, present := forwarded["maxBody"]; present {
+		t.Errorf("maxBody = %v, want the field to be omitted", forwarded["maxBody"])
+	}
+}
+
+func TestArtifactAppsRegisterTranslatesAllowedUploadLimits(t *testing.T) {
+	for _, testCase := range []struct {
+		megabytes int
+		maxBody   string
+	}{
+		{megabytes: 1, maxBody: "1m"},
+		{megabytes: 16, maxBody: "16m"},
+		{megabytes: 64, maxBody: "64m"},
+		{megabytes: 128, maxBody: "128m"},
+		{megabytes: 256, maxBody: "256m"},
+	} {
+		t.Run(fmt.Sprintf("%dMiB", testCase.megabytes), func(t *testing.T) {
+			gateway := newArtifactAppsGateway(t)
+			handler := gateway.handler()
+			recorder := httptest.NewRecorder()
+			handler.HandleApps(recorder, artifactAppsRequest(441, http.MethodPost, "/api/artifacts/apps",
+				fmt.Sprintf(`{"id":"image-workbench","title":"图片工作台","publicKey":"ssh-ed25519 AAAA","uploadLimitMb":%d}`, testCase.megabytes)))
+
+			if recorder.Code != http.StatusCreated {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			forwarded := artifactAppsForwarded(t, artifactAppsWrite(t, gateway))
+			if forwarded["maxBody"] != testCase.maxBody {
+				t.Errorf("maxBody = %v (%T), want %q", forwarded["maxBody"], forwarded["maxBody"], testCase.maxBody)
+			}
+			if _, present := forwarded["uploadLimitMb"]; present {
+				t.Errorf("platform-only uploadLimitMb leaked to gateway: %v", forwarded["uploadLimitMb"])
+			}
+		})
+	}
 }
 
 func TestArtifactAppsRejectsBadInputWithoutCallingGateway(t *testing.T) {
@@ -399,6 +434,8 @@ func TestArtifactAppsRejectsBadInputWithoutCallingGateway(t *testing.T) {
 		{name: "publicKey with a newline", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board","title":"看板","publicKey":"ssh-ed25519 AAAA\nevil"}`, want: http.StatusBadRequest},
 		{name: "localPort zero", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board",` + valid + `,"localPort":0}`, want: http.StatusBadRequest},
 		{name: "localPort too large", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board",` + valid + `,"localPort":65536}`, want: http.StatusBadRequest},
+		{name: "upload limit outside the allowlist", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board",` + valid + `,"uploadLimitMb":17}`, want: http.StatusBadRequest},
+		{name: "upload limit zero", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board",` + valid + `,"uploadLimitMb":0}`, want: http.StatusBadRequest},
 		{name: "body too large", method: http.MethodPost, path: "/api/artifacts/apps", uid: 441, body: `{"id":"saturday-board",` + valid + `,"comment":"` + strings.Repeat("c", artifactAppsMaxBody) + `"}`, want: http.StatusRequestEntityTooLarge},
 		{name: "item with a malformed id", method: http.MethodGet, path: "/api/artifacts/apps/Saturday", uid: 441, want: http.StatusNotFound},
 		{name: "item with a nested path", method: http.MethodGet, path: "/api/artifacts/apps/%2e%2e%2fetc", uid: 441, want: http.StatusNotFound},
