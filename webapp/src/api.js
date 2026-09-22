@@ -154,25 +154,40 @@ export function getApiBaseURL() {
   }
 }
 
+// 已知生产入口域名 → 媒体加速域。未知域名（测试/预览/本地）返回 ''，
+// /uploads/ 保持相对路径解析到各自环境，避免误指生产 CDN。
+const MEDIA_HOST_BASES = {
+  'catsco.cc': 'https://i.catsco.cc',
+  'www.catsco.cc': 'https://i.catsco.cc',
+  'app.catsco.cc': 'https://i.catsco.cc',
+  'catsco.cn': 'https://i.catsco.cn',
+  'www.catsco.cn': 'https://i.catsco.cn',
+  'app.catsco.cn': 'https://i.catsco.cn',
+};
+
 export function mediaBaseForHostname(hostname) {
   if (!hostname) return '';
-  return /(^|\.)catsco\.cn$/i.test(hostname) ? 'https://i.catsco.cn' : 'https://i.catsco.cc';
+  return MEDIA_HOST_BASES[String(hostname).toLowerCase()] || '';
 }
 
 // 媒体加速域（/uploads 图片与文件专用）：优先 VITE_MEDIA_BASE 显式配置；
-// 生产环境按主站后缀自动选择（app.catsco.cn → i.catsco.cn，其余 → i.catsco.cc）；
+// 生产环境仅对已知入口域名自动切换（见 MEDIA_HOST_BASES）；
 // 开发环境默认关闭，图片继续按 API_BASE 相对解析（本地联调不受影响）。
 const MEDIA_BASE = (() => {
-  const explicit = String(import.meta.env.VITE_MEDIA_BASE || '').trim().replace(/\/+$/, '');
+  const explicit = String(import.meta.env.VITE_MEDIA_BASE || '').trim();
   if (explicit) {
     try {
       const parsed = new URL(explicit);
-      // 媒体域必须是 https 且为域名根（资源路径保持 /uploads/...）。
-      if (parsed.protocol === 'https:' && (parsed.pathname === '' || parsed.pathname === '/')) {
-        return explicit;
+      // 媒体域必须是 https 域名根、不含凭据/查询/锚点（资源路径保持 /uploads/...）。
+      if (
+        parsed.protocol === 'https:'
+        && (parsed.pathname === '' || parsed.pathname === '/')
+        && !parsed.username && !parsed.password && !parsed.search && !parsed.hash
+      ) {
+        return parsed.origin;
       }
     } catch {
-      // 非法配置按未配置处理，回退到按主站后缀自动选择。
+      // 非法配置按未配置处理，回退到按入口域名自动选择。
     }
   }
   if (import.meta.env.DEV || typeof window === 'undefined') return '';
@@ -181,7 +196,7 @@ const MEDIA_BASE = (() => {
 
 export function resolveMediaURL(url) {
   if (!url) return '';
-  if (/^https?:\/\//.test(url)) return url;
+  if (/^https?:\/\//i.test(url)) return url;
   if (MEDIA_BASE && String(url).startsWith('/uploads/')) return `${MEDIA_BASE}${url}`;
   return `${API_BASE}${url}`;
 }

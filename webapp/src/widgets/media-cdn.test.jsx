@@ -15,7 +15,7 @@ vi.mock('../api', async (importOriginal) => {
   };
 });
 
-import { downloadableMediaURL, previewFileDescriptor } from './chat-message';
+import { createCloudArtifactPreviewFile, downloadableMediaURL, previewFileDescriptor } from './chat-message';
 
 describe('media acceleration consumption', () => {
   test('file preview stays trusted when uploads resolve to the media domain', () => {
@@ -42,5 +42,33 @@ describe('media acceleration consumption', () => {
     const foreign = 'https://evil.example/uploads/files/20260101_abcdefabcdefabcdefabcdefabcdef12.pdf';
 
     expect(downloadableMediaURL(foreign)).toBe(foreign);
+  });
+
+  test('download works for feedback uploads too', () => {
+    const feedbackURL = 'https://i.catsco.cc/uploads/feedback/20260101_abcdefabcdefabcdefabcdefabcdef12.jpg';
+
+    expect(downloadableMediaURL(feedbackURL)).toBe(`${feedbackURL}?download=1`);
+  });
+
+  test('preview trust rejects crafted hosts', () => {
+    const file = (url) => ({ url, name: 'doc.pdf', size: 1024, type: 'file' });
+
+    expect(previewFileDescriptor(file('https://evilcatsco.cc/uploads/files/20260101_abcdefabcdefabcdefabcdefabcdef12.pdf')).canPreview).toBe(false);
+    expect(previewFileDescriptor(file('https://i.catsco.cc.evil.example/uploads/files/20260101_abcdefabcdefabcdefabcdefabcdef12.pdf')).canPreview).toBe(false);
+    expect(previewFileDescriptor(file('https://evil.example/uploads/files/20260101_abcdefabcdefabcdefabcdefabcdef12.pdf')).canPreview).toBe(false);
+  });
+
+  test('managed artifact preview keeps the app origin while media base is active', () => {
+    const artifact = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      title: 'game',
+      url: '/uploads/files/20260101_abcdefabcdefabcdefabcdefabcdef12.html',
+      publish_version: 1,
+      agent_uid: 42,
+    });
+    const descriptor = previewFileDescriptor(artifact);
+
+    expect(descriptor.url).toContain('/uploads/files/');
+    expect(descriptor.url).not.toContain('i.catsco.cc');
   });
 });
