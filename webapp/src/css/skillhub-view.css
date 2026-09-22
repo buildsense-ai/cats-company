@@ -807,10 +807,12 @@
 .cc-skillhub-added-item:hover { border-color: var(--cc-border-strong); background: var(--cc-hover); }
 .cc-skillhub-added-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; color: var(--cc-accent); }
 .cc-skillhub-added-copy { min-width: 0; }
-.cc-skillhub-added-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.cc-skillhub-added-title h3 { overflow: hidden; margin: 0; color: var(--cc-text); font-size: 14px; font-weight: var(--cc-font-weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
-.cc-skillhub-added-availability, .cc-skillhub-availability { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--cc-success-text); font-size: 11px; font-weight: var(--cc-font-weight-medium); }
-.cc-skillhub-availability.is-local-only { color: var(--cc-warning-text); }
+.cc-skillhub-added-title { display: flex; align-items: center; flex-wrap: wrap; column-gap: 8px; row-gap: 4px; min-width: 0; }
+.cc-skillhub-added-title h3 { min-width: 0; overflow: hidden; margin: 0; color: var(--cc-text); font-size: 14px; font-weight: var(--cc-font-weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
+.cc-skillhub-added-availability, .cc-skillhub-availability { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--cc-success-text); font-size: 11px; font-weight: var(--cc-font-weight-medium); }
+.cc-skillhub-availability.is-applied { color: var(--cc-success-text); }
+.cc-skillhub-availability.is-pending, .cc-skillhub-availability.is-local-only { color: var(--cc-warning-text); }
+.cc-skillhub-availability.is-configured { color: var(--cc-muted); }
 .cc-skillhub-availability.is-update { border-radius: 999px; padding: 1px 7px; background: var(--cc-accent-soft); color: var(--cc-accent-text); }
 .cc-skillhub-added-copy p { margin: 4px 0 6px; overflow: hidden; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .cc-skillhub-version-note { display: inline-flex; align-items: center; gap: 4px; color: var(--cc-muted); font-size: 11px; }
