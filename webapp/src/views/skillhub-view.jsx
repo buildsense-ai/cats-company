@@ -522,6 +522,7 @@ export function normalizeLocalSkills(response) {
   return values.map((skill) => ({
     ...skill,
     name: String(skill?.name || skill?.folder || '').trim(),
+    displayName: String(skill?.displayName || skill?.display_name || skill?.title || '').trim(),
     description: String(skill?.description || '').trim(),
     path: String(skill?.path || '').trim(),
     relativePath: String(skill?.relativePath || skill?.relative_path || '').trim(),

@@ -461,6 +461,13 @@ describe('SkillHubView', () => {
       skillHub: { version: '1.0.0' },
       shareError: 'Skill contains sensitive material.',
     });
+    expect(normalizeLocalSkills({ skills: [{
+      name: 'shimo-reader',
+      display_name: '石墨文档读取',
+    }] })[0]).toMatchObject({
+      name: 'shimo-reader',
+      displayName: '石墨文档读取',
+    });
     expect(isLocalSkillShared({
       canShare: true,
       skillHub: { author: 'alice', version: '1.0.0' },
@@ -1780,6 +1787,76 @@ describe('SkillHubView', () => {
     expect(requestSkillHubDeviceTool.mock.calls.some(([call]) => (
       call.toolName === 'skillhub.localBot.switch'
     ))).toBe(false);
+  });
+
+  it('shows the SkillHub title together with the Runtime directory and published metadata', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'arrowhaken/shimo-reader',
+        version: '1.0.6',
+        contentHash: 'd'.repeat(64),
+      }],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [{
+      id: 'arrowhaken/shimo-reader',
+      displayName: '石墨文档读取',
+      description: '读取石墨文档',
+      author: { displayName: 'arrowhaken', catsCoUid: '85' },
+      latestVersion: '1.0.6',
+      contentHash: 'd'.repeat(64),
+    }] });
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'server-42',
+      displayName: 'David Runtime',
+      runtimeRole: 'server',
+      botUid: 42,
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: ['skillhub.localWorkspace.get', 'skillhub.localWorkspace.pagination.v1', 'skillhub.localSkill.share', 'skillhub.localSkill.finalize'],
+    }] });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: '/srv/xiaoba/skills',
+      skills: [{
+        local_skill_id: 'runtime-shimo-reader',
+        name: 'shimo-reader',
+        description: '读取石墨文档',
+        relative_path: 'shimo-reader',
+        source: 'user',
+        can_share: false,
+        skill_hub: {
+          reference: {
+            skillId: 'arrowhaken/shimo-reader',
+            version: '1.0.6',
+            contentHash: 'd'.repeat(64),
+          },
+        },
+      }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCustomSkills();
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    const card = container.querySelector('.cc-skillhub-local-card');
+    expect(card).not.toBeNull();
+    expect(card.querySelector('strong')?.textContent).toBe('石墨文档读取');
+    expect(card.textContent).toContain('目录：shimo-reader');
+    expect(card.textContent).toContain('版本 v1.0.6');
+    expect(card.textContent).toContain('发布者 arrowhaken · UID 85');
   });
 
   it('lets the owner explicitly sync a reviewed server Runtime workspace as Bot-private abilities', async () => {
