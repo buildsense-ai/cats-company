@@ -4075,6 +4075,8 @@ describe('SkillHubView', () => {
     const button = card.querySelector('.cc-skillhub-card-footer button');
     expect(button.textContent).toContain('更新');
     expect(button.textContent).not.toContain('已添加');
+    expect(button.className).toContain('update');
+    expect(button.getAttribute('aria-label')).toBe('更新 Summarize 到 v2.0.0');
     expect(button.disabled).toBe(false);
     expect(button.title).toBe('更新到 v2.0.0');
 
@@ -4339,6 +4341,8 @@ describe('SkillHubView', () => {
     const addButton = () => catalogueCard().querySelector('.cc-skillhub-card-footer button');
     expect(catalogueCard()).toBeTruthy();
     expect(addButton().textContent).toContain('添加');
+    expect(addButton().className).toContain('primary');
+    expect(addButton().className).not.toContain('update');
 
     await act(async () => {
       Simulate.click(addButton());
