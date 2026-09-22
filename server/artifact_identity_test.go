@@ -260,8 +260,16 @@ func TestArtifactIdentityRejectsTamperedAndExpiredCookies(t *testing.T) {
 	// Re-signing the payload with a different account, or with different
 	// content, must fail the signature check.
 	_, signature, _ := strings.Cut(valid, ".")
+	// Flip the final hex digit so the "broken" signature is guaranteed to
+	// differ from the real one. Replacing it with a literal "0" was a no-op
+	// whenever the signature already ended in "0" (~6% of runs), leaving a
+	// valid cookie in this map and failing the assertion intermittently.
+	brokenTail := "0"
+	if strings.HasSuffix(signature, "0") {
+		brokenTail = "1"
+	}
 	bad := map[string]string{
-		"broken signature":        strings.Replace(valid, signature, signature[:len(signature)-1]+"0", 1),
+		"broken signature":        strings.Replace(valid, signature, signature[:len(signature)-1]+brokenTail, 1),
 		"uid swapped":             identityPayload(364, expUnix, "saturday") + "." + signature,
 		"username swapped":        identityPayload(363, expUnix, "other") + "." + signature,
 		"forged":                  "364:9999999999.deadbeef",
