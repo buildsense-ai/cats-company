@@ -1368,4 +1368,27 @@ describe('media acceleration URL resolution', () => {
     expect(api.resolveMediaURL('https://app.catsco.cc/uploads/images/c.jpg'))
       .toBe('https://app.catsco.cc/uploads/images/c.jpg');
   });
+
+  test('ignores invalid explicit media bases and keeps non-string inputs safe', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'not-a-url');
+    const api = await import('./api');
+    expect(api.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'http://insecure.example');
+    const apiHttp = await import('./api');
+    expect(apiHttp.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cc/prefix');
+    const apiPath = await import('./api');
+    expect(apiPath.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cc');
+    const apiMedia = await import('./api');
+    expect(() => apiMedia.resolveMediaURL(123)).not.toThrow();
+    expect(apiMedia.resolveMediaURL(123)).toBe('123');
+  });
 });

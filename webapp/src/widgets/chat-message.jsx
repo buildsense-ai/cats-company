@@ -2059,12 +2059,16 @@ export function downloadableMediaURL(url) {
   if (!url) return '';
   try {
     const urlObj = new URL(url, window.location.origin);
-    const mediaBase = new URL(resolveMediaURL('/'), window.location.origin);
-    const uploadRootPath = `${mediaBase.pathname.replace(/\/+$/, '')}/uploads/`;
+    // 媒体域（CDN）与页面 origin 都视为可信；上传资源路径可能带 API 相对前缀
+    // （如 /api/uploads/...），从媒体基址推导根路径。
+    const mediaBase = new URL(resolveMediaURL('/uploads/'), window.location.origin);
+    const uploadRootPath = `${mediaBase.pathname.replace(/\/uploads\/?$/, '')}/uploads/`;
     const isDownloadableUpload = ['files', 'images'].some(
       (directory) => urlObj.pathname.startsWith(`${uploadRootPath}${directory}/`),
     );
-    if (urlObj.origin !== mediaBase.origin || !isDownloadableUpload) {
+    const trustedOrigin = urlObj.origin === window.location.origin
+      || urlObj.origin === mediaBase.origin;
+    if (!trustedOrigin || !isDownloadableUpload) {
       return url;
     }
     urlObj.searchParams.set('download', '1');
@@ -2080,7 +2084,7 @@ function isTrustedPreviewURL(url) {
   if (!url) return false;
   try {
     const urlObj = new URL(url, window.location.origin);
-    const mediaOrigin = new URL(resolveMediaURL('/'), window.location.origin).origin;
+    const mediaOrigin = new URL(resolveMediaURL('/uploads/'), window.location.origin).origin;
     const host = window.location.hostname;
     const isLocalDev = host === 'localhost' || host === '127.0.0.1';
     const trustedOrigin = (
@@ -2107,12 +2111,19 @@ function isSameOriginURL(url) {
 
 export function previewFileDescriptor(payload) {
   if (!payload) return null;
-  const url = resolveMediaURL(payload.url);
   const ext = fileExtension(payload);
+  const isHtml = isHtmlFile(payload, ext);
+  // 托管 Artifact 预览依赖同源 frame bridge（上下文快照 / 结果回写），
+  // 这类页面保持源站 origin；其余 /uploads 资源走媒体域（CDN）加速。
+  const prefersManagedArtifactOrigin = isHtml
+    && trustedArtifactPreviewPayloads.has(payload)
+    && !/^https?:\/\//i.test(String(payload.url || ''));
+  const url = prefersManagedArtifactOrigin
+    ? new URL(payload.url, window.location.origin).toString()
+    : resolveMediaURL(payload.url);
   const meta = artifactMeta(payload, ext);
   const isPdf = isPdfFile(payload, ext);
   const isImage = isImageFile(payload, ext);
-  const isHtml = isHtmlFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
   const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
   const isManagedRemoteArtifact = trustedArtifactPreviewPayloads.has(payload)
