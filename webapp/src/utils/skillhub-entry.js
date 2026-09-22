@@ -210,6 +210,14 @@ export function normalizeSkillHubContentHash(value) {
   return SKILL_HUB_CONTENT_HASH_PATTERN.test(hash) ? hash : '';
 }
 
+export function hasCompleteSkillHubReference(skill) {
+  return Boolean(
+    String(skill?.skillId || '').trim()
+    && String(skill?.version || '').trim()
+    && normalizeSkillHubContentHash(skill?.contentHash),
+  );
+}
+
 // Versions are publisher-chosen labels, so rank only the leading numeric run
 // (`2`, `1.0.6`, `2026.09.16`, `1.0.0-beta` -> 1.0.0). A label without numbers
 // stays unranked instead of being guessed at.

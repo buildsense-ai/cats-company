@@ -5,6 +5,7 @@ import {
   describeInstalledCapability,
   findSameNameInstalledCapability,
   formatSkillHubVersion,
+  hasCompleteSkillHubReference,
   isPrivateSkillHubReference,
   normalizeLocalSkillHubSkills,
   normalizeSkillHubSkills,
@@ -15,7 +16,11 @@ import { getStorage } from '../utils/storage-access';
 import SkillHubContent from './skillhub-content';
 import '../css/skillhub-view.css';
 
-export { normalizeSkillHubSkills, resolveSkillHubEntry } from '../utils/skillhub-entry';
+export {
+  hasCompleteSkillHubReference,
+  normalizeSkillHubSkills,
+  resolveSkillHubEntry,
+} from '../utils/skillhub-entry';
 
 const SKILLHUB_DEVICE_TOOLS = {
   workspace: 'skillhub.localWorkspace.get',
@@ -703,14 +708,6 @@ export function hasExactLocalSkillReference(skill, localSkill) {
   );
 }
 
-export function hasCompleteSkillHubReference(skill) {
-  return Boolean(
-    String(skill?.skillId || '').trim()
-    && String(skill?.version || '').trim()
-    && isExactHash(String(skill?.contentHash || '').trim().toLowerCase())
-  );
-}
-
 export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
   const skillId = String(skill?.skillId || '').trim();
   const details = catalogueByID?.get(skillId);
@@ -919,6 +916,19 @@ function isExactHash(value) {
   return /^[0-9a-f]{64}$/.test(String(value || ''));
 }
 
+function isPublicSkillHubEntry(skill, expectedSkillID = '') {
+  const skillID = String(skill?.skillId || '').trim();
+  const expectedID = String(expectedSkillID || '').trim();
+  const source = String(skill?.source || '').trim().toLowerCase();
+  return Boolean(
+    skillID
+    && (!expectedID || skillID === expectedID)
+    && (!source || source === 'skillhub')
+    && !skill?.isLocalSkill
+    && !isPrivateSkillHubReference(skillID),
+  );
+}
+
 async function copyText(value) {
   if (typeof navigator.clipboard?.writeText === 'function') {
     await navigator.clipboard.writeText(value);
@@ -985,12 +995,14 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const catalogueRequestRef = useRef(0);
   const localRequestRef = useRef(0);
   const saveRequestRef = useRef(0);
+  const skillMutationRef = useRef('');
   const requestedBotSwitchRef = useRef('');
 
   useEffect(() => {
     selectedBotUIDRef.current = selectedBotUID;
     setAddedSkillQuery('');
     saveRequestRef.current += 1;
+    skillMutationRef.current = '';
     setSaving(false);
     setSkillAction(null);
     setActionNotice('');
@@ -1661,27 +1673,48 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     }
   };
 
-  const installSkill = async (skill) => {
+  const installSkill = async (skill, { expectedSkillId = '', requireUpdate = false } = {}) => {
+    const targetSkillID = String(expectedSkillId || skill?.skillId || '').trim();
     const initiatingBotUID = selectedBotUIDRef.current;
     if (
-      !initiatingBotUID
+      !targetSkillID
+      || !initiatingBotUID
       || selectedAgentIsFriend
       || definitionBotUID !== initiatingBotUID
       || loadingDefinition
+      || saving
+      || sharingSkill
+      || skillAction
+      || skillMutationRef.current
     ) return;
+    if (requireUpdate && !isPublicSkillHubEntry(skill, targetSkillID)) {
+      setDefinitionError('只能从公开 SkillHub 条目更新当前 Agent 的同一项能力。');
+      return;
+    }
     const initiatingRevision = definition.revision;
     const initiatingSkills = definition.skills;
+    const initiatingDefinitionRequest = definitionRequestRef.current;
+    const installedReference = (initiatingSkills || []).find((candidate) => candidate?.skillId === targetSkillID);
+    if (requireUpdate && (
+      !installedReference
+      || String(installedReference.source || 'skillhub').trim().toLowerCase() !== 'skillhub'
+      || isPrivateSkillHubReference(targetSkillID)
+      || !hasCompleteSkillHubReference(installedReference)
+    )) {
+      setDefinitionError('当前能力引用不完整或不是公开 SkillHub 能力，已停止更新。');
+      return;
+    }
     // The same write either adds a new capability or replaces the installed
     // reference with a newer published version. Decide from the definition the
     // save is based on, so the wording cannot drift when a refresh lands first.
-    const replacing = (initiatingSkills || []).some((candidate) => (
-      candidate?.skillId === skill.skillId
-      && resolveSkillHubUpdateStatus(candidate, skill) === 'update'
-    ));
+    let replacing = Boolean(
+      installedReference
+      && resolveSkillHubUpdateStatus(installedReference, skill) === 'update'
+    );
     // Installing a catalogue entry that only shares a name with an installed
     // capability adds a second same-name ability instead of replacing it, so
     // make that duplicate an explicit choice.
-    if (!replacing) {
+    if (!replacing && !requireUpdate) {
       const sameName = findSameNameInstalledCapability(skill, installedCapabilities);
       if (sameName) {
         const catalogueVersion = formatSkillHubVersion(skill.latestVersion);
@@ -1697,30 +1730,54 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         if (!confirmed || initiatingBotUID !== selectedBotUIDRef.current) return;
       }
     }
+    // Use an object token rather than a Bot/Skill string. If the user switches
+    // away and back while an old request is pending, its cleanup must not clear
+    // a newer operation for the same Bot and Skill.
+    const operationToken = { botUID: initiatingBotUID, skillID: targetSkillID };
+    if (skillMutationRef.current) return;
+    skillMutationRef.current = operationToken;
     const agentName = botLabel(selectedAgent);
-    setSkillAction({ type: 'add', skillId: skill.skillId, update: replacing });
+    setSkillAction({ type: 'add', skillId: targetSkillID, update: replacing || requireUpdate });
     setActionNotice('');
     let resolved = skill;
     try {
       if (!resolved.latestVersion || !isExactHash(resolved.contentHash)) {
-        const detail = await api.getSkillHubSkill(skill.skillId);
+        const detail = await api.getSkillHubSkill(targetSkillID);
         if (
           initiatingBotUID !== selectedBotUIDRef.current
           || definitionBotUID !== initiatingBotUID
+          || definitionRequestRef.current !== initiatingDefinitionRequest
         ) return;
         resolved = resolveSkillHubEntry(skill, detail);
       }
       if (
         initiatingBotUID !== selectedBotUIDRef.current
         || definitionBotUID !== initiatingBotUID
+        || definitionRequestRef.current !== initiatingDefinitionRequest
       ) return;
+      if (
+        (requireUpdate && !isPublicSkillHubEntry(resolved, targetSkillID))
+        || String(resolved?.skillId || '').trim() !== targetSkillID
+      ) {
+        const mismatch = new Error('SkillHub 返回了其他或非公开 Skill，已停止更新。');
+        mismatch.code = 'skillhub_skill_id_mismatch';
+        throw mismatch;
+      }
       if (!resolved.latestVersion || !isExactHash(resolved.contentHash)) {
         setDefinitionError('暂时无法取得推荐稳定版本，请稍后重试。');
         return;
       }
+      replacing = Boolean(
+        installedReference
+        && resolveSkillHubUpdateStatus(installedReference, resolved) === 'update',
+      );
+      if (requireUpdate && !replacing) {
+        setDefinitionError('当前 Skill 已经是最新版本，或暂时无法确认可用更新。');
+        return;
+      }
       const nextRef = {
         source: 'skillhub',
-        skillId: resolved.skillId,
+        skillId: targetSkillID,
         version: resolved.latestVersion,
         contentHash: resolved.contentHash,
       };
@@ -1740,8 +1797,27 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         && definitionBotUID === initiatingBotUID
       ) setDefinitionError(error?.message || '保存失败，未更改 Agent 当前配置。');
     } finally {
+      if (skillMutationRef.current === operationToken) skillMutationRef.current = '';
       if (initiatingBotUID === selectedBotUIDRef.current) setSkillAction(null);
     }
+  };
+
+  const updateSkill = async (skillID) => {
+    const targetSkillID = String(skillID || '').trim();
+    if (
+      !targetSkillID
+      || selectedAgentIsFriend
+      || !definitionReady
+      || saving
+      || sharingSkill
+      || skillAction
+      || skillMutationRef.current
+    ) return;
+    const details = addedSkillPresentationByID.get(targetSkillID)?.details;
+    await installSkill(
+      details || { skillId: targetSkillID },
+      { expectedSkillId: targetSkillID, requireUpdate: true },
+    );
   };
 
   const removeSkill = async (skillID) => {
@@ -2139,6 +2215,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     }}
     onShareLocalSkill={shareLocalSkill}
     onSyncWorkspace={syncWorkspaceToAgent}
+    onUpdateSkill={updateSkill}
     query={query}
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
