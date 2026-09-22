@@ -516,6 +516,7 @@ func appliedBotModelStatus(config *types.BotModelConfig) (DeviceModelStatus, boo
 		if model == "" {
 			return DeviceModelStatus{}, false
 		}
+		model = resolveLegacyCatalogModelID(model)
 		return DeviceModelStatus{Source: "relay", Model: model, ReasoningEffort: strings.TrimSpace(config.AppliedReasoning)}, true
 	case botModelKindCustom:
 		if model == "" || normalizeRelayModelName(model) == "custom" || strings.EqualFold(model, "自定义模型") {

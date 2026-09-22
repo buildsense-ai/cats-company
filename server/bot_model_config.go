@@ -92,7 +92,6 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000, Vision: true, RuntimeModel: "MiniMax-M3",
 	},
 	deepSeekModelCatalogItem(),
-	deepSeekFlashModelCatalogItem(),
 	{
 		ID: "glm-5.3-flash", Label: "GLM 5.3 Flash", Description: "高性价比多模态模型，适合长上下文与工具任务",
 		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000,
@@ -547,7 +546,7 @@ func botModelConfigWithDefaults(config *types.BotModelConfig) *types.BotModelCon
 }
 
 func normalizeBotModelSelection(modelID, reasoning string) (botModelCatalogItem, string, bool) {
-	normalizedModel := strings.ToLower(strings.TrimSpace(modelID))
+	normalizedModel := strings.ToLower(strings.TrimSpace(resolveLegacyCatalogModelID(modelID)))
 	for _, model := range botModelCatalog {
 		if model.ID != normalizedModel {
 			continue
@@ -577,7 +576,7 @@ func normalizeBotModelSelection(modelID, reasoning string) (botModelCatalogItem,
 // guess it from a local profile; catalog ids that are not in the catalog (e.g.
 // legacy aliases) fall back to the callers' defaults.
 func catalogContextWindowTokens(modelID string) (int64, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	normalized := strings.ToLower(strings.TrimSpace(resolveLegacyCatalogModelID(modelID)))
 	for _, model := range botModelCatalog {
 		if model.ID == normalized && model.ContextWindowTokens > 0 {
 			return model.ContextWindowTokens, true
@@ -613,7 +612,7 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 		!(config.AppliedRevision == config.Revision && config.AppliedKind == "local" && config.AppliedModelID == "local")
 	if (configured || localHandoff) && config.LastAttemptRevision == config.Revision && config.LastError != "" {
 		status = "failed"
-	} else if configured && config.AppliedRevision == config.Revision && config.AppliedKind == config.Kind && config.AppliedModelID == config.ModelID {
+	} else if configured && config.AppliedRevision == config.Revision && config.AppliedKind == config.Kind && catalogModelIDMatches(config.AppliedModelID, config.ModelID) {
 		status = "applied"
 	} else if configured || localHandoff {
 		status = "pending"
@@ -623,7 +622,7 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 		"configured": configured,
 		"desired":    desiredModelConfigResponse(desiredKind, desiredModelID, desiredReasoning, config),
 		"applied": map[string]interface{}{
-			"kind": config.AppliedKind, "model_id": config.AppliedModelID, "reasoning_effort": config.AppliedReasoning,
+			"kind": config.AppliedKind, "model_id": resolveLegacyCatalogModelID(config.AppliedModelID), "reasoning_effort": config.AppliedReasoning,
 			"revision": config.AppliedRevision, "applied_at": config.AppliedAt,
 		},
 		"status":     status,
@@ -637,6 +636,9 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 // catalog models it includes the authoritative cloud context window so the
 // device does not rely on a local profile that can drift from the catalog.
 func desiredModelConfigResponse(kind, modelID, reasoning string, config *types.BotModelConfig) map[string]interface{} {
+	if kind == botModelKindCatalog {
+		modelID = resolveLegacyCatalogModelID(modelID)
+	}
 	desired := map[string]interface{}{
 		"kind": kind, "model_id": modelID, "reasoning_effort": reasoning,
 		"revision": config.Revision, "updated_at": config.UpdatedAt,
