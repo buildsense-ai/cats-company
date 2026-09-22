@@ -111,7 +111,7 @@ func TestOwnerCanSelectBotModelAndFriendCannot(t *testing.T) {
 	handler := NewBotModelConfigHandler(db, db)
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
-		`{"model_id":"deepseek-v4-flash","reasoning_effort":"max"}`,
+		`{"model_id":"deepseek-flash","reasoning_effort":"max"}`,
 	))
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 	rec := httptest.NewRecorder()
@@ -119,7 +119,7 @@ func TestOwnerCanSelectBotModelAndFriendCannot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("owner status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := db.models[43]; got == nil || got.ModelID != "deepseek-v4-flash" || got.ReasoningEffort != "max" || got.Revision != 1 {
+	if got := db.models[43]; got == nil || got.ModelID != "deepseek-flash" || got.ReasoningEffort != "max" || got.Revision != 1 {
 		t.Fatalf("saved config=%+v", got)
 	}
 
@@ -402,14 +402,14 @@ func TestOwnerRetryCreatesNewRevisionUntilSelectionIsApplied(t *testing.T) {
 		{
 			name: "pending selection",
 			config: &types.BotModelConfig{
-				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
+				ModelID: "deepseek-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
 			},
 			wantRevision: 4,
 		},
 		{
 			name: "failed selection",
 			config: &types.BotModelConfig{
-				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
+				ModelID: "deepseek-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
 				LastAttemptRevision: 3, LastError: "runtime reload failed",
 			},
 			wantRevision: 4,
@@ -417,10 +417,20 @@ func TestOwnerRetryCreatesNewRevisionUntilSelectionIsApplied(t *testing.T) {
 		{
 			name: "applied selection",
 			config: &types.BotModelConfig{
+				ModelID: "deepseek-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
+				AppliedRevision: 3, AppliedModelID: "deepseek-flash", AppliedReasoning: "high",
+			},
+			wantRevision: 3,
+		},
+		{
+			// A stored legacy V4 selection is rewritten once so the device
+			// reloads onto the current catalog model.
+			name: "legacy applied selection converts once",
+			config: &types.BotModelConfig{
 				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
 				AppliedRevision: 3, AppliedModelID: "deepseek-v4-flash", AppliedReasoning: "high",
 			},
-			wantRevision: 3,
+			wantRevision: 4,
 		},
 	}
 
@@ -432,7 +442,7 @@ func TestOwnerRetryCreatesNewRevisionUntilSelectionIsApplied(t *testing.T) {
 			}
 			handler := NewBotModelConfigHandler(db, db)
 			req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
-				`{"model_id":"deepseek-v4-flash","reasoning_effort":"high"}`,
+				`{"model_id":"deepseek-flash","reasoning_effort":"high"}`,
 			))
 			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 			rec := httptest.NewRecorder()
@@ -472,6 +482,9 @@ func TestRuntimeReadsOwnConfigAndAcknowledgesCurrentRevision(t *testing.T) {
 	if _, exposed := body["models"]; exposed {
 		t.Fatal("runtime response should not include the owner model catalog")
 	}
+	if desired, ok := body["desired"].(map[string]interface{}); !ok || desired["model_id"] != "deepseek-flash" {
+		t.Fatalf("legacy stored selection was not converted in desired payload: %#v", body["desired"])
+	}
 
 	ackReq := httptest.NewRequest(http.MethodPost, "/api/bot/model-config/ack", strings.NewReader(
 		`{"revision":3,"model_id":"deepseek-v4-flash","reasoning_effort":"high"}`,
@@ -482,8 +495,45 @@ func TestRuntimeReadsOwnConfigAndAcknowledgesCurrentRevision(t *testing.T) {
 	if ackRec.Code != http.StatusOK {
 		t.Fatalf("ack status=%d body=%s", ackRec.Code, ackRec.Body.String())
 	}
-	if db.models[43].AppliedRevision != 3 || db.models[43].AppliedModelID != "deepseek-v4-flash" {
+	if db.models[43].AppliedRevision != 3 || db.models[43].AppliedModelID != "deepseek-flash" {
 		t.Fatalf("ack config=%+v", db.models[43])
+	}
+}
+
+func TestOwnerLegacyAppliedSelectionDoesNotLookPending(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{
+			43: {
+				Kind: botModelKindCatalog, ModelID: "deepseek-v4-flash", ReasoningEffort: "high",
+				RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
+				AppliedRevision: 3, AppliedKind: botModelKindCatalog, AppliedModelID: "deepseek-v4-flash", AppliedReasoning: "high",
+			},
+		},
+	}
+	markTestBotModelRuntime(t, db, 43)
+	handler := NewBotModelConfigHandler(db, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["status"] != "applied" {
+		t.Fatalf("legacy applied selection status=%v body=%s", body["status"], rec.Body.String())
+	}
+	applied, _ := body["applied"].(map[string]interface{})
+	if applied["model_id"] != "deepseek-flash" {
+		t.Fatalf("applied model=%v", applied["model_id"])
+	}
+	desired, _ := body["desired"].(map[string]interface{})
+	if desired["model_id"] != "deepseek-flash" {
+		t.Fatalf("desired model=%v", desired["model_id"])
 	}
 }
 
@@ -936,7 +986,7 @@ func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing
 							"budget": map[string]interface{}{"max_limit": 100.0, "current_usage": 25.0},
 						},
 						{
-							"provider": "anthropic", "model": "deepseek-v4-flash",
+							"provider": "anthropic", "model": "deepseek-flash",
 							"budget": map[string]interface{}{"max_limit": 50.0, "current_usage": 45.0},
 						},
 					},
@@ -965,7 +1015,7 @@ func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing
 	if !strings.Contains(rec.Body.String(), `"model":"gpt-5.6-terra"`) || !strings.Contains(rec.Body.String(), `"remaining_percent":75`) {
 		t.Fatalf("Terra quota missing from response: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"model":"deepseek-v4-flash"`) || !strings.Contains(rec.Body.String(), `"status":"high"`) {
+	if !strings.Contains(rec.Body.String(), `"model":"deepseek-flash"`) || !strings.Contains(rec.Body.String(), `"status":"high"`) {
 		t.Fatalf("DeepSeek quota missing from response: %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"context_window_tokens":256000`) ||
@@ -995,7 +1045,7 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	}))
 	defer relay.Close()
 	summary := &types.CommercialSummary{TotalCNY: 33600, TotalsByModel: map[string]float64{
-		"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-v4-flash": 100,
+		"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-flash": 100,
 		"gpt-5.6-terra": 15750, "gpt-5.6-sol": 15750, "glm-5.3-flash": 500,
 	}}
 	handler := NewBotModelConfigHandler(nil, nil)
@@ -1022,10 +1072,10 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 
 func TestOwnerModelCatalogOnlyReturnsModelsIncludedInFreePlan(t *testing.T) {
 	summary := &types.CommercialSummary{TotalsByModel: map[string]float64{
-		"MiniMax-M2.7":      1000,
-		"MiniMax-M3":        500,
-		"deepseek-v4-flash": 100,
-		"glm-5.3-flash":     100,
+		"MiniMax-M2.7":   1000,
+		"MiniMax-M3":     500,
+		"deepseek-flash": 100,
+		"glm-5.3-flash":  100,
 	}}
 	handler := NewBotModelConfigHandler(nil, nil)
 	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: summary}, true, nil)
@@ -1034,7 +1084,7 @@ func TestOwnerModelCatalogOnlyReturnsModelsIncludedInFreePlan(t *testing.T) {
 	if quotaError != "" {
 		t.Fatalf("quota error=%q", quotaError)
 	}
-	want := []string{"minimax-m2.7", "minimax-m3", "deepseek-v4-flash", "glm-5.3-flash"}
+	want := []string{"minimax-m2.7", "minimax-m3", "deepseek-flash", "glm-5.3-flash"}
 	if len(catalog) != len(want) {
 		t.Fatalf("catalog=%#v, want %v", catalog, want)
 	}

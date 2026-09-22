@@ -11,8 +11,8 @@ func TestDeepSeekFlashIndependentResponsesSelection(t *testing.T) {
 	if runtime == nil || runtime.Model != "deepseek-flash" || runtime.OpenAIAPIMode != "responses" || !runtime.Vision {
 		t.Fatalf("incorrect native Flash runtime: %#v", runtime)
 	}
-	old, _, oldOK := normalizeBotModelSelection("deepseek-v4-flash", "high")
-	if !oldOK || old.ID == item.ID {
-		t.Fatal("old selection must remain independent until retirement")
+	legacy, _, legacyOK := normalizeBotModelSelection("deepseek-v4-flash", "high")
+	if !legacyOK || legacy.ID != item.ID {
+		t.Fatal("retired V4 selection must resolve to the current Flash model")
 	}
 }

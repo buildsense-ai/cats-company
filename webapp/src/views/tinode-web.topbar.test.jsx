@@ -58,11 +58,11 @@ const baseConfig = {
       quota: { model: 'minimax-m3', quota_configured: true, percent: 25, remaining_percent: 75, status: 'normal' },
     },
     {
-      id: 'deepseek-v4-flash',
-      label: 'DeepSeek V4 Flash',
-      description: '低额度 Flash，支持推理强度与视觉理解',
+      id: 'deepseek-flash',
+      label: 'DeepSeek Flash',
+      description: '原生多模态，支持图片、工具调用与推理强度',
       context_window_tokens: 1000000,
-      quota: { model: 'deepseek-v4-flash', quota_configured: true, percent: 90, remaining_percent: 10, status: 'high' },
+      quota: { model: 'deepseek-flash', quota_configured: true, percent: 90, remaining_percent: 10, status: 'high' },
       reasoning_efforts: ['high', 'max', 'disabled'],
       default_reasoning_effort: 'high',
       vision: true,
@@ -685,12 +685,12 @@ describe('LocalAssistantBar model selector', () => {
     const m27 = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('MiniMax M2.7'));
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
-      .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+      .find((item) => item.textContent.includes('DeepSeek Flash'));
     const terra = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('GPT-5.6 Terra'));
     expect(m27?.textContent).toContain('标准额度，适合日常任务');
     expect(m3?.textContent).toContain('支持多模态与长上下文');
-    expect(deepseek?.textContent).toContain('低额度 Flash，支持推理强度');
+    expect(deepseek?.textContent).toContain('原生多模态，支持图片、工具调用与推理强度');
     expect(terra?.textContent).toContain('OpenAI Responses，支持精细推理强度');
     expect(m27?.textContent).toContain('上下文 204.8K');
     expect(m3?.textContent).toContain('上下文 1M');
@@ -786,18 +786,18 @@ describe('LocalAssistantBar model selector', () => {
     const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
       ...config,
       status: 'pending',
-      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 3 },
+      desired: { kind: 'catalog', model_id: 'deepseek-flash', reasoning_effort: 'high', revision: 3 },
     });
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
-      .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+      .find((item) => item.textContent.includes('DeepSeek Flash'));
     await act(async () => {
       deepseek.click();
       await Promise.resolve();
     });
     expect(update).toHaveBeenCalledWith(43, {
-      kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high',
+      kind: 'catalog', model_id: 'deepseek-flash', reasoning_effort: 'high',
     });
   });
 
@@ -825,14 +825,14 @@ describe('LocalAssistantBar model selector', () => {
   it('shows vision beside reasoning strength as a read-only automatic capability', async () => {
     const deepseekConfig = {
       ...baseConfig,
-      desired: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 2 },
-      applied: { kind: 'catalog', model_id: 'deepseek-v4-flash', reasoning_effort: 'high', revision: 2 },
+      desired: { kind: 'catalog', model_id: 'deepseek-flash', reasoning_effort: 'high', revision: 2 },
+      applied: { kind: 'catalog', model_id: 'deepseek-flash', reasoning_effort: 'high', revision: 2 },
     };
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(deepseekConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
-      .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+      .find((item) => item.textContent.includes('DeepSeek Flash'));
     await act(async () => deepseek.click());
     expect(container.textContent).toContain('推理强度');
     expect(container.textContent).toContain('视觉');

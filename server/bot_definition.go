@@ -549,7 +549,7 @@ func (h *BotDefinitionHandler) definitionResponse(
 }
 
 func catalogRuntimeDescriptorForModel(modelID string) *botModelRuntimeDescriptor {
-	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	normalized := strings.ToLower(strings.TrimSpace(resolveLegacyCatalogModelID(modelID)))
 	for _, model := range botModelCatalog {
 		if strings.ToLower(strings.TrimSpace(model.ID)) == normalized {
 			return catalogRuntimeDescriptor(model)
@@ -580,6 +580,9 @@ func botDefinitionModelForResponse(record *types.BotDefinitionRecord) (types.Bot
 	}
 	if kind == "" && modelID != "" {
 		model.Kind = botModelKindCatalog
+	}
+	if strings.EqualFold(strings.TrimSpace(model.Kind), botModelKindCatalog) {
+		model.ModelID = resolveLegacyCatalogModelID(model.ModelID)
 	}
 	return model, true
 }

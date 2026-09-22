@@ -58,10 +58,10 @@ const mockBotModels = [
   { id: 'minimax-m2.7', label: 'MiniMax M2.7', description: '标准额度，适合日常任务' },
   { id: 'minimax-m3', label: 'MiniMax M3', description: '支持多模态与长上下文' },
   {
-    id: 'deepseek-v4-flash',
-    label: 'DeepSeek V4 Flash',
-    description: '低额度 Flash，支持推理强度',
-    reasoning_efforts: ['high', 'max', 'disabled'],
+    id: 'deepseek-flash',
+    label: 'DeepSeek Flash',
+    description: '原生多模态，支持图片、工具调用与推理强度',
+    reasoning_efforts: ['low', 'high', 'max', 'disabled'],
     default_reasoning_effort: 'high',
   },
   ...['terra', 'sol'].map((variant) => ({
@@ -107,7 +107,7 @@ function seedExistingBot(user) {
     ? [
       { username: 'code_review_agent', display_name: '代码审查助手', model: 'gpt-5.6-terra', remaining_percent: 82 },
       { username: 'ops_data_agent', display_name: '运营数据助手', model: 'MiniMax-M3', remaining_percent: 61 },
-      { username: 'research_agent', display_name: '行业研究助手', model: 'deepseek-v4-flash', remaining_percent: 47 },
+      { username: 'research_agent', display_name: '行业研究助手', model: 'deepseek-flash', remaining_percent: 47 },
       { username: 'content_agent', display_name: '内容策划助手', model: 'gpt-5.6-terra', remaining_percent: 28 },
       { username: 'quality_agent', display_name: '质量巡检助手', model: 'MiniMax-M2.7', remaining_percent: 93 },
     ]
@@ -1264,7 +1264,7 @@ async function handleApi(req, res) {
         models: [
           { id: 'minimax-m2.7', label: 'MiniMax M2.7', model: 'MiniMax-M2.7', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'standard', context_window_tokens: 204800, default: true },
           { id: 'minimax-m3', label: 'MiniMax M3', model: 'MiniMax-M3', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'multimodal', context_window_tokens: 1000000 },
-          { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'flash-low', context_window_tokens: 1000000 },
+          { id: 'deepseek-flash', label: 'DeepSeek Flash', model: 'deepseek-flash', provider: 'openai', base_url: 'https://relay.catsco.cc/openai', quota_class: 'flash-low', context_window_tokens: 1000000 },
         ],
       });
     }
