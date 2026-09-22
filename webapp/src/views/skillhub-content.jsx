@@ -788,7 +788,42 @@ function CustomGrid(props) {
   return <div className='cc-skillhub-local-grid'>{props.localSkills.map((skill) => <CustomCard key={`${skill.relativePath}:${skill.name}`} skill={skill} {...props} />)}</div>;
 }
 
-function CustomCard({ definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, syncingWorkspace }) {
+export function resolveRuntimeSkillPresentation(skill, catalogueByID) {
+  const reference = skill?.skillHub?.reference || skill?.reference || {};
+  const skillId = String(
+    reference?.skillId
+    || reference?.skill_id
+    || skill?.cloudSkillId
+    || skill?.skillId
+    || '',
+  ).trim();
+  const details = skillId ? catalogueByID?.get(skillId) : null;
+  const displayName = String(
+    details?.displayName
+    || skill?.skillHub?.displayName
+    || skill?.skillHub?.display_name
+    || skill?.displayName
+    || skill?.display_name
+    || skill?.title
+    || skill?.name
+    || '',
+  ).trim();
+  const directory = String(skill?.relativePath || skill?.path || skill?.name || '').trim();
+  const version = formatSkillHubVersion(
+    reference?.version
+    || skill?.skillHub?.version
+    || skill?.version
+    || details?.latestVersion,
+  );
+  const publisher = formatSkillHubPublisher({
+    ...(skill?.skillHub || {}),
+    ...skill,
+    ...(details || {}),
+  }, '');
+  return { details, directory, displayName, publisher, skillId, version };
+}
+
+function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, syncingWorkspace }) {
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
   const shared = isLocalSkillShared(skill, installedReference);
@@ -796,13 +831,18 @@ function CustomCard({ definitionReady, installedByID, isLocalSkillShared, loadin
   const canShare = !blocked && skill.canShare !== false && skill.source !== 'system' && !shared;
   const statusClass = blocked ? 'blocked' : shared ? 'synced' : 'local';
   const statusLabel = blocked ? '无法发布' : shared ? '已发布' : '未发布';
+  const { directory, displayName, publisher, version } = resolveRuntimeSkillPresentation(skill, catalogueByID);
   return (
     <article className='cc-skillhub-local-card'>
-      <div className='cc-skillhub-local-card-heading'><strong>{skill.name}</strong><span className={`cc-skillhub-status ${statusClass}`}>{statusLabel}</span></div>
+      <div className='cc-skillhub-local-card-heading'><strong>{displayName}</strong><span className={`cc-skillhub-status ${statusClass}`}>{statusLabel}</span></div>
       <p className={blocked ? 'cc-skillhub-validation-error' : undefined} title={skill.shareError || skill.description || undefined}>
         {skill.shareError || skill.description || '这个自定义能力暂时没有补充说明。'}
       </p>
-      <code>{skill.relativePath || skill.path}</code>
+      {directory && <div className='cc-skillhub-local-directory'><span>目录：</span><code>{directory}</code></div>}
+      {(version || publisher) && <div className='cc-skillhub-local-meta'>
+        {version && <span>版本 {version}</span>}
+        {publisher && <span>发布者 {publisher}</span>}
+      </div>}
       <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill) || syncingWorkspace} onClick={() => onShareLocalSkill(skill)} title={blocked ? skill.shareError : undefined}>
         {blocked ? <Info size={14} aria-hidden='true' /> : shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
         {blocked ? '请先修复此 Skill' : shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}

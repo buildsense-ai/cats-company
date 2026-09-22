@@ -592,6 +592,40 @@
   white-space: nowrap;
 }
 
+.cc-skillhub-local-directory {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 10px;
+  color: var(--cc-muted);
+  font-size: 11px;
+}
+
+.cc-skillhub-local-directory > span {
+  flex: 0 0 auto;
+  color: var(--cc-text-secondary);
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.cc-skillhub-local-directory code {
+  margin-top: 0;
+}
+
+.cc-skillhub-local-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.cc-skillhub-local-meta > span {
+  overflow-wrap: anywhere;
+}
+
 .cc-skillhub-status {
   flex: 0 0 auto;
   border: 1px solid transparent;
