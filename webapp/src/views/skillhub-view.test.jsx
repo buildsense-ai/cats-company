@@ -2505,6 +2505,108 @@ describe('SkillHubView', () => {
     ]));
   });
 
+  it('automatically applies an added Skill to a Runtime that supports the capability', async () => {
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'alice-device',
+      displayName: 'Alice Laptop',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
+        'skillhub.localWorkspace.applyDefinition',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+      if (toolName === 'skillhub.localWorkspace.get') return {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        skills_path: 'C:\\xiaoba\\skills',
+        skills: [],
+      };
+      if (toolName === 'skillhub.localWorkspace.applyDefinition') return {
+        schema: 'xiaoba.skillhub.local_workspace.apply_definition.v1',
+        bot_uid: '42',
+        applied: true,
+        apply_status: 'applied',
+        synced_skills: 2,
+      };
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCatalogue();
+    await act(async () => {
+      Simulate.click(addButton(container));
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'alice-device',
+      toolName: 'skillhub.localWorkspace.applyDefinition',
+      payload: { bot_uid: '42' },
+    }));
+    expect(container.textContent).toContain('运行环境已应用');
+  });
+
+  it('keeps the Definition update successful when an old Runtime lacks auto-apply', async () => {
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'legacy-device',
+      displayName: 'Legacy Laptop',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localWorkspace.pagination.v1',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    }] });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: [],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await openCatalogue();
+    await act(async () => {
+      Simulate.click(addButton(container));
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalled();
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localWorkspace.applyDefinition',
+    }));
+    expect(container.textContent).toContain('运行环境等待应用');
+  });
+
   it('loads a friend Bot as read-only metadata without touching local devices', async () => {
     await act(async () => {
       root.render(<SkillHubView user={{ uid: 7 }} />);
