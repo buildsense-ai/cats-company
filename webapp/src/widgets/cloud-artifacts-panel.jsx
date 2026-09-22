@@ -387,7 +387,8 @@ export default function CloudArtifactsPanel({
       const operation = await api.publishCloudArtifact(agentUid, {
         title: publishArtifactTitle(file),
         kind,
-        url: new URL(resolveMediaURL(uploaded?.url), window.location.origin).toString(),
+        // 服务端按 CATSCO_PUBLIC_BASE_URL 校验发布来源，这里保持应用 origin（不用媒体域）。
+        url: new URL(uploaded?.url, window.location.origin).toString(),
         source_topic_id: String(topicId || ''),
       });
       if (operation?.artifact) {

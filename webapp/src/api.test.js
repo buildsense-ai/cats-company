@@ -1319,3 +1319,76 @@ describe('direct remote response errors', () => {
     });
   });
 });
+
+describe('media acceleration URL resolution', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test('selects the .cn media base for catsco.cn hostnames', async () => {
+    vi.resetModules();
+    const api = await import('./api');
+
+    expect(api.mediaBaseForHostname('app.catsco.cn')).toBe('https://i.catsco.cn');
+    expect(api.mediaBaseForHostname('catsco.cn')).toBe('https://i.catsco.cn');
+    expect(api.mediaBaseForHostname('x.app.catsco.cn')).toBe('https://i.catsco.cn');
+  });
+
+  test('defaults to the .cc media base for other hostnames', async () => {
+    vi.resetModules();
+    const api = await import('./api');
+
+    expect(api.mediaBaseForHostname('app.catsco.cc')).toBe('https://i.catsco.cc');
+    expect(api.mediaBaseForHostname('catsco.cc')).toBe('https://i.catsco.cc');
+    expect(api.mediaBaseForHostname('localhost')).toBe('https://i.catsco.cc');
+    expect(api.mediaBaseForHostname('')).toBe('');
+    expect(api.mediaBaseForHostname(null)).toBe('');
+  });
+
+  test('keeps relative uploads on the API base while no media base is configured', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', '');
+    const api = await import('./api');
+
+    // 开发/未配置环境行为与改动前一致。
+    expect(api.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+    expect(api.resolveMediaURL('')).toBe('');
+    expect(api.resolveMediaURL('https://app.catsco.cc/uploads/images/b.jpg'))
+      .toBe('https://app.catsco.cc/uploads/images/b.jpg');
+  });
+
+  test('routes uploads to the configured media base and passes everything else through', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cn/');
+    const api = await import('./api');
+
+    expect(api.resolveMediaURL('/uploads/images/a.jpg')).toBe('https://i.catsco.cn/uploads/images/a.jpg');
+    expect(api.resolveMediaURL('/uploads/files/b.pdf')).toBe('https://i.catsco.cn/uploads/files/b.pdf');
+    expect(api.resolveMediaURL('/pwa-512x512.png')).toBe('/pwa-512x512.png');
+    expect(api.resolveMediaURL('https://app.catsco.cc/uploads/images/c.jpg'))
+      .toBe('https://app.catsco.cc/uploads/images/c.jpg');
+  });
+
+  test('ignores invalid explicit media bases and keeps non-string inputs safe', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'not-a-url');
+    const api = await import('./api');
+    expect(api.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'http://insecure.example');
+    const apiHttp = await import('./api');
+    expect(apiHttp.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cc/prefix');
+    const apiPath = await import('./api');
+    expect(apiPath.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cc');
+    const apiMedia = await import('./api');
+    expect(() => apiMedia.resolveMediaURL(123)).not.toThrow();
+    expect(apiMedia.resolveMediaURL(123)).toBe('123');
+  });
+});
