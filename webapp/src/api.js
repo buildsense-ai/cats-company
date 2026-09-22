@@ -154,9 +154,25 @@ export function getApiBaseURL() {
   }
 }
 
+export function mediaBaseForHostname(hostname) {
+  if (!hostname) return '';
+  return /(^|\.)catsco\.cn$/i.test(hostname) ? 'https://i.catsco.cn' : 'https://i.catsco.cc';
+}
+
+// 媒体加速域（/uploads 图片与文件专用）：优先 VITE_MEDIA_BASE 显式配置；
+// 生产环境按主站后缀自动选择（app.catsco.cn → i.catsco.cn，其余 → i.catsco.cc）；
+// 开发环境默认关闭，图片继续按 API_BASE 相对解析（本地联调不受影响）。
+const MEDIA_BASE = (() => {
+  const explicit = String(import.meta.env.VITE_MEDIA_BASE || '').replace(/\/+$/, '');
+  if (explicit) return explicit;
+  if (import.meta.env.DEV || typeof window === 'undefined') return '';
+  return mediaBaseForHostname(window.location.hostname);
+})();
+
 export function resolveMediaURL(url) {
   if (!url) return '';
   if (/^https?:\/\//.test(url)) return url;
+  if (MEDIA_BASE && url.startsWith('/uploads/')) return `${MEDIA_BASE}${url}`;
   return `${API_BASE}${url}`;
 }
 
