@@ -308,6 +308,9 @@ export function buildCurrentAgentSkills(formalSkills = [], localSkills = []) {
       localName: local.name,
       displayName: local.name,
       description: local.description,
+      path: local.path,
+      relativePath: local.relativePath,
+      localSkillId: local.localSkillId,
     });
   }
   return result;
@@ -2129,6 +2132,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setSelectedDeviceID('');
       setRuntimeRouteError('');
       requestedBotSwitchRef.current = nextBotUID;
+      setAddedSkillQuery('');
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;
       setSelectedBotUID(nextBotUID);

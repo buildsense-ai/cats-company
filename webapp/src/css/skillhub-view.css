@@ -149,7 +149,8 @@
 }
 
 .cc-skillhub-bot-picker select,
-.cc-skillhub-search input {
+.cc-skillhub-search input,
+.cc-skillhub-added-search input {
   box-sizing: border-box;
   min-width: 0;
   border: 1px solid var(--cc-border-strong);
@@ -205,7 +206,9 @@
 }
 
 .cc-skillhub-search input:focus,
-.cc-skillhub-search input:focus-visible {
+.cc-skillhub-search input:focus-visible,
+.cc-skillhub-added-search input:focus,
+.cc-skillhub-added-search input:focus-visible {
   border-color: var(--cc-border-strong);
   outline: none;
   box-shadow: none;
@@ -798,6 +801,7 @@
   .cc-skillhub-page button,
   .cc-skillhub-bot-picker select,
   .cc-skillhub-search input,
+  .cc-skillhub-added-search input,
   .cc-skillhub-card,
   .cc-skillhub-local-card {
     transition: none;

@@ -18,6 +18,14 @@ function isCatalogueUpdateAvailable(installedReference, details) {
   return resolveSkillHubUpdateStatus(installedReference, details) === 'update';
 }
 
+function normalizeSkillSearchValue(value) {
+  return String(value || '')
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/');
+}
+
 export default function SkillHubContent(props) {
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
@@ -140,17 +148,20 @@ function AddedSkills(props) {
   } = props;
   const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
-  const normalizedQuery = String(addedSkillQuery || '').trim().toLocaleLowerCase();
+  const normalizedQuery = normalizeSkillSearchValue(addedSkillQuery);
   const matches = (skill) => {
     if (!normalizedQuery) return true;
     const presentation = props.addedSkillPresentationByID.get(skill.skillId);
     return [
       presentation?.label,
+      skill?.displayName,
       skill?.skillId,
       skill?.localName,
       skill?.localDetails?.name,
       skill?.localDetails?.relativePath,
-    ].some((value) => String(value || '').toLocaleLowerCase().includes(normalizedQuery));
+      skill?.relativePath,
+      skill?.path,
+    ].some((value) => normalizeSkillSearchValue(value).includes(normalizedQuery));
   };
   const visibleFormalSkills = formalSkills.filter(matches);
   const visibleLocalOnlySkills = localOnlySkills.filter(matches);

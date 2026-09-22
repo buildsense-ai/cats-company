@@ -223,6 +223,17 @@ describe('SkillHubView', () => {
       .toMatchObject({ localSkillId: 'draft-id' });
   });
 
+  it('preserves nested runtime metadata for local-only capability search', () => {
+    expect(buildCurrentAgentSkills([], [{
+      name: 'OCR Reader',
+      relativePath: 'tools/ocr_reader',
+      localSkillId: 'tools/ocr_reader',
+    }])).toEqual([expect.objectContaining({
+      skillId: 'local:tools/ocr_reader',
+      relativePath: 'tools/ocr_reader',
+    })]);
+  });
+
   it('matches a Runtime Skill only when its SkillHub reference is exact', () => {
     const configured = {
       skillId: 'tools/review',
@@ -1391,7 +1402,7 @@ describe('SkillHubView', () => {
         local_skill_id: 'draft-1',
         name: 'web-search',
         description: 'Search the web',
-        relative_path: 'web-search',
+        relative_path: 'tools\\web-search',
         source: 'user',
         can_share: true,
         skill_hub: {},
@@ -1414,6 +1425,16 @@ describe('SkillHubView', () => {
     expect(localItem.textContent).toContain('仅运行工作区，未同步');
     expect(localItem.textContent).toContain('尚未发布 · 当前运行工作区');
     expect(localItem.textContent).not.toContain('版本未确认');
+
+    const addedSearch = container.querySelector('#cc-skillhub-added-search-input');
+    expect(addedSearch).toBeTruthy();
+    await act(async () => {
+      addedSearch.value = 'tools/web-search';
+      Simulate.change(addedSearch);
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(1);
+    expect(container.querySelector('.cc-skillhub-added-search-count')?.textContent).toMatch(/^1 \/\s*\d+$/);
 
     await act(async () => {
       Simulate.click(localItem.querySelector('button[aria-label="更多操作 web-search"]'));
