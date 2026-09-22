@@ -223,6 +223,17 @@ describe('SkillHubView', () => {
       .toMatchObject({ localSkillId: 'draft-id' });
   });
 
+  it('preserves nested runtime metadata for local-only capability search', () => {
+    expect(buildCurrentAgentSkills([], [{
+      name: 'OCR Reader',
+      relativePath: 'tools/ocr_reader',
+      localSkillId: 'tools/ocr_reader',
+    }])).toEqual([expect.objectContaining({
+      skillId: 'local:tools/ocr_reader',
+      relativePath: 'tools/ocr_reader',
+    })]);
+  });
+
   it('matches a Runtime Skill only when its SkillHub reference is exact', () => {
     const configured = {
       skillId: 'tools/review',
@@ -1291,6 +1302,55 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('Skills 目录');
   });
 
+  it('filters the current Agent capability list by display name and SkillHub ID', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [
+        { source: 'skillhub', skillId: 'tools/review', version: '1.0.0', contentHash: 'a'.repeat(64) },
+        { source: 'skillhub', skillId: 'tools/summarize', version: '2.0.0', contentHash: 'b'.repeat(64) },
+      ],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [
+      { id: 'tools/review', displayName: 'Review', description: 'Review text', latestVersion: '1.0.0', contentHash: 'a'.repeat(64) },
+      { id: 'tools/summarize', displayName: 'Summarize', description: 'Summarize text', latestVersion: '2.0.0', contentHash: 'b'.repeat(64) },
+    ] });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const search = container.querySelector('#cc-skillhub-added-search-input');
+    expect(search).toBeTruthy();
+    expect(container.querySelector('.cc-skillhub-added-search-count')?.textContent).toBe('2 项能力');
+    await act(async () => {
+      search.value = 'summarize';
+      Simulate.change(search);
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(1);
+    expect(container.querySelector('.cc-skillhub-added-item h3')?.textContent).toBe('Summarize');
+    expect(container.querySelector('.cc-skillhub-added-search-count')?.textContent).toBe('1 / 2');
+    expect(container.textContent).not.toContain('Review text');
+
+    await act(async () => {
+      search.value = 'tools/review';
+      Simulate.change(search);
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(1);
+    expect(container.querySelector('.cc-skillhub-added-item h3')?.textContent).toBe('Review');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="清除当前 Agent 能力搜索"]'));
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(2);
+  });
+
   it('opens with the Agent requested by the management summary', async () => {
     api.getMyBots.mockResolvedValue({
       bots: [
@@ -1342,7 +1402,7 @@ describe('SkillHubView', () => {
         local_skill_id: 'draft-1',
         name: 'web-search',
         description: 'Search the web',
-        relative_path: 'web-search',
+        relative_path: 'tools\\web-search',
         source: 'user',
         can_share: true,
         skill_hub: {},
@@ -1365,6 +1425,16 @@ describe('SkillHubView', () => {
     expect(localItem.textContent).toContain('仅运行工作区，未同步');
     expect(localItem.textContent).toContain('尚未发布 · 当前运行工作区');
     expect(localItem.textContent).not.toContain('版本未确认');
+
+    const addedSearch = container.querySelector('#cc-skillhub-added-search-input');
+    expect(addedSearch).toBeTruthy();
+    await act(async () => {
+      addedSearch.value = 'tools/web-search';
+      Simulate.change(addedSearch);
+      await Promise.resolve();
+    });
+    expect(container.querySelectorAll('.cc-skillhub-added-item')).toHaveLength(1);
+    expect(container.querySelector('.cc-skillhub-added-search-count')?.textContent).toMatch(/^1 \/\s*\d+$/);
 
     await act(async () => {
       Simulate.click(localItem.querySelector('button[aria-label="更多操作 web-search"]'));

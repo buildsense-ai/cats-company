@@ -18,6 +18,14 @@ function isCatalogueUpdateAvailable(installedReference, details) {
   return resolveSkillHubUpdateStatus(installedReference, details) === 'update';
 }
 
+function normalizeSkillSearchValue(value) {
+  return String(value || '')
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/');
+}
+
 export default function SkillHubContent(props) {
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
@@ -136,10 +144,29 @@ function AddedSkills(props) {
   const {
     catalogueByID, definition, definitionReady, loadingDefinition, onChangeSection,
     onRefreshDefinition, onRemoveSkill, saving, selectedAgentName, selectedBotUID,
-    sharingSkill, skillAction, isReadOnly,
+    sharingSkill, skillAction, isReadOnly, addedSkillQuery, onAddedSkillQuery,
   } = props;
   const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
+  const normalizedQuery = normalizeSkillSearchValue(addedSkillQuery);
+  const matches = (skill) => {
+    if (!normalizedQuery) return true;
+    const presentation = props.addedSkillPresentationByID.get(skill.skillId);
+    return [
+      presentation?.label,
+      skill?.displayName,
+      skill?.skillId,
+      skill?.localName,
+      skill?.localDetails?.name,
+      skill?.localDetails?.relativePath,
+      skill?.relativePath,
+      skill?.path,
+    ].some((value) => normalizeSkillSearchValue(value).includes(normalizedQuery));
+  };
+  const visibleFormalSkills = formalSkills.filter(matches);
+  const visibleLocalOnlySkills = localOnlySkills.filter(matches);
+  const visibleSkillCount = visibleFormalSkills.length + visibleLocalOnlySkills.length;
+  const totalSkillCount = formalSkills.length + localOnlySkills.length;
   const sourceExplanation = isReadOnly
     ? '这里只读展示该 Agent 的 BotDefinition 配置。不会读取其运行工作区，因此不能确认运行环境是否已应用。'
     : '已配置能力来自 BotDefinition；仅运行工作区能力来自当前 XiaoBa 的真实 skills 目录。状态标签会说明配置是否已在运行环境中应用。';
@@ -151,6 +178,28 @@ function AddedSkills(props) {
           <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={15} aria-hidden='true' />
         </button>
       </div>
+      {selectedBotUID && !loadingDefinition && definition.skills.length > 0 && (
+        <div className='cc-skillhub-added-search' role='search'>
+          <Search size={16} aria-hidden='true' />
+          <label className='cc-visually-hidden' htmlFor='cc-skillhub-added-search-input'>搜索当前 Agent 能力</label>
+          <div className='cc-skillhub-search-field'>
+            <input
+              id='cc-skillhub-added-search-input'
+              type='search'
+              autoComplete='off'
+              value={addedSkillQuery || ''}
+              onChange={(event) => onAddedSkillQuery(event.target.value)}
+              placeholder='搜索当前 Agent 能力…'
+            />
+            {addedSkillQuery && (
+              <button type='button' className='cc-skillhub-search-clear' aria-label='清除当前 Agent 能力搜索' title='清除' onClick={() => onAddedSkillQuery('')}>
+                <X size={14} aria-hidden='true' />
+              </button>
+            )}
+          </div>
+          <span className='cc-skillhub-added-search-count'>{normalizedQuery ? `${visibleSkillCount} / ${totalSkillCount}` : `${totalSkillCount} 项能力`}</span>
+        </div>
+      )}
       {!selectedBotUID ? (
         <EmptyState icon={<Bot size={21} />} title='请先选择 Agent' copy='选择后即可查看它已经具备的能力。' />
       ) : loadingDefinition ? (
@@ -163,21 +212,24 @@ function AddedSkills(props) {
         </div>
       ) : (
         <div className='cc-skillhub-added-groups'>
-          {formalSkills.length > 0 && (
+          {visibleFormalSkills.length > 0 && (
             <AbilityGroup
               label={isReadOnly ? '已同步能力' : '已配置能力'}
               description={isReadOnly ? '来自该 Agent 已同步到 BotDefinition 的只读元数据。' : '已写入 BotDefinition；运行状态基于当前工作区快照。'}
-              skills={formalSkills}
+              skills={visibleFormalSkills}
               {...props}
             />
           )}
-          {localOnlySkills.length > 0 && (
+          {visibleLocalOnlySkills.length > 0 && (
             <AbilityGroup
               label='仅运行工作区中的未同步能力'
               description='来自当前 Agent 的 XiaoBa 真实 skills 目录，尚未同步到 BotDefinition。'
-              skills={localOnlySkills}
+              skills={visibleLocalOnlySkills}
               {...props}
             />
+          )}
+          {visibleSkillCount === 0 && (
+            <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='试试能力名称、SkillHub ID 或运行目录名。' />
           )}
         </div>
       )}

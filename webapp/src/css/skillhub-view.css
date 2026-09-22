@@ -149,7 +149,8 @@
 }
 
 .cc-skillhub-bot-picker select,
-.cc-skillhub-search input {
+.cc-skillhub-search input,
+.cc-skillhub-added-search input {
   box-sizing: border-box;
   min-width: 0;
   border: 1px solid var(--cc-border-strong);
@@ -205,7 +206,9 @@
 }
 
 .cc-skillhub-search input:focus,
-.cc-skillhub-search input:focus-visible {
+.cc-skillhub-search input:focus-visible,
+.cc-skillhub-added-search input:focus,
+.cc-skillhub-added-search input:focus-visible {
   border-color: var(--cc-border-strong);
   outline: none;
   box-shadow: none;
@@ -798,6 +801,7 @@
   .cc-skillhub-page button,
   .cc-skillhub-bot-picker select,
   .cc-skillhub-search input,
+  .cc-skillhub-added-search input,
   .cc-skillhub-card,
   .cc-skillhub-local-card {
     transition: none;
@@ -830,6 +834,9 @@
 .cc-skillhub-content-header h2, .cc-skillhub-custom-header h2 { margin: 0 0 5px; color: var(--cc-text); font-size: 19px; font-weight: var(--cc-font-weight-semibold); letter-spacing: 0; }
 .cc-skillhub-content-header p, .cc-skillhub-custom-header p { margin: 0; color: var(--cc-muted); font-size: 13px; line-height: 1.5; }
 .cc-skillhub-page .cc-skillhub-content-header > button.icon-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--cc-text) 82%, transparent); background: var(--cc-hover); color: var(--cc-text); }
+.cc-skillhub-added-search { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin: 8px 20px 0; border-top: 1px solid var(--cc-border); border-bottom: 1px solid var(--cc-border); padding: 10px 0; color: var(--cc-muted); }
+.cc-skillhub-added-search input { width: 100%; height: 36px; padding: 0 38px 0 11px; background: var(--cc-panel-raised); }
+.cc-skillhub-added-search-count { color: var(--cc-muted); font-size: 11px; white-space: nowrap; }
 .cc-skillhub-added-groups { display: grid; gap: 18px; padding: 12px 20px 20px; }
 .cc-skillhub-ability-group { display: grid; gap: 9px; min-width: 0; }
 .cc-skillhub-ability-group-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 0 2px; }

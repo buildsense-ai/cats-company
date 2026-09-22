@@ -308,6 +308,9 @@ export function buildCurrentAgentSkills(formalSkills = [], localSkills = []) {
       localName: local.name,
       displayName: local.name,
       description: local.description,
+      path: local.path,
+      relativePath: local.relativePath,
+      localSkillId: local.localSkillId,
     });
   }
   return result;
@@ -947,6 +950,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const [viewerSkills, setViewerSkills] = useState([]);
   const [definitionBotUID, setDefinitionBotUID] = useState('');
   const [query, setQuery] = useState('');
+  const [addedSkillQuery, setAddedSkillQuery] = useState('');
   const [catalogue, setCatalogue] = useState([]);
   const [loadingBots, setLoadingBots] = useState(true);
   const [loadingDefinition, setLoadingDefinition] = useState(false);
@@ -985,6 +989,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
 
   useEffect(() => {
     selectedBotUIDRef.current = selectedBotUID;
+    setAddedSkillQuery('');
     saveRequestRef.current += 1;
     setSaving(false);
     setSkillAction(null);
@@ -2073,6 +2078,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   return <SkillHubContent
     actionNotice={actionNotice}
     activeSection={activeSection}
+    addedSkillQuery={addedSkillQuery}
     addedSkillPresentationByID={addedSkillPresentationByID}
     agentOptions={agentOptions}
     catalogue={catalogue}
@@ -2101,6 +2107,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     runtimeRouteError={runtimeRouteError}
     runtimeWorkspaceKnown={runtimeWorkspaceKnown}
     onChangeSection={setActiveSection}
+    onAddedSkillQuery={setAddedSkillQuery}
     onCopyLocalPath={copyLocalSkillsPath}
     librarySkills={librarySkills}
     onInstallSkill={installLibrarySkill}
@@ -2125,6 +2132,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setSelectedDeviceID('');
       setRuntimeRouteError('');
       requestedBotSwitchRef.current = nextBotUID;
+      setAddedSkillQuery('');
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;
       setSelectedBotUID(nextBotUID);
