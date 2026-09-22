@@ -24,6 +24,7 @@ import SkillHubView, {
   rememberSkillHubBotUID,
   resolvePreferredSkillHubBotUID,
   resolveAddedSkillPresentation,
+  hasExactLocalSkillReference,
   resolveSkillHubEntry,
   resolveSharedSkillHubMetadata,
   upsertSkillRef,
@@ -220,6 +221,43 @@ describe('SkillHubView', () => {
     const merged = buildCurrentAgentSkills([], [{ name: 'draft', localSkillId: 'draft-id' }]);
     expect(resolveLocalSkillForAgentSkill(merged[0], [{ name: 'draft', localSkillId: 'draft-id' }]))
       .toMatchObject({ localSkillId: 'draft-id' });
+  });
+
+  it('matches a Runtime Skill only when its SkillHub reference is exact', () => {
+    const configured = {
+      skillId: 'tools/review',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
+    };
+    const exact = {
+      name: 'review',
+      skillHub: { reference: { ...configured } },
+    };
+    const olderVersion = {
+      localSkillId: 'review-old-local',
+      name: 'review-old',
+      skillHub: { reference: { ...configured, version: '0.9.0' } },
+    };
+    const differentContent = {
+      name: 'review-different-content',
+      skillHub: { reference: { ...configured, contentHash: 'b'.repeat(64) } },
+    };
+
+    expect(hasExactLocalSkillReference(configured, exact)).toBe(true);
+    expect(hasExactLocalSkillReference(configured, olderVersion)).toBe(false);
+    expect(hasExactLocalSkillReference(configured, differentContent)).toBe(false);
+    expect(resolveAddedSkillPresentation(configured, new Map(), new Map([[
+      configured.skillId,
+      [olderVersion, differentContent, exact],
+    ]]))).toMatchObject({ localDetails: exact });
+    expect(buildCurrentAgentSkills([configured], [olderVersion])[0]).toMatchObject({
+      local: true,
+      localDetails: olderVersion,
+    });
+    expect(resolveLocalSkillForAgentSkill(
+      buildCurrentAgentSkills([configured], [olderVersion])[0],
+      [olderVersion],
+    )).toBe(olderVersion);
   });
 
   it('collects every paginated Runtime workspace Skill beyond the old 200-item boundary', async () => {
@@ -1230,7 +1268,9 @@ describe('SkillHubView', () => {
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(2);
     expect(container.querySelector('.cc-skillhub-installed')).toBeNull();
-    expect(container.textContent).toContain('运行工作区');
+    expect(container.textContent).toContain('运行工作区（真实目录）');
+    expect(container.querySelector('.cc-skillhub-availability.is-configured')?.textContent).toContain('已配置');
+    expect(container.textContent).not.toContain('已配置，等待运行环境应用');
     expect(container.textContent).not.toContain('已开启');
     expect(container.querySelector('button[aria-label="复制 tools/review"]')).toBeNull();
     expect(container.querySelector('button[aria-label="更多操作 tools/review"]')).toBeTruthy();
@@ -1240,7 +1280,7 @@ describe('SkillHubView', () => {
       Simulate.click(container.querySelector('.cc-skillhub-custom-entry'));
       await Promise.resolve();
     });
-    expect(container.querySelector('#skillhub-custom-title')?.textContent).toBe('管理自定义能力');
+    expect(container.querySelector('#skillhub-custom-title')?.textContent).toBe('运行工作区（真实目录）');
     expect(container.textContent).toContain('Skills 目录');
   });
 
@@ -1312,10 +1352,10 @@ describe('SkillHubView', () => {
     const localItem = [...container.querySelectorAll('.cc-skillhub-added-item')]
       .find((item) => item.querySelector('h3')?.textContent === 'web-search');
     expect(localItem).toBeTruthy();
-    expect(container.textContent).toContain('正式能力来自 BotDefinition');
-    expect(container.textContent).toContain('当前运行工作区能力');
-    expect(container.textContent).toContain('来自当前 Agent 正在运行的 XiaoBa');
-    expect(localItem.textContent).toContain('仅本地');
+    expect(container.textContent).toContain('已配置能力来自 BotDefinition');
+    expect(container.textContent).toContain('仅运行工作区中的未同步能力');
+    expect(container.textContent).toContain('来自当前 Agent 的 XiaoBa 真实 skills 目录');
+    expect(localItem.textContent).toContain('仅运行工作区，未同步');
     expect(localItem.textContent).toContain('尚未发布 · 当前运行工作区');
     expect(localItem.textContent).not.toContain('版本未确认');
 
@@ -1342,6 +1382,157 @@ describe('SkillHubView', () => {
     expect(dialog.textContent).not.toContain('发布者SkillHub');
     expect(api.getAgentSkillVersions).not.toHaveBeenCalled();
     expect(api.getSkillHubVersions).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes applied, pending, and workspace-only Skill states', async () => {
+    const workspaceRevision = 'c'.repeat(64);
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [
+        {
+          source: 'skillhub', skillId: 'tools/applied', version: '1.0.0', contentHash: 'a'.repeat(64),
+        },
+        {
+          source: 'skillhub', skillId: 'tools/pending', version: '1.0.0', contentHash: 'b'.repeat(64),
+        },
+      ],
+    });
+    api.getDevices.mockResolvedValueOnce({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        runtimeRole: 'desktop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localSkill.delete',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      workspace_revision: workspaceRevision,
+      total_skills: 3,
+      page_offset: 0,
+      page_limit: 200,
+      next_offset: null,
+      truncated: false,
+      skills: [
+        {
+          local_skill_id: 'applied-1',
+          name: 'applied',
+          skill_hub: { reference: {
+            skillId: 'tools/applied', version: '1.0.0', contentHash: 'a'.repeat(64),
+          } },
+        },
+        {
+          local_skill_id: 'pending-1',
+          name: 'pending-old-version',
+          skill_hub: { reference: {
+            skillId: 'tools/pending', version: '0.9.0', contentHash: 'b'.repeat(64),
+          } },
+        },
+        {
+          local_skill_id: 'workspace-only-1',
+          name: 'workspace-only',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const itemFor = (label) => [...container.querySelectorAll('.cc-skillhub-added-item')]
+      .find((item) => item.querySelector('h3')?.textContent === label);
+    expect(itemFor('applied')?.textContent).toContain('已配置，运行环境已应用');
+    expect(itemFor('tools/pending')?.textContent).toContain('已配置，等待运行环境应用');
+    expect(itemFor('tools/pending')?.textContent).not.toContain('已配置，运行环境已应用');
+    expect(itemFor('workspace-only')?.textContent).toContain('仅运行工作区，未同步');
+  });
+
+  it('keeps configured Skills neutral when the Runtime workspace cannot be read', async () => {
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        runtimeRole: 'desktop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localWorkspace.pagination.v1',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockRejectedValue(new Error('Runtime unavailable'));
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await Promise.resolve();
+    });
+
+    const configured = container.querySelector('.cc-skillhub-added-item');
+    expect(configured?.querySelector('.cc-skillhub-availability.is-configured')).toBeTruthy();
+    expect(configured?.querySelector('.cc-skillhub-availability.is-pending')).toBeNull();
+    expect(configured?.querySelector('.cc-skillhub-availability.is-applied')).toBeNull();
+    expect(configured?.textContent).not.toContain('已配置，等待运行环境应用');
+  });
+
+  it('keeps configured Skills neutral when an old Runtime returns a truncated workspace snapshot', async () => {
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'alice-device',
+      displayName: 'Alice Laptop',
+      runtimeRole: 'desktop',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: ['skillhub.localWorkspace.get', 'skillhub.localSkill.share'],
+    }] });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: Array.from({ length: 200 }, (_, index) => ({
+        local_skill_id: `legacy-${index}`,
+        name: `legacy-${index}`,
+      })),
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await Promise.resolve();
+    });
+
+    const configured = container.querySelector('.cc-skillhub-added-item');
+    expect(configured?.querySelector('.cc-skillhub-availability.is-configured')).toBeTruthy();
+    expect(configured?.textContent).not.toContain('已配置，等待运行环境应用');
   });
 
   it('opens accessible details and removal actions from the more menu', async () => {
@@ -1653,7 +1844,7 @@ describe('SkillHubView', () => {
     });
     await openCustomSkills();
     const syncButton = [...container.querySelectorAll('button')]
-      .find(button => button.textContent.includes('同步到当前 Agent'));
+      .find(button => button.textContent.includes('用此工作区覆盖 Agent 配置'));
     expect(syncButton).toBeTruthy();
     expect(syncButton.disabled).toBe(false);
 
@@ -1662,11 +1853,12 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     const confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation.textContent).toContain('这是单向覆盖');
     expect(confirmation.textContent).toContain('不会发布到团队能力库');
     expect(confirmation.textContent).toContain('不在当前工作区的能力会被移除');
     await act(async () => {
       Simulate.click([...confirmation.querySelectorAll('button')]
-        .find(button => button.textContent === '确认同步'));
+        .find(button => button.textContent === '确认覆盖'));
       await Promise.resolve();
       await Promise.resolve();
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -2173,7 +2365,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
     await openCustomSkills();
-    expect(container.textContent).toContain('同步到当前 Agent');
+    expect(container.textContent).toContain('用此工作区覆盖 Agent 配置');
     api.getDevices.mockClear();
     await act(async () => {
       Simulate.change(container.querySelector('.cc-skillhub-agent-native-select'), {
@@ -2190,11 +2382,13 @@ describe('SkillHubView', () => {
     expect(container.textContent).toContain('第 2 版 · 最近变更：lin');
     expect(container.textContent).not.toContain('v2');
     expect(container.textContent).toContain('只读查看');
-    expect(container.textContent).toContain('该 Agent 运行环境中尚未同步的本地 Skill 不会显示');
+    expect(container.textContent).toContain('不会读取其运行工作区，因此不能确认运行环境是否已应用');
     expect(container.textContent).toContain('已同步能力');
     expect(container.textContent).toContain('来自该 Agent 已同步到 BotDefinition 的只读元数据');
     expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
-    expect(container.textContent).not.toContain('同步到当前 Agent');
+    expect(container.textContent).not.toContain('用此工作区覆盖 Agent 配置');
+    expect(container.querySelector('.cc-skillhub-availability.is-configured')?.textContent).toContain('已配置');
+    expect(container.textContent).not.toContain('已配置，等待运行环境应用');
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.cc-skillhub-copy-action')).toBeNull();
     expect(container.querySelector('.cc-skillhub-more-action')).toBeNull();

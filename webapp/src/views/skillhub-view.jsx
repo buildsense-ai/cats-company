@@ -681,23 +681,46 @@ export function isLocalSkillShared(skill, installedReference) {
   return skill?.canShare === false && matchesInstalledReference;
 }
 
+// A matching SkillHub id alone is not enough to say that the configured
+// version has reached the Runtime. A local workspace can still hold an older
+// package while the BotDefinition already points at a newer one.
+export function hasExactLocalSkillReference(skill, localSkill) {
+  const skillId = String(skill?.skillId || '').trim();
+  const version = String(skill?.version || '').trim();
+  const contentHash = String(skill?.contentHash || '').trim().toLowerCase();
+  const localReference = localSkill?.skillHub?.reference;
+  return Boolean(
+    skillId
+    && version
+    && isExactHash(contentHash)
+    && String(localReference?.skillId || '').trim() === skillId
+    && String(localReference?.version || '').trim() === version
+    && String(localReference?.contentHash || '').trim().toLowerCase() === contentHash
+  );
+}
+
+export function hasCompleteSkillHubReference(skill) {
+  return Boolean(
+    String(skill?.skillId || '').trim()
+    && String(skill?.version || '').trim()
+    && isExactHash(String(skill?.contentHash || '').trim().toLowerCase())
+  );
+}
+
 export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
   const skillId = String(skill?.skillId || '').trim();
   const details = catalogueByID?.get(skillId);
-  const candidate = localSkillsByReference?.get(skillId);
-  const candidateReference = candidate?.skillHub?.reference;
-  const localDetails = candidate
-    && (!skill?.version || candidateReference?.version === skill.version)
-    && (!skill?.contentHash || candidateReference?.contentHash === skill.contentHash)
-    ? candidate
-    : null;
+  const candidates = localSkillsByReference?.get(skillId);
+  const localDetails = (Array.isArray(candidates) ? candidates : [candidates])
+    .find(candidate => hasExactLocalSkillReference(skill, candidate)) || null;
   const privateReference = isPrivateSkillHubReference(skillId);
   return {
     details,
     localDetails,
+    hasCompleteReference: hasCompleteSkillHubReference(skill),
     privateReference,
     label: details?.displayName || skill?.displayName || skill?.localName || localDetails?.name || (privateReference ? '私有能力' : skillId),
-    description: details?.description || skill?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。',
+    description: details?.description || skill?.description || localDetails?.description || '此能力已写入当前 Agent 的配置。',
   };
 }
 
@@ -932,6 +955,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const [localSkills, setLocalSkills] = useState([]);
   const [localSkillsPath, setLocalSkillsPath] = useState('');
   const [localWorkspaceRevision, setLocalWorkspaceRevision] = useState('');
+  const [localWorkspaceIncomplete, setLocalWorkspaceIncomplete] = useState(false);
   const [localSkillsError, setLocalSkillsError] = useState('');
   const [localNotice, setLocalNotice] = useState('');
   const [loadingLocalSkills, setLoadingLocalSkills] = useState(false);
@@ -1020,10 +1044,19 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     const result = new Map();
     for (const skill of localSkills) {
       const skillId = String(skill?.skillHub?.reference?.skillId || '').trim();
-      if (skillId) result.set(skillId, skill);
+      if (!skillId) continue;
+      const candidates = result.get(skillId) || [];
+      candidates.push(skill);
+      result.set(skillId, candidates);
     }
     return result;
   }, [localSkills]);
+  const runtimeWorkspaceKnown = !selectedAgentIsFriend
+    && Boolean(localWorkspaceRevision)
+    && !localWorkspaceIncomplete
+    && !loadingLocalSkills
+    && !localSkillsError
+    && !runtimeRouteError;
   const librarySkills = useMemo(() => buildSkillLibrary({
     catalogue,
     installedByID,
@@ -1089,6 +1122,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         setLocalSkills([]);
         setLocalSkillsPath('');
         setLocalWorkspaceRevision('');
+        setLocalWorkspaceIncomplete(false);
         setLocalNotice('');
         setLocalSkillsError('');
         if (route.kind === 'server-upgrade-required') {
@@ -1128,6 +1162,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       localRequestRef.current += 1;
       setSelectedDeviceID('');
       setLocalSkillsError(error?.message || '无法读取本地 XiaoBa 设备。');
+      setLocalWorkspaceIncomplete(false);
       return [];
     } finally {
       setLoadingDevices(false);
@@ -1266,6 +1301,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setLocalSkills([]);
       setLocalSkillsPath('');
       setLocalWorkspaceRevision('');
+      setLocalWorkspaceIncomplete(false);
       setLocalNotice('');
       setLoadingLocalSkills(false);
       return;
@@ -1287,6 +1323,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     setLocalSkills([]);
     setLocalSkillsPath('');
     setLocalWorkspaceRevision('');
+    setLocalWorkspaceIncomplete(false);
     setLocalSkillsError('');
     setLocalNotice('');
     const isCurrentRequest = () => (
@@ -1407,6 +1444,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setLocalSkills(normalizeLocalSkills(workspace));
       setLocalSkillsPath(String(workspace?.skills_path || '').trim());
       setLocalWorkspaceRevision(String(workspace?.workspace_revision || '').trim().toLowerCase());
+      setLocalWorkspaceIncomplete(workspace?.legacyTruncated === true);
       setLocalNotice(workspace?.legacyTruncated === true
         ? `目标 XiaoBa Runtime 未提供分页信息，当前列表可能不完整（已读取 ${workspace.skills.length} 个 Skill）；请升级该 Runtime 后刷新。`
         : '');
@@ -1415,6 +1453,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setLocalSkills([]);
       setLocalSkillsPath('');
       setLocalWorkspaceRevision('');
+      setLocalWorkspaceIncomplete(false);
       if (error?.code === 'BOT_ACTIVE_ON_SERVER_RUNTIME') {
         setLocalSkillsError('当前 Agent 已在服务器运行，已停止切换本地 XiaoBa。请刷新页面；若服务器版本较旧，请升级后重试。');
       } else if (error?.code === 'BOT_BOUND_TO_OTHER_RUNTIME') {
@@ -1465,9 +1504,9 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     ) return;
     const agentName = botLabel(selectedAgent);
     const confirmed = await feedback.confirm({
-      title: `同步工作区到“${agentName}”？`,
-      message: `将把当前运行工作区中的 ${localSkills.length} 个 Skill 设为该 Agent 的正式能力。未发布 Skill 会保存为仅该 Bot 可用的私有版本，不会发布到团队能力库；BotDefinition 中不在当前工作区的能力会被移除。`,
-      confirmLabel: '确认同步',
+      title: `用工作区覆盖“${agentName}”的 Agent 配置？`,
+      message: `这是单向覆盖：将把当前运行工作区中的 ${localSkills.length} 个 Skill 完整写入该 Agent 的 BotDefinition。未发布 Skill 会保存为仅该 Bot 可用的私有版本，不会发布到团队能力库；BotDefinition 中不在当前工作区的能力会被移除。`,
+      confirmLabel: '确认覆盖',
     });
     if (
       !confirmed
@@ -1504,7 +1543,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         requestedBotUID === selectedBotUIDRef.current
         && requestedDeviceID === selectedDeviceIDRef.current
       ) {
-        setLocalNotice(`已将 ${Number(result?.synced_skills || 0)} 个工作区 Skill 同步到 Agent“${agentName}”；未发布内容保持 Bot 私有。`);
+        setLocalNotice(`已用 ${Number(result?.synced_skills || 0)} 个工作区 Skill 覆盖 Agent“${agentName}”的配置；未发布内容保持 Bot 私有。`);
       }
     } catch (error) {
       if (
@@ -1551,6 +1590,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       setLocalSkills([]);
       setLocalSkillsPath('');
       setLocalWorkspaceRevision('');
+      setLocalWorkspaceIncomplete(false);
       setLocalSkillsError('');
       setLoadingLocalSkills(false);
       return;
@@ -1704,9 +1744,15 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     const requestedDeviceID = selectedDeviceIDRef.current;
     const agentName = botLabel(selectedAgent);
     const displayedSkill = displaySkills.find(skill => skill.skillId === skillID);
-    const localSkill = resolveLocalSkillForAgentSkill(displayedSkill, localSkills);
+    const exactLocalSkill = addedSkillPresentationByID.get(skillID)?.localDetails;
+    const localSkill = exactLocalSkill || resolveLocalSkillForAgentSkill(displayedSkill, localSkills);
     const removesDefinition = Boolean(displayedSkill?.formal);
     const removesLocal = Boolean(localSkill?.localSkillId);
+    const localReference = localSkill?.skillHub?.reference;
+    const localVersionMismatch = removesLocal
+      && Boolean(displayedSkill?.version && localReference?.version)
+      && (String(displayedSkill.version) !== String(localReference.version)
+        || String(displayedSkill?.contentHash || '').toLowerCase() !== String(localReference?.contentHash || '').toLowerCase());
     const selectedDevice = devices.find(device => String(device?.deviceId || '') === requestedDeviceID);
     const supportsLocalDelete = selectedDevice?.capabilities?.includes(SKILLHUB_DEVICE_TOOLS.delete) === true;
     const skillName = addedSkillPresentationByID.get(skillID)?.label || localSkill?.name || skillID;
@@ -1720,8 +1766,8 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         : `从“${agentName}”移除“${skillName}”？`,
       message: removesLocal
         ? removesDefinition
-          ? `将从 Agent“${agentName}”移除此能力，并删除其当前运行工作区中的 Skill 文件。XiaoBa 会先保留 30 天备份（当前需管理员恢复）；SkillHub 中的团队版本不会被删除。`
-          : '将删除当前运行工作区中的 Skill 文件。XiaoBa 会先保留 30 天备份（当前需管理员恢复）；SkillHub 中的团队版本不会被删除。'
+          ? `将从 Agent“${agentName}”移除此能力，并删除其当前运行工作区中的${localVersionMismatch ? '旧版本 ' : ''}Skill 文件。XiaoBa 会先保留 30 天备份（当前需管理员恢复）；SkillHub 中的团队版本不会被删除。`
+          : `将删除当前运行工作区中的${localVersionMismatch ? '旧版本 ' : ''}Skill 文件。XiaoBa 会先保留 30 天备份（当前需管理员恢复）；SkillHub 中的团队版本不会被删除。`
         : '该 Agent 将无法继续调用此能力。技能本身不会从 SkillHub 删除。',
       confirmLabel: removesLocal ? '确认删除并备份' : '从 Agent 移除',
       tone: 'danger',
@@ -2052,6 +2098,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     localSkillsPath={localSkillsPath}
     localWorkspaceRevision={localWorkspaceRevision}
     runtimeRouteError={runtimeRouteError}
+    runtimeWorkspaceKnown={runtimeWorkspaceKnown}
     onChangeSection={setActiveSection}
     onCopyLocalPath={copyLocalSkillsPath}
     librarySkills={librarySkills}
