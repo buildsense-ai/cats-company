@@ -4134,8 +4134,135 @@ describe('SkillHubView', () => {
     await openAdded();
     const items = [...container.querySelectorAll('.cc-skillhub-added-item')];
     const itemFor = (name) => items.find((candidate) => candidate.textContent.includes(name));
-    expect(itemFor('Summarize').querySelector('.cc-skillhub-availability.is-update').textContent).toContain('可更新');
+    const updateButton = itemFor('Summarize').querySelector('.cc-skillhub-update-action');
+    expect(updateButton).not.toBeNull();
+    expect(updateButton.textContent).toContain('更新到 v2.0.0');
+    expect(updateButton.title).toBe('更新到 v2.0.0');
     expect(itemFor('Review').querySelector('.cc-skillhub-availability.is-update')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(updateButton);
+      await Promise.resolve();
+    });
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, [
+      { source: 'skillhub', skillId: 'tools/review', version: '1.0.0', contentHash: 'a'.repeat(64) },
+      { source: 'skillhub', skillId: 'tools/summarize', version: '2.0.0', contentHash: 'c'.repeat(64) },
+    ]);
+  });
+
+  it('resolves complete SkillHub metadata before applying a direct Agent update', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{ source: 'skillhub', skillId: 'tools/summarize', version: '1.0.0', contentHash: 'a'.repeat(64) }],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{
+        id: 'tools/summarize',
+        name: 'Summarize',
+        latestVersion: '2.0.0',
+      }],
+    });
+    api.getSkillHubSkill.mockResolvedValue({
+      skill: { id: 'tools/summarize', latestVersion: '2.0.0' },
+      versions: [{ id: 'tools/summarize', version: '2.0.0', contentHash: 'c'.repeat(64) }],
+    });
+    api.updateBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 4,
+      skills: [{ source: 'skillhub', skillId: 'tools/summarize', version: '2.0.0', contentHash: 'c'.repeat(64) }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openAdded();
+
+    const updateButton = container.querySelector('.cc-skillhub-update-action');
+    expect(updateButton?.textContent).toContain('更新到 v2.0.0');
+    await act(async () => {
+      Simulate.click(updateButton);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getSkillHubSkill).toHaveBeenCalledWith('tools/summarize');
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, [{
+      source: 'skillhub',
+      skillId: 'tools/summarize',
+      version: '2.0.0',
+      contentHash: 'c'.repeat(64),
+    }]);
+  });
+
+  it('stops a direct update when the SkillHub detail belongs to another skill', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{ source: 'skillhub', skillId: 'tools/summarize', version: '1.0.0', contentHash: 'a'.repeat(64) }],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{ id: 'tools/summarize', name: 'Summarize', latestVersion: '2.0.0' }],
+    });
+    api.getSkillHubSkill.mockResolvedValue({
+      skill: { id: 'tools/other', latestVersion: '2.0.0' },
+      versions: [{ id: 'tools/other', version: '2.0.0', contentHash: 'c'.repeat(64) }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openAdded();
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-skillhub-update-action'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('其他或非公开 Skill');
+  });
+
+  it('sends only one direct update when the button is clicked repeatedly', async () => {
+    const detail = deferred();
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{ source: 'skillhub', skillId: 'tools/summarize', version: '1.0.0', contentHash: 'a'.repeat(64) }],
+    });
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{ id: 'tools/summarize', name: 'Summarize', latestVersion: '2.0.0' }],
+    });
+    api.getSkillHubSkill.mockReturnValue(detail.promise);
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openAdded();
+    const updateButton = container.querySelector('.cc-skillhub-update-action');
+    await act(async () => {
+      Simulate.click(updateButton);
+      Simulate.click(updateButton);
+      await Promise.resolve();
+    });
+    expect(api.getSkillHubSkill).toHaveBeenCalledTimes(1);
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+
+    await act(async () => {
+      detail.resolve({
+        skill: { id: 'tools/summarize', latestVersion: '2.0.0' },
+        versions: [{ id: 'tools/summarize', version: '2.0.0', contentHash: 'c'.repeat(64) }],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledTimes(1);
   });
 
   it('confirms before adding a catalogue capability whose name is already taken', async () => {

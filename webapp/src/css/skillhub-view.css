@@ -858,6 +858,7 @@
 .cc-skillhub-added-copy p { margin: 4px 0 6px; overflow: hidden; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .cc-skillhub-version-note { display: inline-flex; align-items: center; gap: 4px; color: var(--cc-muted); font-size: 11px; }
 .cc-skillhub-added-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.cc-skillhub-update-action { white-space: nowrap; }
 .cc-skillhub-page button.subtle { min-height: 32px; gap: 6px; border-color: transparent; padding: 0 8px; background: transparent; color: var(--cc-muted); }
 .cc-skillhub-page button.cc-skillhub-copy-action:hover:not(:disabled), .cc-skillhub-page button.cc-skillhub-more-action:hover:not(:disabled) { border-color: transparent; background: var(--cc-selected); color: var(--cc-text); }
 .cc-skillhub-page button.danger.subtle:hover:not(:disabled) { border-color: color-mix(in srgb, var(--cc-danger) 28%, var(--cc-border)); background: color-mix(in srgb, var(--cc-danger) 9%, transparent); color: var(--cc-danger); }

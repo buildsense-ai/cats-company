@@ -7,14 +7,30 @@ import {
 } from 'lucide-react';
 import CustomSelect from '../widgets/custom-select';
 import useDialogBehavior from '../utils/use-dialog-behavior';
-import { formatSkillHubPublisher, formatSkillHubVersion, resolveSkillHubUpdateStatus } from '../utils/skillhub-entry';
+import {
+  formatSkillHubPublisher,
+  formatSkillHubVersion,
+  hasCompleteSkillHubReference,
+  isPrivateSkillHubReference,
+  resolveSkillHubUpdateStatus,
+} from '../utils/skillhub-entry';
 
 // A capability that is already installed can only be replaced through the public
 // SkillHub entry for the same Skill. Bot-private references, runtime-local
 // Skills and the read-only friend view keep their current presentation so this
 // control never rewrites a capability that was not installed from the catalogue.
 function isCatalogueUpdateAvailable(installedReference, details) {
-  if (details?.isLocalSkill) return false;
+  const installedSkillID = String(installedReference?.skillId || '').trim();
+  const catalogueSkillID = String(details?.skillId || '').trim();
+  const detailsSource = String(details?.source || '').trim().toLowerCase();
+  if (
+    !installedSkillID
+    || installedSkillID !== catalogueSkillID
+    || !hasCompleteSkillHubReference(installedReference)
+    || isPrivateSkillHubReference(installedSkillID)
+    || (detailsSource && detailsSource !== 'skillhub')
+    || details?.isLocalSkill
+  ) return false;
   return resolveSkillHubUpdateStatus(installedReference, details) === 'update';
 }
 
@@ -251,12 +267,14 @@ function AbilityGroup({ description, label, skills, ...props }) {
   );
 }
 
-function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onLoadSkillHistory, onRemoveSkill, runtimeWorkspaceKnown, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
+function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onLoadSkillHistory, onRemoveSkill, onUpdateSkill, runtimeWorkspaceKnown, saving, selectedBotUID, sharingSkill, skill, skillAction }) {
   const presentation = addedSkillPresentationByID.get(skill.skillId);
   const {
     description, details, hasCompleteReference, label, localDetails, privateReference,
   } = presentation;
   const removing = skillAction?.type === 'remove' && skillAction.skillId === skill.skillId;
+  const updating = skillAction?.skillId === skill.skillId
+    && (skillAction?.type === 'update' || skillAction?.update);
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
   const localVersionMismatch = !skill.localOnly && Boolean(skill.local) && !localDetails;
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
@@ -361,12 +379,22 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
             localOnly={skill.localOnly}
             runtimeWorkspaceKnown={runtimeWorkspaceKnown}
           />
-          {updatable && <span className='cc-skillhub-availability is-update' title='能力库中有新版本，可在能力库中更新'><RefreshCw size={12} aria-hidden='true' /> 可更新</span>}
         </div>
         <p>{description}</p>
         <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.localOnly ? '尚未发布 · 当前运行工作区' : <>{versionLabel} · {authorLabel}{privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : ''}</>}</span>
       </div>
       <div className='cc-skillhub-added-actions'>
+        {updatable && <button
+          type='button'
+          className='primary cc-skillhub-update-action'
+          aria-label={`更新 ${label} 到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
+          title={`更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
+          disabled={actionsDisabled}
+          onClick={() => onUpdateSkill?.(skill.skillId)}
+        >
+          <RefreshCw className={updating ? 'is-spinning' : ''} size={14} aria-hidden='true' />
+          {updating ? '更新中…' : `更新到 ${formatSkillHubVersion(details?.latestVersion) || '最新版本'}`}
+        </button>}
         {isReadOnly && !skill.localOnly && <button
           ref={triggerRef}
           type='button'
