@@ -2063,7 +2063,7 @@ export function downloadableMediaURL(url) {
     // （如 /api/uploads/...），从媒体基址推导根路径。
     const mediaBase = new URL(resolveMediaURL('/uploads/'), window.location.origin);
     const uploadRootPath = `${mediaBase.pathname.replace(/\/uploads\/?$/, '')}/uploads/`;
-    const isDownloadableUpload = ['files', 'images'].some(
+    const isDownloadableUpload = ['files', 'images', 'feedback'].some(
       (directory) => urlObj.pathname.startsWith(`${uploadRootPath}${directory}/`),
     );
     const trustedOrigin = urlObj.origin === window.location.origin
@@ -2090,7 +2090,7 @@ function isTrustedPreviewURL(url) {
     const trustedOrigin = (
       urlObj.origin === window.location.origin ||
       urlObj.origin === mediaOrigin ||
-      (isLocalDev && urlObj.hostname.endsWith('catsco.cc'))
+      (isLocalDev && (urlObj.hostname === 'catsco.cc' || urlObj.hostname.endsWith('.catsco.cc')))
     );
     const trustedPath = /^\/uploads\/(files|images|feedback)\//.test(urlObj.pathname) ||
       (isLocalDev && urlObj.pathname.startsWith('/demo-artifacts/'));
@@ -2115,9 +2115,17 @@ export function previewFileDescriptor(payload) {
   const isHtml = isHtmlFile(payload, ext);
   // 托管 Artifact 预览依赖同源 frame bridge（上下文快照 / 结果回写），
   // 这类页面保持源站 origin；其余 /uploads 资源走媒体域（CDN）加速。
-  const prefersManagedArtifactOrigin = isHtml
-    && trustedArtifactPreviewPayloads.has(payload)
-    && !/^https?:\/\//i.test(String(payload.url || ''));
+  // 仅当解析后仍是同源 URL 时保持（protocol-relative 等外部形态除外）。
+  const prefersManagedArtifactOrigin = (() => {
+    if (!isHtml || !trustedArtifactPreviewPayloads.has(payload)) return false;
+    const raw = String(payload.url || '');
+    if (!raw) return false;
+    try {
+      return new URL(raw, window.location.origin).origin === window.location.origin;
+    } catch {
+      return false;
+    }
+  })();
   const url = prefersManagedArtifactOrigin
     ? new URL(payload.url, window.location.origin).toString()
     : resolveMediaURL(payload.url);

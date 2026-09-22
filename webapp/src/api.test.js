@@ -1331,18 +1331,31 @@ describe('media acceleration URL resolution', () => {
 
     expect(api.mediaBaseForHostname('app.catsco.cn')).toBe('https://i.catsco.cn');
     expect(api.mediaBaseForHostname('catsco.cn')).toBe('https://i.catsco.cn');
-    expect(api.mediaBaseForHostname('x.app.catsco.cn')).toBe('https://i.catsco.cn');
+    expect(api.mediaBaseForHostname('x.app.catsco.cn')).toBe('');
   });
 
-  test('defaults to the .cc media base for other hostnames', async () => {
+  test('selects the .cc media base only for known cc entry hostnames', async () => {
     vi.resetModules();
     const api = await import('./api');
 
     expect(api.mediaBaseForHostname('app.catsco.cc')).toBe('https://i.catsco.cc');
     expect(api.mediaBaseForHostname('catsco.cc')).toBe('https://i.catsco.cc');
-    expect(api.mediaBaseForHostname('localhost')).toBe('https://i.catsco.cc');
+    expect(api.mediaBaseForHostname('App.Catsco.CC')).toBe('https://i.catsco.cc');
     expect(api.mediaBaseForHostname('')).toBe('');
     expect(api.mediaBaseForHostname(null)).toBe('');
+  });
+
+  test('leaves unknown hostnames without a media base', async () => {
+    vi.resetModules();
+    const api = await import('./api');
+
+    // 测试/预览/本地环境不得指向生产 CDN。
+    expect(api.mediaBaseForHostname('localhost')).toBe('');
+    expect(api.mediaBaseForHostname('127.0.0.1')).toBe('');
+    expect(api.mediaBaseForHostname('preview.catsco.cc')).toBe('');
+    expect(api.mediaBaseForHostname('evilcatsco.cc')).toBe('');
+    expect(api.mediaBaseForHostname('catsco.cn.evil.com')).toBe('');
+    expect(api.mediaBaseForHostname('i.catsco.cc')).toBe('');
   });
 
   test('keeps relative uploads on the API base while no media base is configured', async () => {
@@ -1384,6 +1397,16 @@ describe('media acceleration URL resolution', () => {
     vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cc/prefix');
     const apiPath = await import('./api');
     expect(apiPath.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'https://user:pass@i.catsco.cc');
+    const apiCreds = await import('./api');
+    expect(apiCreds.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
+
+    vi.resetModules();
+    vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cc/?a=1');
+    const apiQuery = await import('./api');
+    expect(apiQuery.resolveMediaURL('/uploads/images/a.jpg')).toBe('/uploads/images/a.jpg');
 
     vi.resetModules();
     vi.stubEnv('VITE_MEDIA_BASE', 'https://i.catsco.cc');

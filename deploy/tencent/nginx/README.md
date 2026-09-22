@@ -60,16 +60,29 @@ Install without enabling traffic:
 
 ```bash
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-app.conf /etc/nginx/sites-available/catscompany-app
+sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-app-cn.conf /etc/nginx/sites-available/catscompany-app-cn
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-public.conf /etc/nginx/sites-available/catsco-public
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-api.conf /etc/nginx/sites-available/catscompany-api
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-safe-log.conf /etc/nginx/conf.d/catsco-safe-log.conf
+sudo install -o root -g root -m 644 deploy/tencent/nginx/uploads-zos-map.conf /etc/nginx/conf.d/uploads-zos-map.conf
 sudo nginx -t
 ```
+
+The `/uploads/` read path in both app vhosts relies on
+`deploy/tencent/nginx/uploads-zos-map.conf`, which defines `$uploads_disp`
+(Content-Disposition mirror of the application rules) and `$uploads_csp` (CSP
+sandbox for HTML served directly by ZOS). Install the map file into
+`/etc/nginx/conf.d/` before reloading: without it the `add_header` directives
+degrade to empty values and the headers are silently dropped. The vhosts
+answer `?preview`/`?download` with `418` so share-preview and forced-download
+links keep going to the app origin, and fall back to the web container
+(`@uploads_fallback`) when ZOS returns 403/404 or an error.
 
 Enable on the host:
 
 ```bash
 sudo ln -sfn /etc/nginx/sites-available/catscompany-app /etc/nginx/sites-enabled/catscompany-app
+sudo ln -sfn /etc/nginx/sites-available/catscompany-app-cn /etc/nginx/sites-enabled/catscompany-app-cn
 sudo ln -sfn /etc/nginx/sites-available/catsco-public /etc/nginx/sites-enabled/catsco-public
 sudo ln -sfn /etc/nginx/sites-available/catscompany-api /etc/nginx/sites-enabled/catscompany-api
 sudo nginx -t
