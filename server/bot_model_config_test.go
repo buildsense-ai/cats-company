@@ -500,6 +500,43 @@ func TestRuntimeReadsOwnConfigAndAcknowledgesCurrentRevision(t *testing.T) {
 	}
 }
 
+func TestOwnerLegacyAppliedSelectionDoesNotLookPending(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{
+			43: {
+				Kind: botModelKindCatalog, ModelID: "deepseek-v4-flash", ReasoningEffort: "high",
+				RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
+				AppliedRevision: 3, AppliedKind: botModelKindCatalog, AppliedModelID: "deepseek-v4-flash", AppliedReasoning: "high",
+			},
+		},
+	}
+	markTestBotModelRuntime(t, db, 43)
+	handler := NewBotModelConfigHandler(db, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["status"] != "applied" {
+		t.Fatalf("legacy applied selection status=%v body=%s", body["status"], rec.Body.String())
+	}
+	applied, _ := body["applied"].(map[string]interface{})
+	if applied["model_id"] != "deepseek-flash" {
+		t.Fatalf("applied model=%v", applied["model_id"])
+	}
+	desired, _ := body["desired"].(map[string]interface{})
+	if desired["model_id"] != "deepseek-flash" {
+		t.Fatalf("desired model=%v", desired["model_id"])
+	}
+}
+
 func TestRuntimeRejectsStaleModelAcknowledgement(t *testing.T) {
 	db := &botModelConfigTestStore{
 		owners: map[int64]int64{43: 7},

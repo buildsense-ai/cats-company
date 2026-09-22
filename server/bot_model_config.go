@@ -608,11 +608,17 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 		desiredReasoning = ""
 	}
 	status := "local"
+	appliedModelID := config.AppliedModelID
+	appliedSelectionMatches := config.AppliedModelID == config.ModelID
+	if config.AppliedKind == botModelKindCatalog {
+		appliedModelID = resolveLegacyCatalogModelID(appliedModelID)
+		appliedSelectionMatches = catalogModelIDMatches(config.AppliedModelID, config.ModelID)
+	}
 	localHandoff := !configured && config.Revision > 0 &&
 		!(config.AppliedRevision == config.Revision && config.AppliedKind == "local" && config.AppliedModelID == "local")
 	if (configured || localHandoff) && config.LastAttemptRevision == config.Revision && config.LastError != "" {
 		status = "failed"
-	} else if configured && config.AppliedRevision == config.Revision && config.AppliedKind == config.Kind && catalogModelIDMatches(config.AppliedModelID, config.ModelID) {
+	} else if configured && config.AppliedRevision == config.Revision && config.AppliedKind == config.Kind && appliedSelectionMatches {
 		status = "applied"
 	} else if configured || localHandoff {
 		status = "pending"
@@ -622,7 +628,7 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 		"configured": configured,
 		"desired":    desiredModelConfigResponse(desiredKind, desiredModelID, desiredReasoning, config),
 		"applied": map[string]interface{}{
-			"kind": config.AppliedKind, "model_id": resolveLegacyCatalogModelID(config.AppliedModelID), "reasoning_effort": config.AppliedReasoning,
+			"kind": config.AppliedKind, "model_id": appliedModelID, "reasoning_effort": config.AppliedReasoning,
 			"revision": config.AppliedRevision, "applied_at": config.AppliedAt,
 		},
 		"status":     status,
