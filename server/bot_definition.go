@@ -518,7 +518,7 @@ func (h *BotDefinitionHandler) definitionResponse(
 		} else if tokens, ok := catalogContextWindowTokens(model.ModelID); ok {
 			modelResponse["contextWindowTokens"] = tokens
 		}
-		if descriptor := catalogRuntimeDescriptorForModel(model.ModelID); descriptor != nil {
+		if descriptor := catalogRuntimeDescriptorForBot(botUID, model.ModelID); descriptor != nil {
 			modelResponse["catalogRuntime"] = descriptor
 		}
 	}

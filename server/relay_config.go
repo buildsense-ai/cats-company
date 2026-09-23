@@ -74,6 +74,9 @@ func (h *RelayConfigHandler) HandleConfig(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// relayPublicModelCatalog serves the catalog-wide defaults. The per-bot
+// DeepSeek Flash protocol lane (deepseek_flash_lane.go) travels with the bot
+// definition and model configuration instead of this global list.
 func relayPublicModelCatalog() []botModelCatalogItem {
 	catalog := make([]botModelCatalogItem, len(botModelCatalog))
 	copy(catalog, botModelCatalog)
