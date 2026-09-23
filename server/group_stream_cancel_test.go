@@ -2,6 +2,7 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -123,6 +124,75 @@ func TestGroupStreamCancelRejectsThirdMemberAfterTurnStarts(t *testing.T) {
 	}
 	if drainOne(bot.send) || drainOne(initiator.send) {
 		t.Fatal("forged cancel must not be fanned out")
+	}
+}
+
+func TestGroupStreamCancelPassiveDeliveryPromotesInitiatorOnFirstRunStatus(t *testing.T) {
+	db := &groupStreamCancelStore{
+		members: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 42, IsBot: true},
+		},
+	}
+	hub := NewHub(db, nil)
+	initiator := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	hub.addClient(initiator)
+	hub.addClient(bot)
+
+	// A passively delivered message reserves no turn before triage: the
+	// initiator cannot cancel yet, and nobody else can either.
+	hub.groupTurns.armPassive(80, 42, 7, 23)
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("a pending passive label must not authorize cancel before a run starts")
+	}
+
+	// Once the Agent publishes its first running status, the pending label
+	// promotes into a real turn bound to that run.
+	hub.observeGroupAgentTaskStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", SourceUID: 42, RunID: "run-passive-1", State: "running",
+	})
+	if !hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("promoted passive turn should keep the original initiator")
+	}
+
+	hub.handleStreamPub(initiator, streamCancelMessage("passive-cancel", 42), "grp_80")
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, initiator.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("initiator cancel response = %#v, want 200", ack.Ctrl)
+	}
+	if !drainOne(bot.send) {
+		t.Fatal("cancel must be fanned out to the running agent")
+	}
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("cancel must clear the promoted turn")
+	}
+}
+
+func TestGroupStreamCancelPassiveLabelExpiresWithoutRun(t *testing.T) {
+	hub := NewHub(nil, nil)
+	hub.groupTurns = newGroupAgentTurnTracker(time.Millisecond)
+	hub.groupTurns.armPassive(80, 42, 7, 23)
+	time.Sleep(2 * time.Millisecond)
+
+	// A silenced delivery never promotes: a late unrelated status does not
+	// resurrect cancel authority for the stale initiator.
+	hub.observeGroupAgentTaskStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", SourceUID: 42, RunID: "run-other", State: "running",
+	})
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("expired passive label must not promote")
+	}
+
+	// A terminal status without any turn stays a no-op.
+	hub.groupTurns.armPassive(80, 42, 7, 24)
+	hub.observeGroupAgentTaskStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", SourceUID: 42, RunID: "run-terminal", State: "completed",
+	})
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("terminal status must not promote a passive label")
 	}
 }
 

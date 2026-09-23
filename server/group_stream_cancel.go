@@ -17,10 +17,20 @@ type groupAgentTurn struct {
 	updatedAt    time.Time
 }
 
+// pendingPassiveTurn records who triggered a passively delivered message. It
+// authorizes nothing by itself; it is only promoted into a real turn when the
+// Agent's first running/waiting status proves the delivery became a run.
+type pendingPassiveTurn struct {
+	initiatorUID int64
+	requestSeqID int
+	expiresAt    time.Time
+}
+
 type groupAgentTurnTracker struct {
-	mu    sync.Mutex
-	ttl   time.Duration
-	turns map[int64]map[int64]groupAgentTurn
+	mu      sync.Mutex
+	ttl     time.Duration
+	turns   map[int64]map[int64]groupAgentTurn
+	pending map[int64]map[int64]pendingPassiveTurn
 }
 
 func newGroupAgentTurnTracker(ttl time.Duration) *groupAgentTurnTracker {
@@ -28,9 +38,46 @@ func newGroupAgentTurnTracker(ttl time.Duration) *groupAgentTurnTracker {
 		ttl = defaultGroupAgentTurnTTL
 	}
 	return &groupAgentTurnTracker{
-		ttl:   ttl,
-		turns: make(map[int64]map[int64]groupAgentTurn),
+		ttl:     ttl,
+		turns:   make(map[int64]map[int64]groupAgentTurn),
+		pending: make(map[int64]map[int64]pendingPassiveTurn),
 	}
+}
+
+// armPassive labels the next turn-less run for this bot with the passive
+// delivery's initiator. A silenced or never-activated delivery simply expires;
+// a newer passive delivery replaces the label.
+func (t *groupAgentTurnTracker) armPassive(groupID, botUID, initiatorUID int64, requestSeqID int) {
+	if t == nil || groupID <= 0 || botUID <= 0 || initiatorUID <= 0 || requestSeqID <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.pending[groupID] == nil {
+		t.pending[groupID] = make(map[int64]pendingPassiveTurn)
+	}
+	t.pending[groupID][botUID] = pendingPassiveTurn{
+		initiatorUID: initiatorUID,
+		requestSeqID: requestSeqID,
+		expiresAt:    time.Now().Add(t.ttl),
+	}
+}
+
+// takePendingPassiveLocked consumes the pending label, valid or expired.
+func (t *groupAgentTurnTracker) takePendingPassiveLocked(groupID, botUID int64, now time.Time) (pendingPassiveTurn, bool) {
+	pendingTurns := t.pending[groupID]
+	pending, ok := pendingTurns[botUID]
+	if !ok {
+		return pendingPassiveTurn{}, false
+	}
+	delete(pendingTurns, botUID)
+	if len(pendingTurns) == 0 {
+		delete(t.pending, groupID)
+	}
+	if now.After(pending.expiresAt) {
+		return pendingPassiveTurn{}, false
+	}
+	return pending, true
 }
 
 // begin reserves an agent's next active turn for the first routed request.
@@ -98,7 +145,25 @@ func (t *groupAgentTurnTracker) observeTaskStatus(groupID, botUID int64, runID, 
 	groupTurns := t.turns[groupID]
 	turn, ok := groupTurns[botUID]
 	if !ok {
-		return
+		// A passively delivered activation reserved no turn at delivery time.
+		// Promote its pending label so the original requester keeps
+		// stream-cancel authority over the run it actually started.
+		if state != "running" && state != "waiting" {
+			return
+		}
+		pending, pendingOK := t.takePendingPassiveLocked(groupID, botUID, now)
+		if !pendingOK {
+			return
+		}
+		if t.turns[groupID] == nil {
+			t.turns[groupID] = make(map[int64]groupAgentTurn)
+		}
+		groupTurns = t.turns[groupID]
+		turn = groupAgentTurn{
+			initiatorUID: pending.initiatorUID,
+			requestSeqID: pending.requestSeqID,
+			updatedAt:    now,
+		}
 	}
 
 	if state == "running" || state == "waiting" {
@@ -127,6 +192,16 @@ func (t *groupAgentTurnTracker) pruneExpiredLocked(now time.Time) {
 			delete(t.turns, groupID)
 		}
 	}
+	for groupID, pendingTurns := range t.pending {
+		for botUID, pending := range pendingTurns {
+			if now.After(pending.expiresAt) {
+				delete(pendingTurns, botUID)
+			}
+		}
+		if len(pendingTurns) == 0 {
+			delete(t.pending, groupID)
+		}
+	}
 }
 
 func (t *groupAgentTurnTracker) clear(groupID, botUID int64) {
@@ -143,6 +218,11 @@ func (t *groupAgentTurnTracker) clearLocked(groupID, botUID int64) {
 	delete(groupTurns, botUID)
 	if len(groupTurns) == 0 {
 		delete(t.turns, groupID)
+	}
+	pendingTurns := t.pending[groupID]
+	delete(pendingTurns, botUID)
+	if len(pendingTurns) == 0 {
+		delete(t.pending, groupID)
 	}
 }
 

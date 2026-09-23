@@ -2392,6 +2392,10 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		if groupErr == nil && group != nil {
 			standardGroup = group.Kind == types.GroupKindStandard && !channelManaged &&
 				msg != nil && msg.Data != nil &&
+				// Every channel-bound delivery carries an unforgeable trust token;
+				// the source_channel string additionally rejects forged hints. Both
+				// keep passive delivery inside native standard-group traffic only.
+				!trustedChannelBindingDeliveryMetadata(msg.Data.Metadata) &&
 				strings.TrimSpace(firstMetadataString(msg.Data.Metadata, "source_channel", "channel")) == ""
 			if group.Kind == types.GroupKindAgentTask && len(group.AgentIDs) > 0 {
 				// The first current task agent is the default. If it leaves, the
@@ -2444,8 +2448,14 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID && !passiveDelivery {
 				continue
 			}
-			if !passiveDelivery && !senderIsBot && isGroupAgentTurnRequest(msg) {
-				h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
+			if !senderIsBot && isGroupAgentTurnRequest(msg) {
+				if passiveDelivery {
+					// Do not reserve a turn before the client-side triage decides;
+					// arm a label so a later run still binds this initiator.
+					h.groupTurns.armPassive(groupID, m.UserID, senderUID, msg.Data.SeqID)
+				} else {
+					h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
+				}
 			}
 		}
 
