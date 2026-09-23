@@ -41,6 +41,7 @@ const (
 	DeviceGrantBrowserControl                   DeviceGrantOperation = "browser_control"
 	DeviceGrantDesktopControl                   DeviceGrantOperation = "desktop_control"
 	DeviceGrantSkillHubWorkspaceGet             DeviceGrantOperation = "skillhub.localWorkspace.get"
+	DeviceGrantSkillHubWorkspaceApplyDefinition DeviceGrantOperation = "skillhub.localWorkspace.applyDefinition"
 	DeviceCapabilitySkillHubWorkspacePagination DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
 	DeviceGrantSkillHubWorkspaceSync            DeviceGrantOperation = "skillhub.localWorkspace.syncToAgent"
 	DeviceGrantSkillHubSkillShare               DeviceGrantOperation = "skillhub.localSkill.share"
@@ -1017,6 +1018,7 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantBrowserControl,
 		DeviceGrantDesktopControl,
 		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubWorkspaceApplyDefinition,
 		DeviceCapabilitySkillHubWorkspacePagination,
 		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,

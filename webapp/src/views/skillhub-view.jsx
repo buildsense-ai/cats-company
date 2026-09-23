@@ -24,6 +24,7 @@ export {
 
 const SKILLHUB_DEVICE_TOOLS = {
   workspace: 'skillhub.localWorkspace.get',
+  applyDefinition: 'skillhub.localWorkspace.applyDefinition',
   syncWorkspace: 'skillhub.localWorkspace.syncToAgent',
   share: 'skillhub.localSkill.share',
   finalize: 'skillhub.localSkill.finalize',
@@ -47,6 +48,7 @@ const SKILLHUB_DESKTOP_CAPABILITIES = [
 ];
 const SKILLHUB_DEVICE_SCHEMAS = {
   [SKILLHUB_DEVICE_TOOLS.workspace]: 'xiaoba.skillhub.local_workspace.v1',
+  [SKILLHUB_DEVICE_TOOLS.applyDefinition]: 'xiaoba.skillhub.local_workspace.apply_definition.v1',
   [SKILLHUB_DEVICE_TOOLS.syncWorkspace]: 'xiaoba.skillhub.workspace_sync.v1',
   [SKILLHUB_DEVICE_TOOLS.share]: 'xiaoba.skillhub.local_share.v1',
   [SKILLHUB_DEVICE_TOOLS.finalize]: 'xiaoba.skillhub.local_finalize.v1',
@@ -61,6 +63,7 @@ const SKILLHUB_SWITCH_INITIAL_DELAY_MS = 2_000;
 const SKILLHUB_SWITCH_RETRY_DELAY_MS = 1_500;
 const SKILLHUB_DEVICE_LIST_TIMEOUT_MS = 5_000;
 const SKILLHUB_WORKSPACE_TIMEOUT_MS = 8_000;
+const SKILLHUB_APPLY_DEFINITION_TIMEOUT_MS = 120_000;
 // Keep each thin-tool response comfortably below CatsCo's 64 KiB WebSocket
 // message limit. Older Runtime versions honor this item limit even though they
 // do not yet apply their own serialized-byte budget.
@@ -1502,6 +1505,37 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     );
   }, [loadDevices, loadLocalWorkspace]);
 
+  const applyDefinitionToRuntime = useCallback(async (botUID) => {
+    const requestedBotUID = String(botUID || '').trim();
+    const requestedDeviceID = selectedDeviceIDRef.current;
+    const selectedDevice = devicesRef.current.find(
+      device => String(device?.deviceId || '') === requestedDeviceID,
+    );
+    if (!requestedBotUID || !requestedDeviceID) return { status: 'unavailable' };
+    if (!selectedDevice?.capabilities?.includes(SKILLHUB_DEVICE_TOOLS.applyDefinition)) {
+      return { status: 'unsupported' };
+    }
+    try {
+      const result = assertSkillHubDeviceResult(await requestSkillHubDeviceTool({
+        deviceId: requestedDeviceID,
+        ownerUserId: user?.uid,
+        toolName: SKILLHUB_DEVICE_TOOLS.applyDefinition,
+        payload: { bot_uid: requestedBotUID },
+        timeoutMs: SKILLHUB_APPLY_DEFINITION_TIMEOUT_MS,
+      }), {
+        toolName: SKILLHUB_DEVICE_TOOLS.applyDefinition,
+        botUID: requestedBotUID,
+      });
+      if (result?.applied !== true) return { status: 'pending', result };
+      await loadLocalWorkspace(requestedBotUID, requestedDeviceID);
+      return { status: 'applied', result };
+    } catch (error) {
+      // The Definition write has already succeeded. Keep that success visible
+      // while allowing the next refresh/retry to complete Runtime application.
+      return { status: 'pending', error };
+    }
+  }, [loadLocalWorkspace, user?.uid]);
+
   const syncWorkspaceToAgent = useCallback(async () => {
     const requestedBotUID = selectedBotUIDRef.current;
     const requestedDeviceID = selectedDeviceIDRef.current;
@@ -1787,9 +1821,13 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       });
       if (saved?.ok && initiatingBotUID === selectedBotUIDRef.current) {
         const installedName = resolved.displayName || resolved.skillId;
-        setActionNotice(replacing
-          ? `已把 Agent“${agentName}”的 ${installedName} 更新到 ${formatSkillHubVersion(resolved.latestVersion)}。`
-          : `已为 Agent“${agentName}”添加 ${installedName}。`);
+        const runtimeApply = await applyDefinitionToRuntime(initiatingBotUID);
+        const operationLabel = replacing
+          ? `已把 Agent“${agentName}”的 ${installedName} 更新到 ${formatSkillHubVersion(resolved.latestVersion)}`
+          : `已为 Agent“${agentName}”添加 ${installedName}`;
+        setActionNotice(runtimeApply.status === 'applied'
+          ? `${operationLabel}。运行环境已应用。`
+          : `${operationLabel}。运行环境等待应用，请保持 XiaoBa 在线。`);
       }
     } catch (error) {
       if (
