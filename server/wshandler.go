@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -88,28 +89,29 @@ type presenceEvent struct {
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub                  *Hub
-	conn                 *websocket.Conn
-	uid                  int64
-	remoteAddr           string
-	displayName          string
-	accountType          types.AccountType
-	bodyID               string
-	installationID       string
-	connectionID         string
-	deviceOwnerUID       int64
-	deviceID             string
-	deviceBodyID         string
-	deviceInstallationID string
-	deviceConnector      *DeviceConnectorClaims
-	wikiAgentUID         int64
-	botRuntimeCredential *botRuntimeCredentialClaims
-	messagingAttention   messagingClientAttention
-	messagingAttentionMu sync.RWMutex
-	attentionSyncMu      sync.Mutex
-	send                 chan []byte
-	sendMu               sync.RWMutex
-	sendClosed           bool
+	hub                     *Hub
+	conn                    *websocket.Conn
+	uid                     int64
+	remoteAddr              string
+	displayName             string
+	accountType             types.AccountType
+	bodyID                  string
+	installationID          string
+	connectionID            string
+	deviceOwnerUID          int64
+	deviceID                string
+	deviceBodyID            string
+	deviceInstallationID    string
+	deviceConnector         *DeviceConnectorClaims
+	wikiAgentUID            int64
+	botRuntimeCredential    *botRuntimeCredentialClaims
+	messagingAttention      messagingClientAttention
+	messagingAttentionMu    sync.RWMutex
+	attentionSyncMu         sync.Mutex
+	semanticGroupActivation atomic.Bool
+	send                    chan []byte
+	sendMu                  sync.RWMutex
+	sendClosed              bool
 }
 
 // NewHub creates a new Hub.
@@ -1315,6 +1317,7 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
+	client.semanticGroupActivation.Store(false)
 	h.setClientMessagingAttention(client, messagingClientAttention{
 		SubscriptionID: msg.PushSubscriptionID,
 		ActiveTopic:    msg.ActiveTopic,
@@ -1332,7 +1335,10 @@ func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
 		})
 		return
 	}
-	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc"}
+	if client.accountType == types.AccountBot && client.deviceConnector == nil && msg.SemanticGroupActivation {
+		client.semanticGroupActivation.Store(true)
+	}
+	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc", "semantic_group_activation_passive_delivery"}
 	params := map[string]interface{}{
 		"ver":   "0.1.0",
 		"build": "catscompany",
@@ -2380,13 +2386,41 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
 	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
 	defaultAgentUID := int64(0)
+	standardGroup := false
 	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
 		group, groupErr := h.db.GetGroup(groupID)
-		if groupErr == nil && group != nil && group.Kind == types.GroupKindAgentTask && len(group.AgentIDs) > 0 {
-			// The first current task agent is the default. If it leaves, the
-			// next current agent takes over; other agents still require @.
-			defaultAgentUID = group.AgentIDs[0]
+		if groupErr == nil && group != nil {
+			standardGroup = group.Kind == types.GroupKindStandard && !channelManaged &&
+				msg != nil && msg.Data != nil &&
+				strings.TrimSpace(firstMetadataString(msg.Data.Metadata, "source_channel", "channel")) == ""
+			if group.Kind == types.GroupKindAgentTask && len(group.AgentIDs) > 0 {
+				// The first current task agent is the default. If it leaves, the
+				// next current agent takes over; other agents still require @.
+				defaultAgentUID = group.AgentIDs[0]
+			}
 		}
+	}
+	// Only one authenticated opt-in connection may receive an unmentioned
+	// standard-group message. Multiple candidates need explicit @ instead of
+	// silently starting competing Agents (including duplicate body connections).
+	var semanticRecipient *Client
+	semanticCandidates := 0
+	if standardGroup && msg.artifactTaskRef == nil {
+		for _, member := range members {
+			if member.UserID == excludeUID {
+				continue
+			}
+			for _, client := range h.getClients(member.UserID) {
+				if client.accountType != types.AccountBot || client.deviceConnector != nil || !client.semanticGroupActivation.Load() {
+					continue
+				}
+				semanticCandidates++
+				semanticRecipient = client
+			}
+		}
+	}
+	if semanticCandidates != 1 {
+		semanticRecipient = nil
 	}
 	for _, m := range members {
 		if m.UserID == excludeUID {
@@ -2403,13 +2437,14 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			continue
 		}
 
+		passiveDelivery := isBot && semanticRecipient != nil && semanticRecipient.uid == m.UserID
 		if isBot {
 			userIDStr := formatUID(m.UserID)
 			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
-			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID {
+			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID && !passiveDelivery {
 				continue
 			}
-			if !senderIsBot && isGroupAgentTurnRequest(msg) {
+			if !passiveDelivery && !senderIsBot && isGroupAgentTurnRequest(msg) {
 				h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
 			}
 		}
@@ -2459,6 +2494,8 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			} else if h.sendToUserExceptConfirmed(m.UserID, out, nil) > 0 {
 				taskDelivered = h.artifactTasks.confirmDelivery(out.artifactTaskRef)
 			}
+		} else if passiveDelivery {
+			h.SendToClient(semanticRecipient, out)
 		} else {
 			h.SendToUser(m.UserID, out)
 		}

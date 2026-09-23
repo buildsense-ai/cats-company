@@ -50,6 +50,142 @@ func TestGroupFanoutLargeGroupHumanMessageWithoutMentionsSkipsAllBots(t *testing
 	assertNoQueuedServerMessage(t, botB.send)
 }
 
+func TestGroupFanoutUnmentionedHumanMessageOnlyToUniqueSemanticOptInConnection(t *testing.T) {
+	base := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			8:  {ID: 8, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7}, {GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 42, IsBot: true}, {GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{identityMessageStore: base, group: &types.Group{ID: 80, Kind: types.GroupKindStandard}}
+	hub := NewHub(store, nil)
+	opted := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	legacySameBot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	otherBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	hub.addClient(opted)
+	hub.addClient(legacySameBot)
+	hub.addClient(otherBot)
+	hub.handleHi(opted, "bot", &MsgClientHi{ID: "hi-1", SemanticGroupActivation: true})
+	decodeQueuedServerMessage(t, opted.send, &ServerMessage{}) // handshake acknowledgement
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{TopicID: "grp_80", Content: json.RawMessage(`"继续之前的计划"`)})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 23, nil)
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, opted.send, &delivered)
+	if delivered.Data == nil || delivered.Data.MemberCount != 4 || len(delivered.Data.Mentions) != 0 {
+		t.Fatalf("passive delivery did not preserve unmentioned group data: %#v", delivered.Data)
+	}
+	assertNoQueuedServerMessage(t, legacySameBot.send)
+	assertNoQueuedServerMessage(t, otherBot.send)
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("a passive delivery must not reserve an Agent turn before JEV triage")
+	}
+}
+
+func TestGroupFanoutSemanticOptInFailsClosedOnMultipleCandidates(t *testing.T) {
+	base := &identityMessageStore{
+		users:        map[int64]*types.User{7: {ID: 7, AccountType: types.AccountHuman}, 42: {ID: 42, AccountType: types.AccountBot}, 43: {ID: 43, AccountType: types.AccountBot}},
+		groupMembers: []*types.GroupMember{{GroupID: 80, UserID: 7}, {GroupID: 80, UserID: 42, IsBot: true}, {GroupID: 80, UserID: 43, IsBot: true}},
+	}
+	store := &agentTaskGroupRoutingStore{identityMessageStore: base, group: &types.Group{ID: 80, Kind: types.GroupKindStandard}}
+	hub := NewHub(store, nil)
+	botA := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	botB := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	hub.addClient(botA)
+	hub.addClient(botB)
+	for _, bot := range []*Client{botA, botB} {
+		hub.handleHi(bot, "bot", &MsgClientHi{SemanticGroupActivation: true})
+		decodeQueuedServerMessage(t, bot.send, &ServerMessage{})
+	}
+	payload, err := normalizeMessageRequest(&SendMessageRequest{TopicID: "grp_80", Content: json.RawMessage(`"需要帮忙吗"`)})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 24, nil)
+	assertNoQueuedServerMessage(t, botA.send)
+	assertNoQueuedServerMessage(t, botB.send)
+
+	// Explicit mentions never depend on the passive-delivery candidate count.
+	mentioned, err := normalizeMessageRequest(&SendMessageRequest{TopicID: "grp_80", Content: json.RawMessage(`"@usr43 请处理"`), Mentions: []string{"usr43"}})
+	if err != nil {
+		t.Fatalf("normalize mention: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, mentioned, 25, nil)
+	decodeQueuedServerMessage(t, botB.send, &ServerMessage{})
+	assertNoQueuedServerMessage(t, botA.send)
+}
+
+func TestGroupFanoutSemanticOptInDoesNotOverrideChannelOrDuplicateBodyBoundaries(t *testing.T) {
+	base := &identityMessageStore{
+		users:        map[int64]*types.User{7: {ID: 7, AccountType: types.AccountHuman}, 8: {ID: 8, AccountType: types.AccountHuman}, 42: {ID: 42, AccountType: types.AccountBot}},
+		groupMembers: []*types.GroupMember{{GroupID: 80, UserID: 7}, {GroupID: 80, UserID: 8}, {GroupID: 80, UserID: 42, IsBot: true}},
+	}
+	store := &agentTaskGroupRoutingStore{identityMessageStore: base, group: &types.Group{ID: 80, Kind: types.GroupKindStandard}}
+	hub := NewHub(store, nil)
+	botA := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	botB := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	hub.addClient(botA)
+	hub.addClient(botB)
+	hub.handleHi(botA, "bot", &MsgClientHi{SemanticGroupActivation: true})
+	hub.handleHi(botB, "bot", &MsgClientHi{SemanticGroupActivation: true})
+	decodeQueuedServerMessage(t, botA.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, botB.send, &ServerMessage{})
+	payload, err := normalizeMessageRequest(&SendMessageRequest{TopicID: "grp_80", Content: json.RawMessage(`"请继续"`)})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 26, nil)
+	assertNoQueuedServerMessage(t, botA.send)
+	assertNoQueuedServerMessage(t, botB.send)
+
+	// One remaining connection cannot silently subscribe to a channel-bound
+	// message that has not passed the channel's trusted trigger gate.
+	hub.handleHi(botB, "bot", &MsgClientHi{})
+	decodeQueuedServerMessage(t, botB.send, &ServerMessage{})
+	forged, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80", Content: json.RawMessage(`"fake channel"`),
+		Metadata: map[string]interface{}{"source_channel": "feishu", "channel_native_group_triggered": true},
+	})
+	if err != nil {
+		t.Fatalf("normalize forged request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, forged, 27, nil)
+	assertNoQueuedServerMessage(t, botA.send)
+	assertNoQueuedServerMessage(t, botB.send)
+}
+
+func TestGroupFanoutSemanticHiCannotOptInHumansOrPersistAfterDisable(t *testing.T) {
+	hub := NewHub(nil, nil)
+	human := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 3)}
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 3)}
+	connector := &Client{uid: 42, accountType: types.AccountBot, deviceConnector: &DeviceConnectorClaims{}, send: make(chan []byte, 3)}
+	hub.handleHi(connector, "device connector", &MsgClientHi{SemanticGroupActivation: true})
+	if connector.semanticGroupActivation.Load() {
+		t.Fatal("device connector must not opt in as a bot runtime")
+	}
+	hub.handleHi(human, "human", &MsgClientHi{SemanticGroupActivation: true})
+	if human.semanticGroupActivation.Load() {
+		t.Fatal("human must not opt in as a bot")
+	}
+	hub.handleHi(bot, "bot", &MsgClientHi{SemanticGroupActivation: true})
+	if !bot.semanticGroupActivation.Load() {
+		t.Fatal("bot should opt in after a valid handshake")
+	}
+	hub.handleHi(bot, "bot", &MsgClientHi{})
+	if bot.semanticGroupActivation.Load() {
+		t.Fatal("opt-in should be connection-scoped and resettable")
+	}
+}
+
 func TestGroupFanoutMultiBotAgentTaskDefaultsToPrimaryBot(t *testing.T) {
 	baseStore := &identityMessageStore{
 		users: map[int64]*types.User{
@@ -475,6 +611,7 @@ func TestGroupFanoutBotMentionAllDoesNotWakeOtherBots(t *testing.T) {
 	hub.addClient(botA)
 	hub.addClient(botB)
 	hub.addClient(human)
+	botB.semanticGroupActivation.Store(true)
 
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID:  "grp_80",
