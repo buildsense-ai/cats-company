@@ -597,6 +597,18 @@ var commercialRelayLegacyFreeBudgets = map[string]float64{
 	"glm-5.3-flash":     100,
 }
 
+// commercialRelayGlmEraFreeBudgets is the oldest Free pool generation (the
+// GLM 5.3 Flash add-on set, before the DeepSeek Flash add-on). Relay keys
+// created from a default template older than 000022 carry this pool; they
+// must still be recognized as Free and upgraded to the current baseline
+// instead of being frozen as legacy.
+var commercialRelayGlmEraFreeBudgets = map[string]float64{
+	"MiniMax-M2.7":      1000,
+	"MiniMax-M3":        500,
+	"deepseek-v4-flash": 100,
+	"glm-5.3-flash":     100,
+}
+
 func commercialRelayBudgetsMatch(budgets, expected map[string]float64) bool {
 	if len(budgets) != len(expected) {
 		return false
@@ -611,6 +623,86 @@ func commercialRelayBudgetsMatch(budgets, expected map[string]float64) bool {
 		}
 	}
 	return true
+}
+
+// commercialRelayKnownFreePoolModels is the union of every model that has
+// ever belonged to a Free pool generation. A shared-pool key is only upgraded
+// when all of its models fall inside this set, so a custom pool that happens
+// to share the same total keeps its legacy semantics.
+func commercialRelayKnownFreePoolModels() map[string]bool {
+	known := make(map[string]bool, len(commercialRelayFreeBudgets))
+	for _, pool := range []map[string]float64{
+		commercialRelayGlmEraFreeBudgets,
+		commercialRelayLegacyFreeBudgets,
+		commercialRelayFreeBudgets,
+	} {
+		for model := range pool {
+			known[normalizeRelayModelName(model)] = true
+		}
+	}
+	return known
+}
+
+// commercialRelaySharedPoolFreeUpgrade detects Relay keys that report the
+// shared monthly pool total on every model entry (the shared-pool
+// representation used by current relay-admin versions). When that total
+// equals a known Free pool generation and every listed model belongs to a
+// known Free set, the key is treated as Free and upgraded to the current
+// baseline instead of being normalized down to a frozen legacy pool.
+func commercialRelaySharedPoolFreeUpgrade(sharedLimit float64, budgets map[string]float64) (map[string]float64, bool) {
+	if len(budgets) == 0 || sharedLimit <= commercialRelayBlockedLimit {
+		return nil, false
+	}
+	for _, amount := range budgets {
+		if !nearlyEqual(amount, sharedLimit) {
+			return nil, false
+		}
+	}
+	known := commercialRelayKnownFreePoolModels()
+	for model := range budgets {
+		if !known[normalizeRelayModelName(model)] {
+			return nil, false
+		}
+	}
+	knownTotal := nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayGlmEraFreeBudgets)) ||
+		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayLegacyFreeBudgets)) ||
+		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayFreeBudgets))
+	if !knownTotal {
+		return nil, false
+	}
+	return commercialRelayFreeBudgetsCopy(), true
+}
+
+// commercialRelayFreeBudgetsCopy returns a copy of the current Free pool so
+// callers never hand the package-level map to a store.
+func commercialRelayFreeBudgetsCopy() map[string]float64 {
+	budgets := make(map[string]float64, len(commercialRelayFreeBudgets))
+	for model, amount := range commercialRelayFreeBudgets {
+		budgets[model] = amount
+	}
+	return budgets
+}
+
+// commercialRelayUniformBudgetValue reports the common value when every budget
+// entry carries the same amount (the shared-pool representation where each
+// model entry repeats the shared monthly total).
+func commercialRelayUniformBudgetValue(budgets map[string]float64) (float64, bool) {
+	if len(budgets) == 0 {
+		return 0, false
+	}
+	shared := 0.0
+	first := true
+	for _, amount := range budgets {
+		if first {
+			shared = amount
+			first = false
+			continue
+		}
+		if !nearlyEqual(amount, shared) {
+			return 0, false
+		}
+	}
+	return shared, true
 }
 
 func commercialRelayHasBaselineEntitlement(summary *types.CommercialSummary) bool {
@@ -656,11 +748,7 @@ func commercialRelayBaselineForSummary(summary *types.CommercialSummary, relayUs
 			}
 		}
 		if len(summary.Entitlements) > 0 || len(summary.Grants) > 0 {
-			budgets := make(map[string]float64, len(commercialRelayFreeBudgets))
-			for model, amount := range commercialRelayFreeBudgets {
-				budgets[model] = amount
-			}
-			return commercialRelayBaselineProfileFree, budgets, nil
+			return commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy(), nil
 		}
 		// Paid upgrades revoke the prior free entitlement. A later refund
 		// leaves only the immutable refund ledger entries, so use that audit
@@ -668,11 +756,7 @@ func commercialRelayBaselineForSummary(summary *types.CommercialSummary, relayUs
 		// stale shared Relay quota.
 		for _, entry := range summary.Ledger {
 			if entry != nil && strings.EqualFold(strings.TrimSpace(entry.SourceType), "refund") {
-				budgets := make(map[string]float64, len(commercialRelayFreeBudgets))
-				for model, amount := range commercialRelayFreeBudgets {
-					budgets[model] = amount
-				}
-				return commercialRelayBaselineProfileFree, budgets, nil
+				return commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy(), nil
 			}
 		}
 	}
@@ -681,13 +765,29 @@ func commercialRelayBaselineForSummary(summary *types.CommercialSummary, relayUs
 		return "", nil, fmt.Errorf("relay quota exists without recoverable model limits")
 	}
 	// A Relay key created before commercial entitlements existed may already
-	// carry a shared pool. Preserve its model access and exact pool total as an
+	// carry a shared pool. Keys rebuilt from an outdated default template are
+	// upgraded to the current Free pool (see commercialRelaySharedPoolFreeUpgrade);
+	// anything else preserves its model access and exact pool total as an
 	// auditable baseline instead of multiplying the shared limit by model count.
 	if relayUser != nil {
 		sharedLimit := relayUser.Limits.MonthlyBudget.MaxLimit
-		if sharedLimit > commercialRelayBlockedLimit {
-			originalTotal := commercialRelayBudgetTotal(budgets)
-			if profile != commercialRelayBaselineProfileFree || !nearlyEqual(originalTotal, sharedLimit) {
+		originalTotal := commercialRelayBudgetTotal(budgets)
+		knownFreeBaseline := profile == commercialRelayBaselineProfileFree &&
+			len(budgets) == len(commercialRelayFreeBudgets) &&
+			nearlyEqual(originalTotal, commercialRelayBudgetTotal(commercialRelayFreeBudgets))
+		if !knownFreeBaseline {
+			effectiveShared := sharedLimit
+			if effectiveShared <= commercialRelayBlockedLimit {
+				// Relay keys without a monthly budget still repeat the shared
+				// value on every model entry, so read it from the limits.
+				if uniform, ok := commercialRelayUniformBudgetValue(budgets); ok {
+					effectiveShared = uniform
+				}
+			}
+			if upgraded, ok := commercialRelaySharedPoolFreeUpgrade(effectiveShared, budgets); ok {
+				profile = commercialRelayBaselineProfileFree
+				budgets = upgraded
+			} else if sharedLimit > commercialRelayBlockedLimit && (profile != commercialRelayBaselineProfileFree || !nearlyEqual(originalTotal, sharedLimit)) {
 				profile = commercialRelayBaselineProfileLegacy
 				budgets = normalizeCommercialRelaySharedBaseline(budgets, sharedLimit)
 			}
@@ -748,15 +848,14 @@ func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[s
 	if commercialRelayBudgetsMatch(budgets, commercialRelayFreeBudgets) {
 		return commercialRelayBaselineProfileFree, budgets
 	}
-	// Relay keys created before the image lane opened still carry the original
-	// five-model Free pool. Recognize them as Free and upgrade them to the
-	// current baseline so legacy keys are not frozen out of the image models.
-	if commercialRelayBudgetsMatch(budgets, commercialRelayLegacyFreeBudgets) {
-		upgraded := make(map[string]float64, len(commercialRelayFreeBudgets))
-		for model, amount := range commercialRelayFreeBudgets {
-			upgraded[model] = amount
-		}
-		return commercialRelayBaselineProfileFree, upgraded
+	// Relay keys created before the image lane opened still carry an older
+	// Free pool (five models after the DeepSeek Flash add-on, four models in
+	// the GLM era). Recognize both generations as Free and upgrade them to
+	// the current baseline so older keys are not frozen out of the new
+	// models.
+	if commercialRelayBudgetsMatch(budgets, commercialRelayLegacyFreeBudgets) ||
+		commercialRelayBudgetsMatch(budgets, commercialRelayGlmEraFreeBudgets) {
+		return commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy()
 	}
 	return commercialRelayBaselineProfileLegacy, budgets
 }

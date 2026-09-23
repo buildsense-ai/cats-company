@@ -1330,6 +1330,139 @@ func TestCommercialRelayBaselineDoesNotMultiplySharedProviderLimits(t *testing.T
 	}
 }
 
+func TestCommercialRelayBaselineUpgradesGlmEraFreePool(t *testing.T) {
+	glmEra := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+		{Provider: "minimax-m27", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 1000}},
+		{Provider: "minimax-m3", Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 500}},
+		{Provider: "deepseek", Model: "deepseek-v4-flash", Budget: commercialRelayBudget{MaxLimit: 100}},
+		{Provider: "glm", Model: "glm-5.3-flash", Budget: commercialRelayBudget{MaxLimit: 100}},
+	}}}
+	profile, budgets := commercialRelayBaseline(glmEra)
+	if profile != commercialRelayBaselineProfileFree || len(budgets) != len(commercialRelayFreeBudgets) || budgets["gpt-image-2"] != 100 || budgets["deepseek-flash"] != 100 {
+		t.Fatalf("glm-era free pool was not upgraded: profile=%s budgets=%#v", profile, budgets)
+	}
+
+	// The full classification path must not downgrade the upgraded pool when
+	// the Relay key still carries the glm-era shared monthly limit.
+	glmEra.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: 1700, ResetDuration: "1M"}
+	profile, summaryBudgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 9527}, glmEra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(summaryBudgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets)) {
+		t.Fatalf("glm-era pool with a shared monthly limit was not upgraded: profile=%q budgets=%#v", profile, summaryBudgets)
+	}
+}
+
+func TestCommercialRelayBaselineUpgradesSharedPoolDefaultTemplate(t *testing.T) {
+	// Relay keys rewritten by the shared-pool sync report the pool total on
+	// every model entry. A key created from the outdated default template shows
+	// the glm-era total (1700) on the chat models; it must be upgraded to the
+	// current Free baseline instead of being frozen as legacy.
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 1700, ResetDuration: "1M"},
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax-m27", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "minimax-m3", Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "deepseek", Model: "deepseek-v4-flash", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "deepseek-flash", Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "glm", Model: "glm-5.3-flash", Budget: commercialRelayBudget{MaxLimit: 1700}},
+		},
+	}}
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 9529}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(budgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets)) {
+		t.Fatalf("shared-pool default template was not upgraded: profile=%q budgets=%#v", profile, budgets)
+	}
+	if budgets["gpt-image-2"] != 100 || budgets["deepseek-flash"] != 100 {
+		t.Fatalf("upgraded baseline is missing pool models: %#v", budgets)
+	}
+}
+
+func TestCommercialRelayBaselineUpgradesSharedPoolLegacyFreeTotal(t *testing.T) {
+	shared := commercialRelayBudgetTotal(commercialRelayLegacyFreeBudgets)
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: shared, ResetDuration: "1M"},
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax-m27", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: shared}},
+			{Provider: "minimax-m3", Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: shared}},
+			{Provider: "deepseek", Model: "deepseek-v4-flash", Budget: commercialRelayBudget{MaxLimit: shared}},
+			{Provider: "deepseek-flash", Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: shared}},
+			{Provider: "glm", Model: "glm-5.3-flash", Budget: commercialRelayBudget{MaxLimit: shared}},
+		},
+	}}
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 9528}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(budgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets)) {
+		t.Fatalf("five-model shared pool was not upgraded: profile=%q budgets=%#v", profile, budgets)
+	}
+}
+
+func TestCommercialRelayBaselineUpgradesUniformPoolWithoutMonthlyBudget(t *testing.T) {
+	// Keys that report the shared value on every model entry without a
+	// monthly budget must be upgraded instead of being frozen as a legacy
+	// pool multiplied by the model count.
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax-m27", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "minimax-m3", Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "deepseek", Model: "deepseek-v4-flash", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "deepseek-flash", Model: "deepseek-flash", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "glm", Model: "glm-5.3-flash", Budget: commercialRelayBudget{MaxLimit: 1700}},
+		},
+	}}
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 9526}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(budgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets)) {
+		t.Fatalf("uniform pool without a monthly budget was not upgraded: profile=%q budgets=%#v", profile, budgets)
+	}
+}
+
+func TestCommercialRelayBaselineRecognizesUniformCurrentFreePool(t *testing.T) {
+	shared := commercialRelayBudgetTotal(commercialRelayFreeBudgets)
+	limits := make([]commercialRelayModelLimit, 0, len(commercialRelayFreeBudgets))
+	for model := range commercialRelayFreeBudgets {
+		limits = append(limits, commercialRelayModelLimit{Provider: model, Model: model, Budget: commercialRelayBudget{MaxLimit: shared}})
+	}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: shared, ResetDuration: "1M"},
+		ModelLimits:   limits,
+	}}
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 9525}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(budgets), shared) {
+		t.Fatalf("uniform current free pool was not recognized: profile=%q budgets=%#v", profile, budgets)
+	}
+}
+
+func TestCommercialRelayBaselineKeepsCustomSharedPoolLegacy(t *testing.T) {
+	// A shared pool that happens to match a known Free total but carries a
+	// model outside every Free pool generation keeps its legacy semantics.
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: 1700, ResetDuration: "1M"},
+		ModelLimits: []commercialRelayModelLimit{
+			{Provider: "minimax-m27", Model: "MiniMax-M2.7", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "minimax-m3", Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 1700}},
+			{Provider: "gpt", Model: "gpt-5.6-terra", Budget: commercialRelayBudget{MaxLimit: 1700}},
+		},
+	}}
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 941}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileLegacy || !nearlyEqual(commercialRelayBudgetTotal(budgets), 1700) {
+		t.Fatalf("custom shared pool was misclassified: profile=%q budgets=%#v", profile, budgets)
+	}
+}
+
 func TestCommercialRelayBaselineRecognizesExistingFreeSharedPool(t *testing.T) {
 	limits := make([]commercialRelayModelLimit, 0, len(commercialRelayFreeBudgets))
 	for model, amount := range commercialRelayFreeBudgets {
