@@ -135,12 +135,101 @@ func (s *platformLifecycleStub) ListCloudWorkerLifecycles(int64) ([]CloudWorkerL
 
 func TestCloudWorkerPlatformLifecycleCount(t *testing.T) {
 	h, _ := newCloudWorkerTestHandler("")
-	h.credits = &platformLifecycleStub{lifecycles: []CloudWorkerLifecycle{{ID: 1, TenantName: "worker1"}, {ID: 2}}}
+	h.credits = &platformLifecycleStub{lifecycles: []CloudWorkerLifecycle{
+		{ID: 1, TenantName: "worker1", State: "active"},
+		{ID: 2, TenantName: "worker2", State: "active"},
+		{ID: 3, TenantName: "", State: "active"},
+		{ID: 4, TenantName: "worker3", State: "delete_running"},
+	}}
 	if got := h.PlatformLifecycleCount(38); got != 2 {
-		t.Fatalf("count=%d want 2", got)
+		t.Fatalf("count=%d want 2 (renew-eligible only)", got)
 	}
 	if got := h.PlatformLifecycleCount(0); got != 0 {
 		t.Fatalf("zero uid count=%d want 0", got)
+	}
+}
+
+// trialLifecycleStub drives the on-demand trial conversion branches of
+// renewTrial: a rejected conversion or a missing billing store must surface
+// as a failed outcome instead of a silent success.
+type trialLifecycleStub struct {
+	quotaCreditStub
+	lifecycles []CloudWorkerLifecycle
+	accepted   bool
+	claim      bool
+}
+
+func (s *trialLifecycleStub) ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error) {
+	return s.lifecycles, nil
+}
+
+func (s *trialLifecycleStub) GetCloudWorkerBillingLifecycle(string) (*types.CloudWorkerLifecycle, error) {
+	return &types.CloudWorkerLifecycle{}, nil
+}
+
+func (s *trialLifecycleStub) RequestCloudWorkerConversion(int64) (bool, error) {
+	return s.accepted, nil
+}
+
+func (s *trialLifecycleStub) ClaimCloudWorkerBillingAction(int64, string, bool) (bool, error) {
+	return s.claim, nil
+}
+
+func (s *trialLifecycleStub) CompleteCloudWorkerBillingAction(int64, string, time.Time, string) error {
+	return nil
+}
+
+func (s *trialLifecycleStub) ClaimCloudWorkerTrialRelease(int64) (bool, error) {
+	return false, nil
+}
+
+func TestCloudWorkerRenewForOwnerReportsTrialConversionFailure(t *testing.T) {
+	h, _ := newCloudWorkerTestHandler("")
+	h.renewScript = "unused-renew.sh"
+	h.credits = &trialLifecycleStub{lifecycles: []CloudWorkerLifecycle{{ID: 1, TenantName: "bot-trial", State: "active", BillingMode: types.CloudWorkerOnDemand}}}
+	report := h.RenewForOwner(38)
+	if report == nil || len(report.Outcomes) != 1 {
+		t.Fatalf("report: %#v", report)
+	}
+	if outcome := report.Outcomes[0]; outcome.Status != types.CloudWorkerRenewFailed || !strings.Contains(outcome.Message, "rejected") {
+		t.Fatalf("rejected trial conversion must be reported failed: %#v", outcome)
+	}
+
+	h, _ = newCloudWorkerTestHandler("")
+	h.renewScript = "unused-renew.sh"
+	h.credits = &platformLifecycleStub{lifecycles: []CloudWorkerLifecycle{{ID: 2, TenantName: "bot-trial2", State: "active", BillingMode: types.CloudWorkerOnDemand}}}
+	report = h.RenewForOwner(38)
+	if report == nil || len(report.Outcomes) != 1 {
+		t.Fatalf("report: %#v", report)
+	}
+	if outcome := report.Outcomes[0]; outcome.Status != types.CloudWorkerRenewFailed || !strings.Contains(outcome.Message, "billing store") {
+		t.Fatalf("missing billing store must be reported failed: %#v", outcome)
+	}
+}
+
+func TestCloudWorkerRenewForOwnerReportsTrialConversionSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX billing script contract")
+	}
+	h, _ := newCloudWorkerTestHandler("")
+	root := t.TempDir()
+	h.renewScript = filepath.Join(root, "renew-worker.sh")
+	output := `{"expires_at":"2030-01-01T00:00:00Z","auto_renew_disabled":true}`
+	if err := os.WriteFile(filepath.Join(root, "billing-worker.sh"), []byte("#!/bin/sh\nprintf '%s\\n' '"+output+"'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	h.credits = &trialLifecycleStub{
+		lifecycles: []CloudWorkerLifecycle{{ID: 3, TenantName: "bot-trial3", State: "active", BillingMode: types.CloudWorkerOnDemand}},
+		accepted:   true,
+		claim:      true,
+	}
+	report := h.RenewForOwner(38)
+	if report == nil || len(report.Outcomes) != 1 {
+		t.Fatalf("report: %#v", report)
+	}
+	outcome := report.Outcomes[0]
+	if outcome.Status != types.CloudWorkerRenewApplied || !strings.Contains(outcome.Message, "试用已转为付费") {
+		t.Fatalf("successful trial conversion outcome: %#v", outcome)
 	}
 }
 

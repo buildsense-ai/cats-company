@@ -1100,9 +1100,13 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 // reports the outcome; it never creates a replacement instance.
 func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorkerLifecycle) types.CloudWorkerRenewOutcome {
 	item := types.CloudWorkerRenewOutcome{TenantName: lifecycle.TenantName}
-	if h.renewTrial(lifecycle) {
+	if handled, trialErr := h.renewTrial(lifecycle); handled {
 		item.Status = types.CloudWorkerRenewApplied
 		item.Message = "试用已转为付费"
+		if trialErr != nil {
+			item.Status = types.CloudWorkerRenewFailed
+			item.Message = trialErr.Error()
+		}
 		return item
 	}
 	// One renewal event buys exactly one more paid month. A tenant's
@@ -1170,7 +1174,16 @@ func (h *CloudWorkerHandler) PlatformLifecycleCount(uid int64) int {
 	if err != nil {
 		return 0
 	}
-	return len(lifecycles)
+	// Match the renewal loop's eligibility so the console warning counts
+	// exactly the instances that a renewal would resubscribe.
+	count := 0
+	for _, lifecycle := range lifecycles {
+		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // cloudWorkerPaidUntil resolves the paid window a new worker should match:

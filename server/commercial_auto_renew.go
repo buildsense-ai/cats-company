@@ -226,13 +226,19 @@ func (h *AccountAdminHandler) recordCloudWorkerRenewRuns(uid int64, operationID 
 		if outcome.Status == types.CloudWorkerRenewApplied {
 			status = commercialAutoRenewRunApplied
 		}
+		opID := operationID + "-worker-" + outcome.TenantName
+		if len(opID) > 120 {
+			// operation_id is VARCHAR(128); keep the row insertable for any
+			// tenant name instead of dropping the audit entry on a length error.
+			opID = opID[:120]
+		}
 		run := &types.CommercialAutoRenewRun{
 			UID:         uid,
 			Action:      commercialAutoRenewActionWorker,
 			Status:      status,
 			NewExpiry:   outcome.ExpiresAt,
 			Message:     strings.TrimSpace(outcome.Message),
-			OperationID: operationID + "-worker-" + outcome.TenantName,
+			OperationID: opID,
 		}
 		if err := store.RecordCommercialAutoRenewRun(run); err != nil {
 			log.Printf("[commercial-auto-renew] record cloud worker run failed uid=%d tenant=%s: %v", uid, outcome.TenantName, err)
