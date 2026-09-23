@@ -626,7 +626,7 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 	response := map[string]interface{}{
 		"uid":        botUID,
 		"configured": configured,
-		"desired":    desiredModelConfigResponse(desiredKind, desiredModelID, desiredReasoning, config),
+		"desired":    desiredModelConfigResponse(botUID, desiredKind, desiredModelID, desiredReasoning, config),
 		"applied": map[string]interface{}{
 			"kind": config.AppliedKind, "model_id": appliedModelID, "reasoning_effort": config.AppliedReasoning,
 			"revision": config.AppliedRevision, "applied_at": config.AppliedAt,
@@ -641,7 +641,9 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 // desiredModelConfigResponse builds the desired model selection payload. For
 // catalog models it includes the authoritative cloud context window so the
 // device does not rely on a local profile that can drift from the catalog.
-func desiredModelConfigResponse(kind, modelID, reasoning string, config *types.BotModelConfig) map[string]interface{} {
+// The runtime descriptor is resolved per bot so the DeepSeek Flash protocol
+// lane can be assigned centrally (see deepseek_flash_lane.go).
+func desiredModelConfigResponse(botUID int64, kind, modelID, reasoning string, config *types.BotModelConfig) map[string]interface{} {
 	if kind == botModelKindCatalog {
 		modelID = resolveLegacyCatalogModelID(modelID)
 	}
@@ -659,7 +661,7 @@ func desiredModelConfigResponse(kind, modelID, reasoning string, config *types.B
 		// runtime without a hard-coded model profile.
 		for _, item := range botModelCatalog {
 			if strings.EqualFold(item.ID, strings.TrimSpace(modelID)) {
-				if runtime := catalogRuntimeDescriptor(item); runtime != nil {
+				if runtime := catalogRuntimeDescriptorForBot(botUID, item.ID); runtime != nil {
 					desired["runtime"] = runtime
 				}
 				break
@@ -689,7 +691,7 @@ func (h *BotModelConfigHandler) ownerConfigResponse(
 	if botModelConfigIsConfigured(config) && normalized.Kind == botModelKindCatalog {
 		currentCatalogModelID = normalized.ModelID
 	}
-	catalog, quotaError := h.catalogWithUsageForCurrent(ctx, ownerUID, includeUsage, currentCatalogModelID)
+	catalog, quotaError := h.catalogWithUsageForCurrent(ctx, ownerUID, botUID, includeUsage, currentCatalogModelID)
 	response["models"] = catalog
 	response["custom_supported"] = h.secretCodec != nil
 	if quotaError != "" {
@@ -733,13 +735,15 @@ func (h *BotModelConfigHandler) runtimeConfigResponse(botUID int64, config *type
 	return response, nil
 }
 
+// Without a bot context the catalog keeps the default protocol lane;
+// bot-scoped responses apply the per-bot DeepSeek Flash lane.
 func (h *BotModelConfigHandler) catalogWithUsage(ctx context.Context, ownerUID int64, includeUsage bool) ([]botModelCatalogItem, string) {
-	return h.catalogWithUsageForCurrent(ctx, ownerUID, includeUsage, "")
+	return h.catalogWithUsageForCurrent(ctx, ownerUID, 0, includeUsage, "")
 }
 
 func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 	ctx context.Context,
-	ownerUID int64,
+	ownerUID, botUID int64,
 	includeUsage bool,
 	currentModelID string,
 ) ([]botModelCatalogItem, string) {
@@ -749,7 +753,7 @@ func (h *BotModelConfigHandler) catalogWithUsageForCurrent(
 		catalog[i].Available = true
 		catalog[i].UnavailableReason = ""
 		catalog[i].Quota = nil
-		catalog[i].Runtime = catalogRuntimeDescriptor(catalog[i])
+		catalog[i].Runtime = catalogRuntimeDescriptorForBot(botUID, catalog[i].ID)
 	}
 
 	var commercialSummary *types.CommercialSummary

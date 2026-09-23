@@ -81,8 +81,10 @@ func enableBotModelEncryption(t *testing.T) {
 }
 
 func TestLegacyModelConfigIncludesCatalogRuntimeDescriptor(t *testing.T) {
+	t.Setenv(deepSeekAnthropicLanePercentEnv, "")
+	t.Setenv(deepSeekAnthropicLaneBotsEnv, "")
 	config := &types.BotModelConfig{Revision: 7, UpdatedAt: "2026-09-11T00:00:00Z"}
-	desired := desiredModelConfigResponse(botModelKindCatalog, "deepseek-flash", "", config)
+	desired := desiredModelConfigResponse(501, botModelKindCatalog, "deepseek-flash", "", config)
 	runtime, ok := desired["runtime"].(*botModelRuntimeDescriptor)
 	if !ok || runtime == nil {
 		t.Fatalf("runtime descriptor missing: %#v", desired["runtime"])
@@ -1137,7 +1139,7 @@ func TestOwnerModelCatalogKeepsCurrentRevokedModelVisibleButDisabled(t *testing.
 	handler.SetCommercialQuotaSource(fixedCommercialQuotaStore{summary: summary}, true, nil)
 
 	catalog, quotaError := handler.catalogWithUsageForCurrent(
-		context.Background(), 7, false, "gpt-5.6-terra",
+		context.Background(), 7, 0, false, "gpt-5.6-terra",
 	)
 	if quotaError != "" {
 		t.Fatalf("quota error=%q", quotaError)
