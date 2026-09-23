@@ -99,6 +99,12 @@ func TestPostgresCommercialAutoRenewConfigAndRuns(t *testing.T) {
 		t.Fatalf("an already extended chain must not be renewed twice: %#v %v", extended, err)
 	}
 
+	// Even a very generous lead time must not re-renew a future-dated
+	// extension segment: the latest segment has not started yet.
+	if generous, err := db.ListDueCommercialAutoRenew(now, 60*24*time.Hour); err != nil || len(generous) != 0 {
+		t.Fatalf("future-dated extension must never be due: %#v %v", generous, err)
+	}
+
 	// Disabling the switch removes the account from the schedule entirely.
 	if _, err := db.SetCommercialAutoRenewConfig(uid, false, ""); err != nil {
 		t.Fatalf("disable auto renew: %v", err)

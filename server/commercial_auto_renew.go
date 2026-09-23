@@ -17,7 +17,7 @@ const (
 	commercialAutoRenewRunFailed       = "failed"
 	commercialAutoRenewActionExtend    = "extend"
 	commercialAutoRenewRunListLimit    = 20
-	commercialAutoRenewFrontendMessage = "已自动顺延一个周期（30 天）"
+	commercialAutoRenewFrontendMessage = "已自动顺延一个周期"
 )
 
 // CommercialAutoRenewStore persists the opt-in switch and the detailed run
@@ -93,6 +93,10 @@ func (r *CommercialAutoRenewRunner) RunOnce(ctx context.Context) (applied, faile
 		return 0, 0
 	}
 	for _, item := range due {
+		if ctx.Err() != nil {
+			// Stop cleanly when the server shuts down mid-pass.
+			break
+		}
 		if item == nil || item.UID <= 0 {
 			continue
 		}

@@ -49,12 +49,16 @@ func (s *fakeAutoRenewStore) ListCommercialAutoRenewRuns(uid int64, limit int) (
 type fakeAutoRenewExecutor struct {
 	operations []*types.CommercialAccountAdjustment
 	err        error
+	failUID    int64
 	result     *types.CommercialAccountAdjustmentResult
 }
 
 func (f *fakeAutoRenewExecutor) ApplyCommercialAutoRenewExtend(ctx context.Context, uid int64, expectedExpiry time.Time, operationID, note string) (*types.CommercialAccountAdjustmentResult, error) {
 	expiry := expectedExpiry
 	f.operations = append(f.operations, &types.CommercialAccountAdjustment{UID: uid, ExpectedExpiresAt: &expiry, OperationID: operationID, Note: note})
+	if f.failUID != 0 && uid == f.failUID {
+		return nil, errors.New("relay key is not configured")
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -103,19 +107,49 @@ func TestCommercialAutoRenewRunnerExtendsDueAccounts(t *testing.T) {
 
 func TestCommercialAutoRenewRunnerRecordsFailuresAndContinues(t *testing.T) {
 	expiry := time.Now().UTC().Add(2 * 24 * time.Hour)
-	store := &fakeAutoRenewStore{due: []*types.CommercialAutoRenewDue{{UID: 7, ExpiresAt: expiry}}}
-	executor := &fakeAutoRenewExecutor{err: errors.New("relay key is not configured")}
+	newExpiry := expiry.AddDate(0, 0, 30)
+	store := &fakeAutoRenewStore{due: []*types.CommercialAutoRenewDue{{UID: 7, ExpiresAt: expiry}, {UID: 42, ExpiresAt: expiry}}}
+	executor := &fakeAutoRenewExecutor{failUID: 7, result: &types.CommercialAccountAdjustmentResult{Applied: true, ExpiresAt: &newExpiry}}
 	runner := NewCommercialAutoRenewRunner(store, executor, 7*24*time.Hour)
 
 	applied, failed := runner.RunOnce(context.Background())
-	if applied != 0 || failed != 1 {
-		t.Fatalf("run counts applied=%d failed=%d want 0/1", applied, failed)
+	if applied != 1 || failed != 1 {
+		t.Fatalf("run counts applied=%d failed=%d want 1/1", applied, failed)
 	}
-	if len(store.runs) != 1 || store.runs[0].Status != commercialAutoRenewRunFailed {
-		t.Fatalf("failed run not recorded: %#v", store.runs)
+	if len(store.runs) != 2 {
+		t.Fatalf("run log: %#v", store.runs)
+	}
+	statuses := map[int64]string{}
+	for _, run := range store.runs {
+		statuses[run.UID] = run.Status
+	}
+	if statuses[7] != commercialAutoRenewRunFailed || statuses[42] != commercialAutoRenewRunApplied {
+		t.Fatalf("per-account statuses: %#v", statuses)
 	}
 	if !strings.Contains(store.runs[0].Message, "relay key") {
 		t.Fatalf("failure message lost: %#v", store.runs[0])
+	}
+}
+
+func TestCommercialAutoRenewRunnerTreatsReplayAsAppliedWithoutDoubleBilling(t *testing.T) {
+	expiry := time.Now().UTC().Add(3 * 24 * time.Hour)
+	newExpiry := expiry.AddDate(0, 0, 30)
+	store := &fakeAutoRenewStore{due: []*types.CommercialAutoRenewDue{{UID: 5, ExpiresAt: expiry}}}
+	executor := &fakeAutoRenewExecutor{result: &types.CommercialAccountAdjustmentResult{Applied: false, ExpiresAt: &newExpiry}}
+	runner := NewCommercialAutoRenewRunner(store, executor, 7*24*time.Hour)
+
+	applied, failed := runner.RunOnce(context.Background())
+	if applied != 1 || failed != 0 {
+		t.Fatalf("replay counts applied=%d failed=%d want 1/0", applied, failed)
+	}
+	if len(store.runs) != 1 || store.runs[0].Status != commercialAutoRenewRunApplied {
+		t.Fatalf("replay run record: %#v", store.runs)
+	}
+	if !strings.Contains(store.runs[0].Message, "已顺延") {
+		t.Fatalf("replay message: %#v", store.runs[0])
+	}
+	if len(executor.operations) != 1 {
+		t.Fatalf("replay must call the executor exactly once: %#v", executor.operations)
 	}
 }
 
@@ -278,5 +312,47 @@ func TestCommercialAutoRenewExtendAppliesDeterministicExtension(t *testing.T) {
 
 	if _, err := handler.ApplyCommercialAutoRenewExtend(context.Background(), 38, expiry.Add(time.Hour), "auto-renew-38-2", "内部自动续费"); err == nil {
 		t.Fatal("a changed package expiry must abort the renewal instead of double extending")
+	}
+}
+
+func TestCommercialAutoRenewExtendRequiresRelayEnforcement(t *testing.T) {
+	now := time.Now().UTC()
+	expiry := now.Add(5 * 24 * time.Hour)
+	personal := &types.CommercialPlan{ID: 7, Slug: "catsco-personal", Name: "个人版", ModelBudgets: map[string]float64{"gpt-5.6-terra": 500}, DurationDays: 30}
+	store := &autoRenewExtendStore{
+		summary: &types.CommercialSummary{
+			UID: 38, TotalCNY: 600,
+			Entitlements: []*types.CommercialEntitlement{{UID: 38, PlanID: 7, PlanSlug: "catsco-personal", Source: "operator", State: "active", StartsAt: now.Add(-25 * 24 * time.Hour), ExpiresAt: &expiry}},
+		},
+		plans:  []*types.CommercialPlan{personal},
+		result: &types.CommercialAccountAdjustmentResult{Action: commercialAdjustmentExtend, Applied: true},
+	}
+	handler := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, store)
+	if _, err := handler.ApplyCommercialAutoRenewExtend(context.Background(), 38, expiry, "auto-renew-38-9", "内部自动续费"); err == nil {
+		t.Fatal("renewal without relay enforcement must not apply")
+	}
+	if store.applied != nil {
+		t.Fatalf("ledger must stay untouched: %#v", store.applied)
+	}
+}
+
+func TestCommercialAutoRenewHandlerRejectsForeignSources(t *testing.T) {
+	store := &autoRenewHandlerStore{commercialTestStore: newCommercialTestStore()}
+	handler := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, store)
+
+	foreign := httptest.NewRequest(http.MethodGet, "/local/account-admin/commercial/auto-renew?uid=38", nil)
+	foreign.RemoteAddr = "203.0.113.9:4444"
+	recorder := httptest.NewRecorder()
+	handler.HandleCommercialAutoRenew(recorder, foreign)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("foreign source must be rejected: %d", recorder.Code)
+	}
+
+	method := httptest.NewRequest(http.MethodDelete, "/local/account-admin/commercial/auto-renew?uid=38", nil)
+	method.RemoteAddr = "127.0.0.1:22345"
+	recorder = httptest.NewRecorder()
+	handler.HandleCommercialAutoRenew(recorder, method)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("unsupported method must be rejected: %d", recorder.Code)
 	}
 }

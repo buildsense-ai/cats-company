@@ -52,9 +52,10 @@ func (a *Adapter) SetCommercialAutoRenewConfig(uid int64, enabled bool, note str
 }
 
 // ListDueCommercialAutoRenew returns enabled users whose latest active
-// personal/pro window expires inside the lead time. The latest expiry across
-// all active segments (including future-dated extension segments) is compared
-// so an account renewed early is never extended twice.
+// personal/pro window expires inside the lead time and has already become
+// effective (starts_at <= now). The latest expiry across all active segments
+// is compared so an account renewed early is never extended twice, and the
+// starts_at guard keeps a future-dated extension segment from re-triggering.
 func (a *Adapter) ListDueCommercialAutoRenew(now time.Time, within time.Duration) ([]*types.CommercialAutoRenewDue, error) {
 	if within <= 0 {
 		return nil, nil
@@ -71,6 +72,7 @@ func (a *Adapter) ListDueCommercialAutoRenew(now time.Time, within time.Duration
 		  AND e.expires_at > $1
 		GROUP BY c.uid
 		HAVING MAX(e.expires_at) <= $2
+		   AND MAX(e.starts_at) <= $1
 		ORDER BY c.uid`, now, now.Add(within), commercialPersonalPlanSlug, commercialProPlanSlug)
 	if err != nil {
 		return nil, fmt.Errorf("list due commercial auto renew: %w", err)
@@ -93,8 +95,8 @@ func (a *Adapter) RecordCommercialAutoRenewRun(run *types.CommercialAutoRenewRun
 		return fmt.Errorf("run is required")
 	}
 	message := run.Message
-	if len(message) > 500 {
-		message = message[:500]
+	if runes := []rune(message); len(runes) > 500 {
+		message = string(runes[:500])
 	}
 	err := a.db.QueryRow(`
 		INSERT INTO commercial_auto_renew_runs(uid, action, status, previous_expiry, new_expiry, message, operation_id)
