@@ -36,12 +36,12 @@ type RelayCommercialHandler struct {
 	syncer         *CommercialRelaySyncer
 	// cloudWorkerRenewer resumes provider-frozen cloud workers after a
 	// redemption reopens paid time. Optional; nil keeps redemption local-only.
-	cloudWorkerRenewer func(uid int64)
+	cloudWorkerRenewer func(uid int64) *types.CloudWorkerRenewReport
 }
 
 // SetCloudWorkerRenewer wires the async resume hook shared with payments and
 // operator extensions.
-func (h *RelayCommercialHandler) SetCloudWorkerRenewer(renew func(uid int64)) {
+func (h *RelayCommercialHandler) SetCloudWorkerRenewer(renew func(uid int64) *types.CloudWorkerRenewReport) {
 	if h != nil {
 		h.cloudWorkerRenewer = renew
 	}
