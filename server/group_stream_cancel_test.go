@@ -196,6 +196,39 @@ func TestGroupStreamCancelPassiveLabelExpiresWithoutRun(t *testing.T) {
 	}
 }
 
+func TestGroupStreamCancelPassiveLabelInvalidatedByNewerRoutedRequest(t *testing.T) {
+	hub := NewHub(nil, nil)
+	hub.groupTurns.armPassive(80, 42, 7, 23)
+
+	// A newer routed request (e.g. an @-mention) begins a real turn; the stale
+	// passive label must not attribute a later turn-less run to usr7.
+	hub.groupTurns.begin(80, 42, 9, 30)
+	hub.observeGroupAgentTaskStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", SourceUID: 42, RunID: "run-mention", State: "running",
+	})
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("stale passive label must not promote after a newer routed request")
+	}
+	if !hub.groupTurns.initiatedBy(80, 42, 9) {
+		t.Fatal("the @-mention turn must keep its own initiator")
+	}
+
+	// Even a begin attempt that loses to an active turn still invalidates the
+	// pending label: provenance of the next turn-less run is ambiguous.
+	hub2 := NewHub(nil, nil)
+	hub2.groupTurns.begin(80, 42, 9, 30)
+	hub2.groupTurns.armPassive(80, 42, 7, 31)
+	hub2.groupTurns.begin(80, 42, 9, 32) // loses to the active turn
+	hub2.groupTurns.clear(80, 42)
+	hub2.groupTurns.armPassive(80, 42, 7, 33)
+	hub2.observeGroupAgentTaskStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", SourceUID: 42, RunID: "run-queued", State: "running",
+	})
+	if !hub2.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("fresh passive label should promote for the next turn-less run")
+	}
+}
+
 func TestGroupStreamCancelRequiresTargetAgentInMultiMemberGroup(t *testing.T) {
 	db := &groupStreamCancelStore{
 		members: []*types.GroupMember{

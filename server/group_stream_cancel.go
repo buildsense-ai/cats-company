@@ -91,6 +91,14 @@ func (t *groupAgentTurnTracker) begin(groupID, botUID, initiatorUID int64, reque
 	defer t.mu.Unlock()
 	now := time.Now()
 	t.pruneExpiredLocked(now)
+	// A newer routed request makes any pending passive label ambiguous: the
+	// next turn-less run can no longer be attributed to it with confidence.
+	if pendingTurns := t.pending[groupID]; pendingTurns != nil {
+		delete(pendingTurns, botUID)
+		if len(pendingTurns) == 0 {
+			delete(t.pending, groupID)
+		}
+	}
 	if t.turns[groupID] == nil {
 		t.turns[groupID] = make(map[int64]groupAgentTurn)
 	}
