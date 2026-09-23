@@ -525,6 +525,23 @@ func main() {
 			}
 		})
 	}
+	if autoRenewStore, ok := db.(server.CommercialAutoRenewStore); ok {
+		if envBool("CATS_COMMERCIAL_AUTO_RENEW_DISABLED") {
+			log.Printf("commercial auto-renew runner is disabled by CATS_COMMERCIAL_AUTO_RENEW_DISABLED")
+		} else {
+			renewBefore := 7 * 24 * time.Hour
+			if raw := envString("CATS_COMMERCIAL_AUTO_RENEW_DAYS_BEFORE"); raw != "" {
+				if days, err := strconv.Atoi(raw); err == nil && days >= 1 && days <= 30 {
+					renewBefore = time.Duration(days) * 24 * time.Hour
+				} else {
+					log.Printf("invalid CATS_COMMERCIAL_AUTO_RENEW_DAYS_BEFORE=%q; using the default lead time", raw)
+				}
+			}
+			commercialAutoRenewRunner := server.NewCommercialAutoRenewRunner(autoRenewStore, accountAdminHandler, renewBefore)
+			commercialAutoRenewRunner.Start(commercialServiceCtx)
+			log.Printf("commercial auto-renew runner is active (%d day lead time)", int(renewBefore.Hours()/24))
+		}
+	}
 	relayCommercialHandler := server.NewRelayCommercialHandlerWithOptions(commercialStore, server.RelayCommercialOptions{
 		PublicEnabled:  relayCommercialPublicEnabled,
 		TestUIDs:       relayCommercialTestUIDs,
@@ -736,6 +753,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/cloud-workers/import", commercialOpsHandler.HandleCloudWorkerImport)
 	mux.HandleFunc("/api/account/commercial-ops/cloud-workers/billing", commercialOpsHandler.HandleCloudWorkerBilling)
 	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
+	mux.HandleFunc("/api/account/commercial-ops/auto-renew", commercialOpsHandler.HandleAutoRenew)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
 	mux.HandleFunc("/api/account/commercial-ops/order-refunds", commercialOpsHandler.HandleOrderRefund)
@@ -754,6 +772,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/grants", accountAdminHandler.HandleCommercialGrant)
 	mux.HandleFunc("/local/account-admin/commercial/cloud-worker-credits", accountAdminHandler.HandleCloudWorkerCredits)
 	mux.HandleFunc("/local/account-admin/commercial/adjustments", accountAdminHandler.HandleCommercialAdjustment)
+	mux.HandleFunc("/local/account-admin/commercial/auto-renew", accountAdminHandler.HandleCommercialAutoRenew)
 	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
 	mux.HandleFunc("/local/account-admin/commercial/relay-sync", accountAdminHandler.HandleCommercialRelaySync)

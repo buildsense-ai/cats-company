@@ -278,6 +278,10 @@ func (h *CommercialOpsHandler) HandleAdjustments(w http.ResponseWriter, r *http.
 	h.forward(w, r, "adjustments.apply", "user", h.admin.HandleCommercialAdjustment)
 }
 
+func (h *CommercialOpsHandler) HandleAutoRenew(w http.ResponseWriter, r *http.Request) {
+	h.forward(w, r, "auto_renew.update", "user", h.admin.HandleCommercialAutoRenew)
+}
+
 func (h *CommercialOpsHandler) HandleUsers(w http.ResponseWriter, r *http.Request) {
 	h.forward(w, r, "users.read", "user", h.admin.HandleCommercialUserSummary)
 }
