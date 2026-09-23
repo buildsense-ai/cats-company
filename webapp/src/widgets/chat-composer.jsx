@@ -562,6 +562,26 @@ export default function ChatComposer({
     if (showVoicePreview && textarea) textarea.scrollTop = textarea.scrollHeight;
   }, [displayedValue, resizeInput, showVoicePreview]);
 
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return undefined;
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', resizeInput);
+      return () => window.removeEventListener('resize', resizeInput);
+    }
+
+    let previousWidth = null;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect.width;
+      if (width === previousWidth) return;
+      previousWidth = width;
+      resizeInput(textarea);
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [resizeInput]);
+
   const finishVoiceHold = (event, cancelled = false) => {
     const gesture = voiceHoldGestureRef.current;
     const eventPointerId = event?.pointerId;
