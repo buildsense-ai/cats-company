@@ -130,6 +130,25 @@ describe('ChatComposer', () => {
     expect(measurements).toBe(measurementsAfterResize);
   });
 
+  it('resizes on window resize when ResizeObserver is unavailable', async () => {
+    vi.stubGlobal('ResizeObserver', undefined);
+    await renderComposer({ value: '还有其他几个区的你也要接入的' });
+
+    const textarea = container.querySelector('.v3-composer-input');
+    let width = 180;
+    Object.defineProperty(textarea, 'scrollHeight', {
+      configurable: true,
+      get: () => width < 250 ? 62 : 40,
+    });
+
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    expect(textarea.style.height).toBe('62px');
+
+    width = 500;
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    expect(textarea.style.height).toBe('40px');
+  });
+
 	it('places model information in the composer and marks content state for mobile controls', async () => {
 		await renderComposer({
 			modelInfo: {

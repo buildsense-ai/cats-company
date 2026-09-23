@@ -567,8 +567,9 @@ export default function ChatComposer({
     if (!textarea) return undefined;
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', resizeInput);
-      return () => window.removeEventListener('resize', resizeInput);
+      const handleWindowResize = () => resizeInput(textarea);
+      window.addEventListener('resize', handleWindowResize);
+      return () => window.removeEventListener('resize', handleWindowResize);
     }
 
     let previousWidth = null;
