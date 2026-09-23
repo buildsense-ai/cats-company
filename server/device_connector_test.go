@@ -409,6 +409,82 @@ func TestDeviceConnectorUploadAuthIsScopedToSendFileCapability(t *testing.T) {
 			}
 		})
 	}
+	ordinaryToken, err := GenerateToken(7, "alice", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	ordinaryReq := httptest.NewRequest(http.MethodPost, "/api/upload?type=file", nil)
+	ordinaryReq.Header.Set("Authorization", "Bearer "+ordinaryToken)
+	ordinaryRec := httptest.NewRecorder()
+	endpoint(ordinaryRec, ordinaryReq)
+	if ordinaryRec.Code != http.StatusNoContent {
+		t.Fatalf("ordinary JWT upload status=%d body=%s, want %d", ordinaryRec.Code, ordinaryRec.Body.String(), http.StatusNoContent)
+	}
+}
+
+func TestDeviceConnectorPairingToUploadAuthorization(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("device-connector-pairing-upload-test")
+
+	store := &deviceHandlerStore{users: map[int64]*types.User{
+		7: {ID: 7, Username: "alice", AccountType: types.AccountHuman, State: 0},
+	}}
+	hub := NewHub(store, nil)
+	handler := NewDeviceConnectorHandler(store, hub)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/device-connectors/pairings", bytes.NewBufferString(`{
+		"device_name": "Alice Laptop",
+		"capabilities": ["read_file", "send_file"]
+	}`))
+	createReq = createReq.WithContext(context.WithValue(createReq.Context(), uidKey, int64(7)))
+	createRec := httptest.NewRecorder()
+	handler.HandleCreatePairing(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create pairing status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var pairing struct {
+		PairingCode string `json:"pairing_code"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &pairing); err != nil {
+		t.Fatalf("decode pairing: %v", err)
+	}
+
+	enrollReq := httptest.NewRequest(http.MethodPost, "/api/device-connectors/enroll", bytes.NewBufferString(`{
+		"pairing_code": "`+pairing.PairingCode+`",
+		"device_id": "alice-laptop",
+		"capabilities": ["read_file", "send_file"]
+	}`))
+	enrollRec := httptest.NewRecorder()
+	handler.HandleEnroll(enrollRec, enrollReq)
+	if enrollRec.Code != http.StatusOK {
+		t.Fatalf("enroll status=%d body=%s", enrollRec.Code, enrollRec.Body.String())
+	}
+	var enrolled struct {
+		ConnectorToken string `json:"connector_token"`
+	}
+	if err := json.Unmarshal(enrollRec.Body.Bytes(), &enrolled); err != nil {
+		t.Fatalf("decode enroll: %v", err)
+	}
+	claims, err := ParseDeviceConnectorToken(enrolled.ConnectorToken)
+	if err != nil {
+		t.Fatalf("parse enrolled connector token: %v", err)
+	}
+	if !deviceConnectorHasScope(claims, "device:upload") || !containsDeviceCapability(claims.Capabilities, "send_file") {
+		t.Fatalf("enrolled token lacks upload authorization: scopes=%#v capabilities=%#v", claims.Scopes, claims.Capabilities)
+	}
+
+	uploadAuth := DeviceConnectorUploadAuthWithDB(store, hub)(func(w http.ResponseWriter, r *http.Request) {
+		if UIDFromContext(r.Context()) != 7 || UsernameFromContext(r.Context()) != "alice" {
+			t.Errorf("upload context = uid %d username %q, want 7/alice", UIDFromContext(r.Context()), UsernameFromContext(r.Context()))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	uploadReq := httptest.NewRequest(http.MethodPost, "/api/upload?connector_token="+enrolled.ConnectorToken, nil)
+	uploadRec := httptest.NewRecorder()
+	uploadAuth(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusNoContent {
+		t.Fatalf("upload auth status=%d body=%s, want %d", uploadRec.Code, uploadRec.Body.String(), http.StatusNoContent)
+	}
 }
 
 func TestExistingConnectorCanAdvertisePaginationMarkerAfterRuntimeUpgrade(t *testing.T) {

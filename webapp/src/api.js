@@ -628,6 +628,7 @@ export const api = {
       device_name: deviceName || '',
       capabilities: [
         'read_file',
+        'send_file',
         'resolve_common_directory',
         'glob',
         'grep',

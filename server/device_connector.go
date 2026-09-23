@@ -30,7 +30,6 @@ var defaultDeviceConnectorScopes = []string{
 	"device:register",
 	"device:rpc_result",
 	"device:refresh",
-	"device:upload",
 }
 
 // DeviceConnectorClaims is a restricted credential for one user's one local device.
@@ -190,13 +189,7 @@ func DeviceConnectorUploadAuthWithDB(db store.Store, hub *Hub) func(http.Handler
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		ordinaryHandler := ordinaryAuth(next)
 		return func(w http.ResponseWriter, r *http.Request) {
-			token := strings.TrimSpace(r.Header.Get("X-CatsCo-Connector-Token"))
-			if token == "" {
-				authorization := r.Header.Get("Authorization")
-				if strings.HasPrefix(authorization, "DeviceConnector ") {
-					token = strings.TrimSpace(strings.TrimPrefix(authorization, "DeviceConnector "))
-				}
-			}
+			token := extractDeviceConnectorToken(r)
 			if token == "" {
 				ordinaryHandler(w, r)
 				return
@@ -228,6 +221,7 @@ func DeviceConnectorUploadAuthWithDB(db store.Store, hub *Hub) func(http.Handler
 				return
 			}
 			ctx := context.WithValue(r.Context(), uidKey, claims.UID)
+			ctx = context.WithValue(ctx, usernameKey, claims.Username)
 			next(w, r.WithContext(ctx))
 		}
 	}
@@ -240,13 +234,6 @@ func containsDeviceCapability(capabilities []string, expected string) bool {
 		}
 	}
 	return false
-}
-
-func appendDeviceCapability(capabilities []string, value string) []string {
-	if containsDeviceCapability(capabilities, value) {
-		return append([]string(nil), capabilities...)
-	}
-	return append(append([]string(nil), capabilities...), value)
 }
 
 func appendDeviceScope(scopes []string, value string) []string {
@@ -757,6 +744,10 @@ func (h *DeviceConnectorHandler) HandleEnroll(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	scopes := normalizeDeviceConnectorScopes(nil)
+	if containsDeviceCapability(capabilities, "send_file") {
+		scopes = appendDeviceScope(scopes, "device:upload")
+	}
 	token, err := GenerateDeviceConnectorToken(DeviceConnectorTokenInput{
 		UID:            pairing.OwnerUID,
 		Username:       pairing.Username,
@@ -764,6 +755,7 @@ func (h *DeviceConnectorHandler) HandleEnroll(w http.ResponseWriter, r *http.Req
 		InstallationID: device.InstallationID,
 		DisplayName:    device.DisplayName,
 		Capabilities:   capabilities,
+		Scopes:         scopes,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to issue device token"})
