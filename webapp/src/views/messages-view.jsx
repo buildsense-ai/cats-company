@@ -1171,20 +1171,6 @@ export default function MessagesView({
     setCloudArtifactsReturnOpen(false);
   }, [clearActiveArtifactFocus]);
 
-  const resizeComposerInput = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const maxHeight = 200;
-    textarea.style.height = 'auto';
-    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 40), maxHeight);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
-  }, []);
-
-  useEffect(() => {
-    resizeComposerInput();
-  }, [input, resizeComposerInput]);
-
   useEffect(() => {
     setTutorialDismissed(readStorageValue(tutorialDismissStorageKey(user.uid, topic)) === '1');
   }, [topic, user.uid]);
