@@ -31,7 +31,13 @@ type AccountAdminHandler struct {
 	commercialEnforceUIDs    map[int64]bool
 	// cloudWorkerRenewer resumes provider-frozen cloud workers after a paid
 	// period is committed (payment fulfillment or operator renewal extension).
-	cloudWorkerRenewer func(uid int64)
+	// It reports each instance outcome so the auto-renew run log can show what
+	// happened to every bound worker alongside the package extension.
+	cloudWorkerRenewer func(uid int64) *types.CloudWorkerRenewReport
+	// cloudWorkerCounter counts platform-managed (bound) cloud workers owned
+	// by a uid; the internal auto-renew console shows the number so an
+	// operator knows a package renewal also renews those instances.
+	cloudWorkerCounter func(uid int64) int
 }
 
 // SetCloudWorkerCreditAdmin wires the operator-only manual credit grant
@@ -57,9 +63,17 @@ func (h *AccountAdminHandler) SetCommercialRelaySyncer(syncer *CommercialRelaySy
 
 // SetCloudWorkerRenewer wires the cloud-worker resume hook so an operator
 // renewal extension revives frozen workers the same way a paid renewal does.
-func (h *AccountAdminHandler) SetCloudWorkerRenewer(renew func(uid int64)) {
+func (h *AccountAdminHandler) SetCloudWorkerRenewer(renew func(uid int64) *types.CloudWorkerRenewReport) {
 	if h != nil {
 		h.cloudWorkerRenewer = renew
+	}
+}
+
+// SetCloudWorkerCounter wires the bound-worker counter surfaced next to the
+// auto-renew switch in the internal console.
+func (h *AccountAdminHandler) SetCloudWorkerCounter(count func(uid int64) int) {
+	if h != nil {
+		h.cloudWorkerCounter = count
 	}
 }
 

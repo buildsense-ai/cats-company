@@ -1065,9 +1065,11 @@ func autoCloudWorkerDisplayName(db store.Store, uid int64) string {
 // payment has committed; the provider script is idempotent for active workers
 // and resubscribes provider-expired/freezing instances. Permanently
 // unsubscribed instances are not recoverable in the current worker region.
-func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
+// The returned report carries one outcome per instance so the internal
+// auto-renew console can log what happened next to the package extension.
+func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewReport {
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
-		return
+		return nil
 	}
 	h.opMu.Lock()
 	defer h.opMu.Unlock()
@@ -1076,59 +1078,112 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) {
 	})
 	if !ok {
 		log.Printf("[cloud-worker] renewal store unavailable uid=%d", uid)
-		return
+		return nil
 	}
 	lifecycles, err := lifecycleStore.ListCloudWorkerLifecycles(uid)
 	if err != nil {
 		log.Printf("[cloud-worker] list renewal lifecycles uid=%d failed: %v", uid, err)
-		return
+		return nil
 	}
+	report := &types.CloudWorkerRenewReport{}
 	for _, lifecycle := range lifecycles {
 		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
 			continue
 		}
-		if h.renewTrial(lifecycle) {
-			continue
-		}
-		// One renewal event buys exactly one more paid month. A tenant's
-		// deployment snapshot can record a multi-month creation purchase, so
-		// pin the monthly step explicitly instead of inheriting that count.
-		out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				// The provider operation may already have been applied before the
-				// script timeout; keep the lifecycle date instead of recording a
-				// failure that prompts a second charge.
-				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d hit the script timeout; the renewal may already be applied, lifecycle date left unchanged: %v", lifecycle.TenantName, uid, err)
-			} else {
-				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
-			}
-			continue
-		}
-		result, parseErr := parseCloudWorkerRenewalResult(out)
-		if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
-			log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
-		}
-		if parseErr != nil {
-			// The provider operation already succeeded. Do not turn a missing
-			// informational field into a second charge or a false failure, but
-			// leave an auditable warning so operators can reconcile the date.
-			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d succeeded but returned no valid expires_at: %v; lifecycle date unchanged", lifecycle.TenantName, uid, parseErr)
-		} else {
-			expiresAt := result.ExpiresAt
-			var extendErr error
-			if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
-				extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
-			} else {
-				extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
-			}
-			if extendErr != nil {
-				log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
-			}
-		}
-		log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d completed", lifecycle.TenantName, uid)
+		report.Outcomes = append(report.Outcomes, h.renewOneCloudWorker(uid, lifecycle))
 	}
 	h.requestCloudStatusRefresh(true)
+	return report
+}
+
+// renewOneCloudWorker runs the provider renewal for a single lifecycle and
+// reports the outcome; it never creates a replacement instance.
+func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorkerLifecycle) types.CloudWorkerRenewOutcome {
+	item := types.CloudWorkerRenewOutcome{TenantName: lifecycle.TenantName}
+	if handled, trialErr := h.renewTrial(lifecycle); handled {
+		item.Status = types.CloudWorkerRenewApplied
+		item.Message = "试用已转为付费"
+		if trialErr != nil {
+			item.Status = types.CloudWorkerRenewFailed
+			item.Message = trialErr.Error()
+		}
+		return item
+	}
+	// One renewal event buys exactly one more paid month. A tenant's
+	// deployment snapshot can record a multi-month creation purchase, so
+	// pin the monthly step explicitly instead of inheriting that count.
+	out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
+	if err != nil {
+		item.Status = types.CloudWorkerRenewFailed
+		item.Message = err.Error()
+		if errors.Is(err, context.DeadlineExceeded) {
+			// The provider operation may already have been applied before the
+			// script timeout; keep the lifecycle date instead of recording a
+			// failure that prompts a second charge.
+			item.Message = "续订脚本超时，可能已生效，请核对 provider 到期时间：" + err.Error()
+			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d hit the script timeout; the renewal may already be applied, lifecycle date left unchanged: %v", lifecycle.TenantName, uid, err)
+		} else {
+			log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d failed: %v", lifecycle.TenantName, uid, err)
+		}
+		return item
+	}
+	result, parseErr := parseCloudWorkerRenewalResult(out)
+	if result.AutoRenewDisabled != nil && !*result.AutoRenewDisabled {
+		log.Printf("[cloud-worker] CRITICAL renewal/resubscribe tenant=%s uid=%d completed but provider automatic renewal is not confirmed disabled", lifecycle.TenantName, uid)
+	}
+	item.Status = types.CloudWorkerRenewApplied
+	if parseErr != nil {
+		// The provider operation already succeeded. Do not turn a missing
+		// informational field into a second charge or a false failure, but
+		// leave an auditable warning so operators can reconcile the date.
+		item.Message = "已续订，但未返回新的到期时间：" + parseErr.Error()
+		log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d succeeded but returned no valid expires_at: %v; lifecycle date unchanged", lifecycle.TenantName, uid, parseErr)
+		return item
+	}
+	expiresAt := result.ExpiresAt
+	var extendErr error
+	if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
+		extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
+	} else {
+		extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
+	}
+	if extendErr != nil {
+		item.Message = "已续订；平台记录同步失败：" + extendErr.Error()
+		log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d provider expiry=%s but lifecycle sync failed: %v", lifecycle.TenantName, uid, expiresAt.UTC().Format(time.RFC3339), extendErr)
+	}
+	expiry := expiresAt
+	item.ExpiresAt = &expiry
+	log.Printf("[cloud-worker] renewal/resubscribe tenant=%s uid=%d completed", lifecycle.TenantName, uid)
+	return item
+}
+
+// PlatformLifecycleCount returns how many non-deleted platform-managed
+// (bound) cloud workers belong to the owner. The internal auto-renew console
+// uses it to warn that a package renewal also renews these instances.
+func (h *CloudWorkerHandler) PlatformLifecycleCount(uid int64) int {
+	if h == nil || uid <= 0 || h.credits == nil {
+		return 0
+	}
+	lifecycleStore, ok := h.credits.(interface {
+		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
+	})
+	if !ok {
+		return 0
+	}
+	lifecycles, err := lifecycleStore.ListCloudWorkerLifecycles(uid)
+	if err != nil {
+		return 0
+	}
+	// Match the renewal loop's eligibility so the console warning counts
+	// exactly the instances that a renewal would resubscribe.
+	count := 0
+	for _, lifecycle := range lifecycles {
+		if lifecycle.State == "delete_running" || lifecycle.State == "deleted" || strings.TrimSpace(lifecycle.TenantName) == "" {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // cloudWorkerPaidUntil resolves the paid window a new worker should match:

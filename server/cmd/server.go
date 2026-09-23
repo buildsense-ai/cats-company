@@ -342,6 +342,7 @@ func main() {
 	botHandler.SetHub(hub)
 	cloudWorkerHandler := server.NewCloudWorkerHandler(db, botHandler, server.CloudWorkerConfigFromEnv())
 	accountAdminHandler.SetCloudWorkerRenewer(cloudWorkerHandler.RenewForOwner)
+	accountAdminHandler.SetCloudWorkerCounter(cloudWorkerHandler.PlatformLifecycleCount)
 	go func() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()

@@ -16,6 +16,7 @@ const (
 	commercialAutoRenewRunApplied      = "applied"
 	commercialAutoRenewRunFailed       = "failed"
 	commercialAutoRenewActionExtend    = "extend"
+	commercialAutoRenewActionWorker    = "worker_renew"
 	commercialAutoRenewRunListLimit    = 20
 	commercialAutoRenewFrontendMessage = "已自动顺延一个周期"
 )
@@ -188,7 +189,12 @@ func (h *AccountAdminHandler) ApplyCommercialAutoRenewExtend(ctx context.Context
 		return nil, fmt.Errorf("commercial adjustment result is unavailable")
 	}
 	if h.cloudWorkerRenewer != nil && commercialAdjustmentRenewsCloudWorkers(commercialAdjustmentExtend, result, preview) {
-		go h.cloudWorkerRenewer(uid)
+		renew := h.cloudWorkerRenewer
+		// Provider renewal takes minutes; keep it off the caller's path but
+		// mirror every bound-instance outcome into the console run log.
+		go func() {
+			h.recordCloudWorkerRenewRuns(uid, operationID, renew(uid))
+		}()
 	}
 	if err := h.applyCommercialAdjustmentToRelay(ctx, uid, commercialAdjustmentExtend, result); err != nil {
 		// The ledger is committed; Relay sync stays recoverable through the
@@ -199,6 +205,45 @@ func (h *AccountAdminHandler) ApplyCommercialAutoRenewExtend(ctx context.Context
 		log.Printf("[commercial-auto-renew] uid=%d renewed but relay sync is pending: %v", uid, err)
 	}
 	return result, nil
+}
+
+// recordCloudWorkerRenewRuns mirrors the asynchronous cloud-worker renewal
+// report into the same run log the relay-admin console renders, so an operator
+// can see which bound instances were renewed alongside the package extension.
+func (h *AccountAdminHandler) recordCloudWorkerRenewRuns(uid int64, operationID string, report *types.CloudWorkerRenewReport) {
+	if h == nil || report == nil || len(report.Outcomes) == 0 {
+		return
+	}
+	store, ok := h.commercial.(CommercialAutoRenewStore)
+	if !ok {
+		return
+	}
+	for _, outcome := range report.Outcomes {
+		if strings.TrimSpace(outcome.TenantName) == "" {
+			continue
+		}
+		status := commercialAutoRenewRunFailed
+		if outcome.Status == types.CloudWorkerRenewApplied {
+			status = commercialAutoRenewRunApplied
+		}
+		opID := operationID + "-worker-" + outcome.TenantName
+		if len(opID) > 120 {
+			// operation_id is VARCHAR(128); keep the row insertable for any
+			// tenant name instead of dropping the audit entry on a length error.
+			opID = opID[:120]
+		}
+		run := &types.CommercialAutoRenewRun{
+			UID:         uid,
+			Action:      commercialAutoRenewActionWorker,
+			Status:      status,
+			NewExpiry:   outcome.ExpiresAt,
+			Message:     strings.TrimSpace(outcome.Message),
+			OperationID: opID,
+		}
+		if err := store.RecordCommercialAutoRenewRun(run); err != nil {
+			log.Printf("[commercial-auto-renew] record cloud worker run failed uid=%d tenant=%s: %v", uid, outcome.TenantName, err)
+		}
+	}
 }
 
 // HandleCommercialAutoRenew serves the internal console surface: GET returns
@@ -233,7 +278,11 @@ func (h *AccountAdminHandler) HandleCommercialAutoRenew(w http.ResponseWriter, r
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load auto renew runs"})
 			return
 		}
-		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"config": config, "runs": runs})
+		boundWorkers := 0
+		if h.cloudWorkerCounter != nil {
+			boundWorkers = h.cloudWorkerCounter(uid)
+		}
+		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"config": config, "runs": runs, "platform_cloud_workers": boundWorkers})
 	case http.MethodPost:
 		var req struct {
 			UID     int64  `json:"uid"`

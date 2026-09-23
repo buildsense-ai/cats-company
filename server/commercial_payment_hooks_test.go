@@ -21,7 +21,7 @@ func TestFulfillCommercialOrderTriggersCloudWorkerHooks(t *testing.T) {
 	renewCalls := make(chan int64, 1)
 	ensureCalls := make(chan int64, 1)
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
-		RenewCloudWorkers: func(uid int64) { renewCalls <- uid },
+		RenewCloudWorkers: func(uid int64) *types.CloudWorkerRenewReport { renewCalls <- uid; return nil },
 		EnsureCloudWorker: func(uid int64) { ensureCalls <- uid },
 	})
 	confirmation := &types.CommercialPaymentConfirmation{
@@ -59,7 +59,7 @@ func TestFulfillCommercialOrderSkipsCloudWorkerHooksForOtherPlans(t *testing.T) 
 	}
 	called := make(chan int64, 2)
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
-		RenewCloudWorkers: func(uid int64) { called <- uid },
+		RenewCloudWorkers: func(uid int64) *types.CloudWorkerRenewReport { called <- uid; return nil },
 		EnsureCloudWorker: func(uid int64) { called <- uid },
 	})
 	confirmation := &types.CommercialPaymentConfirmation{

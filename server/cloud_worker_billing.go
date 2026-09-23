@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -141,22 +142,28 @@ func (h *CloudWorkerHandler) HandleAdminBilling(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]string{"status": "completed", "action": input.Action, "tenant_name": input.Tenant})
 }
 
-func (h *CloudWorkerHandler) renewTrial(item types.CloudWorkerLifecycle) bool {
+// renewTrial converts an on-demand trial instance into the paid lifecycle.
+// handled reports whether the trial path owned the event (non-trial
+// lifecycles return false); err reports a rejected or failed conversion so
+// the caller can record it instead of claiming success.
+func (h *CloudWorkerHandler) renewTrial(item types.CloudWorkerLifecycle) (handled bool, err error) {
 	if item.BillingMode != types.CloudWorkerOnDemand {
-		return false
+		return false, nil
 	}
 	store, ok := h.credits.(cloudWorkerBillingStore)
 	if !ok {
-		return true
+		return true, errors.New("cloud worker billing store unavailable")
 	}
 	accepted, err := store.RequestCloudWorkerConversion(item.ID)
 	if err == nil && accepted {
 		err = h.runBillingAction(item, "convert", false)
+	} else if err == nil {
+		err = errors.New("trial conversion was rejected: instance is being released or cannot be converted")
 	}
 	if err != nil {
 		log.Printf("[cloud-worker] paid trial conversion tenant=%s failed: %v", item.TenantName, err)
 	}
-	return true
+	return true, err
 }
 
 func trialNotice(item types.CloudWorkerLifecycle, now time.Time) string {

@@ -100,7 +100,7 @@ type CommercialPaymentHandlerOptions struct {
 	// RenewCloudWorkers runs after an official paid plan is fulfilled. It is
 	// deliberately outside the payment transaction so provider recovery or
 	// renewal failures never roll back a confirmed payment.
-	RenewCloudWorkers func(uid int64)
+	RenewCloudWorkers func(uid int64) *types.CloudWorkerRenewReport
 	// EnsureCloudWorker runs after an official paid plan is fulfilled as well.
 	// A first purchase provisions the paid cloud instance automatically;
 	// renewals and upgrades of an account that already owns a worker are
@@ -119,7 +119,7 @@ type CommercialPaymentHandler struct {
 	providers         map[string]CommercialPaymentProvider
 	saleChannels      map[string]bool
 	syncer            *CommercialRelaySyncer
-	renewCloudWorkers func(uid int64)
+	renewCloudWorkers func(uid int64) *types.CloudWorkerRenewReport
 	ensureCloudWorker func(uid int64)
 	queryMu           sync.Mutex
 	nextQueries       map[string]time.Time

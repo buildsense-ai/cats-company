@@ -206,6 +206,12 @@ func newAutoRenewRequest(method, target, body string) *http.Request {
 func TestCommercialAutoRenewHandlerTogglesConfig(t *testing.T) {
 	store := &autoRenewHandlerStore{commercialTestStore: newCommercialTestStore()}
 	handler := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, store)
+	handler.SetCloudWorkerCounter(func(uid int64) int {
+		if uid != 38 {
+			t.Fatalf("counter uid=%d want 38", uid)
+		}
+		return 3
+	})
 
 	recorder := httptest.NewRecorder()
 	handler.HandleCommercialAutoRenew(recorder, newAutoRenewRequest(http.MethodGet, "/local/account-admin/commercial/auto-renew?uid=38", ""))
@@ -213,14 +219,18 @@ func TestCommercialAutoRenewHandlerTogglesConfig(t *testing.T) {
 		t.Fatalf("GET status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var getBody struct {
-		Config *types.CommercialAutoRenewConfig `json:"config"`
-		Runs   []*types.CommercialAutoRenewRun  `json:"runs"`
+		Config              *types.CommercialAutoRenewConfig `json:"config"`
+		Runs                []*types.CommercialAutoRenewRun  `json:"runs"`
+		PlatformCloudWorker int                              `json:"platform_cloud_workers"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &getBody); err != nil {
 		t.Fatalf("decode GET response: %v", err)
 	}
 	if getBody.Config == nil || getBody.Config.UID != 38 || getBody.Config.Enabled {
 		t.Fatalf("default config: %#v", getBody.Config)
+	}
+	if getBody.PlatformCloudWorker != 3 {
+		t.Fatalf("platform_cloud_workers=%d want 3", getBody.PlatformCloudWorker)
 	}
 
 	recorder = httptest.NewRecorder()
@@ -251,6 +261,28 @@ type autoRenewExtendStore struct {
 	plans   []*types.CommercialPlan
 	applied *types.CommercialAccountAdjustment
 	result  *types.CommercialAccountAdjustmentResult
+	runs    []*types.CommercialAutoRenewRun
+}
+
+func (s *autoRenewExtendStore) GetCommercialAutoRenewConfig(int64) (*types.CommercialAutoRenewConfig, error) {
+	return nil, nil
+}
+
+func (s *autoRenewExtendStore) SetCommercialAutoRenewConfig(uid int64, enabled bool, note string) (*types.CommercialAutoRenewConfig, error) {
+	return &types.CommercialAutoRenewConfig{UID: uid, Enabled: enabled, Note: note}, nil
+}
+
+func (s *autoRenewExtendStore) ListDueCommercialAutoRenew(time.Time, time.Duration) ([]*types.CommercialAutoRenewDue, error) {
+	return nil, nil
+}
+
+func (s *autoRenewExtendStore) RecordCommercialAutoRenewRun(run *types.CommercialAutoRenewRun) error {
+	s.runs = append(s.runs, run)
+	return nil
+}
+
+func (s *autoRenewExtendStore) ListCommercialAutoRenewRuns(int64, int) ([]*types.CommercialAutoRenewRun, error) {
+	return s.runs, nil
 }
 
 func (s *autoRenewExtendStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
@@ -295,10 +327,37 @@ func TestCommercialAutoRenewExtendAppliesDeterministicExtension(t *testing.T) {
 	defer relay.Close()
 	handler := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, store)
 	handler.SetCommercialRelayAdmin(&RelayAdminClient{baseURL: relay.URL, token: "test", client: relay.Client()}, true)
+	renewed := make(chan struct{}, 1)
+	handler.SetCloudWorkerRenewer(func(int64) *types.CloudWorkerRenewReport {
+		renewed <- struct{}{}
+		expiry := newExpiry
+		return &types.CloudWorkerRenewReport{Outcomes: []types.CloudWorkerRenewOutcome{
+			{TenantName: "worker1", Status: types.CloudWorkerRenewApplied, ExpiresAt: &expiry},
+		}}
+	})
 
 	result, err := handler.ApplyCommercialAutoRenewExtend(context.Background(), 38, expiry, "auto-renew-38-1", "内部自动续费")
 	if err != nil {
 		t.Fatalf("auto renew extend failed: %v", err)
+	}
+	select {
+	case <-renewed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bound cloud worker renewal hook was not triggered")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(store.runs) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(store.runs) != 1 {
+		t.Fatalf("worker renewal run rows: %#v", store.runs)
+	}
+	workerRun := store.runs[0]
+	if workerRun.Action != commercialAutoRenewActionWorker || workerRun.Status != commercialAutoRenewRunApplied || workerRun.OperationID != "auto-renew-38-1-worker-worker1" {
+		t.Fatalf("worker renewal run: %#v", workerRun)
+	}
+	if workerRun.NewExpiry == nil || !workerRun.NewExpiry.Equal(newExpiry) {
+		t.Fatalf("worker renewal expiry: %#v want %v", workerRun.NewExpiry, newExpiry)
 	}
 	if store.applied == nil || store.applied.Action != commercialAdjustmentExtend || store.applied.OperationID != "auto-renew-38-1" {
 		t.Fatalf("adjustment not applied with deterministic id: %#v", store.applied)
@@ -333,6 +392,37 @@ func TestCommercialAutoRenewExtendRequiresRelayEnforcement(t *testing.T) {
 	}
 	if store.applied != nil {
 		t.Fatalf("ledger must stay untouched: %#v", store.applied)
+	}
+}
+
+func TestCommercialAutoRenewRecordsCloudWorkerOutcomes(t *testing.T) {
+	store := &autoRenewHandlerStore{commercialTestStore: newCommercialTestStore()}
+	handler := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, store)
+	expiry := time.Now().UTC().Add(24 * time.Hour)
+	handler.recordCloudWorkerRenewRuns(38, "auto-renew-38-1", &types.CloudWorkerRenewReport{Outcomes: []types.CloudWorkerRenewOutcome{
+		{TenantName: "worker1", Status: types.CloudWorkerRenewApplied, ExpiresAt: &expiry},
+		{TenantName: "worker2", Status: types.CloudWorkerRenewFailed, Message: "resubscribe failed"},
+		{TenantName: "  "},
+	}})
+	if len(store.runs) != 2 {
+		t.Fatalf("worker runs: %#v", store.runs)
+	}
+	first, second := store.runs[0], store.runs[1]
+	if first.Action != commercialAutoRenewActionWorker || first.Status != commercialAutoRenewRunApplied || first.UID != 38 {
+		t.Fatalf("applied outcome row: %#v", first)
+	}
+	if first.NewExpiry == nil || !first.NewExpiry.Equal(expiry) {
+		t.Fatalf("applied outcome expiry: %#v", first.NewExpiry)
+	}
+	if first.OperationID != "auto-renew-38-1-worker-worker1" {
+		t.Fatalf("applied outcome operation id: %q", first.OperationID)
+	}
+	if second.Status != commercialAutoRenewRunFailed || !strings.Contains(second.Message, "resubscribe failed") {
+		t.Fatalf("failed outcome row: %#v", second)
+	}
+	handler.recordCloudWorkerRenewRuns(38, "auto-renew-38-2", nil)
+	if len(store.runs) != 2 {
+		t.Fatalf("empty reports must not add rows: %#v", store.runs)
 	}
 }
 

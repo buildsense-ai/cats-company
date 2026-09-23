@@ -346,6 +346,29 @@ type CloudWorkerLifecycle struct {
 	State             string
 }
 
+// Cloud worker renewal outcome statuses reported by RenewForOwner.
+const (
+	CloudWorkerRenewApplied = "applied"
+	CloudWorkerRenewFailed  = "failed"
+)
+
+// CloudWorkerRenewOutcome is the result of one cloud worker instance during
+// an owner renewal event; the internal auto-renew console mirrors every
+// outcome into its run log so bound instances stay visible next to the
+// package extension that paid for them.
+type CloudWorkerRenewOutcome struct {
+	TenantName string
+	Status     string // CloudWorkerRenewApplied or CloudWorkerRenewFailed
+	Message    string
+	ExpiresAt  *time.Time
+}
+
+// CloudWorkerRenewReport is the per-owner summary returned by the renewal
+// hook (no outcomes means the owner has no platform-managed worker).
+type CloudWorkerRenewReport struct {
+	Outcomes []CloudWorkerRenewOutcome
+}
+
 // CloudWorkerAdminRecord is the read-only operator view of a cloud worker.
 // It deliberately contains no credentials or runtime secrets. Database
 // adapters expose this narrow projection to the internal commercial-ops
