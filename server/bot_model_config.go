@@ -325,8 +325,19 @@ func (h *BotModelConfigHandler) saveDesiredCatalogModel(
 	botUID int64,
 	modelID, reasoning string,
 ) (*types.BotModelConfig, error) {
+	return h.saveDesiredCatalogModelRevision(botUID, -1, modelID, reasoning)
+}
+
+// saveDesiredCatalogModelRevision writes a catalog selection. Definition
+// backends honour expectedRevision for optimistic concurrency (negative means
+// unconditional, matching the owner path); legacy backends have no revision
+// CAS and always apply the write.
+func (h *BotModelConfigHandler) saveDesiredCatalogModelRevision(
+	botUID, expectedRevision int64,
+	modelID, reasoning string,
+) (*types.BotModelConfig, error) {
 	if definitions, ok := h.models.(store.BotDefinitionStore); ok {
-		record, err := definitions.UpdateBotDefinitionModel(botUID, -1, types.BotDefinitionModel{
+		record, err := definitions.UpdateBotDefinitionModel(botUID, expectedRevision, types.BotDefinitionModel{
 			Kind: botModelKindCatalog, ModelID: modelID, ReasoningEffort: reasoning,
 		})
 		if err != nil {
@@ -362,6 +373,79 @@ func (h *BotModelConfigHandler) saveDesiredCustomModel(
 	return h.models.SaveBotDesiredModelConfig(
 		botUID, botModelKindCustom, custom.Model, custom.ReasoningEffort, ciphertext,
 	)
+}
+
+// HandleAdminReapplyModelConfig handles POST /api/admin/bots/model-config/reapply?uid=<bot>.
+//
+// It bumps the desired model-configuration revision while keeping the current
+// catalog selection. Devices reload their runtime only when the desired
+// revision changes, so this is how a server-side runtime change (for example
+// the DeepSeek Flash protocol lane) reaches an already-applied bot; a changed
+// catalog descriptor alone does not trigger a device reload. A selection that
+// changed concurrently (owner edit) is rejected with 409.
+func (h *BotModelConfigHandler) HandleAdminReapplyModelConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil || botUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+	if h.models == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot model configuration is unavailable"})
+		return
+	}
+	managementEnabled := false
+	if h.owners != nil {
+		ownerUID, err := h.owners.GetBotOwner(botUID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+			return
+		}
+		managementEnabled = h.managementEnabled(ownerUID)
+	}
+	stored, err := h.models.GetBotModelConfig(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
+		return
+	}
+	if !botModelConfigIsConfigured(stored) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "bot has no cloud model selection to reapply"})
+		return
+	}
+	kind := strings.ToLower(strings.TrimSpace(stored.Kind))
+	if kind == botModelKindCustom {
+		// Custom selections carry a device-local endpoint and never a cloud
+		// catalog descriptor, so there is nothing a reapply could refresh.
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "only catalog model selections can be reapplied"})
+		return
+	}
+	model, reasoning, ok := normalizeBotModelSelection(stored.ModelID, stored.ReasoningEffort)
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "stored model selection is no longer supported"})
+		return
+	}
+	updated, err := h.saveDesiredCatalogModelRevision(botUID, stored.Revision, model.ID, reasoning)
+	if err != nil {
+		if errors.Is(err, store.ErrStaleBotModelRevision) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "bot model selection changed, retry the reapply"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reapply bot model configuration"})
+		return
+	}
+	log.Printf("admin model-config reapply bot_uid=%d model=%s reasoning=%s revision=%d->%d admin=%s",
+		botUID, updated.ModelID, updated.ReasoningEffort, stored.Revision, updated.Revision, UsernameFromContext(r.Context()))
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "reapplied", "uid": botUID, "kind": updated.Kind,
+		"model_id": updated.ModelID, "reasoning_effort": updated.ReasoningEffort,
+		"previous_revision": stored.Revision, "revision": updated.Revision,
+		// Devices only apply the new revision when cloud model management is
+		// enabled for the owner; reporting it lets ops detect ineffective runs.
+		"management_enabled": managementEnabled,
+	})
 }
 
 // HandleRuntimeConfig lets an authenticated bot read only its own desired model.

@@ -927,6 +927,10 @@ func main() {
 	mux.HandleFunc("/api/bots/model-config", ownerAuthWithDB(botModelConfigHandler.HandleOwnerConfig))
 	mux.HandleFunc("/api/bot/model-config", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeConfig))
 	mux.HandleFunc("/api/bot/model-config/ack", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeAck))
+	// Ops-only: bump a bot's desired model-config revision so its device
+	// re-applies and picks up server-side catalog descriptor changes (for
+	// example the DeepSeek Flash protocol lane). See bot_model_config.go.
+	mux.HandleFunc("/api/admin/bots/model-config/reapply", adminAuthWithDB(botModelConfigHandler.HandleAdminReapplyModelConfig))
 	mux.HandleFunc("/api/bot/identity", botAPIKeyAuthWithDB(server.HandleBotIdentity))
 	mux.HandleFunc("/api/bot/artifact-runtime-config", botAPIKeyAuthWithDB(artifactRuntimeConfigHandler.Handle))
 	mux.HandleFunc("/api/bot/artifact-context", botAPIKeyAuthWithDB(artifactContextSnapshotHandler.HandleBotRead))
