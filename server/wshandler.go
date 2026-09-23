@@ -1337,6 +1337,7 @@ func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
 	}
 	if client.accountType == types.AccountBot && client.deviceConnector == nil && msg.SemanticGroupActivation {
 		client.semanticGroupActivation.Store(true)
+		log.Printf("semantic group activation opted in: uid=%d addr=%s", client.uid, client.remoteAddr)
 	}
 	features := []string{"client_msg_id", "device_rpc", "thin_tool_rpc", "semantic_group_activation_passive_delivery"}
 	params := map[string]interface{}{
@@ -2409,7 +2410,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	// silently starting competing Agents (including duplicate body connections).
 	var semanticRecipient *Client
 	semanticCandidates := 0
-	if standardGroup && msg.artifactTaskRef == nil {
+	if standardGroup && msg.artifactTaskRef == nil && isGroupAgentTurnRequest(msg) {
 		for _, member := range members {
 			if member.UserID == excludeUID {
 				continue

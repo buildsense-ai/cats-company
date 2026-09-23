@@ -89,6 +89,35 @@ func TestGroupFanoutUnmentionedHumanMessageOnlyToUniqueSemanticOptInConnection(t
 	if hub.groupTurns.initiatedBy(80, 42, 7) {
 		t.Fatal("a passive delivery must not reserve an Agent turn before JEV triage")
 	}
+
+	// Non-text messages are outside turn semantics and stay undelivered.
+	image, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80", Content: json.RawMessage(`"[图片]"`), Type: "image",
+	})
+	if err != nil {
+		t.Fatalf("normalize image request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, image, 24, nil)
+	assertNoQueuedServerMessage(t, opted.send)
+	assertNoQueuedServerMessage(t, legacySameBot.send)
+
+	// The pending label arms on delivery and promotes only when the Agent's
+	// first running status proves the delivery became a run.
+	text, err := normalizeMessageRequest(&SendMessageRequest{TopicID: "grp_80", Content: json.RawMessage(`"继续"`)})
+	if err != nil {
+		t.Fatalf("normalize text request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, text, 25, nil)
+	decodeQueuedServerMessage(t, opted.send, &ServerMessage{})
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("pending passive label must not authorize cancel before a run")
+	}
+	hub.observeGroupAgentTaskStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", SourceUID: 42, RunID: "run-1", State: "running",
+	})
+	if !hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("first running status must promote the passive initiator")
+	}
 }
 
 func TestGroupFanoutSemanticOptInFailsClosedOnMultipleCandidates(t *testing.T) {
