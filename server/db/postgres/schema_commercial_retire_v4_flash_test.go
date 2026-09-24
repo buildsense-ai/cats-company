@@ -206,9 +206,9 @@ func assertRetireV4MigrationUp(t *testing.T, db *Adapter, personalUID, proUID, f
 	assertRetireV4PlanBudgets(t, db, "catsco-personal", retireV4PersonalFiveModelBudgets)
 	assertRetireV4PlanBudgets(t, db, "catsco-pro", retireV4ProFiveModelBudgets)
 	assertRetireV4PlanBudgets(t, db, "catsco-free", retireV4FreeNineModelBudgets)
-	assertRetireV4ActivePackage(t, db, "personal-order", 10, 11000, 2100)
-	assertRetireV4ActivePackage(t, db, "pro-order", 10, 33000, 6300)
-	assertRetireV4ActivePackage(t, db, "free-baseline", 9, 2200, 1000)
+	assertRetireV4ActivePackage(t, db, "personal-order", 10, 11000, 2100, 0)
+	assertRetireV4ActivePackage(t, db, "pro-order", 10, 33000, 6300, 0)
+	assertRetireV4ActivePackage(t, db, "free-baseline", 9, 2200, 1000, 0)
 	assertRetireV4ManualQuota(t, db, personalUID)
 	assertRetireV4OrderSnapshot(t, db, "retire-v4-created", retireV4PersonalFiveModelBudgets)
 	assertRetireV4OrderSnapshot(t, db, "retire-v4-fulfilled", retireV4PersonalSixModelBudgets)
@@ -222,9 +222,9 @@ func assertRetireV4MigrationDown(t *testing.T, db *Adapter, personalUID, proUID,
 	assertRetireV4PlanBudgets(t, db, "catsco-personal", retireV4PersonalSixModelBudgets)
 	assertRetireV4PlanBudgets(t, db, "catsco-pro", retireV4ProSixModelBudgets)
 	assertRetireV4PlanBudgets(t, db, "catsco-free", retireV4FreeTenModelBudgets)
-	assertRetireV4ActivePackage(t, db, "personal-order", 11, 11000, 1750)
-	assertRetireV4ActivePackage(t, db, "pro-order", 11, 33000, 5250)
-	assertRetireV4ActivePackage(t, db, "free-baseline", 10, 2300, 1000)
+	assertRetireV4ActivePackage(t, db, "personal-order", 11, 11000, 1750, 1)
+	assertRetireV4ActivePackage(t, db, "pro-order", 11, 33000, 5250, 1)
+	assertRetireV4ActivePackage(t, db, "free-baseline", 10, 2300, 1000, 1)
 	assertRetireV4ManualQuota(t, db, personalUID)
 	assertRetireV4OrderSnapshot(t, db, "retire-v4-created", retireV4PersonalSixModelBudgets)
 	assertRetireV4OrderSnapshot(t, db, "retire-v4-fulfilled", retireV4PersonalSixModelBudgets)
@@ -244,7 +244,7 @@ func assertRetireV4PlanBudgets(t *testing.T, db *Adapter, slug, expected string)
 	}
 }
 
-func assertRetireV4ActivePackage(t *testing.T, db *Adapter, sourceRef string, wantCount int, wantTotal, wantMax float64) {
+func assertRetireV4ActivePackage(t *testing.T, db *Adapter, sourceRef string, wantCount int, wantTotal, wantMax float64, wantV4 int) {
 	t.Helper()
 	var count, distinctCount, v4Count int
 	var total, maxAmount float64
@@ -256,10 +256,6 @@ func assertRetireV4ActivePackage(t *testing.T, db *Adapter, sourceRef string, wa
 		WHERE source_ref = $1 AND revoked_at IS NULL`, sourceRef).
 		Scan(&count, &distinctCount, &total, &maxAmount, &v4Count); err != nil {
 		t.Fatalf("query active package %s: %v", sourceRef, err)
-	}
-	wantV4 := 0
-	if wantCount > 10 {
-		wantV4 = 1
 	}
 	if count != wantCount || distinctCount != wantCount || total != wantTotal || maxAmount != wantMax || v4Count != wantV4 {
 		t.Fatalf("active package %s = count:%d distinct:%d total:%v max:%v v4:%d", sourceRef, count, distinctCount, total, maxAmount, v4Count)

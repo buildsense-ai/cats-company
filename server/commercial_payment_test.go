@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1503,11 +1504,8 @@ func TestCommercialRelayBaselineUpgradesV4EraPerModelPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(budgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets)) {
+	if profile != commercialRelayBaselineProfileFree || !reflect.DeepEqual(budgets, commercialRelayFreeBudgets) {
 		t.Fatalf("V4-era per-model pool was not upgraded: profile=%q budgets=%#v", profile, budgets)
-	}
-	if _, found := budgets["deepseek-v4-flash"]; found {
-		t.Fatalf("V4-era upgrade kept the retired model: %#v", budgets)
 	}
 }
 
@@ -1533,11 +1531,8 @@ func TestCommercialRelayBaselineUpgradesV4EraSharedPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile != commercialRelayBaselineProfileFree || !nearlyEqual(commercialRelayBudgetTotal(budgets), commercialRelayBudgetTotal(commercialRelayFreeBudgets)) {
+	if profile != commercialRelayBaselineProfileFree || !reflect.DeepEqual(budgets, commercialRelayFreeBudgets) {
 		t.Fatalf("V4-era shared pool was not upgraded: profile=%q budgets=%#v", profile, budgets)
-	}
-	if _, found := budgets["deepseek-v4-flash"]; found {
-		t.Fatalf("V4-era shared upgrade kept the retired model: %#v", budgets)
 	}
 }
 

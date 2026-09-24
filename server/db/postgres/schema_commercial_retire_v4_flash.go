@@ -9,8 +9,9 @@ const migrateCommercialPlansRetireV4Flash = `-- Retire DeepSeek V4 Flash from ev
 -- plans keep their advertised totals (11000 / 33000): the five remaining
 -- chat models split the same allowance the six used to hold (mirroring how
 -- 000022 spread 10500 over six). The Free pool drops the model and its
--- 100-CNY grant. Exact prior-state predicates keep the migration idempotent
--- and leave custom or legacy quota untouched.
+-- 100-CNY grant. Exact prior-state predicates keep the migration idempotent;
+-- custom paid packages and manual quota are left untouched, while the free
+-- V4 grant is revoked for every free entitlement by design.
 
 UPDATE commercial_plans
 SET model_budgets = '{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}'::jsonb
