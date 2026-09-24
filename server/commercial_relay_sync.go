@@ -572,12 +572,29 @@ const (
 	commercialRelayUniversalModel        = "deepseek-flash"
 )
 
-// commercialRelayFreeBudgets is the Free baseline pool, including the image
-// lane since 000024 so every public plan can use image generation.
-var commercialRelayFreeBudgets = map[string]float64{
+// commercialRelayV4EraFreeBudgets is the Free pool generation that still
+// carried DeepSeek V4 Flash (the six-model chat set with the image lane).
+// Relay keys created before the V4 retirement report this 2300 pool; they
+// are still recognized as Free and upgraded to the current baseline.
+var commercialRelayV4EraFreeBudgets = map[string]float64{
 	"MiniMax-M2.7":           1000,
 	"MiniMax-M3":             500,
 	"deepseek-v4-flash":      100,
+	"deepseek-flash":         100,
+	"glm-5.3-flash":          100,
+	"gpt-image-2":            100,
+	"gpt-image-2.5":          100,
+	"gpt-image-2.5-flare":    100,
+	"gpt-image-2.5-sunburst": 100,
+	"chatgpt-image-latest":   100,
+}
+
+// commercialRelayFreeBudgets is the Free baseline pool, including the image
+// lane since 000024 so every public plan can use image generation. DeepSeek
+// V4 Flash was retired on 2026-09-23 and is no longer part of any pool.
+var commercialRelayFreeBudgets = map[string]float64{
+	"MiniMax-M2.7":           1000,
+	"MiniMax-M3":             500,
 	"deepseek-flash":         100,
 	"glm-5.3-flash":          100,
 	"gpt-image-2":            100,
@@ -634,6 +651,7 @@ func commercialRelayKnownFreePoolModels() map[string]bool {
 	for _, pool := range []map[string]float64{
 		commercialRelayGlmEraFreeBudgets,
 		commercialRelayLegacyFreeBudgets,
+		commercialRelayV4EraFreeBudgets,
 		commercialRelayFreeBudgets,
 	} {
 		for model := range pool {
@@ -666,6 +684,7 @@ func commercialRelaySharedPoolFreeUpgrade(sharedLimit float64, budgets map[strin
 	}
 	knownTotal := nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayGlmEraFreeBudgets)) ||
 		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayLegacyFreeBudgets)) ||
+		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayV4EraFreeBudgets)) ||
 		nearlyEqual(sharedLimit, commercialRelayBudgetTotal(commercialRelayFreeBudgets))
 	if !knownTotal {
 		return nil, false
@@ -849,11 +868,12 @@ func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[s
 		return commercialRelayBaselineProfileFree, budgets
 	}
 	// Relay keys created before the image lane opened still carry an older
-	// Free pool (five models after the DeepSeek Flash add-on, four models in
-	// the GLM era). Recognize both generations as Free and upgrade them to
-	// the current baseline so older keys are not frozen out of the new
-	// models.
-	if commercialRelayBudgetsMatch(budgets, commercialRelayLegacyFreeBudgets) ||
+	// Free pool (the six-model V4-era set, the five models after the DeepSeek
+	// Flash add-on, or the four models in the GLM era). Recognize every
+	// generation as Free and upgrade it to the current baseline so older
+	// keys are not frozen out of the new models.
+	if commercialRelayBudgetsMatch(budgets, commercialRelayV4EraFreeBudgets) ||
+		commercialRelayBudgetsMatch(budgets, commercialRelayLegacyFreeBudgets) ||
 		commercialRelayBudgetsMatch(budgets, commercialRelayGlmEraFreeBudgets) {
 		return commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy()
 	}

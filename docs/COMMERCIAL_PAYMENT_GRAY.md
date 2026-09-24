@@ -31,7 +31,7 @@ Personal 和 Pro 每次成功支付各赠送 1 次云托管员工创建权益，
 
 换算采用 `SOL 等价 token ÷ 1,000,000 × 7.5 USD × 7 CNY/USD`，即每 100 万 SOL 等价 token 对应 ¥52.5 Relay 额度。等价 token 已包含价差权重：普通输入 `1x`、输出 `6x`、缓存读取 `0.1x`、缓存写入 `0.2x`，不能再把缓存或输出重复加价。生图 add-on（每个生图模型 ¥100 / ¥300）属于额外赠送额度，不参与 SOL 等价 token 折算。
 
-当前新套餐开放五个公开聊天模型（MiniMax M2.7、MiniMax M3、DeepSeek Flash、GLM-5.3 Flash、GPT-5.6 Terra；DeepSeek 旧 id `deepseek-v4-flash` 仅在过渡期兼容）与五个生图模型（gpt-image-2、gpt-image-2.5、gpt-image-2.5-flare、gpt-image-2.5-sunburst、chatgpt-image-latest）。所有模型共用同一个模型服务额度池；套餐表中的分模型数值只用于声明可用模型并组成共享总额，不是各模型独立额度：Personal 在五个聊天模型下各记 ¥2100、五个生图模型下各记 ¥100，汇总为 ¥11000；Pro 各记 ¥6300、各记 ¥300，汇总为 ¥33000。任一模型的调用都按自身价格倍率从同一池中扣减，因此不同模型的 token 或出图张数消耗速度不同，但不会把套餐总额复制多份。生图模型只通过技能接口调用，不进入用户可切换的模型列表；Free 套餐自 000024 起同样包含五个生图模型（各 ¥100，随套餐自动发放）。为个别账户额外补额仍由内部运营在商业化后台显式操作（必须填写到期时间）。Pro 的内部等价 token 与共享总额均为 Personal 的 3 倍，对应官网“约 3 倍任务容量”的表达。新增公开模型时必须同步更新套餐模型集合、Relay provider scope、价格覆盖和存量权益迁移，不能只改模型目录。
+当前新套餐开放五个公开聊天模型（MiniMax M2.7、MiniMax M3、DeepSeek Flash、GLM-5.3 Flash、GPT-5.6 Terra；DeepSeek 旧 id `deepseek-v4-flash` 已于 2026-09-23 退役，历史用量、账本与直链统计仍可查）与五个生图模型（gpt-image-2、gpt-image-2.5、gpt-image-2.5-flare、gpt-image-2.5-sunburst、chatgpt-image-latest）。所有模型共用同一个模型服务额度池；套餐表中的分模型数值只用于声明可用模型并组成共享总额，不是各模型独立额度：Personal 在五个聊天模型下各记 ¥2100、五个生图模型下各记 ¥100，汇总为 ¥11000；Pro 各记 ¥6300、各记 ¥300，汇总为 ¥33000。任一模型的调用都按自身价格倍率从同一池中扣减，因此不同模型的 token 或出图张数消耗速度不同，但不会把套餐总额复制多份。生图模型只通过技能接口调用，不进入用户可切换的模型列表；Free 套餐自 000024 起同样包含五个生图模型（各 ¥100，随套餐自动发放）。为个别账户额外补额仍由内部运营在商业化后台显式操作（必须填写到期时间）。Pro 的内部等价 token 与共享总额均为 Personal 的 3 倍，对应官网“约 3 倍任务容量”的表达。新增公开模型时必须同步更新套餐模型集合、Relay provider scope、价格覆盖和存量权益迁移，不能只改模型目录。
 
 用户端只显示 Free / Personal / Pro、工作强度、已用百分比和剩余百分比，不显示 SOL 等价 token、CNY 执行额度、模型预算或内部成本。用户商业化接口也不返回套餐的 `internal_quota_tokens`、`model_budgets` 和 `monthly_budget_cny`。
 
@@ -39,7 +39,7 @@ Personal 和 Pro 每次成功支付各赠送 1 次云托管员工创建权益，
 
 全量迁移由 Relay key 现有策略反向建立套餐基线，且必须幂等：
 
-- 默认 Free 集合（`MiniMax M2.7=1000`、`MiniMax M3=500`、`DeepSeek V4 Flash=100`、`DeepSeek Flash=100`、`GLM-5.3 Flash=100`、五个生图模型各 `100`，自 000024 起）归为 `catsco-free`。
+- 默认 Free 集合（`MiniMax M2.7=1000`、`MiniMax M3=500`、`DeepSeek Flash=100`、`GLM-5.3 Flash=100`、五个生图模型各 `100`，自 000024 起；000026 起 DeepSeek V4 Flash 已移除）归为 `catsco-free`。
 - 任何非默认额度或额外模型归为 `catsco-legacy-custom`，界面显示“内部保留套餐”。
 - 已有有效付费、邀请码或试用权益不重复导入；原有手调额度不归零。
 - 迁移周期沿用 Relay 当前最早有效 `last_reset`，避免全量切换时无故重置已用量。
@@ -48,7 +48,7 @@ Personal 和 Pro 每次成功支付各赠送 1 次云托管员工创建权益，
 
 当前权益和 Relay 同步仍按单个 UID 发放。团队成员、席位和共享额度归属机制完成前，不新增团队公开套餐。
 
-000016 起的套餐模型迁移随 CatsCompany 数据库 schema migration 执行：会更新 Personal/Pro 套餐与未履约订单快照，并按原有效期、原共享总额重建基础授权。000021 迁移（2026-09）在不改动原授权与账期的前提下，为两个公开套餐追加 5 个生图模型并同步未履约订单快照；应用启动后的 Relay reconcile 会把每个已配置 UID 的 provider scope 一并补齐，无需手工给单个用户重复充值。
+000016 起的套餐模型迁移随 CatsCompany 数据库 schema migration 执行：会更新 Personal/Pro 套餐与未履约订单快照，并按原有效期、原共享总额重建基础授权。000021 迁移（2026-09）在不改动原授权与账期的前提下，为两个公开套餐追加 5 个生图模型并同步未履约订单快照；000026 迁移（2026-09-23）把已退役的 DeepSeek V4 Flash 从 Personal/Pro/Free 套餐与未履约订单快照中移除，并把存量付费授权替换为五个聊天模型的授权（共享总额不变），Free 的 V4 授权同时撤销；应用启动后的 Relay reconcile 会把存量 Free key 升级到不含 V4 的九模型基线。
 
 `monthly_budget_cny` 目前只作为后台账本字段保留，不能用于可售套餐或体验包。可履约套餐必须只配置明确的分模型额度；同时配置月总额度和模型额度也会被购买链路拒绝，避免 `*` 额度被记账但没有写入 Relay。
 

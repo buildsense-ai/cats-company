@@ -134,9 +134,9 @@ func TestPostgresCommercialPublicModelsPreserveRenewalAndCustomQuota(t *testing.
 		err := db.db.QueryRow(`SELECT COUNT(*), SUM(amount_cny), MIN(effective_at), MAX(expires_at),
 			COUNT(*) FILTER (WHERE model IN ('gpt-5.6-sol','gpt-5.6-luna')) FROM commercial_quota_grants WHERE source_ref=$1 AND revoked_at IS NULL`, ref).Scan(&count, &total, &start, &end, &restricted)
 		wantStart := now.Add(time.Duration(index) * 30 * 24 * time.Hour)
-		// The startup stack leaves the six chat grants plus the five image
+		// The startup stack leaves the five chat grants plus the five image
 		// add-on grants at the same interval.
-		if err != nil || count != 11 || total != 11000 || restricted != 0 || !start.Equal(wantStart) || !end.Equal(wantStart.Add(30*24*time.Hour)) {
+		if err != nil || count != 10 || total != 11000 || restricted != 0 || !start.Equal(wantStart) || !end.Equal(wantStart.Add(30*24*time.Hour)) {
 			t.Fatalf("%s changed interval/quota: %v %d %f %v %v", ref, err, count, total, start, end)
 		}
 	}
@@ -145,14 +145,25 @@ func TestPostgresCommercialPublicModelsPreserveRenewalAndCustomQuota(t *testing.
 		t.Fatalf("custom grants changed: %v %d", err, preserved)
 	}
 	assertGLM53OrderSnapshot(t, db, "glm53-fulfilled", personalSixModelBudgets)
-	assertGLM53OrderSnapshot(t, db, "glm53-created", `{"MiniMax-M2.7":1750,"MiniMax-M3":1750,"deepseek-v4-flash":1750,"deepseek-flash":1750,"glm-5.3-flash":1750,"gpt-5.6-terra":1750,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}`)
+	assertGLM53OrderSnapshot(t, db, "glm53-created", `{"MiniMax-M2.7":2100,"MiniMax-M3":2100,"deepseek-flash":2100,"glm-5.3-flash":2100,"gpt-5.6-terra":2100,"gpt-image-2":100,"gpt-image-2.5":100,"gpt-image-2.5-flare":100,"gpt-image-2.5-sunburst":100,"chatgpt-image-latest":100}`)
 	var balance float64
 	if err := db.db.QueryRow(`SELECT SUM(amount_cny) FROM commercial_quota_ledger WHERE source_type='public_models_v2'`).Scan(&balance); err != nil || balance != 0 {
 		t.Fatalf("migration ledger unbalanced: %v %f", err, balance)
 	}
-	// The native-search add-on runs last; unwind it before the image and
-	// public-model rollbacks so the historical rollback chain still sees
-	// five-chat packages.
+	// The V4 retirement runs last; unwind it first so the historical
+	// rollback chain still sees the six-chat packages it expects.
+	retireDown, err := os.ReadFile("../migrations/postgres/000026_commercial_retire_v4_flash.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := db.db.Exec(string(retireDown)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The native-search add-on runs before the V4 retirement; unwind it
+	// before the image and public-model rollbacks so the historical
+	// rollback chain still sees five-chat packages.
 	nativeDown, err := os.ReadFile("../migrations/postgres/000022_commercial_native_search_flash.down.sql")
 	if err != nil {
 		t.Fatal(err)

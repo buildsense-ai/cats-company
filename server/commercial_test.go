@@ -15,8 +15,8 @@ import (
 
 func TestValidateCommercialOfficialPaidPlanModelsRequiresAllPublicModels(t *testing.T) {
 	complete := map[string]float64{
-		"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750, "deepseek-flash": 1750,
-		"glm-5.3-flash": 1750, "gpt-5.6-terra": 1750,
+		"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100,
+		"glm-5.3-flash": 2100, "gpt-5.6-terra": 2100,
 		"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100,
 		"chatgpt-image-latest": 100,
 	}
