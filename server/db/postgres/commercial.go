@@ -57,6 +57,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.DurationDays,
 		&plan.State,
 		&plan.SortOrder,
+		&plan.AutoUpdateModels,
 		&plan.CreatedAt,
 		&plan.UpdatedAt,
 		&plan.CloudWorkerBillingMode,
@@ -74,7 +75,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at, cloud_worker_billing_mode
+		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -103,9 +104,6 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if plan.RealCostCNY < 0 {
 		return 0, fmt.Errorf("commercial plan real cost must be non-negative")
 	}
-	if err := validateCommercialOfficialPaidPlanModels(plan.Slug, plan.ModelBudgets); err != nil {
-		return 0, err
-	}
 	billing, valid := types.NormalizeCloudWorkerBilling(plan.CloudWorkerBillingMode)
 	if !valid || (billing == types.CloudWorkerOnDemand && normalizeCommercialSaleState(plan.SaleState) != "hidden") {
 		return 0, fmt.Errorf("trial billing is only allowed for hidden internal plans")
@@ -129,9 +127,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode
+			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, auto_update_models
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -146,7 +144,8 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			duration_days = EXCLUDED.duration_days,
 			state = EXCLUDED.state,
 			sort_order = EXCLUDED.sort_order,
-			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode
+			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode,
+			auto_update_models = EXCLUDED.auto_update_models
 		WHERE commercial_plans.archived_at IS NULL
 		RETURNING id`,
 		strings.TrimSpace(plan.Slug),
@@ -164,6 +163,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		plan.State,
 		sortOrder,
 		billing,
+		plan.AutoUpdateModels,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create commercial plan: %w", err)

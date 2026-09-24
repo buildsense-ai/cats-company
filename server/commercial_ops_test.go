@@ -87,6 +87,13 @@ func TestCommercialOpsRequiresExplicitScopesAndInternalSource(t *testing.T) {
 func TestCommercialOpsWriteIsAuditedWithoutRequestBody(t *testing.T) {
 	store := newCommercialOpsTestStore()
 	admin := NewAccountAdminHandler(accountTestUserLookup{}, nil, nil, store)
+	// An official paid plan save is validated against the relay catalog, so the
+	// handler needs one; this test is about the audit trail, not the model set.
+	admin.SetCommercialModelCatalog(newStubCommercialModelCatalog(t, []string{
+		"MiniMax-M2.7", "MiniMax-M3", "deepseek-flash", "glm-5.3-flash", "gpt-5.6-terra",
+		"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+		"chatgpt-image-latest",
+	}))
 	handler := NewCommercialOpsHandler(admin, commercialOpsTestVerifier{service: AccountService{
 		Slug:   "cats-relay-admin",
 		Scopes: []string{commercialOpsWriteScope},
