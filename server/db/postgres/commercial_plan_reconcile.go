@@ -70,28 +70,6 @@ var commercialReconcilePlanSlugs = []string{
 	commercialProPlanSlug,
 }
 
-// commercialImageModelPrefixes identifies the image lane inside a plan's model
-// budgets.
-//
-// A paid plan carries two kinds of model: chat models that share one pool of
-// points, and image models that each hold a small fixed allowance because the
-// relay bills images per request rather than per token (a plan grants 100 per
-// image model against thousands per chat model). The two lanes are re-split
-// separately so an image model can never inherit a chat-sized allowance. These
-// are name prefixes rather than a model list, so a new image model is
-// classified correctly without a code change.
-var commercialImageModelPrefixes = []string{"gpt-image-", "chatgpt-image-"}
-
-func isCommercialImageModel(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	for _, prefix := range commercialImageModelPrefixes {
-		if strings.HasPrefix(model, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 func normalizeReconcileModels(catalog []string) []string {
 	out := make([]string, 0, len(catalog))
 	seen := make(map[string]struct{}, len(catalog))
@@ -108,6 +86,13 @@ func normalizeReconcileModels(catalog []string) []string {
 		out = append(out, model)
 	}
 	return out
+}
+
+// storedBudget keeps a plan's own spelling of a model alongside its amount, so
+// a case-insensitive match still writes back the relay's canonical spelling.
+type storedBudget struct {
+	spelling string
+	amount   float64
 }
 
 // reconcileOfficialPlan rewrites one plan's model budgets and, when the model
@@ -154,35 +139,30 @@ func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog
 	return reconcileActivePlanGrants(ctx, tx, planID, planName, current, target)
 }
 
-// storedBudget keeps a plan's own spelling of a model alongside its amount, so
-// a case-insensitive match still writes back the relay's canonical spelling.
-type storedBudget struct {
-	spelling string
-	amount   float64
-}
-
 // reconcilePlanModelBudgets computes the model set a plan should carry. It
 // returns nil when the plan already matches, which is what keeps a steady-state
 // startup free of writes.
 //
-// The plan's advertised total is preserved and the two lanes are re-split
-// separately:
+// Only the plan's total is meaningful. A plan's models share one pool, and the
+// relay repeats the shared limit on every model entry, so the per-model amounts
+// in model_budgets are a split of that total rather than independent quotas.
+// Verified against production: every model a paid user holds (image models
+// included) reports the same max_limit, equal to the plan's model_budgets sum
+// plus any grants.
 //
-//   - the chat models keep their combined allowance and share it evenly, so
-//     five models at 2100 become six at 1750 and the buyer's pool is unchanged
-//   - each image model keeps its own small allowance, and a newly added image
-//     model is paid for out of the chat pool so the total still holds
-//
-// A retired model's share stays in its lane rather than leaving the plan: a
-// model dropping out re-splits the remaining allowance, the same way the
-// DeepSeek V4 retirement turned six chat models at 1750 into five at 2100.
+// The total is therefore preserved and re-split evenly over the resulting model
+// set, so five chat models at 2100 plus five image models at 100 become eleven
+// models at 1000 each and the buyer's pool is unchanged. Treating the image
+// models as a separate small allowance would be wrong twice over: it would leave
+// them out of the split, and a newly added image model would silently take its
+// allowance away from the shared pool instead of sharing it.
 func reconcilePlanModelBudgets(current map[string]float64, catalog []string, autoUpdateModels bool) map[string]float64 {
 	existing := make(map[string]storedBudget, len(current))
 	// The plan's present total is the anchor: whatever the model set becomes,
 	// this is what the plan advertises and what a buyer's pool must stay at. A
-	// retired model's share therefore returns to the flexible lane rather than
-	// leaving the plan, which is exactly what the DeepSeek V4 retirement did
-	// (six chat models at 1750 became five at 2100).
+	// retired model's share therefore returns to the pool rather than leaving the
+	// plan, which is exactly what the DeepSeek V4 retirement did (six chat models
+	// at 1750 became five at 2100).
 	total := 0.0
 	for model, amount := range current {
 		model = strings.TrimSpace(model)
@@ -197,9 +177,6 @@ func reconcilePlanModelBudgets(current map[string]float64, catalog []string, aut
 	}
 
 	out := make(map[string]float64, len(catalog))
-	chatCount := 0
-	imageCount := 0
-	imageAllowance := 0.0
 	changed := false
 	for _, model := range catalog {
 		model = strings.TrimSpace(model)
@@ -207,31 +184,14 @@ func reconcilePlanModelBudgets(current map[string]float64, catalog []string, aut
 			// "*" is the relay's monthly-pool wildcard, not a sellable model.
 			continue
 		}
-		stored, ok := existing[strings.ToLower(model)]
-		if isCommercialImageModel(model) {
-			switch {
-			case ok:
-				out[model] = stored.amount
-				imageAllowance = stored.amount
-				imageCount++
-			case autoUpdateModels && imageAllowance > 0:
-				// Inherit the lane's per-model allowance; the cost is covered by
-				// the plan's existing total, so the advertised allowance holds.
-				out[model] = imageAllowance
-				imageCount++
-				changed = true
+		if _, ok := existing[strings.ToLower(model)]; !ok {
+			if !autoUpdateModels {
+				// The plan pins its model set, so a new relay model is not added.
+				continue
 			}
-			continue
-		}
-		if !ok && !autoUpdateModels {
-			// The plan pins its model set, so a new relay model is not added.
-			continue
-		}
-		if !ok {
 			changed = true
 		}
 		out[model] = 0
-		chatCount++
 	}
 	// A model the relay no longer sells leaves the plan even when the plan is
 	// pinned: keeping it would advertise a model whose requests the relay
@@ -245,43 +205,25 @@ func reconcilePlanModelBudgets(current map[string]float64, catalog []string, aut
 		}
 		changed = true
 	}
-	if !changed || chatCount == 0 {
+	if !changed || len(out) == 0 {
 		return nil
 	}
 
-	// The image lane holds a fixed allowance per model; everything else is the
-	// chat pool, shared evenly.
-	chatPool := roundBudget(total - imageAllowance*float64(imageCount))
-	if chatPool <= 0 {
-		return nil
-	}
-	chatNames := make([]string, 0, chatCount)
+	names := make([]string, 0, len(out))
 	for model := range out {
-		if !isCommercialImageModel(model) {
-			chatNames = append(chatNames, model)
-		}
+		names = append(names, model)
 	}
-	sort.Strings(chatNames)
-	share := roundBudget(chatPool / float64(len(chatNames)))
+	sort.Strings(names)
+	share := roundBudget(total / float64(len(names)))
 	assigned := 0.0
-	for _, model := range chatNames {
+	for _, model := range names {
 		out[model] = share
 		assigned += share
 	}
-	// Push the rounding remainder onto the first model so the sum is exactly
-	// the pool: a restart must not drift the plan's advertised allowance.
-	if remainder := roundBudget(chatPool - assigned); remainder != 0 {
-		out[chatNames[0]] = roundBudget(out[chatNames[0]] + remainder)
-	}
-	// Drop anything left without an allowance rather than storing a zero budget,
-	// which the relay reads as "model not configured".
-	for model, amount := range out {
-		if amount <= 0 {
-			delete(out, model)
-		}
-	}
-	if len(out) == 0 {
-		return nil
+	// Push the rounding remainder onto the first model so the sum is exactly the
+	// plan's total: a restart must not drift the advertised allowance.
+	if remainder := roundBudget(total - assigned); remainder != 0 {
+		out[names[0]] = roundBudget(out[names[0]] + remainder)
 	}
 	return out
 }
@@ -318,22 +260,54 @@ func reconcilePlanOrderSnapshots(ctx context.Context, tx *sql.Tx, slug string, b
 // the plan they bought.
 //
 // Grants are created from the plan's budgets at purchase time, so changing the
-// plan alone would leave existing buyers without the new model. Only the models
-// that actually changed are touched, so a grant an operator adjusted by hand is
-// left alone.
+// plan alone would leave existing buyers without the new model. The package's
+// plan-derived grants are therefore rebuilt for the new model set, exactly as
+// the model-set migrations did before this reconcile replaced them: the total is
+// the same because the same allowance is re-split, and each model carries the
+// plan's own per-model amount.
+//
+// Only grants that came from a plan's model set are touched. Free, manual and
+// top-up grants are the operator's own arrangements and stay as they are.
 func reconcileActivePlanGrants(ctx context.Context, tx *sql.Tx, planID int64, planName string, before, after map[string]float64) error {
 	added, removed := reconcileModelDelta(before, after)
 	if len(added) == 0 && len(removed) == 0 {
 		return nil
 	}
-	if len(removed) > 0 {
-		if err := revokeReconciledPlanGrants(ctx, tx, planID, removed); err != nil {
-			return err
+	packages, err := reconcileGrantPackages(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	if len(packages) == 0 {
+		return nil
+	}
+	// The plan's own per-model amount: every model carries the same share of the
+	// shared pool, so one lookup covers them all.
+	share := 0.0
+	for _, amount := range after {
+		if amount > 0 {
+			share = roundBudget(amount)
+			break
 		}
 	}
-	if len(added) > 0 {
-		if err := grantReconciledPlanModels(ctx, tx, planID, planName, added, after); err != nil {
+	if share <= 0 {
+		return nil
+	}
+	models := make([]string, 0, len(after))
+	for model, amount := range after {
+		if amount > 0 {
+			models = append(models, model)
+		}
+	}
+	sort.Strings(models)
+
+	for _, pkg := range packages {
+		if err := revokePackageGrants(ctx, tx, pkg); err != nil {
 			return err
+		}
+		for _, model := range models {
+			if err := grantPackageModel(ctx, tx, pkg, planID, planName, model, share); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -364,80 +338,61 @@ func reconcileModelDelta(before, after map[string]float64) (added, removed []str
 	return added, removed
 }
 
-// revokeReconciledPlanGrants retires grants for models the relay dropped. The
-// ledger keeps a negative entry so the buyer's history explains why the model
-// disappeared from their package.
-func revokeReconciledPlanGrants(ctx context.Context, tx *sql.Tx, planID int64, removed []string) error {
-	for _, model := range removed {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
-			SELECT g.uid, g.model, -g.amount_cny, 'revoke', 'plan_model_reconcile', g.id,
-			       'retired relay model removed from paid plan'
-			FROM commercial_quota_grants g
-			WHERE g.plan_id = $1
-			  AND g.model = $2
-			  AND g.grant_type IN ('order', 'invite', 'operator_plan')
-			  AND g.revoked_at IS NULL
-			  AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)`,
-			planID, model,
-		); err != nil {
-			return fmt.Errorf("record %s grant revocation: %w", model, err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE commercial_quota_grants
-			SET revoked_at = CURRENT_TIMESTAMP,
-			    expires_at = LEAST(COALESCE(expires_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
-			WHERE plan_id = $1
-			  AND model = $2
-			  AND grant_type IN ('order', 'invite', 'operator_plan')
-			  AND revoked_at IS NULL`,
-			planID, model,
-		); err != nil {
-			return fmt.Errorf("revoke %s grants: %w", model, err)
-		}
+// revokePackageGrants retires one buyer's plan-derived grants so the package can
+// be rebuilt for the plan's new model set. The ledger keeps a negative entry per
+// grant, so the buyer's history explains why the old amounts stopped applying.
+func revokePackageGrants(ctx context.Context, tx *sql.Tx, pkg reconcileGrantPackage) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
+		SELECT g.uid, g.model, -g.amount_cny, 'revoke', 'plan_model_reconcile', g.id,
+		       'paid plan model set updated'
+		FROM commercial_quota_grants g
+		WHERE g.uid = $1 AND g.plan_id = $2
+		  AND g.grant_type = $3 AND g.source_ref = $4
+		  AND g.revoked_at IS NULL
+		  AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)`,
+		pkg.uid, pkg.planID, pkg.grantType, pkg.sourceRef,
+	); err != nil {
+		return fmt.Errorf("record uid %d package revocation: %w", pkg.uid, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE commercial_quota_grants
+		SET revoked_at = CURRENT_TIMESTAMP,
+		    expires_at = LEAST(COALESCE(expires_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+		WHERE uid = $1 AND plan_id = $2
+		  AND grant_type = $3 AND source_ref = $4
+		  AND revoked_at IS NULL`,
+		pkg.uid, pkg.planID, pkg.grantType, pkg.sourceRef,
+	); err != nil {
+		return fmt.Errorf("revoke uid %d package grants: %w", pkg.uid, err)
 	}
 	return nil
 }
 
-// grantReconciledPlanModels gives current holders the models the relay added.
-//
-// The new model carries the plan's own allowance for it, so a buyer's usable
-// quota matches the package they are on. Existing models are left alone: the
-// plan's re-split only applies to a new purchase, and rewriting live grants
-// would change what a buyer already holds.
-func grantReconciledPlanModels(ctx context.Context, tx *sql.Tx, planID int64, planName string, added []string, budgets map[string]float64) error {
-	packages, err := reconcileGrantPackages(ctx, tx, planID)
-	if err != nil {
-		return err
+// grantPackageModel gives one buyer's package a model at the plan's per-model
+// amount. Every model carries the same share of the shared pool, so rebuilding
+// the whole set leaves the buyer's total exactly where it was.
+func grantPackageModel(ctx context.Context, tx *sql.Tx, pkg reconcileGrantPackage, planID int64, planName, model string, amount float64) error {
+	var grantID int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO commercial_quota_grants(
+			uid, plan_id, invite_code_id, grant_type, model, amount_cny,
+			reset_duration, effective_at, expires_at, source_ref, note, operator_uid
+		)
+		VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, '1M', $7, $8, $9, $10, $11)
+		RETURNING id`,
+		pkg.uid, planID, pkg.inviteCodeID, pkg.grantType, model, amount,
+		pkg.effectiveAt, pkg.expiresAt, pkg.sourceRef,
+		"paid plan model auto-update", pkg.operatorUID,
+	).Scan(&grantID); err != nil {
+		return fmt.Errorf("grant %s to uid %d: %w", model, pkg.uid, err)
 	}
-	for _, pkg := range packages {
-		for _, model := range added {
-			amount := roundBudget(budgets[model])
-			if amount <= 0 {
-				continue
-			}
-			var grantID int64
-			if err := tx.QueryRowContext(ctx, `
-				INSERT INTO commercial_quota_grants(
-					uid, plan_id, invite_code_id, grant_type, model, amount_cny,
-					reset_duration, effective_at, expires_at, source_ref, note, operator_uid
-				)
-				VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, '1M', $7, $8, $9, $10, $11)
-				RETURNING id`,
-				pkg.uid, planID, pkg.inviteCodeID, pkg.grantType, model, amount,
-				pkg.effectiveAt, pkg.expiresAt, pkg.sourceRef,
-				"paid plan model auto-update", pkg.operatorUID,
-			).Scan(&grantID); err != nil {
-				return fmt.Errorf("grant %s to uid %d: %w", model, pkg.uid, err)
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
-				VALUES ($1, $2, $3, 'grant', 'plan_model_reconcile', $4, $5)`,
-				pkg.uid, model, amount, grantID, planName,
-			); err != nil {
-				return fmt.Errorf("record %s grant for uid %d: %w", model, pkg.uid, err)
-			}
-		}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
+		VALUES ($1, $2, $3, 'grant', 'plan_model_reconcile', $4, $5)`,
+		pkg.uid, model, amount, grantID, planName,
+	); err != nil {
+		return fmt.Errorf("record %s grant for uid %d: %w", model, pkg.uid, err)
 	}
 	return nil
 }
@@ -445,6 +400,7 @@ func grantReconciledPlanModels(ctx context.Context, tx *sql.Tx, planID int64, pl
 // reconcileGrantPackage identifies one buyer's active package: the grants that
 // were created together for the same plan from the same source.
 type reconcileGrantPackage struct {
+	planID       int64
 	uid          int64
 	grantType    string
 	sourceRef    string
@@ -476,7 +432,7 @@ func reconcileGrantPackages(ctx context.Context, tx *sql.Tx, planID int64) ([]re
 	defer rows.Close()
 	var packages []reconcileGrantPackage
 	for rows.Next() {
-		var pkg reconcileGrantPackage
+		pkg := reconcileGrantPackage{planID: planID}
 		if err := rows.Scan(
 			&pkg.uid, &pkg.grantType, &pkg.sourceRef, &pkg.inviteCodeID,
 			&pkg.operatorUID, &pkg.effectiveAt, &pkg.expiresAt,
