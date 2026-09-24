@@ -1,44 +1,35 @@
 package postgres
 
 import (
-	"strings"
 	"testing"
 )
 
-// The postgres copy of the official paid-plan validator mirrors the server
-// copy; this test pins the same ten-model set and totals so the two copies
-// cannot drift apart unnoticed.
-func TestValidateCommercialOfficialPaidPlanModelsTracksImageAddOns(t *testing.T) {
-	personal := map[string]float64{
-		"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100,
-		"glm-5.3-flash": 2100, "gpt-5.6-terra": 2100,
-		"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100,
-		"chatgpt-image-latest": 100,
+// The postgres package used to carry a second copy of the official paid-plan
+// model whitelist and its validator, and this test pinned the same ten-model set
+// in both places so they could not drift apart. The whitelist is gone: the relay
+// catalog is the source of truth and the plan model sets are maintained by
+// ReconcileCommercialPlanModels. What still matters here is that the plan slugs
+// the reconcile owns stay pinned to the slugs the tier logic recognises.
+func TestReconcileCoversEveryOfficialPaidPlan(t *testing.T) {
+	for _, slug := range commercialReconcilePlanSlugs {
+		if commercialOfficialPlanTier(slug) == 0 {
+			t.Fatalf("reconcile maintains %s, which is not an official paid plan", slug)
+		}
 	}
-	if err := validateCommercialOfficialPaidPlanModels(commercialPersonalPlanSlug, personal); err != nil {
-		t.Fatalf("complete personal plan rejected: %v", err)
+	for _, slug := range []string{commercialPersonalPlanSlug, commercialProPlanSlug} {
+		found := false
+		for _, candidate := range commercialReconcilePlanSlugs {
+			if candidate == slug {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("official paid plan %s is not maintained by the reconcile", slug)
+		}
 	}
-	personal["gpt-image-2"] = 99
-	if err := validateCommercialOfficialPaidPlanModels(commercialPersonalPlanSlug, personal); err == nil {
-		t.Fatal("mismatched total was accepted")
-	}
-	personal["gpt-image-2"] = 100
-
-	pro := map[string]float64{
-		"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300,
-		"glm-5.3-flash": 6300, "gpt-5.6-terra": 6300,
-		"gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300,
-		"chatgpt-image-latest": 300,
-	}
-	if err := validateCommercialOfficialPaidPlanModels(commercialProPlanSlug, pro); err != nil {
-		t.Fatalf("complete pro plan rejected: %v", err)
-	}
-	delete(pro, "chatgpt-image-latest")
-	pro["chatgpt-image-9"] = 300
-	if err := validateCommercialOfficialPaidPlanModels(commercialProPlanSlug, pro); err == nil || !strings.Contains(err.Error(), "chatgpt-image-latest") {
-		t.Fatalf("missing image model was accepted: %v", err)
-	}
-	if err := validateCommercialOfficialPaidPlanModels(commercialFreePlanSlug, map[string]float64{}); err != nil {
-		t.Fatalf("free plan must stay unconstrained: %v", err)
+	// The Free plan keeps its own model set; the reconcile must not touch it.
+	if commercialOfficialPlanTier(commercialFreePlanSlug) != 0 {
+		t.Fatal("the free plan must not be treated as an official paid plan")
 	}
 }

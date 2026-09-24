@@ -25,6 +25,12 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// commercialPlanReconcileTimeout bounds the startup pass that aligns paid plan
+// model sets with the relay catalog. It runs once, before the server accepts
+// traffic, so it must not hold startup open when the relay is unreachable: a
+// timeout logs and skips, leaving the plans as they are until the next restart.
+const commercialPlanReconcileTimeout = 30 * time.Second
+
 func envString(name string) string {
 	return strings.TrimSpace(os.Getenv(name))
 }
@@ -509,6 +515,29 @@ func main() {
 	relayKeyHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	botModelConfigHandler.SetCommercialQuotaSource(commercialStore, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
 	accountAdminHandler.SetCommercialRelayAdmin(relayAdminClient, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	// The paid plans' model sets follow the relay catalog rather than a
+	// hardcoded list, so a model onboarded on the relay becomes sellable with no
+	// control-plane change. The reconcile runs once at startup and only writes
+	// when a plan's model set actually differs from the catalog.
+	if modelCatalog := server.NewCommercialModelCatalogFromEnv(); modelCatalog != nil {
+		accountAdminHandler.SetCommercialModelCatalog(modelCatalog)
+		reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), commercialPlanReconcileTimeout)
+		catalogModels, catalogSource, catalogErr := modelCatalog.Models(reconcileCtx)
+		if catalogErr != nil {
+			log.Printf("commercial plan model reconcile skipped: relay catalog unavailable: %v", catalogErr)
+		} else if reconciler, ok := db.(interface {
+			ReconcileCommercialPlanModels(context.Context, []string) error
+		}); ok {
+			if err := reconciler.ReconcileCommercialPlanModels(reconcileCtx, catalogModels); err != nil {
+				log.Printf("commercial plan model reconcile failed: %v", err)
+			} else {
+				log.Printf("commercial plan model reconcile done: catalog=%d models source=%s", len(catalogModels), catalogSource)
+			}
+		}
+		cancelReconcile()
+	} else {
+		log.Printf("commercial model catalog is not configured; paid plan model sets will not follow the relay")
+	}
 	var commercialRelaySyncer *server.CommercialRelaySyncer
 	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())
 	defer commercialServiceCancel()
