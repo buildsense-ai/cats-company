@@ -67,8 +67,13 @@ func (a *Adapter) CreateSchema() error {
 		migrateCommercialPublicModels,
 		migrateCommercialImageModels,
 		migrateCommercialPlanManagement,
+		// Model-set migrations must stay ordered oldest-first: every step
+		// re-applies its literal package lists on each startup, and the V4
+		// retirement below is what strips the retired model again. Never
+		// insert a model-list migration after the retire step.
 		migrateCommercialPlansNativeSearchFlash,
 		migrateCommercialPlansFreeImageModels,
+		migrateCommercialPlansRetireV4Flash,
 		migrateCommercialAutoRenew,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,

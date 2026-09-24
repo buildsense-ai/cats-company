@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1482,6 +1483,59 @@ func TestCommercialRelayBaselineRecognizesExistingFreeSharedPool(t *testing.T) {
 	}
 }
 
+func TestCommercialRelayBaselineUpgradesV4EraPerModelPool(t *testing.T) {
+	// Relay keys created before the V4 retirement still carry the ten-model
+	// V4-era Free pool with per-model amounts. They must be recognized as
+	// Free and upgraded to the current baseline instead of being frozen as
+	// legacy.
+	limits := make([]commercialRelayModelLimit, 0, len(commercialRelayV4EraFreeBudgets))
+	for model, amount := range commercialRelayV4EraFreeBudgets {
+		limits = append(limits, commercialRelayModelLimit{
+			Provider: model, Model: model, AllowedModels: []string{model},
+			Budget: commercialRelayBudget{MaxLimit: amount, ResetDuration: "1M"},
+		})
+	}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: commercialRelayBudgetTotal(commercialRelayV4EraFreeBudgets), ResetDuration: "1M"},
+		ModelLimits:   limits,
+	}}
+
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 9523}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !reflect.DeepEqual(budgets, commercialRelayFreeBudgets) {
+		t.Fatalf("V4-era per-model pool was not upgraded: profile=%q budgets=%#v", profile, budgets)
+	}
+}
+
+func TestCommercialRelayBaselineUpgradesV4EraSharedPool(t *testing.T) {
+	// The shared-pool representation a live Free key carries before the V4
+	// retirement: every model entry repeats the 2300 V4-era total. The
+	// retired generation must stay on the known-total chain so these keys
+	// are upgraded, not frozen.
+	shared := commercialRelayBudgetTotal(commercialRelayV4EraFreeBudgets)
+	limits := make([]commercialRelayModelLimit, 0, len(commercialRelayV4EraFreeBudgets))
+	for model := range commercialRelayV4EraFreeBudgets {
+		limits = append(limits, commercialRelayModelLimit{
+			Provider: model, Model: model, AllowedModels: []string{model},
+			Budget: commercialRelayBudget{MaxLimit: shared, ResetDuration: "1M"},
+		})
+	}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		MonthlyBudget: commercialRelayBudget{MaxLimit: shared, ResetDuration: "1M"},
+		ModelLimits:   limits,
+	}}
+
+	profile, budgets, err := commercialRelayBaselineForSummary(&types.CommercialSummary{UID: 9522}, relayUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != commercialRelayBaselineProfileFree || !reflect.DeepEqual(budgets, commercialRelayFreeBudgets) {
+		t.Fatalf("V4-era shared pool was not upgraded: profile=%q budgets=%#v", profile, budgets)
+	}
+}
+
 func TestCommercialRelayBaselineLegacyMigrationIsIdempotent(t *testing.T) {
 	reset := "2026-08-01T08:30:00Z"
 	store := &commercialRelayBaselineTestStore{commercialRelaySyncTestStore: &commercialRelaySyncTestStore{
@@ -1565,7 +1619,7 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 			state.Limits.MonthlyBudget = commercialRelayBudget{MaxLimit: posted["monthly_budget"].(float64), ResetDuration: "1M"}
 			state.UsageWindowStart = posted["usage_window_start"].(string)
 			for index := range state.Limits.ModelLimits {
-				state.Limits.ModelLimits[index].Budget.MaxLimit = 2300
+				state.Limits.ModelLimits[index].Budget.MaxLimit = posted["monthly_budget"].(float64)
 			}
 			var scopes []commercialRelayModelScope
 			raw, _ := json.Marshal(posted["model_scopes"])
@@ -1586,10 +1640,10 @@ func TestCommercialRelayBaselinePreservesResetAndCreatesSharedPolicy(t *testing.
 	if got := store.startsAt.Format(time.RFC3339Nano); got != "2026-08-01T08:30:00.123456789Z" {
 		t.Fatalf("reset anchor changed: %s", got)
 	}
-	if posted["monthly_budget"] != float64(2300) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
+	if posted["monthly_budget"] != float64(2200) || posted["usage_window_start"] != "2026-08-01T08:30:00Z" {
 		t.Fatalf("shared policy mismatch: %#v", posted)
 	}
-	if len(state.Limits.ModelScopes) != 6 || !state.Limits.FreeTerraTrial.Enabled {
+	if len(state.Limits.ModelScopes) != 5 || !state.Limits.FreeTerraTrial.Enabled {
 		t.Fatalf("free models were not scoped: %#v", state.Limits.ModelScopes)
 	}
 }

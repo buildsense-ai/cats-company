@@ -15,13 +15,12 @@ const (
 	commercialLegacyPlanSlug   = "catsco-legacy-custom"
 )
 
-// commercialOfficialPaidModels pins the public paid-plan model set: the six
+// commercialOfficialPaidModels pins the public paid-plan model set: the five
 // public chat models plus the image lane add-on models, which share the same
 // pool. Keep this in step with the startup migration that maintains the plans.
 var commercialOfficialPaidModels = []string{
 	"MiniMax-M2.7",
 	"MiniMax-M3",
-	"deepseek-v4-flash",
 	"deepseek-flash",
 	"glm-5.3-flash",
 	"gpt-5.6-terra",
