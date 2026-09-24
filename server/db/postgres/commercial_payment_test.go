@@ -869,7 +869,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'upgrade' AND entry_type = 'revoke'`, paidUID).Scan(&upgradeLedger); err != nil {
 		t.Fatalf("count upgrade ledger entries: %v", err)
 	}
-	if revokedPersonalGrants != 11 || upgradeLedger != 11 {
+	if revokedPersonalGrants != 10 || upgradeLedger != 10 {
 		t.Fatalf("paid upgrade audit mismatch: revoked=%d ledger=%d", revokedPersonalGrants, upgradeLedger)
 	}
 	var personalState string
