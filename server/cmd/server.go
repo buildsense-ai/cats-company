@@ -786,6 +786,7 @@ func main() {
 
 	// Friends (require auth — JWT or API Key for bot access)
 	authWithDB := server.AuthMiddlewareWithDB(db)
+	deviceConnectorUploadAuth := server.DeviceConnectorUploadAuthWithDB(db, hub)
 	jwtAuthWithDB := server.JWTAuthMiddlewareWithDB(db)
 	ownerAuthWithDB := server.OwnerMiddlewareWithDB(db)
 	botAPIKeyAuthWithDB := server.BotAPIKeyMiddlewareWithDB(db)
@@ -990,9 +991,9 @@ func main() {
 	mux.HandleFunc("/api/groups/disband", jwtAuthWithDB(groupHandler.HandleDisbandGroup))
 	mux.HandleFunc("/api/groups/role", jwtAuthWithDB(groupHandler.HandleUpdateRole))
 
-	// File upload (accepts both JWT and API Key for bot uploads)
+	// File upload accepts JWT/API Key clients plus explicitly scoped device Connector uploads.
 	mux.HandleFunc("/api/tutorial-tasks", tutorialTaskHandler.HandleTasks)
-	mux.HandleFunc("/api/upload", chainHTTP(uploadHandler.HandleUpload, uploadIPLimit, authWithDB, uploadUserLimit))
+	mux.HandleFunc("/api/upload", chainHTTP(uploadHandler.HandleUpload, uploadIPLimit, deviceConnectorUploadAuth, uploadUserLimit))
 	mux.HandleFunc("/api/mobile-upload/sessions", chainHTTP(uploadHandler.HandleMobileUploadSession, uploadIPLimit, authWithDB, uploadUserLimit))
 	mux.HandleFunc("/api/mobile-upload/sessions/", uploadIPLimit(uploadHandler.HandleMobileUploadSession))
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))

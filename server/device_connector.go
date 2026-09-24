@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -138,6 +139,7 @@ func normalizeDeviceConnectorScopes(scopes []string) []string {
 		"device:register":   {},
 		"device:rpc_result": {},
 		"device:refresh":    {},
+		"device:upload":     {},
 	}
 	out := make([]string, 0, len(scopes))
 	seen := make(map[string]struct{}, len(scopes))
@@ -165,7 +167,7 @@ func normalizeDeviceConnectorCapabilityStrings(values []string) []string {
 	ops := normalizeDeviceCapabilities(values)
 	out := make([]string, 0, len(ops))
 	for _, op := range ops {
-		if isAllowedDeviceConnectorCapability(op) {
+		if isAllowedDeviceConnectorCapability(op) || op == "send_file" {
 			out = append(out, string(op))
 		}
 	}
@@ -178,6 +180,69 @@ func normalizeDeviceConnectorCapabilityStrings(values []string) []string {
 func isAllowedDeviceConnectorCapability(operation DeviceGrantOperation) bool {
 	return operation == DeviceCapabilitySkillHubWorkspacePagination ||
 		isAllowedDeviceRPCOperation(operation) || isSkillHubThinToolOperation(operation)
+}
+
+// DeviceConnectorUploadAuthWithDB accepts ordinary user/API-key credentials
+// and the narrowly scoped device credential only for local file uploads.
+func DeviceConnectorUploadAuthWithDB(db store.Store, hub *Hub) func(http.HandlerFunc) http.HandlerFunc {
+	ordinaryAuth := AuthMiddlewareWithDB(db)
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		ordinaryHandler := ordinaryAuth(next)
+		return func(w http.ResponseWriter, r *http.Request) {
+			token := extractDeviceConnectorToken(r)
+			if token == "" {
+				ordinaryHandler(w, r)
+				return
+			}
+			claims, err := ParseDeviceConnectorToken(token)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid device connector token"})
+				return
+			}
+			if !deviceConnectorHasScope(claims, "device:upload") || !containsDeviceCapability(claims.Capabilities, "send_file") {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "device connector token does not allow file uploads"})
+				return
+			}
+			if db == nil || hub == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "device connector unavailable"})
+				return
+			}
+			if hub.isDeviceConnectorRevoked(claims) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "device connector token has been revoked"})
+				return
+			}
+			user, status, msg := activeUserByID(claims.UID, db.GetUser)
+			if status != 0 {
+				writeJSON(w, status, map[string]string{"error": msg})
+				return
+			}
+			if user.AccountType != types.AccountHuman {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "file upload requires a human-owned device connector"})
+				return
+			}
+			ctx := context.WithValue(r.Context(), uidKey, claims.UID)
+			ctx = context.WithValue(ctx, usernameKey, claims.Username)
+			next(w, r.WithContext(ctx))
+		}
+	}
+}
+
+func containsDeviceCapability(capabilities []string, expected string) bool {
+	for _, capability := range capabilities {
+		if strings.TrimSpace(capability) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func appendDeviceScope(scopes []string, value string) []string {
+	for _, scope := range scopes {
+		if strings.TrimSpace(scope) == value {
+			return append([]string(nil), scopes...)
+		}
+	}
+	return append(append([]string(nil), scopes...), value)
 }
 
 func deviceConnectorHasScope(claims *DeviceConnectorClaims, scope string) bool {
@@ -679,6 +744,10 @@ func (h *DeviceConnectorHandler) HandleEnroll(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	scopes := normalizeDeviceConnectorScopes(nil)
+	if containsDeviceCapability(capabilities, "send_file") {
+		scopes = appendDeviceScope(scopes, "device:upload")
+	}
 	token, err := GenerateDeviceConnectorToken(DeviceConnectorTokenInput{
 		UID:            pairing.OwnerUID,
 		Username:       pairing.Username,
@@ -686,6 +755,7 @@ func (h *DeviceConnectorHandler) HandleEnroll(w http.ResponseWriter, r *http.Req
 		InstallationID: device.InstallationID,
 		DisplayName:    device.DisplayName,
 		Capabilities:   capabilities,
+		Scopes:         scopes,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to issue device token"})
@@ -716,6 +786,10 @@ func (h *DeviceConnectorHandler) HandleRefreshToken(w http.ResponseWriter, r *ht
 		writeJSON(w, status, map[string]string{"error": msg})
 		return
 	}
+	scopes := append([]string(nil), claims.Scopes...)
+	if containsDeviceCapability(claims.Capabilities, "send_file") {
+		scopes = appendDeviceScope(scopes, "device:upload")
+	}
 	token, err := GenerateDeviceConnectorToken(DeviceConnectorTokenInput{
 		UID:            claims.UID,
 		Username:       claims.Username,
@@ -723,7 +797,7 @@ func (h *DeviceConnectorHandler) HandleRefreshToken(w http.ResponseWriter, r *ht
 		InstallationID: claims.InstallationID,
 		DisplayName:    claims.DisplayName,
 		Capabilities:   claims.Capabilities,
-		Scopes:         claims.Scopes,
+		Scopes:         scopes,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to refresh token"})
