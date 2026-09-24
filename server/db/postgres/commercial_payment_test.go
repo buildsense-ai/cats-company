@@ -236,8 +236,8 @@ func testCommercialAdjustmentContract(t *testing.T, db *Adapter) {
 	personalPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: "catsco-personal", Name: "Personal", DurationDays: 30,
 		ModelBudgets: map[string]float64{
-			"MiniMax-M2.7": 1900, "MiniMax-M3": 1900, "deepseek-v4-flash": 1900,
-			"glm-5.3-flash": 1900, "gpt-5.6-terra": 1900, "deepseek-flash": 1000,
+			"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100,
+			"glm-5.3-flash": 2100, "gpt-5.6-terra": 2100,
 			"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100,
 			"gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100,
 		},
@@ -827,14 +827,14 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 	t.Helper()
 	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 1750, "MiniMax-M3": 1750, "deepseek-v4-flash": 1750, "deepseek-flash": 1750, "glm-5.3-flash": 1750, "gpt-5.6-terra": 1750, "gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100, "glm-5.3-flash": 2100, "gpt-5.6-terra": 2100, "gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create personal plan: %v", err)
 	}
 	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
 		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
-		ModelBudgets: map[string]float64{"MiniMax-M2.7": 5250, "MiniMax-M3": 5250, "deepseek-v4-flash": 5250, "deepseek-flash": 5250, "glm-5.3-flash": 5250, "gpt-5.6-terra": 5250, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
+		ModelBudgets: map[string]float64{"MiniMax-M2.7": 6300, "MiniMax-M3": 6300, "deepseek-flash": 6300, "glm-5.3-flash": 6300, "gpt-5.6-terra": 6300, "gpt-image-2": 300, "gpt-image-2.5": 300, "gpt-image-2.5-flare": 300, "gpt-image-2.5-sunburst": 300, "chatgpt-image-latest": 300}, DurationDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("create pro plan: %v", err)
@@ -855,7 +855,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatal("paid upgrade order did not retain payment timestamp")
 	}
 	summary, err := db.GetCommercialSummary(paidUID)
-	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 5275 {
+	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 6325 {
 		t.Fatalf("paid upgrade did not replace personal quota: summary=%#v err=%v", summary, err)
 	}
 	var bonusRevokedAt sql.NullTime
@@ -1031,7 +1031,7 @@ func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, invit
 		t.Fatalf("reserve personal invite credit: %v", err)
 	}
 	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
-	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 5250 {
+	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 6300 {
 		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
 	}
 	var revokedPersonal, reservedPersonal, availablePro int
