@@ -61,12 +61,14 @@ function parseCsv(text) {
   let value = '';
   let inQuotes = false;
   let currentCellCount = 0;
+  let rowHasContent = false;
   let totalRows = 0;
   let totalColumns = 0;
   let truncatedRows = false;
   let truncatedColumns = false;
 
   const pushCell = () => {
+    if (String(value).trim() !== '') rowHasContent = true;
     if (currentCellCount < SPREADSHEET_PREVIEW_MAX_COLUMNS) {
       row.push(value);
     } else {
@@ -77,9 +79,8 @@ function parseCsv(text) {
   };
 
   const pushRow = () => {
-    const rowHasContent = row.some((cell) => String(cell).trim() !== '');
-    totalColumns = Math.max(totalColumns, currentCellCount);
-    if (rowHasContent || rows.length === 0) {
+    if (rowHasContent) {
+      totalColumns = Math.max(totalColumns, currentCellCount);
       totalRows += 1;
       if (rows.length < SPREADSHEET_PREVIEW_MAX_ROWS) {
         rows.push(row);
@@ -89,6 +90,7 @@ function parseCsv(text) {
     }
     row = [];
     currentCellCount = 0;
+    rowHasContent = false;
   };
 
   for (let index = 0; index < text.length; index += 1) {
@@ -213,6 +215,14 @@ export function SpreadsheetPreview({ buffer, kind }) {
     () => Array.from({ length: activeSheet?.columnCount || 0 }, (_, index) => columnLabel(index)),
     [activeSheet?.columnCount],
   );
+  const csvHeaders = useMemo(
+    () => kind === 'csv'
+      ? columns.map((column, index) => activeSheet?.rows?.[0]?.[index]?.trim() || column)
+      : columns,
+    [activeSheet?.rows, columns, kind],
+  );
+  const visibleRows = kind === 'csv' ? activeSheet?.rows?.slice(1) || [] : activeSheet?.rows || [];
+  const firstVisibleRowNumber = kind === 'csv' ? 2 : 1;
 
   if (loading) {
     return <div className="v3-file-preview-state">正在解析表格...</div>;
@@ -246,6 +256,7 @@ export function SpreadsheetPreview({ buffer, kind }) {
       <div className="v3-spreadsheet-summary">
         <strong>{activeSheet.name}</strong>
         <span>{activeSheet.totalRows || 0} 行 · {activeSheet.totalColumns || 0} 列</span>
+        {kind === 'csv' && activeSheet.rows.length > 0 && <span className="v3-spreadsheet-header-note">首行为字段名</span>}
         {(activeSheet.truncatedRows || activeSheet.truncatedColumns) && (
           <em>仅预览前 {SPREADSHEET_PREVIEW_MAX_ROWS} 行、{SPREADSHEET_PREVIEW_MAX_COLUMNS} 列</em>
         )}
@@ -255,19 +266,29 @@ export function SpreadsheetPreview({ buffer, kind }) {
           <thead>
             <tr>
               <th className="v3-spreadsheet-corner" aria-label="行号" />
-              {columns.map((column) => (
-                <th key={column}>{column}</th>
+              {columns.map((column, columnIndex) => (
+                <th key={column} scope="col">
+                  <span className="v3-spreadsheet-column-label">{column}</span>
+                  <span className="v3-spreadsheet-column-name" title={csvHeaders[columnIndex]}>
+                    {csvHeaders[columnIndex]}
+                  </span>
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {activeSheet.rows.map((row, rowIndex) => (
+            {visibleRows.map((row, rowIndex) => (
               <tr key={rowIndex}>
-                <th className="v3-spreadsheet-row-number">{rowIndex + 1}</th>
+                <th className="v3-spreadsheet-row-number" scope="row">{rowIndex + firstVisibleRowNumber}</th>
                 {columns.map((column, columnIndex) => {
                   const cell = row[columnIndex] || '';
+                  const isNumeric = /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(cell.trim());
                   return (
-                    <td key={`${rowIndex}-${column}`} title={cell}>
+                    <td
+                      key={`${rowIndex}-${column}`}
+                      className={isNumeric ? 'is-numeric' : undefined}
+                      title={cell}
+                    >
                       {cell}
                     </td>
                   );
