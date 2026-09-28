@@ -103,14 +103,24 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-terra",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
-	// GPT-6 Sol replaced GPT-5.6 Sol on the same routes. This list is the pool a
-	// client may pick from; the paid plans decide which entries are visible, and
-	// they sell gpt-6-sol now. Listing the superseded name would offer a model no
-	// public plan contains, and omitting the new one would hide it from every
-	// buyer whose plan does - the plan and the picker have to agree on the name.
+	// This is the candidate pool, not the sellable list: it has to cover every
+	// model any plan may grant, and the plan then decides which entries a given
+	// buyer sees. An entry missing here is invisible no matter what the plan
+	// grants, which is exactly how a buyer ends up holding quota for a model the
+	// picker never offers.
+	//
+	// GPT-6 Sol and GPT-5.6 Sol run on the same routes and are split by plan, not
+	// by name: the paid plans sell gpt-6-sol, the internal all-models plan keeps
+	// gpt-5.6-sol. Both names therefore belong in the pool, and neither plan leaks
+	// the other's name because the plan filter removes it.
 	{
 		ID: "gpt-6-sol", Label: "GPT-6 Sol", Description: "OpenAI Responses，支持精细推理强度",
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-6-sol",
+		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
+	},
+	{
+		ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Description: "OpenAI Responses，支持精细推理强度",
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-sol",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 }
