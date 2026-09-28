@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"regexp"
@@ -953,6 +954,17 @@ func (h *AccountAdminHandler) requireCommercialStore(w http.ResponseWriter, r *h
 	return h.commercial, true
 }
 
+// sellableModelCatalog reports every model a plan may sell, with the source the
+// catalog service answered from. It exists so the console's plan editor and the
+// startup reconcile read the same list; before this the editor carried its own
+// hardcoded set and drifted from the relay.
+func (h *AccountAdminHandler) sellableModelCatalog() ([]string, string, error) {
+	if h.modelCatalog == nil {
+		return nil, "", fmt.Errorf("relay model catalog is not configured")
+	}
+	return h.modelCatalog.Models(context.Background())
+}
+
 func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *http.Request) {
 	store, ok := h.requireCommercialStore(w, r)
 	if !ok {
@@ -969,7 +981,23 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list plans"})
 			return
 		}
-		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"plans": plans})
+		// The console renders one checkbox per sellable model. It used to carry a
+		// hardcoded list, so a model onboarded on the relay was not offered there
+		// until the console was redeployed - an operator could not add the new
+		// model to a plan even though the relay already sold it. Shipping the
+		// catalog with the plans keeps the editor and the reconcile reading the
+		// same source.
+		response := map[string]interface{}{"plans": plans}
+		if catalog, source, catalogErr := h.sellableModelCatalog(); catalogErr != nil {
+			// An absent catalog leaves the editor on the plan's stored models
+			// rather than showing an empty picker the operator could save.
+			log.Printf("commercial plan editor model catalog unavailable: %v", catalogErr)
+			response["model_catalog_error"] = catalogErr.Error()
+		} else {
+			response["model_catalog"] = catalog
+			response["model_catalog_source"] = source
+		}
+		writeAccountAdminJSON(w, http.StatusOK, response)
 	case http.MethodPost:
 		var req struct {
 			Slug                   string             `json:"slug"`

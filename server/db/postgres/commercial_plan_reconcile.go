@@ -9,17 +9,25 @@ import (
 	"strings"
 )
 
-// ReconcileCommercialPlanModels keeps the official paid plans' model sets in
+// ReconcileCommercialPlanModels keeps every auto-updating plan's model set in
 // step with the relay catalog.
 //
 // It replaces the startup migrations that used to hardcode the plan model lists.
 // Those migrations had to be edited and redeployed every time the relay
 // onboarded a model, and each one re-applied its literal list on every startup,
 // so a hand-edited plan was silently reverted on the next restart. Reading the
-// catalog instead means a new relay model reaches paid plans with no
-// control-plane change.
+// catalog instead means a new relay model reaches a plan with no control-plane
+// change.
 //
-// Two behaviours, both driven by the plan's auto_update_models switch:
+// The plans it covers are chosen by the plan's own switch rather than a list in
+// this file: every non-archived plan with auto_update_models = true follows the
+// relay. An operator creating an internal all-models package and leaving the
+// switch on gets the whole catalog, and an operator who unchecks it pins exactly
+// the models they picked. Keeping a slug list here instead meant a plan the
+// operator had already opted in was silently skipped, so its buyers held quota
+// for models that were never added to their grants.
+//
+// Two behaviours, both driven by that switch:
 //
 //   - add: a model that is sellable on the relay but missing from the plan is
 //     added, unless the plan pins its model set (auto_update_models = false)
@@ -52,7 +60,11 @@ func (a *Adapter) ReconcileCommercialPlanModels(ctx context.Context, catalog []s
 		return fmt.Errorf("lock commercial plan reconcile: %w", err)
 	}
 
-	for _, slug := range commercialReconcilePlanSlugs {
+	plans, err := reconcilePlanSlugs(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, slug := range plans {
 		if err := reconcileOfficialPlan(ctx, tx, slug, models); err != nil {
 			return err
 		}
@@ -63,11 +75,57 @@ func (a *Adapter) ReconcileCommercialPlanModels(ctx context.Context, catalog []s
 	return nil
 }
 
-// commercialReconcilePlanSlugs are the plans whose model sets follow the relay.
-// Kept in a fixed order so a failure always reports the same first plan.
-var commercialReconcilePlanSlugs = []string{
-	commercialPersonalPlanSlug,
-	commercialProPlanSlug,
+// reconcileCoversPlan reports whether a plan follows the relay catalog.
+//
+// The official paid plans always follow it: their model set is a product
+// decision, so a switch flipped by mistake must not freeze them. Every other
+// plan is decided by its own switch, which is what lets an operator create an
+// internal all-models package (switch on, gets the whole catalog) or a pinned
+// package (switch off, keeps exactly the models they picked) with no code
+// change. Free and legacy are excluded: Free is sold to every account and keeps
+// a deliberately small model set, and legacy grants are historical records.
+func reconcileCoversPlan(slug string, autoUpdateModels bool) bool {
+	slug = strings.TrimSpace(slug)
+	if slug == "" || slug == commercialFreePlanSlug || slug == commercialLegacyPlanSlug {
+		return false
+	}
+	if commercialOfficialPlanTier(slug) != 0 {
+		return true
+	}
+	return autoUpdateModels
+}
+
+// reconcilePlanSlugs lists the plans that follow the relay.
+//
+// The query only narrows the candidate set; the decision itself is made by
+// reconcileCoversPlan so the rule exists in one place. Duplicating the switch in
+// SQL is how a plan ends up covered by one half and skipped by the other.
+func reconcilePlanSlugs(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT slug, auto_update_models FROM commercial_plans
+		WHERE archived_at IS NULL
+		ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list plans for model reconcile: %w", err)
+	}
+	defer rows.Close()
+	var slugs []string
+	for rows.Next() {
+		var (
+			slug       string
+			autoUpdate bool
+		)
+		if err := rows.Scan(&slug, &autoUpdate); err != nil {
+			return nil, fmt.Errorf("scan plan slug for model reconcile: %w", err)
+		}
+		if reconcileCoversPlan(slug, autoUpdate) {
+			slugs = append(slugs, slug)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read plan slugs for model reconcile: %w", err)
+	}
+	return slugs, nil
 }
 
 func normalizeReconcileModels(catalog []string) []string {

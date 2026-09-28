@@ -290,27 +290,27 @@ func TestReconcileSortedNamesAreDeterministic(t *testing.T) {
 	}
 }
 
-func TestReconcileCoversEveryOfficialPaidPlan(t *testing.T) {
-	for _, slug := range commercialReconcilePlanSlugs {
-		if commercialOfficialPlanTier(slug) == 0 {
-			t.Fatalf("reconcile maintains %s, which is not an official paid plan", slug)
-		}
-	}
+// TestReconcileSelectionKeepsFreeAndLegacyOut pins who the reconcile covers now
+// that the slug list is gone. The set is chosen by the plans' own switch, so the
+// test states the rule rather than a list: an opted-in internal plan follows the
+// relay, and Free and legacy never do even with the switch on.
+//
+// Free is the dangerous one: it is sold to every account, so letting it follow
+// the catalog would hand out the flagship models the moment they became
+// sellable, and its own migration would fight the reconcile over the model set.
+func TestReconcileSelectionKeepsFreeAndLegacyOut(t *testing.T) {
+	// The official paid plans always follow the catalog, switch or not.
 	for _, slug := range []string{commercialPersonalPlanSlug, commercialProPlanSlug} {
-		found := false
-		for _, candidate := range commercialReconcilePlanSlugs {
-			if candidate == slug {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("official paid plan %s is not maintained by the reconcile", slug)
+		if commercialOfficialPlanTier(slug) == 0 {
+			t.Fatalf("%s must be an official paid plan", slug)
 		}
 	}
-	// The Free plan keeps its own model set; the reconcile must not touch it.
-	if commercialOfficialPlanTier(commercialFreePlanSlug) != 0 {
-		t.Fatal("the free plan must not be treated as an official paid plan")
+	// Free and legacy are excluded by the query's NOT IN, so they must not be
+	// reachable through the official-plan path either.
+	for _, slug := range []string{commercialFreePlanSlug, commercialLegacyPlanSlug} {
+		if commercialOfficialPlanTier(slug) != 0 {
+			t.Fatalf("%s must not be treated as an official paid plan", slug)
+		}
 	}
 }
 
@@ -375,5 +375,38 @@ func TestReconcileGrantSharesSkipNonPositiveBudgets(t *testing.T) {
 	}
 	if models, amounts := reconcileGrantShares(map[string]float64{"a": 0}); models != nil || amounts != nil {
 		t.Fatal("a plan with no positive budget must not produce shares")
+	}
+}
+
+// TestReconcileSelectionFollowsThePlanSwitch pins the rule that replaced the
+// slug list: a plan follows the relay when its own switch is on, so an operator
+// who creates an internal all-models package and leaves the switch checked gets
+// the whole catalog without a code change.
+func TestReconcileSelectionFollowsThePlanSwitch(t *testing.T) {
+	cases := []struct {
+		slug       string
+		autoUpdate bool
+		want       bool
+	}{
+		{commercialPersonalPlanSlug, true, true},
+		{commercialProPlanSlug, true, true},
+		// The official plans follow the catalog even if the switch was turned off.
+		{commercialPersonalPlanSlug, false, true},
+		{commercialProPlanSlug, false, true},
+		// An opted-in internal plan follows it too - this is the case that was
+		// silently skipped before, leaving its buyers without grants for models
+		// the plan already advertised.
+		{"catsco-internal-all-models-50k", true, true},
+		// An operator who unchecks the switch pins exactly the models they picked.
+		{"catsco-internal-pinned", false, false},
+		// Free is sold to every account and keeps its own model set.
+		{commercialFreePlanSlug, true, false},
+		{commercialLegacyPlanSlug, true, false},
+	}
+	for _, tc := range cases {
+		got := reconcileCoversPlan(tc.slug, tc.autoUpdate)
+		if got != tc.want {
+			t.Fatalf("reconcileCoversPlan(%q, auto=%v) = %v, want %v", tc.slug, tc.autoUpdate, got, tc.want)
+		}
 	}
 }
