@@ -81,8 +81,77 @@ func (a *Adapter) ReconcileCommercialPlanModelsWithInternal(ctx context.Context,
 			return err
 		}
 	}
+	// Plans whose model set is deliberately fixed still need their buyer grants
+	// aligned with the plan they bought. An operator-assigned package is built
+	// from the plan as it stood at assignment time, so a later change - a model
+	// added by the plan's own migration, or one retired - leaves its holder with
+	// the old set: quota for a model the plan no longer sells, and none for the
+	// ones it gained.
+	if err := reconcileFixedPlanGrants(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit commercial plan reconcile: %w", err)
+	}
+	return nil
+}
+
+// reconcileFixedPlanGrants aligns the grants of plans that do not follow the
+// catalog. It never rewrites their model budgets: only the link between a plan
+// and what its holders were given is repaired.
+func reconcileFixedPlanGrants(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, slug, name, model_budgets FROM commercial_plans
+		WHERE archived_at IS NULL AND slug = $1
+		ORDER BY id FOR UPDATE`, commercialFreePlanSlug)
+	if err != nil {
+		return fmt.Errorf("list fixed plans for grant reconcile: %w", err)
+	}
+	// Collect before writing: a tx is one connection, so running an INSERT while
+	// this cursor is open fails with "driver: bad connection". The rows are few
+	// (one per fixed plan) so buffering them costs nothing.
+	type fixedPlan struct {
+		id      int64
+		slug    string
+		name    string
+		budgets map[string]float64
+	}
+	var plans []fixedPlan
+	for rows.Next() {
+		var (
+			planID     int64
+			slug       string
+			planName   string
+			rawBudgets []byte
+		)
+		if err := rows.Scan(&planID, &slug, &planName, &rawBudgets); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan fixed plan for grant reconcile: %w", err)
+		}
+		if !reconcileSyncsGrantsSeparately(slug) {
+			continue
+		}
+		plans = append(plans, fixedPlan{id: planID, slug: slug, name: planName, budgets: decodeModelBudgets(rawBudgets)})
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close fixed plans for grant reconcile: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read fixed plans for grant reconcile: %w", err)
+	}
+
+	for _, plan := range plans {
+		// The amounts are the plan's own, not an even split: a repaired holder
+		// must match every other holder of the same plan.
+		models, amounts := reconcilePlanOwnShares(plan.budgets)
+		if len(models) == 0 {
+			continue
+		}
+		// The delta guard inside the catalog pass would short-circuit here - the
+		// plan's set did not change - so the forced entry point is used instead.
+		if err := reconcilePlanGrantsForced(ctx, tx, plan.id, plan.name, models, amounts); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -105,6 +174,20 @@ func reconcileCoversPlan(slug string, autoUpdateModels bool) bool {
 		return true
 	}
 	return autoUpdateModels
+}
+
+// reconcileSyncsGrantsSeparately reports whether a plan's buyer grants are
+// aligned with the plan even though its model set does not follow the catalog.
+//
+// Free is the case this exists for. Its model set is deliberately small and
+// maintained by its own migration, but an operator-assigned free package is
+// built from whatever the plan held at assignment time. When the plan later
+// gains a model - or drops a retired one - those buyers keep the old set, so
+// they hold quota for a model the plan no longer sells and lack the ones it
+// gained. That is indistinguishable from the reconcile being broken, so the
+// grant pass runs for Free too; only the model-set rewrite is skipped.
+func reconcileSyncsGrantsSeparately(slug string) bool {
+	return strings.TrimSpace(slug) == commercialFreePlanSlug
 }
 
 // reconcilePlanSlugs lists the plans that follow the relay.
@@ -380,13 +463,6 @@ func reconcileActivePlanGrants(ctx context.Context, tx *sql.Tx, planID int64, pl
 	if len(added) == 0 && len(removed) == 0 {
 		return nil
 	}
-	packages, err := reconcileGrantPackages(ctx, tx, planID)
-	if err != nil {
-		return err
-	}
-	if len(packages) == 0 {
-		return nil
-	}
 	// Split the plan's total over the new model set exactly the way
 	// reconcilePlanModelBudgets split it for the plan, so the buyer's pool stays
 	// equal to the plan total. The remainder has to be placed deliberately: when
@@ -395,11 +471,47 @@ func reconcileActivePlanGrants(ctx context.Context, tx *sql.Tx, planID int64, pl
 	// a different model on every run, because Go randomises map iteration, and
 	// the buyer's total would drift by that leftover.
 	models, amounts := reconcileGrantShares(after)
+	return reconcilePlanGrantsForced(ctx, tx, planID, planName, models, amounts)
+}
+
+// reconcilePlanGrantsForced rebuilds a plan's holder grants for the given model
+// set, without the "did the set change" short-circuit.
+//
+// It exists for plans whose model set is fixed: their budgets do not move here,
+// so a delta check would always report no change and the drift it is called to
+// repair would survive every restart. The rebuild itself is the same pass, which
+// keeps one implementation of the revocation.
+//
+// The amounts come from the caller rather than being recomputed here, because
+// the two cases need different ones. A catalog-following plan has just been
+// re-split evenly by reconcilePlanModelBudgets, so its grants take that split. A
+// fixed plan keeps its own per-model amounts - Free grants 1000 for MiniMax-M2.7
+// and 100 for an image model - and its holders already carry exactly those, so
+// re-splitting evenly would leave one repaired package looking unlike every
+// other holder of the same plan.
+func reconcilePlanGrantsForced(ctx context.Context, tx *sql.Tx, planID int64, planName string, models []string, amounts map[string]float64) error {
 	if len(models) == 0 {
+		return nil
+	}
+	packages, err := reconcileGrantPackages(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	if len(packages) == 0 {
 		return nil
 	}
 
 	for _, pkg := range packages {
+		// A package already holding exactly the plan's set is left alone: this
+		// pass runs on every startup, and rewriting a correct package would
+		// churn the ledger and the grants for no reason.
+		current, err := packageGrantModels(ctx, tx, pkg)
+		if err != nil {
+			return err
+		}
+		if reconcileGrantSetMatches(current, models) {
+			continue
+		}
 		if err := revokePackageGrants(ctx, tx, pkg); err != nil {
 			return err
 		}
@@ -444,6 +556,33 @@ func reconcileGrantShares(after map[string]float64) ([]string, map[string]float6
 	if remainder := roundBudget(total - assigned); remainder != 0 {
 		amounts[models[0]] = roundBudget(amounts[models[0]] + remainder)
 	}
+	return models, amounts
+}
+
+// reconcilePlanOwnShares returns a plan's models with the plan's own per-model
+// amounts, for the fixed-plan grant pass.
+//
+// It does not re-split the total. A catalog-following plan has just been
+// re-split evenly, so its grants take that even split; a fixed plan keeps the
+// allocation it was written with, and its holders already carry exactly those
+// amounts. Re-splitting here would leave a repaired package looking unlike every
+// other holder of the same plan - Free grants 1000 for MiniMax-M2.7 and 100 for
+// an image model, and both must survive the repair.
+func reconcilePlanOwnShares(plan map[string]float64) ([]string, map[string]float64) {
+	models := make([]string, 0, len(plan))
+	amounts := make(map[string]float64, len(plan))
+	for model, amount := range plan {
+		model = strings.TrimSpace(model)
+		if model == "" || model == "*" || amount <= 0 {
+			continue
+		}
+		models = append(models, model)
+		amounts[model] = amount
+	}
+	if len(models) == 0 {
+		return nil, nil
+	}
+	sort.Strings(models)
 	return models, amounts
 }
 
@@ -529,6 +668,54 @@ func grantPackageModel(ctx context.Context, tx *sql.Tx, pkg reconcileGrantPackag
 		return fmt.Errorf("record %s grant for uid %d: %w", model, pkg.uid, err)
 	}
 	return nil
+}
+
+// packageGrantModels reads the models one buyer's package currently holds. The
+// rebuild compares against it so a package that already matches the plan is left
+// untouched: the forced pass runs on every startup, and rewriting a correct
+// package would churn both the grants and the ledger for no reason.
+func packageGrantModels(ctx context.Context, tx *sql.Tx, pkg reconcileGrantPackage) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT model FROM commercial_quota_grants
+		WHERE uid = $1 AND plan_id = $2
+		  AND grant_type = $3 AND source_ref = $4
+		  AND revoked_at IS NULL`,
+		pkg.uid, pkg.planID, pkg.grantType, pkg.sourceRef)
+	if err != nil {
+		return nil, fmt.Errorf("read uid %d package models: %w", pkg.uid, err)
+	}
+	defer rows.Close()
+	var models []string
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, fmt.Errorf("scan uid %d package model: %w", pkg.uid, err)
+		}
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read uid %d package models: %w", pkg.uid, err)
+	}
+	return models, nil
+}
+
+// reconcileGrantSetMatches reports whether a package already holds exactly the
+// plan's models. Comparison is case-insensitive because a stored grant may use
+// the plan's older spelling while the split uses the relay's canonical one.
+func reconcileGrantSetMatches(current, want []string) bool {
+	if len(current) != len(want) {
+		return false
+	}
+	held := make(map[string]struct{}, len(current))
+	for _, model := range current {
+		held[strings.ToLower(strings.TrimSpace(model))] = struct{}{}
+	}
+	for _, model := range want {
+		if _, ok := held[strings.ToLower(strings.TrimSpace(model))]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // reconcileGrantPackage identifies one buyer's active package: the grants that
