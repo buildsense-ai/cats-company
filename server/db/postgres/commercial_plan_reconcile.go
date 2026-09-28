@@ -165,14 +165,11 @@ func reconcileFixedPlanGrants(ctx context.Context, tx *sql.Tx) error {
 	}
 
 	for _, plan := range plans {
-		// The amounts are the plan's own, not an even split: a repaired holder
+		// The delta guard inside the catalog pass would short-circuit here - the
+		// plan's set did not change - so the forced entry point is used instead,
+		// with the plan's own amounts rather than an even split: a repaired holder
 		// must match every other holder of the same plan.
 		models, amounts := reconcilePlanOwnShares(plan.budgets)
-		if len(models) == 0 {
-			continue
-		}
-		// The delta guard inside the catalog pass would short-circuit here - the
-		// plan's set did not change - so the forced entry point is used instead.
 		if err := reconcilePlanGrantsForced(ctx, tx, plan.id, plan.name, models, amounts); err != nil {
 			return err
 		}
@@ -296,6 +293,17 @@ func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog
 	current := decodeModelBudgets(rawBudgets)
 	target := reconcilePlanModelBudgets(current, catalog, autoUpdateModels, internalOnly...)
 	if target == nil {
+		// The plan's model set already matches the catalog, so there is nothing to
+		// rewrite. Its holders can still be out of step: a model the relay routes
+		// but does not sell is absent from the catalog, so keeping it leaves the
+		// set unchanged (nil above) while the grants never received it - which is
+		// exactly what happened when the internal all-models package held twelve
+		// models and its buyers held six. Aligning the grants is idempotent, so it
+		// runs unconditionally rather than only after a rewrite.
+		grantModels, grantAmounts := reconcilePlanOwnShares(current)
+		if err := reconcilePlanGrantsForced(ctx, tx, planID, planName, grantModels, grantAmounts); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -471,7 +479,7 @@ func reconcilePlanOrderSnapshots(ctx context.Context, tx *sql.Tx, slug string, b
 }
 
 // reconcileActivePlanGrants brings the grants of current holders in line with
-// the plan they bought.
+// the plan they bought when the plan's model set moved.
 //
 // Grants are created from the plan's budgets at purchase time, so changing the
 // plan alone would leave existing buyers without the new model. The package's
@@ -506,12 +514,12 @@ func reconcileActivePlanGrants(ctx context.Context, tx *sql.Tx, planID int64, pl
 // repair would survive every restart. The rebuild itself is the same pass, which
 // keeps one implementation of the revocation.
 //
-// The amounts come from the caller rather than being recomputed here, because
-// the two cases need different ones. A catalog-following plan has just been
-// re-split evenly by reconcilePlanModelBudgets, so its grants take that split. A
-// fixed plan keeps its own per-model amounts - Free grants 1000 for MiniMax-M2.7
-// and 100 for an image model - and its holders already carry exactly those, so
-// re-splitting evenly would leave one repaired package looking unlike every
+// shares is how the amounts are derived, and the two callers need different
+// ones. A catalog-following plan has just been re-split evenly by
+// reconcilePlanModelBudgets, so its grants take that split. A plan whose set did
+// not move keeps its own per-model amounts - Free grants 1000 for MiniMax-M2.7
+// and 100 for an image model, and its holders already carry exactly those -
+// so re-splitting evenly would leave one repaired package looking unlike every
 // other holder of the same plan.
 func reconcilePlanGrantsForced(ctx context.Context, tx *sql.Tx, planID int64, planName string, models []string, amounts map[string]float64) error {
 	if len(models) == 0 {
