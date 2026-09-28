@@ -78,10 +78,10 @@ type CommercialPlan struct {
 	ModelBudgets map[string]float64 `json:"model_budgets,omitempty"`
 	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
 	// Relay enforcement continues to use the CNY budgets above.
-	InternalQuotaTokens int64 `json:"internal_quota_tokens,omitempty"`
-	DurationDays        int   `json:"duration_days"`
-	State               int   `json:"state"`
-	SortOrder           int   `json:"sort_order"`
+	InternalQuotaTokens int64     `json:"internal_quota_tokens,omitempty"`
+	DurationDays        int       `json:"duration_days"`
+	State               int       `json:"state"`
+	SortOrder           int       `json:"sort_order"`
 	// AutoUpdateModels controls whether the startup reconcile may add newly
 	// onboarded relay models to this plan. It defaults to true; plans that sell
 	// a fixed model set turn it off. A retired model is removed either way,
@@ -91,6 +91,7 @@ type CommercialPlan struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+// CommercialOrder is an immutable purchase snapshot plus its payment and
 // fulfillment state. Provider secrets and raw callback bodies are never stored.
 type CommercialOrder struct {
 	ID                int64              `json:"id"`

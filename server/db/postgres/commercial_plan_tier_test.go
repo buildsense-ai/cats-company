@@ -6,11 +6,11 @@ import (
 
 // The postgres package used to carry a second copy of the official paid-plan
 // model whitelist and its validator, and a test pinned the same ten-model set in
-// both places so they could not drift apart. The whitelist is gone: the relay
+// both places so they could not drift apart. That duplicate is gone: the relay
 // catalog is the source of truth and the plan model sets are maintained by
 // ReconcileCommercialPlanModels, whose own tests live in
-// commercial_plan_reconcile_test.go. What still matters here is that the plan
-// slugs the tier logic recognises stay pinned.
+// commercial_plan_reconcile_test.go. What still matters here is that the slugs
+// the tier logic recognises stay pinned.
 func TestOfficialPaidPlanTierRecognisesTheReconciledPlans(t *testing.T) {
 	if commercialOfficialPlanTier(commercialPersonalPlanSlug) != 1 {
 		t.Fatalf("%s must be tier 1", commercialPersonalPlanSlug)
