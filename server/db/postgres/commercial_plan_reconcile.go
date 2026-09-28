@@ -280,37 +280,64 @@ func reconcileActivePlanGrants(ctx context.Context, tx *sql.Tx, planID int64, pl
 	if len(packages) == 0 {
 		return nil
 	}
-	// The plan's own per-model amount: every model carries the same share of the
-	// shared pool, so one lookup covers them all.
-	share := 0.0
-	for _, amount := range after {
-		if amount > 0 {
-			share = roundBudget(amount)
-			break
-		}
-	}
-	if share <= 0 {
+	// Split the plan's total over the new model set exactly the way
+	// reconcilePlanModelBudgets split it for the plan, so the buyer's pool stays
+	// equal to the plan total. The remainder has to be placed deliberately: when
+	// the total does not divide evenly (11000 over 12 models), one model carries
+	// the leftover. Reading a per-model amount out of the map instead would pick
+	// a different model on every run, because Go randomises map iteration, and
+	// the buyer's total would drift by that leftover.
+	models, amounts := reconcileGrantShares(after)
+	if len(models) == 0 {
 		return nil
 	}
-	models := make([]string, 0, len(after))
-	for model, amount := range after {
-		if amount > 0 {
-			models = append(models, model)
-		}
-	}
-	sort.Strings(models)
 
 	for _, pkg := range packages {
 		if err := revokePackageGrants(ctx, tx, pkg); err != nil {
 			return err
 		}
 		for _, model := range models {
-			if err := grantPackageModel(ctx, tx, pkg, planID, planName, model, share); err != nil {
+			if err := grantPackageModel(ctx, tx, pkg, planID, planName, model, amounts[model]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// reconcileGrantShares splits a plan's total over its models for the grant
+// rebuild, mirroring reconcilePlanModelBudgets. It returns the models in a
+// stable order plus each model's amount.
+//
+// The split must be deterministic: the same plan must produce the same amounts
+// on every startup, because it decides what every current buyer holds. Deriving
+// it by reading one entry out of the map would not be, since Go randomises map
+// iteration, and the model carrying the rounding remainder would change run to
+// run.
+func reconcileGrantShares(after map[string]float64) ([]string, map[string]float64) {
+	models := make([]string, 0, len(after))
+	total := 0.0
+	for model, amount := range after {
+		if amount > 0 {
+			models = append(models, model)
+			total += amount
+		}
+	}
+	if total <= 0 || len(models) == 0 {
+		return nil, nil
+	}
+	sort.Strings(models)
+	share := roundBudget(total / float64(len(models)))
+	amounts := make(map[string]float64, len(models))
+	assigned := 0.0
+	for _, model := range models {
+		amounts[model] = share
+		assigned += share
+	}
+	if remainder := roundBudget(total - assigned); remainder != 0 {
+		amounts[models[0]] = roundBudget(amounts[models[0]] + remainder)
+	}
+	return models, amounts
 }
 
 // reconcileModelDelta reports which models the reconcile added and removed.

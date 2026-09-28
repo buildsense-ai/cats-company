@@ -313,3 +313,67 @@ func TestReconcileCoversEveryOfficialPaidPlan(t *testing.T) {
 		t.Fatal("the free plan must not be treated as an official paid plan")
 	}
 }
+
+// TestReconcileGrantSharesAreDeterministicAndTotalPreserving guards the grant
+// rebuild. It runs the split many times because a value read out of a Go map is
+// randomised: an implementation that took "the first model's amount" as the
+// shared limit would return a different set on some runs, and the buyer's total
+// would move by the rounding remainder.
+func TestReconcileGrantSharesAreDeterministicAndTotalPreserving(t *testing.T) {
+	plan := reconcilePlanModelBudgets(reconcilePersonalPlan(), reconcileCatalog(), true)
+	if plan == nil {
+		t.Fatal("reconcile skipped a plan missing a relay model")
+	}
+	planTotal := sumBudgets(plan)
+
+	wantModels, wantAmounts := reconcileGrantShares(plan)
+	if len(wantModels) != 12 {
+		t.Fatalf("expected twelve models, got %d", len(wantModels))
+	}
+	if got := sumBudgets(wantAmounts); got != planTotal {
+		t.Fatalf("grant shares total = %v, want the plan total %v", got, planTotal)
+	}
+
+	for run := 0; run < 200; run++ {
+		models, amounts := reconcileGrantShares(plan)
+		if strings.Join(models, ",") != strings.Join(wantModels, ",") {
+			t.Fatalf("run %d returned a different model order: %v", run, models)
+		}
+		if sumBudgets(amounts) != planTotal {
+			t.Fatalf("run %d total = %v, want %v", run, sumBudgets(amounts), planTotal)
+		}
+		for _, model := range wantModels {
+			if amounts[model] != wantAmounts[model] {
+				t.Fatalf("run %d gave %s = %v, want %v", run, model, amounts[model], wantAmounts[model])
+			}
+		}
+	}
+
+	// The rebuild must reproduce exactly what the plan holds, which is what makes
+	// a buyer's pool unchanged across a restart.
+	for _, model := range wantModels {
+		if got, want := wantAmounts[model], plan[model]; math.Abs(got-want) > 0.000001 {
+			t.Fatalf("grant share for %s = %v, but the plan holds %v", model, got, want)
+		}
+	}
+}
+
+// TestReconcileGrantSharesSkipNonPositiveBudgets keeps the split off models the
+// plan does not actually sell.
+func TestReconcileGrantSharesSkipNonPositiveBudgets(t *testing.T) {
+	models, amounts := reconcileGrantShares(map[string]float64{
+		"a": 100, "b": 0, "c": 300, "d": -5,
+	})
+	if strings.Join(models, ",") != "a,c" {
+		t.Fatalf("models = %v, want only the positive-budget models", models)
+	}
+	if len(amounts) != 2 || sumBudgets(amounts) != 400 {
+		t.Fatalf("amounts = %v, want 400 split over two models", amounts)
+	}
+	if amounts["a"] != 200 || amounts["c"] != 200 {
+		t.Fatalf("amounts = %v, want 200 each", amounts)
+	}
+	if models, amounts := reconcileGrantShares(map[string]float64{"a": 0}); models != nil || amounts != nil {
+		t.Fatal("a plan with no positive budget must not produce shares")
+	}
+}
