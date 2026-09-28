@@ -43,10 +43,22 @@ import (
 // starting instances cannot interleave, and it is idempotent: when a plan's
 // model set already matches the catalog it performs no write at all.
 func (a *Adapter) ReconcileCommercialPlanModels(ctx context.Context, catalog []string) error {
+	return a.ReconcileCommercialPlanModelsWithInternal(ctx, catalog, nil)
+}
+
+// ReconcileCommercialPlanModelsWithInternal is ReconcileCommercialPlanModels
+// plus the relay's internal-only list.
+//
+// The extra list is what keeps an internal package's models from being stripped:
+// those names are routable but deliberately absent from the sellable catalog, so
+// without them the removal rule reads them as retired and drops them from the
+// plan that grants them.
+func (a *Adapter) ReconcileCommercialPlanModelsWithInternal(ctx context.Context, catalog, internalOnly []string) error {
 	models := normalizeReconcileModels(catalog)
 	if len(models) == 0 {
 		return fmt.Errorf("commercial model catalog is empty")
 	}
+	internalModels := normalizeReconcileModels(internalOnly)
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin commercial plan reconcile: %w", err)
@@ -65,7 +77,7 @@ func (a *Adapter) ReconcileCommercialPlanModels(ctx context.Context, catalog []s
 		return err
 	}
 	for _, slug := range plans {
-		if err := reconcileOfficialPlan(ctx, tx, slug, models); err != nil {
+		if err := reconcileOfficialPlan(ctx, tx, slug, models, internalModels); err != nil {
 			return err
 		}
 	}
@@ -155,7 +167,7 @@ type storedBudget struct {
 
 // reconcileOfficialPlan rewrites one plan's model budgets and, when the model
 // set actually changed, migrates the grants of everyone currently holding it.
-func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog []string) error {
+func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog, internalOnly []string) error {
 	var (
 		planID           int64
 		planName         string
@@ -175,7 +187,7 @@ func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog
 	}
 
 	current := decodeModelBudgets(rawBudgets)
-	target := reconcilePlanModelBudgets(current, catalog, autoUpdateModels)
+	target := reconcilePlanModelBudgets(current, catalog, autoUpdateModels, internalOnly...)
 	if target == nil {
 		return nil
 	}
@@ -214,7 +226,13 @@ func reconcileOfficialPlan(ctx context.Context, tx *sql.Tx, slug string, catalog
 // models as a separate small allowance would be wrong twice over: it would leave
 // them out of the split, and a newly added image model would silently take its
 // allowance away from the shared pool instead of sharing it.
-func reconcilePlanModelBudgets(current map[string]float64, catalog []string, autoUpdateModels bool) map[string]float64 {
+//
+// internalOnly names models the relay routes but deliberately does not sell. A
+// plan that already holds one keeps it: the model is missing from the sellable
+// catalog, and the removal rule below would otherwise read that as "the relay
+// retired it" and strip it from the internal package that grants it. They are
+// never added - only an operator puts one in a plan.
+func reconcilePlanModelBudgets(current map[string]float64, catalog []string, autoUpdateModels bool, internalOnly ...string) map[string]float64 {
 	existing := make(map[string]storedBudget, len(current))
 	// The plan's present total is the anchor: whatever the model set becomes,
 	// this is what the plan advertises and what a buyer's pool must stay at. A
@@ -234,7 +252,23 @@ func reconcilePlanModelBudgets(current map[string]float64, catalog []string, aut
 		return nil
 	}
 
-	out := make(map[string]float64, len(catalog))
+	// Models that must survive the removal pass even though they are not in the
+	// sellable catalog. Only the ones the plan already holds are considered: this
+	// keeps an internal package intact without letting a name be invented into a
+	// plan that never carried it.
+	keep := make(map[string]storedBudget, len(internalOnly))
+	for _, model := range internalOnly {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		key := strings.ToLower(model)
+		if stored, ok := existing[key]; ok {
+			keep[key] = stored
+		}
+	}
+
+	out := make(map[string]float64, len(catalog)+len(keep))
 	changed := false
 	for _, model := range catalog {
 		model = strings.TrimSpace(model)
@@ -251,9 +285,24 @@ func reconcilePlanModelBudgets(current map[string]float64, catalog []string, aut
 		}
 		out[model] = 0
 	}
+	// Put back the internal-only models the plan already holds. They are absent
+	// from the sellable catalog, so the loop above skipped them and the removal
+	// pass below would drop them; the relay still routes them and the internal
+	// package still grants them, so they stay and keep sharing the same pool.
+	for _, stored := range keep {
+		if _, ok := out[stored.spelling]; ok {
+			continue
+		}
+		if _, ok := out[strings.ToLower(stored.spelling)]; ok {
+			continue
+		}
+		out[stored.spelling] = 0
+	}
 	// A model the relay no longer sells leaves the plan even when the plan is
 	// pinned: keeping it would advertise a model whose requests the relay
-	// refuses.
+	// refuses. The internal-only models were put back above, so their own
+	// presence in out is what exempts them; only a genuinely retired name
+	// reaches here.
 	for key, stored := range existing {
 		if _, ok := out[stored.spelling]; ok {
 			continue

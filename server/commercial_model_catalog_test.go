@@ -17,6 +17,12 @@ import (
 // catalogTestServer serves the relay-admin catalog shape and counts hits, so
 // tests can assert the memory cache actually prevents repeat reads.
 func catalogTestServer(t *testing.T, models []string, status int) (*httptest.Server, *int32) {
+	return catalogTestServerWithInternal(t, models, nil, status)
+}
+
+// catalogTestServerWithInternal serves the relay's two-list shape: sellable
+// models plus the internal-only names a plan may keep but not buy.
+func catalogTestServerWithInternal(t *testing.T, models, internalOnly []string, status int) (*httptest.Server, *int32) {
 	t.Helper()
 	var hits int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +37,7 @@ func catalogTestServer(t *testing.T, models []string, status int) (*httptest.Ser
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(catalogPayload{Models: models, Count: len(models), Source: "adapter"})
+		_ = json.NewEncoder(w).Encode(catalogPayload{Models: models, Count: len(models), InternalOnly: internalOnly, Source: "adapter"})
 	}))
 	t.Cleanup(server.Close)
 	return server, &hits
