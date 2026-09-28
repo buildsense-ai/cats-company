@@ -1062,12 +1062,56 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	if len(catalog) != 6 {
 		t.Fatalf("catalog length=%d, want 6 granted models: %#v", len(catalog), catalog)
 	}
+	// The paid plan grants gpt-6-sol, so the picker has to offer it. An entry
+	// missing from botModelCatalog is invisible no matter what the plan sells,
+	// which is how the model reached every buyer's quota while staying out of
+	// their model list.
+	granted := map[string]bool{}
+	for _, item := range catalog {
+		granted[item.ID] = true
+	}
+	for _, model := range []string{"gpt-6-sol", "gpt-5.6-terra"} {
+		if !granted[model] {
+			t.Fatalf("catalog is missing %s, which the plan grants: %#v", model, catalog)
+		}
+	}
+	// The superseded name must not come back: no public plan contains it, so a
+	// picker entry would offer a model the plan refuses.
+	for _, item := range catalog {
+		if item.ID == "gpt-5.6-sol" {
+			t.Fatal("catalog must not offer the superseded gpt-5.6-sol")
+		}
+	}
 	for _, item := range catalog {
 		if item.ID == "gpt-5.6-luna" {
 			t.Fatal("ungranted Luna must not be exposed in the model catalog")
 		}
 		if !item.Available || item.Quota == nil || item.Quota.Source != "relay_shared" || item.Quota.Percent != 10 || item.Quota.RemainingPercent != 90 {
 			t.Fatalf("model %s did not receive the shared quota: %#v", item.ID, item.Quota)
+		}
+	}
+}
+
+// TestCatalogOffersEveryGPTModelThePaidPlansSell compares the picker's GPT
+// entries against the models the paid plans actually grant. The two lists live
+// in different files and drifted once already: the plan gained gpt-6-sol while
+// the picker kept gpt-5.6-sol, so buyers held a model they could not select.
+func TestCatalogOffersEveryGPTModelThePaidPlansSell(t *testing.T) {
+	planModels := map[string]bool{"gpt-5.6-terra": true, "gpt-6-sol": true}
+	offered := map[string]bool{}
+	for _, item := range botModelCatalog {
+		if strings.HasPrefix(item.ID, "gpt-") {
+			offered[item.ID] = true
+		}
+	}
+	for model := range planModels {
+		if !offered[model] {
+			t.Fatalf("the paid plans sell %s but the picker does not offer it: %v", model, offered)
+		}
+	}
+	for model := range offered {
+		if !planModels[model] {
+			t.Fatalf("the picker offers %s, which no paid plan sells: %v", model, planModels)
 		}
 	}
 }
