@@ -78,10 +78,10 @@ type CommercialPlan struct {
 	ModelBudgets map[string]float64 `json:"model_budgets,omitempty"`
 	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
 	// Relay enforcement continues to use the CNY budgets above.
-	InternalQuotaTokens int64     `json:"internal_quota_tokens,omitempty"`
-	DurationDays        int       `json:"duration_days"`
-	State               int       `json:"state"`
-	SortOrder           int       `json:"sort_order"`
+	InternalQuotaTokens int64 `json:"internal_quota_tokens,omitempty"`
+	DurationDays        int   `json:"duration_days"`
+	State               int   `json:"state"`
+	SortOrder           int   `json:"sort_order"`
 	// AutoUpdateModels controls whether the startup reconcile may add newly
 	// onboarded relay models to this plan. It defaults to true; plans that sell
 	// a fixed model set turn it off. A retired model is removed either way,
@@ -936,6 +936,16 @@ type BotDefinitionRuntime struct {
 // separate from the currently selected portable model.
 type BotDefinitionSavedCustomModel struct {
 	APIKeyCiphertext string `json:"apiKeyCiphertext,omitempty"`
+}
+
+// BotFunction is the owner-defined identity a bot presents inside a group:
+// what it is for, beyond its display name. Group activation judging reads it so
+// a request can be matched to the member whose job it is, and the same values
+// are what the owner edits on the bot's profile.
+type BotFunction struct {
+	UID         int64
+	Role        string
+	Description string
 }
 
 type BotDefinitionRecord struct {

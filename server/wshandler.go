@@ -79,6 +79,20 @@ type Hub struct {
 	// and skip recovery when a newer connection generation appeared, so an old
 	// timer never marks work owned by a fresh connection as stale.
 	botConnectionEpochs map[int64]uint64
+	// groupActivation decides which bots a group message activates. It is nil
+	// unless a deployment installs the semantic judge, in which case the
+	// pre-existing mention rules remain the fallback.
+	groupActivation GroupActivationResolver
+}
+
+// SetGroupActivationResolver installs the group activation judge used by the
+// group broadcaster, mirroring the existing resolver-injection pattern so tests
+// can substitute deterministic judging.
+func (h *Hub) SetGroupActivationResolver(resolver GroupActivationResolver) {
+	if h == nil {
+		return
+	}
+	h.groupActivation = resolver
 }
 
 type presenceEvent struct {
@@ -1903,6 +1917,28 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 	}
 }
 
+// cloneDataMessageWithActivation copies a message for one bot recipient and
+// stamps the activation verdict. The copy keeps sibling deliveries independent,
+// so a verdict for one bot cannot leak into another's message.
+func cloneDataMessageWithActivation(msg *ServerMessage, activated bool) *ServerMessage {
+	if msg == nil || msg.Data == nil {
+		return msg
+	}
+	data := *msg.Data
+	data.Activated = &activated
+	return &ServerMessage{
+		Ctrl:                     msg.Ctrl,
+		Data:                     &data,
+		Pres:                     msg.Pres,
+		Meta:                     msg.Meta,
+		Info:                     msg.Info,
+		Friend:                   msg.Friend,
+		suppressPushNotification: msg.suppressPushNotification,
+		artifactContextRef:       msg.artifactContextRef,
+		artifactTaskRef:          msg.artifactTaskRef,
+	}
+}
+
 // isGroupTopic checks if a topic ID is a group topic.
 func isGroupTopic(topic string) bool {
 	return len(topic) > 4 && topic[:4] == "grp_"
@@ -2352,9 +2388,15 @@ func pushNotificationExcerpt(value string) string {
 	return value
 }
 
-// broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
-// Agent-task groups route unmentioned human messages to their current default agent.
-// Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
+// broadcastToGroupWithMentions delivers a group message to every online member
+// and marks which bots the message activates.
+//
+// Delivery and activation are separate concerns. Every member receives the
+// message so bots can see each other's work as context, while activation decides
+// which bots open a turn. Activation is resolved once per message: a group with
+// a single bot always activates it, an explicit mention wins immediately, and
+// otherwise a multi-bot group asks the activation judge. When judging is
+// unavailable the group is told, rather than guessing on the bots' behalf.
 func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) bool {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
@@ -2369,25 +2411,12 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		msg.Data.MemberCount = memberCount
 	}
 
-	// Convert structured mentions to a set for quick lookup.
-	mentionSet := make(map[string]bool)
-	for _, m := range mentions {
-		mentionSet[m] = true
-	}
-
 	channelManaged := h.isChannelManagedGroup(groupID)
 	senderIsBot := h.isBotUser(senderUID)
 	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
-	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
-	defaultAgentUID := int64(0)
-	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
-		group, groupErr := h.db.GetGroup(groupID)
-		if groupErr == nil && group != nil && group.Kind == types.GroupKindAgentTask && len(group.AgentIDs) > 0 {
-			// The first current task agent is the default. If it leaves, the
-			// next current agent takes over; other agents still require @.
-			defaultAgentUID = group.AgentIDs[0]
-		}
-	}
+
+	decision := h.resolveGroupActivation(groupID, members, msg, mentions, senderUID, senderIsBot, trustedChannelTrigger)
+
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
@@ -2403,13 +2432,10 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			continue
 		}
 
+		activated := false
 		if isBot {
-			userIDStr := formatUID(m.UserID)
-			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
-			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID {
-				continue
-			}
-			if !senderIsBot && isGroupAgentTurnRequest(msg) {
+			_, activated = decision.Activated[m.UserID]
+			if activated && !senderIsBot && isGroupAgentTurnRequest(msg) {
 				h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
 			}
 		}
@@ -2447,6 +2473,9 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			)
 			out.artifactTaskRef = validatedTaskDelivery
 		}
+		if out != nil && out.Data != nil && isBot {
+			out = cloneDataMessageWithActivation(out, activated)
+		}
 		if msg != nil && msg.artifactTaskRef != nil && msg.artifactTaskRef.AgentUID == m.UserID {
 			// Never deliver a task-shaped message to its target Agent after the
 			// reserved delivery stopped validating; that would become an ordinary
@@ -2466,5 +2495,169 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderPublishesTaskStatus)
 		}
 	}
+	if decision.Degraded {
+		h.announceActivationUnavailable(groupID, senderUID)
+	}
 	return taskDelivered
 }
+
+// resolveGroupActivation asks the injected resolver which bots a message
+// activates. Without a resolver the pre-existing behaviour is preserved: a
+// single-bot group activates, larger groups require an explicit mention.
+func (h *Hub) resolveGroupActivation(
+	groupID int64,
+	members []*types.GroupMember,
+	msg *ServerMessage,
+	mentions []string,
+	senderUID int64,
+	senderIsBot bool,
+	trustedChannelTrigger bool,
+) GroupActivationDecision {
+	req := GroupActivationRequest{
+		GroupID:               groupID,
+		SenderUID:             senderUID,
+		SenderIsBot:           senderIsBot,
+		Mentions:              mentions,
+		Members:               members,
+		TrustedChannelTrigger: trustedChannelTrigger,
+	}
+	if msg != nil && msg.Data != nil {
+		req.Message = normalizeContentText(msg.Data.Content)
+		// The group name and transcript each cost a query, so they load lazily:
+		// the resolver only asks for them on the path that actually judges.
+		topicID := msg.Data.Topic
+		req.JudgeContext = func() GroupJudgeContext {
+			return GroupJudgeContext{
+				GroupName:   h.groupNameForActivation(groupID),
+				RecentTurns: h.recentActivationTurns(topicID),
+			}
+		}
+	}
+	if h.groupActivation != nil {
+		return h.groupActivation.Resolve(context.Background(), req)
+	}
+	return deterministicGroupActivation(req)
+}
+
+// deterministicGroupActivation applies the rules that predate semantic judging.
+// It is the fallback used when no judge is installed, and it never reports
+// itself as degraded: falling back to mentions is a designed outcome, not a
+// failure worth telling the group about.
+func deterministicGroupActivation(req GroupActivationRequest) GroupActivationDecision {
+	allBots := activationBots(req.Members)
+	if len(allBots) == 0 {
+		return GroupActivationDecision{Source: activationSourceNoBot}
+	}
+	if len(allBots) == 1 {
+		if allBots[0].UID == req.SenderUID {
+			return GroupActivationDecision{Source: activationSourceBotSender}
+		}
+		return GroupActivationDecision{
+			Activated: map[int64]float64{allBots[0].UID: 1},
+			Source:    activationSourceSingleBot,
+		}
+	}
+	bots := activationExcludingSender(allBots, req.SenderUID)
+	if len(bots) == 0 {
+		return GroupActivationDecision{Source: activationSourceBotSender}
+	}
+	if req.TrustedChannelTrigger {
+		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceChannel}
+	}
+	if activationMentionAll(req.Mentions) {
+		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceMention}
+	}
+	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
+		return GroupActivationDecision{Activated: mentioned, Source: activationSourceMention}
+	}
+	return GroupActivationDecision{Source: activationSourceNoMention}
+}
+
+// groupNameForActivation reads the group label used in the judging prompt. A
+// lookup failure only costs prompt detail, never correctness.
+func (h *Hub) groupNameForActivation(groupID int64) string {
+	if h == nil || h.db == nil || groupID <= 0 {
+		return ""
+	}
+	group, err := h.db.GetGroup(groupID)
+	if err != nil || group == nil {
+		return ""
+	}
+	return strings.TrimSpace(group.Name)
+}
+
+// recentActivationTurns loads the transcript the judge reads. Only durable
+// participant messages qualify, which already excludes internal agent working
+// output (see message_visibility.go), so the judge sees conversation rather
+// than tool traffic.
+func (h *Hub) recentActivationTurns(topicID string) []GroupActivationTurn {
+	if h == nil || h.db == nil || topicID == "" {
+		return nil
+	}
+	limit := activationContextCutoff(0)
+	messages, err := h.db.GetLatestMessages(topicID, limit*2, 0)
+	if err != nil {
+		log.Printf("recentActivationTurns: failed to load messages for %s: %v", topicID, err)
+		return nil
+	}
+	turns := make([]GroupActivationTurn, 0, len(messages))
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		displayType := inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks)
+		if !isDurableAgentContextMessage(message, displayType) {
+			continue
+		}
+		text := strings.TrimSpace(normalizeContentText(decodeStoredContent(message.Content)))
+		if text == "" {
+			continue
+		}
+		turns = append(turns, GroupActivationTurn{
+			Speaker: h.activationSpeakerName(message.FromUID),
+			IsBot:   h.isBotUser(message.FromUID),
+			Text:    text,
+		})
+	}
+	if len(turns) > limit {
+		turns = turns[len(turns)-limit:]
+	}
+	return turns
+}
+
+// activationSpeakerName mirrors the name the speaker sees for itself: both the
+// roster and a bot's own handshake read users.display_name, so the judge and the
+// bot always agree on who is who.
+func (h *Hub) activationSpeakerName(uid int64) string {
+	if h != nil && h.db != nil && uid > 0 {
+		if user, err := h.db.GetUser(uid); err == nil && user != nil {
+			if name := strings.TrimSpace(user.DisplayName); name != "" {
+				return name
+			}
+			if name := strings.TrimSpace(user.Username); name != "" {
+				return name
+			}
+		}
+	}
+	return formatUID(uid)
+}
+
+// announceActivationUnavailable tells the group that routing failed instead of
+// leaving it silently unanswered, and points at the fallback a person can use.
+func (h *Hub) announceActivationUnavailable(groupID, senderUID int64) {
+	if h == nil || groupID <= 0 {
+		return
+	}
+	text := activationUnavailableNotice
+	message := &ServerMessage{Data: &MsgServerData{
+		Topic:    fmt.Sprintf("grp_%d", groupID),
+		From:     formatUID(senderUID),
+		Content:  text,
+		Type:     "text",
+		MsgType:  "text",
+		Metadata: map[string]interface{}{"catsco_transient": true, "catsco_activation_notice": true},
+	}}
+	h.broadcastToGroup(groupID, message, 0)
+}
+
+const activationUnavailableNotice = "⚠️ 智能路由暂不可用，本条未触发任何成员。可再次发送，或 @ 对应成员。"

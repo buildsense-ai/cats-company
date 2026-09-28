@@ -295,6 +295,34 @@ func (a *Adapter) UpdateBotProfile(botUID int64, role, description *string) erro
 	return err
 }
 
+// GetBotFunctions reads the owner-defined identity for the given bots. Bots
+// without a config row are omitted so callers fall back to the display name
+// rather than judging against an empty function.
+func (a *Adapter) GetBotFunctions(uids []int64) (map[int64]types.BotFunction, error) {
+	functions := make(map[int64]types.BotFunction, len(uids))
+	if len(uids) == 0 {
+		return functions, nil
+	}
+	rows, err := a.db.Query(
+		`SELECT user_id, COALESCE(role, ''), COALESCE(description, '')
+		 FROM bot_config
+		 WHERE user_id = ANY($1::bigint[])`,
+		uids,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get bot functions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var function types.BotFunction
+		if err := rows.Scan(&function.UID, &function.Role, &function.Description); err != nil {
+			return nil, fmt.Errorf("scan bot function: %w", err)
+		}
+		functions[function.UID] = function
+	}
+	return functions, rows.Err()
+}
+
 func (a *Adapter) UpdateBotArtifactUploadPolicy(botUID int64, enabled bool) error {
 	_, err := a.db.Exec(
 		`UPDATE bot_config SET artifact_upload_enabled = $1 WHERE user_id = $2`,

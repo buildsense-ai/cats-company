@@ -272,6 +272,11 @@ type MsgServerData struct {
 	ReplyTo       int                    `json:"reply_to,omitempty"`
 	Mentions      []string               `json:"mentions,omitempty"` // Structured @mention targets (for example ["usr123"] or ["all"]).
 	MemberCount   int                    `json:"member_count,omitempty"`
+	// Activated tells a bot whether this group message addresses it. Every
+	// member receives the message so bots can read each other's work, so the
+	// receiving bot needs the judgement spelled out instead of inferring it.
+	// Absent on non-group messages and on messages to human members.
+	Activated *bool `json:"activated,omitempty"`
 }
 
 type MsgServerPres struct {

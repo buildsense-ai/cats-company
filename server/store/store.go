@@ -298,6 +298,13 @@ type BotProfileStore interface {
 	UpdateBotProfile(botUID int64, role, description *string) error
 }
 
+// BotFunctionStore reads the owner-defined assistant identity used by group
+// activation judging. It stays separate from BotProfileStore so a store that
+// only writes profiles does not have to answer reads.
+type BotFunctionStore interface {
+	GetBotFunctions(uids []int64) (map[int64]types.BotFunction, error)
+}
+
 // BotArtifactPolicyStore persists whether regular Agent members may publish
 // shared artifacts. Owners remain able to publish and manage artifacts.
 type BotArtifactPolicyStore interface {
