@@ -103,9 +103,14 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-terra",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
+	// GPT-6 Sol replaced GPT-5.6 Sol on the same routes. This list is the pool a
+	// client may pick from; the paid plans decide which entries are visible, and
+	// they sell gpt-6-sol now. Listing the superseded name would offer a model no
+	// public plan contains, and omitting the new one would hide it from every
+	// buyer whose plan does - the plan and the picker have to agree on the name.
 	{
-		ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-sol",
+		ID: "gpt-6-sol", Label: "GPT-6 Sol", Description: "OpenAI Responses，支持精细推理强度",
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-6-sol",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 }

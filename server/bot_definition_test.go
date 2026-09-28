@@ -210,7 +210,7 @@ func TestBotDefinitionFieldUpdatesPreserveTheOtherField(t *testing.T) {
 	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
 
 	modelReq := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/model?uid=43", strings.NewReader(
-		`{"revision":2,"model":{"kind":"catalog","modelId":"gpt-5.6-sol","reasoningEffort":"high"}}`,
+		`{"revision":2,"model":{"kind":"catalog","modelId":"gpt-6-sol","reasoningEffort":"high"}}`,
 	))
 	modelReq = modelReq.WithContext(context.WithValue(modelReq.Context(), uidKey, int64(7)))
 	modelRec := httptest.NewRecorder()
@@ -218,7 +218,7 @@ func TestBotDefinitionFieldUpdatesPreserveTheOtherField(t *testing.T) {
 	if modelRec.Code != http.StatusOK {
 		t.Fatalf("model status=%d body=%s", modelRec.Code, modelRec.Body.String())
 	}
-	if got := db.records[43]; got.Definition.Model.ModelID != "gpt-5.6-sol" ||
+	if got := db.records[43]; got.Definition.Model.ModelID != "gpt-6-sol" ||
 		got.Definition.Prompt == nil ||
 		got.Definition.Prompt.CustomSystemPrompt != "Keep me." ||
 		len(got.Definition.Skills) != 1 ||
@@ -236,7 +236,7 @@ func TestBotDefinitionFieldUpdatesPreserveTheOtherField(t *testing.T) {
 	if promptRec.Code != http.StatusOK {
 		t.Fatalf("prompt status=%d body=%s", promptRec.Code, promptRec.Body.String())
 	}
-	if got := db.records[43]; got.Definition.Model.ModelID != "gpt-5.6-sol" ||
+	if got := db.records[43]; got.Definition.Model.ModelID != "gpt-6-sol" ||
 		got.Definition.Prompt == nil ||
 		got.Definition.Prompt.Selected != "default" ||
 		len(got.Definition.Skills) != 1 ||
@@ -429,7 +429,7 @@ func TestCatalogDefinitionShipsContextWindowTokens(t *testing.T) {
 					BotID:  "43",
 					// 存储为旧数据：catalog 模型不带 context window，
 					// 响应必须从 catalog 权威补全，设备不依赖本地 profile。
-					Model: types.BotDefinitionModel{Kind: "catalog", ModelID: "gpt-5.6-sol"},
+					Model: types.BotDefinitionModel{Kind: "catalog", ModelID: "gpt-6-sol"},
 				},
 				Runtime: types.BotDefinitionRuntime{DesiredRevision: 3},
 				Exists:  true,
@@ -446,9 +446,9 @@ func TestCatalogDefinitionShipsContextWindowTokens(t *testing.T) {
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("runtime get status=%d body=%s", getRec.Code, getRec.Body.String())
 	}
-	if !strings.Contains(getRec.Body.String(), `"modelId":"gpt-5.6-sol"`) ||
+	if !strings.Contains(getRec.Body.String(), `"modelId":"gpt-6-sol"`) ||
 		!strings.Contains(getRec.Body.String(), `"contextWindowTokens":256000`) ||
-		!strings.Contains(getRec.Body.String(), `"catalogRuntime":{"catalogModelId":"gpt-5.6-sol","model":"gpt-5.6-sol","provider":"openai"`) ||
+		!strings.Contains(getRec.Body.String(), `"catalogRuntime":{"catalogModelId":"gpt-6-sol","model":"gpt-6-sol","provider":"openai"`) ||
 		!strings.Contains(getRec.Body.String(), `"openaiApiMode":"responses"`) {
 		t.Fatalf("catalog definition must ship cloud context window: body=%s", getRec.Body.String())
 	}
