@@ -1075,11 +1075,12 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 			t.Fatalf("catalog is missing %s, which the plan grants: %#v", model, catalog)
 		}
 	}
-	// The superseded name must not come back: no public plan contains it, so a
-	// picker entry would offer a model the plan refuses.
+	// The paid plans do not sell the superseded name, so it must stay hidden
+	// here even though the pool carries it for the internal all-models plan. The
+	// filter is what keeps the two apart; the pool only has to cover both.
 	for _, item := range catalog {
 		if item.ID == "gpt-5.6-sol" {
-			t.Fatal("catalog must not offer the superseded gpt-5.6-sol")
+			t.Fatal("a plan without gpt-5.6-sol must not be shown the superseded name")
 		}
 	}
 	for _, item := range catalog {
@@ -1092,27 +1093,41 @@ func TestOwnerModelCatalogUsesOneSharedQuotaForGrayUID(t *testing.T) {
 	}
 }
 
-// TestCatalogOffersEveryGPTModelThePaidPlansSell compares the picker's GPT
-// entries against the models the paid plans actually grant. The two lists live
-// in different files and drifted once already: the plan gained gpt-6-sol while
-// the picker kept gpt-5.6-sol, so buyers held a model they could not select.
-func TestCatalogOffersEveryGPTModelThePaidPlansSell(t *testing.T) {
-	planModels := map[string]bool{"gpt-5.6-terra": true, "gpt-6-sol": true}
+// TestCatalogPoolCoversEveryGPTModelAnyPlanGrants pins the candidate pool
+// against the GPT names the plans actually carry. The pool is not the sellable
+// list: it must cover every name any plan grants, and the per-plan filter hides
+// the rest. Drifting the other way is just as broken - dropping a name the
+// internal all-models plan grants hides the model from those users while their
+// quota for it keeps being billed.
+func TestCatalogPoolCoversEveryGPTModelAnyPlanGrants(t *testing.T) {
+	// catsco-pro / catsco-personal sell gpt-6-sol; the internal all-models plan
+	// keeps gpt-5.6-sol; every plan with GPT models carries gpt-5.6-terra.
+	planModels := []string{"gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"}
 	offered := map[string]bool{}
 	for _, item := range botModelCatalog {
 		if strings.HasPrefix(item.ID, "gpt-") {
 			offered[item.ID] = true
 		}
 	}
-	for model := range planModels {
+	for _, model := range planModels {
 		if !offered[model] {
-			t.Fatalf("the paid plans sell %s but the picker does not offer it: %v", model, offered)
+			t.Fatalf("a plan grants %s but the candidate pool does not carry it: %v", model, offered)
 		}
 	}
-	for model := range offered {
-		if !planModels[model] {
-			t.Fatalf("the picker offers %s, which no paid plan sells: %v", model, planModels)
-		}
+	// A plan that sells gpt-6-sol must never surface the superseded name, and a
+	// plan that keeps gpt-5.6-sol must never surface the paid one - both are the
+	// same filter working in opposite directions.
+	paid := &types.CommercialSummary{TotalsByModel: map[string]float64{
+		"gpt-5.6-terra": 1000, "gpt-6-sol": 1000,
+	}}
+	internal := &types.CommercialSummary{TotalsByModel: map[string]float64{
+		"gpt-5.6-terra": 1000, "gpt-5.6-sol": 1000,
+	}}
+	if !commercialQuotaModelAllowed(paid, "gpt-6-sol") || commercialQuotaModelAllowed(paid, "gpt-5.6-sol") {
+		t.Fatal("a plan selling gpt-6-sol must not be offered gpt-5.6-sol")
+	}
+	if !commercialQuotaModelAllowed(internal, "gpt-5.6-sol") || commercialQuotaModelAllowed(internal, "gpt-6-sol") {
+		t.Fatal("the internal all-models plan must keep gpt-5.6-sol and not gain gpt-6-sol")
 	}
 }
 
