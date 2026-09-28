@@ -87,10 +87,10 @@ func TestDeepSeekFlashAnthropicLanePercentFullFlipsAll(t *testing.T) {
 func TestDeepSeekFlashAnthropicLaneIgnoresOtherModels(t *testing.T) {
 	t.Setenv(deepSeekAnthropicLanePercentEnv, "100")
 	t.Setenv(deepSeekAnthropicLaneBotsEnv, "")
-	if provider := laneProviderForBot(t, 5, "gpt-5.6-sol"); provider != "openai" {
+	if provider := laneProviderForBot(t, 5, "gpt-6-sol"); provider != "openai" {
 		t.Fatalf("gpt descriptor provider = %s", provider)
 	}
-	if descriptor := catalogRuntimeDescriptorForBot(5, "gpt-5.6-sol"); descriptor == nil || descriptor.OpenAIAPIMode != "responses" {
+	if descriptor := catalogRuntimeDescriptorForBot(5, "gpt-6-sol"); descriptor == nil || descriptor.OpenAIAPIMode != "responses" {
 		t.Fatalf("gpt descriptor lost its api mode: %+v", descriptor)
 	}
 	if provider := laneProviderForBot(t, 5, "minimax-m3"); provider != "anthropic" {

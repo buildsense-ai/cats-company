@@ -609,7 +609,7 @@ func TestHandleAgentQuotaKeepsAppliedModelWhenQuotaBucketUsesAnotherModelName(t 
 		friendPairs: map[string]bool{agentPairKey(7, 43): true},
 		modelConfigs: map[int64]*types.BotModelConfig{43: {
 			AppliedKind:      "catalog",
-			AppliedModelID:   "gpt-5.6-sol",
+			AppliedModelID:   "gpt-6-sol",
 			AppliedReasoning: "high",
 			AppliedRevision:  2,
 		}},
@@ -619,7 +619,7 @@ func TestHandleAgentQuotaKeepsAppliedModelWhenQuotaBucketUsesAnotherModelName(t 
 			UID: 99, Configured: true,
 			Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
 				Model:         "gpt-5.6-terra",
-				AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"},
+				AllowedModels: []string{"gpt-5.6-terra", "gpt-6-sol"},
 				Budget: commercialRelayBudget{
 					MaxLimit:      5000,
 					CurrentUsage:  25,
@@ -652,7 +652,7 @@ func TestHandleAgentQuotaKeepsAppliedModelWhenQuotaBucketUsesAnotherModelName(t 
 	if body.Summary == nil {
 		t.Fatalf("missing summary: %+v", body)
 	}
-	if body.Summary.Model != "gpt-5.6-sol" || body.Summary.ReasoningEffort != "high" {
+	if body.Summary.Model != "gpt-6-sol" || body.Summary.ReasoningEffort != "high" {
 		t.Fatalf("summary must describe the applied bot model, got %+v", body.Summary)
 	}
 	if body.Summary.RemainingPercent != 99.5 || body.Summary.ResetDuration != "1M" {
@@ -706,14 +706,14 @@ func TestResolveAgentModelStatusKeepsAppliedModelDuringPendingOrFailedSwitch(t *
 		{
 			name: "pending",
 			config: &types.BotModelConfig{
-				Kind: "catalog", ModelID: "gpt-5.6-sol", Revision: 8,
+				Kind: "catalog", ModelID: "gpt-6-sol", Revision: 8,
 				AppliedKind: "catalog", AppliedModelID: "minimax-m3", AppliedRevision: 7,
 			},
 		},
 		{
 			name: "failed",
 			config: &types.BotModelConfig{
-				Kind: "catalog", ModelID: "gpt-5.6-sol", Revision: 8,
+				Kind: "catalog", ModelID: "gpt-6-sol", Revision: 8,
 				AppliedKind: "catalog", AppliedModelID: "minimax-m3", AppliedRevision: 7,
 				LastAttemptRevision: 8, LastError: "upstream unavailable",
 			},
@@ -757,13 +757,13 @@ func TestResolveAgentModelStatusFallsBackToBoundBody(t *testing.T) {
 func TestResolveAgentModelStatusKeepsBotsSeparateUnderOneOwner(t *testing.T) {
 	store := &agentTestStore{modelConfigs: map[int64]*types.BotModelConfig{
 		43: {AppliedKind: "catalog", AppliedModelID: "minimax-m3", AppliedRevision: 1},
-		44: {AppliedKind: "catalog", AppliedModelID: "gpt-5.6-sol", AppliedRevision: 1},
+		44: {AppliedKind: "catalog", AppliedModelID: "gpt-6-sol", AppliedRevision: 1},
 	}}
 	handler := NewAgentHandler(store, nil)
 
 	first, firstOK := handler.resolveAgentModelStatus(43, 99)
 	second, secondOK := handler.resolveAgentModelStatus(44, 99)
-	if !firstOK || !secondOK || first.Model != "minimax-m3" || second.Model != "gpt-5.6-sol" {
+	if !firstOK || !secondOK || first.Model != "minimax-m3" || second.Model != "gpt-6-sol" {
 		t.Fatalf("unexpected per-bot models: first=%+v second=%+v", first, second)
 	}
 }
