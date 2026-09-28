@@ -61,7 +61,7 @@ func TestPostgresCommercialFixedPlanGrantsFollowThePlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := db.ReconcileCommercialPlanModelsWithInternal(ctx, reconcileCatalog(), nil); err != nil {
+	if err := db.ReconcileCommercialPlanModelsWithInternal(ctx, reconcileCatalog(), nil, true); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestPostgresCommercialPlanReconcileLeavesMatchingGrantsAlone(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if err := db.ReconcileCommercialPlanModelsWithInternal(ctx, reconcileCatalog(), nil); err != nil {
+	if err := db.ReconcileCommercialPlanModelsWithInternal(ctx, reconcileCatalog(), nil, true); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 

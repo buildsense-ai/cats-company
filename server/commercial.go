@@ -955,8 +955,6 @@ func (h *AccountAdminHandler) requireCommercialStore(w http.ResponseWriter, r *h
 }
 
 // sellableModelCatalog reports every model a plan may sell, with the source the
-// catalog service answered from. It exists so the console's plan editor and the
-// startup reconcile read the same list; before this the editor carried its own
 // modelCatalogForEditor reports the models the plan editor may offer: the
 // sellable catalog plus the internal-only names an internal/custom package may
 // keep. They are returned separately so the page can label them, exactly as the
@@ -965,7 +963,11 @@ func (h *AccountAdminHandler) modelCatalogForEditor() ([]string, []string, strin
 	if h.modelCatalog == nil {
 		return nil, nil, "", fmt.Errorf("relay model catalog is not configured")
 	}
-	return h.modelCatalog.Catalog(context.Background())
+	models, internalOnly, _, source, err := h.modelCatalog.Catalog(context.Background())
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return models, internalOnly, source, nil
 }
 
 func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *http.Request) {

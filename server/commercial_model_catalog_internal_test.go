@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCommercialModelCatalogKeepsInternalOnlySeparate guards the two-list
@@ -21,12 +23,15 @@ func TestCommercialModelCatalogKeepsInternalOnlySeparate(t *testing.T) {
 	)
 	catalog := newTestCatalog(t, server)
 
-	models, internalOnly, source, err := catalog.Catalog(context.Background())
+	models, internalOnly, known, source, err := catalog.Catalog(context.Background())
 	if err != nil {
 		t.Fatalf("catalog read failed: %v", err)
 	}
 	if source != "live" {
 		t.Fatalf("source=%q, want live", source)
+	}
+	if !known {
+		t.Fatal("a relay that reports the field must be answered as known")
 	}
 	if strings.Join(models, ",") != "MiniMax-M2.7,gpt-6-sol" {
 		t.Fatalf("sellable models = %v, want the two sellable names", models)
@@ -59,7 +64,7 @@ func TestCommercialModelCatalogSnapshotCarriesInternalOnly(t *testing.T) {
 	)
 	cold := newTestCatalog(t, warm)
 	cold.snapshotPath = dir + "/catalog.json"
-	if _, _, _, err := cold.Catalog(context.Background()); err != nil {
+	if _, _, _, _, err := cold.Catalog(context.Background()); err != nil {
 		t.Fatalf("warm read failed: %v", err)
 	}
 
@@ -68,12 +73,15 @@ func TestCommercialModelCatalogSnapshotCarriesInternalOnly(t *testing.T) {
 	restored := newTestCatalog(t, dead)
 	restored.snapshotPath = dir + "/catalog.json"
 
-	models, internalOnly, source, err := restored.Catalog(context.Background())
+	models, internalOnly, known, source, err := restored.Catalog(context.Background())
 	if err != nil {
 		t.Fatalf("snapshot fallback failed: %v", err)
 	}
 	if source != "snapshot" {
 		t.Fatalf("source=%q, want snapshot", source)
+	}
+	if !known {
+		t.Fatal("a snapshot written with the field must answer as known")
 	}
 	if strings.Join(models, ",") != "MiniMax-M2.7,gpt-6-sol" {
 		t.Fatalf("sellable models = %v, want the snapshot's list", models)
@@ -90,11 +98,69 @@ func TestCommercialModelCatalogReportsAnEmptyInternalList(t *testing.T) {
 	server, _ := catalogTestServer(t, []string{"MiniMax-M2.7", "gpt-6-sol"}, http.StatusOK)
 	catalog := newTestCatalog(t, server)
 
-	models, internalOnly, _, err := catalog.Catalog(context.Background())
+	models, internalOnly, known, _, err := catalog.Catalog(context.Background())
 	if err != nil {
 		t.Fatalf("catalog read failed: %v", err)
 	}
+	if !known {
+		t.Fatal("an explicit empty list is still a known answer")
+	}
 	if len(models) != 2 || len(internalOnly) != 0 {
 		t.Fatalf("models=%v internal=%v, want two sellable and no internal names", models, internalOnly)
+	}
+}
+
+// TestCommercialModelCatalogMarksAPreSplitRelayUnknown is the deployment-order
+// guard. A relay older than the internal-only split answers without the field,
+// and absence cannot be read as "this relay keeps nothing back": the reconcile
+// would then delete gpt-5.6-sol from the internal package that grants it. The
+// answer has to carry that the list is unknown so the pass can refuse to run.
+func TestCommercialModelCatalogMarksAPreSplitRelayUnknown(t *testing.T) {
+	server, _ := catalogTestServerWithoutInternalField(t, []string{"MiniMax-M2.7", "gpt-6-sol"})
+	catalog := newTestCatalog(t, server)
+
+	models, internalOnly, known, source, err := catalog.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("catalog read failed: %v", err)
+	}
+	if source != "live" {
+		t.Fatalf("source=%q, want live", source)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models=%v, want the relay's list", models)
+	}
+	if known {
+		t.Fatal("a relay that omits the field must be answered as unknown, not as having none")
+	}
+	if len(internalOnly) != 0 {
+		t.Fatalf("internal-only = %v, want nothing invented for an unknown list", internalOnly)
+	}
+}
+
+// TestCommercialModelCatalogMarksAPreSplitSnapshotUnknown covers the other way
+// the unknown state reaches a running process: a snapshot file written before
+// the split. Reading it as "no internal-only models" would strip the internal
+// package on the next restart after a relay outage.
+func TestCommercialModelCatalogMarksAPreSplitSnapshotUnknown(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/catalog.json"
+	// The shape a pre-split release wrote: models and a timestamp, no field.
+	preSplit := `{"models":["MiniMax-M2.7","gpt-6-sol"],"fetched_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `"}`
+	if err := os.WriteFile(path, []byte(preSplit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dead, _ := catalogTestServer(t, nil, http.StatusServiceUnavailable)
+	catalog := newTestCatalog(t, dead)
+	catalog.snapshotPath = path
+
+	_, _, known, source, err := catalog.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("snapshot fallback failed: %v", err)
+	}
+	if source != "snapshot" {
+		t.Fatalf("source=%q, want snapshot", source)
+	}
+	if known {
+		t.Fatal("a snapshot without the field must be answered as unknown")
 	}
 }

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -42,18 +43,41 @@ import (
 // The whole pass is one transaction guarded by an advisory lock, so two
 // starting instances cannot interleave, and it is idempotent: when a plan's
 // model set already matches the catalog it performs no write at all.
+// ReconcileCommercialPlanModels keeps every auto-updating plan's model set in
+// step with the relay catalog, given only the sellable list.
+//
+// It is the narrow entry point: without the internal-only list the caller cannot
+// describe what the relay keeps off the shelf, so the pass is refused rather
+// than run blind. Callers that read the catalog should use
+// ReconcileCommercialPlanModelsWithInternal.
 func (a *Adapter) ReconcileCommercialPlanModels(ctx context.Context, catalog []string) error {
-	return a.ReconcileCommercialPlanModelsWithInternal(ctx, catalog, nil)
+	return a.ReconcileCommercialPlanModelsWithInternal(ctx, catalog, nil, false)
 }
 
+// errReconcileCatalogUnknown marks a relay catalog that predates the
+// internal-only split. It is returned instead of running the pass so the caller
+// can log it as a skipped reconcile rather than a failure.
+var errReconcileCatalogUnknown = errors.New("relay model catalog does not classify internal-only models")
+
 // ReconcileCommercialPlanModelsWithInternal is ReconcileCommercialPlanModels
-// plus the relay's internal-only list.
+// plus the relay's internal-only list and whether that list is trustworthy.
 //
 // The extra list is what keeps an internal package's models from being stripped:
 // those names are routable but deliberately absent from the sellable catalog, so
 // without them the removal rule reads them as retired and drops them from the
 // plan that grants them.
-func (a *Adapter) ReconcileCommercialPlanModelsWithInternal(ctx context.Context, catalog, internalOnly []string) error {
+//
+// internalOnlyKnown says whether the relay actually declared that list. An older
+// relay answers without the field, and absence must not be read as "this relay
+// sells everything it routes": acting on it would delete a model an internal
+// package grants. When the list is unknown the whole pass is skipped - a plan
+// keeps the models it has and gains none this startup - because the alternative
+// is guessing which absent names are retired. The condition clears as soon as
+// the relay reports the field.
+func (a *Adapter) ReconcileCommercialPlanModelsWithInternal(ctx context.Context, catalog []string, internalOnly []string, internalOnlyKnown bool) error {
+	if !internalOnlyKnown {
+		return fmt.Errorf("relay catalog predates the internal-only split: %w", errReconcileCatalogUnknown)
+	}
 	models := normalizeReconcileModels(catalog)
 	if len(models) == 0 {
 		return fmt.Errorf("commercial model catalog is empty")
