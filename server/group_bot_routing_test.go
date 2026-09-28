@@ -208,10 +208,11 @@ func TestGroupFanoutSingleBotGroupIgnoresMentionOfAnotherMember(t *testing.T) {
 	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 31, nil)
 
 	// A one-bot group needs no addressing, so mentioning a human does not
-	// silence the only bot.
+	// silence the only bot. The delivery names the bot, because mentions now
+	// carry "who should answer" rather than "who a person typed @".
 	delivered := assertBotActivation(t, bot.send, true)
-	if !reflect.DeepEqual(delivered.Data.Mentions, []string{"usr7"}) {
-		t.Fatalf("mentions = %#v, want usr7", delivered.Data.Mentions)
+	if !reflect.DeepEqual(delivered.Data.Mentions, []string{"usr42"}) {
+		t.Fatalf("mentions = %#v, want usr42", delivered.Data.Mentions)
 	}
 }
 
@@ -374,8 +375,11 @@ func TestGroupFanoutHumanMentionAllActivatesEveryBot(t *testing.T) {
 
 	for index, bot := range []*Client{botA, botB} {
 		delivered := assertBotActivation(t, bot.send, true)
-		if !reflect.DeepEqual(delivered.Data.Mentions, []string{structuredMentionAllBots}) {
-			t.Fatalf("bot %d mentions = %#v, want all", index, delivered.Data.Mentions)
+		// The delivery names the recipient so every client version reaches the
+		// same conclusion the server did.
+		want := []string{formatUID(bot.uid)}
+		if !reflect.DeepEqual(delivered.Data.Mentions, want) {
+			t.Fatalf("bot %d mentions = %#v, want %#v", index, delivered.Data.Mentions, want)
 		}
 		if delivered.Data.MemberCount != 3 {
 			t.Fatalf("bot %d member_count = %d, want 3", index, delivered.Data.MemberCount)

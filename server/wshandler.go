@@ -1920,12 +1920,24 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 // cloneDataMessageWithActivation copies a message for one bot recipient and
 // stamps the activation verdict. The copy keeps sibling deliveries independent,
 // so a verdict for one bot cannot leak into another's message.
-func cloneDataMessageWithActivation(msg *ServerMessage, activated bool) *ServerMessage {
+//
+// It also rewrites mentions to match the verdict. Deployed clients decide
+// whether to answer from mentions and member_count, so a server that only set
+// the new flag would see those clients drop messages the server had activated.
+// Rewriting mentions makes one server-side decision authoritative for every
+// client version, and the flag carries the same answer without the overloaded
+// "someone typed @me" meaning.
+func cloneDataMessageWithActivation(msg *ServerMessage, activated bool, botUID int64) *ServerMessage {
 	if msg == nil || msg.Data == nil {
 		return msg
 	}
 	data := *msg.Data
 	data.Activated = &activated
+	if activated {
+		data.Mentions = []string{formatUID(botUID)}
+	} else {
+		data.Mentions = nil
+	}
 	return &ServerMessage{
 		Ctrl:                     msg.Ctrl,
 		Data:                     &data,
@@ -2474,7 +2486,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			out.artifactTaskRef = validatedTaskDelivery
 		}
 		if out != nil && out.Data != nil && isBot {
-			out = cloneDataMessageWithActivation(out, activated)
+			out = cloneDataMessageWithActivation(out, activated, m.UserID)
 		}
 		if msg != nil && msg.artifactTaskRef != nil && msg.artifactTaskRef.AgentUID == m.UserID {
 			// Never deliver a task-shaped message to its target Agent after the
