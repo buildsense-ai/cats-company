@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"regexp"
@@ -953,6 +954,22 @@ func (h *AccountAdminHandler) requireCommercialStore(w http.ResponseWriter, r *h
 	return h.commercial, true
 }
 
+// sellableModelCatalog reports every model a plan may sell, with the source the
+// modelCatalogForEditor reports the models the plan editor may offer: the
+// sellable catalog plus the internal-only names an internal/custom package may
+// keep. They are returned separately so the page can label them, exactly as the
+// relay classifies them.
+func (h *AccountAdminHandler) modelCatalogForEditor() ([]string, []string, string, error) {
+	if h.modelCatalog == nil {
+		return nil, nil, "", fmt.Errorf("relay model catalog is not configured")
+	}
+	models, internalOnly, _, source, err := h.modelCatalog.Catalog(context.Background())
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return models, internalOnly, source, nil
+}
+
 func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *http.Request) {
 	store, ok := h.requireCommercialStore(w, r)
 	if !ok {
@@ -969,7 +986,26 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list plans"})
 			return
 		}
-		writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"plans": plans})
+		// The console renders one checkbox per model a plan may carry. It used to
+		// carry a hardcoded list, so a model onboarded on the relay was not offered
+		// there until the console was redeployed - an operator could not add the new
+		// model to a plan even though the relay already sold it. Shipping the
+		// catalog with the plans keeps the editor and the reconcile reading the same
+		// source, and the internal-only list travels with it because the editor must
+		// offer those too: an internal package keeps gpt-5.6-sol, which is routable
+		// but deliberately not sellable.
+		response := map[string]interface{}{"plans": plans}
+		if catalog, internalOnly, source, catalogErr := h.modelCatalogForEditor(); catalogErr != nil {
+			// An absent catalog leaves the editor on the plan's stored models
+			// rather than showing an empty picker the operator could save.
+			log.Printf("commercial plan editor model catalog unavailable: %v", catalogErr)
+			response["model_catalog_error"] = catalogErr.Error()
+		} else {
+			response["model_catalog"] = catalog
+			response["internal_only_models"] = internalOnly
+			response["model_catalog_source"] = source
+		}
+		writeAccountAdminJSON(w, http.StatusOK, response)
 	case http.MethodPost:
 		var req struct {
 			Slug                   string             `json:"slug"`

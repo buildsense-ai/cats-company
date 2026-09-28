@@ -522,16 +522,17 @@ func main() {
 	if modelCatalog := server.NewCommercialModelCatalogFromEnv(); modelCatalog != nil {
 		accountAdminHandler.SetCommercialModelCatalog(modelCatalog)
 		reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), commercialPlanReconcileTimeout)
-		catalogModels, catalogSource, catalogErr := modelCatalog.Models(reconcileCtx)
+		catalogModels, internalOnlyModels, internalOnlyKnown, catalogSource, catalogErr := modelCatalog.Catalog(reconcileCtx)
 		if catalogErr != nil {
 			log.Printf("commercial plan model reconcile skipped: relay catalog unavailable: %v", catalogErr)
 		} else if reconciler, ok := db.(interface {
-			ReconcileCommercialPlanModels(context.Context, []string) error
+			ReconcileCommercialPlanModelsWithInternal(context.Context, []string, []string, bool) error
 		}); ok {
-			if err := reconciler.ReconcileCommercialPlanModels(reconcileCtx, catalogModels); err != nil {
+			if err := reconciler.ReconcileCommercialPlanModelsWithInternal(reconcileCtx, catalogModels, internalOnlyModels, internalOnlyKnown); err != nil {
 				log.Printf("commercial plan model reconcile failed: %v", err)
 			} else {
-				log.Printf("commercial plan model reconcile done: catalog=%d models source=%s", len(catalogModels), catalogSource)
+				log.Printf("commercial plan model reconcile done: catalog=%d models internal_only=%d known=%t source=%s",
+					len(catalogModels), len(internalOnlyModels), internalOnlyKnown, catalogSource)
 			}
 		}
 		cancelReconcile()
