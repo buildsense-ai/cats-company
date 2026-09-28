@@ -62,18 +62,22 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
 		migrateCommercialRefundColumns,
-		migrateCommercialPaidPlansAllModels,
-		migrateCommercialPlansGLM53Flash,
-		migrateCommercialPublicModels,
-		migrateCommercialImageModels,
 		migrateCommercialPlanManagement,
-		// Model-set migrations must stay ordered oldest-first: every step
-		// re-applies its literal package lists on each startup, and the V4
-		// retirement below is what strips the retired model again. Never
-		// insert a model-list migration after the retire step.
-		migrateCommercialPlansNativeSearchFlash,
-		migrateCommercialPlansFreeImageModels,
-		migrateCommercialPlansRetireV4Flash,
+		// Per-plan policy for whether the startup reconcile may add newly
+		// onboarded relay models to a plan.
+		migrateCommercialPlansAutoUpdateModels,
+		// The model-set migrations used to run here. Each one re-applied a
+		// literal model list on every startup, so a plan an operator edited was
+		// silently reverted on the next restart, and onboarding a model on the
+		// relay needed a control-plane change. The relay catalog plus
+		// ReconcileCommercialPlanModels (wired in cmd/server.go) maintain the
+		// paid plans now, so these are no longer executed.
+		//
+		// Their constants stay defined and stay byte-identical to the numbered
+		// .sql files, which remain the documented history of each change and keep
+		// their up/down symmetry. Test*StartupMigrationMatchesFile still compares
+		// the two, and the migration integration tests still exercise the SQL
+		// against a real database.
 		migrateCommercialAutoRenew,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,

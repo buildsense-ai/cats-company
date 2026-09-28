@@ -38,6 +38,20 @@ type AccountAdminHandler struct {
 	// by a uid; the internal auto-renew console shows the number so an
 	// operator knows a package renewal also renews those instances.
 	cloudWorkerCounter func(uid int64) int
+	// modelCatalog answers which models a paid plan may sell. It is read from
+	// the relay rather than hardcoded so an onboarded model becomes sellable
+	// without a deploy. Optional: nil means the catalog cannot be verified.
+	modelCatalog *CommercialModelCatalog
+}
+
+// SetCommercialModelCatalog wires the relay-backed model catalog used to
+// validate official paid plan model sets. Optional so focused tests and
+// non-relay deployments keep working; without it an official paid plan save is
+// refused rather than validated against a stale list.
+func (h *AccountAdminHandler) SetCommercialModelCatalog(catalog *CommercialModelCatalog) {
+	if h != nil {
+		h.modelCatalog = catalog
+	}
 }
 
 // SetCloudWorkerCreditAdmin wires the operator-only manual credit grant

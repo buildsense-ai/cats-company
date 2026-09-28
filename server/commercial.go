@@ -802,47 +802,130 @@ func defaultRelayResetDuration(value string) string {
 var commercialSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$`)
 var commercialCodePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{3,63}$`)
 
-// commercialOfficialPaidModels pins the public paid-plan model set: the five
-// public chat models plus the image lane add-on models, which share the same
-// pool. Keep this in step with the startup migration that maintains the plans.
-var commercialOfficialPaidModels = []string{
-	"MiniMax-M2.7",
-	"MiniMax-M3",
-	"deepseek-flash",
-	"glm-5.3-flash",
-	"gpt-5.6-terra",
-	"gpt-image-2",
-	"gpt-image-2.5",
-	"gpt-image-2.5-flare",
-	"gpt-image-2.5-sunburst",
-	"chatgpt-image-latest",
+// commercialOfficialPaidPlanSlugs names the plans whose model set follows the
+// relay. Which models those plans sell is no longer written down here: the
+// relay catalog is the source of truth, so a model onboarded on the relay
+// becomes sellable with no control-plane change. Only the plan identities stay
+// pinned, because "this slug is an official paid plan" is a business fact, not
+// a model fact.
+var commercialOfficialPaidPlanSlugs = map[string]struct{}{
+	"catsco-personal": {},
+	"catsco-pro":      {},
 }
 
-func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
-	slug = strings.TrimSpace(slug)
-	expectedTotal := 0.0
-	switch slug {
-	case "catsco-personal":
-		expectedTotal = 11000
-	case "catsco-pro":
-		expectedTotal = 33000
-	default:
+// IsCommercialOfficialPaidPlanSlug reports whether a slug is one of the plans
+// whose model set must track the relay catalog.
+func IsCommercialOfficialPaidPlanSlug(slug string) bool {
+	_, ok := commercialOfficialPaidPlanSlugs[strings.TrimSpace(slug)]
+	return ok
+}
+
+// validateOfficialPaidPlanModels guards an official paid plan's model budgets.
+//
+// The relay catalog replaces the whitelist that used to live here, so a new
+// model needs no code change. Three things are still enforced:
+//
+//  1. every model must be sellable on the relay (no invented model names)
+//  2. every budget must be positive (a zero-budget model is a plan that
+//     advertises a model it will immediately refuse)
+//  3. the total must not move, which is what catches a reconcile bug or a
+//     mistyped per-model value silently changing what every buyer receives
+//
+// currentTotal is the plan's present total, read by the caller from the plan it
+// already loaded, so this adds no query of its own. A nil currentTotal means
+// the plan does not exist yet: a brand-new official plan has no prior total to
+// preserve, so the submitted total becomes its baseline.
+func validateOfficialPaidPlanModels(slug string, budgets map[string]float64, catalog []string, currentTotal *float64) error {
+	if !IsCommercialOfficialPaidPlanSlug(slug) {
 		return nil
 	}
-	if len(budgets) != len(commercialOfficialPaidModels) {
-		return fmt.Errorf("official paid plan must contain only the official public models")
+	if len(catalog) == 0 {
+		return fmt.Errorf("relay model catalog is unavailable; cannot verify the official plan model set")
+	}
+	sellable := make(map[string]struct{}, len(catalog))
+	for _, model := range catalog {
+		sellable[strings.ToLower(strings.TrimSpace(model))] = struct{}{}
+	}
+	if len(budgets) == 0 {
+		return fmt.Errorf("official paid plan must contain at least one model")
 	}
 	total := 0.0
-	for _, model := range commercialOfficialPaidModels {
-		if budgets[model] <= 0 {
-			return fmt.Errorf("official paid plan must include model %s", model)
+	for model, amount := range budgets {
+		if _, ok := sellable[strings.ToLower(strings.TrimSpace(model))]; !ok {
+			return fmt.Errorf("official paid plan model %s is not offered by the relay", model)
 		}
-		total += budgets[model]
+		if amount <= 0 {
+			return fmt.Errorf("official paid plan model %s must have a positive budget", model)
+		}
+		total += amount
 	}
-	if math.Abs(total-expectedTotal) > 0.000001 {
-		return fmt.Errorf("official paid plan model budgets must total %.0f", expectedTotal)
+	if currentTotal == nil {
+		return nil
+	}
+	if math.Abs(total-*currentTotal) > 0.000001 {
+		return fmt.Errorf(
+			"official paid plan model budgets must keep the current total %.2f, got %.2f",
+			*currentTotal, total,
+		)
 	}
 	return nil
+}
+
+// commercialPlanBudgetsTotal sums a plan's per-model budgets. Paid plans share
+// one pool across their models, so this sum is the plan's advertised total.
+func commercialPlanBudgetsTotal(budgets map[string]float64) float64 {
+	total := 0.0
+	for _, amount := range budgets {
+		total += amount
+	}
+	return total
+}
+
+// commercialPlanBySlug finds a plan in an already-loaded list.
+func commercialPlanBySlug(plans []*types.CommercialPlan, slug string) *types.CommercialPlan {
+	slug = strings.TrimSpace(slug)
+	for _, plan := range plans {
+		if plan != nil && strings.TrimSpace(plan.Slug) == slug {
+			return plan
+		}
+	}
+	return nil
+}
+
+// commercialPlanForSave returns the stored plan a save is about to overwrite, or
+// nil when the slug is new. The caller reuses it for both the total guard and
+// the auto-update default, so a save reads the plan list once.
+func (h *AccountAdminHandler) commercialPlanForSave(store CommercialStore, slug string) *types.CommercialPlan {
+	plans, err := store.ListCommercialPlans(true)
+	if err != nil {
+		return nil
+	}
+	return commercialPlanBySlug(plans, slug)
+}
+
+// validateOfficialPaidPlanSave validates an official paid plan's model budgets
+// against the live relay catalog, preserving the plan's current total.
+//
+// existingPlan is the plan being overwritten (nil for a new slug). Its total is
+// the baseline, so this adds no query of its own: paid plans are few and a save
+// is an operator action, not a request-path operation.
+func (h *AccountAdminHandler) validateOfficialPaidPlanSave(slug string, budgets map[string]float64, existingPlan *types.CommercialPlan) error {
+	if !IsCommercialOfficialPaidPlanSlug(slug) {
+		return nil
+	}
+	if h.modelCatalog == nil {
+		return fmt.Errorf("relay model catalog is not configured; cannot verify the official plan model set")
+	}
+	catalog, _, err := h.modelCatalog.Models(context.Background())
+	if err != nil {
+		return fmt.Errorf("relay model catalog is unavailable: %w", err)
+	}
+	var currentTotal *float64
+	if existingPlan != nil {
+		total := commercialPlanBudgetsTotal(existingPlan.ModelBudgets)
+		currentTotal = &total
+	}
+	return validateOfficialPaidPlanModels(slug, budgets, catalog, currentTotal)
 }
 
 func parseCommercialBudgets(value map[string]float64) map[string]float64 {
@@ -904,6 +987,9 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			State                  int                `json:"state"`
 			SortOrder              int                `json:"sort_order"`
 			CloudWorkerBillingMode string             `json:"cloud_worker_billing_mode"`
+			// Pointer so an absent field keeps the plan's current setting
+			// instead of decoding to false and silently pinning the plan.
+			AutoUpdateModels *bool `json:"auto_update_models"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid plan request"})
@@ -957,9 +1043,19 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "按量试用仅可用于隐藏的内部套餐"})
 			return
 		}
-		if err := validateCommercialOfficialPaidPlanModels(req.Slug, modelBudgets); err != nil {
+		existingPlan := h.commercialPlanForSave(store, req.Slug)
+		if err := h.validateOfficialPaidPlanSave(req.Slug, modelBudgets, existingPlan); err != nil {
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
+		}
+		// An absent auto_update_models keeps the plan's current setting; a new
+		// plan follows the relay by default, matching the column default.
+		autoUpdateModels := true
+		if existingPlan != nil {
+			autoUpdateModels = existingPlan.AutoUpdateModels
+		}
+		if req.AutoUpdateModels != nil {
+			autoUpdateModels = *req.AutoUpdateModels
 		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                   req.Slug,
@@ -977,6 +1073,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			DurationDays:           req.DurationDays,
 			State:                  req.State,
 			SortOrder:              req.SortOrder,
+			AutoUpdateModels:       autoUpdateModels,
 		})
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save plan"})

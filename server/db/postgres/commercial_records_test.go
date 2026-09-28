@@ -106,6 +106,34 @@ func TestPostgresCommercialRecordsBeyondFirstHundred(t *testing.T) {
 	}
 }
 
+// applyHistoricalModelSetMigrations runs the seven model-set migrations that
+// used to be part of CreateSchema, in their original oldest-first order. They
+// are no longer part of the startup statement list, because each one re-applied
+// a literal model list on every startup and therefore reverted an operator's
+// plan edit on the next restart. The relay catalog plus
+// ReconcileCommercialPlanModels maintain the paid plans now.
+//
+// Keeping the chain here means the regression coverage that used to come for
+// free from a startup run still exists, and the ordering constraint is
+// recorded: the V4 retirement must run last, because it is what strips the
+// retired model the earlier steps added back.
+func applyHistoricalModelSetMigrations(t *testing.T, db *Adapter) {
+	t.Helper()
+	for _, statement := range []string{
+		migrateCommercialPaidPlansAllModels,
+		migrateCommercialPlansGLM53Flash,
+		migrateCommercialPublicModels,
+		migrateCommercialImageModels,
+		migrateCommercialPlansNativeSearchFlash,
+		migrateCommercialPlansFreeImageModels,
+		migrateCommercialPlansRetireV4Flash,
+	} {
+		if _, err := db.db.Exec(statement); err != nil {
+			t.Fatalf("run historical model-set migration: %v", err)
+		}
+	}
+}
+
 func TestPostgresCommercialPublicModelsPreserveRenewalAndCustomQuota(t *testing.T) {
 	db := commercialPolicyTestDB(t)
 	uid := createGLM53MigrationUser(t, db, "migration")
@@ -122,10 +150,12 @@ func TestPostgresCommercialPublicModelsPreserveRenewalAndCustomQuota(t *testing.
 		VALUES ($1,$2,'manual','gpt-5.6-sol',17,'1M',$3,'manual')`, uid, planID, now); err != nil {
 		t.Fatal(err)
 	}
+	// The model-set migrations used to run on every startup. They no longer do:
+	// the relay catalog plus ReconcileCommercialPlanModels maintain the paid
+	// plans now. Drive the historical chain explicitly so this regression test
+	// still covers what a startup run produced, idempotency included.
 	for i := 0; i < 2; i++ {
-		if err := db.CreateSchema(); err != nil {
-			t.Fatal(err)
-		}
+		applyHistoricalModelSetMigrations(t, db)
 	}
 	for index, ref := range []string{"current", "renewal"} {
 		var count, restricted int

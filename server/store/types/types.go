@@ -82,8 +82,13 @@ type CommercialPlan struct {
 	DurationDays        int       `json:"duration_days"`
 	State               int       `json:"state"`
 	SortOrder           int       `json:"sort_order"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	// AutoUpdateModels controls whether the startup reconcile may add newly
+	// onboarded relay models to this plan. It defaults to true; plans that sell
+	// a fixed model set turn it off. A retired model is removed either way,
+	// because leaving it would advertise a model the relay refuses.
+	AutoUpdateModels bool      `json:"auto_update_models"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // CommercialOrder is an immutable purchase snapshot plus its payment and

@@ -3,7 +3,6 @@ package postgres
 import (
 	"database/sql"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 )
@@ -15,47 +14,12 @@ const (
 	commercialLegacyPlanSlug   = "catsco-legacy-custom"
 )
 
-// commercialOfficialPaidModels pins the public paid-plan model set: the five
-// public chat models plus the image lane add-on models, which share the same
-// pool. Keep this in step with the startup migration that maintains the plans.
-var commercialOfficialPaidModels = []string{
-	"MiniMax-M2.7",
-	"MiniMax-M3",
-	"deepseek-flash",
-	"glm-5.3-flash",
-	"gpt-5.6-terra",
-	"gpt-image-2",
-	"gpt-image-2.5",
-	"gpt-image-2.5-flare",
-	"gpt-image-2.5-sunburst",
-	"chatgpt-image-latest",
-}
-
-func validateCommercialOfficialPaidPlanModels(slug string, budgets map[string]float64) error {
-	expectedTotal := 0.0
-	switch strings.TrimSpace(slug) {
-	case commercialPersonalPlanSlug:
-		expectedTotal = 11000
-	case commercialProPlanSlug:
-		expectedTotal = 33000
-	default:
-		return nil
-	}
-	if len(budgets) != len(commercialOfficialPaidModels) {
-		return fmt.Errorf("official paid plan must contain only the official public models")
-	}
-	total := 0.0
-	for _, model := range commercialOfficialPaidModels {
-		if budgets[model] <= 0 {
-			return fmt.Errorf("official paid plan must include model %s", model)
-		}
-		total += budgets[model]
-	}
-	if math.Abs(total-expectedTotal) > 0.000001 {
-		return fmt.Errorf("official paid plan model budgets must total %.0f", expectedTotal)
-	}
-	return nil
-}
+// commercialOfficialPaidModels and its validator used to live here as a second
+// copy of the server-level whitelist. Both are gone: the relay catalog is the
+// source of truth for which models a paid plan may sell, and duplicating that
+// list in the storage layer is what let the two copies drift apart. The
+// validation now happens once, in the server package, before the store is
+// called.
 
 func commercialOfficialPlanTier(slug string) int {
 	switch strings.TrimSpace(slug) {

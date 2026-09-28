@@ -13,68 +13,107 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-func TestValidateCommercialOfficialPaidPlanModelsRequiresAllPublicModels(t *testing.T) {
+// catalogTestModels is the shape the relay publishes after gpt-6-sol landed.
+var catalogTestModels = []string{
+	"MiniMax-M2.7", "MiniMax-M3", "deepseek-flash", "glm-5.3-flash",
+	"gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-sol",
+	"gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+	"chatgpt-image-latest",
+}
+
+func float64Ptr(value float64) *float64 { return &value }
+
+func TestValidateOfficialPaidPlanModelsFollowsTheRelayCatalog(t *testing.T) {
 	complete := map[string]float64{
-		"MiniMax-M2.7": 2100, "MiniMax-M3": 2100, "deepseek-flash": 2100,
-		"glm-5.3-flash": 2100, "gpt-5.6-terra": 2100,
+		"MiniMax-M2.7": 1500, "MiniMax-M3": 1500, "deepseek-flash": 1500,
+		"glm-5.3-flash": 1500, "gpt-5.6-sol": 1500, "gpt-5.6-terra": 1500, "gpt-6-sol": 1500,
 		"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100, "gpt-image-2.5-sunburst": 100,
 		"chatgpt-image-latest": 100,
 	}
-	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err != nil {
+	// A plan matching the catalog and keeping its total is accepted.
+	if err := validateOfficialPaidPlanModels("catsco-personal", complete, catalogTestModels, float64Ptr(11000)); err != nil {
 		t.Fatalf("complete paid plan rejected: %v", err)
 	}
-	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-luna"} {
-		complete[model] = 100
-		if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err == nil {
-			t.Fatalf("public plan accepted %s", model)
-		}
-		if err := validateCommercialOfficialPaidPlanModels("internal-custom", complete); err != nil {
-			t.Fatal(err)
-		}
-		delete(complete, model)
+	// A model the relay does not sell cannot be invented into a plan, even
+	// though the total still matches.
+	invented := map[string]float64{"gpt-image-9": 100}
+	for model, amount := range complete {
+		invented[model] = amount
+	}
+	if err := validateOfficialPaidPlanModels("catsco-personal", invented, catalogTestModels, float64Ptr(11100)); err == nil ||
+		!strings.Contains(err.Error(), "gpt-image-9") {
+		t.Fatalf("paid plan accepted a model the relay does not sell: %v", err)
 	}
 	// A wrong amount breaks the advertised total.
-	complete["gpt-image-2"] = 101
-	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err == nil {
+	mismatched := map[string]float64{}
+	for model, amount := range complete {
+		mismatched[model] = amount
+	}
+	mismatched["gpt-image-2"] = 101
+	if err := validateOfficialPaidPlanModels("catsco-personal", mismatched, catalogTestModels, float64Ptr(11000)); err == nil {
 		t.Fatal("paid plan with a mismatched total was accepted")
 	}
-	complete["gpt-image-2"] = 100
-	// Replacing an image model with an unknown one must fail the model set.
-	delete(complete, "gpt-image-2")
-	complete["gpt-image-9"] = 100
-	if err := validateCommercialOfficialPaidPlanModels("catsco-personal", complete); err == nil || !strings.Contains(err.Error(), "gpt-image-2") {
-		t.Fatalf("paid plan with a missing image model was accepted: %v", err)
+	// Dropping a model without re-splitting its share would shrink the plan, so
+	// the total guard rejects it. Re-splitting the same total is accepted, and
+	// that is what the reconcile does.
+	shrunk := map[string]float64{}
+	for model, amount := range complete {
+		shrunk[model] = amount
 	}
-	delete(complete, "gpt-image-9")
-	complete["gpt-image-2"] = 100
-	delete(complete, "gpt-5.6-terra")
-	if err := validateCommercialOfficialPaidPlanModels("catsco-pro", complete); err == nil {
-		t.Fatal("incomplete paid plan was accepted")
+	delete(shrunk, "gpt-6-sol")
+	if err := validateOfficialPaidPlanModels("catsco-personal", shrunk, catalogTestModels, float64Ptr(11000)); err == nil {
+		t.Fatal("paid plan accepted a dropped model without re-splitting the total")
 	}
-	if err := validateCommercialOfficialPaidPlanModels("catsco-free", map[string]float64{}); err != nil {
+	// A zero budget advertises a model the plan will immediately refuse.
+	zeroed := map[string]float64{}
+	for model, amount := range complete {
+		zeroed[model] = amount
+	}
+	zeroed["gpt-6-sol"] = 0
+	if err := validateOfficialPaidPlanModels("catsco-personal", zeroed, catalogTestModels, float64Ptr(10500)); err == nil {
+		t.Fatal("paid plan accepted a zero model budget")
+	}
+	// A new plan has no prior total to preserve, so its own total is the baseline.
+	if err := validateOfficialPaidPlanModels("catsco-personal", complete, catalogTestModels, nil); err != nil {
+		t.Fatalf("a new official plan must be accepted: %v", err)
+	}
+	// A plan the reconcile does not own stays unconstrained.
+	if err := validateOfficialPaidPlanModels("catsco-free", map[string]float64{}, catalogTestModels, nil); err != nil {
 		t.Fatalf("non-official plan should not be constrained: %v", err)
+	}
+	if err := validateOfficialPaidPlanModels("internal-custom", complete, catalogTestModels, nil); err != nil {
+		t.Fatalf("internal plan should not be constrained: %v", err)
 	}
 }
 
-func TestCommercialOfficialPaidModelsKeepImageLaneOutOfUserCatalog(t *testing.T) {
+func TestValidateOfficialPaidPlanModelsRefusesWithoutACatalog(t *testing.T) {
+	// Without the relay catalog there is nothing to validate against, so a save
+	// must fail loudly rather than fall back to a stale hardcoded list.
+	if err := validateOfficialPaidPlanModels("catsco-personal", map[string]float64{"gpt-6-sol": 1}, nil, nil); err == nil {
+		t.Fatal("a paid plan save was accepted with no catalog")
+	}
+	if err := validateOfficialPaidPlanModels("catsco-personal", map[string]float64{"gpt-6-sol": 1}, []string{}, nil); err == nil {
+		t.Fatal("a paid plan save was accepted with an empty catalog")
+	}
+}
+
+func TestCommercialImageLaneStaysOutOfTheUserCatalog(t *testing.T) {
+	// The image lane is an add-on: those models must never appear in the
+	// user-switchable chat catalog, whichever models the relay publishes.
 	imageModels := 0
-	for _, model := range commercialOfficialPaidModels {
-		if commercialImageLaneModel(model) {
-			imageModels++
-		}
-	}
-	if imageModels != 5 {
-		t.Fatalf("official paid plans must pin the five image lane models: %d", imageModels)
-	}
-	for _, model := range commercialOfficialPaidModels {
+	for _, model := range catalogTestModels {
 		if !commercialImageLaneModel(model) {
 			continue
 		}
+		imageModels++
 		for _, item := range botModelCatalog {
 			if strings.EqualFold(item.ID, model) || strings.EqualFold(strings.TrimSpace(item.RuntimeModel), model) {
 				t.Fatalf("image model %s must stay out of the user-switchable catalog", model)
 			}
 		}
+	}
+	if imageModels != 5 {
+		t.Fatalf("the relay catalog carries five image lane models, found %d", imageModels)
 	}
 }
 
