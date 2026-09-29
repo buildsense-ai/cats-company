@@ -95,6 +95,35 @@ func TestVideoMessageDoesNotExpandDurableAgentContext(t *testing.T) {
 	}
 }
 
+func TestManualCompactUsesExistingTextAndThinkingProtocol(t *testing.T) {
+	command, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "p2p_1_2",
+		Type:    "text",
+		Content: json.RawMessage(`"/compact"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize /compact command: %v", err)
+	}
+	if command.DisplayType != "text" || command.DisplayContent != "/compact" {
+		t.Fatalf("command was rewritten: type=%q content=%q", command.DisplayType, command.DisplayContent)
+	}
+
+	working, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "p2p_1_2",
+		Type:    "thinking",
+		Content: json.RawMessage(`"正在压缩上下文……"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize checkpoint progress: %v", err)
+	}
+	if working.DisplayType != "thinking" {
+		t.Fatalf("working status type=%q, want thinking", working.DisplayType)
+	}
+	if len(working.ContentBlocks) != 1 || working.ContentBlocks[0].Type != "thinking" {
+		t.Fatalf("working status blocks=%+v", working.ContentBlocks)
+	}
+}
+
 func TestRuntimePlanMessageIsTransientWithoutMetadata(t *testing.T) {
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID: "p2p_1_2",
