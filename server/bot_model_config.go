@@ -124,8 +124,8 @@ var botModelCatalog = []botModelCatalogItem{
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
-		ID: "claude-opus-5-5", Label: "Claude Opus 5.5", Description: "Claude 旗舰模型，长上下文与深度推理",
-		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 200000, Vision: true, RuntimeModel: "claude-opus-5-5",
+		ID: "claude-sonnet-5-5", Label: "Claude Sonnet 5.5", Description: "Claude 长上下文模型，1M 上下文与深度推理",
+		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 1000000, Vision: true, RuntimeModel: "claude-sonnet-5-5",
 	},
 }
 
