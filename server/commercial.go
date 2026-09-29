@@ -38,6 +38,10 @@ type RelayCommercialHandler struct {
 	// cloudWorkerRenewer resumes provider-frozen cloud workers after a
 	// redemption reopens paid time. Optional; nil keeps redemption local-only.
 	cloudWorkerRenewer func(uid int64) *types.CloudWorkerRenewReport
+	// cloudWorkerEnsure starts the paid instance for a first redemption the
+	// same way a first purchase does. Optional; it skips accounts that
+	// already own a worker, so renewals never create a second instance.
+	cloudWorkerEnsure func(uid int64)
 }
 
 // SetCloudWorkerRenewer wires the async resume hook shared with payments and
@@ -45,6 +49,15 @@ type RelayCommercialHandler struct {
 func (h *RelayCommercialHandler) SetCloudWorkerRenewer(renew func(uid int64) *types.CloudWorkerRenewReport) {
 	if h != nil {
 		h.cloudWorkerRenewer = renew
+	}
+}
+
+// SetCloudWorkerEnsure wires the async first-provision hook shared with
+// payments. The hook must be idempotent: it has to skip accounts that already
+// own a worker so re-redemptions only renew the existing instance.
+func (h *RelayCommercialHandler) SetCloudWorkerEnsure(ensure func(uid int64)) {
+	if h != nil {
+		h.cloudWorkerEnsure = ensure
 	}
 }
 
@@ -246,6 +259,13 @@ func (h *RelayCommercialHandler) HandleRedeemInvite(w http.ResponseWriter, r *ht
 		// A redemption can reopen an expired package; resume provider-frozen
 		// workers the same way a payment renewal does.
 		go h.cloudWorkerRenewer(uid)
+	}
+	if h.cloudWorkerEnsure != nil {
+		// A first redemption carries the same worker credits a first purchase
+		// does, so start the paid instance without making the user click
+		// create. The hook skips accounts that already own a worker, which
+		// keeps re-redemptions and upgrades renewal-only.
+		go h.cloudWorkerEnsure(uid)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": publicCommercialSummary(summary)})
 }
