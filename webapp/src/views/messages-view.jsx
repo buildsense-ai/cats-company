@@ -11,6 +11,7 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
@@ -499,6 +500,8 @@ export default function MessagesView({
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const [previewImageId, setPreviewImageId] = useState('');
@@ -2523,6 +2526,21 @@ export default function MessagesView({
     }
   }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, messages, removeOptimisticMessage, topic, user.uid]);
 
+  const selectCommand = (command) => {
+    if (!command?.name) return;
+    setInput(command.name);
+    updateComposerDraft(topic, command.name);
+    updateStructuredMentionDraft(topic, []);
+    setShowCommandPalette(false);
+    setCommandActiveIndex(0);
+    setTimeout(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(command.name.length, command.name.length);
+    }, 0);
+  };
+
   const handleKeyDown = (e) => {
     if (
       e.isComposing
@@ -2545,6 +2563,38 @@ export default function MessagesView({
         e.preventDefault();
         insertMention(mentionableBots[Math.min(mentionActiveIndex, mentionableBots.length - 1)]);
         return;
+      }
+    }
+    if (commandPaletteVisible) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCommandActiveIndex((current) => (current + 1) % commandOptions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCommandActiveIndex((current) => (current - 1 + commandOptions.length) % commandOptions.length);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowCommandPalette(false);
+        setCommandActiveIndex(0);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        selectCommand(commandOptions[Math.min(commandActiveIndex, commandOptions.length - 1)]);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        const exact = commandOptions.find((command) => command.name === input.trim());
+        if (!exact) {
+          e.preventDefault();
+          selectCommand(commandOptions[Math.min(commandActiveIndex, commandOptions.length - 1)]);
+          return;
+        }
+        setShowCommandPalette(false);
       }
     }
     if (e.key === 'Escape' && showMentionPicker) {
@@ -2571,6 +2621,9 @@ export default function MessagesView({
     setInput(val);
     updateComposerDraft(topic, val);
     updateStructuredMentionDraft(topic, nextStructuredMentions);
+    const nextCommandDraft = commandMatchesDraft(val);
+    setShowCommandPalette(Boolean(nextCommandDraft?.commands.length));
+    setCommandActiveIndex(0);
     if (!val.trim()) {
       setAttachmentStatus((current) => (
         current?.source === 'edit-resend' ? null : current
@@ -3095,6 +3148,12 @@ export default function MessagesView({
       return searchable.includes(mentionFilter);
     }),
   ];
+  const commandDraft = commandMatchesDraft(input);
+  const commandOptions = commandDraft?.commands || [];
+  const commandPaletteVisible = showCommandPalette
+    && !showMentionPicker
+    && !isSendingMessage
+    && commandOptions.length > 0;
 
   const peerUID = useMemo(() => {
     if (isGroup || !topic || !String(topic).startsWith('p2p_')) return 0;
@@ -4723,12 +4782,18 @@ export default function MessagesView({
         voiceInputDisabled={isSendingMessage || isUploadingAttachment}
         voiceSessionKey={topic}
         textareaProps={{
-          'aria-controls': showMentionPicker ? 'mention-picker' : undefined,
-          'aria-expanded': showMentionPicker,
-          'aria-haspopup': isGroup ? 'listbox' : undefined,
+          'aria-controls': showMentionPicker
+            ? 'mention-picker'
+            : commandPaletteVisible
+              ? 'command-palette'
+              : undefined,
+          'aria-expanded': showMentionPicker || commandPaletteVisible,
+          'aria-haspopup': showMentionPicker || commandPaletteVisible ? 'listbox' : undefined,
           'aria-activedescendant': showMentionPicker && mentionableBots.length > 0
             ? `mention-option-${mentionableBots[Math.min(mentionActiveIndex, mentionableBots.length - 1)].user_id}`
-            : undefined,
+            : commandPaletteVisible && commandOptions.length > 0
+              ? `command-option-${commandOptions[Math.min(commandActiveIndex, commandOptions.length - 1)].name.slice(1)}`
+              : undefined,
         }}
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSendingMessage}
@@ -4755,6 +4820,7 @@ export default function MessagesView({
         onStop={handleStopGeneration}
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
+          setShowCommandPalette(false);
         }}
         context={replyTo && (
           <div className="oc-reply-bar">
@@ -4786,35 +4852,47 @@ export default function MessagesView({
           updateAttachmentDraft(topic, (items) => items.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}
-        overlay={showMentionPicker && isGroup && (
-          <div id="mention-picker" className="oc-mention-picker v3-composer-mention-picker" role="listbox" aria-label="可提及的机器人">
-            {mentionableBots.map((m, index) => (
-              <button
-                key={m.user_id}
-                id={`mention-option-${m.user_id}`}
-                className={`oc-mention-item${index === mentionActiveIndex ? ' is-active' : ''}`}
-                type="button"
-                role="option"
-                aria-selected={index === mentionActiveIndex}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  insertMention(m);
-                }}
-                onMouseEnter={() => setMentionActiveIndex(index)}
-              >
-                {m.is_all
-                  ? <span className="oc-mention-all-icon" aria-hidden="true"><Users size={15} /></span>
-                  : <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />}
-                <span className="oc-mention-item-copy">
-                  <span className="oc-mention-item-name">{m.display_name || m.username || `usr${m.user_id}`}</span>
-                  <span className="oc-mention-item-handle">{m.is_all ? '全部机器人' : `@usr${m.user_id}`}</span>
-                </span>
-              </button>
-            ))}
-            {mentionableBots.length === 0 && (
-              <div className="oc-mention-empty">没有匹配的机器人</div>
+        overlay={(
+          <>
+            {commandPaletteVisible && (
+              <CommandPalette
+                commands={commandOptions}
+                activeIndex={commandActiveIndex}
+                onSelect={selectCommand}
+                onHighlight={setCommandActiveIndex}
+              />
             )}
-          </div>
+            {showMentionPicker && isGroup && (
+              <div id="mention-picker" className="oc-mention-picker v3-composer-mention-picker" role="listbox" aria-label="可提及的机器人">
+                {mentionableBots.map((m, index) => (
+                  <button
+                    key={m.user_id}
+                    id={`mention-option-${m.user_id}`}
+                    className={`oc-mention-item${index === mentionActiveIndex ? ' is-active' : ''}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === mentionActiveIndex}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      insertMention(m);
+                    }}
+                    onMouseEnter={() => setMentionActiveIndex(index)}
+                  >
+                    {m.is_all
+                      ? <span className="oc-mention-all-icon" aria-hidden="true"><Users size={15} /></span>
+                      : <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />}
+                    <span className="oc-mention-item-copy">
+                      <span className="oc-mention-item-name">{m.display_name || m.username || `usr${m.user_id}`}</span>
+                      <span className="oc-mention-item-handle">{m.is_all ? '全部机器人' : `@usr${m.user_id}`}</span>
+                    </span>
+                  </button>
+                ))}
+                {mentionableBots.length === 0 && (
+                  <div className="oc-mention-empty">没有匹配的机器人</div>
+                )}
+              </div>
+            )}
+          </>
         )}
         boxOverlay={isDragActive && (
           <div className="v3-drop-overlay" aria-hidden="true">
