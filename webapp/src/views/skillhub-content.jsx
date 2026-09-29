@@ -21,6 +21,16 @@ function normalizeSkillSearchValue(value) {
     .replace(/\/{2,}/g, '/');
 }
 
+function formatUnavailableSkillHint(skillIds = []) {
+  const ids = [...new Set((Array.isArray(skillIds) ? skillIds : [])
+    .map((skillId) => String(skillId || '').trim())
+    .filter(Boolean))];
+  if (ids.length === 0) return '部分 Skill 暂时无法从 SkillHub 确认更新状态';
+  const shown = ids.slice(0, 3).join('、');
+  const suffix = ids.length > 3 ? ` 等 ${ids.length} 个 Skill` : '';
+  return `部分 Skill 暂时无法从 SkillHub 确认更新状态：${shown}${suffix}`;
+}
+
 export default function SkillHubContent(props) {
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
@@ -126,7 +136,7 @@ function AgentSelect({ agents, disabled, onChange, value }) {
             data-title={agent.label}
             data-description={agent.updateStatus === 'unavailable'
               ? '暂时无法确认更新状态'
-              : agent.updateStatus === 'partial' ? '部分 Skill 暂时无法确认更新状态' : undefined}
+              : agent.updateStatus === 'partial' ? formatUnavailableSkillHint(agent.unavailableSkillIds) : undefined}
           >
             <span className='cc-skillhub-agent-option-content'>
               <span className='cc-skillhub-agent-option-name'>{agent.label}</span>
@@ -141,7 +151,7 @@ function AgentSelect({ agents, disabled, onChange, value }) {
   );
 }
 
-function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUpdateCount = 0, selectedUpdateStatus = '', updatesOnly = false }) {
+function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUnavailableSkillIds = [], selectedUpdateCount = 0, selectedUpdateStatus = '', updatesOnly = false }) {
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs-actions'>
@@ -164,7 +174,7 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly
           </button>
         )}
         {!isReadOnly && selectedUpdateStatus === 'partial' && (
-          <span className='cc-skillhub-update-uncertain-note' role='status' title='部分 Skill 暂时无法从 SkillHub 确认更新状态'>
+          <span className='cc-skillhub-update-uncertain-note' role='status' title={formatUnavailableSkillHint(selectedUnavailableSkillIds)}>
             部分 Skill 无法确认更新
           </span>
         )}

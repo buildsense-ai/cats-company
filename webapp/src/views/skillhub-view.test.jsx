@@ -2525,6 +2525,8 @@ describe('SkillHubView', () => {
       .toBe('1');
     expect(container.querySelector('.cc-skillhub-update-uncertain-note')?.textContent)
       .toBe('部分 Skill 无法确认更新');
+    expect(container.querySelector('.cc-skillhub-update-uncertain-note')?.getAttribute('title'))
+      .toContain('removed/skill');
 
     const trigger = container.querySelector('.cc-skillhub-agent-select-trigger');
     await act(async () => {
@@ -2532,6 +2534,8 @@ describe('SkillHubView', () => {
     });
     expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent)
       .toContain('部分待确认');
+    expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent)
+      .toContain('removed/skill');
   });
 
   it('loads only owner bots and binds a precise SkillHub reference', async () => {

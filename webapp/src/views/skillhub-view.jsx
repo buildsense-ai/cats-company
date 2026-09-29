@@ -1139,19 +1139,23 @@ export default function SkillHubView({
     return skillHubUpdateSummary?.byBot?.[uid] || null;
   }, [skillHubUpdateSummary]);
 
-  const agentOptions = useMemo(() => bots.map((bot) => ({
-    value: String(botUID(bot)),
-    label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
-    updateCount: ['ready', 'partial'].includes(updateSummaryForBot(bot)?.status)
-      ? updateSummaryForBot(bot)?.count
-      : null,
-    updateStatus: updateSummaryForBot(bot)?.status || '',
-  })), [bots, updateSummaryForBot]);
+  const agentOptions = useMemo(() => bots.map((bot) => {
+    const summary = updateSummaryForBot(bot);
+    const status = summary?.status || '';
+    return {
+      value: String(botUID(bot)),
+      label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
+      updateCount: ['ready', 'partial'].includes(status) ? summary?.count : null,
+      updateStatus: status,
+      unavailableSkillIds: summary?.unavailableSkillIds || [],
+    };
+  }), [bots, updateSummaryForBot]);
   const selectedUpdateSummary = updateSummaryForBot(selectedAgent);
   const selectedUpdateCount = ['ready', 'partial'].includes(selectedUpdateSummary?.status)
-    ? Number(updateSummaryForBot(selectedAgent)?.count || 0)
+    ? Number(selectedUpdateSummary?.count || 0)
     : 0;
   const selectedUpdateStatus = selectedUpdateSummary?.status || '';
+  const selectedUnavailableSkillIds = selectedUpdateSummary?.unavailableSkillIds || [];
   const loadDevices = useCallback(async (options = {}) => {
     setLoadingDevices(true);
     try {
@@ -2297,6 +2301,7 @@ export default function SkillHubView({
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
     selectedAgentRelation={selectedAgent?.relation || 'owner'}
+    selectedUnavailableSkillIds={selectedUnavailableSkillIds}
     skillHubUpdateDetailsByID={skillHubUpdateSummary?.detailsBySkillID}
     selectedUpdateCount={selectedUpdateCount}
     selectedUpdateStatus={selectedUpdateStatus}
