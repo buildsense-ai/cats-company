@@ -11,8 +11,10 @@ WORKDIR /app
 
 RUN corepack enable pnpm
 COPY website/package.json website/pnpm-lock.yaml website/pnpm-workspace.yaml ./
+# pnpm does not read npm_config_registry from the environment, so pass the
+# registry explicitly; the env var stays for tools that do honor it.
 RUN --mount=type=cache,id=catscompany-website-pnpm,target=/root/.local/share/pnpm/store,sharing=locked \
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --registry="${NPM_REGISTRY}"
 
 # Keep the large, hand-managed public media tree out of the OCI image.  The
 # source is still present in the repository for local development and for the
