@@ -139,13 +139,12 @@ func TestRelayCommercialRedeemInviteSkipsEnsureOnFailure(t *testing.T) {
 	}
 }
 
-// The auto-provision hook grants exactly one worker for a redemption that
-// carries multiple credits; the remaining credits stay for manual creation.
-// The user-facing rule is "开一个就够，多了浪费，剩下的我等用户手动开".
-// This exercises the real hook (AutoProvisionForOwner) against a counting
-// credit store: the sequential reservation model means the loop inside the
-// redemption cannot provision more than the first credit.
-func TestRelayCommercialEnsureHookProvisionsAtMostOnce(t *testing.T) {
+// Repeated redemption attempts against a single-redemption code must reach
+// the ensure hook exactly once: only the successful redemption may start
+// provisioning, so a failing retry can never open a second worker.
+// (The "one worker per redemption regardless of credit count" contract is
+// covered by TestRedeemWithMultipleCreditsProvisionsOneWorker.)
+func TestRelayCommercialEnsureHookRunsOncePerRedemption(t *testing.T) {
 	store := newCommercialTestStore()
 	planID, err := store.CreateCommercialPlan(&types.CommercialPlan{
 		Slug:         "catsco-personal",
@@ -191,10 +190,15 @@ func TestRelayCommercialEnsureHookProvisionsAtMostOnce(t *testing.T) {
 	}
 }
 
-// countingCreditStub implements the cloud-worker credit interfaces with a
-// real reservation state machine: it tracks how many credits a provisioning
-// run consumes so a multi-credit redemption can be shown to open exactly one
+// countingCreditStub implements the configured-credit interfaces with a real
+// reservation state machine: it tracks how many credits a provisioning run
+// consumes so a multi-credit redemption can be shown to open exactly one
 // instance.
+//
+// It mirrors the production Postgres adapter, which implements
+// cloudWorkerBillingCredits (ReserveCloudWorkerConfiguredCredit) - the branch
+// HandleCreate picks first - and CloudWorkerCreditSummary used by the
+// admission checks in AutoProvisionForOwner/HandleCreate.
 type countingCreditStub struct {
 	total     int
 	available int
@@ -205,6 +209,27 @@ type countingCreditStub struct {
 
 func (s *countingCreditStub) CloudWorkerCreditSummary(int64) (int, int, error) {
 	return s.total, s.available, nil
+}
+
+func (s *countingCreditStub) CloudWorkerConfiguredCreditSummary(int64, string, string) (int, int, error) {
+	return s.total, s.available, nil
+}
+
+// ReserveCloudWorkerConfiguredCredit mirrors the production reservation: the
+// first available credit is consumed and the caller learns which profile and
+// billing mode it carried.
+func (s *countingCreditStub) ReserveCloudWorkerConfiguredCredit(uid int64, reservation, profile, billing string) (types.CloudWorkerCreditSelection, bool, error) {
+	selection := types.CloudWorkerCreditSelection{Profile: types.CloudWorkerPrivateNAT, BillingMode: types.CloudWorkerMonthly}
+	if s.available <= 0 {
+		return selection, false, nil
+	}
+	s.available--
+	s.reserved++
+	return selection, true, nil
+}
+
+func (s *countingCreditStub) GrantCloudWorkerConfiguredCredits(int64, int, string, *time.Time, string, string) (int, error) {
+	return 0, nil
 }
 
 func (s *countingCreditStub) ReserveCloudWorkerCredit(uid int64, reservation string) (bool, error) {
