@@ -157,6 +157,12 @@ services:
       CATS_RELAY_COMMERCIAL_TEST_UIDS: "${CATS_RELAY_COMMERCIAL_TEST_UIDS:-}"
       CATS_RELAY_COMMERCIAL_ENFORCE_ENABLED: "${CATS_RELAY_COMMERCIAL_ENFORCE_ENABLED:-0}"
       CATS_RELAY_COMMERCIAL_ENFORCE_UIDS: "${CATS_RELAY_COMMERCIAL_ENFORCE_UIDS:-}"
+      # Group-chat activation judging. Off unless CATS_JEV_ENABLED is set, so an
+      # unset block leaves routing exactly as it was before the judge existed.
+      # The key is only a non-empty marker the relay uses to attribute usage; the
+      # upstream credential lives on the relay and never reaches this host.
+      CATS_JEV_ENABLED: "${CATS_JEV_ENABLED:-}"
+      CATS_JEV_API_KEY: "${CATS_JEV_API_KEY:-}"
       # Cloud worker control plane (B4-1/B4-2): ops scripts + create quota.
       # Unset script => corresponding /api/cloud-workers action returns 503.
       CATSCO_WORKER_CREATE_QUOTA: "${CATSCO_WORKER_CREATE_QUOTA:-}"
