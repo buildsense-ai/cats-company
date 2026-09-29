@@ -463,6 +463,15 @@ func main() {
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	hub.SetArtifactTaskIntentResolver(cloudArtifactHandler)
 	hub.SetArtifactRuntimeManifestResolver(cloudArtifactHandler)
+	// Group activation judging is optional: without a configured relay endpoint
+	// the hub keeps the deterministic mention rules.
+	if jevClient := server.NewJevClientFromEnv(); jevClient.Enabled() {
+		var functions server.BotFunctionReader
+		if reader, ok := db.(server.BotFunctionReader); ok {
+			functions = reader
+		}
+		hub.SetGroupActivationResolver(server.NewJevGroupActivationResolver(jevClient, functions))
+	}
 	artifactContextSnapshotHandler := server.NewArtifactContextSnapshotHandler(hub)
 	artifactResultHandler := server.NewArtifactResultHandler(hub)
 	artifactTaskHandler := server.NewArtifactTaskHandler(hub)
