@@ -34,6 +34,37 @@ func clientWouldRespond(t *testing.T, delivered *ServerMessage, botUID int64) bo
 	return true
 }
 
+// TestActivationNoticeIsRateLimited guards the degraded-routing notice.
+//
+// An outage affects every message, so one notice each would bury the
+// conversation it is meant to explain.
+func TestActivationNoticeIsRateLimited(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	hub := NewHub(store, nil)
+
+	if !hub.activationNoticeAllowed(80) {
+		t.Fatalf("the first notice was suppressed")
+	}
+	if hub.activationNoticeAllowed(80) {
+		t.Fatalf("a second notice was sent inside the cooldown")
+	}
+	// A different group has its own budget.
+	if !hub.activationNoticeAllowed(81) {
+		t.Fatalf("another group was suppressed by the first group's notice")
+	}
+}
+
 // TestJevClientRequiresExplicitEnablement guards the deployment default.
 //
 // Every deployment already has a relay base URL, so a client built from the

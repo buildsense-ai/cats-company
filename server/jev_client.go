@@ -41,7 +41,6 @@ type JevClient struct {
 	model      string
 	path       string
 	attempts   int
-	perAttempt time.Duration
 	httpClient *http.Client
 }
 
@@ -147,7 +146,6 @@ func NewJevClientFromEnv() *JevClient {
 		model:      model,
 		path:       path,
 		attempts:   attempts,
-		perAttempt: timeout,
 		httpClient: client,
 	}
 }

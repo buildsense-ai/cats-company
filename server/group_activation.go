@@ -44,14 +44,15 @@ type GroupActivationDecision struct {
 }
 
 const (
-	activationSourceSingleBot = "single_bot"
-	activationSourceMention   = "mention"
-	activationSourceChannel   = "channel_trigger"
-	activationSourceBotSender = "bot_sender"
-	activationSourceJev       = "jev"
-	activationSourceDegraded  = "jev_unavailable"
-	activationSourceNoBot     = "no_bot"
-	activationSourceNoMention = "no_mention"
+	activationSourceSingleBot    = "single_bot"
+	activationSourceMention      = "mention"
+	activationSourceChannel      = "channel_trigger"
+	activationSourceBotSender    = "bot_sender"
+	activationSourceJev          = "jev"
+	activationSourceDegraded     = "jev_unavailable"
+	activationSourceNoBot        = "no_bot"
+	activationSourceNoMention    = "no_mention"
+	activationSourceDefaultAgent = "default_agent"
 )
 
 // GroupActivationResolver decides which bots respond to a group message.
@@ -73,6 +74,10 @@ type GroupActivationRequest struct {
 	// TrustedChannelTrigger marks a channel-managed group message that already
 	// passed the channel's own trigger rules.
 	TrustedChannelTrigger bool
+	// DefaultAgentUID is the agent an agent-task group falls back to when a
+	// message addresses nobody. Such a group exists to get one piece of work
+	// done, so a message that reaches no one would silently stall it.
+	DefaultAgentUID int64
 	// JudgeContext lazily loads the prompt material. It is only called when
 	// semantic judging actually happens, so the common paths (a single-bot
 	// group, an explicit mention, a channel trigger) pay no query at all.
@@ -187,7 +192,7 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 		return GroupActivationDecision{Activated: activationAll(bots), Source: activationSourceMention}
 	}
 	if !r.client.Enabled() {
-		return GroupActivationDecision{Source: activationSourceDegraded, Degraded: true}
+		return activationDefaultAgentFallback(req, bots)
 	}
 	r.attachFunctions(bots)
 
@@ -197,7 +202,41 @@ func (r *JevGroupActivationResolver) Resolve(ctx context.Context, req GroupActiv
 		// unavailable so a person can mention the right member instead.
 		return GroupActivationDecision{Source: activationSourceDegraded, Degraded: true}
 	}
+	if len(decision.Activated) == 0 && req.DefaultAgentUID > 0 {
+		// An agent-task group exists to finish one piece of work. When judging
+		// finds no addressee, the task still needs its owner rather than
+		// stalling silently.
+		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
+			return GroupActivationDecision{
+				Activated: map[int64]float64{req.DefaultAgentUID: 1},
+				Source:    activationSourceDefaultAgent,
+			}
+		}
+	}
 	return decision
+}
+
+// activationDefaultAgentFallback applies the agent-task rule when judging is
+// unavailable, matching what the deterministic path does.
+func activationDefaultAgentFallback(req GroupActivationRequest, bots []GroupActivationBot) GroupActivationDecision {
+	if req.DefaultAgentUID > 0 {
+		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
+			return GroupActivationDecision{
+				Activated: map[int64]float64{req.DefaultAgentUID: 1},
+				Source:    activationSourceDefaultAgent,
+			}
+		}
+	}
+	return GroupActivationDecision{Source: activationSourceDegraded, Degraded: true}
+}
+
+// activationBotUIDs indexes the candidate bots for membership checks.
+func activationBotUIDs(bots []GroupActivationBot) map[int64]struct{} {
+	index := make(map[int64]struct{}, len(bots))
+	for _, bot := range bots {
+		index[bot.UID] = struct{}{}
+	}
+	return index
 }
 
 // attachFunctions fills in each bot's owner-defined role and description, which

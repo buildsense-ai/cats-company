@@ -517,6 +517,155 @@ func TestGroupFanoutBotMentionActivatesMentionedBot(t *testing.T) {
 
 // --- rule ordering ---
 
+// --- agent-task groups ---
+//
+// An agent-task group exists to finish one piece of work. A message that
+// addresses nobody still needs its owner, otherwise the task stalls with no
+// reply and no notice. These cases pin that rule and its handover behaviour.
+
+func TestGroupFanoutMultiBotAgentTaskDefaultsToPrimaryBot(t *testing.T) {
+	baseStore := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{
+		identityMessageStore: baseStore,
+		group: &types.Group{
+			ID:       80,
+			Kind:     types.GroupKindAgentTask,
+			AgentIDs: []int64{42, 43},
+		},
+	}
+	hub := NewHub(store, nil)
+	primaryBot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	collaboratorBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(primaryBot)
+	hub.addClient(collaboratorBot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"继续处理这个任务"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 34, nil)
+
+	delivered := assertBotActivation(t, primaryBot.send, true)
+	if delivered.Data.MemberCount != 3 {
+		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
+	}
+	assertBotActivation(t, collaboratorBot.send, false)
+}
+
+func TestGroupFanoutMultiBotAgentTaskMentionOverridesPrimaryBot(t *testing.T) {
+	baseStore := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{
+		identityMessageStore: baseStore,
+		group: &types.Group{
+			ID:       80,
+			Kind:     types.GroupKindAgentTask,
+			AgentIDs: []int64{42, 43},
+		},
+	}
+	hub := NewHub(store, nil)
+	primaryBot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	collaboratorBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(primaryBot)
+	hub.addClient(collaboratorBot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:  "grp_80",
+		Content:  json.RawMessage(`"@usr43 请接手"`),
+		Mentions: []string{"usr43"},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 35, nil)
+
+	// Naming someone overrides the default owner.
+	delivered := assertBotActivation(t, collaboratorBot.send, true)
+	if !reflect.DeepEqual(delivered.Data.Mentions, []string{"usr43"}) {
+		t.Fatalf("mentions = %#v, want usr43", delivered.Data.Mentions)
+	}
+	assertBotActivation(t, primaryBot.send, false)
+}
+
+func TestGroupFanoutAgentTaskPromotesRemainingBotAfterPrimaryRemoval(t *testing.T) {
+	baseStore := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			8:  {ID: 8, AccountType: types.AccountHuman},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{
+		identityMessageStore: baseStore,
+		group: &types.Group{
+			ID:       80,
+			Kind:     types.GroupKindAgentTask,
+			AgentIDs: []int64{43},
+		},
+	}
+	hub := NewHub(store, nil)
+	remainingBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(remainingBot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"原机器人已移除，请继续"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 36, nil)
+
+	// The remaining agent is now first in the list, so it inherits the task.
+	delivered := assertBotActivation(t, remainingBot.send, true)
+	if delivered.Data.MemberCount != 3 {
+		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
+	}
+}
+
+// assertNoQueuedServerMessage fails when a message was delivered that should not
+// have been.
+func assertNoQueuedServerMessage(t *testing.T, ch <-chan []byte) {
+	t.Helper()
+	select {
+	case raw := <-ch:
+		t.Fatalf("unexpected queued server message: %s", raw)
+	default:
+	}
+}
+
 func TestDeterministicActivationSingleBotAlwaysActivates(t *testing.T) {
 	decision := deterministicGroupActivation(GroupActivationRequest{
 		Members: []*types.GroupMember{
