@@ -2,6 +2,12 @@ ARG NGINX_BROTLI_BASE_IMAGE="georgjung/nginx-brotli:latest@sha256:488e48d7773dee
 
 FROM node:24-alpine3.24 AS webapp-build
 
+# Overridable Node registry. The deploy script passes a China-friendly mirror
+# (npmmirror) for the build host; the default keeps plain docker builds on the
+# official registry.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV npm_config_registry=${NPM_REGISTRY}
+
 WORKDIR /app
 
 RUN apk add --no-cache brotli gzip

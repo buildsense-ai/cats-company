@@ -81,6 +81,8 @@ fallback_output="$(run_build "$fallback_revision" pull 2>&1)"
 [ -f "$cache_root/source/$revision/reuse-marker" ]
 grep -q 'Building web image locally' <<<"$first_output"
 grep -q -- '--build-arg APK_REPOSITORY=https://mirrors.aliyun.com/alpine' "$docker_log"
+grep '^build .*cats-company-web:' "$docker_log" | grep -q -- '--build-arg NPM_REGISTRY=https://registry.npmmirror.com'
+grep '^build .*cats-company-website:' "$docker_log" | grep -q -- '--build-arg NPM_REGISTRY=https://registry.npmmirror.com'
 grep '^build .*cats-company-shimo-worker:' "$docker_log" | grep -q -- '--build-arg DEBIAN_MIRROR=http://mirrors.ustc.edu.cn/debian'
 grep '^build .*cats-company-shimo-worker:' "$docker_log" | grep -q -- '--build-arg DEBIAN_SECURITY_MIRROR=http://mirrors.ustc.edu.cn/debian-security'
 grep -q 'timed out after 120s' <<<"$fallback_output"
