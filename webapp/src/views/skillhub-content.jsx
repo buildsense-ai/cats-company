@@ -885,7 +885,7 @@ function CustomGrid(props) {
   return <div className='cc-skillhub-local-grid'>{props.localSkills.map((skill) => <CustomCard key={`${skill.relativePath}:${skill.name}`} skill={skill} {...props} />)}</div>;
 }
 
-export function resolveRuntimeSkillPresentation(skill, catalogueByID) {
+export function resolveRuntimeSkillPresentation(skill, catalogueByID, fallbackDetailsByID = {}) {
   const reference = skill?.skillHub?.reference || skill?.reference || {};
   const skillId = String(
     reference?.skillId
@@ -894,7 +894,9 @@ export function resolveRuntimeSkillPresentation(skill, catalogueByID) {
     || skill?.skillId
     || '',
   ).trim();
-  const details = skillId ? catalogueByID?.get(skillId) : null;
+  const details = skillId
+    ? (catalogueByID?.get(skillId) || fallbackDetailsByID?.[skillId] || null)
+    : null;
   const displayName = String(
     details?.displayName
     || skill?.skillHub?.displayName
@@ -920,7 +922,7 @@ export function resolveRuntimeSkillPresentation(skill, catalogueByID) {
   return { details, directory, displayName, publisher, skillId, version };
 }
 
-function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, syncingWorkspace }) {
+function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
   const shared = isLocalSkillShared(skill, installedReference);
@@ -928,7 +930,7 @@ function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkil
   const canShare = !blocked && skill.canShare !== false && skill.source !== 'system' && !shared;
   const statusClass = blocked ? 'blocked' : shared ? 'synced' : 'local';
   const statusLabel = blocked ? '无法发布' : shared ? '已发布' : '未发布';
-  const { directory, displayName, publisher, version } = resolveRuntimeSkillPresentation(skill, catalogueByID);
+  const { directory, displayName, publisher, version } = resolveRuntimeSkillPresentation(skill, catalogueByID, skillHubUpdateDetailsByID);
   return (
     <article className='cc-skillhub-local-card'>
       <div className='cc-skillhub-local-card-heading'><strong>{displayName}</strong><span className={`cc-skillhub-status ${statusClass}`}>{statusLabel}</span></div>

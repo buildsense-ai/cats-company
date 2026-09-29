@@ -34,6 +34,7 @@ import SkillHubView, {
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
+import { resolveRuntimeSkillPresentation } from './skillhub-content';
 import {
   formatSkillHubPublisher,
   isPrivateSkillHubReference,
@@ -1023,6 +1024,27 @@ describe('SkillHubView', () => {
     expect(library.map((skill) => skill.sourceLabel)).toEqual(['本机', undefined]);
     expect(library[0]).toMatchObject({ isLocalSkill: true, canBind: false });
     expect(library[1]).toMatchObject({ latestVersion: '1.0.0', author: 'alice' });
+  });
+
+  it('uses verified SkillHub details for Runtime metadata when the local catalogue entry is filtered', () => {
+    const presentation = resolveRuntimeSkillPresentation({
+      name: 'Local Writer',
+      skillHub: { reference: { skillId: 'alice/writer', version: '1.0.5' } },
+    }, new Map(), {
+      'alice/writer': {
+        skillId: 'alice/writer',
+        displayName: 'Online Writer',
+        latestVersion: '1.0.6',
+        publisherDisplayName: 'Alice',
+        publisherUid: '7',
+      },
+    });
+
+    expect(presentation).toMatchObject({
+      displayName: 'Online Writer',
+      publisher: 'Alice · UID 7',
+      version: 'v1.0.5',
+    });
   });
 
   it('calibrates the current publisher profile before loading the catalogue and tolerates sync failure', async () => {

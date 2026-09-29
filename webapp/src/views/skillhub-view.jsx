@@ -2295,6 +2295,7 @@ export default function SkillHubView({
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
     selectedAgentRelation={selectedAgent?.relation || 'owner'}
+    skillHubUpdateDetailsByID={skillHubUpdateSummary?.detailsBySkillID}
     selectedUpdateCount={selectedUpdateCount}
     selectedBotUID={selectedBotUID}
     selectedDeviceID={selectedDeviceID}
