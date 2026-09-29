@@ -33,9 +33,11 @@ function normalizeDefinitionSkills(response) {
 
 /**
  * Fetch update counts for owner Bots without allowing one unavailable Bot to
- * hide updates for the other Bots. A Bot is included in the aggregate only
- * when its definition and every public SkillHub reference were checked
- * successfully; an unavailable/partial Bot is intentionally omitted.
+ * hide updates for the other Bots. A Bot whose definition cannot be read is
+ * unavailable. If only some of its public SkillHub references cannot be
+ * resolved (for example, a Skill was removed from the catalogue), the Bot is
+ * partial: the resolvable references still contribute to the update count,
+ * while the unresolved IDs are reported to the UI.
  */
 export async function collectSkillHubUpdateSummary({
   bots = [],
@@ -103,14 +105,20 @@ export async function collectSkillHubUpdateSummary({
 
   let total = 0;
   for (const entry of definitions) {
-    if (!entry.ok || entry.skills.some((skill) => !details.get(skill.skillId))) {
+    if (!entry.ok) {
       byBot[entry.botUID] = { count: null, status: 'unavailable' };
       continue;
     }
+    const unavailableSkillIds = [...new Set(entry.skills
+      .filter((skill) => !details.get(skill.skillId))
+      .map((skill) => skill.skillId))];
     const count = entry.skills.reduce((sum, skill) => (
-      sum + (isSkillHubUpdateAvailable(skill, details.get(skill.skillId)) ? 1 : 0)
+      sum + (details.get(skill.skillId)
+        && isSkillHubUpdateAvailable(skill, details.get(skill.skillId)) ? 1 : 0)
     ), 0);
-    byBot[entry.botUID] = { count, status: 'ready' };
+    byBot[entry.botUID] = unavailableSkillIds.length > 0
+      ? { count, status: 'partial', unavailableSkillIds }
+      : { count, status: 'ready' };
     total += count;
   }
 

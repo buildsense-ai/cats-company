@@ -300,6 +300,18 @@
   white-space: nowrap;
 }
 
+.cc-skillhub-update-uncertain-note {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  align-self: center;
+  overflow-wrap: anywhere;
+  color: var(--cc-warning-text, #9a6700);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: right;
+}
+
 .cc-skillhub-updates-filter {
   display: inline-flex;
   align-items: center;
