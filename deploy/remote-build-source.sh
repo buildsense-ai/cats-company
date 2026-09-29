@@ -29,6 +29,11 @@ else
 fi
 touch "$source_bundle" "$source_root"
 
+# Node dependency registry for the webapp/website builds. The deploy host
+# reaches registry.npmjs.org slowly and flakily; default to a China-friendly
+# mirror and allow overrides via REMOTE_NPM_REGISTRY.
+npm_registry="${REMOTE_NPM_REGISTRY:-https://registry.npmmirror.com}"
+
 cd "$source_root"
 
 # Reuse layers from the last deployed revision whenever that image is still
@@ -139,6 +144,7 @@ build_web_image() {
   timeout "$fallback_build_timeout" docker build --progress=plain \
     --build-arg REACT_APP_API_BASE="${REMOTE_WEB_REACT_APP_API_BASE:-}" \
     --build-arg NGINX_BROTLI_BASE_IMAGE="$web_base_image" \
+    --build-arg NPM_REGISTRY="$npm_registry" \
     -f deploy/Dockerfile.nginx \
     -t "$web_image" \
     .
@@ -181,6 +187,7 @@ build_website_image() {
   echo "Building website image locally (timeout ${website_build_timeout}s)."
   timeout "$website_build_timeout" docker build --progress=plain \
     --build-arg VITE_APP_BASE_URL="${REMOTE_WEBSITE_APP_BASE_URL:-https://app.catsco.cn}" \
+    --build-arg NPM_REGISTRY="$npm_registry" \
     -f deploy/Dockerfile.website \
     -t "$website_image" \
     .

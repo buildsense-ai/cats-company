@@ -1,5 +1,12 @@
 FROM node:24-alpine3.24 AS website-build
 
+# Overridable Node registry (same convention as Dockerfile.nginx).
+# COREPACK_NPM_REGISTRY keeps the corepack-provisioned pnpm download off the
+# default registry as well.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV npm_config_registry=${NPM_REGISTRY} \
+    COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
+
 WORKDIR /app
 
 RUN corepack enable pnpm
