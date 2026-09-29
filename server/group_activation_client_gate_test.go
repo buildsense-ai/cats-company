@@ -34,6 +34,27 @@ func clientWouldRespond(t *testing.T, delivered *ServerMessage, botUID int64) bo
 	return true
 }
 
+// TestJevClientRequiresExplicitEnablement guards the deployment default.
+//
+// Every deployment already has a relay base URL, so a client built from the
+// relay fallback alone would send judging traffic to a lane that may not exist
+// and turn each multi-bot message into a retry-then-degrade cycle. Judging must
+// therefore stay off until it is explicitly switched on.
+func TestJevClientRequiresExplicitEnablement(t *testing.T) {
+	t.Setenv("CATS_JEV_ENABLED", "")
+	t.Setenv("CATS_JEV_RELAY_BASE_URL", "")
+	if client := NewJevClientFromEnv(); client != nil {
+		t.Fatalf("judging was enabled without CATS_JEV_ENABLED")
+	}
+
+	t.Setenv("CATS_JEV_ENABLED", "true")
+	t.Setenv("CATS_JEV_RELAY_BASE_URL", "https://relay.example")
+	client := NewJevClientFromEnv()
+	if client == nil || !client.Enabled() {
+		t.Fatalf("judging was not enabled by CATS_JEV_ENABLED")
+	}
+}
+
 // TestClientGateSingleBotTwoMemberGroup is the baseline: one bot and one human
 // is what the client already treats as "no addressing needed".
 func TestClientGateSingleBotTwoMemberGroup(t *testing.T) {

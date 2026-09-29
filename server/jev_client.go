@@ -86,9 +86,13 @@ type JevNoulAnswer struct {
 }
 
 // NewJevClientFromEnv builds the activation judge from environment
-// configuration. It returns nil when no relay endpoint is configured, which
-// callers treat as "activation judging unavailable" rather than an error.
+// configuration. It returns nil unless judging is explicitly turned on, because
+// the relay base URL is already set in every deployment and falling back to it
+// would silently point judging at a relay lane that may not exist yet.
 func NewJevClientFromEnv() *JevClient {
+	if !jevEnabled() {
+		return nil
+	}
 	baseURL := strings.TrimSpace(os.Getenv("CATS_JEV_RELAY_BASE_URL"))
 	if baseURL == "" {
 		baseURL = strings.TrimRight(relayBaseURL(), "/")
@@ -151,6 +155,21 @@ func NewJevClientFromEnv() *JevClient {
 // Enabled reports whether the client can issue requests.
 func (c *JevClient) Enabled() bool {
 	return c != nil && c.baseURL != "" && c.httpClient != nil
+}
+
+// jevEnabled reports whether judging was explicitly turned on.
+//
+// It must be explicit rather than inferred from the relay URL: every deployment
+// already has a relay base URL, so inferring would point judging at a lane that
+// may not exist and turn every multi-bot message into a retry-then-degrade
+// cycle instead of the documented "behaves exactly as before" default.
+func jevEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CATS_JEV_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // Ask evaluates every question and returns the answers keyed by question name.

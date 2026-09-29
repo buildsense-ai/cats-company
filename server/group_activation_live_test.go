@@ -24,6 +24,7 @@ func TestJevResolverLiveEndToEnd(t *testing.T) {
 	if baseURL == "" {
 		baseURL = "https://api.typesafe.ai"
 	}
+	t.Setenv("CATS_JEV_ENABLED", "true")
 	t.Setenv("CATS_JEV_RELAY_BASE_URL", baseURL)
 	t.Setenv("CATS_JEV_API_KEY", apiKey)
 	client := NewJevClientFromEnv()
