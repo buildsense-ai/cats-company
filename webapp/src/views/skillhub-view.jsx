@@ -12,6 +12,7 @@ import {
   resolveSkillHubEntry,
   resolveSkillHubUpdateStatus,
 } from '../utils/skillhub-entry';
+import { normalizeOwnedBots } from '../utils/owned-bots';
 import { getStorage } from '../utils/storage-access';
 import SkillHubContent from './skillhub-content';
 import '../css/skillhub-view.css';
@@ -249,15 +250,7 @@ export function resolveAutomaticSkillHubDeviceID(devices) {
   return String(devices[0]?.deviceId || '');
 }
 
-export function normalizeOwnedBots(response, userUid) {
-  const bots = Array.isArray(response) ? response : (response?.bots || []);
-  return bots.filter((bot) => {
-    if (bot?.relation) return bot.relation === 'owner';
-    if (bot?.is_owner !== undefined) return Boolean(bot.is_owner);
-    const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
-    return ownerUID > 0 && ownerUID === Number(userUid);
-  });
-}
+export { normalizeOwnedBots } from '../utils/owned-bots';
 
 export function normalizeAccessibleBots(response, userUid) {
   const bots = Array.isArray(response) ? response : (response?.agents || response?.bots || []);
@@ -711,9 +704,9 @@ export function hasExactLocalSkillReference(skill, localSkill) {
   );
 }
 
-export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
+export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference, fallbackDetailsByID = {}) {
   const skillId = String(skill?.skillId || '').trim();
-  const details = catalogueByID?.get(skillId);
+  const details = catalogueByID?.get(skillId) || fallbackDetailsByID?.[skillId] || null;
   const candidates = localSkillsByReference?.get(skillId);
   const localDetails = (Array.isArray(candidates) ? candidates : [candidates])
     .find(candidate => hasExactLocalSkillReference(skill, candidate)) || null;
@@ -960,6 +953,7 @@ export default function SkillHubView({
   initialAgent = null,
   initialAgentId = null,
   skillHubUpdateSummary = null,
+  onRegisterSkillHubCatalogue,
   onRefreshSkillHubUpdateSummary,
 }) {
   const feedback = useFeedback();
@@ -1102,15 +1096,24 @@ export default function SkillHubView({
     }),
   ]), [librarySkills, viewerSkills]);
 
+  useEffect(() => {
+    onRegisterSkillHubCatalogue?.(catalogueByID);
+  }, [catalogueByID, onRegisterSkillHubCatalogue]);
+
   const addedSkillPresentationByID = useMemo(() => new Map(
     buildCurrentAgentSkills(
       selectedAgentIsFriend ? viewerSkills : definition.skills,
       selectedAgentIsFriend ? [] : localSkills,
     ).map((skill) => [
       skill.skillId,
-      resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference),
+      resolveAddedSkillPresentation(
+        skill,
+        catalogueByID,
+        localSkillsByReference,
+        skillHubUpdateSummary?.detailsBySkillID,
+      ),
     ]),
-  ), [catalogueByID, definition.skills, localSkills, localSkillsByReference, selectedAgentIsFriend, viewerSkills]);
+  ), [catalogueByID, definition.skills, localSkills, localSkillsByReference, selectedAgentIsFriend, skillHubUpdateSummary?.detailsBySkillID, viewerSkills]);
 
   const displaySkills = useMemo(() => buildCurrentAgentSkills(
     selectedAgentIsFriend ? viewerSkills : definition.skills,

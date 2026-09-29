@@ -218,6 +218,25 @@ export function hasCompleteSkillHubReference(skill) {
   );
 }
 
+// Keep the notification badge, the "可更新" filter and the update action on
+// the same conservative rule. An incomplete historical reference may still be
+// displayed in Agent 能力, but it must not be advertised as an update that the
+// update action will reject.
+export function isSkillHubUpdateAvailable(installedReference, catalogueSkill) {
+  const installedSkillID = String(installedReference?.skillId || '').trim();
+  const catalogueSkillID = String(catalogueSkill?.skillId || '').trim();
+  const catalogueSource = String(catalogueSkill?.source || '').trim().toLowerCase();
+  if (
+    !installedSkillID
+    || installedSkillID !== catalogueSkillID
+    || !hasCompleteSkillHubReference(installedReference)
+    || isPrivateSkillHubReference(installedSkillID)
+    || (catalogueSource && catalogueSource !== 'skillhub')
+    || catalogueSkill?.isLocalSkill
+  ) return false;
+  return resolveSkillHubUpdateStatus(installedReference, catalogueSkill) === 'update';
+}
+
 // Versions are publisher-chosen labels, so rank only the leading numeric run
 // (`2`, `1.0.6`, `2026.09.16`, `1.0.0-beta` -> 1.0.0). A label without numbers
 // stays unranked instead of being guessed at.

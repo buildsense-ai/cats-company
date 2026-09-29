@@ -4,6 +4,7 @@ import {
   findSameNameInstalledCapability,
   formatSkillHubVersion,
   isPrivateSkillHubReference,
+  isSkillHubUpdateAvailable,
   normalizeSkillHubSkills,
   resolveSkillHubUpdateStatus,
 } from './skillhub-entry';
@@ -73,6 +74,19 @@ describe('skillhub entry versions', () => {
       { source: 'local', skillId: 'local:demo', version: '1.0.5', contentHash: hash('a') },
       catalogueSkill('1.0.6', hash('b')),
     )).toBe('current');
+  });
+
+  it('uses the same conservative update predicate for badges and actions', () => {
+    const installed = installedReference('1.0.5', hash('a'));
+    expect(isSkillHubUpdateAvailable(installed, {
+      skillId: 'tools/summarize', source: 'skillhub', latestVersion: '1.0.6', contentHash: hash('b'),
+    })).toBe(true);
+    expect(isSkillHubUpdateAvailable({ ...installed, contentHash: '' }, {
+      skillId: 'tools/summarize', latestVersion: '1.0.6', contentHash: hash('b'),
+    })).toBe(false);
+    expect(isSkillHubUpdateAvailable(installed, {
+      skillId: 'other-publisher/summarize', latestVersion: '1.0.6', contentHash: hash('b'),
+    })).toBe(false);
   });
 
   it('reads the hash of a catalogue entry as the list route returns it', () => {

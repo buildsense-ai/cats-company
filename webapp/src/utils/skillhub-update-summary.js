@@ -1,20 +1,14 @@
 import {
   isPrivateSkillHubReference,
+  isSkillHubUpdateAvailable,
   resolveSkillHubEntry,
-  resolveSkillHubUpdateStatus,
 } from './skillhub-entry';
+import { normalizeOwnedBots } from './owned-bots';
 
 export const SKILLHUB_UPDATE_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 
 function botUID(bot) {
   return String(bot?.uid ?? bot?.id ?? '').trim();
-}
-
-function isOwnedBot(bot, userUid) {
-  if (bot?.relation) return bot.relation === 'owner';
-  if (bot?.is_owner !== undefined) return bot.is_owner === true;
-  const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
-  return ownerUID > 0 && ownerUID === Number(userUid);
 }
 
 function isPublicSkillHubReference(skill) {
@@ -55,7 +49,7 @@ export async function collectSkillHubUpdateSummary({
   }
 
   const ownerBots = (Array.isArray(bots) ? bots : [])
-    .filter((bot) => isOwnedBot(bot, userUid))
+    .filter((bot) => normalizeOwnedBots([bot], userUid).length > 0)
     .map((bot) => ({ bot, botUID: botUID(bot) }))
     .filter(({ botUID: uid }) => uid);
 
@@ -75,8 +69,12 @@ export async function collectSkillHubUpdateSummary({
   const details = new Map();
   await Promise.all(skillIDs.map(async (skillId) => {
     const catalogueEntry = catalogueByID instanceof Map ? catalogueByID.get(skillId) : null;
-    if (catalogueEntry?.latestVersion) {
-      details.set(skillId, catalogueEntry);
+    const catalogueSkill = catalogueEntry?.skill || catalogueEntry;
+    const fetchedAt = Number(catalogueEntry?.fetchedAt || 0);
+    const catalogueIsFresh = !fetchedAt
+      || (Date.now() - fetchedAt) <= SKILLHUB_UPDATE_REFRESH_INTERVAL_MS;
+    if (catalogueIsFresh && catalogueSkill?.latestVersion) {
+      details.set(skillId, catalogueSkill);
       return;
     }
     try {
@@ -91,6 +89,11 @@ export async function collectSkillHubUpdateSummary({
     }
   }));
 
+  const detailsBySkillID = {};
+  for (const [skillId, detail] of details) {
+    if (detail) detailsBySkillID[skillId] = detail;
+  }
+
   let total = 0;
   for (const entry of definitions) {
     if (!entry.ok || entry.skills.some((skill) => !details.get(skill.skillId))) {
@@ -98,7 +101,7 @@ export async function collectSkillHubUpdateSummary({
       continue;
     }
     const count = entry.skills.reduce((sum, skill) => (
-      sum + (resolveSkillHubUpdateStatus(skill, details.get(skill.skillId)) === 'update' ? 1 : 0)
+      sum + (isSkillHubUpdateAvailable(skill, details.get(skill.skillId)) ? 1 : 0)
     ), 0);
     byBot[entry.botUID] = { count, status: 'ready' };
     total += count;
@@ -107,11 +110,10 @@ export async function collectSkillHubUpdateSummary({
   return {
     total,
     byBot,
-    checkedBotCount: Object.values(byBot).filter((entry) => entry.status === 'ready').length,
-    checkedAt: new Date().toISOString(),
+    detailsBySkillID,
   };
 }
 
 export function createEmptySkillHubUpdateSummary() {
-  return { total: 0, byBot: {}, checkedBotCount: 0, checkedAt: '' };
+  return { total: 0, byBot: {}, detailsBySkillID: {} };
 }

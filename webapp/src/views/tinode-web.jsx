@@ -363,6 +363,7 @@ function TinodeWebApp({ location }) {
   const [activeView, setActiveView] = useState('chats');
   const [skillHubUpdateSummary, setSkillHubUpdateSummary] = useState(() => createEmptySkillHubUpdateSummary());
   const skillHubUpdateRequestRef = useRef(0);
+  const skillHubCatalogueByIDRef = useRef(new Map());
   const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
   const [activeTopic, _setActiveTopic] = useState(() => (
     user?.uid ? readStoredTopic(user.uid) : null
@@ -377,7 +378,18 @@ function TinodeWebApp({ location }) {
   const composerDraftOwnerRef = useRef('');
   const composerDraftOwner = String(user?.uid || '');
 
-  const refreshSkillHubUpdateSummary = useCallback(async () => {
+  const registerSkillHubCatalogue = useCallback((catalogueByID) => {
+    if (!(catalogueByID instanceof Map)) return;
+    const fetchedAt = Date.now();
+    // Keep entries learned from a previous catalogue search. Search results
+    // replace the child view's list, but an installed Skill outside that
+    // search still needs its verified detail for the update filter.
+    const merged = new Map(skillHubCatalogueByIDRef.current);
+    for (const [skillID, skill] of catalogueByID) merged.set(skillID, { skill, fetchedAt });
+    skillHubCatalogueByIDRef.current = merged;
+  }, []);
+
+  const refreshSkillHubUpdateSummary = useCallback(async (options = {}) => {
     const requestID = skillHubUpdateRequestRef.current + 1;
     skillHubUpdateRequestRef.current = requestID;
     if (!user?.uid || typeof api.getMyBots !== 'function') {
@@ -391,6 +403,9 @@ function TinodeWebApp({ location }) {
         userUid: user.uid,
         getDefinition: api.getBotDefinitionSkills,
         getSkill: api.getSkillHubSkill,
+        catalogueByID: options.catalogueByID instanceof Map
+          ? options.catalogueByID
+          : skillHubCatalogueByIDRef.current,
       });
       if (requestID !== skillHubUpdateRequestRef.current) return null;
       setSkillHubUpdateSummary(summary);
@@ -406,13 +421,24 @@ function TinodeWebApp({ location }) {
   useEffect(() => {
     if (!user?.uid) {
       setSkillHubUpdateSummary(createEmptySkillHubUpdateSummary());
+      skillHubCatalogueByIDRef.current = new Map();
       return undefined;
     }
     refreshSkillHubUpdateSummary().catch(() => {});
-    const timer = window.setInterval(() => {
-      refreshSkillHubUpdateSummary().catch(() => {});
-    }, SKILLHUB_UPDATE_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshSkillHubUpdateSummary().catch(() => {});
+    };
+    const timer = window.setInterval(refreshWhenVisible, SKILLHUB_UPDATE_REFRESH_INTERVAL_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshSkillHubUpdateSummary().catch(() => {});
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [refreshSkillHubUpdateSummary, user?.uid]);
 
   if (composerDraftStoreRef.current === null
@@ -1680,6 +1706,7 @@ function TinodeWebApp({ location }) {
                   user={user}
                   initialAgent={skillHubInitialAgent}
                   skillHubUpdateSummary={skillHubUpdateSummary}
+                  onRegisterSkillHubCatalogue={registerSkillHubCatalogue}
                   onRefreshSkillHubUpdateSummary={refreshSkillHubUpdateSummary}
                 />
               </Suspense>

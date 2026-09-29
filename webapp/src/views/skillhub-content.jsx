@@ -10,29 +10,8 @@ import useDialogBehavior from '../utils/use-dialog-behavior';
 import {
   formatSkillHubPublisher,
   formatSkillHubVersion,
-  hasCompleteSkillHubReference,
-  isPrivateSkillHubReference,
-  resolveSkillHubUpdateStatus,
+  isSkillHubUpdateAvailable,
 } from '../utils/skillhub-entry';
-
-// A capability that is already installed can only be replaced through the public
-// SkillHub entry for the same Skill. Bot-private references, runtime-local
-// Skills and the read-only friend view keep their current presentation so this
-// control never rewrites a capability that was not installed from the catalogue.
-function isCatalogueUpdateAvailable(installedReference, details) {
-  const installedSkillID = String(installedReference?.skillId || '').trim();
-  const catalogueSkillID = String(details?.skillId || '').trim();
-  const detailsSource = String(details?.source || '').trim().toLowerCase();
-  if (
-    !installedSkillID
-    || installedSkillID !== catalogueSkillID
-    || !hasCompleteSkillHubReference(installedReference)
-    || isPrivateSkillHubReference(installedSkillID)
-    || (detailsSource && detailsSource !== 'skillhub')
-    || details?.isLocalSkill
-  ) return false;
-  return resolveSkillHubUpdateStatus(installedReference, details) === 'update';
-}
 
 function normalizeSkillSearchValue(value) {
   return String(value || '')
@@ -124,7 +103,7 @@ function AgentSelect({ agents, disabled, onChange, value }) {
         onChange={(event) => onChange(event.target.value)}
       >
         {agents.length === 0 && <option value=''>暂无自己拥有的 Agent</option>}
-        {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.nativeLabel || agent.label}</option>)}
+        {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.label}</option>)}
       </select>
       <CustomSelect
         ariaLabel='当前 Agent'
@@ -156,13 +135,15 @@ function AgentSelect({ agents, disabled, onChange, value }) {
 function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUpdateCount = 0, updatesOnly = false }) {
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
-      <div className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
-        <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
-          Agent 能力总览 <span>{addedCount}</span>
-        </button>
-        <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
-          能力库
-        </button>
+      <div className='cc-skillhub-tabs-actions'>
+        <div className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
+          <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
+            Agent 能力总览 <span>{addedCount}</span>
+          </button>
+          <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
+            能力库
+          </button>
+        </div>
         {!isReadOnly && selectedUpdateCount > 0 && (
           <button
             type='button'
@@ -206,7 +187,7 @@ function AddedSkills(props) {
       skill?.path,
     ].some((value) => normalizeSkillSearchValue(value).includes(normalizedQuery));
   };
-  const isUpdateable = (skill) => !skill.localOnly && isCatalogueUpdateAvailable(
+  const isUpdateable = (skill) => !skill.localOnly && isSkillHubUpdateAvailable(
     skill,
     props.addedSkillPresentationByID.get(skill.skillId)?.details,
   );
@@ -276,7 +257,11 @@ function AddedSkills(props) {
             />
           )}
           {visibleSkillCount === 0 && (
-            <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='试试能力名称、SkillHub ID 或运行目录名。' />
+            <EmptyState
+              icon={<Search size={21} />}
+              title={updatesOnly && !normalizedQuery ? '当前没有可更新的能力' : '没有找到匹配的能力'}
+              copy={updatesOnly && !normalizedQuery ? '当前 Agent 已配置的 Skill 都是最新版本，或暂时无法确认更新状态。' : '试试能力名称、SkillHub ID 或运行目录名。'}
+            />
           )}
         </div>
       )}
@@ -309,7 +294,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
   const localVersionMismatch = !skill.localOnly && Boolean(skill.local) && !localDetails;
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
-  const updatable = !isReadOnly && !skill.localOnly && isCatalogueUpdateAvailable(skill, details);
+  const updatable = !isReadOnly && !skill.localOnly && isSkillHubUpdateAvailable(skill, details);
   const authorLabel = privateReference
     ? `最近变更：${skill.lastChangedBy || '修改者未记录'}`
     : formatSkillHubPublisher(details || skill);
@@ -734,7 +719,7 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
   const label = skill.displayName || skill.skillId;
   const installedReference = installedByID.get(skill.skillId) || null;
   const installed = Boolean(installedReference);
-  const updatable = isCatalogueUpdateAvailable(installedReference, skill);
+  const updatable = isSkillHubUpdateAvailable(installedReference, skill);
   const adding = skillAction?.type === 'add' && skillAction.skillId === skill.skillId;
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
   const unavailable = skill.isLocalSkill && !skill.canBind

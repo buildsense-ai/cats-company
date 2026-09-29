@@ -26,15 +26,39 @@ describe('collectSkillHubUpdateSummary', () => {
       getSkill,
     })).resolves.toMatchObject({
       total: 1,
-      checkedBotCount: 2,
       byBot: {
         1: { count: 1, status: 'ready' },
         2: { count: 0, status: 'ready' },
         3: { count: null, status: 'unavailable' },
       },
+      detailsBySkillID: {
+        'arrowhaken/image-generation': {
+          skillId: 'arrowhaken/image-generation',
+          latestVersion: '1.0.6',
+        },
+      },
     });
     expect(getDefinition).toHaveBeenCalledTimes(3);
     expect(getSkill).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not advertise an update for an incomplete historical reference', async () => {
+    const getDefinition = vi.fn(async () => ({
+      skills: [{ skillId: 'arrowhaken/image-generation', version: '1.0.5' }],
+    }));
+    const getSkill = vi.fn(async () => ({
+      skill: { skillId: 'arrowhaken/image-generation', latestVersion: '1.0.6' },
+    }));
+
+    await expect(collectSkillHubUpdateSummary({
+      bots: [{ uid: 1, relation: 'owner' }],
+      userUid: 7,
+      getDefinition,
+      getSkill,
+    })).resolves.toMatchObject({
+      total: 0,
+      byBot: { 1: { count: 0, status: 'ready' } },
+    });
   });
 
   it('does not count private references or friend Bots', async () => {
@@ -53,7 +77,7 @@ describe('collectSkillHubUpdateSummary', () => {
       userUid: 7,
       getDefinition,
       getSkill,
-    })).resolves.toMatchObject({ total: 0, checkedBotCount: 1 });
+    })).resolves.toMatchObject({ total: 0, byBot: { 1: { count: 0, status: 'ready' } } });
     expect(getDefinition).toHaveBeenCalledTimes(1);
     expect(getSkill).toHaveBeenCalledTimes(1);
   });

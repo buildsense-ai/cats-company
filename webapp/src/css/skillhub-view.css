@@ -304,7 +304,6 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
   padding: 7px 10px;
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-sm);
@@ -906,6 +905,7 @@
 .cc-skillhub-agent-label { display: inline-flex; align-items: center; gap: 6px; color: var(--cc-muted); font-size: 12px; font-weight: var(--cc-font-weight-medium); }
 .cc-skillhub-agent-label svg { color: var(--cc-accent); }
 .cc-skillhub-navigation { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; border-bottom: 1px solid var(--cc-border); }
+.cc-skillhub-tabs-actions { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .cc-skillhub-tabs { display: flex; align-items: center; gap: 4px; }
 .cc-skillhub-tabs button { position: relative; min-height: 44px; border: 0; border-radius: 0; padding: 0 12px; background: transparent; color: var(--cc-muted); font-size: 13px; font-weight: var(--cc-font-weight-medium); }
 .cc-skillhub-tabs button:hover:not(:disabled) { background: transparent; color: var(--cc-text); }
@@ -1084,6 +1084,11 @@
   .cc-skillhub-tabs {
     width: 100%;
     gap: 4px;
+  }
+
+  .cc-skillhub-tabs-actions {
+    width: 100%;
+    min-width: 0;
   }
 
   .cc-skillhub-tabs button {
