@@ -73,7 +73,11 @@ export async function collectSkillHubUpdateSummary({
     const fetchedAt = Number(catalogueEntry?.fetchedAt || 0);
     const catalogueIsFresh = !fetchedAt
       || (Date.now() - fetchedAt) <= SKILLHUB_UPDATE_REFRESH_INTERVAL_MS;
-    if (catalogueIsFresh && catalogueSkill?.latestVersion) {
+    if (
+      catalogueIsFresh
+      && String(catalogueSkill?.skillId || '').trim() === skillId
+      && catalogueSkill?.latestVersion
+    ) {
       details.set(skillId, catalogueSkill);
       return;
     }
