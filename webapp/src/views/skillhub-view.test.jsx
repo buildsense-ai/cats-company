@@ -2499,6 +2499,41 @@ describe('SkillHubView', () => {
     expect(document.body.querySelector('[role="listbox"][aria-label="Agent 列表"]')).toBeFalsy();
   });
 
+  it('shows confirmed updates while marking a partially unresolved Agent', async () => {
+    await act(async () => {
+      root.render(<SkillHubView
+        user={{ uid: 7 }}
+        skillHubUpdateSummary={{
+          total: 1,
+          byBot: {
+            42: {
+              count: 1,
+              status: 'partial',
+              unavailableSkillIds: ['removed/skill'],
+            },
+          },
+          detailsBySkillID: {},
+        }}
+      />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.cc-skillhub-updates-filter')?.textContent)
+      .toContain('可更新');
+    expect(container.querySelector('.cc-skillhub-updates-filter span')?.textContent)
+      .toBe('1');
+    expect(container.querySelector('.cc-skillhub-update-uncertain-note')?.textContent)
+      .toBe('部分 Skill 无法确认更新');
+
+    const trigger = container.querySelector('.cc-skillhub-agent-select-trigger');
+    await act(async () => {
+      Simulate.click(trigger);
+    });
+    expect(document.body.querySelector('[role="option"][aria-selected="true"]')?.textContent)
+      .toContain('部分待确认');
+  });
+
   it('loads only owner bots and binds a precise SkillHub reference', async () => {
     await act(async () => {
       root.render(<SkillHubView user={{ uid: 7 }} />);

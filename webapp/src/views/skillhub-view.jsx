@@ -1142,14 +1142,16 @@ export default function SkillHubView({
   const agentOptions = useMemo(() => bots.map((bot) => ({
     value: String(botUID(bot)),
     label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
-    updateCount: updateSummaryForBot(bot)?.status === 'ready'
+    updateCount: ['ready', 'partial'].includes(updateSummaryForBot(bot)?.status)
       ? updateSummaryForBot(bot)?.count
       : null,
     updateStatus: updateSummaryForBot(bot)?.status || '',
   })), [bots, updateSummaryForBot]);
-  const selectedUpdateCount = updateSummaryForBot(selectedAgent)?.status === 'ready'
+  const selectedUpdateSummary = updateSummaryForBot(selectedAgent);
+  const selectedUpdateCount = ['ready', 'partial'].includes(selectedUpdateSummary?.status)
     ? Number(updateSummaryForBot(selectedAgent)?.count || 0)
     : 0;
+  const selectedUpdateStatus = selectedUpdateSummary?.status || '';
   const loadDevices = useCallback(async (options = {}) => {
     setLoadingDevices(true);
     try {
@@ -2297,6 +2299,7 @@ export default function SkillHubView({
     selectedAgentRelation={selectedAgent?.relation || 'owner'}
     skillHubUpdateDetailsByID={skillHubUpdateSummary?.detailsBySkillID}
     selectedUpdateCount={selectedUpdateCount}
+    selectedUpdateStatus={selectedUpdateStatus}
     selectedBotUID={selectedBotUID}
     selectedDeviceID={selectedDeviceID}
     sharingSkill={sharingSkill}

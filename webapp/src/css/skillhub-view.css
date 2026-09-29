@@ -300,6 +300,13 @@
   white-space: nowrap;
 }
 
+.cc-skillhub-update-uncertain-note {
+  align-self: center;
+  color: var(--cc-warning-text, #9a6700);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .cc-skillhub-updates-filter {
   display: inline-flex;
   align-items: center;

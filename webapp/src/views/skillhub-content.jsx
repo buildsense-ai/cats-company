@@ -25,7 +25,7 @@ export default function SkillHubContent(props) {
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
     isReadOnly, loadingDefinition, onChangeSection, onToggleUpdates, saving, selectedAgentName,
-    selectedAgentRelation, selectedUpdateCount, skillAction, updatesOnly,
+    selectedAgentRelation, selectedUpdateCount, selectedUpdateStatus, skillAction, updatesOnly,
   } = props;
   // A friend Bot is metadata-only. Keep this guard in the rendering boundary
   // as well as in the Agent-switch handler so stale UI state can never expose
@@ -54,6 +54,7 @@ export default function SkillHubContent(props) {
               activeSection={visibleSection}
               addedCount={definition.skills.length}
               selectedUpdateCount={selectedUpdateCount}
+              selectedUpdateStatus={selectedUpdateStatus}
               updatesOnly={updatesOnly}
               onToggleUpdates={onToggleUpdates}
             />
@@ -119,11 +120,19 @@ function AgentSelect({ agents, disabled, onChange, value }) {
       >
         {agents.length === 0 && <option value=''>暂无自己拥有的 Agent</option>}
         {agents.map((agent) => (
-          <option key={agent.value} value={agent.value} data-title={agent.label} data-description={agent.updateStatus === 'unavailable' ? '暂时无法确认更新状态' : undefined}>
+          <option
+            key={agent.value}
+            value={agent.value}
+            data-title={agent.label}
+            data-description={agent.updateStatus === 'unavailable'
+              ? '暂时无法确认更新状态'
+              : agent.updateStatus === 'partial' ? '部分 Skill 暂时无法确认更新状态' : undefined}
+          >
             <span className='cc-skillhub-agent-option-content'>
               <span className='cc-skillhub-agent-option-name'>{agent.label}</span>
               {agent.updateCount > 0 && <span className='cc-skillhub-agent-update-badge'>{agent.updateCount}</span>}
               {agent.updateStatus === 'unavailable' && <span className='cc-skillhub-agent-uncertain'>可能有更新</span>}
+              {agent.updateStatus === 'partial' && <span className='cc-skillhub-agent-uncertain'>部分待确认</span>}
             </span>
           </option>
         ))}
@@ -132,7 +141,7 @@ function AgentSelect({ agents, disabled, onChange, value }) {
   );
 }
 
-function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUpdateCount = 0, updatesOnly = false }) {
+function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUpdateCount = 0, selectedUpdateStatus = '', updatesOnly = false }) {
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs-actions'>
@@ -153,6 +162,11 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly
           >
             可更新 <span>{selectedUpdateCount}</span>
           </button>
+        )}
+        {!isReadOnly && selectedUpdateStatus === 'partial' && (
+          <span className='cc-skillhub-update-uncertain-note' role='status' title='部分 Skill 暂时无法从 SkillHub 确认更新状态'>
+            部分 Skill 无法确认更新
+          </span>
         )}
       </div>
       {isLocalEnabled && (

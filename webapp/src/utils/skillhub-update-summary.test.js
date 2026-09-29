@@ -61,6 +61,47 @@ describe('collectSkillHubUpdateSummary', () => {
     });
   });
 
+  it('keeps resolvable updates when one historical SkillHub reference is missing', async () => {
+    const getDefinition = vi.fn(async () => ({
+      skills: [
+        { skillId: 'arrowhaken/image-generation', version: '1.0.5', contentHash: 'a'.repeat(64) },
+        { skillId: 'arrowhaken/removed-skill', version: '1.0.0' },
+      ],
+    }));
+    const getSkill = vi.fn(async (skillId) => {
+      if (skillId === 'arrowhaken/removed-skill') throw new Error('Skill was removed');
+      return {
+        skill: {
+          id: skillId,
+          latestVersion: '1.0.6',
+          contentHash: 'b'.repeat(64),
+        },
+      };
+    });
+
+    await expect(collectSkillHubUpdateSummary({
+      bots: [{ uid: 1, relation: 'owner' }],
+      userUid: 7,
+      getDefinition,
+      getSkill,
+    })).resolves.toMatchObject({
+      total: 1,
+      byBot: {
+        1: {
+          count: 1,
+          status: 'partial',
+          unavailableSkillIds: ['arrowhaken/removed-skill'],
+        },
+      },
+      detailsBySkillID: {
+        'arrowhaken/image-generation': {
+          skillId: 'arrowhaken/image-generation',
+          latestVersion: '1.0.6',
+        },
+      },
+    });
+  });
+
   it('does not trust a local workspace entry as catalogue metadata', async () => {
     const getDefinition = vi.fn(async () => ({
       skills: [{
