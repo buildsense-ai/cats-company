@@ -590,6 +590,10 @@ func main() {
 		Syncer:         commercialRelaySyncer,
 	})
 	relayCommercialHandler.SetCloudWorkerRenewer(cloudWorkerHandler.RenewForOwner)
+	// Invite redemptions grant the same worker credits a purchase does, so they
+	// get the same first-provision hook; it skips accounts that already own a
+	// worker, leaving only the renewal path for those.
+	relayCommercialHandler.SetCloudWorkerEnsure(cloudWorkerHandler.AutoProvisionForOwner)
 	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
 	commercialOpsHandler.SetCloudWorkerAdmin(cloudWorkerHandler)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
