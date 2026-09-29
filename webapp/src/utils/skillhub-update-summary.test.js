@@ -61,6 +61,41 @@ describe('collectSkillHubUpdateSummary', () => {
     });
   });
 
+  it('does not trust a local workspace entry as catalogue metadata', async () => {
+    const getDefinition = vi.fn(async () => ({
+      skills: [{
+        skillId: 'arrowhaken/image-generation',
+        version: '1.0.5',
+        contentHash: 'a'.repeat(64),
+      }],
+    }));
+    const getSkill = vi.fn(async () => ({
+      skill: {
+        skillId: 'arrowhaken/image-generation',
+        latestVersion: '1.0.6',
+        contentHash: 'b'.repeat(64),
+      },
+    }));
+
+    await expect(collectSkillHubUpdateSummary({
+      bots: [{ uid: 1, relation: 'owner' }],
+      userUid: 7,
+      getDefinition,
+      getSkill,
+      catalogueByID: new Map([['arrowhaken/image-generation', {
+        skillId: 'arrowhaken/image-generation',
+        latestVersion: '1.0.5',
+        contentHash: 'a'.repeat(64),
+        source: 'local',
+        isLocalSkill: true,
+      }]]),
+    })).resolves.toMatchObject({
+      total: 1,
+      byBot: { 1: { count: 1, status: 'ready' } },
+    });
+    expect(getSkill).toHaveBeenCalledTimes(1);
+  });
+
   it('does not count private references or friend Bots', async () => {
     const getDefinition = vi.fn(async () => ({
       skills: [

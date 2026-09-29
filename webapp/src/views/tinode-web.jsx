@@ -384,7 +384,12 @@ function TinodeWebApp({ location }) {
     // Keep entries learned from a previous catalogue search. Search results
     // replace the child view's list, but an installed Skill outside that
     // search still needs its verified detail for the update filter.
-    const merged = new Map(skillHubCatalogueByIDRef.current);
+    const merged = new Map();
+    for (const [skillID, entry] of skillHubCatalogueByIDRef.current) {
+      if (Date.now() - Number(entry?.fetchedAt || 0) <= SKILLHUB_UPDATE_REFRESH_INTERVAL_MS * 2) {
+        merged.set(skillID, entry);
+      }
+    }
     for (const [skillID, skill] of catalogueByID) merged.set(skillID, { skill, fetchedAt });
     skillHubCatalogueByIDRef.current = merged;
   }, []);

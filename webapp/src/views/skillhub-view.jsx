@@ -1089,7 +1089,7 @@ export default function SkillHubView({
 
   const catalogueByID = useMemo(() => new Map([
     ...viewerSkills.map((skill) => [skill.skillId, skill]),
-    ...librarySkills.flatMap((skill) => {
+    ...librarySkills.filter((skill) => !skill.isLocalSkill).flatMap((skill) => {
       const entries = [[skill.skillId, skill]];
       if (skill.cloudSkillId) entries.push([skill.cloudSkillId, skill]);
       return entries;
@@ -1097,8 +1097,17 @@ export default function SkillHubView({
   ]), [librarySkills, viewerSkills]);
 
   useEffect(() => {
-    onRegisterSkillHubCatalogue?.(catalogueByID);
-  }, [catalogueByID, onRegisterSkillHubCatalogue]);
+    const publicCatalogue = new Map(
+      librarySkills
+        .filter((skill) => isPublicSkillHubEntry(skill))
+        .flatMap((skill) => {
+          const entries = [[skill.skillId, skill]];
+          if (skill.cloudSkillId) entries.push([skill.cloudSkillId, skill]);
+          return entries;
+        }),
+    );
+    onRegisterSkillHubCatalogue?.(publicCatalogue);
+  }, [librarySkills, onRegisterSkillHubCatalogue]);
 
   const addedSkillPresentationByID = useMemo(() => new Map(
     buildCurrentAgentSkills(

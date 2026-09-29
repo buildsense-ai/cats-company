@@ -76,6 +76,9 @@ export async function collectSkillHubUpdateSummary({
     if (
       catalogueIsFresh
       && String(catalogueSkill?.skillId || '').trim() === skillId
+      && catalogueSkill?.isLocalSkill !== true
+      && (!String(catalogueSkill?.source || '').trim()
+        || String(catalogueSkill?.source || '').trim().toLowerCase() === 'skillhub')
       && catalogueSkill?.latestVersion
     ) {
       details.set(skillId, catalogueSkill);
