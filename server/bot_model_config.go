@@ -123,6 +123,10 @@ var botModelCatalog = []botModelCatalogItem{
 		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000, RuntimeModel: "gpt-5.6-sol",
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
+	{
+		ID: "claude-opus-5-5", Label: "Claude Opus 5.5", Description: "Claude 旗舰模型，长上下文与深度推理",
+		Provider: "anthropic", Protocol: "Anthropic SDK", ContextWindowTokens: 200000, Vision: true, RuntimeModel: "claude-opus-5-5",
+	},
 }
 
 type botModelUpdateRequest struct {
