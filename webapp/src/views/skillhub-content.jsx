@@ -10,29 +10,8 @@ import useDialogBehavior from '../utils/use-dialog-behavior';
 import {
   formatSkillHubPublisher,
   formatSkillHubVersion,
-  hasCompleteSkillHubReference,
-  isPrivateSkillHubReference,
-  resolveSkillHubUpdateStatus,
+  isSkillHubUpdateAvailable,
 } from '../utils/skillhub-entry';
-
-// A capability that is already installed can only be replaced through the public
-// SkillHub entry for the same Skill. Bot-private references, runtime-local
-// Skills and the read-only friend view keep their current presentation so this
-// control never rewrites a capability that was not installed from the catalogue.
-function isCatalogueUpdateAvailable(installedReference, details) {
-  const installedSkillID = String(installedReference?.skillId || '').trim();
-  const catalogueSkillID = String(details?.skillId || '').trim();
-  const detailsSource = String(details?.source || '').trim().toLowerCase();
-  if (
-    !installedSkillID
-    || installedSkillID !== catalogueSkillID
-    || !hasCompleteSkillHubReference(installedReference)
-    || isPrivateSkillHubReference(installedSkillID)
-    || (detailsSource && detailsSource !== 'skillhub')
-    || details?.isLocalSkill
-  ) return false;
-  return resolveSkillHubUpdateStatus(installedReference, details) === 'update';
-}
 
 function normalizeSkillSearchValue(value) {
   return String(value || '')
@@ -45,7 +24,8 @@ function normalizeSkillSearchValue(value) {
 export default function SkillHubContent(props) {
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
-    isReadOnly, loadingDefinition, onChangeSection, saving, selectedAgentName, selectedAgentRelation, skillAction,
+    isReadOnly, loadingDefinition, onChangeSection, onToggleUpdates, saving, selectedAgentName,
+    selectedAgentRelation, selectedUpdateCount, skillAction, updatesOnly,
   } = props;
   // A friend Bot is metadata-only. Keep this guard in the rendering boundary
   // as well as in the Agent-switch handler so stale UI state can never expose
@@ -69,7 +49,14 @@ export default function SkillHubContent(props) {
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
         {visibleSection === 'custom' ? <CustomSkills {...props} /> : (
           <>
-            <SkillNavigation {...props} activeSection={visibleSection} addedCount={definition.skills.length} />
+            <SkillNavigation
+              {...props}
+              activeSection={visibleSection}
+              addedCount={definition.skills.length}
+              selectedUpdateCount={selectedUpdateCount}
+              updatesOnly={updatesOnly}
+              onToggleUpdates={onToggleUpdates}
+            />
             {(loadingDefinition || saving) && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
@@ -125,27 +112,48 @@ function AgentSelect({ agents, disabled, onChange, value }) {
         disabled={disabled}
         listboxAriaLabel='Agent 列表'
         menuClassName='cc-skillhub-agent-options'
+        selectedLabelTitle={agents.find((agent) => agent.value === value)?.label}
         triggerClassName='cc-skillhub-agent-select-trigger'
         value={value}
         onValueChange={onChange}
       >
         {agents.length === 0 && <option value=''>暂无自己拥有的 Agent</option>}
-        {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.label}</option>)}
+        {agents.map((agent) => (
+          <option key={agent.value} value={agent.value} data-title={agent.label} data-description={agent.updateStatus === 'unavailable' ? '暂时无法确认更新状态' : undefined}>
+            <span className='cc-skillhub-agent-option-content'>
+              <span className='cc-skillhub-agent-option-name'>{agent.label}</span>
+              {agent.updateCount > 0 && <span className='cc-skillhub-agent-update-badge'>{agent.updateCount}</span>}
+              {agent.updateStatus === 'unavailable' && <span className='cc-skillhub-agent-uncertain'>可能有更新</span>}
+            </span>
+          </option>
+        ))}
       </CustomSelect>
     </span>
   );
 }
 
-function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSection }) {
+function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUpdateCount = 0, updatesOnly = false }) {
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
-      <div className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
-        <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
-          Agent 能力总览 <span>{addedCount}</span>
-        </button>
-        <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
-          能力库
-        </button>
+      <div className='cc-skillhub-tabs-actions'>
+        <div className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
+          <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
+            Agent 能力总览 <span>{addedCount}</span>
+          </button>
+          <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
+            能力库
+          </button>
+        </div>
+        {!isReadOnly && selectedUpdateCount > 0 && (
+          <button
+            type='button'
+            className={`cc-skillhub-updates-filter${updatesOnly ? ' active' : ''}`}
+            aria-pressed={updatesOnly}
+            onClick={onToggleUpdates}
+          >
+            可更新 <span>{selectedUpdateCount}</span>
+          </button>
+        )}
       </div>
       {isLocalEnabled && (
         <button type='button' className='cc-skillhub-custom-entry' onClick={() => onChangeSection('custom')}>
@@ -160,7 +168,7 @@ function AddedSkills(props) {
   const {
     catalogueByID, definition, definitionReady, loadingDefinition, onChangeSection,
     onRefreshDefinition, onRemoveSkill, saving, selectedAgentName, selectedBotUID,
-    sharingSkill, skillAction, isReadOnly, addedSkillQuery, onAddedSkillQuery,
+    sharingSkill, skillAction, isReadOnly, addedSkillQuery, onAddedSkillQuery, updatesOnly,
   } = props;
   const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
@@ -179,8 +187,12 @@ function AddedSkills(props) {
       skill?.path,
     ].some((value) => normalizeSkillSearchValue(value).includes(normalizedQuery));
   };
-  const visibleFormalSkills = formalSkills.filter(matches);
-  const visibleLocalOnlySkills = localOnlySkills.filter(matches);
+  const isUpdateable = (skill) => !skill.localOnly && isSkillHubUpdateAvailable(
+    skill,
+    props.addedSkillPresentationByID.get(skill.skillId)?.details,
+  );
+  const visibleFormalSkills = formalSkills.filter(matches).filter((skill) => !updatesOnly || isUpdateable(skill));
+  const visibleLocalOnlySkills = localOnlySkills.filter(matches).filter((skill) => !updatesOnly || isUpdateable(skill));
   const visibleSkillCount = visibleFormalSkills.length + visibleLocalOnlySkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
   const sourceExplanation = isReadOnly
@@ -245,7 +257,11 @@ function AddedSkills(props) {
             />
           )}
           {visibleSkillCount === 0 && (
-            <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='试试能力名称、SkillHub ID 或运行目录名。' />
+            <EmptyState
+              icon={<Search size={21} />}
+              title={updatesOnly && !normalizedQuery ? '当前没有可更新的能力' : '没有找到匹配的能力'}
+              copy={updatesOnly && !normalizedQuery ? '当前 Agent 已配置的 Skill 都是最新版本，或暂时无法确认更新状态。' : '试试能力名称、SkillHub ID 或运行目录名。'}
+            />
           )}
         </div>
       )}
@@ -278,7 +294,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnl
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
   const localVersionMismatch = !skill.localOnly && Boolean(skill.local) && !localDetails;
   const versionLabel = formatAddedSkillVersion(skill, privateReference);
-  const updatable = !isReadOnly && !skill.localOnly && isCatalogueUpdateAvailable(skill, details);
+  const updatable = !isReadOnly && !skill.localOnly && isSkillHubUpdateAvailable(skill, details);
   const authorLabel = privateReference
     ? `最近变更：${skill.lastChangedBy || '修改者未记录'}`
     : formatSkillHubPublisher(details || skill);
@@ -703,7 +719,7 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
   const label = skill.displayName || skill.skillId;
   const installedReference = installedByID.get(skill.skillId) || null;
   const installed = Boolean(installedReference);
-  const updatable = isCatalogueUpdateAvailable(installedReference, skill);
+  const updatable = isSkillHubUpdateAvailable(installedReference, skill);
   const adding = skillAction?.type === 'add' && skillAction.skillId === skill.skillId;
   const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
   const unavailable = skill.isLocalSkill && !skill.canBind
@@ -869,7 +885,7 @@ function CustomGrid(props) {
   return <div className='cc-skillhub-local-grid'>{props.localSkills.map((skill) => <CustomCard key={`${skill.relativePath}:${skill.name}`} skill={skill} {...props} />)}</div>;
 }
 
-export function resolveRuntimeSkillPresentation(skill, catalogueByID) {
+export function resolveRuntimeSkillPresentation(skill, catalogueByID, fallbackDetailsByID = {}) {
   const reference = skill?.skillHub?.reference || skill?.reference || {};
   const skillId = String(
     reference?.skillId
@@ -878,7 +894,9 @@ export function resolveRuntimeSkillPresentation(skill, catalogueByID) {
     || skill?.skillId
     || '',
   ).trim();
-  const details = skillId ? catalogueByID?.get(skillId) : null;
+  const details = skillId
+    ? (catalogueByID?.get(skillId) || fallbackDetailsByID?.[skillId] || null)
+    : null;
   const displayName = String(
     details?.displayName
     || skill?.skillHub?.displayName
@@ -904,7 +922,7 @@ export function resolveRuntimeSkillPresentation(skill, catalogueByID) {
   return { details, directory, displayName, publisher, skillId, version };
 }
 
-function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, syncingWorkspace }) {
+function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
   const shared = isLocalSkillShared(skill, installedReference);
@@ -912,7 +930,7 @@ function CustomCard({ catalogueByID, definitionReady, installedByID, isLocalSkil
   const canShare = !blocked && skill.canShare !== false && skill.source !== 'system' && !shared;
   const statusClass = blocked ? 'blocked' : shared ? 'synced' : 'local';
   const statusLabel = blocked ? '无法发布' : shared ? '已发布' : '未发布';
-  const { directory, displayName, publisher, version } = resolveRuntimeSkillPresentation(skill, catalogueByID);
+  const { directory, displayName, publisher, version } = resolveRuntimeSkillPresentation(skill, catalogueByID, skillHubUpdateDetailsByID);
   return (
     <article className='cc-skillhub-local-card'>
       <div className='cc-skillhub-local-card-heading'><strong>{displayName}</strong><span className={`cc-skillhub-status ${statusClass}`}>{statusLabel}</span></div>

@@ -12,6 +12,7 @@ import {
   resolveSkillHubEntry,
   resolveSkillHubUpdateStatus,
 } from '../utils/skillhub-entry';
+import { normalizeOwnedBots } from '../utils/owned-bots';
 import { getStorage } from '../utils/storage-access';
 import SkillHubContent from './skillhub-content';
 import '../css/skillhub-view.css';
@@ -249,15 +250,7 @@ export function resolveAutomaticSkillHubDeviceID(devices) {
   return String(devices[0]?.deviceId || '');
 }
 
-export function normalizeOwnedBots(response, userUid) {
-  const bots = Array.isArray(response) ? response : (response?.bots || []);
-  return bots.filter((bot) => {
-    if (bot?.relation) return bot.relation === 'owner';
-    if (bot?.is_owner !== undefined) return Boolean(bot.is_owner);
-    const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
-    return ownerUID > 0 && ownerUID === Number(userUid);
-  });
-}
+export { normalizeOwnedBots } from '../utils/owned-bots';
 
 export function normalizeAccessibleBots(response, userUid) {
   const bots = Array.isArray(response) ? response : (response?.agents || response?.bots || []);
@@ -711,9 +704,9 @@ export function hasExactLocalSkillReference(skill, localSkill) {
   );
 }
 
-export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
+export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference, fallbackDetailsByID = {}) {
   const skillId = String(skill?.skillId || '').trim();
-  const details = catalogueByID?.get(skillId);
+  const details = catalogueByID?.get(skillId) || fallbackDetailsByID?.[skillId] || null;
   const candidates = localSkillsByReference?.get(skillId);
   const localDetails = (Array.isArray(candidates) ? candidates : [candidates])
     .find(candidate => hasExactLocalSkillReference(skill, candidate)) || null;
@@ -955,7 +948,14 @@ async function copyText(value) {
   }
 }
 
-export default function SkillHubView({ user, initialAgent = null, initialAgentId = null }) {
+export default function SkillHubView({
+  user,
+  initialAgent = null,
+  initialAgentId = null,
+  skillHubUpdateSummary = null,
+  onRegisterSkillHubCatalogue,
+  onRefreshSkillHubUpdateSummary,
+}) {
   const feedback = useFeedback();
   const [bots, setBots] = useState([]);
   const [selectedBotUID, setSelectedBotUID] = useState('');
@@ -984,6 +984,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const [syncingWorkspace, setSyncingWorkspace] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState('added');
+  const [updatesOnly, setUpdatesOnly] = useState(false);
   const [skillAction, setSkillAction] = useState(null);
   const [actionNotice, setActionNotice] = useState('');
   const [devices, setDevices] = useState([]);
@@ -1004,6 +1005,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   useEffect(() => {
     selectedBotUIDRef.current = selectedBotUID;
     setAddedSkillQuery('');
+    setUpdatesOnly(false);
     saveRequestRef.current += 1;
     skillMutationRef.current = '';
     setSaving(false);
@@ -1087,12 +1089,25 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
 
   const catalogueByID = useMemo(() => new Map([
     ...viewerSkills.map((skill) => [skill.skillId, skill]),
-    ...librarySkills.flatMap((skill) => {
+    ...librarySkills.filter((skill) => !skill.isLocalSkill).flatMap((skill) => {
       const entries = [[skill.skillId, skill]];
       if (skill.cloudSkillId) entries.push([skill.cloudSkillId, skill]);
       return entries;
     }),
   ]), [librarySkills, viewerSkills]);
+
+  useEffect(() => {
+    const publicCatalogue = new Map(
+      librarySkills
+        .filter((skill) => isPublicSkillHubEntry(skill))
+        .flatMap((skill) => {
+          const entries = [[skill.skillId, skill]];
+          if (skill.cloudSkillId) entries.push([skill.cloudSkillId, skill]);
+          return entries;
+        }),
+    );
+    onRegisterSkillHubCatalogue?.(publicCatalogue);
+  }, [librarySkills, onRegisterSkillHubCatalogue]);
 
   const addedSkillPresentationByID = useMemo(() => new Map(
     buildCurrentAgentSkills(
@@ -1100,9 +1115,14 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       selectedAgentIsFriend ? [] : localSkills,
     ).map((skill) => [
       skill.skillId,
-      resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference),
+      resolveAddedSkillPresentation(
+        skill,
+        catalogueByID,
+        localSkillsByReference,
+        skillHubUpdateSummary?.detailsBySkillID,
+      ),
     ]),
-  ), [catalogueByID, definition.skills, localSkills, localSkillsByReference, selectedAgentIsFriend, viewerSkills]);
+  ), [catalogueByID, definition.skills, localSkills, localSkillsByReference, selectedAgentIsFriend, skillHubUpdateSummary?.detailsBySkillID, viewerSkills]);
 
   const displaySkills = useMemo(() => buildCurrentAgentSkills(
     selectedAgentIsFriend ? viewerSkills : definition.skills,
@@ -1113,10 +1133,23 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     bots.find((bot) => String(botUID(bot)) === selectedBotUID) || null
   ), [bots, selectedBotUID]);
 
+  const updateSummaryForBot = useCallback((bot) => {
+    const uid = String(botUID(bot) || '').trim();
+    if (!uid || isFriendBot(bot)) return null;
+    return skillHubUpdateSummary?.byBot?.[uid] || null;
+  }, [skillHubUpdateSummary]);
+
   const agentOptions = useMemo(() => bots.map((bot) => ({
     value: String(botUID(bot)),
     label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
-  })), [bots]);
+    updateCount: updateSummaryForBot(bot)?.status === 'ready'
+      ? updateSummaryForBot(bot)?.count
+      : null,
+    updateStatus: updateSummaryForBot(bot)?.status || '',
+  })), [bots, updateSummaryForBot]);
+  const selectedUpdateCount = updateSummaryForBot(selectedAgent)?.status === 'ready'
+    ? Number(updateSummaryForBot(selectedAgent)?.count || 0)
+    : 0;
   const loadDevices = useCallback(async (options = {}) => {
     setLoadingDevices(true);
     try {
@@ -1820,6 +1853,8 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
         revision: initiatingRevision,
       });
       if (saved?.ok && initiatingBotUID === selectedBotUIDRef.current) {
+        const refresh = onRefreshSkillHubUpdateSummary?.();
+        refresh?.catch?.(() => {});
         const installedName = resolved.displayName || resolved.skillId;
         const runtimeApply = await applyDefinitionToRuntime(initiatingBotUID);
         const operationLabel = replacing
@@ -2222,6 +2257,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     runtimeWorkspaceKnown={runtimeWorkspaceKnown}
     onChangeSection={setActiveSection}
     onAddedSkillQuery={setAddedSkillQuery}
+    onRefreshSkillHubUpdateSummary={onRefreshSkillHubUpdateSummary}
     onCopyLocalPath={copyLocalSkillsPath}
     librarySkills={librarySkills}
     onInstallSkill={installLibrarySkill}
@@ -2254,15 +2290,19 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     onShareLocalSkill={shareLocalSkill}
     onSyncWorkspace={syncWorkspaceToAgent}
     onUpdateSkill={updateSkill}
+    onToggleUpdates={() => setUpdatesOnly((current) => !current)}
     query={query}
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
     selectedAgentRelation={selectedAgent?.relation || 'owner'}
+    skillHubUpdateDetailsByID={skillHubUpdateSummary?.detailsBySkillID}
+    selectedUpdateCount={selectedUpdateCount}
     selectedBotUID={selectedBotUID}
     selectedDeviceID={selectedDeviceID}
     sharingSkill={sharingSkill}
     supportsWorkspaceSync={devices.find(device => String(device?.deviceId || '') === String(selectedDeviceID || ''))?.capabilities?.includes(SKILLHUB_DEVICE_TOOLS.syncWorkspace) === true}
     syncingWorkspace={syncingWorkspace}
+    updatesOnly={updatesOnly}
     skillAction={skillAction}
   />;
 }

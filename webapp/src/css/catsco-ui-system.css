@@ -1733,6 +1733,22 @@ html[data-theme="liquid"] .catsco-brand-mark {
   text-align: left;
 }
 
+.cc-skillhub-sidebar-update-badge {
+  min-width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--cc-accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .cc-sidebar-primary:hover,
 .cc-sidebar-search:hover,
 .cc-sidebar-search:focus-within {
