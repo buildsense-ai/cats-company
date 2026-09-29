@@ -23,6 +23,7 @@ export default function CustomSelect({
   onValueChange,
   optionClassName = '',
   placement = 'bottom',
+  selectedLabelTitle,
   triggerClassName = '',
   value,
 }) {
@@ -33,6 +34,7 @@ export default function CustomSelect({
   const options = React.Children.toArray(children).map((child, index) => ({
     disabled: Boolean(child.props.disabled),
     description: child.props['data-description'],
+    title: child.props['data-title'] || (typeof child.props.children === 'string' ? child.props.children : ''),
     id: `${listboxID}-option-${index}`,
     key: child.key || `${child.props.value}-${index}`,
     label: child.props.children,
@@ -245,9 +247,9 @@ export default function CustomSelect({
   }, [activeIndex, open, floatingStyle?.maxHeight]);
 
   const selectedOption = options[selectedIndex];
-  const selectedLabelTitle = typeof selectedOption?.label === 'string'
+  const selectedTitle = selectedLabelTitle ?? (typeof selectedOption?.label === 'string'
     ? selectedOption.label
-    : undefined;
+    : undefined);
   const optionList = open && createPortal(
     <div
       ref={listRef}
@@ -275,12 +277,12 @@ export default function CustomSelect({
           key={option.key}
           className={`v3-custom-model-select-option ${optionClassName} ${index === activeIndex ? 'is-active' : ''}`.trim()}
           role="option"
-          aria-label={option.description && typeof option.label === 'string' ? option.label : undefined}
+          aria-label={option.description && option.title ? option.title : undefined}
           aria-describedby={option.description ? `${option.id}-description` : undefined}
           aria-selected={option.value === String(value)}
           aria-disabled={option.disabled || undefined}
           disabled={option.disabled}
-          title={typeof option.label === 'string' ? option.label : undefined}
+          title={option.title || undefined}
           tabIndex={-1}
           onMouseEnter={() => {
             if (!option.disabled) setActiveIndex(index);
@@ -313,7 +315,7 @@ export default function CustomSelect({
         aria-controls={open ? listboxID : undefined}
         data-value={String(value)}
         disabled={disabled}
-        title={selectedLabelTitle}
+        title={selectedTitle}
         onClick={() => open ? closeList() : openList()}
         onKeyDown={handleTriggerKeyDown}
       >

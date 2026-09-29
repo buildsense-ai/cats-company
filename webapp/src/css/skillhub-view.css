@@ -260,6 +260,80 @@
   font-weight: 600;
 }
 
+.cc-skillhub-agent-option-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.cc-skillhub-agent-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-skillhub-agent-update-badge {
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent-text);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.cc-skillhub-agent-uncertain {
+  flex: 0 0 auto;
+  color: var(--cc-warning-text, #9a6700);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.cc-skillhub-updates-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 7px 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  cursor: pointer;
+}
+
+.cc-skillhub-updates-filter:hover,
+.cc-skillhub-updates-filter.active {
+  border-color: var(--cc-border-strong);
+  background: var(--cc-hover);
+  color: var(--cc-accent-text);
+}
+
+.cc-skillhub-updates-filter span {
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .cc-skillhub-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(290px, 340px);

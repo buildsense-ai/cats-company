@@ -92,6 +92,11 @@ import {
   writeComposerTaskContextDraft,
 } from '../utils/composer-draft-storage';
 import {
+  collectSkillHubUpdateSummary,
+  createEmptySkillHubUpdateSummary,
+  SKILLHUB_UPDATE_REFRESH_INTERVAL_MS,
+} from '../utils/skillhub-update-summary';
+import {
   authenticationRedirectPath,
   isKnowledgeWikiPathname,
   isNameOnboardingPathname,
@@ -356,6 +361,8 @@ function TinodeWebApp({ location }) {
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
+  const [skillHubUpdateSummary, setSkillHubUpdateSummary] = useState(() => createEmptySkillHubUpdateSummary());
+  const skillHubUpdateRequestRef = useRef(0);
   const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
   const [activeTopic, _setActiveTopic] = useState(() => (
     user?.uid ? readStoredTopic(user.uid) : null
@@ -369,6 +376,44 @@ function TinodeWebApp({ location }) {
   const composerDraftStoreRef = useRef(null);
   const composerDraftOwnerRef = useRef('');
   const composerDraftOwner = String(user?.uid || '');
+
+  const refreshSkillHubUpdateSummary = useCallback(async () => {
+    const requestID = skillHubUpdateRequestRef.current + 1;
+    skillHubUpdateRequestRef.current = requestID;
+    if (!user?.uid || typeof api.getMyBots !== 'function') {
+      setSkillHubUpdateSummary(createEmptySkillHubUpdateSummary());
+      return null;
+    }
+    try {
+      const response = await api.getMyBots();
+      const summary = await collectSkillHubUpdateSummary({
+        bots: response?.bots || response?.agents || response || [],
+        userUid: user.uid,
+        getDefinition: api.getBotDefinitionSkills,
+        getSkill: api.getSkillHubSkill,
+      });
+      if (requestID !== skillHubUpdateRequestRef.current) return null;
+      setSkillHubUpdateSummary(summary);
+      return summary;
+    } catch {
+      // Keep the last known count during a transient refresh failure. A failed
+      // background check must not turn a visible update notification into a
+      // false "no updates" state.
+      return null;
+    }
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setSkillHubUpdateSummary(createEmptySkillHubUpdateSummary());
+      return undefined;
+    }
+    refreshSkillHubUpdateSummary().catch(() => {});
+    const timer = window.setInterval(() => {
+      refreshSkillHubUpdateSummary().catch(() => {});
+    }, SKILLHUB_UPDATE_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [refreshSkillHubUpdateSummary, user?.uid]);
 
   if (composerDraftStoreRef.current === null
     || (composerDraftOwner && composerDraftOwner !== composerDraftOwnerRef.current)) {
@@ -1541,6 +1586,7 @@ function TinodeWebApp({ location }) {
               <>
                 <SkillHubSidebarButton
                   active={activeView === 'skillhub'}
+                  updateCount={skillHubUpdateSummary.total}
                   onClick={() => {
                     setSkillHubInitialAgent(null);
                     setActiveView('skillhub');
@@ -1630,7 +1676,12 @@ function TinodeWebApp({ location }) {
           <div className="v3-main-content">
             {activeView === 'skillhub' ? (
               <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
-                <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
+                <SkillHubView
+                  user={user}
+                  initialAgent={skillHubInitialAgent}
+                  skillHubUpdateSummary={skillHubUpdateSummary}
+                  onRefreshSkillHubUpdateSummary={refreshSkillHubUpdateSummary}
+                />
               </Suspense>
             ) : !showOnboardingPreview && activeTopic ? (
               <MessagesView
@@ -2067,7 +2118,10 @@ function SidebarContent({
   );
 }
 
-function SkillHubSidebarButton({ active, onClick }) {
+function SkillHubSidebarButton({ active, onClick, updateCount = 0 }) {
+  const count = Number.isSafeInteger(Number(updateCount)) && Number(updateCount) > 0
+    ? Number(updateCount)
+    : 0;
   return (
     <button
       type="button"
@@ -2075,10 +2129,11 @@ function SkillHubSidebarButton({ active, onClick }) {
       onClick={onClick}
       aria-label="打开 SkillHub"
       aria-current={active ? 'page' : undefined}
-      title="SkillHub"
+      title={count > 0 ? `SkillHub：${count} 个 Skill 可更新` : 'SkillHub'}
     >
       <Package size={17} />
       <span>SkillHub</span>
+      {count > 0 && <span className="cc-skillhub-sidebar-update-badge" aria-label={`${count} 个 Skill 可更新`}>{count}</span>}
     </button>
   );
 }

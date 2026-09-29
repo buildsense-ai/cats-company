@@ -45,7 +45,8 @@ function normalizeSkillSearchValue(value) {
 export default function SkillHubContent(props) {
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled, runtimeRouteError,
-    isReadOnly, loadingDefinition, onChangeSection, saving, selectedAgentName, selectedAgentRelation, skillAction,
+    isReadOnly, loadingDefinition, onChangeSection, onToggleUpdates, saving, selectedAgentName,
+    selectedAgentRelation, selectedUpdateCount, skillAction, updatesOnly,
   } = props;
   // A friend Bot is metadata-only. Keep this guard in the rendering boundary
   // as well as in the Agent-switch handler so stale UI state can never expose
@@ -69,7 +70,14 @@ export default function SkillHubContent(props) {
         {actionNotice && <div className='cc-skillhub-alert success' role='status'>{actionNotice}</div>}
         {visibleSection === 'custom' ? <CustomSkills {...props} /> : (
           <>
-            <SkillNavigation {...props} activeSection={visibleSection} addedCount={definition.skills.length} />
+            <SkillNavigation
+              {...props}
+              activeSection={visibleSection}
+              addedCount={definition.skills.length}
+              selectedUpdateCount={selectedUpdateCount}
+              updatesOnly={updatesOnly}
+              onToggleUpdates={onToggleUpdates}
+            />
             {(loadingDefinition || saving) && (
               <div className='cc-skillhub-progress' role='status'>
                 <RefreshCw className='is-spinning' size={14} aria-hidden='true' />
@@ -116,7 +124,7 @@ function AgentSelect({ agents, disabled, onChange, value }) {
         onChange={(event) => onChange(event.target.value)}
       >
         {agents.length === 0 && <option value=''>暂无自己拥有的 Agent</option>}
-        {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.label}</option>)}
+        {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.nativeLabel || agent.label}</option>)}
       </select>
       <CustomSelect
         ariaLabel='当前 Agent'
@@ -125,18 +133,27 @@ function AgentSelect({ agents, disabled, onChange, value }) {
         disabled={disabled}
         listboxAriaLabel='Agent 列表'
         menuClassName='cc-skillhub-agent-options'
+        selectedLabelTitle={agents.find((agent) => agent.value === value)?.label}
         triggerClassName='cc-skillhub-agent-select-trigger'
         value={value}
         onValueChange={onChange}
       >
         {agents.length === 0 && <option value=''>暂无自己拥有的 Agent</option>}
-        {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.label}</option>)}
+        {agents.map((agent) => (
+          <option key={agent.value} value={agent.value} data-title={agent.label} data-description={agent.updateStatus === 'unavailable' ? '暂时无法确认更新状态' : undefined}>
+            <span className='cc-skillhub-agent-option-content'>
+              <span className='cc-skillhub-agent-option-name'>{agent.label}</span>
+              {agent.updateCount > 0 && <span className='cc-skillhub-agent-update-badge'>{agent.updateCount}</span>}
+              {agent.updateStatus === 'unavailable' && <span className='cc-skillhub-agent-uncertain'>可能有更新</span>}
+            </span>
+          </option>
+        ))}
       </CustomSelect>
     </span>
   );
 }
 
-function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSection }) {
+function SkillNavigation({ activeSection, addedCount, isLocalEnabled, isReadOnly, onChangeSection, onToggleUpdates, selectedUpdateCount = 0, updatesOnly = false }) {
   return (
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
@@ -146,6 +163,16 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSe
         <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
           能力库
         </button>
+        {!isReadOnly && selectedUpdateCount > 0 && (
+          <button
+            type='button'
+            className={`cc-skillhub-updates-filter${updatesOnly ? ' active' : ''}`}
+            aria-pressed={updatesOnly}
+            onClick={onToggleUpdates}
+          >
+            可更新 <span>{selectedUpdateCount}</span>
+          </button>
+        )}
       </div>
       {isLocalEnabled && (
         <button type='button' className='cc-skillhub-custom-entry' onClick={() => onChangeSection('custom')}>
@@ -160,7 +187,7 @@ function AddedSkills(props) {
   const {
     catalogueByID, definition, definitionReady, loadingDefinition, onChangeSection,
     onRefreshDefinition, onRemoveSkill, saving, selectedAgentName, selectedBotUID,
-    sharingSkill, skillAction, isReadOnly, addedSkillQuery, onAddedSkillQuery,
+    sharingSkill, skillAction, isReadOnly, addedSkillQuery, onAddedSkillQuery, updatesOnly,
   } = props;
   const formalSkills = definition.skills.filter((skill) => !skill.localOnly);
   const localOnlySkills = definition.skills.filter((skill) => skill.localOnly);
@@ -179,8 +206,12 @@ function AddedSkills(props) {
       skill?.path,
     ].some((value) => normalizeSkillSearchValue(value).includes(normalizedQuery));
   };
-  const visibleFormalSkills = formalSkills.filter(matches);
-  const visibleLocalOnlySkills = localOnlySkills.filter(matches);
+  const isUpdateable = (skill) => !skill.localOnly && isCatalogueUpdateAvailable(
+    skill,
+    props.addedSkillPresentationByID.get(skill.skillId)?.details,
+  );
+  const visibleFormalSkills = formalSkills.filter(matches).filter((skill) => !updatesOnly || isUpdateable(skill));
+  const visibleLocalOnlySkills = localOnlySkills.filter(matches).filter((skill) => !updatesOnly || isUpdateable(skill));
   const visibleSkillCount = visibleFormalSkills.length + visibleLocalOnlySkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
   const sourceExplanation = isReadOnly
