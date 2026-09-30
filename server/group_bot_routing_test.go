@@ -523,7 +523,11 @@ func TestGroupFanoutBotMentionActivatesMentionedBot(t *testing.T) {
 // addresses nobody still needs its owner, otherwise the task stalls with no
 // reply and no notice. These cases pin that rule and its handover behaviour.
 
-func TestGroupFanoutMultiBotAgentTaskDefaultsToPrimaryBot(t *testing.T) {
+// An agent-task group is a group like any other once judging is installed: a
+// message that addresses nobody reaches nobody. The old rule handed such a
+// message to the first agent, which meant every message produced a reply even
+// when the group had nothing to do with it.
+func TestGroupFanoutMultiBotAgentTaskWithoutMentionReachesNobody(t *testing.T) {
 	baseStore := &identityMessageStore{
 		users: map[int64]*types.User{
 			7:  {ID: 7, AccountType: types.AccountHuman},
@@ -560,10 +564,7 @@ func TestGroupFanoutMultiBotAgentTaskDefaultsToPrimaryBot(t *testing.T) {
 
 	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 34, nil)
 
-	delivered := assertBotActivation(t, primaryBot.send, true)
-	if delivered.Data.MemberCount != 3 {
-		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
-	}
+	assertBotActivation(t, primaryBot.send, false)
 	assertBotActivation(t, collaboratorBot.send, false)
 }
 
@@ -648,7 +649,8 @@ func TestGroupFanoutAgentTaskPromotesRemainingBotAfterPrimaryRemoval(t *testing.
 
 	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 36, nil)
 
-	// The remaining agent is now first in the list, so it inherits the task.
+	// Only one bot remains, so the single-bot rule covers the message: a lone
+	// bot needs no addressing. This no longer depends on an agent-task default.
 	delivered := assertBotActivation(t, remainingBot.send, true)
 	if delivered.Data.MemberCount != 3 {
 		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
@@ -758,7 +760,7 @@ func TestDeterministicActivationWithoutMentionLeavesBotsIdle(t *testing.T) {
 }
 
 func TestJevResolverFallsBackWhenClientIsUnavailable(t *testing.T) {
-	resolver := NewJevGroupActivationResolver(&JevClient{}, nil)
+	resolver := NewJevGroupActivationResolver(&JevClient{})
 	decision := resolver.Resolve(context.Background(), GroupActivationRequest{
 		Members: []*types.GroupMember{
 			{UserID: 7},
@@ -775,7 +777,7 @@ func TestJevResolverFallsBackWhenClientIsUnavailable(t *testing.T) {
 }
 
 func TestJevResolverSingleBotSkipsJudging(t *testing.T) {
-	resolver := NewJevGroupActivationResolver(&JevClient{}, nil)
+	resolver := NewJevGroupActivationResolver(&JevClient{})
 	decision := resolver.Resolve(context.Background(), GroupActivationRequest{
 		Members: []*types.GroupMember{
 			{UserID: 7},
@@ -791,7 +793,7 @@ func TestJevResolverSingleBotSkipsJudging(t *testing.T) {
 }
 
 func TestJevResolverMentionSkipsJudging(t *testing.T) {
-	resolver := NewJevGroupActivationResolver(&JevClient{}, nil)
+	resolver := NewJevGroupActivationResolver(&JevClient{})
 	decision := resolver.Resolve(context.Background(), GroupActivationRequest{
 		Members: []*types.GroupMember{
 			{UserID: 7},
@@ -810,7 +812,7 @@ func TestJevResolverMentionSkipsJudging(t *testing.T) {
 
 // --- prompt construction ---
 
-func TestActivationStateNamesBotsAndHumans(t *testing.T) {
+func TestActivationStateNamesMembersAndMarksTheirKind(t *testing.T) {
 	state := activationState(GroupActivationRequest{
 		GroupName: "产品发布组",
 		Members: []*types.GroupMember{
@@ -828,18 +830,79 @@ func TestActivationStateNamesBotsAndHumans(t *testing.T) {
 			}
 		},
 	}, []GroupActivationBot{
-		{UID: 42, DisplayName: "阿码", Role: "代码审查员", Description: "负责代码审查"},
-		{UID: 43, DisplayName: "小文", Role: "文案写手", Description: "负责营销文案"},
+		{UID: 42, DisplayName: "阿码"},
+		{UID: 43, DisplayName: "小文"},
 	})
 
-	for _, want := range []string{"产品发布组", "阿码", "代码审查员", "小文", "文案写手", "林", "这段代码帮我看下"} {
-		if !strings.Contains(state, want) {
-			t.Fatalf("state is missing %q:\n%s", want, state)
+	// The state is a JSON object so each part carries a name, and every member
+	// is marked as a bot or a user so the judge can tell them apart.
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(state), &decoded); err != nil {
+		t.Fatalf("state is not valid JSON: %v\n%s", err, state)
+	}
+	group, ok := decoded["group"].(map[string]any)
+	if !ok || group["name"] != "产品发布组" {
+		t.Fatalf("group name missing from state: %s", state)
+	}
+
+	members, ok := decoded["members"].([]any)
+	if !ok || len(members) != 3 {
+		t.Fatalf("expected three members, got %v: %s", decoded["members"], state)
+	}
+	kinds := map[string]string{}
+	for _, entry := range members {
+		member, _ := entry.(map[string]any)
+		name, _ := member["name"].(string)
+		kind, _ := member["type"].(string)
+		kinds[name] = kind
+	}
+	if kinds["阿码"] != "bot" || kinds["小文"] != "bot" || kinds["林"] != "user" {
+		t.Fatalf("member kinds are wrong: %#v", kinds)
+	}
+
+	messages, ok := decoded["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected two transcript entries, got %v: %s", decoded["messages"], state)
+	}
+	last, _ := messages[1].(map[string]any)
+	if last["from"] != "阿码" || last["type"] != "bot" || last["text"] != "收到" {
+		t.Fatalf("bot turn is not marked as coming from a bot: %#v", last)
+	}
+}
+
+// The judge is asked about participation, not about a job title, so the prompt
+// must not carry the owner-defined role or description.
+func TestActivationStateCarriesNoRoleOrDescription(t *testing.T) {
+	state := activationState(GroupActivationRequest{
+		GroupName: "产品发布组",
+		Members: []*types.GroupMember{
+			{UserID: 42, IsBot: true, DisplayName: "阿码"},
+		},
+	}, []GroupActivationBot{{UID: 42, DisplayName: "阿码"}})
+
+	for _, unwanted := range []string{"代码审查员", "文案写手", "role", "description"} {
+		if strings.Contains(state, unwanted) {
+			t.Fatalf("state should not carry %q:\n%s", unwanted, state)
 		}
 	}
-	// The judge must be able to tell the bot apart from the human.
-	if !strings.Contains(state, "阿码（机器人）") {
-		t.Fatalf("bot turn is not marked as coming from a bot:\n%s", state)
+}
+
+// A bot's display name must reach the prompt. Naming bots by uid would not line
+// up with the transcript, which speaks display names.
+func TestActivationBotNameUsesDisplayName(t *testing.T) {
+	bots := activationBots([]*types.GroupMember{
+		{UserID: 42, IsBot: true, DisplayName: "阿码"},
+		{UserID: 43, IsBot: true},
+	})
+	if len(bots) != 2 {
+		t.Fatalf("expected two bots, got %d", len(bots))
+	}
+	if got := activationBotName(bots[0]); got != "阿码" {
+		t.Fatalf("display name not carried through: %q", got)
+	}
+	// A bot with no display name still needs an identity the judge can cite.
+	if got := activationBotName(bots[1]); got != "usr43" {
+		t.Fatalf("missing display name should fall back to uid, got %q", got)
 	}
 }
 

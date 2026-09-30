@@ -2537,7 +2537,6 @@ func (h *Hub) resolveGroupActivation(
 		Mentions:              mentions,
 		Members:               members,
 		TrustedChannelTrigger: trustedChannelTrigger,
-		DefaultAgentUID:       h.defaultAgentForGroup(groupID, len(members), mentions, senderIsBot, trustedChannelTrigger),
 	}
 	if msg != nil && msg.Data != nil {
 		req.Message = normalizeContentText(msg.Data.Content)
@@ -2555,32 +2554,6 @@ func (h *Hub) resolveGroupActivation(
 		return h.groupActivation.Resolve(context.Background(), req)
 	}
 	return deterministicGroupActivation(req)
-}
-
-// defaultAgentForGroup reports the agent an agent-task group falls back to.
-//
-// The rule predates semantic judging and still applies: the first current task
-// agent owns messages that address nobody, and if it leaves the next current
-// agent takes over.
-//
-// The lookup is skipped unless a fallback could actually apply. A message that
-// names someone needs no fallback, and a group of two members is already covered
-// by the single-bot rule, so neither pays for a query.
-func (h *Hub) defaultAgentForGroup(groupID int64, memberCount int, mentions []string, senderIsBot, trustedChannelTrigger bool) int64 {
-	if h == nil || h.db == nil || groupID <= 0 || memberCount <= 2 {
-		return 0
-	}
-	if trustedChannelTrigger || senderIsBot || len(mentions) > 0 {
-		return 0
-	}
-	group, err := h.db.GetGroup(groupID)
-	if err != nil || group == nil {
-		return 0
-	}
-	if group.Kind != types.GroupKindAgentTask || len(group.AgentIDs) == 0 {
-		return 0
-	}
-	return group.AgentIDs[0]
 }
 
 // deterministicGroupActivation applies the rules that predate semantic judging.
@@ -2613,18 +2586,6 @@ func deterministicGroupActivation(req GroupActivationRequest) GroupActivationDec
 	}
 	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
 		return GroupActivationDecision{Activated: mentioned, Source: activationSourceMention}
-	}
-	// An agent-task group exists to finish one piece of work. A message that
-	// addresses nobody still needs its owner, otherwise the task stalls with no
-	// reply and no notice. The first current agent is the default; if it leaves,
-	// the next current agent takes over.
-	if req.DefaultAgentUID > 0 {
-		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
-			return GroupActivationDecision{
-				Activated: map[int64]float64{req.DefaultAgentUID: 1},
-				Source:    activationSourceDefaultAgent,
-			}
-		}
 	}
 	return GroupActivationDecision{Source: activationSourceNoMention}
 }
@@ -2747,8 +2708,10 @@ func (h *Hub) activationNoticeAllowed(groupID int64) bool {
 
 const (
 	activationUnavailableNotice = "⚠️ 智能路由暂不可用，本条未触发任何成员。可再次发送，或 @ 对应成员。"
-	// activationNoticeCooldown bounds how often one group is told about an
-	// outage. Long enough to keep the notice readable, short enough that a
-	// person arriving mid-outage still learns what is wrong.
-	activationNoticeCooldown = 5 * time.Minute
+	// activationNoticeCooldown absorbs a burst without hiding the problem. It is
+	// deliberately short: the notice is how a person learns routing is down, so
+	// a long silence would be worse than a repeat. Ten seconds collapses the
+	// messages of one back-and-forth into a single notice while still telling
+	// someone who arrives a moment later.
+	activationNoticeCooldown = 10 * time.Second
 )
