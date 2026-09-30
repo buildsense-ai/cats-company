@@ -953,6 +953,7 @@ export default function MessagesView({
       artifactId,
       agentUid,
       url,
+      displayedVersion,
       gateway: true,
       signal: undefined,
     };
@@ -969,19 +970,48 @@ export default function MessagesView({
     const getCurrentSession = () => {
       const focus = activeArtifactFocusRef.current;
       const binding = activeArtifactFrameRef.current;
+      const gatewayFocus = !focus && binding?.gateway && binding.frame
+        ? (() => {
+          const previewFile = {
+            artifact_id: binding.artifactId,
+            artifact_agent_uid: binding.agentUid,
+            publish_version: binding.displayedVersion,
+            mime_type: 'text/html',
+            url: binding.url,
+          };
+          const artifactRef = artifactRefFromPreviewFile(previewFile, binding.agentUid);
+          return artifactRef && activeTopicRef.current
+            ? {
+              topic: activeTopicRef.current,
+              topicGeneration: artifactTopicGenerationRef.current,
+              agentUid: binding.agentUid,
+              artifactId: binding.artifactId,
+              displayedVersion: binding.displayedVersion,
+              url: binding.url,
+              previewKey: [binding.agentUid, binding.artifactId, binding.displayedVersion, binding.url].join('|'),
+              artifactRef,
+            }
+            : null;
+        })()
+        : null;
+      const sessionFocus = focus || gatewayFocus;
       if (!focus || !binding || activeTopicRef.current !== focus.topic
         || artifactTopicGenerationRef.current !== focus.topicGeneration
         || activeArtifactAgentUIDRef.current !== focus.agentUid
-        || !artifactBindingMatchesFocus(binding, focus)) return null;
+        || !artifactBindingMatchesFocus(binding, focus)) {
+        if (!gatewayFocus || !binding || activeTopicRef.current !== gatewayFocus.topic
+          || artifactTopicGenerationRef.current !== gatewayFocus.topicGeneration
+          || !artifactBindingMatchesFocus(binding, gatewayFocus)) return null;
+      }
       return {
-        token: focus,
-        identityKey: focus.previewKey,
-        topicId: focus.topic,
-        topicGeneration: focus.topicGeneration,
-        agentUid: focus.agentUid,
-        artifactId: focus.artifactId,
-        displayedVersion: focus.displayedVersion,
-        artifactRef: focus.artifactRef,
+        token: sessionFocus,
+        identityKey: sessionFocus.previewKey,
+        topicId: sessionFocus.topic,
+        topicGeneration: sessionFocus.topicGeneration,
+        agentUid: sessionFocus.agentUid,
+        artifactId: sessionFocus.artifactId,
+        displayedVersion: sessionFocus.displayedVersion,
+        artifactRef: sessionFocus.artifactRef,
         binding,
       };
     };

@@ -9,6 +9,10 @@ import { sameOriginNotificationURL } from './utils/notification-url';
 import { cleanupNavigationCaches } from './utils/navigation-cache';
 import { navigationFallback } from './utils/navigation-fallback';
 
+// A gateway/runtime repair must reach already-open workspaces immediately.
+// Keeping an updated worker in "waiting" would let the old navigation cache
+// continue serving a stale application shell and its outdated artifact bridge.
+self.skipWaiting();
 clientsClaim();
 cleanupOutdatedCaches();
 
