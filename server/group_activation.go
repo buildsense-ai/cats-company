@@ -37,6 +37,12 @@ const (
 type GroupActivationDecision struct {
 	// Activated holds the bot UIDs that should respond, mapped to their score.
 	Activated map[int64]float64
+	// Scores holds every judged candidate's score, including the ones below the
+	// threshold. Activated alone cannot explain a message that reached nobody:
+	// it keeps only the winners, so a correct "nobody" and a criteria that never
+	// fires look identical. This exists for observability and does not affect
+	// routing.
+	Scores map[int64]float64
 	// Source explains which rule produced the decision.
 	Source string
 	// Degraded is true when judging failed and the fallback applied.
@@ -44,14 +50,15 @@ type GroupActivationDecision struct {
 }
 
 const (
-	activationSourceSingleBot = "single_bot"
-	activationSourceMention   = "mention"
-	activationSourceChannel   = "channel_trigger"
-	activationSourceBotSender = "bot_sender"
-	activationSourceJev       = "jev"
-	activationSourceDegraded  = "jev_unavailable"
-	activationSourceNoBot     = "no_bot"
-	activationSourceNoMention = "no_mention"
+	activationSourceSingleBot    = "single_bot"
+	activationSourceMention      = "mention"
+	activationSourceChannel      = "channel_trigger"
+	activationSourceBotSender    = "bot_sender"
+	activationSourceJev          = "jev"
+	activationSourceDegraded     = "jev_unavailable"
+	activationSourceNoBot        = "no_bot"
+	activationSourceNoMention    = "no_mention"
+	activationSourceDefaultAgent = "default_agent"
 )
 
 // GroupActivationResolver decides which bots respond to a group message.
@@ -73,6 +80,11 @@ type GroupActivationRequest struct {
 	// TrustedChannelTrigger marks a channel-managed group message that already
 	// passed the channel's own trigger rules.
 	TrustedChannelTrigger bool
+	// DefaultAgentUID is the agent an agent-task group falls back to when
+	// judging is not installed. It is only consulted on the deterministic path:
+	// once judging runs, its verdict is the decision, including a verdict of
+	// "nobody", and a fallback would silently overrule it.
+	DefaultAgentUID int64
 	// JudgeContext lazily loads the prompt material. It is only called when
 	// semantic judging actually happens, so the common paths (a single-bot
 	// group, an explicit mention, a channel trigger) pay no query at all.
@@ -217,19 +229,37 @@ func (r *JevGroupActivationResolver) judge(ctx context.Context, req GroupActivat
 	if err != nil {
 		return GroupActivationDecision{}, err
 	}
+	return r.scoreAnswers(answers, bots), nil
+}
 
+// scoreAnswers turns the raw answers into a decision.
+//
+// Scores keeps every candidate's value, including the ones below the threshold.
+// Activated alone cannot explain a message that reached nobody: it holds only
+// the winners, so a correct "nobody" and a criteria that never fires look
+// identical. Keeping the losers is what makes the difference visible.
+func (r *JevGroupActivationResolver) scoreAnswers(answers map[string]jevAnswer, bots []GroupActivationBot) GroupActivationDecision {
 	activated := make(map[int64]float64)
+	scores := make(map[int64]float64, len(bots))
 	for _, bot := range bots {
 		answer, ok := answers[activationQuestionKey(bot.UID)]
 		if !ok {
 			continue
 		}
 		value := answer.NoulAnswer()
-		if value.Valid && value.Value >= r.threshold {
+		if !value.Valid {
+			continue
+		}
+		scores[bot.UID] = value.Value
+		if value.Value >= r.threshold {
 			activated[bot.UID] = value.Value
 		}
 	}
-	return GroupActivationDecision{Activated: activated, Source: activationSourceJev}, nil
+	return GroupActivationDecision{
+		Activated: activated,
+		Scores:    scores,
+		Source:    activationSourceJev,
+	}
 }
 
 // activationState renders the prompt material. It names every member by the
@@ -237,9 +267,11 @@ func (r *JevGroupActivationResolver) judge(ctx context.Context, req GroupActivat
 // is who, and it marks each one as a bot or a user so the judge can tell the
 // two apart.
 //
-// The state is an object rather than a flat string: every part carries a name
-// ("group", "members", "messages"), which is what the upstream recommends and
-// what keeps the roster from being read as more transcript.
+// The state is built as a named structure and sent as JSON text — the API takes
+// the state as a string, so this is the serialised form, not an object on the
+// wire. Each part carries a name ("group", "members", "messages"), which is what
+// the upstream recommends and what keeps the roster from being read as more
+// transcript.
 func activationState(req GroupActivationRequest, bots []GroupActivationBot) string {
 	context := judgeContext(req)
 	state := map[string]any{}

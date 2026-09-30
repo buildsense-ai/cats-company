@@ -523,11 +523,12 @@ func TestGroupFanoutBotMentionActivatesMentionedBot(t *testing.T) {
 // addresses nobody still needs its owner, otherwise the task stalls with no
 // reply and no notice. These cases pin that rule and its handover behaviour.
 
-// An agent-task group is a group like any other once judging is installed: a
-// message that addresses nobody reaches nobody. The old rule handed such a
-// message to the first agent, which meant every message produced a reply even
-// when the group had nothing to do with it.
-func TestGroupFanoutMultiBotAgentTaskWithoutMentionReachesNobody(t *testing.T) {
+// With no judge installed, an agent-task group still hands an unaddressed
+// message to its first agent. The rule predates judging and stays on the
+// deterministic path: removing it would change the behaviour of every
+// deployment that has not switched judging on, and the deterministic path
+// reports nothing to the group, so the change would be silent.
+func TestGroupFanoutMultiBotAgentTaskFallsBackToFirstAgent(t *testing.T) {
 	baseStore := &identityMessageStore{
 		users: map[int64]*types.User{
 			7:  {ID: 7, AccountType: types.AccountHuman},
@@ -553,6 +554,59 @@ func TestGroupFanoutMultiBotAgentTaskWithoutMentionReachesNobody(t *testing.T) {
 	collaboratorBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
 	hub.addClient(primaryBot)
 	hub.addClient(collaboratorBot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"继续处理这个任务"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 34, nil)
+
+	delivered := assertBotActivation(t, primaryBot.send, true)
+	if delivered.Data.MemberCount != 3 {
+		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
+	}
+	assertBotActivation(t, collaboratorBot.send, false)
+}
+
+// A judge supersedes the fallback: when it runs, its verdict is the decision,
+// including a verdict of "nobody". This is what keeps an agent-task group from
+// answering every message.
+func TestGroupFanoutJudgeVerdictBeatsAgentTaskFallback(t *testing.T) {
+	baseStore := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{
+		identityMessageStore: baseStore,
+		group: &types.Group{
+			ID:       80,
+			Kind:     types.GroupKindAgentTask,
+			AgentIDs: []int64{42, 43},
+		},
+	}
+	hub := NewHub(store, nil)
+	primaryBot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	collaboratorBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(primaryBot)
+	hub.addClient(collaboratorBot)
+
+	// A judge that reaches nobody, even though the group would otherwise fall
+	// back to its first agent.
+	hub.SetGroupActivationResolver(GroupActivationResolverFunc(func(context.Context, GroupActivationRequest) GroupActivationDecision {
+		return GroupActivationDecision{Source: activationSourceJev}
+	}))
 
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID: "grp_80",

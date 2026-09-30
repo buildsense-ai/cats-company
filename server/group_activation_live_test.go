@@ -129,7 +129,7 @@ func TestJevResolverLiveEndToEnd(t *testing.T) {
 			if decision.Source != activationSourceJev {
 				t.Fatalf("source = %s, want %s", decision.Source, activationSourceJev)
 			}
-			t.Logf("activated=%v source=%s", decision.Activated, decision.Source)
+			t.Logf("activated=%v scores=%v source=%s", decision.Activated, decision.Scores, decision.Source)
 
 			if tc.wantNone {
 				if len(decision.Activated) != 0 {

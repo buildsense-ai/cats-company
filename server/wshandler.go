@@ -2537,6 +2537,7 @@ func (h *Hub) resolveGroupActivation(
 		Mentions:              mentions,
 		Members:               members,
 		TrustedChannelTrigger: trustedChannelTrigger,
+		DefaultAgentUID:       h.defaultAgentForGroup(groupID, len(members), mentions, senderIsBot, trustedChannelTrigger),
 	}
 	if msg != nil && msg.Data != nil {
 		req.Message = normalizeContentText(msg.Data.Content)
@@ -2551,9 +2552,36 @@ func (h *Hub) resolveGroupActivation(
 		}
 	}
 	if h.groupActivation != nil {
-		return h.groupActivation.Resolve(context.Background(), req)
+		decision := h.groupActivation.Resolve(context.Background(), req)
+		h.logActivationDecision(groupID, req, decision)
+		return decision
 	}
 	return deterministicGroupActivation(req)
+}
+
+// logActivationDecision records what the judge decided and why.
+//
+// A message that reaches nobody is indistinguishable from a broken prompt
+// without this: Activated keeps only the winners, so "correctly nobody" and
+// "the criteria never fire" produce the same empty map. The per-candidate
+// scores make the difference visible, and the source says which rule ran.
+func (h *Hub) logActivationDecision(groupID int64, req GroupActivationRequest, decision GroupActivationDecision) {
+	if h == nil {
+		return
+	}
+	sender := fmt.Sprintf("usr%d", req.SenderUID)
+	if req.SenderIsBot {
+		sender += "(bot)"
+	}
+	log.Printf(
+		"group activation: group=%d sender=%s source=%s degraded=%t activated=%v scores=%v",
+		groupID,
+		sender,
+		decision.Source,
+		decision.Degraded,
+		decision.Activated,
+		decision.Scores,
+	)
 }
 
 // deterministicGroupActivation applies the rules that predate semantic judging.
@@ -2587,7 +2615,54 @@ func deterministicGroupActivation(req GroupActivationRequest) GroupActivationDec
 	if mentioned := activationMentionedBots(bots, req.Mentions); len(mentioned) > 0 {
 		return GroupActivationDecision{Activated: mentioned, Source: activationSourceMention}
 	}
+	// An agent-task group exists to finish one piece of work, so a message that
+	// addresses nobody still needs its owner rather than stalling silently.
+	//
+	// This applies only when no judge is installed. Once judging runs, its
+	// verdict is the decision — including a verdict of "nobody" — and a fallback
+	// here would silently overrule it.
+	if req.DefaultAgentUID > 0 {
+		if _, ok := activationBotUIDs(bots)[req.DefaultAgentUID]; ok {
+			return GroupActivationDecision{
+				Activated: map[int64]float64{req.DefaultAgentUID: 1},
+				Source:    activationSourceDefaultAgent,
+			}
+		}
+	}
 	return GroupActivationDecision{Source: activationSourceNoMention}
+}
+
+// activationBotUIDs indexes the candidate bots for membership checks.
+func activationBotUIDs(bots []GroupActivationBot) map[int64]struct{} {
+	index := make(map[int64]struct{}, len(bots))
+	for _, bot := range bots {
+		index[bot.UID] = struct{}{}
+	}
+	return index
+}
+
+// defaultAgentForGroup reports the agent an agent-task group falls back to when
+// no judge is installed.
+//
+// The rule predates semantic judging and still applies on the deterministic
+// path: the first current task agent owns messages that address nobody, and if
+// it leaves the next current agent takes over. Judging supersedes it, which is
+// why the lookup is skipped unless a fallback could actually apply.
+func (h *Hub) defaultAgentForGroup(groupID int64, memberCount int, mentions []string, senderIsBot, trustedChannelTrigger bool) int64 {
+	if h == nil || h.db == nil || groupID <= 0 || memberCount <= 2 {
+		return 0
+	}
+	if trustedChannelTrigger || senderIsBot || len(mentions) > 0 {
+		return 0
+	}
+	group, err := h.db.GetGroup(groupID)
+	if err != nil || group == nil {
+		return 0
+	}
+	if group.Kind != types.GroupKindAgentTask || len(group.AgentIDs) == 0 {
+		return 0
+	}
+	return group.AgentIDs[0]
 }
 
 // groupNameForActivation reads the group label used in the judging prompt. A
